@@ -30,14 +30,6 @@ pub struct TypeClosureVisit<'a> {
     pub guarded: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct NativeDescriptorVisit<'a> {
-    pub nominal: &'a NominalTypeKey,
-    pub symbol: &'a str,
-    pub trace: &'a TypeClosureTrace,
-    pub guarded: bool,
-}
-
 pub trait TypeClosurePolicy {
     type Error;
 
@@ -68,9 +60,6 @@ pub trait TypeClosurePolicy {
         Ok(())
     }
 
-    fn native_descriptor(&mut self, _visit: NativeDescriptorVisit<'_>) -> Result<(), Self::Error> {
-        Ok(())
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -297,15 +286,6 @@ where
                 }
                 Ok(())
             }
-            TypeDescriptorIr::Native { symbol } => self.call(
-                trace,
-                policy.native_descriptor(NativeDescriptorVisit {
-                    nominal,
-                    symbol,
-                    trace,
-                    guarded,
-                }),
-            ),
         }
     }
 

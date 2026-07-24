@@ -184,9 +184,6 @@ impl PreludeRegistry {
             let symbol = format!("{}.{}", symbol_root, ty.name);
             self.type_symbols.insert(ty.name.clone(), symbol.clone());
             self.type_symbols.insert(symbol.clone(), symbol.clone());
-            if ty.is_native {
-                self.native_type_names.insert(ty.name.clone());
-            }
             self.type_decls_by_symbol.insert(symbol, ty.clone());
             self.type_decls.insert(ty.name.clone(), ty);
         }

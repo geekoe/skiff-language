@@ -2760,9 +2760,6 @@ fn artifact_type_kind(
                 .collect::<Result<Vec<_>, _>>()?
                 .join(" | "),
         }),
-        TypeDescriptorIr::Native { symbol } => Ok(SourceTypeKind::Representation {
-            target: symbol.clone(),
-        }),
     }
 }
 
@@ -5007,8 +5004,8 @@ mod tests {
             is_static: false,
             implicit_self: None,
         };
-        let descriptor = TypeDescriptorIr::Native {
-            symbol: "interface:LlmClient".to_string(),
+        let descriptor = TypeDescriptorIr::Record {
+            fields: BTreeMap::new(),
         };
         let tool_descriptor = TypeDescriptorIr::Record {
             fields: BTreeMap::from([("name".to_string(), TypeRefIr::builtin("string"))]),

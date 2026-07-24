@@ -2,21 +2,21 @@ use std::collections::BTreeSet;
 
 use crate::{
     ast::{
-        AliasDecl, BinaryOp, Block, BlockSourceSpans, BuiltinPackage, ConstDecl, DbBlockMode,
-        DbBody, DbChange, DbChangeOp, DbDecl, DbIndexDirection, DbIndexEntry, DbIndexField,
-        DbIndexWhereSourceSpans, DbLeaseClaim, DbLeaseDecl, DbLeaseRead, DbObjectFieldValue,
-        DbObjectKey, DbOperation, DbOperationKind, DbOrderEntry, DbProjection, DbQuery,
-        DbQueryBlock, DbRetention, DbRetentionUnit, DbSelector, DbStorageCodec, DbStorageDecl,
-        DbTransaction, DbWhereClause, DependencySourceAddress, ExecutableSourceSpans, Expr,
-        ExprSourceSpans, FieldDecl, FieldPath, ForBinding, FunctionDecl, ImplDecl, ImportDecl,
-        InterfaceDecl, InterfaceOperation, Literal, MatchArm, PackageId, Param, Pattern,
-        PatternField, RecordFieldSourceSpans, SourceFile, SourceSpanTable, Stmt, StmtSourceSpans,
-        TypeDecl, TypeRef, UnaryOp,
+        ActorDecl, AliasDecl, BinaryOp, Block, BlockSourceSpans, BuiltinPackage, ConstDecl,
+        DbBlockMode, DbBody, DbChange, DbChangeOp, DbDecl, DbIndexDirection, DbIndexEntry,
+        DbIndexField, DbIndexWhereSourceSpans, DbLeaseClaim, DbLeaseDecl, DbLeaseRead,
+        DbObjectFieldValue, DbObjectKey, DbOperation, DbOperationKind, DbOrderEntry, DbProjection,
+        DbQuery, DbQueryBlock, DbRetention, DbRetentionUnit, DbSelector, DbStorageCodec,
+        DbStorageDecl, DbTransaction, DbWhereClause, DependencySourceAddress,
+        ExecutableSourceSpans, Expr, ExprSourceSpans, FieldDecl, FieldPath, ForBinding,
+        FunctionDecl, ImplDecl, ImportDecl, InterfaceDecl, InterfaceOperation, Literal, MatchArm,
+        PackageId, Param, Pattern, PatternField, RecordFieldSourceSpans, SourceFile,
+        SourceSpanTable, Stmt, StmtSourceSpans, TypeDecl, TypeRef, UnaryOp,
     },
     ast_utils::{expr_path, without_generic},
     error::{CompileError, Result, SourceLocation, SourceSpan},
     lexer::{lex, Token, TokenKind},
-    type_syntax::{record_type_fields, split_top_level, string_literal},
+    type_syntax::{generic_parts, record_type_fields, split_top_level, string_literal},
 };
 
 const IMPORT_NAME_RULE: &str =
@@ -224,6 +224,32 @@ fn validate_type_decl_discriminator(
     Ok(())
 }
 
+fn reject_duplicate_actor_declarations(actors: &[ActorDecl], types: &[TypeDecl]) -> Result<()> {
+    let type_names = types
+        .iter()
+        .map(|declaration| declaration.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut actor_names = BTreeSet::new();
+    for actor in actors {
+        if type_names.contains(actor.name.as_str()) {
+            return Err(CompileError::syntax(
+                format!(
+                    "actor {} conflicts with a normal type declaration of the same name",
+                    actor.name
+                ),
+                actor.span.start,
+            ));
+        }
+        if !actor_names.insert(actor.name.as_str()) {
+            return Err(CompileError::syntax(
+                format!("duplicated actor declaration {}", actor.name),
+                actor.span.start,
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn discriminator_record_branch_value(
     fields: &[(String, String)],
     discriminator: &str,
@@ -261,6 +287,7 @@ impl Parser {
         let mut function_signatures = Vec::new();
         let mut imports = Vec::new();
         let mut types = Vec::new();
+        let mut actors = Vec::new();
         let mut aliases = Vec::new();
         let mut interfaces = Vec::new();
         let mut impls = Vec::new();
@@ -325,6 +352,9 @@ impl Parser {
             } else if self.check_ident("type") {
                 self.reject_export_modifier_if_needed(exported, export_token_start)?;
                 types.push(self.parse_type_decl(exported)?);
+            } else if self.check_ident("actor") {
+                self.reject_export_modifier_if_needed(exported, export_token_start)?;
+                actors.push(self.parse_actor_decl(exported)?);
             } else if self.check_ident("alias") {
                 self.reject_export_modifier_if_needed(exported, export_token_start)?;
                 aliases.push(self.parse_alias_decl(exported)?);
@@ -387,12 +417,14 @@ impl Parser {
                 ));
             }
         }
+        reject_duplicate_actor_declarations(&actors, &types)?;
         Ok(SourceFile {
             provider_capability,
             functions,
             function_signatures,
             imports,
             types,
+            actors,
             aliases,
             interfaces,
             impls,
@@ -457,6 +489,7 @@ impl Parser {
             || self.check_ident("provider")
             || self.check_ident("const")
             || self.check_ident("type")
+            || self.check_ident("actor")
             || self.check_ident("alias")
             || self.check_ident("interface")
             || self.check_ident("impl")
@@ -507,7 +540,19 @@ impl Parser {
         } else {
             if self.match_ident("implements") {
                 loop {
-                    implements.push(self.parse_type()?);
+                    let implemented = self.parse_type()?;
+                    let implemented_root = generic_parts(&implemented.name)
+                        .map_or(implemented.name.as_str(), |parts| parts.root);
+                    if matches!(
+                        implemented_root,
+                        "Actor" | "actor.Actor" | "std.actor.Actor"
+                    ) {
+                        return Err(CompileError::syntax(
+                            "actor declarations must use `actor Name id IdType { ... }`, not `type implements Actor`",
+                            start,
+                        ));
+                    }
+                    implements.push(implemented);
                     if !self.match_symbol(",") {
                         break;
                     }
@@ -531,6 +576,35 @@ impl Parser {
             discriminator,
             alias,
             implements,
+            fields,
+            span: SourceSpan { start, end },
+        })
+    }
+
+    fn parse_actor_decl(&mut self, exported: bool) -> Result<ActorDecl> {
+        let start = self.expect_ident_value("actor")?.span.start;
+        let name = self.expect_ident("expected actor name")?;
+        if self.check_symbol("<") {
+            return Err(CompileError::syntax(
+                "actor declarations cannot be generic",
+                self.peek().span.start,
+            ));
+        }
+        self.expect_ident_value("id")?;
+        let id_type = self.parse_type()?;
+        if !self.check_symbol("{") {
+            return Err(CompileError::syntax(
+                "expected actor field body",
+                self.peek().span.start,
+            ));
+        }
+        let fields = self.parse_field_block()?;
+        self.match_symbol(";");
+        let end = self.previous().span.end;
+        Ok(ActorDecl {
+            exported,
+            name,
+            id_type,
             fields,
             span: SourceSpan { start, end },
         })

@@ -41,8 +41,7 @@ use type_name_validation::*;
 use type_validation::*;
 
 use super::provider_rules::{
-    collect_non_std_package_native_function_violations,
-    collect_non_std_package_native_type_violations, collect_removed_connect_provider_violations,
+    collect_non_std_package_native_function_violations, collect_removed_connect_provider_violations,
 };
 use super::NameResolutionModel;
 
@@ -159,12 +158,6 @@ pub(crate) fn validate_package_sources_with_dependency_analysis(
             &mut violations,
         );
         collect_non_std_package_native_function_violations(
-            package_id,
-            &path,
-            parsed.ast(),
-            &mut violations,
-        );
-        collect_non_std_package_native_type_violations(
             package_id,
             &path,
             parsed.ast(),

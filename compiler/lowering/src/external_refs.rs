@@ -405,7 +405,6 @@ fn collect_type_ref_external_refs_from_descriptor(
             }
         }
         TypeDescriptorIr::Alias { target } => collect_type_ref_external_refs(target, refs),
-        TypeDescriptorIr::Native { .. } => {}
     }
 }
 

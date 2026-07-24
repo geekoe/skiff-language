@@ -690,7 +690,6 @@ fn derive_file_ir_link_targets(units: &mut [FileIrUnit], seed: &PublicationApiSe
                     collect_type_ref_named_locations(&index, &module_path, variant, &mut refs);
                 }
             }
-            TypeDescriptorIr::Native { .. } => {}
         }
         // Interfaces declared in this module contribute their operation signatures.
         if let Some(interface) = unit.declarations.interfaces.get(&ty.name) {

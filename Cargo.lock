@@ -2201,10 +2201,12 @@ dependencies = [
  "skiff-compiler-contract",
  "skiff-compiler-core",
  "skiff-compiler-input",
+ "skiff-compiler-input-model",
  "skiff-compiler-lowering",
  "skiff-compiler-projection",
  "skiff-compiler-projection-input",
  "skiff-compiler-source",
+ "skiff-syntax",
  "thiserror",
 ]
 

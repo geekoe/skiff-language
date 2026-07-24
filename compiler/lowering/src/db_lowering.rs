@@ -529,7 +529,6 @@ fn expand_db_storage_type_ref(
                         .map(|variant| expand_db_storage_type_ref(variant, unit, seen_local_types))
                         .collect::<Result<Vec<_>>>()?,
                 },
-                TypeDescriptorIr::Native { .. } => ty.clone(),
             };
             seen_local_types.remove(type_index);
             Ok(expanded)

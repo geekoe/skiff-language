@@ -14,6 +14,8 @@ pub struct SourceFile {
     #[serde(default)]
     pub types: Vec<TypeDecl>,
     #[serde(default)]
+    pub actors: Vec<ActorDecl>,
+    #[serde(default)]
     pub aliases: Vec<AliasDecl>,
     #[serde(default)]
     pub interfaces: Vec<InterfaceDecl>,
@@ -153,6 +155,16 @@ pub struct TypeDecl {
     pub discriminator: Option<String>,
     pub alias: Option<TypeRef>,
     pub implements: Vec<TypeRef>,
+    pub fields: Vec<FieldDecl>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActorDecl {
+    pub exported: bool,
+    pub name: String,
+    pub id_type: TypeRef,
     pub fields: Vec<FieldDecl>,
     pub span: SourceSpan,
 }

@@ -848,6 +848,71 @@ fn rejects_removed_native_type_declaration() {
 }
 
 #[test]
+fn parses_explicit_actor_declaration_and_round_trips_ast() {
+    let source = r#"
+actor DocHub id DocId {
+  nextSeq: number,
+  pendingOps: Array<Op>
+}
+"#;
+    let ast = parse_source(source).unwrap();
+    assert!(ast.types.is_empty());
+    assert_eq!(ast.actors.len(), 1);
+    let actor = &ast.actors[0];
+    assert_eq!(actor.name, "DocHub");
+    assert_eq!(actor.id_type.name, "DocId");
+    assert_eq!(
+        actor
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["nextSeq", "pendingOps"]
+    );
+    let wire = serde_json::to_value(&ast).unwrap();
+    assert_eq!(
+        serde_json::from_value::<crate::ast::SourceFile>(wire).unwrap(),
+        ast
+    );
+}
+
+#[test]
+fn explicit_actor_rejects_missing_id_generic_and_name_conflicts() {
+    for (source, expected) in [
+        ("actor DocHub { value: string }", "expected id"),
+        (
+            "actor DocHub<T> id string { value: T }",
+            "actor declarations cannot be generic",
+        ),
+        (
+            "actor DocHub id string {}\nactor DocHub id string {}",
+            "duplicated actor declaration DocHub",
+        ),
+        (
+            "type DocHub { value: string }\nactor DocHub id string {}",
+            "conflicts with a normal type declaration",
+        ),
+    ] {
+        let error = parse_source(source).unwrap_err().to_string();
+        assert!(error.contains(expected), "unexpected error: {error}");
+    }
+}
+
+#[test]
+fn ordinary_type_cannot_forge_actor_with_legacy_conformance() {
+    for source in [
+        "type DocHub implements Actor<string> {}",
+        "type DocHub implements std.actor.Actor<string> {}",
+    ] {
+        let error = parse_source(source).unwrap_err().to_string();
+        assert!(
+            error.contains("actor declarations must use `actor Name id IdType"),
+            "unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
 fn type_declaration_ast_has_no_native_compatibility_field() {
     let declaration = parse_source("type User { name: string }")
         .unwrap()

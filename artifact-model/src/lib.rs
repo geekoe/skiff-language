@@ -1,10 +1,15 @@
 pub mod abi_identity;
+pub mod actor_declaration;
 pub use abi_identity::{
     AbiAliasId, AbiCallableId, AbiConstId, AbiContractRevision, AbiDeclarationAnchor,
     AbiDeclarationKind, AbiIdentityFacts, AbiInstanceId, AbiInterfaceId,
     AbiSourceDeclarationAnchor, AbiSymbolId, AbiSymbolIdFact, AbiTypeFact, AbiTypeId,
     DescriptorHash, ExternalDeclarationAnchor, PublishedDeclarationId, SchemaRevision, StdSymbolId,
     TypeNameability,
+};
+pub use actor_declaration::{
+    ActorAbiIdentity, ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr,
+    ActorPublicMethodIr, ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 mod activation_lexical;
 pub mod assembly_activation_control;

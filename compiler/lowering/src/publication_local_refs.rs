@@ -180,7 +180,6 @@ fn rewrite_type_descriptor(
                 rewrite_type_ref(index, module_path, variant);
             }
         }
-        TypeDescriptorIr::Native { .. } => {}
     }
 }
 

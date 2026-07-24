@@ -1115,7 +1115,6 @@ fn collect_package_type_descriptor_abi_violations(
                 );
             }
         }
-        TypeDescriptorIr::Native { .. } => {}
     }
 }
 

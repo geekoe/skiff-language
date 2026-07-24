@@ -178,11 +178,6 @@ impl SchemaBuilder<'_> {
                     .map(|ty| self.project_ref(ty))
                     .collect::<Result<_, _>>()?,
             },
-            TypeDescriptorIr::Native { .. } => {
-                return Err(message(
-                    "external named types cannot enter package schema v1",
-                ))
-            }
         })
     }
 

@@ -605,7 +605,6 @@ fn descriptor_contains_type_ref(
         TypeDescriptorIr::Union { variants } => variants
             .iter()
             .any(|variant| type_ref_contains(variant, predicate)),
-        TypeDescriptorIr::Native { .. } => false,
     }
 }
 

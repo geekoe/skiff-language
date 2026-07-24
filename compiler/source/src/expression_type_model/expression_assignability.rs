@@ -600,7 +600,6 @@ fn object_literal_targets_from_descriptor(
             .map(|variant| object_literal_targets_from_type_ref(variant, substitutions))
             .collect::<Option<Vec<_>>>()
             .map(|items| items.into_iter().flatten().collect()),
-        TypeDescriptorIr::Native { .. } => None,
     }
 }
 

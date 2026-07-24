@@ -2,6 +2,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ArtifactIdentityError {
+    #[error("failed to serialize actor ABI identity input: {0}")]
+    SerializeActorAbiIdentity(serde_json::Error),
     #[error("failed to serialize package schema type identity payload: {0}")]
     SerializePackageSchemaTypeIdentity(serde_json::Error),
     #[error("failed to serialize package schema index identity payload: {0}")]

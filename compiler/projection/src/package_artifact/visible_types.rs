@@ -111,9 +111,6 @@ pub(crate) fn projection_visible_type_descriptor(
                 })
                 .collect(),
         },
-        TypeDescriptorIr::Native { symbol } => TypeDescriptorIr::Native {
-            symbol: symbol.clone(),
-        },
     }
 }
 

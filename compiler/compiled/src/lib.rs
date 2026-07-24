@@ -1,4 +1,5 @@
 use skiff_artifact_model::{ActorMetadataIr, DbMetadataIr, FileIrUnit};
+use skiff_compiler_input_model::{actor_declaration_inputs, ActorDeclarationInput};
 use skiff_compiler_lowering::{CompiledPackageSource, LoweredPackage};
 use skiff_compiler_source::{
     source_identity::PublicationDeclarationAnchors, CompileParsedPackageSourcesInput,
@@ -17,6 +18,22 @@ use skiff_compiler_source::{ConfigRequirementSet, ExportBindingModel};
 pub struct CompiledPackage {
     model: PackageSourceModel,
     lowered: LoweredPackage,
+    actor_declarations: Vec<CompiledActorDeclaration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledActorDeclaration {
+    pub module_path: String,
+    pub declaration: ActorDeclarationInput,
+}
+
+impl CompiledActorDeclaration {
+    pub fn new(module_path: impl Into<String>, declaration: ActorDeclarationInput) -> Self {
+        Self {
+            module_path: module_path.into(),
+            declaration,
+        }
+    }
 }
 
 pub fn compile_parsed_publication_sources(
@@ -35,7 +52,23 @@ pub fn compile_source_model(
 
 impl CompiledPackage {
     pub fn new(model: PackageSourceModel, lowered: LoweredPackage) -> Self {
-        Self { model, lowered }
+        let actor_declarations = model
+            .sources()
+            .parsed_sources()
+            .iter()
+            .flat_map(|source| {
+                actor_declaration_inputs(source.ast())
+                    .into_iter()
+                    .map(|declaration| {
+                        CompiledActorDeclaration::new(source.module_path(), declaration)
+                    })
+            })
+            .collect();
+        Self {
+            model,
+            lowered,
+            actor_declarations,
+        }
     }
 
     pub fn compile_model(&self) -> &PackageSourceModel {
@@ -106,7 +139,41 @@ impl CompiledPackage {
         self.lowered.service_actor_metadata()
     }
 
+    pub fn actor_declarations(&self) -> &[CompiledActorDeclaration] {
+        &self.actor_declarations
+    }
+
     pub fn has_service_storage_metadata(&self) -> bool {
         self.lowered.has_service_storage_metadata()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use skiff_compiler_input_model::{ActorDeclarationInput, ActorFieldInput};
+    use skiff_syntax::ast::TypeRef;
+
+    use super::*;
+
+    #[test]
+    fn compiled_actor_fact_keeps_module_id_and_bootstrap_shape() {
+        let fact = CompiledActorDeclaration::new(
+            "docs",
+            ActorDeclarationInput {
+                name: "DocHub".to_string(),
+                id_type: TypeRef {
+                    name: "DocId".to_string(),
+                },
+                fields: vec![ActorFieldInput {
+                    name: "nextSeq".to_string(),
+                    ty: TypeRef {
+                        name: "number".to_string(),
+                    },
+                }],
+            },
+        );
+        assert_eq!(fact.module_path, "docs");
+        assert_eq!(fact.declaration.id_type.name, "DocId");
+        assert_eq!(fact.declaration.fields[0].name, "nextSeq");
     }
 }

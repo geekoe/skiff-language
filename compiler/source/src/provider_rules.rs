@@ -61,18 +61,6 @@ pub fn collect_non_std_package_native_function_violations(
     );
 }
 
-pub fn collect_non_std_package_native_type_violations(
-    package_id: &str,
-    path: &str,
-    ast: &SourceFile,
-    violations: &mut Vec<String>,
-) {
-    if is_standard_package_id(package_id) || package_id == PRELUDE_REGISTRY_ID {
-        return;
-    }
-    collect_native_type_violations(path, ast, &format!("package {package_id}"), violations);
-}
-
 fn collect_native_function_violations(
     path: &str,
     ast: &SourceFile,
@@ -97,20 +85,6 @@ fn collect_native_function_violations(
                 implementation.target, method.name
             ));
         }
-    }
-}
-
-fn collect_native_type_violations(
-    path: &str,
-    ast: &SourceFile,
-    owner: &str,
-    violations: &mut Vec<String>,
-) {
-    for ty in ast.types.iter().filter(|ty| ty.is_native) {
-        violations.push(format!(
-            "{path}: {owner} cannot declare native type {}",
-            ty.name
-        ));
     }
 }
 

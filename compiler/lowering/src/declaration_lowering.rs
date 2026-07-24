@@ -150,8 +150,8 @@ pub(super) fn lower_type_declarations(
         let source_span = source_span_ref(interface.span);
         unit.type_table.push(TypeDeclIr {
             name: interface.name.clone(),
-            descriptor: TypeDescriptorIr::Native {
-                symbol: symbol(module_path, &interface.name),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::new(),
             },
             type_params: interface.type_params.clone(),
             discriminator: None,
