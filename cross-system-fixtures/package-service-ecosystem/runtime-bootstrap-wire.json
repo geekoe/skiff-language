@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "canonical",
+      "outcome": "accept",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff?replicaSet=rs0"
+        }
+      }
+    },
+    {
+      "name": "missing-artifacts-path",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        }
+      }
+    },
+    {
+      "name": "empty-artifacts-path",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        }
+      }
+    },
+    {
+      "name": "relative-artifacts-path",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "artifacts",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        }
+      }
+    },
+    {
+      "name": "non-normalized-artifacts-path",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/../artifacts",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        }
+      }
+    },
+    {
+      "name": "missing-service-db",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts"
+      }
+    },
+    {
+      "name": "missing-mongo-url",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts",
+        "serviceDb": {}
+      }
+    },
+    {
+      "name": "empty-mongo-url",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts",
+        "serviceDb": {
+          "mongoUrl": "   "
+        }
+      }
+    },
+    {
+      "name": "unknown-top-level-field",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        },
+        "registryEndpoint": "https://registry.internal"
+      }
+    },
+    {
+      "name": "unknown-service-db-field",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff",
+          "database": "skiff"
+        }
+      }
+    },
+    {
+      "name": "plural-artifact-roots",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactRoots": [
+          "/opt/skiff/artifacts"
+        ],
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        }
+      }
+    }
+  ]
+}

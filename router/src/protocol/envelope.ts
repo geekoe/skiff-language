@@ -63,6 +63,7 @@ export type RuntimeFrameHeaderName =
   | 'runtime.capabilities'
   | 'runtime.health'
   | 'runtime.registered'
+  | 'router.bootstrap'
   | 'router.control'
   | 'actor.put.request'
   | 'actor.put.response'
@@ -234,6 +235,19 @@ export interface RuntimeRegisteredEnvelope {
 
 export type RuntimeRegisteredFrameHeader = RuntimeFrameHeaderBase<'runtime.registered'> &
   Omit<RuntimeRegisteredEnvelope, 'type'>;
+
+export interface RouterBootstrapServiceDb {
+  mongoUrl: string;
+}
+
+export interface RouterBootstrapEnvelope {
+  type: 'router.bootstrap';
+  artifactsPath: string;
+  serviceDb: RouterBootstrapServiceDb;
+}
+
+export type RouterBootstrapFrameHeader = RuntimeFrameHeaderBase<'router.bootstrap'> &
+  Omit<RouterBootstrapEnvelope, 'type'>;
 
 export interface RouterControlEnvelope {
   type: 'router.control';
@@ -768,6 +782,7 @@ export type ActorSpawnRuntimeErrorFrameHeader = {
 }[ActorSpawnRuntimeErrorFrameHeaderName];
 
 export type RouterToRuntimeFrameHeader =
+  | RouterBootstrapFrameHeader
   | RouterControlFrameHeader
   | RuntimeRegisteredFrameHeader
   | ActorSpawnRuntimeResponseFrameHeader

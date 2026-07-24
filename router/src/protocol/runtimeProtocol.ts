@@ -87,6 +87,7 @@ const runtimeToRouterFrameHeaderTypes = [
 ] as const satisfies readonly RuntimeToRouterFrameHeaderName[];
 
 const routerToRuntimeFrameHeaderTypes = [
+  'router.bootstrap',
   'router.control',
   'runtime.registered',
   'actor.put.response',
@@ -230,6 +231,19 @@ const runtimeHealthProperties = {
 const runtimeRegisteredProperties = {
   type: { type: 'string', enum: ['runtime.registered'] },
   runtimeId: { type: 'string' }
+} as const satisfies Record<string, ProtocolSchemaProperty>;
+
+const routerBootstrapProperties = {
+  type: { type: 'string', enum: ['router.bootstrap'] },
+  artifactsPath: { type: 'string' },
+  serviceDb: {
+    type: 'object',
+    required: ['mongoUrl'],
+    properties: {
+      mongoUrl: { type: 'string' }
+    },
+    additionalProperties: false
+  }
 } as const satisfies Record<string, ProtocolSchemaProperty>;
 
 const routerControlProperties = {
@@ -745,6 +759,15 @@ export const runtimeFrameHeaderSchemas = {
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
       ...runtimeRegisteredProperties
+    },
+    additionalProperties: false
+  },
+  'router.bootstrap': {
+    type: 'object',
+    required: ['schemaVersion', 'type', 'artifactsPath', 'serviceDb'],
+    properties: {
+      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+      ...routerBootstrapProperties
     },
     additionalProperties: false
   },
@@ -1593,6 +1616,14 @@ export const runtimeFrameHeaderFixtures = {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
     ...runtimeRegisteredFixture
   },
+  'router.bootstrap': {
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    type: 'router.bootstrap',
+    artifactsPath: '/opt/skiff/artifacts',
+    serviceDb: {
+      mongoUrl: 'mongodb://mongo.internal:27017/skiff?replicaSet=rs0'
+    }
+  },
   'router.control': {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
     ...routerControlFixture
@@ -1972,7 +2003,9 @@ export function validateRouterToRuntimeFrameHeader(
   const { envelope, type } = typeResult;
   const error =
     validateFrameHeaderBase(envelope, type) ??
-    (type === 'router.control'
+    (type === 'router.bootstrap'
+      ? validateRouterBootstrap(envelope)
+      : type === 'router.control'
       ? validateRouterControl(envelope)
       : type === 'runtime.registered'
         ? validateRuntimeRegistered(envelope)
@@ -2647,6 +2680,53 @@ function validateRouterControl(envelope: Record<string, unknown>): string | null
     validateTelemetryControl(envelope) ??
     validateFileBackendControl(envelope) ??
     validateServiceConfig(envelope)
+  );
+}
+
+function validateRouterBootstrap(envelope: Record<string, unknown>): string | null {
+  const fieldsError = rejectUnsupportedFrameHeaderFields(envelope, 'router.bootstrap', [
+    'schemaVersion',
+    'type',
+    'artifactsPath',
+    'serviceDb'
+  ]);
+  if (fieldsError !== null) {
+    return fieldsError;
+  }
+  if (!isNormalizedAbsoluteArtifactsPath(envelope.artifactsPath)) {
+    return 'invalid router.bootstrap envelope: artifactsPath must be an absolute normalized path';
+  }
+  if (!isRecord(envelope.serviceDb)) {
+    return 'invalid router.bootstrap envelope: serviceDb must be an object';
+  }
+  const serviceDbFieldsError = rejectUnsupportedObjectFields(
+    envelope.serviceDb,
+    'router.bootstrap',
+    'serviceDb',
+    ['mongoUrl']
+  );
+  if (serviceDbFieldsError !== null) {
+    return serviceDbFieldsError;
+  }
+  return typeof envelope.serviceDb.mongoUrl === 'string' &&
+    envelope.serviceDb.mongoUrl.trim().length > 0
+    ? null
+    : 'invalid router.bootstrap envelope: serviceDb.mongoUrl must be a non-empty string';
+}
+
+function isNormalizedAbsoluteArtifactsPath(value: unknown): value is string {
+  if (typeof value !== 'string' || !value.startsWith('/')) {
+    return false;
+  }
+  if (value !== '/' && value.endsWith('/')) {
+    return false;
+  }
+  if (value === '/') {
+    return true;
+  }
+  const components = value.split('/').slice(1);
+  return components.every(
+    (component) => component.length > 0 && component !== '.' && component !== '..'
   );
 }
 

@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::protocol::decode_router_bootstrap_frame_header;
 use crate::protocol::{
     decode_binary_frame, decode_typed_binary_frame, encode_binary_frame,
     ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader, ActorPutRequestFrameHeader,
@@ -24,6 +26,62 @@ use crate::protocol::{
 const SERVICE_PROTOCOL_A: &str =
     "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SERVICE_REVISION: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RouterBootstrapCorpus {
+    schema_version: u32,
+    cases: Vec<RouterBootstrapCorpusCase>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RouterBootstrapCorpusCase {
+    name: String,
+    outcome: String,
+    header: Value,
+}
+
+#[test]
+fn router_bootstrap_shared_corpus_has_strict_parity() {
+    let corpus: RouterBootstrapCorpus = serde_json::from_str(include_str!(
+        "../../../../cross-system-fixtures/package-service-ecosystem/runtime-bootstrap-wire.json"
+    ))
+    .expect("router bootstrap corpus must decode");
+    assert_eq!(corpus.schema_version, 1);
+    assert_eq!(
+        corpus
+            .cases
+            .iter()
+            .filter(|test_case| test_case.outcome == "accept")
+            .count(),
+        1
+    );
+
+    for test_case in corpus.cases {
+        let encoded = encode_binary_frame(&test_case.header, &[])
+            .unwrap_or_else(|error| panic!("{} must encode: {error}", test_case.name));
+        let decoded = decode_binary_frame(&encoded)
+            .unwrap_or_else(|error| panic!("{} must decode binary framing: {error}", test_case.name));
+        assert!(decoded.payload_bytes.is_empty());
+        let result = decode_router_bootstrap_frame_header(decoded.header);
+        match test_case.outcome.as_str() {
+            "accept" => {
+                let header = result
+                    .unwrap_or_else(|error| panic!("{} must accept: {error}", test_case.name));
+                assert_eq!(header.envelope_type, "router.bootstrap");
+                assert_eq!(header.artifacts_path, "/opt/skiff/artifacts");
+                assert!(!header.service_db.mongo_url.is_empty());
+            }
+            "reject" => assert!(
+                result.is_err(),
+                "{} must reject but decoded successfully",
+                test_case.name
+            ),
+            outcome => panic!("{} has unsupported outcome {outcome}", test_case.name),
+        }
+    }
+}
 
 fn activation_identity() -> ActivationIdentityFrameMetadata {
     ActivationIdentityFrameMetadata {

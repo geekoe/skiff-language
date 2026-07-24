@@ -58,6 +58,7 @@ const runtimeFrameHeaderTypes = [
   'spawn.fail.error',
   'request.start',
   'package-test.start',
+  'router.bootstrap',
   'router.control',
   'runtime.registered',
   'response.start',
@@ -91,6 +92,7 @@ const runtimeToRouterFrameHeaderTypes = [
 
 const routerToRuntimeFrameHeaderTypes = [
   'runtime.registered',
+  'router.bootstrap',
   'router.control',
   'actor.put.response',
   'actor.put.error',

@@ -271,6 +271,63 @@ pub struct RuntimeRegisteredFrameHeader {
     pub runtime_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RouterBootstrapServiceDbFrameHeader {
+    pub mongo_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RouterBootstrapFrameHeader {
+    pub schema_version: String,
+    #[serde(rename = "type")]
+    pub envelope_type: String,
+    pub artifacts_path: String,
+    pub service_db: RouterBootstrapServiceDbFrameHeader,
+}
+
+pub fn decode_router_bootstrap_frame_header(
+    value: Value,
+) -> std::result::Result<RouterBootstrapFrameHeader, BinaryFrameError> {
+    let header: RouterBootstrapFrameHeader = serde_json::from_value(value).map_err(|error| {
+        TransportError::decode(format!(
+            "invalid router.bootstrap frame header: typed decode failed: {error}"
+        ))
+    })?;
+    if header.schema_version != RUNTIME_FRAME_SCHEMA_VERSION {
+        return Err(TransportError::decode(format!(
+            "invalid router.bootstrap frame header: schemaVersion must be {RUNTIME_FRAME_SCHEMA_VERSION}"
+        )));
+    }
+    if header.envelope_type != "router.bootstrap" {
+        return Err(TransportError::decode(
+            "invalid router.bootstrap frame header: type must be router.bootstrap",
+        ));
+    }
+    if !is_normalized_absolute_artifacts_path(&header.artifacts_path) {
+        return Err(TransportError::decode(
+            "invalid router.bootstrap frame header: artifactsPath must be an absolute normalized path",
+        ));
+    }
+    if header.service_db.mongo_url.trim().is_empty() {
+        return Err(TransportError::decode(
+            "invalid router.bootstrap frame header: serviceDb.mongoUrl must be a non-empty string",
+        ));
+    }
+    Ok(header)
+}
+
+fn is_normalized_absolute_artifacts_path(value: &str) -> bool {
+    if !value.starts_with('/') || (value.len() > 1 && value.ends_with('/')) {
+        return false;
+    }
+    value == "/"
+        || value[1..]
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RouterControlFrameHeader {
