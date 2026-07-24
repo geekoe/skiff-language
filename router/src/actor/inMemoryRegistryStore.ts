@@ -24,6 +24,7 @@ import {
   type AdmitActorMethodResult,
   type RenewActorOwnerResult,
   type ExpiredActorOwner,
+  type DisconnectActorOwnerResult,
   type TransitionActorInvocationResult,
 } from './registryStore.js';
 
@@ -367,6 +368,39 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     terminalReason: string;
   }): Promise<ActorInvocationLedger[]> {
     return this.invocationLedger.failForOwner(input);
+  }
+
+  async disconnectOwner(input: {
+    fence: ActorOwnerFence;
+    now?: Date | undefined;
+    terminalReason: string;
+  }): Promise<DisconnectActorOwnerResult> {
+    const entry = this.entries.get(actorLogicalKey(input.fence.actorKey));
+    if (
+      entry === undefined ||
+      entry.ownerLeaseExpiresAt?.getTime() !== input.fence.ownerLeaseExpiresAt.getTime() ||
+      !ownerFenceMatches(entry, {
+        expectedEpoch: input.fence.epoch,
+        actorImplementationIdentity: input.fence.implementationIdentity,
+        ownerRuntimeId: input.fence.ownerRuntimeId,
+        ownerLeaseId: input.fence.ownerLeaseId,
+      })
+    ) {
+      return { released: false, failedInvocations: [] };
+    }
+
+    const now = input.now ?? new Date();
+    const failedInvocations = this.invocationLedger.failForOwner({
+      actorKey: input.fence.actorKey,
+      expectedEpoch: input.fence.epoch,
+      actorImplementationIdentity: input.fence.implementationIdentity,
+      ownerRuntimeId: input.fence.ownerRuntimeId,
+      ownerLeaseId: input.fence.ownerLeaseId,
+      now,
+      terminalReason: input.terminalReason,
+    });
+    this.clearOwner(entry, now);
+    return { released: true, failedInvocations };
   }
 
   async expireOwnerLeases(input: {

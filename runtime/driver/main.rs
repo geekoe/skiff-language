@@ -69,6 +69,7 @@ async fn run() -> anyhow::Result<()> {
             tracing::info!(event = "runtime.shutdown_requested");
         }
     }
+    host.shutdown_actor_instances();
     host.shutdown_telemetry().await;
 
     Ok(())

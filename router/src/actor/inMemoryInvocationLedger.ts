@@ -61,6 +61,9 @@ export class InMemoryActorInvocationLedger {
   failForOwner(input: {
     ownerRuntimeId: string;
     ownerLeaseId: string;
+    actorKey?: ActorInvocationLedger['actorKey'] | undefined;
+    expectedEpoch?: number | undefined;
+    actorImplementationIdentity?: string | undefined;
     now?: Date | undefined;
     terminalReason: string;
   }): ActorInvocationLedger[] {
@@ -70,6 +73,11 @@ export class InMemoryActorInvocationLedger {
       if (
         invocation.ownerRuntimeId === input.ownerRuntimeId &&
         invocation.ownerLeaseId === input.ownerLeaseId &&
+        (input.actorKey === undefined ||
+          actorLogicalKey(invocation.actorKey) === actorLogicalKey(input.actorKey)) &&
+        (input.expectedEpoch === undefined || invocation.epoch === input.expectedEpoch) &&
+        (input.actorImplementationIdentity === undefined ||
+          invocation.implementationIdentity === input.actorImplementationIdentity) &&
         (invocation.state === 'admitted' || invocation.state === 'dispatched')
       ) {
         invocation.state = 'failed';

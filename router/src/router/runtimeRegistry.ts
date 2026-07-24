@@ -127,6 +127,11 @@ export interface RuntimeDispatchRuntimeIdentity {
   ws: WebSocket;
 }
 
+export interface RuntimeConnectionFence {
+  runtimeId: string;
+  sessionId: string;
+}
+
 export interface RuntimeInFlightCounter {
   countInFlight(runtime: RuntimeDispatchRuntimeIdentity): number;
 }
@@ -351,6 +356,20 @@ export class RuntimeRegistry {
 
   runtimeCapabilityIdentityForConnection(ws: WebSocket): string | undefined {
     return this.runtimeCapabilitiesByConnection.get(ws)?.runtimeId;
+  }
+
+  runtimeConnectionFenceForConnection(
+    ws: WebSocket
+  ): RuntimeConnectionFence | undefined {
+    for (const runtime of this.runtimes.values()) {
+      if (runtime.ws === ws) {
+        return {
+          runtimeId: runtime.runtimeId,
+          sessionId: runtime.sessionId,
+        };
+      }
+    }
+    return undefined;
   }
 
   capabilityConnectionsSnapshot(): RuntimeCapabilityConnectionSnapshot[] {

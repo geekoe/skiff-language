@@ -45,6 +45,10 @@ import type {
   WebSocketGenerationLifecycleControlSender,
   WebSocketGenerationLifecycleRouter
 } from './webSocketGenerationLifecycleRouter.js';
+import type {
+  ActorRuntimeConnectionFence,
+  ActorRuntimeDisconnectController
+} from './actorRuntimeDisconnectController.js';
 
 const CONNECTION_SEND_TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
@@ -122,6 +126,10 @@ export interface RuntimeControlBroadcaster {
 
 interface RuntimeEndpointBaseOptions {
   registry: RuntimeRegistry;
+  actorRuntimeDisconnect?: Pick<
+    ActorRuntimeDisconnectController,
+    'handleRuntimeDisconnect'
+  >;
   observeConnectionSend?(observation: RuntimeConnectionSendObservation): void;
 }
 
@@ -235,12 +243,17 @@ export class RuntimeEndpoint
       });
 
       ws.on('close', () => {
+        const actorRuntimeConnection =
+          this.options.registry.runtimeConnectionFenceForConnection(ws);
         this.dispatcher().handleRuntimeDisconnect(ws);
         this.generationLifecycle?.handleRuntimeDisconnect(ws);
         const participantId =
           this.options.registry.runtimeCapabilityIdentityForConnection(ws);
         const replicaId = this.options.assemblyRegistry?.removeRuntimeConnection(ws);
         this.options.registry.removeRuntimeConnection(ws);
+        if (actorRuntimeConnection !== undefined) {
+          this.handleActorRuntimeDisconnect(actorRuntimeConnection);
+        }
         this.coordinator?.handleReplicaDisconnected(participantId ?? replicaId);
       });
     });
@@ -296,6 +309,21 @@ export class RuntimeEndpoint
     this.webSocketServer = undefined;
     this.server = undefined;
     this.control = undefined;
+  }
+
+  private handleActorRuntimeDisconnect(
+    connection: ActorRuntimeConnectionFence
+  ): void {
+    void this.options.actorRuntimeDisconnect
+      ?.handleRuntimeDisconnect(connection)
+      .catch((error: unknown) => {
+        console.error({
+          event: 'actor.runtime_disconnect_cleanup_error',
+          runtimeId: connection.runtimeId,
+          sessionId: connection.sessionId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
   }
 
   broadcastControl(control: Omit<RouterControlEnvelope, 'type'>): void {

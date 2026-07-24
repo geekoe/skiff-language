@@ -4,6 +4,10 @@ use std::{
 };
 
 use skiff_runtime_capability_context::{DbProviderSource, HttpRuntimeOptions};
+use skiff_runtime_eval::actor_instance::{
+    ActorInstanceHandle, ActorInstanceSessionTrackError, ActorInstanceSessionTracker,
+    ActorInstanceStore,
+};
 use skiff_runtime_model::request_heap::RequestHeapLimits;
 use tokio::sync::Mutex;
 
@@ -66,6 +70,7 @@ pub struct RuntimeHost {
     pub(super) telemetry: TelemetryProducer,
     pub(super) telemetry_exporter: Arc<Mutex<Option<TelemetryExporterHandle>>>,
     pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
+    pub(crate) actor_instances: Arc<ActorInstanceSessionTracker>,
 }
 
 impl RuntimeHost {
@@ -101,6 +106,7 @@ impl RuntimeHost {
             producer_id,
             config.base_runtime_id.clone(),
         ));
+        let actor_instance_store = Arc::new(ActorInstanceStore::new());
         Ok(Self {
             router_url: config.router_url,
             base_runtime_id: config.base_runtime_id.clone(),
@@ -120,7 +126,24 @@ impl RuntimeHost {
             telemetry,
             telemetry_exporter: Arc::new(Mutex::new(None)),
             outbound_requests: Arc::new(OutboundRequestRegistry::default()),
+            actor_instances: Arc::new(ActorInstanceSessionTracker::new(actor_instance_store)),
         })
+    }
+
+    pub(crate) fn track_actor_instance(
+        &self,
+        router_session_id: &str,
+        handle: ActorInstanceHandle,
+    ) -> Result<(), ActorInstanceSessionTrackError> {
+        self.actor_instances.track(router_session_id, handle)
+    }
+
+    pub(crate) fn discard_actor_instances_for_session(&self, router_session_id: &str) -> usize {
+        self.actor_instances.discard_session(router_session_id)
+    }
+
+    pub fn shutdown_actor_instances(&self) -> usize {
+        self.actor_instances.discard_all()
     }
 
     pub async fn shutdown_telemetry(&self) {

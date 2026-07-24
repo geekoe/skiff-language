@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 
 use serde_json::Value;
@@ -185,6 +185,111 @@ struct ActorInstanceStoreState {
     latest_epochs: HashMap<ActorLogicalKey, u64>,
 }
 
+/// Connection-scoped ownership of live Actor instances in one Runtime process.
+#[derive(Debug)]
+pub struct ActorInstanceSessionTracker {
+    store: Arc<ActorInstanceStore>,
+    state: Mutex<ActorInstanceSessionTrackerState>,
+}
+
+#[derive(Debug, Default)]
+struct ActorInstanceSessionTrackerState {
+    by_session: HashMap<String, Vec<ActorInstanceHandle>>,
+    handle_owners: HashMap<usize, (String, Weak<ActorInstance>)>,
+}
+
+impl ActorInstanceSessionTracker {
+    pub fn new(store: Arc<ActorInstanceStore>) -> Self {
+        Self {
+            store,
+            state: Mutex::new(ActorInstanceSessionTrackerState::default()),
+        }
+    }
+
+    pub fn store(&self) -> &Arc<ActorInstanceStore> {
+        &self.store
+    }
+
+    /// A materialized handle has exactly one Router-session owner.
+    pub fn track(
+        &self,
+        router_session_id: &str,
+        handle: ActorInstanceHandle,
+    ) -> Result<(), ActorInstanceSessionTrackError> {
+        if router_session_id.is_empty() {
+            return Err(ActorInstanceSessionTrackError::EmptySessionId);
+        }
+        let identity = Arc::as_ptr(&handle.instance) as usize;
+        let mut state = self
+            .state
+            .lock()
+            .expect("actor instance session tracker lock poisoned");
+        if let Some((owner, tracked)) = state.handle_owners.get(&identity) {
+            if tracked
+                .upgrade()
+                .is_some_and(|tracked| Arc::ptr_eq(&tracked, &handle.instance))
+            {
+                return Err(ActorInstanceSessionTrackError::AlreadyTracked {
+                    owner_session_id: owner.clone(),
+                });
+            }
+        }
+        state.handle_owners.insert(
+            identity,
+            (
+                router_session_id.to_string(),
+                Arc::downgrade(&handle.instance),
+            ),
+        );
+        state
+            .by_session
+            .entry(router_session_id.to_string())
+            .or_default()
+            .push(handle);
+        Ok(())
+    }
+
+    /// Takes a session before discarding, so repeated/stale cleanup is inert.
+    pub fn discard_session(&self, router_session_id: &str) -> usize {
+        let handles = {
+            let mut state = self
+                .state
+                .lock()
+                .expect("actor instance session tracker lock poisoned");
+            let handles = state
+                .by_session
+                .remove(router_session_id)
+                .unwrap_or_default();
+            handles
+        };
+        self.store.discard_exact_batch(&handles)
+    }
+
+    /// Runtime shutdown discards all volatile state, never registry bootstrap.
+    pub fn discard_all(&self) -> usize {
+        let handles = {
+            let mut state = self
+                .state
+                .lock()
+                .expect("actor instance session tracker lock poisoned");
+            state
+                .by_session
+                .drain()
+                .flat_map(|(_, handles)| handles)
+                .collect::<Vec<_>>()
+        };
+        self.store.discard_exact_batch(&handles)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ActorInstanceSessionTrackError {
+    #[error("router session id must be non-empty")]
+    EmptySessionId,
+    #[error("Actor instance handle is already tracked by Router session {owner_session_id}")]
+    AlreadyTracked { owner_session_id: String },
+}
+
 impl ActorInstanceStore {
     pub fn new() -> Self {
         Self::default()
@@ -252,21 +357,35 @@ impl ActorInstanceStore {
     /// handle cannot remove a later re-materialization with otherwise identical
     /// logical and declaration fences.
     pub fn discard_exact(&self, handle: &ActorInstanceHandle) -> bool {
+        self.discard_exact_batch(std::slice::from_ref(handle)) == 1
+    }
+
+    /// Atomically removes the live instances represented by the exact handles.
+    ///
+    /// Both the complete Actor fence and the materialized instance identity
+    /// must still match. This makes repeated or delayed disconnect cleanup
+    /// harmless even when the same incarnation has since been materialized
+    /// again.
+    pub fn discard_exact_batch(&self, handles: &[ActorInstanceHandle]) -> usize {
         let mut state = self
             .state
             .lock()
             .expect("actor instance store lock poisoned");
-        let matches = state
-            .instances
-            .get(&handle.fence.incarnation)
-            .is_some_and(|instance| {
-                ensure_instance_fence(instance, &handle.fence).is_ok()
-                    && Arc::ptr_eq(instance, &handle.instance)
-            });
-        if matches {
-            state.instances.remove(&handle.fence.incarnation);
+        let mut removed = 0;
+        for handle in handles {
+            let matches = state
+                .instances
+                .get(&handle.fence.incarnation)
+                .is_some_and(|instance| {
+                    ensure_instance_fence(instance, &handle.fence).is_ok()
+                        && Arc::ptr_eq(instance, &handle.instance)
+                });
+            if matches {
+                state.instances.remove(&handle.fence.incarnation);
+                removed += 1;
+            }
         }
-        matches
+        removed
     }
 
     pub fn len(&self) -> usize {
@@ -909,6 +1028,66 @@ mod tests {
             .unwrap();
         assert!(!store.discard_exact(&old));
         assert!(store.discard_exact(&current));
+    }
+
+    #[test]
+    fn stale_session_cleanup_cannot_remove_same_epoch_rematerialization() {
+        let fixture = fixture();
+        let bytes = payload();
+        let store = Arc::new(ActorInstanceStore::new());
+        let tracker = ActorInstanceSessionTracker::new(Arc::clone(&store));
+        let old = store
+            .activate(request(fixture.view(), fence(1), &bytes))
+            .unwrap();
+        let delayed_old_handle = old.clone();
+        tracker.track("old-session", old).unwrap();
+
+        assert_eq!(tracker.discard_session("old-session"), 1);
+        assert_eq!(
+            tracker
+                .track("new-session", delayed_old_handle)
+                .unwrap_err(),
+            ActorInstanceSessionTrackError::AlreadyTracked {
+                owner_session_id: "old-session".to_string()
+            }
+        );
+        let current = store
+            .activate(request(fixture.view(), fence(1), &bytes))
+            .unwrap();
+        tracker.track("new-session", current.clone()).unwrap();
+
+        assert_eq!(tracker.discard_session("old-session"), 0);
+        assert_eq!(store.len(), 1);
+        assert!(store
+            .with_fields_for_executor(&ActorExecutorAuthority::new(), &current, |fields, _| fields
+                .len())
+            .is_ok());
+    }
+
+    #[test]
+    fn session_tracker_rejects_duplicate_ownership_and_shutdown_discards_all() {
+        let fixture = fixture();
+        let bytes = payload();
+        let store = Arc::new(ActorInstanceStore::new());
+        let tracker = ActorInstanceSessionTracker::new(Arc::clone(&store));
+        let first = store
+            .activate(request(fixture.view(), fence(1), &bytes))
+            .unwrap();
+        tracker.track("session-a", first.clone()).unwrap();
+        assert_eq!(
+            tracker.track("session-b", first).unwrap_err(),
+            ActorInstanceSessionTrackError::AlreadyTracked {
+                owner_session_id: "session-a".to_string()
+            }
+        );
+
+        let second = store
+            .activate(request(fixture.view(), fence(2), &bytes))
+            .unwrap();
+        tracker.track("session-b", second).unwrap();
+        assert_eq!(tracker.discard_all(), 2);
+        assert_eq!(tracker.discard_all(), 0);
+        assert!(store.is_empty());
     }
 
     #[test]

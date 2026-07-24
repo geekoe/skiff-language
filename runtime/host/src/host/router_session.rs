@@ -103,6 +103,7 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     }
     .await;
 
+    host.discard_actor_instances_for_session(&router_session_id);
     let disconnect_result = host.websocket_generations.disconnect(&router_session_id);
     drop(sender);
     let _ = writer_task.await;

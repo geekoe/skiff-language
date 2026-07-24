@@ -113,6 +113,11 @@ export interface ExpiredActorOwner {
   failedInvocations: ActorInvocationLedger[];
 }
 
+export interface DisconnectActorOwnerResult {
+  released: boolean;
+  failedInvocations: ActorInvocationLedger[];
+}
+
 export type AcquireActorOwnerResult =
   | { ok: true; fence: ActorOwnerFence; entry: ActorRegistryEntry }
   | {
@@ -243,6 +248,11 @@ export interface ActorRegistryStore {
     now?: Date | undefined;
     terminalReason: string;
   }): Promise<ActorInvocationLedger[]>;
+  disconnectOwner(input: {
+    fence: ActorOwnerFence;
+    now?: Date | undefined;
+    terminalReason: string;
+  }): Promise<DisconnectActorOwnerResult>;
   expireOwnerLeases(input: {
     now: Date;
     terminalReason: string;
