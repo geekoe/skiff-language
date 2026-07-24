@@ -99,13 +99,13 @@ fn platform_source_context_pins_current_prelude_identity() {
         registry.schema_identity(),
         // c277e45 added std.websocket.WebSocketIngressEvent to the validated
         // platform API, changing the schema identity as well.
-        "skiff-prelude-schema-v1:sha256:1e126d4e67da3a0c3327367abd42460cba642dee6d76209adb79e7cc14256f8b"
+        "skiff-prelude-schema-v1:sha256:4a9245f8f56b0d10ec4d6d98937d55b9e03650d3d5a2f60d3f4744c0db06d277"
     );
     assert_eq!(
         registry.native_identity(),
         // Native identity also commits to the validated manifest and source
         // fingerprints changed by c277e45's WebSocketIngressEvent addition.
-        "skiff-prelude-native-v1:sha256:cfca235c8ab09abcdcda1be1ecd3004a35f7499c29ce41bbc28960f88c8bd586"
+        "skiff-prelude-native-v1:sha256:c2b047b40c64f0e904455de04396746d7cf5b25893821dbe4e6565f3f6f9ab8b"
     );
     assert_eq!(registry.schema_identity(), prelude_schema_identity());
     assert_eq!(
@@ -116,7 +116,7 @@ fn platform_source_context_pins_current_prelude_identity() {
         prelude_identity(),
         // c277e45 added std.websocket.WebSocketIngressEvent to the validated
         // platform source/API fingerprint, producing this current identity.
-        "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699"
+        "skiff-prelude-v1:sha256:06b874079b74b70aab0092e4e2ffb9781fb34cd57238f3ee90d2789f5eb6019c"
     );
 }
 

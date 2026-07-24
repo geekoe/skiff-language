@@ -160,6 +160,20 @@ impl Date {
     assert_eq!(instance_shape.params, vec!["Date", "integer"]);
 }
 
+#[test]
+fn platform_source_cannot_spoof_compiler_builtin_type() {
+    let mut registry = PreludeRegistry::empty();
+    registry.install_compiler_builtin_types();
+    let error = registry
+        .add_source("fake", "type Array<T> { value: T }")
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "standard_library source must not declare compiler builtin type Array"
+    );
+    assert!(registry.type_decl("Array").is_none());
+}
+
 fn temp_test_dir(label: &str) -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

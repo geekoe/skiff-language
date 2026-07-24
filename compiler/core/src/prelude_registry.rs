@@ -6,6 +6,153 @@ pub const LANGUAGE_PRIMITIVES: &[&str] = &[
     "string", "number", "integer", "bool", "boolean", "null", "unknown", "void", "never",
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompilerBuiltinTypeKind {
+    Value,
+    Container,
+    OpaqueHandle,
+    Capability,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompilerBuiltinType {
+    pub name: &'static str,
+    pub symbol: &'static str,
+    pub arity: usize,
+    pub kind: CompilerBuiltinTypeKind,
+}
+
+pub const COMPILER_BUILTIN_TYPES: &[CompilerBuiltinType] = &[
+    CompilerBuiltinType {
+        name: "Actor",
+        symbol: "std.actor.Actor",
+        arity: 1,
+        kind: CompilerBuiltinTypeKind::OpaqueHandle,
+    },
+    CompilerBuiltinType {
+        name: "bytes",
+        symbol: "std.bytes.bytes",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Value,
+    },
+    CompilerBuiltinType {
+        name: "Array",
+        symbol: "std.collection.Array",
+        arity: 1,
+        kind: CompilerBuiltinTypeKind::Container,
+    },
+    CompilerBuiltinType {
+        name: "Map",
+        symbol: "std.collection.Map",
+        arity: 2,
+        kind: CompilerBuiltinTypeKind::Container,
+    },
+    CompilerBuiltinType {
+        name: "Config",
+        symbol: "config.Config",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Capability,
+    },
+    CompilerBuiltinType {
+        name: "Date",
+        symbol: "Date",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Value,
+    },
+    CompilerBuiltinType {
+        name: "Json",
+        symbol: "Json",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Value,
+    },
+    CompilerBuiltinType {
+        name: "JsonObject",
+        symbol: "JsonObject",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Value,
+    },
+    CompilerBuiltinType {
+        name: "Stream",
+        symbol: "std.stream.Stream",
+        arity: 1,
+        kind: CompilerBuiltinTypeKind::OpaqueHandle,
+    },
+    CompilerBuiltinType {
+        name: "ErrorPayload",
+        symbol: "std.error.ErrorPayload",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "Exception",
+        symbol: "std.error.Exception",
+        arity: 1,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "CatchResult",
+        symbol: "std.error.CatchResult",
+        arity: 2,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "SourceLocation",
+        symbol: "std.error.SourceLocation",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "StackTrace",
+        symbol: "std.error.StackTrace",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "StackFrame",
+        symbol: "std.error.StackFrame",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "TimeoutError",
+        symbol: "std.error.TimeoutError",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "CancelError",
+        symbol: "std.error.CancelError",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "InternalError",
+        symbol: "std.error.InternalError",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "ClientSessionRef",
+        symbol: "std.session.ClientSessionRef",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::OpaqueHandle,
+    },
+    CompilerBuiltinType {
+        name: "ClientCapability",
+        symbol: "std.session.ClientCapability",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Capability,
+    },
+];
+
+pub fn compiler_builtin_type(name: &str) -> Option<&'static CompilerBuiltinType> {
+    let name = name.trim();
+    COMPILER_BUILTIN_TYPES
+        .iter()
+        .find(|builtin| builtin.name == name || builtin.symbol == name)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeBindingShape {
     pub type_params: Vec<String>,
@@ -98,21 +245,7 @@ pub fn module_symbol_root(package_id: &str, module_path: &str) -> String {
 }
 
 pub fn compiler_owned_type_symbol(name: &str) -> Option<&'static str> {
-    match name {
-        "Array" => Some("std.collection.Array"),
-        "Date" => Some("Date"),
-        "Map" => Some("std.collection.Map"),
-        "Stream" => Some("std.stream.Stream"),
-        "bytes" => Some("std.bytes.bytes"),
-        "Json" => Some("Json"),
-        "JsonObject" => Some("JsonObject"),
-        "WebSocketConnectResult" => Some("std.websocket.WebSocketConnectResult"),
-        "WebSocketIngressEvent" => Some("std.websocket.WebSocketIngressEvent"),
-        "ConnectionMessage" => Some("std.websocket.ConnectionMessage"),
-        "TextConnectionMessage" => Some("std.websocket.TextConnectionMessage"),
-        "BinaryConnectionMessage" => Some("std.websocket.BinaryConnectionMessage"),
-        _ => None,
-    }
+    compiler_builtin_type(name).map(|builtin| builtin.symbol)
 }
 
 pub fn schema_primitive_type(name: &str) -> bool {
@@ -155,9 +288,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        compiler_owned_type_symbol, config_prelude_type, module_symbol_root,
+        compiler_builtin_type, compiler_owned_type_symbol, config_prelude_type, module_symbol_root,
         qualified_prelude_type, validate_package_api_public_path,
-        validate_root_projection_metadata, PRELUDE_REGISTRY_ID,
+        validate_root_projection_metadata, CompilerBuiltinTypeKind, PRELUDE_REGISTRY_ID,
     };
 
     #[test]
@@ -226,6 +359,21 @@ mod tests {
         );
         assert_eq!(config_prelude_type("config.deep.Type"), None);
         assert_eq!(compiler_owned_type_symbol("JsonObject"), Some("JsonObject"));
+    }
+
+    #[test]
+    fn compiler_builtin_registry_owns_identity_kind_and_arity() {
+        let array = compiler_builtin_type("Array").unwrap();
+        assert_eq!(array.symbol, "std.collection.Array");
+        assert_eq!(array.arity, 1);
+        assert_eq!(array.kind, CompilerBuiltinTypeKind::Container);
+        assert_eq!(compiler_builtin_type(array.symbol), Some(array));
+
+        let session = compiler_builtin_type("ClientSessionRef").unwrap();
+        assert_eq!(session.symbol, "std.session.ClientSessionRef");
+        assert_eq!(session.arity, 0);
+        assert_eq!(session.kind, CompilerBuiltinTypeKind::OpaqueHandle);
+        assert!(compiler_builtin_type("NotABuiltin").is_none());
     }
 
     #[test]

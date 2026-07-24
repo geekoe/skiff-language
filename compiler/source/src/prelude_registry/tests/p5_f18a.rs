@@ -42,7 +42,7 @@ fn p5_f18a_prelude_loader_snapshot() {
         registry.identity(),
         // The copied snapshot includes c277e45's
         // std.websocket.WebSocketIngressEvent platform source/API fingerprint.
-        "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699"
+        "skiff-prelude-v1:sha256:06b874079b74b70aab0092e4e2ffb9781fb34cd57238f3ee90d2789f5eb6019c"
     );
 }
 

@@ -173,14 +173,16 @@ impl PreludeRegistry {
         Ok(())
     }
 
-    fn add_source(
-        &mut self,
-        module_path: &str,
-        text: &str,
-    ) -> Result<(), crate::shared::error::CompileError> {
-        let source = parse_source(text)?;
+    fn add_source(&mut self, module_path: &str, text: &str) -> Result<(), String> {
+        let source = parse_source(text).map_err(|error| error.to_string())?;
         let symbol_root = module_symbol_root(&self.package_id, module_path);
         for ty in source.types {
+            if skiff_compiler_core::prelude_registry::compiler_builtin_type(&ty.name).is_some() {
+                return Err(format!(
+                    "standard_library source must not declare compiler builtin type {}",
+                    ty.name
+                ));
+            }
             let symbol = format!("{}.{}", symbol_root, ty.name);
             self.type_symbols.insert(ty.name.clone(), symbol.clone());
             self.type_symbols.insert(symbol.clone(), symbol.clone());
@@ -188,6 +190,12 @@ impl PreludeRegistry {
             self.type_decls.insert(ty.name.clone(), ty);
         }
         for alias in source.aliases {
+            if skiff_compiler_core::prelude_registry::compiler_builtin_type(&alias.name).is_some() {
+                return Err(format!(
+                    "standard_library source must not declare compiler builtin type {}",
+                    alias.name
+                ));
+            }
             let symbol = format!("{}.{}", symbol_root, alias.name);
             self.type_symbols.insert(alias.name.clone(), symbol.clone());
             self.type_symbols.insert(symbol.clone(), symbol.clone());
@@ -195,6 +203,14 @@ impl PreludeRegistry {
             self.type_aliases.insert(alias.name.clone(), alias);
         }
         for interface in source.interfaces {
+            if skiff_compiler_core::prelude_registry::compiler_builtin_type(&interface.name)
+                .is_some()
+            {
+                return Err(format!(
+                    "standard_library source must not declare compiler builtin type {}",
+                    interface.name
+                ));
+            }
             let symbol = format!("{}.{}", symbol_root, interface.name);
             self.type_symbols
                 .insert(interface.name.clone(), symbol.clone());

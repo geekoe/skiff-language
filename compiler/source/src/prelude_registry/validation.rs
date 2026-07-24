@@ -10,6 +10,7 @@ use super::{
     compiler_owned_schema_stable_type, qualified_prelude_type, schema_primitive_type, type_root,
     PreludeRegistry,
 };
+use skiff_compiler_core::prelude_registry::compiler_builtin_type;
 
 pub(super) use skiff_compiler_core::prelude_registry::validate_root_projection_metadata;
 
@@ -185,6 +186,11 @@ impl PreludeRegistry {
 
     fn known_type_roots(&self) -> Vec<String> {
         let mut known = self.prelude_types.clone();
+        known.extend(
+            skiff_compiler_core::prelude_registry::COMPILER_BUILTIN_TYPES
+                .iter()
+                .flat_map(|builtin| [builtin.name.to_string(), builtin.symbol.to_string()]),
+        );
         known.extend(self.type_decls.keys().cloned());
         known.extend(self.type_aliases.keys().cloned());
         known.extend(super::primitive_type_symbols().into_keys());
@@ -198,7 +204,7 @@ impl PreludeRegistry {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::validate_root_projection_metadata;
+    use super::{validate_root_projection_metadata, validate_type_name};
 
     #[test]
     fn metadata_validation_requires_declared_prelude_root() {
@@ -233,6 +239,28 @@ mod tests {
         assert_eq!(
             error,
             "rootProjections.std.string points to std.string, but no standard_library source module provides it"
+        );
+    }
+
+    #[test]
+    fn compiler_builtin_arity_and_unknown_types_fail_closed() {
+        let known = vec![
+            "Array".to_string(),
+            "string".to_string(),
+            "number".to_string(),
+        ];
+        assert!(validate_type_name("Array<string>", &known, &[], "std.test").is_ok());
+        assert_eq!(
+            validate_type_name("Array", &known, &[], "std.test").unwrap_err(),
+            "compiler builtin type Array expects 1 type arguments, got 0 in module std.test"
+        );
+        assert_eq!(
+            validate_type_name("Array<string, number>", &known, &[], "std.test").unwrap_err(),
+            "compiler builtin type Array expects 1 type arguments, got 2 in module std.test"
+        );
+        assert_eq!(
+            validate_type_name("Missing", &known, &[], "std.test").unwrap_err(),
+            "unknown standard_library type reference Missing in module std.test"
         );
     }
 }
@@ -316,13 +344,30 @@ fn validate_type_name(
 
     if let Some(parts) = generic_parts(name) {
         validate_named_type_root(parts.root, known, type_params, module_path)?;
+        if let Some(builtin) = compiler_builtin_type(parts.root) {
+            if parts.args.len() != builtin.arity {
+                return Err(format!(
+                    "compiler builtin type {} expects {} type arguments, got {} in module {module_path}",
+                    builtin.name, builtin.arity, parts.args.len()
+                ));
+            }
+        }
         for arg in parts.args {
             validate_type_name(arg, known, type_params, module_path)?;
         }
         return Ok(());
     }
 
-    validate_named_type_root(name, known, type_params, module_path)
+    validate_named_type_root(name, known, type_params, module_path)?;
+    if let Some(builtin) = compiler_builtin_type(name) {
+        if builtin.arity != 0 {
+            return Err(format!(
+                "compiler builtin type {} expects {} type arguments, got 0 in module {module_path}",
+                builtin.name, builtin.arity
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_function_type_tail(
