@@ -18,6 +18,7 @@ export interface ActorRegistryEntry {
   actorIdTypeIdentity: string;
   actorAbiIdentity: string;
   actorImplementationIdentity: string;
+  retiredImplementationIdentities: string[];
   lifecycleState: ActorLifecycleState;
   targetImplementationIdentity?: string | undefined;
   bootstrapEncodingVersion: string;
@@ -103,6 +104,32 @@ export interface ActorOwnerFence {
   ownerLeaseId: string;
   ownerLeaseExpiresAt: Date;
 }
+
+export interface ActorUpgradeFence {
+  actorKey: ActorKey;
+  oldEpoch: number;
+  oldImplementationIdentity: string;
+  oldOwnerRuntimeId: string;
+  oldOwnerLeaseId: string;
+  targetImplementationIdentity: string;
+}
+
+export interface ActorUpgradeTransition {
+  actorKey: ActorKey;
+  oldEpoch: number;
+  newEpoch: number;
+  actorAbiIdentity: string;
+  targetImplementationIdentity: string;
+  bootstrapEncodingVersion: string;
+  encodedBootstrapBytes: Uint8Array;
+}
+
+export type CompleteActorUpgradeResult =
+  | { ok: true; transition: ActorUpgradeTransition; entry: ActorRegistryEntry }
+  | {
+      ok: false;
+      reason: 'NotPresent' | 'FenceMismatch' | 'StillActive';
+    };
 
 export interface ActorIdleEvictionFence extends ActorOwnerFence {
   evictionRequestId: string;
@@ -230,6 +257,15 @@ export interface ActorRegistryStore {
     now?: Date | undefined;
   }): Promise<boolean>;
   admitActorMethod(input: ActorMethodAdmissionInput): Promise<AdmitActorMethodResult>;
+  actorUpgradeFence(actorKey: ActorKey): Promise<ActorUpgradeFence | undefined>;
+  completeActorUpgrade(input: {
+    fence: ActorUpgradeFence;
+    now?: Date | undefined;
+  }): Promise<CompleteActorUpgradeResult>;
+  waitForActorUpgradeDrain(input: {
+    fence: ActorUpgradeFence;
+    deadlineAt?: Date | undefined;
+  }): Promise<'Drained' | 'DeadlineExceeded' | 'FenceMismatch'>;
   transitionActorInvocation(input: {
     invocationId: string;
     actorKey: ActorKey;

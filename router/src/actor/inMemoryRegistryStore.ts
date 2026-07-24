@@ -10,6 +10,7 @@ import {
   type AcceptActorExecutionResult,
   type AcquireActorOwnerResult,
   type ActorInvocationLedger,
+  type ActorUpgradeFence,
   type ActorIdleEvictionFence,
   type ActorOwnerFence,
   type ActorMethodAdmissionInput,
@@ -26,6 +27,7 @@ import {
   type ExpiredActorOwner,
   type DisconnectActorOwnerResult,
   type TransitionActorInvocationResult,
+  type CompleteActorUpgradeResult,
 } from './registryStore.js';
 
 const ACTOR_UPGRADE_RETRY_AFTER_MS = 100;
@@ -34,6 +36,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
   private readonly entries = new Map<string, ActorRegistryEntry>();
   private readonly executions = new Map<string, ActorExecution>();
   private readonly invocationLedger = new InMemoryActorInvocationLedger();
+  private readonly upgradeWaiters = new Map<string, Set<() => void>>();
 
   async getOrCreate(input: ActorBootstrapInput): Promise<ActorRegistryEntry> {
     const now = input.now ?? new Date();
@@ -67,6 +70,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
       actorIdTypeIdentity: input.actorKey.actorIdTypeIdentity,
       actorAbiIdentity: input.actorAbiIdentity,
       actorImplementationIdentity: input.actorImplementationIdentity,
+      retiredImplementationIdentities: [],
       lifecycleState: 'inactive',
       bootstrapEncodingVersion: input.bootstrapEncodingVersion,
       encodedBootstrapBytes: new Uint8Array(input.encodedBootstrapBytes),
@@ -279,6 +283,25 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     }
 
     if (input.requestedImplementationIdentity !== entry.actorImplementationIdentity) {
+      if (
+        entry.retiredImplementationIdentities.includes(
+          input.requestedImplementationIdentity
+        )
+      ) {
+        return {
+          ok: false,
+          rejection: {
+            reason: 'VersionRejected',
+            acceptedImplementationIdentity: entry.actorImplementationIdentity,
+          },
+        };
+      }
+      if (
+        entry.ownerRuntimeId === undefined ||
+        entry.ownerLeaseId === undefined
+      ) {
+        return { ok: false, rejection: { reason: 'OwnerUnavailable' } };
+      }
       entry.lifecycleState = 'upgrading';
       entry.targetImplementationIdentity = input.requestedImplementationIdentity;
       entry.updatedAt = input.now ?? new Date();
@@ -354,7 +377,115 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
       }
       entry.updatedAt = now;
     }
+    if (
+      input.nextState === 'completed' ||
+      input.nextState === 'cancelled' ||
+      input.nextState === 'failed'
+    ) {
+      this.notifyUpgradeWaiters(input.actorKey);
+    }
     return result;
+  }
+
+  async actorUpgradeFence(actorKey: ActorKey): Promise<ActorUpgradeFence | undefined> {
+    const entry = this.entries.get(actorLogicalKey(actorKey));
+    return entry === undefined ? undefined : upgradeFence(entry);
+  }
+
+  async completeActorUpgrade(input: {
+    fence: ActorUpgradeFence;
+    now?: Date | undefined;
+  }): Promise<CompleteActorUpgradeResult> {
+    const entry = this.entries.get(actorLogicalKey(input.fence.actorKey));
+    if (entry === undefined || entry.status !== 'present') {
+      return { ok: false, reason: 'NotPresent' };
+    }
+    if (!upgradeFenceMatches(entry, input.fence)) {
+      return { ok: false, reason: 'FenceMismatch' };
+    }
+    if (
+      this.invocationLedger.activeCountForFence({
+        actorKey: input.fence.actorKey,
+        expectedEpoch: input.fence.oldEpoch,
+        actorImplementationIdentity: input.fence.oldImplementationIdentity,
+        ownerRuntimeId: input.fence.oldOwnerRuntimeId,
+        ownerLeaseId: input.fence.oldOwnerLeaseId,
+      }) !== 0
+    ) {
+      return { ok: false, reason: 'StillActive' };
+    }
+
+    const now = input.now ?? new Date();
+    const oldEpoch = entry.epoch;
+    if (
+      !entry.retiredImplementationIdentities.includes(
+        entry.actorImplementationIdentity
+      )
+    ) {
+      entry.retiredImplementationIdentities.push(
+        entry.actorImplementationIdentity
+      );
+    }
+    entry.epoch += 1;
+    entry.actorImplementationIdentity = input.fence.targetImplementationIdentity;
+    entry.lifecycleState = 'inactive';
+    entry.targetImplementationIdentity = undefined;
+    entry.ownerRuntimeId = undefined;
+    entry.ownerLeaseId = undefined;
+    entry.ownerLeaseExpiresAt = undefined;
+    entry.idleEvictionRequestId = undefined;
+    entry.idleEvictionRequestedAt = undefined;
+    entry.lastIdleAt = now;
+    entry.updatedAt = now;
+    const transition = {
+      actorKey: cloneActorKey(entry.actorKey),
+      oldEpoch,
+      newEpoch: entry.epoch,
+      actorAbiIdentity: entry.actorAbiIdentity,
+      targetImplementationIdentity: entry.actorImplementationIdentity,
+      bootstrapEncodingVersion: entry.bootstrapEncodingVersion,
+      encodedBootstrapBytes: new Uint8Array(entry.encodedBootstrapBytes),
+    };
+    this.notifyUpgradeWaiters(entry.actorKey);
+    return { ok: true, transition, entry: cloneEntry(entry) };
+  }
+
+  async waitForActorUpgradeDrain(input: {
+    fence: ActorUpgradeFence;
+    deadlineAt?: Date | undefined;
+  }): Promise<'Drained' | 'DeadlineExceeded' | 'FenceMismatch'> {
+    const current = this.upgradeDrainState(input.fence);
+    if (current !== 'Waiting') {
+      return current;
+    }
+    const remainingMs =
+      input.deadlineAt === undefined
+        ? undefined
+        : input.deadlineAt.getTime() - Date.now();
+    if (remainingMs !== undefined && remainingMs <= 0) {
+      return 'DeadlineExceeded';
+    }
+    return new Promise((resolve) => {
+      const key = actorLogicalKey(input.fence.actorKey);
+      const waiters = this.upgradeWaiters.get(key) ?? new Set<() => void>();
+      let timer: NodeJS.Timeout | undefined;
+      const finish = (result: 'Drained' | 'DeadlineExceeded' | 'FenceMismatch') => {
+        if (timer !== undefined) clearTimeout(timer);
+        waiters.delete(check);
+        if (waiters.size === 0) this.upgradeWaiters.delete(key);
+        resolve(result);
+      };
+      const check = () => {
+        const state = this.upgradeDrainState(input.fence);
+        if (state !== 'Waiting') finish(state);
+      };
+      waiters.add(check);
+      this.upgradeWaiters.set(key, waiters);
+      if (remainingMs !== undefined) {
+        timer = setTimeout(() => finish('DeadlineExceeded'), remainingMs);
+      }
+      check();
+    });
   }
 
   async actorInvocation(invocationId: string): Promise<ActorInvocationLedger | undefined> {
@@ -367,7 +498,9 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     now?: Date | undefined;
     terminalReason: string;
   }): Promise<ActorInvocationLedger[]> {
-    return this.invocationLedger.failForOwner(input);
+    const failed = this.invocationLedger.failForOwner(input);
+    for (const invocation of failed) this.notifyUpgradeWaiters(invocation.actorKey);
+    return failed;
   }
 
   async disconnectOwner(input: {
@@ -400,6 +533,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
       terminalReason: input.terminalReason,
     });
     this.clearOwner(entry, now);
+    this.notifyUpgradeWaiters(entry.actorKey);
     return { released: true, failedInvocations };
   }
 
@@ -426,6 +560,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
         terminalReason: input.terminalReason,
       });
       this.clearOwner(entry, input.now);
+      this.notifyUpgradeWaiters(entry.actorKey);
       expired.push({ fence, failedInvocations });
     }
     return expired;
@@ -663,6 +798,30 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     entry.lastIdleAt = now;
     entry.updatedAt = now;
   }
+
+  private upgradeDrainState(
+    fence: ActorUpgradeFence
+  ): 'Waiting' | 'Drained' | 'FenceMismatch' {
+    const entry = this.entries.get(actorLogicalKey(fence.actorKey));
+    if (entry === undefined || !upgradeFenceMatches(entry, fence)) {
+      return 'FenceMismatch';
+    }
+    return this.invocationLedger.activeCountForFence({
+      actorKey: fence.actorKey,
+      expectedEpoch: fence.oldEpoch,
+      actorImplementationIdentity: fence.oldImplementationIdentity,
+      ownerRuntimeId: fence.oldOwnerRuntimeId,
+      ownerLeaseId: fence.oldOwnerLeaseId,
+    }) === 0
+      ? 'Drained'
+      : 'Waiting';
+  }
+
+  private notifyUpgradeWaiters(actorKey: ActorKey): void {
+    const waiters = this.upgradeWaiters.get(actorLogicalKey(actorKey));
+    if (waiters === undefined) return;
+    for (const notify of [...waiters]) notify();
+  }
 }
 
 function isTerminal(execution: ActorExecution): boolean {
@@ -692,6 +851,7 @@ function cloneEntry(entry: ActorRegistryEntry): ActorRegistryEntry {
     createdAt: new Date(entry.createdAt),
     updatedAt: new Date(entry.updatedAt),
     diagnostics: entry.diagnostics === undefined ? undefined : { ...entry.diagnostics },
+    retiredImplementationIdentities: [...entry.retiredImplementationIdentities],
   };
 }
 
@@ -739,5 +899,41 @@ function ownerFenceMatches(
     entry.actorImplementationIdentity === input.actorImplementationIdentity &&
     entry.ownerRuntimeId === input.ownerRuntimeId &&
     entry.ownerLeaseId === input.ownerLeaseId
+  );
+}
+
+function upgradeFence(entry: ActorRegistryEntry): ActorUpgradeFence | undefined {
+  if (
+    entry.status !== 'present' ||
+    entry.lifecycleState !== 'upgrading' ||
+    entry.targetImplementationIdentity === undefined ||
+    entry.ownerRuntimeId === undefined ||
+    entry.ownerLeaseId === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    actorKey: cloneActorKey(entry.actorKey),
+    oldEpoch: entry.epoch,
+    oldImplementationIdentity: entry.actorImplementationIdentity,
+    oldOwnerRuntimeId: entry.ownerRuntimeId,
+    oldOwnerLeaseId: entry.ownerLeaseId,
+    targetImplementationIdentity: entry.targetImplementationIdentity,
+  };
+}
+
+function upgradeFenceMatches(
+  entry: ActorRegistryEntry,
+  fence: ActorUpgradeFence
+): boolean {
+  const current = upgradeFence(entry);
+  return (
+    current !== undefined &&
+    actorLogicalKey(current.actorKey) === actorLogicalKey(fence.actorKey) &&
+    current.oldEpoch === fence.oldEpoch &&
+    current.oldImplementationIdentity === fence.oldImplementationIdentity &&
+    current.oldOwnerRuntimeId === fence.oldOwnerRuntimeId &&
+    current.oldOwnerLeaseId === fence.oldOwnerLeaseId &&
+    current.targetImplementationIdentity === fence.targetImplementationIdentity
   );
 }

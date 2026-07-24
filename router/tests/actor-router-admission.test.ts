@@ -195,6 +195,180 @@ describe('Actor Router admission and owner state machine', () => {
       nextState: 'failed',
     })).resolves.toEqual({ ok: false, reason: 'InvalidTransition' });
   });
+
+  it('drains the exact active invocation before discarding, advancing epoch and activating', async () => {
+    const { manager, actorKey, epoch } = await liveActorFixture();
+    const order: string[] = [];
+    const delivered: number[] = [];
+    let resolveMarked!: () => void;
+    const marked = new Promise<void>((resolve) => {
+      resolveMarked = resolve;
+    });
+    const dispatcher = dispatcherFor(manager, {
+      dispatchToOwner({ ownerFence }) {
+        delivered.push(ownerFence.epoch);
+      },
+      markOwnerUpgrading() {
+        order.push('mark');
+        resolveMarked();
+      },
+      discardOldInstance() {
+        order.push('discard');
+      },
+      activateTarget({ transition }) {
+        order.push(`activate-${transition.newEpoch}-${transition.encodedBootstrapBytes[0]}`);
+        return {
+          ownerRuntimeId: 'runtime-2',
+          ownerLeaseId: 'lease-2',
+          ownerLeaseExpiresAt: new Date(baseTime.getTime() + 60_000),
+        };
+      },
+    });
+    const old = await dispatcher.dispatch(invokeFrame(actorKey, epoch), new Uint8Array());
+    if (!old.ok) throw new Error('old invocation must dispatch');
+
+    const target = dispatcher.dispatch(
+      invokeFrame(actorKey, epoch, {
+        actorImplementationIdentity: implementationV2,
+        deadline: { timeoutMs: 60_000, expiresAt: new Date(Date.now() + 60_000).toISOString() },
+      }),
+      new Uint8Array([2])
+    );
+    await marked;
+    expect(order).toEqual(['mark']);
+    await expect(manager.entry(actorKey)).resolves.toMatchObject({
+      epoch,
+      lifecycleState: 'upgrading',
+      targetImplementationIdentity: implementationV2,
+    });
+    const fence = await manager.registryStore().actorUpgradeFence(makeActorKey(actorKey));
+    if (fence === undefined) throw new Error('upgrade fence must exist');
+    await expect(manager.registryStore().completeActorUpgrade({ fence })).resolves.toEqual({
+      ok: false,
+      reason: 'StillActive',
+    });
+    await expect(
+      manager.registryStore().completeActorUpgrade({
+        fence: { ...fence, oldOwnerLeaseId: 'stale-lease' },
+      })
+    ).resolves.toEqual({ ok: false, reason: 'FenceMismatch' });
+
+    await manager.registryStore().transitionActorInvocation({
+      invocationId: old.invocation.invocationId,
+      actorKey: makeActorKey(actorKey),
+      expectedEpoch: epoch,
+      actorImplementationIdentity: implementationV1,
+      ownerRuntimeId: 'runtime-1',
+      ownerLeaseId: 'lease-1',
+      nextState: 'completed',
+    });
+
+    const targetResult = await target;
+    expect(targetResult).toMatchObject({
+      ok: true,
+      ownerFence: {
+        epoch: epoch + 1,
+        implementationIdentity: implementationV2,
+        ownerRuntimeId: 'runtime-2',
+      },
+    });
+    expect(order).toEqual(['mark', 'discard', `activate-${epoch + 1}-1`]);
+    expect(delivered).toEqual([epoch, epoch + 1]);
+    await expect(manager.entry(actorKey)).resolves.toMatchObject({
+      epoch: epoch + 1,
+      lifecycleState: 'live',
+      actorImplementationIdentity: implementationV2,
+      retiredImplementationIdentities: [implementationV1],
+      targetImplementationIdentity: undefined,
+    });
+
+    const nextDispatcher = dispatcherFor(manager);
+    await expect(
+      nextDispatcher.dispatch(
+        invokeFrame(actorKey, epoch + 1, {
+          actorImplementationIdentity: implementationV1,
+        }),
+        new Uint8Array()
+      )
+    ).resolves.toMatchObject({
+      ok: false,
+      reason: 'VersionRejected',
+      errorFrame: {
+        error: {
+          requestedImplementationIdentity: implementationV1,
+          acceptedImplementationIdentity: implementationV2,
+        },
+      },
+    });
+    await expect(
+      nextDispatcher.dispatch(
+        invokeFrame(actorKey, epoch + 1, {
+          actorImplementationIdentity: implementationUnknown,
+        }),
+        new Uint8Array()
+      )
+    ).resolves.toMatchObject({ ok: false, reason: 'Upgrading' });
+    await expect(manager.entry(actorKey)).resolves.toMatchObject({
+      lifecycleState: 'upgrading',
+      actorImplementationIdentity: implementationV2,
+      targetImplementationIdentity: implementationUnknown,
+    });
+  });
+
+  it('keeps upgrade progress after the triggering call deadline and rejects stale completion', async () => {
+    const { manager, actorKey, epoch } = await liveActorFixture();
+    let resolveActivated!: () => void;
+    const activated = new Promise<void>((resolve) => {
+      resolveActivated = resolve;
+    });
+    const dispatcher = dispatcherFor(manager, {
+      dispatchToOwner() {},
+      markOwnerUpgrading() {},
+      discardOldInstance() {},
+      activateTarget() {
+        resolveActivated();
+        return {
+          ownerRuntimeId: 'runtime-2',
+          ownerLeaseId: 'lease-2',
+          ownerLeaseExpiresAt: new Date(baseTime.getTime() + 60_000),
+        };
+      },
+    });
+    const old = await dispatcher.dispatch(invokeFrame(actorKey, epoch), new Uint8Array());
+    if (!old.ok) throw new Error('old invocation must dispatch');
+    const targetHeader = invokeFrame(actorKey, epoch, {
+      actorImplementationIdentity: implementationV2,
+      deadline: { timeoutMs: 1, expiresAt: new Date(Date.now() + 1).toISOString() },
+    });
+    await expect(dispatcher.dispatch(targetHeader, new Uint8Array())).resolves.toMatchObject({
+      ok: false,
+      reason: 'Upgrading',
+    });
+    const fence = await manager.registryStore().actorUpgradeFence(makeActorKey(actorKey));
+    if (fence === undefined) throw new Error('upgrade fence must exist');
+
+    await manager.registryStore().transitionActorInvocation({
+      invocationId: old.invocation.invocationId,
+      actorKey: makeActorKey(actorKey),
+      expectedEpoch: epoch,
+      actorImplementationIdentity: implementationV1,
+      ownerRuntimeId: 'runtime-1',
+      ownerLeaseId: 'lease-1',
+      nextState: 'completed',
+    });
+    await expect(manager.registryStore().waitForActorUpgradeDrain({ fence })).resolves.toBe(
+      'Drained'
+    );
+    await activated;
+    await expect(manager.registryStore().completeActorUpgrade({ fence })).resolves.toEqual({
+      ok: false,
+      reason: 'FenceMismatch',
+    });
+    await expect(manager.entry(actorKey)).resolves.toMatchObject({
+      epoch: epoch + 1,
+      actorImplementationIdentity: implementationV2,
+    });
+  });
 });
 
 async function actorFixture() {

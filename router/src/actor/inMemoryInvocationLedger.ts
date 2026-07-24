@@ -102,6 +102,30 @@ export class InMemoryActorInvocationLedger {
     }
     return count;
   }
+
+  activeCountForFence(input: {
+    actorKey: ActorInvocationLedger['actorKey'];
+    expectedEpoch: number;
+    actorImplementationIdentity: string;
+    ownerRuntimeId: string;
+    ownerLeaseId: string;
+  }): number {
+    const logicalKey = actorLogicalKey(input.actorKey);
+    let count = 0;
+    for (const invocation of this.invocations.values()) {
+      if (
+        actorLogicalKey(invocation.actorKey) === logicalKey &&
+        invocation.epoch === input.expectedEpoch &&
+        invocation.implementationIdentity === input.actorImplementationIdentity &&
+        invocation.ownerRuntimeId === input.ownerRuntimeId &&
+        invocation.ownerLeaseId === input.ownerLeaseId &&
+        (invocation.state === 'admitted' || invocation.state === 'dispatched')
+      ) {
+        count += 1;
+      }
+    }
+    return count;
+  }
 }
 
 function isValidTransition(

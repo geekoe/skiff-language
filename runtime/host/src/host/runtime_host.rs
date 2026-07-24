@@ -5,8 +5,8 @@ use std::{
 
 use skiff_runtime_capability_context::{DbProviderSource, HttpRuntimeOptions};
 use skiff_runtime_eval::actor_instance::{
-    ActorInstanceHandle, ActorInstanceSessionTrackError, ActorInstanceSessionTracker,
-    ActorInstanceStore,
+    ActorInstanceFence, ActorInstanceHandle, ActorInstanceSessionTrackError,
+    ActorInstanceSessionTracker, ActorInstanceStore,
 };
 use skiff_runtime_model::request_heap::RequestHeapLimits;
 use tokio::sync::Mutex;
@@ -140,6 +140,24 @@ impl RuntimeHost {
 
     pub(crate) fn discard_actor_instances_for_session(&self, router_session_id: &str) -> usize {
         self.actor_instances.discard_session(router_session_id)
+    }
+
+    pub(crate) fn begin_actor_upgrade_exact(
+        &self,
+        router_session_id: &str,
+        fence: &ActorInstanceFence,
+    ) -> bool {
+        self.actor_instances
+            .begin_upgrade_exact(router_session_id, fence)
+    }
+
+    pub(crate) fn discard_upgrading_actor_exact(
+        &self,
+        router_session_id: &str,
+        fence: &ActorInstanceFence,
+    ) -> bool {
+        self.actor_instances
+            .discard_upgrading_exact(router_session_id, fence)
     }
 
     pub fn shutdown_actor_instances(&self) -> usize {

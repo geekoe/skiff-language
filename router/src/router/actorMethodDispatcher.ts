@@ -5,6 +5,8 @@ import {
   type ActorManager,
   type ActorMethodAdmissionRejection,
   type ActorOwnerFence,
+  type ActorUpgradeFence,
+  type ActorUpgradeTransition,
 } from '../actor/index.js';
 import {
   type ActorDeclarationOwnerFrameHeader,
@@ -29,6 +31,21 @@ export interface ActorOwnerTransport {
     header: ActorMethodInvokeFrameHeader;
     payloadBytes: Uint8Array;
   }): void | Promise<void>;
+  markOwnerUpgrading?(input: { fence: ActorUpgradeFence }): void | Promise<void>;
+  discardOldInstance?(input: { fence: ActorUpgradeFence }): void | Promise<void>;
+  activateTarget?(input: {
+    transition: ActorUpgradeTransition;
+  }):
+    | {
+        ownerRuntimeId: string;
+        ownerLeaseId: string;
+        ownerLeaseExpiresAt: Date;
+      }
+    | Promise<{
+        ownerRuntimeId: string;
+        ownerLeaseId: string;
+        ownerLeaseExpiresAt: Date;
+      }>;
 }
 
 export type ActorMethodDispatchRejection =
@@ -54,6 +71,8 @@ export type ActorMethodDispatchResult =
     };
 
 export class ActorMethodDispatcher {
+  private readonly upgrades = new Map<string, Promise<boolean>>();
+
   constructor(
     private readonly actorManager: ActorManager,
     private readonly catalog: ActorMethodCatalog,
@@ -100,6 +119,29 @@ export class ActorMethodDispatcher {
       now: this.now(),
     });
     if (!admitted.ok) {
+      if (
+        admitted.rejection.reason === 'Upgrading' &&
+        header.actorImplementationIdentity ===
+          (await this.actorManager.registryStore().find(actorKey))
+            ?.targetImplementationIdentity
+      ) {
+        const completed = await this.advanceUpgrade(
+          actorKey,
+          new Date(header.deadline.expiresAt)
+        );
+        if (completed) {
+          const current = await this.actorManager.registryStore().find(actorKey);
+          if (current !== undefined) {
+            return this.dispatch(
+              {
+                ...header,
+                actorRef: { ...header.actorRef, epoch: current.epoch },
+              },
+              payloadBytes
+            );
+          }
+        }
+      }
       return admissionRejection(header, admitted.rejection);
     }
 
@@ -141,6 +183,85 @@ export class ActorMethodDispatcher {
       ownerFence: admitted.ownerFence,
       invocation: dispatched.invocation,
     };
+  }
+
+  private async advanceUpgrade(
+    actorKey: ReturnType<typeof makeActorKey>,
+    deadlineAt: Date
+  ): Promise<boolean> {
+    const key = actorLogicalKey(actorKey);
+    const existing = this.upgrades.get(key);
+    if (existing !== undefined) return waitUntilDeadline(existing, deadlineAt);
+    const upgrade = this.runUpgrade(actorKey).finally(() => {
+      if (this.upgrades.get(key) === upgrade) this.upgrades.delete(key);
+    });
+    this.upgrades.set(key, upgrade);
+    return waitUntilDeadline(upgrade, deadlineAt);
+  }
+
+  private async runUpgrade(actorKey: ReturnType<typeof makeActorKey>): Promise<boolean> {
+    const store = this.actorManager.registryStore();
+    const fence = await store.actorUpgradeFence(actorKey);
+    if (
+      fence === undefined ||
+      this.transport.markOwnerUpgrading === undefined ||
+      this.transport.discardOldInstance === undefined ||
+      this.transport.activateTarget === undefined
+    ) {
+      return false;
+    }
+    try {
+      await this.transport.markOwnerUpgrading({ fence });
+      const drained = await store.waitForActorUpgradeDrain({ fence });
+      if (drained !== 'Drained') return false;
+      await this.transport.discardOldInstance({ fence });
+      const completed = await store.completeActorUpgrade({ fence, now: this.now() });
+      if (!completed.ok) return false;
+      const target = await this.transport.activateTarget({
+        transition: completed.transition,
+      });
+      const acquired = await store.acquireOwnerLease({
+        actorKey: completed.transition.actorKey,
+        expectedEpoch: completed.transition.newEpoch,
+        actorImplementationIdentity:
+          completed.transition.targetImplementationIdentity,
+        ownerRuntimeId: target.ownerRuntimeId,
+        ownerLeaseId: target.ownerLeaseId,
+        ownerLeaseExpiresAt: target.ownerLeaseExpiresAt,
+        now: this.now(),
+      });
+      if (!acquired.ok) return false;
+      return store.markOwnerLive({
+        actorKey: completed.transition.actorKey,
+        expectedEpoch: completed.transition.newEpoch,
+        actorImplementationIdentity:
+          completed.transition.targetImplementationIdentity,
+        ownerRuntimeId: target.ownerRuntimeId,
+        ownerLeaseId: target.ownerLeaseId,
+        now: this.now(),
+      });
+    } catch {
+      return false;
+    }
+  }
+}
+
+async function waitUntilDeadline(
+  upgrade: Promise<boolean>,
+  deadlineAt: Date
+): Promise<boolean> {
+  const remainingMs = deadlineAt.getTime() - Date.now();
+  if (remainingMs <= 0) return false;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      upgrade,
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), remainingMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

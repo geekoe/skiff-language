@@ -153,6 +153,7 @@ struct ActorInstance {
     state: Mutex<ActorInstanceState>,
     scheduler: Arc<tokio::sync::Mutex<()>>,
     next_execution_token: AtomicU64,
+    upgrading: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -314,6 +315,41 @@ impl ActorInstanceSessionTracker {
         Ok(())
     }
 
+    /// Applies the Runtime-side upgrade fence only to the exact instance owned
+    /// by this Router session. Stale sessions and duplicate old fences are inert.
+    pub fn begin_upgrade_exact(&self, router_session_id: &str, fence: &ActorInstanceFence) -> bool {
+        self.exact_session_handle(router_session_id, fence)
+            .is_some_and(|handle| self.store.begin_upgrade_exact(&handle))
+    }
+
+    /// Retires the exact upgrading instance after the Router's active ledger
+    /// reaches zero. Repeated or stale completion notifications are inert.
+    pub fn discard_upgrading_exact(
+        &self,
+        router_session_id: &str,
+        fence: &ActorInstanceFence,
+    ) -> bool {
+        let Some(handle) = self.exact_session_handle(router_session_id, fence) else {
+            return false;
+        };
+        if !self.store.discard_upgrading_exact(&handle) {
+            return false;
+        }
+        let identity = Arc::as_ptr(&handle.instance) as usize;
+        let mut state = self
+            .state
+            .lock()
+            .expect("actor instance session tracker lock poisoned");
+        if let Some(handles) = state.by_session.get_mut(router_session_id) {
+            handles.retain(|candidate| !Arc::ptr_eq(&candidate.instance, &handle.instance));
+            if handles.is_empty() {
+                state.by_session.remove(router_session_id);
+            }
+        }
+        state.handle_owners.remove(&identity);
+        true
+    }
+
     /// Takes a session before discarding, so repeated/stale cleanup is inert.
     pub fn discard_session(&self, router_session_id: &str) -> usize {
         let handles = {
@@ -344,6 +380,21 @@ impl ActorInstanceSessionTracker {
                 .collect::<Vec<_>>()
         };
         self.store.discard_exact_batch(&handles)
+    }
+
+    fn exact_session_handle(
+        &self,
+        router_session_id: &str,
+        fence: &ActorInstanceFence,
+    ) -> Option<ActorInstanceHandle> {
+        self.state
+            .lock()
+            .expect("actor instance session tracker lock poisoned")
+            .by_session
+            .get(router_session_id)?
+            .iter()
+            .find(|handle| handle.fence == *fence)
+            .cloned()
     }
 }
 
@@ -387,9 +438,11 @@ impl ActorInstanceStore {
                 });
             }
         }
-
         if let Some(existing) = state.instances.get(&request.fence.incarnation) {
             ensure_instance_fence(existing, &request.fence)?;
+            if existing.upgrading.load(Ordering::Acquire) {
+                return Err(ActorInstanceStoreError::InstanceReplaced);
+            }
             return Ok(ActorInstanceHandle {
                 fence: request.fence,
                 instance: Arc::clone(existing),
@@ -423,6 +476,60 @@ impl ActorInstanceStore {
     /// logical and declaration fences.
     pub fn discard_exact(&self, handle: &ActorInstanceHandle) -> bool {
         self.discard_exact_batch(std::slice::from_ref(handle)) == 1
+    }
+
+    /// Closes this exact incarnation to continuation resume and activation reuse.
+    ///
+    /// A synchronous segment that already owns an execution lease is allowed to
+    /// finish and commit. Once that segment reaches a real suspension point, its
+    /// next acquire observes this fence and exits instead of resuming.
+    pub fn begin_upgrade_exact(&self, handle: &ActorInstanceHandle) -> bool {
+        let state = self
+            .state
+            .lock()
+            .expect("actor instance store lock poisoned");
+        let Some(instance) = state.instances.get(&handle.fence.incarnation) else {
+            return false;
+        };
+        if ensure_instance_fence(instance, &handle.fence).is_err()
+            || !Arc::ptr_eq(instance, &handle.instance)
+        {
+            return false;
+        }
+        instance.upgrading.store(true, Ordering::Release);
+        true
+    }
+
+    /// Retires and removes only the exact incarnation previously fenced for upgrade.
+    ///
+    /// Advancing the local epoch floor prevents delayed activation traffic from
+    /// recreating the old epoch after the Router has advanced the registry.
+    pub fn discard_upgrading_exact(&self, handle: &ActorInstanceHandle) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("actor instance store lock poisoned");
+        let matches = state
+            .instances
+            .get(&handle.fence.incarnation)
+            .is_some_and(|instance| {
+                ensure_instance_fence(instance, &handle.fence).is_ok()
+                    && Arc::ptr_eq(instance, &handle.instance)
+                    && instance.upgrading.load(Ordering::Acquire)
+            });
+        if !matches {
+            return false;
+        }
+        let Some(next_epoch) = handle.fence.incarnation.epoch.checked_add(1) else {
+            return false;
+        };
+        state.instances.remove(&handle.fence.incarnation);
+        state
+            .latest_epochs
+            .entry(handle.fence.incarnation.logical_key.clone())
+            .and_modify(|epoch| *epoch = (*epoch).max(next_epoch))
+            .or_insert(next_epoch);
+        true
     }
 
     /// Atomically removes the live instances represented by the exact handles.
@@ -514,9 +621,9 @@ impl ActorInstanceStore {
         _authority: &ActorExecutorAuthority,
         handle: &ActorInstanceHandle,
     ) -> Result<ActorInstanceExecutionLease, ActorInstanceStoreError> {
-        let instance = self.resolve_current_instance(handle)?;
+        let instance = self.resolve_active_instance(handle)?;
         let scheduler_guard = Arc::clone(&instance.scheduler).lock_owned().await;
-        let instance = self.resolve_current_instance(handle)?;
+        let instance = self.resolve_active_instance(handle)?;
         let state = instance
             .state
             .lock()
@@ -600,6 +707,17 @@ impl ActorInstanceStore {
             return Err(ActorInstanceStoreError::InstanceReplaced);
         }
         Ok(Arc::clone(current))
+    }
+
+    fn resolve_active_instance(
+        &self,
+        handle: &ActorInstanceHandle,
+    ) -> Result<Arc<ActorInstance>, ActorInstanceStoreError> {
+        let instance = self.resolve_current_instance(handle)?;
+        if instance.upgrading.load(Ordering::Acquire) {
+            return Err(ActorInstanceStoreError::InstanceReplaced);
+        }
+        Ok(instance)
     }
 }
 
@@ -694,6 +812,7 @@ fn materialize_instance(
         state: Mutex::new(ActorInstanceState { fields, heap }),
         scheduler: Arc::new(tokio::sync::Mutex::new(())),
         next_execution_token: AtomicU64::new(1),
+        upgrading: AtomicBool::new(false),
     })
 }
 
@@ -1276,6 +1395,102 @@ mod tests {
             .is_ok());
     }
 
+    #[tokio::test]
+    async fn upgrade_fence_allows_owned_sync_segment_to_commit_but_blocks_next_acquire() {
+        let fixture = fixture();
+        let bytes = payload();
+        let store = ActorInstanceStore::new();
+        let handle = store
+            .activate(request(fixture.view(), fence(1), &bytes))
+            .unwrap();
+        let authority = ActorExecutorAuthority::new();
+        let mut lease = store.acquire_execution(&authority, &handle).await.unwrap();
+        lease.fields().lock().unwrap()[0].value = RuntimeValue::Number(12.0);
+        let heap = lease.take_heap();
+
+        assert!(store.begin_upgrade_exact(&handle));
+        store.commit_execution(&handle, lease, heap).unwrap();
+        assert!(matches!(
+            store.acquire_execution(&authority, &handle).await,
+            Err(ActorInstanceStoreError::InstanceReplaced)
+        ));
+        assert_eq!(
+            store
+                .with_fields_for_executor(&authority, &handle, |fields, _| {
+                    fields[0].value.clone()
+                })
+                .unwrap(),
+            RuntimeValue::Number(12.0)
+        );
+    }
+
+    #[tokio::test]
+    async fn suspended_continuation_cannot_resume_after_upgrade_fence() {
+        let fixture = fixture();
+        let bytes = payload();
+        let store = ActorInstanceStore::new();
+        let handle = store
+            .activate(request(fixture.view(), fence(1), &bytes))
+            .unwrap();
+        let authority = ActorExecutorAuthority::new();
+        let mut lease = store.acquire_execution(&authority, &handle).await.unwrap();
+        let heap = lease.take_heap();
+        store.commit_execution(&handle, lease, heap).unwrap();
+
+        assert!(store.begin_upgrade_exact(&handle));
+        assert!(matches!(
+            store.acquire_execution(&authority, &handle).await,
+            Err(ActorInstanceStoreError::InstanceReplaced)
+        ));
+    }
+
+    #[test]
+    fn upgrade_discard_is_exact_idempotent_and_new_epoch_rebuilds_from_bootstrap() {
+        let fixture = fixture();
+        let original_bootstrap = payload();
+        let replacement_bootstrap = br#"{"count":3,"title":"replacement"}"#.to_vec();
+        let store = ActorInstanceStore::new();
+        let old = store
+            .activate(request(fixture.view(), fence(1), &original_bootstrap))
+            .unwrap();
+        store
+            .with_fields_for_executor(&ActorExecutorAuthority::new(), &old, |fields, _| {
+                fields[0].value = RuntimeValue::Number(99.0);
+            })
+            .unwrap();
+
+        let mut forged = old.clone();
+        forged.fence.actor_implementation_identity = ActorImplementationIdentity::new("different");
+        assert!(!store.begin_upgrade_exact(&forged));
+        assert!(!store.discard_upgrading_exact(&old));
+        assert!(store.begin_upgrade_exact(&old));
+        assert!(store.discard_upgrading_exact(&old));
+        assert!(!store.discard_upgrading_exact(&old));
+        assert_eq!(
+            store
+                .activate(request(fixture.view(), fence(1), &original_bootstrap))
+                .unwrap_err(),
+            ActorInstanceStoreError::StaleEpoch {
+                requested: 1,
+                latest: 2
+            }
+        );
+
+        let replacement = store
+            .activate(request(fixture.view(), fence(2), &replacement_bootstrap))
+            .unwrap();
+        let fields = store
+            .with_fields_for_executor(&ActorExecutorAuthority::new(), &replacement, |fields, _| {
+                fields.to_vec()
+            })
+            .unwrap();
+        assert_eq!(fields[0].value, RuntimeValue::Number(3.0));
+        assert_eq!(
+            fields[1].value,
+            RuntimeValue::String("replacement".to_string())
+        );
+    }
+
     #[test]
     fn stale_cleanup_handle_cannot_remove_same_epoch_rematerialization() {
         let fixture = fixture();
@@ -1350,6 +1565,40 @@ mod tests {
         assert_eq!(tracker.discard_all(), 2);
         assert_eq!(tracker.discard_all(), 0);
         assert!(store.is_empty());
+    }
+
+    #[test]
+    fn session_upgrade_control_is_exact_and_stale_notifications_are_inert() {
+        let fixture = fixture();
+        let bytes = payload();
+        let store = Arc::new(ActorInstanceStore::new());
+        let tracker = ActorInstanceSessionTracker::new(Arc::clone(&store));
+        let handle = store
+            .activate(request(fixture.view(), fence(1), &bytes))
+            .unwrap();
+        tracker.track("owner-session", handle.clone()).unwrap();
+
+        let mut wrong_epoch = handle.fence().clone();
+        wrong_epoch.incarnation.epoch = 2;
+        assert!(!tracker.begin_upgrade_exact("stale-session", handle.fence()));
+        assert!(!tracker.begin_upgrade_exact("owner-session", &wrong_epoch));
+        assert!(tracker.begin_upgrade_exact("owner-session", handle.fence()));
+        assert!(tracker.discard_upgrading_exact("owner-session", handle.fence()));
+        assert!(!tracker.discard_upgrading_exact("owner-session", handle.fence()));
+        assert!(!tracker.discard_upgrading_exact("stale-session", handle.fence()));
+        assert!(store.is_empty());
+        {
+            let tracked = tracker.state.lock().unwrap();
+            assert!(!tracked.by_session.contains_key("owner-session"));
+            assert!(tracked.handle_owners.is_empty());
+        }
+
+        let replacement = store
+            .activate(request(fixture.view(), fence(2), &bytes))
+            .unwrap();
+        tracker
+            .track("replacement-session", replacement)
+            .expect("upgrade discard releases old tracker ownership");
     }
 
     #[test]
