@@ -595,6 +595,65 @@ fn exact_context_free_native_uses_shared_callable_semantics() {
 }
 
 #[test]
+fn exact_http_request_natives_transfer_through_local_helpers() {
+    let model = analyze(
+        r#"
+            function cookieValue(request: std.http.HttpRequest) -> string? {
+              return std.http.cookie(request, "session")
+            }
+
+            function headerValues(request: std.http.HttpRequest) -> Array<string> {
+              return std.http.headers(request, "x-trace")
+            }
+
+            function handler(request: std.http.HttpRequest) -> std.http.HttpResponse {
+              const values = headerValues(request)
+              const session = cookieValue(request)
+              return std.http.HttpResponse {
+                status: 200,
+                headers: Array.empty<std.http.HttpHeader>(),
+                body: bytes.fromUtf8("ok"),
+              }
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    for (callable, expected_origins) in [
+        ("cookieValue", vec![ValueProvenance::Fresh]),
+        ("headerValues", vec![ValueProvenance::Fresh]),
+        (
+            "handler",
+            vec![ValueProvenance::Fresh, ValueProvenance::Constant],
+        ),
+    ] {
+        assert_eq!(effects(&model, callable), no_effects(), "{callable}");
+        let CallableProvenanceSummary::Analyzed {
+            return_origins,
+            throw_origins,
+            escape_lanes,
+        } = provenance(&model, callable)
+        else {
+            panic!("{callable} should retain exact HTTP request native provenance");
+        };
+        assert_eq!(return_origins, &expected_origins, "{callable}");
+        assert!(throw_origins.is_empty(), "{callable}");
+        assert!(escape_lanes.is_empty(), "{callable}");
+    }
+
+    let native_keys = model
+        .resolved_call_targets()
+        .iter()
+        .filter_map(|(_, target)| match target {
+            ResolvedCallTarget::NativeFunction { binding_key } => Some(binding_key.as_str()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(native_keys.contains("std.http.request.headers"));
+    assert!(native_keys.contains("std.http.request.cookie"));
+}
+
+#[test]
 fn std_exact_native_matrix_uses_shared_callable_semantics() {
     let model = analyze_named(
         r#"

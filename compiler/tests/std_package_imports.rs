@@ -107,6 +107,86 @@ function truncate(value: string, maxBytes: number) -> string {
 }
 
 #[test]
+fn http_request_native_helpers_project_available_from_imported_source() {
+    let temp = TestDir::new("skiff-compiler", "http-request-native-projection");
+    temp.write(
+        "package.yml",
+        "id: example.com/http-request-native-projection\nversion: 1.0.0\n",
+    );
+    temp.write("api.yml", "handler: main.handler\n");
+    temp.write(
+        "main.skiff",
+        r#"import std
+
+function cookieValue(request: std.http.HttpRequest) -> string? {
+  return std.http.cookie(request, "session")
+}
+
+function headerValues(request: std.http.HttpRequest) -> Array<string> {
+  return std.http.headers(request, "x-trace")
+}
+
+function handler(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const values = headerValues(request)
+  const session = cookieValue(request)
+  return std.http.HttpResponse {
+    status: 200,
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: bytes.fromUtf8("ok"),
+  }
+}
+"#,
+    );
+
+    let project =
+        compile_package_project(temp.path()).expect("HTTP request native handler should compile");
+    let callable_id = public_callable_id(&project.package, "handler");
+    let facts = &project.package.artifact.callable_semantic_facts[&callable_id];
+    assert_eq!(
+        facts.effects,
+        CallableEffectSummary::Analyzed {
+            effects: CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            },
+        }
+    );
+    assert_eq!(
+        facts.provenance,
+        CallableProvenanceSummary::Analyzed {
+            return_origins: vec![ValueProvenance::Fresh, ValueProvenance::Constant],
+            throw_origins: Vec::new(),
+            escape_lanes: Vec::new(),
+        }
+    );
+    assert!(matches!(
+        project.package.artifact.boundary_projections[&callable_id],
+        BoundaryCallableProjection::Available { .. }
+    ));
+
+    let main = module_artifact(&project.package, "main");
+    for (symbol, binding_key) in [
+        ("headers", "std.http.request.headers"),
+        ("cookie", "std.http.request.cookie"),
+    ] {
+        assert!(file_contains_call(main, &|target| {
+            matches!(
+                target,
+                CallTargetIr::Native { target }
+                    if target.namespace == "std.http"
+                        && target.symbol == symbol
+                        && target.binding_key.as_deref() == Some(binding_key)
+            )
+        }));
+    }
+}
+
+#[test]
 fn std_root_import_materializes_exact_requirement_and_typed_log_call() {
     let temp = TestDir::new("skiff-compiler", "std-root-import");
     temp.write(
