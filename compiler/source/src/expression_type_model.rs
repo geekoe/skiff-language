@@ -2338,12 +2338,18 @@ impl<'a> OwnerChecker<'a> {
                     self.validate_resolved_call_params(&path, expected.params, args, arg_types);
                 }
             }
-            return self.resolve_callable_return_type(
+            let resolved_return_type = self.resolve_callable_return_type(
                 &return_type,
                 &native_context,
                 prelude_registry().native_type_params(&path).unwrap_or(&[]),
                 type_args,
-            );
+            )?;
+            return Some(if native_context.module_path == self.module_path {
+                resolved_return_type
+            } else {
+                self.type_resolution
+                    .externalize_local_type_refs(&resolved_return_type, native_context.module_path)
+            });
         }
         if let Some(signature) = self.local_callable_signature(&path).cloned() {
             let signature_context = TypeResolutionContext::with_type_params(
@@ -3711,7 +3717,12 @@ fn native_return_type_context<'a>(
     fallback: &TypeResolutionContext<'a>,
 ) -> TypeResolutionContext<'a> {
     path.rsplit_once('.')
-        .map(|(module_path, _)| {
+        .and_then(|(owner, _)| {
+            prelude_registry()
+                .type_decl_module(owner)
+                .or_else(|| (!prelude_registry().is_prelude_type_name(owner)).then_some(owner))
+        })
+        .map(|module_path| {
             TypeResolutionContext::with_type_params(module_path, fallback.type_params.clone())
         })
         .unwrap_or_else(|| {
@@ -3862,6 +3873,20 @@ pub fn runtime_receiver_root_from_type_ref(ty: &TypeRefIr) -> Option<String> {
         TypeRefIr::Builtin { name, .. } => Some(canonical_runtime_receiver_root(name).to_string()),
         TypeRefIr::PackageSymbol { symbol } if is_official_std_package_ref(&symbol.package) => {
             Some(canonical_runtime_receiver_root(&symbol.symbol_path).to_string())
+        }
+        TypeRefIr::ServiceSymbol { symbol }
+            if prelude_registry().known_type_symbol(&format!(
+                "{}.{}",
+                symbol.module_path, symbol.symbol
+            )) == Some(format!("{}.{}", symbol.module_path, symbol.symbol)) =>
+        {
+            Some(
+                canonical_runtime_receiver_root(&format!(
+                    "{}.{}",
+                    symbol.module_path, symbol.symbol
+                ))
+                .to_string(),
+            )
         }
         TypeRefIr::Literal {
             value: LiteralIr::String { .. },
