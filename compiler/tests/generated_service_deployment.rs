@@ -22,6 +22,7 @@ fn generates_exact_operations_ingress_and_profile_bindings() {
         service_api: &service_api,
         implementation: &project.package.artifact,
         package_closure: &[],
+        package_schema_records: &project.package.resolved_package_schema_type_records,
     })
     .unwrap();
 
@@ -57,6 +58,7 @@ fn ingress_and_mapping_fail_closed() {
         service_api: &service_api,
         implementation: &project.package.artifact,
         package_closure: &[],
+        package_schema_records: &project.package.resolved_package_schema_type_records,
     })
     .unwrap_err();
     assert!(error.to_string().contains("boundary unavailable"));
@@ -69,11 +71,12 @@ fn ingress_and_mapping_fail_closed() {
         service_api: &service_api,
         implementation: &project.package.artifact,
         package_closure: &[],
+        package_schema_records: &project.package.resolved_package_schema_type_records,
     })
     .unwrap_err();
     assert!(error.to_string().contains("missing"));
 
-    let (_, mut duplicate) = compile_fixture("generated-duplicate", "\"ok\"");
+    let (duplicate_project, mut duplicate) = compile_fixture("generated-duplicate", "\"ok\"");
     let callable = duplicate.available["read"].clone();
     let original = duplicate
         .contract
@@ -105,8 +108,11 @@ fn ingress_and_mapping_fail_closed() {
         profile_name: "prod",
         profile: &profile,
         service_api: &duplicate,
-        implementation: &project.package.artifact,
+        implementation: &duplicate_project.package.artifact,
         package_closure: &[],
+        package_schema_records: &duplicate_project
+            .package
+            .resolved_package_schema_type_records,
     })
     .unwrap_err();
     assert!(error.to_string().contains("duplicate source callable"));
@@ -124,6 +130,7 @@ fn unbound_requirement_and_identity_mismatch_fail_closed() {
         service_api: &service_api,
         implementation: &project.package.artifact,
         package_closure: &[],
+        package_schema_records: &project.package.resolved_package_schema_type_records,
     })
     .unwrap_err();
     assert!(error
@@ -139,6 +146,7 @@ fn unbound_requirement_and_identity_mismatch_fail_closed() {
         service_api: &service_api,
         implementation: &project.package.artifact,
         package_closure: &[],
+        package_schema_records: &project.package.resolved_package_schema_type_records,
     })
     .unwrap_err();
     assert!(error.to_string().contains("does not match"));
@@ -157,8 +165,18 @@ fn compatible_rebuild_changes_package_identity_not_service_api_identity() {
         right_api.contract.service_protocol_identity
     );
 
-    let left_deployment = generate(&left.package.artifact, &[], &left_api);
-    let right_deployment = generate(&right.package.artifact, &[], &right_api);
+    let left_deployment = generate(
+        &left.package.artifact,
+        &[],
+        &left_api,
+        &left.package.resolved_package_schema_type_records,
+    );
+    let right_deployment = generate(
+        &right.package.artifact,
+        &[],
+        &right_api,
+        &right.package.resolved_package_schema_type_records,
+    );
     assert_ne!(
         left_deployment.implementation.package_build_id,
         right_deployment.implementation.package_build_id
@@ -172,7 +190,12 @@ fn compatible_rebuild_changes_package_identity_not_service_api_identity() {
 #[test]
 fn generated_service_package_and_deployment_identities_ignore_human_version_relabeling() {
     let (base, base_api) = compile_fixture("generated-version-base", "\"ok\"");
-    let base_deployment = generate(&base.package.artifact, &[], &base_api);
+    let base_deployment = generate(
+        &base.package.artifact,
+        &[],
+        &base_api,
+        &base.package.resolved_package_schema_type_records,
+    );
 
     let mut relabeled_artifact = base.package.artifact.clone();
     relabeled_artifact.package_version = "99.0.0".to_string();
@@ -180,7 +203,12 @@ fn generated_service_package_and_deployment_identities_ignore_human_version_rela
     relabeled_api.contract.contract_version = "99.0.0".to_string();
     skiff_artifact_identity::assign_service_contract_identities(&mut relabeled_api.contract)
         .unwrap();
-    let relabeled_deployment = generate(&relabeled_artifact, &[], &relabeled_api);
+    let relabeled_deployment = generate(
+        &relabeled_artifact,
+        &[],
+        &relabeled_api,
+        &base.package.resolved_package_schema_type_records,
+    );
 
     assert_eq!(
         base.package.artifact.package_build_id,
@@ -204,6 +232,10 @@ fn generate(
     artifact: &skiff_artifact_model::PackageArtifact,
     closure: &[skiff_artifact_model::PackageArtifact],
     api: &ServiceApiProjection,
+    package_schema_records: &std::collections::BTreeMap<
+        skiff_artifact_model::PackageSchemaTypeId,
+        skiff_artifact_model::PackageSchemaTypeRecord,
+    >,
 ) -> skiff_artifact_model::ServiceDeployment {
     generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &manifest("read"),
@@ -212,6 +244,7 @@ fn generate(
         service_api: api,
         implementation: artifact,
         package_closure: closure,
+        package_schema_records,
     })
     .unwrap()
 }
@@ -236,7 +269,12 @@ fn compile_fixture(
         ),
     );
     let project = compile_package_project(root.path()).unwrap();
-    let api = project_service_api("example.com/registry", &project.package.artifact).unwrap();
+    let api = project_service_api(
+        "example.com/registry",
+        &project.package.artifact,
+        &project.package.package_schema_type_records,
+    )
+    .unwrap();
     (project, api)
 }
 

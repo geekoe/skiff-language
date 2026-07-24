@@ -6,11 +6,12 @@ use skiff_artifact_identity::{package_artifact_ref, service_contract_ref};
 use skiff_artifact_model::{
     ActivationPolicy, ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentIngressBinding,
     DeploymentPolicy, DeploymentRevision, IngressProtocol, IngressSelector, MetadataValue,
-    PackageArtifact, PackageBinding, PackageRequirementKey, ResourceBinding, ResourcePolicy,
-    RuntimeCapabilityBinding, SecretRefBinding, ServiceConfigProfileAuthoring, ServiceContractRef,
-    ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentOperationInput,
-    ServiceManifestAuthoring, ServiceRequirementKey, ServiceSelectorBinding, StateBinding,
-    StateBindingKind, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    PackageArtifact, PackageBinding, PackageRequirementKey, PackageSchemaTypeId,
+    PackageSchemaTypeRecord, ResourceBinding, ResourcePolicy, RuntimeCapabilityBinding,
+    SecretRefBinding, ServiceConfigProfileAuthoring, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentInput, ServiceDeploymentOperationInput, ServiceManifestAuthoring,
+    ServiceRequirementKey, ServiceSelectorBinding, StateBinding, StateBindingKind,
+    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_compiler_contract::ServiceApiProjection;
 use skiff_deployment::projection::{project_service_deployment, ProjectionError};
@@ -25,6 +26,7 @@ pub struct GeneratedServiceDeploymentInput<'a> {
     pub service_api: &'a ServiceApiProjection,
     pub implementation: &'a PackageArtifact,
     pub package_closure: &'a [PackageArtifact],
+    pub package_schema_records: &'a BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 }
 
 #[derive(Debug, Error)]
@@ -94,6 +96,7 @@ pub fn generate_service_deployment(
         typed,
         &input.service_api.contract,
         &artifacts,
+        input.package_schema_records,
     )?)
 }
 

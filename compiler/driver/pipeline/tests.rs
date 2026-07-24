@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_identity::assign_package_artifact_identities;
+use skiff_artifact_identity::{assign_package_artifact_identities, package_schema_index_identity};
 use skiff_artifact_model::{
     PackageBuildId, PackageCallableId, PackageCallableRef, PackageImplementationLinks,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSymbolRef,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex,
+    PackageSchemaIndexRef, PackageSymbolRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -170,7 +170,112 @@ fn used_std_fails_closed_without_one_valid_same_round_artifact() {
     assert_eq!(requirements[0].exact_version, "9.9.9");
 }
 
+#[test]
+fn exact_package_schema_batch_rejects_missing_version_build_and_abi_mismatch() {
+    let artifact = canonical_artifact("example.types", "1.0.0");
+    let requirement = PackageRequirement {
+        alias: "types".to_string(),
+        package_id: artifact.package_id.clone(),
+        exact_version: artifact.package_version.clone(),
+        expected_local_abi: artifact.package_local_abi.local_abi_identity.clone(),
+    };
+    let schema = ResolvedPackageSchema::new(
+        requirement.alias.clone(),
+        artifact.package_id.clone(),
+        artifact.package_version.clone(),
+        artifact.package_build_id.clone(),
+        artifact.package_local_abi.local_abi_identity.clone(),
+        PackageSchemaIndex {
+            package_id: artifact.package_id.clone(),
+            package_schema_index_identity: artifact
+                .package_schema_index
+                .package_schema_index_identity
+                .clone(),
+            types: BTreeMap::new(),
+        },
+        BTreeMap::new(),
+    )
+    .unwrap();
+
+    assert!(exact_resolved_package_schemas(
+        std::slice::from_ref(&requirement),
+        std::slice::from_ref(&artifact),
+        &[],
+        None,
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("no resolved schema"));
+
+    assert!(exact_resolved_package_schemas(
+        std::slice::from_ref(&requirement),
+        std::slice::from_ref(&artifact),
+        std::slice::from_ref(&schema),
+        None,
+    )
+    .is_ok());
+
+    let wrong_version = ResolvedPackageSchema::new(
+        "types".to_string(),
+        artifact.package_id.clone(),
+        "2.0.0".to_string(),
+        artifact.package_build_id.clone(),
+        artifact.package_local_abi.local_abi_identity.clone(),
+        PackageSchemaIndex {
+            package_id: artifact.package_id.clone(),
+            package_schema_index_identity: artifact
+                .package_schema_index
+                .package_schema_index_identity
+                .clone(),
+            types: BTreeMap::new(),
+        },
+        BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(exact_resolved_package_schemas(
+        std::slice::from_ref(&requirement),
+        std::slice::from_ref(&artifact),
+        &[wrong_version],
+        None,
+    )
+    .is_err());
+
+    let wrong_build = ResolvedPackageSchema::new(
+        "types".to_string(),
+        artifact.package_id.clone(),
+        artifact.package_version.clone(),
+        PackageBuildId::new("wrong-build"),
+        artifact.package_local_abi.local_abi_identity.clone(),
+        PackageSchemaIndex {
+            package_id: artifact.package_id.clone(),
+            package_schema_index_identity: artifact
+                .package_schema_index
+                .package_schema_index_identity
+                .clone(),
+            types: BTreeMap::new(),
+        },
+        BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(exact_resolved_package_schemas(
+        std::slice::from_ref(&requirement),
+        std::slice::from_ref(&artifact),
+        &[wrong_build],
+        None,
+    )
+    .is_err());
+
+    let wrong_abi_requirement = PackageRequirement {
+        expected_local_abi: PackageLocalAbiIdentity::new("wrong-abi"),
+        ..requirement
+    };
+    assert!(
+        exact_resolved_package_schemas(&[wrong_abi_requirement], &[artifact], &[], None,).is_err()
+    );
+}
+
 fn canonical_artifact(package_id: &str, version: &str) -> PackageArtifact {
+    let empty_schema_types = BTreeMap::new();
     let mut artifact = PackageArtifact {
         schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
         package_id: package_id.to_string(),
@@ -182,6 +287,15 @@ fn canonical_artifact(package_id: &str, version: &str) -> PackageArtifact {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: package_id.to_string(),
+            package_schema_index_identity: package_schema_index_identity(
+                package_id,
+                &empty_schema_types,
+            )
+            .unwrap(),
+        },
+        package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
         package_requirements: Vec::new(),

@@ -15,7 +15,7 @@ pub(super) fn contract(stable_key: &str) -> ServiceContract {
         service_id: "example.echo".to_string(),
         contract_version: "1.0.0".to_string(),
         operations: BTreeMap::from([(stable_key.to_string(), operation_contract())]),
-        boundary_schema: BTreeMap::new(),
+        package_type_requirements: Vec::new(),
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
             service: "Echo".to_string(),
             operations: BTreeMap::from([(stable_key.to_string(), "Echo".to_string())]),

@@ -182,6 +182,7 @@ fn build_package_after_platform_context_guard(
             service_api: &service_api,
             implementation: &published.artifact,
             package_closure: &package_closure,
+            package_schema_records: &published.resolved_package_schema_type_records,
         })?;
         let deployment_path = store.write_service_deployment(&deployment)?;
         let deployment_ref = service_deployment_ref(&deployment);

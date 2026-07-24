@@ -33,6 +33,7 @@ fn validated_contract_dependencies(
             ResolvedContractDependency::validated(
                 dependency.requirement.clone(),
                 dependency.contract.clone(),
+                input.resolved_package_schemas(),
             )
         })
         .collect::<Result<Vec<_>, _>>()
