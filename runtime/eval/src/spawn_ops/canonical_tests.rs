@@ -156,6 +156,13 @@ impl RuntimeAssemblyEvalResolver for TestResolver {
         None
     }
 
+    fn admitted_schema_records(
+        &self,
+        _contract: &ServiceContractRef,
+    ) -> Option<crate::AdmittedServiceSchemaRecords> {
+        None
+    }
+
     fn operation_target(
         &self,
         _activation_id: &ActivationId,

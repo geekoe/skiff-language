@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use skiff_artifact_identity::service_contract_ref;
 use skiff_artifact_model::{
     ContractOperationId, PackageRefIr, ServiceCallRefIndex, ServiceDeploymentRef,
 };
@@ -210,6 +211,17 @@ pub(super) async fn assert_typed_execution_fixture() {
             .implementation_package_build_id()
     );
     let provider = fixture.resolve_provider();
+    let contract_ref =
+        service_contract_ref(provider.contract()).expect("provider contract identity is admitted");
+    let admitted_records = fixture
+        ._active
+        .contexts()
+        .admitted_schema_records(&contract_ref)
+        .expect("active generation retains the provider schema");
+    assert!(
+        Arc::ptr_eq(provider.schema_records(), &admitted_records),
+        "internal call target must share the active generation schema map"
+    );
     assert_eq!(
         provider.provider_activation().identity().deployment,
         fixture.provider_deployment
@@ -344,6 +356,20 @@ async fn in_process_request_entry_and_internal_call_share_dispatcher_symbol() {
     let request_target = route
         .request_target()
         .expect("route should form one pinned request target");
+    let contract_ref = service_contract_ref(request_target.boundary().contract())
+        .expect("ingress contract identity is admitted");
+    let admitted_records = route
+        .active
+        .contexts()
+        .admitted_schema_records(&contract_ref)
+        .expect("active generation retains the ingress schema");
+    assert!(
+        Arc::ptr_eq(
+            request_target.boundary().schema_records(),
+            &admitted_records
+        ),
+        "ingress target must share the active generation schema map"
+    );
     let runtime = TypedExecutionRuntime::new(
         &request_target
             .eval()

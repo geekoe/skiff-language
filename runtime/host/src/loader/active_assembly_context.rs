@@ -14,7 +14,7 @@ use skiff_runtime_activation::{ActivationContext, ActivationId};
 use skiff_runtime_capability_context::{
     DbCapabilitySource, DbProviderBuildInput, DbProviderConfig, DbProviderSource,
 };
-use skiff_runtime_eval::RuntimeAssemblyEvalResolver;
+use skiff_runtime_eval::{AdmittedServiceSchemaRecords, RuntimeAssemblyEvalResolver};
 use skiff_runtime_linker::AssemblyLinkedCandidate;
 
 /// Immutable activation owners and canonical target facts published with one assembly generation.
@@ -23,6 +23,7 @@ pub(crate) struct ActiveAssemblyContextSet {
     activations: BTreeMap<ActivationId, Arc<ActivationContext>>,
     activations_by_deployment: BTreeMap<ServiceDeploymentRef, Arc<ActivationContext>>,
     contracts: BTreeMap<ServiceContractRef, Arc<ServiceContract>>,
+    schema_records: BTreeMap<ServiceContractRef, AdmittedServiceSchemaRecords>,
     operation_targets: BTreeMap<(ActivationId, ContractOperationId), OperationTargetRef>,
     db_sources: BTreeMap<ActivationId, DbCapabilitySource>,
 }
@@ -152,10 +153,35 @@ impl ActiveAssemblyContextSet {
             .contracts()
             .map(|(reference, contract)| (reference.clone(), Arc::clone(contract)))
             .collect();
+        let mut schema_records = BTreeMap::new();
+        for contract_ref in contracts.keys() {
+            let schema = candidate
+                .contract_store()
+                .resolved_schema(contract_ref)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "admitted contract {:?} has no resolved Package schema",
+                        contract_ref
+                    )
+                })?;
+            if schema.contract() != contract_ref {
+                anyhow::bail!(
+                    "admitted schema contract {:?} does not match store key {:?}",
+                    schema.contract(),
+                    contract_ref
+                );
+            }
+            let records = schema
+                .records()
+                .map(|(type_id, record)| (type_id.clone(), Arc::clone(record)))
+                .collect();
+            schema_records.insert(contract_ref.clone(), Arc::new(records));
+        }
         Ok(Self {
             activations,
             activations_by_deployment,
             contracts,
+            schema_records,
             operation_targets,
             db_sources,
         })
@@ -170,6 +196,14 @@ impl ActiveAssemblyContextSet {
 
     pub(crate) fn db_source(&self, activation_id: &ActivationId) -> Option<DbCapabilitySource> {
         self.db_sources.get(activation_id).cloned()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn admitted_schema_records(
+        &self,
+        contract: &ServiceContractRef,
+    ) -> Option<AdmittedServiceSchemaRecords> {
+        self.schema_records.get(contract).cloned()
     }
 }
 
@@ -256,6 +290,13 @@ impl RuntimeAssemblyEvalResolver for ActiveAssemblyContextSet {
 
     fn contract(&self, contract: &ServiceContractRef) -> Option<Arc<ServiceContract>> {
         self.contracts.get(contract).cloned()
+    }
+
+    fn admitted_schema_records(
+        &self,
+        contract: &ServiceContractRef,
+    ) -> Option<AdmittedServiceSchemaRecords> {
+        self.schema_records.get(contract).cloned()
     }
 
     fn operation_target(
