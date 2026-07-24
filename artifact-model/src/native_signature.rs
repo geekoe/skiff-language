@@ -80,6 +80,8 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_scalar_native("std.crypto.uuid"),
     detached_scalar_native("std.crypto.uuidSimple"),
     detached_native("std.http.client.request", true),
+    detached_scalar_native("std.http.request.cookie"),
+    detached_scalar_native("std.http.request.headers"),
     detached_native("std.time.sleep", true),
     detached_scalar_native("std.websocket.sendTextToConnection"),
     detached_scalar_native("std.websocket.sendBinaryToConnection"),
@@ -837,6 +839,8 @@ mod tests {
             "std.crypto.uuid",
             "std.crypto.uuidSimple",
             "std.http.client.request",
+            "std.http.request.cookie",
+            "std.http.request.headers",
             "std.json.encode",
             "std.string.join",
             "std.string.split",
@@ -883,8 +887,48 @@ mod tests {
             );
         }
 
-        for missing in ["std.file.readText", "custom.native"] {
+        for missing in [
+            "std.file.readText",
+            "std.http.request.header",
+            "std.http.request.query",
+            "std.http.response.json",
+            "custom.native",
+        ] {
             assert_eq!(native_callable_semantics(missing), None, "{missing}");
+        }
+    }
+
+    #[test]
+    fn http_request_native_semantics_match_exact_signatures() {
+        for (binding_key, return_type) in [
+            (
+                "std.http.request.headers",
+                super::NativeTypeExprDef::Array(&super::STRING),
+            ),
+            ("std.http.request.cookie", super::STRING_NULLABLE),
+        ] {
+            let semantics = native_callable_semantics(binding_key)
+                .expect("audited HTTP request binding should have exact semantics");
+            assert_eq!(
+                semantics.effects,
+                CallableMayEffects {
+                    writes_caller_reachable: false,
+                    returns_caller_alias: false,
+                    throws_caller_alias: false,
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: false,
+                    invokes_unknown_target: false,
+                    may_suspend: false,
+                }
+            );
+            assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+            let signature = STD_NATIVE_SIGNATURES
+                .iter()
+                .find(|signature| signature.binding_key == binding_key)
+                .expect("audited HTTP request binding should have a native signature");
+            assert_eq!(signature.params, &[super::HTTP_REQUEST, super::STRING]);
+            assert_eq!(signature.return_type, return_type);
         }
     }
 
