@@ -46,12 +46,39 @@ fn websocket_context_resolves_package_owned_schema_record() {
 }
 
 #[test]
+fn websocket_context_borrows_value_owned_publication_record() {
+    let context_id = PackageSchemaTypeId::new("type:context");
+    let context_ref = ContractTypeRef::package_schema(PACKAGE_ID, "Context", context_id.clone());
+    let (contract, operation_id) = websocket_contract(context_ref);
+    let records = BTreeMap::from([(
+        context_id.clone(),
+        record(
+            "Context",
+            context_id.clone(),
+            ContractTypeDescriptor::Record {
+                fields: BTreeMap::new(),
+            },
+        ),
+    )]);
+
+    assert_eq!(
+        websocket_ingress_context(&contract, &operation_id, &records).unwrap(),
+        WebSocketIngressContext::PackageSchema(PackageSchemaTypeRef {
+            package_id: PACKAGE_ID.to_string(),
+            stable_schema_key: "Context".to_string(),
+            package_schema_type_id: context_id,
+        })
+    );
+}
+
+#[test]
 fn websocket_context_fails_closed_without_required_record() {
     let context_id = PackageSchemaTypeId::new("type:context");
     let (contract, operation_id) = websocket_contract(ContractTypeRef::package_schema(
         PACKAGE_ID, "Context", context_id,
     ));
-    let error = websocket_ingress_context(&contract, &operation_id, &BTreeMap::new())
+    let records = BTreeMap::<PackageSchemaTypeId, PackageSchemaTypeRecord>::new();
+    let error = websocket_ingress_context(&contract, &operation_id, &records)
         .expect_err("missing content-addressed record must fail");
     assert!(error.to_string().contains("missing PackageSchemaTypeId"));
 }

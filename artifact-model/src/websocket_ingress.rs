@@ -1,7 +1,8 @@
 use std::{
+    borrow::Borrow,
     collections::{BTreeMap, BTreeSet},
     fmt,
-    sync::{Arc, OnceLock},
+    sync::OnceLock,
 };
 
 use crate::{
@@ -437,11 +438,14 @@ impl fmt::Display for WebSocketIngressContractError {
 impl std::error::Error for WebSocketIngressContractError {}
 
 /// Validates the single canonical WebSocket ingress ABI and returns its contract-owned Context.
-pub fn websocket_ingress_context(
+pub fn websocket_ingress_context<Record>(
     contract: &ServiceContract,
     operation_id: &ContractOperationId,
-    package_schema_records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
-) -> Result<WebSocketIngressContext, WebSocketIngressContractError> {
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, Record>,
+) -> Result<WebSocketIngressContext, WebSocketIngressContractError>
+where
+    Record: Borrow<PackageSchemaTypeRecord>,
+{
     websocket_ingress_context_with_shape_spec(
         contract,
         operation_id,
@@ -450,12 +454,15 @@ pub fn websocket_ingress_context(
     )
 }
 
-fn websocket_ingress_context_with_shape_spec(
+fn websocket_ingress_context_with_shape_spec<Record>(
     contract: &ServiceContract,
     operation_id: &ContractOperationId,
-    package_schema_records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, Record>,
     shape_spec: &CanonicalWebSocketShapeSpec,
-) -> Result<WebSocketIngressContext, WebSocketIngressContractError> {
+) -> Result<WebSocketIngressContext, WebSocketIngressContractError>
+where
+    Record: Borrow<PackageSchemaTypeRecord>,
+{
     let event_builtin = shape_spec.contract_builtin(WebSocketContractBuiltin::Event);
     let result_builtin = shape_spec.contract_builtin(WebSocketContractBuiltin::Result);
     let descriptor = contract.operations.get(operation_id).ok_or_else(|| {
@@ -551,11 +558,14 @@ fn websocket_ingress_context_with_shape_spec(
     Ok(context)
 }
 
-fn validate_persistable_context(
+fn validate_persistable_context<Record>(
     contract: &ServiceContract,
-    package_schema_records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, Record>,
     context_type: &PackageSchemaTypeRef,
-) -> Result<(), WebSocketIngressContractError> {
+) -> Result<(), WebSocketIngressContractError>
+where
+    Record: Borrow<PackageSchemaTypeRecord>,
+{
     let mut visiting = BTreeSet::new();
     let mut complete = BTreeSet::new();
     visit_persistable_context_type(
@@ -568,14 +578,17 @@ fn validate_persistable_context(
     )
 }
 
-fn visit_persistable_context_type(
+fn visit_persistable_context_type<Record>(
     contract: &ServiceContract,
-    package_schema_records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, Record>,
     package_schema_type: &PackageSchemaTypeRef,
     path: &str,
     visiting: &mut BTreeSet<PackageSchemaTypeId>,
     complete: &mut BTreeSet<PackageSchemaTypeId>,
-) -> Result<(), WebSocketIngressContractError> {
+) -> Result<(), WebSocketIngressContractError>
+where
+    Record: Borrow<PackageSchemaTypeRecord>,
+{
     let type_id = &package_schema_type.package_schema_type_id;
     if complete.contains(type_id) {
         return Ok(());
@@ -592,11 +605,14 @@ fn visit_persistable_context_type(
             "{path} references package schema type {type_id} outside ServiceContract requirements"
         )));
     }
-    let schema_type = package_schema_records.get(type_id).ok_or_else(|| {
-        WebSocketIngressContractError::new(format!(
-            "{path} references missing PackageSchemaTypeId {type_id}"
-        ))
-    })?;
+    let schema_type = package_schema_records
+        .get(type_id)
+        .map(Borrow::borrow)
+        .ok_or_else(|| {
+            WebSocketIngressContractError::new(format!(
+                "{path} references missing PackageSchemaTypeId {type_id}"
+            ))
+        })?;
     if schema_type.package_id != package_schema_type.package_id
         || schema_type.stable_schema_key != package_schema_type.stable_schema_key
         || &schema_type.package_schema_type_id != type_id
@@ -674,14 +690,17 @@ fn visit_persistable_context_type(
     result
 }
 
-fn validate_persistable_context_ref(
+fn validate_persistable_context_ref<Record>(
     contract: &ServiceContract,
-    package_schema_records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, Record>,
     ty: &ContractTypeRef,
     path: &str,
     visiting: &mut BTreeSet<PackageSchemaTypeId>,
     complete: &mut BTreeSet<PackageSchemaTypeId>,
-) -> Result<(), WebSocketIngressContractError> {
+) -> Result<(), WebSocketIngressContractError>
+where
+    Record: Borrow<PackageSchemaTypeRecord>,
+{
     match ty {
         ContractTypeRef::Builtin { name, arguments } => {
             if name == "void" {
