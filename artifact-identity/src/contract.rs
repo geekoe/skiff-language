@@ -109,6 +109,15 @@ pub fn package_schema_index_identity(
 }
 
 pub fn validate_package_schema_index(index: &PackageSchemaIndex) -> Result<()> {
+    for (stable_schema_key, entry) in &index.types {
+        if entry.nameability != ContractTypeNameability::PublicNameable
+            || entry.public_path.as_deref() != Some(stable_schema_key.as_str())
+        {
+            return invalid_contract(format!(
+                "package schema index entry {stable_schema_key} must be an api.yml public named type"
+            ));
+        }
+    }
     let expected = package_schema_index_identity(&index.package_id, &index.types)?;
     if index.package_schema_index_identity != expected {
         return invalid_contract(format!(
@@ -589,6 +598,25 @@ mod tests {
             public_path: Some("api.User".to_string()),
             nameability: ContractTypeNameability::PublicNameable,
         }
+    }
+
+    #[test]
+    fn package_schema_index_rejects_non_public_named_types() {
+        let type_id = PackageSchemaTypeId::new("type:user");
+        let mut types = BTreeMap::from([("api.User".to_string(), index_entry(type_id))]);
+        types.get_mut("api.User").unwrap().nameability =
+            ContractTypeNameability::ClosureOnly;
+        let index = PackageSchemaIndex {
+            package_id: "example.pkg".to_string(),
+            package_schema_index_identity: package_schema_index_identity(
+                "example.pkg",
+                &types,
+            )
+            .unwrap(),
+            types,
+        };
+        let error = validate_package_schema_index(&index).unwrap_err();
+        assert!(error.to_string().contains("api.yml public named type"));
     }
 
     fn service_contract(type_id: PackageSchemaTypeId) -> ServiceContract {
