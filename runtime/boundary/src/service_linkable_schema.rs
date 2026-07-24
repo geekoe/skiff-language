@@ -1,12 +1,15 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use skiff_artifact_model::{
     ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
 };
 
-use crate::service_linkable::ServiceLinkableMaterializationError;
+use crate::{
+    service_linkable::ServiceLinkableMaterializationError,
+    service_schema_records::ServiceSchemaRecords,
+};
 
-type PackageSchema = BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>;
+type PackageSchema = ServiceSchemaRecords;
 
 pub(crate) fn validate_schema_closure(
     ty: &ContractTypeRef,
@@ -179,5 +182,5 @@ pub(crate) fn resolve_record<'a>(
             },
         );
     }
-    Ok(record)
+    Ok(record.as_ref())
 }

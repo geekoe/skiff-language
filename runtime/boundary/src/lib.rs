@@ -16,6 +16,7 @@ pub mod recoverable;
 pub mod service_linkable;
 mod service_linkable_detached;
 mod service_linkable_schema;
+pub mod service_schema_records;
 pub mod service_value_plan;
 pub mod stream;
 pub mod type_descriptor;

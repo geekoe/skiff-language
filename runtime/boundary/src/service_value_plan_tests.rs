@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use serde_json::{json, Value};
 use skiff_artifact_model::{
@@ -47,11 +47,11 @@ fn schema_type(
     id: &str,
     stable_key: &str,
     descriptor: ContractTypeDescriptor,
-) -> (PackageSchemaTypeId, PackageSchemaTypeRecord) {
+) -> (PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>) {
     let id = PackageSchemaTypeId::new(id);
     (
         id.clone(),
-        PackageSchemaTypeRecord {
+        Arc::new(PackageSchemaTypeRecord {
             package_id: PACKAGE_ID.to_string(),
             package_schema_type_id: id,
             stable_schema_key: stable_key.to_string(),
@@ -59,11 +59,11 @@ fn schema_type(
                 type_params: Vec::new(),
                 descriptor,
             },
-        },
+        }),
     )
 }
 
-fn rich_context_schema() -> BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord> {
+fn rich_context_schema() -> BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>> {
     let user_id = PackageSchemaTypeId::new(USER_ID);
     BTreeMap::from([
         schema_type(
@@ -96,6 +96,35 @@ fn rich_context_schema() -> BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecor
             },
         ),
     ])
+}
+
+#[test]
+fn shared_schema_record_is_reused_by_multiple_contract_plans_without_payload_clones() {
+    let (id, record) = schema_type(
+        CONTEXT_ID,
+        "Context",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([("name".to_string(), ContractTypeRef::builtin("string"))]),
+        },
+    );
+    let schema = Arc::new(BTreeMap::from([(id.clone(), Arc::clone(&record))]));
+    let first_contract = package_ref(id.clone());
+    let second_contract = package_ref(id);
+    let record_owners_before = Arc::strong_count(&record);
+
+    let first = ServiceValuePlan::compile(&first_contract, schema.as_ref())
+        .expect("first plan should borrow the admitted shared record");
+    let second = ServiceValuePlan::compile(&second_contract, schema.as_ref())
+        .expect("second plan should borrow the same admitted shared record");
+
+    assert_eq!(Arc::strong_count(&record), record_owners_before);
+    let _compiled_plans = (first, second);
+    assert!(Arc::ptr_eq(
+        schema
+            .get(&PackageSchemaTypeId::new(CONTEXT_ID))
+            .expect("shared record should remain admitted"),
+        &record,
+    ));
 }
 
 fn rich_context_ref() -> ContractTypeRef {

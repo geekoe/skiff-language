@@ -39,13 +39,13 @@ fn callback_plan(lifetime: BoundaryValueLifetime) -> BoundaryValuePlan {
 
 fn callback_schema() -> (
     ContractTypeRef,
-    BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
 ) {
     let id = PackageSchemaTypeId::new("contract:reader");
     let ty = ContractTypeRef::package_schema("test.callback", "Reader", id.clone());
     let schema = BTreeMap::from([(
         id.clone(),
-        PackageSchemaTypeRecord {
+        Arc::new(PackageSchemaTypeRecord {
             package_id: "test.callback".to_string(),
             package_schema_type_id: id,
             stable_schema_key: "Reader".to_string(),
@@ -55,7 +55,7 @@ fn callback_schema() -> (
                     operations: BTreeMap::new(),
                 },
             },
-        },
+        }),
     )]);
     (ty, schema)
 }

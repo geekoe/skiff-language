@@ -1,9 +1,6 @@
-use std::collections::BTreeMap;
-
 use skiff_artifact_model::{
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
     BoundaryValuePlan, BoundaryValuePlanUnavailableReason, ContractTypeRef, PackageSchemaTypeId,
-    PackageSchemaTypeRecord,
 };
 use skiff_runtime_model::{
     request_heap::RequestHeap,
@@ -15,6 +12,7 @@ use crate::{
         materialize_detached_graph, model_error, reject_detached_interface_graph,
     },
     service_linkable_schema::{contract_type_is_callback_interface, validate_schema_closure},
+    service_schema_records::ServiceSchemaRecords,
     service_value_plan::ServiceValuePlan,
 };
 
@@ -22,7 +20,7 @@ use crate::{
 /// It retains no File IR or runtime-inferred type descriptor.
 pub struct ServiceLinkableContractPlan<'a> {
     ty: &'a ContractTypeRef,
-    boundary_schema: &'a BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    boundary_schema: &'a ServiceSchemaRecords,
     value_plan: &'a BoundaryValuePlan,
     detached_value_plan: Option<ServiceValuePlan<'a>>,
 }
@@ -30,7 +28,7 @@ pub struct ServiceLinkableContractPlan<'a> {
 impl<'a> ServiceLinkableContractPlan<'a> {
     pub fn new(
         ty: &'a ContractTypeRef,
-        boundary_schema: &'a BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+        boundary_schema: &'a ServiceSchemaRecords,
         value_plan: &'a BoundaryValuePlan,
     ) -> Result<Self, ServiceLinkableMaterializationError> {
         validate_value_plan_shape(value_plan)?;
@@ -174,7 +172,7 @@ pub struct ServiceLinkableCapabilityRequest<'a> {
     pub value: &'a RuntimeValue,
     pub source_heap: &'a RequestHeap,
     pub ty: &'a ContractTypeRef,
-    pub boundary_schema: &'a BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    pub boundary_schema: &'a ServiceSchemaRecords,
     pub lifetime: BoundaryValueLifetime,
 }
 

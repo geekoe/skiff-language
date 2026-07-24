@@ -1,10 +1,8 @@
 mod compile;
 mod matcher;
 
-use std::collections::BTreeMap;
-
 use serde_json::Value;
-use skiff_artifact_model::{ContractTypeRef, PackageSchemaTypeId, PackageSchemaTypeRecord};
+use skiff_artifact_model::ContractTypeRef;
 use skiff_runtime_model::{
     request_heap::RequestHeap, type_plan::RuntimeTypePlan, value::RuntimeValue,
 };
@@ -14,6 +12,7 @@ use crate::{
     json_convert::{decode_wire_plan_impl, encode_wire_plan_impl, BoundaryStreamHandlePolicy},
     payload::PayloadBoundary,
     service_linkable::ServiceLinkableMaterializationError,
+    service_schema_records::ServiceSchemaRecords,
 };
 
 /// The one expected-type plan for an ordinary value crossing a service boundary.
@@ -29,7 +28,7 @@ pub struct ServiceValuePlan<'contract> {
 impl<'contract> ServiceValuePlan<'contract> {
     pub fn compile(
         contract_type: &'contract ContractTypeRef,
-        boundary_schema: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+        boundary_schema: &ServiceSchemaRecords,
     ) -> Result<Self, ServiceLinkableMaterializationError> {
         let runtime_type = compile::compile(contract_type, boundary_schema)?;
         Ok(Self {
