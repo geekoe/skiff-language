@@ -618,16 +618,16 @@ async function detectRootKind(root) {
   const files = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
   const hasPackage = files.has('package.yml');
   const hasService = files.has('service.yml');
-  if (hasPackage && hasService) {
-    return { kind: 'ambiguous', message: `${root} contains both package.yml and service config` };
-  }
   if (hasPackage) {
     return { kind: 'package' };
   }
   if (hasService) {
-    return { kind: 'service' };
+    return {
+      kind: 'missing',
+      message: `${root} contains service.yml but no package.yml; service.yml adds a service role to a Package and cannot define a source root`,
+    };
   }
-  return { kind: 'missing', message: `${root} must contain package.yml or service.yml` };
+  return { kind: 'missing', message: `${root} must contain package.yml` };
 }
 
 async function loadDevConfig(path) {

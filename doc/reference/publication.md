@@ -89,7 +89,8 @@ Package 是 Publication 的本地链接形态：
 
 Service 是 Publication 的远程运行形态：
 
-- 由 `service.yml` 声明。
+- source root 仍由 `package.yml` 声明；`service.yml` 在同一个 Package 根上附加 service role。
+- 只有 `service.yml`、没有 `package.yml` 的目录不是独立 service source root。
 - 在 Publication core 之外叠加 service runtime spec。
 - 发布与 package 相同的 `PublicationAbiUnit`。
 - 在 `ServiceUnit.operations` 中保存 `operation_abi_id` 到 service-local target 的 runtime table。

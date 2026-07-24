@@ -93,6 +93,70 @@ test('skiff test selects the canonical binary once for absolute and relative roo
   }
 });
 
+test('skiff test treats package.yml as the root and service.yml as an optional role', async () => {
+  for (const withServiceRole of [false, true]) {
+    const fixture = await fakeCargoFixture();
+    try {
+      const packageRoot = join(fixture.root, withServiceRole ? 'service-package' : 'package');
+      const artifactRoot = join(fixture.root, 'artifacts');
+      await mkdir(packageRoot);
+      await mkdir(artifactRoot);
+      await writeFile(
+        join(packageRoot, 'package.yml'),
+        'id: example.com/root-detection\nversion: 1.0.0\n',
+      );
+      if (withServiceRole) {
+        await writeFile(join(packageRoot, 'service.yml'), 'id: example.com/root-detection\n');
+      }
+
+      const result = await runProcess(process.execPath, [
+        skiffPath, 'test', packageRoot, '--artifact-root', artifactRoot,
+        '--live',
+        '--activation-url', 'http://router.test:4101/__skiff/activate-assembly',
+        '--ingress-url', 'http://router.test:4100',
+        '--environment', 'root-detection',
+        '--expected-generation', '0',
+      ], { env: fixture.env });
+
+      assert.equal(result.code, 0, result.stderr);
+      const args = JSON.parse(await readFile(fixture.marker, 'utf8'));
+      assert.equal(args[args.indexOf('--') + 1], packageRoot);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('skiff test rejects service-only and manifest-less directories before Cargo', async () => {
+  for (const manifest of ['service.yml', undefined]) {
+    const fixture = await fakeCargoFixture();
+    try {
+      const sourceRoot = join(fixture.root, manifest ? 'legacy-service' : 'missing-manifest');
+      const artifactRoot = join(fixture.root, 'artifacts');
+      await mkdir(sourceRoot);
+      await mkdir(artifactRoot);
+      if (manifest) {
+        await writeFile(join(sourceRoot, manifest), 'id: example.com/legacy-service\n');
+      }
+
+      const result = await runProcess(process.execPath, [
+        skiffPath, 'test', sourceRoot, '--artifact-root', artifactRoot,
+      ], { env: fixture.env });
+
+      assert.notEqual(result.code, 0);
+      assert.match(
+        result.stderr,
+        manifest
+          ? /service\.yml adds a service role to a Package and cannot define a source root/
+          : /must contain package\.yml/,
+      );
+      await assert.rejects(access(fixture.marker), { code: 'ENOENT' });
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
 test('non-live skiff test rejects caller-owned live targets before Cargo', async () => {
   const fixture = await fakeCargoFixture();
   try {
