@@ -3,6 +3,9 @@
 use std::{collections::HashMap, sync::Arc};
 
 pub mod actor_executor;
+#[cfg(test)]
+#[path = "assembly_execution/ordinary/test_runtime.rs"]
+pub(crate) mod actor_executor_test_runtime;
 pub mod actor_instance;
 mod assembly_execution;
 mod assembly_seam;
