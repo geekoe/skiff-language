@@ -5,7 +5,6 @@ use skiff_artifact_model::{
     DeploymentOperationBinding, PackageArtifact, PackageCallableId, PackageLocalAbiSymbol,
     ServiceContract, ServiceDeploymentInput,
 };
-use skiff_compiler_contract::canonicalize_service_owned_operation_contract;
 
 use super::eligibility;
 use super::{ProjectionError, ProjectionResult};
@@ -85,17 +84,7 @@ pub(super) fn project_operation_bindings<'a>(
             }
         };
         let descriptor = &contract.operations[&binding.contract_operation_id];
-        let canonical_operation_contract = canonicalize_service_owned_operation_contract(
-            &contract.service_id,
-            &implementation.package_version,
-            operation_contract,
-        )
-        .map_err(|error| ProjectionError::OperationContractCanonicalization {
-            operation_id: binding.contract_operation_id.clone(),
-            callable_id: callable_id.clone(),
-            message: error.to_string(),
-        })?;
-        if canonical_operation_contract != descriptor.contract {
+        if operation_contract != &descriptor.contract {
             return Err(ProjectionError::OperationContractMismatch {
                 operation_id: binding.contract_operation_id.clone(),
                 callable_id: callable_id.clone(),

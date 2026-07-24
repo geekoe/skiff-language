@@ -2341,7 +2341,6 @@ dependencies = [
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-canonical-json",
- "skiff-compiler-contract",
  "thiserror",
 ]
 

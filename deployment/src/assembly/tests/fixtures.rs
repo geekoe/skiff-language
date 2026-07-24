@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::{
     assign_package_artifact_identities, assign_service_contract_identities,
-    assign_service_deployment_identity, contract_operation_id, service_deployment_ref,
+    assign_service_deployment_identity, contract_operation_id, package_schema_index_identity,
+    service_deployment_ref,
 };
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
@@ -13,9 +14,9 @@ use skiff_artifact_model::{
     DeploymentOperationBinding, DeploymentRevision, IngressProtocol, IngressSelector,
     PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId,
     PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageRequirement,
-    PackageRequirementKey, PackageRuntimeRequirements, ServiceCallRef, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity,
-    ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
+    PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndexRef, ServiceCallRef,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
     PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
@@ -62,7 +63,7 @@ pub fn contract_with_stable_key(service_id: &str, stable_key: &str) -> ServiceCo
         contract_version: version.to_string(),
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations: BTreeMap::from([(operation_id, descriptor)]),
-        boundary_schema: BTreeMap::new(),
+        package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: service_id.to_string(),
             operations: BTreeMap::new(),
@@ -137,6 +138,15 @@ pub fn package(
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: package_id.to_string(),
+            package_schema_index_identity: package_schema_index_identity(
+                package_id,
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+        },
+        package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
         package_requirements,

@@ -727,15 +727,15 @@ mod package_schema_tests {
     #[test]
     fn schema_reads_reject_wrong_path_owner_stable_key_and_descriptor_hash() {
         let test = TestStore::new();
-        let record = record("example.com/shared", "User");
+        let user_record = record("example.com/shared", "User");
         let path = test
             .store
-            .write_package_schema_type_record(&record)
+            .write_package_schema_type_record(&user_record)
             .unwrap();
 
         let wrong_owner = PackageSchemaTypeRecord {
             package_id: "example.com/other".to_string(),
-            ..record.clone()
+            ..user_record.clone()
         };
         assert!(test
             .store
@@ -752,15 +752,15 @@ mod package_schema_tests {
             .read_package_schema_type_record(&record_ref(&other))
             .is_err());
 
-        let mut tampered = record.clone();
+        let mut tampered = user_record.clone();
         tampered.stable_schema_key = "Tampered".to_string();
         fs::write(&path, canonical_bytes(&tampered).unwrap()).unwrap();
         assert!(test
             .store
-            .read_package_schema_type_record(&record_ref(&record))
+            .read_package_schema_type_record(&record_ref(&user_record))
             .is_err());
 
-        tampered.stable_schema_key = record.stable_schema_key.clone();
+        tampered.stable_schema_key = user_record.stable_schema_key.clone();
         tampered.canonical_descriptor = PackageSchemaCanonicalDescriptor {
             type_params: Vec::new(),
             descriptor: ContractTypeDescriptor::Enumeration {
@@ -770,7 +770,7 @@ mod package_schema_tests {
         fs::write(&path, canonical_bytes(&tampered).unwrap()).unwrap();
         assert!(test
             .store
-            .read_package_schema_type_record(&record_ref(&record))
+            .read_package_schema_type_record(&record_ref(&user_record))
             .is_err());
     }
 
@@ -804,24 +804,26 @@ mod package_schema_tests {
     #[test]
     fn package_artifact_schema_resolution_fails_closed_on_missing_or_mismatched_refs() {
         let test = TestStore::new();
-        let record = record("example.com/shared", "User");
-        let index = index(&record);
-        let reference = record_ref(&record);
-        let valid_refs =
-            BTreeMap::from([(record.package_schema_type_id.clone(), reference.clone())]);
-        let artifact = artifact("1.0.0", &index, valid_refs.clone());
+        let user_record = record("example.com/shared", "User");
+        let index = index(&user_record);
+        let reference = record_ref(&user_record);
+        let valid_refs = BTreeMap::from([(
+            user_record.package_schema_type_id.clone(),
+            reference.clone(),
+        )]);
+        let package_artifact = artifact("1.0.0", &index, valid_refs.clone());
 
         assert!(test
             .store
-            .resolve_package_artifact_schema(&artifact)
+            .resolve_package_artifact_schema(&package_artifact)
             .is_err());
         test.store.write_package_schema_index(&index).unwrap();
         assert!(test
             .store
-            .resolve_package_artifact_schema(&artifact)
+            .resolve_package_artifact_schema(&package_artifact)
             .is_err());
         test.store
-            .write_package_schema_type_record(&record)
+            .write_package_schema_type_record(&user_record)
             .unwrap();
 
         let missing_ref = artifact("1.0.1", &index, BTreeMap::new());
@@ -845,17 +847,9 @@ mod package_schema_tests {
         mismatched_index.package_schema_index_identity =
             package_schema_index_identity(&mismatched_index.package_id, &mismatched_index.types)
                 .unwrap();
-        test.store
-            .write_package_schema_index(&mismatched_index)
-            .unwrap();
-        let mismatched = artifact(
-            "1.0.3",
-            &mismatched_index,
-            BTreeMap::from([(record.package_schema_type_id.clone(), reference)]),
-        );
         assert!(test
             .store
-            .resolve_package_artifact_schema(&mismatched)
+            .write_package_schema_index(&mismatched_index)
             .is_err());
     }
 }

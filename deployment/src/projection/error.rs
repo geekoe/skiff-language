@@ -1,5 +1,6 @@
 use skiff_artifact_model::{
     BoundaryUnavailableReason, ContractOperationId, PackageBuildId, PackageCallableId,
+    PackageSchemaTypeId,
 };
 use thiserror::Error;
 
@@ -49,13 +50,16 @@ pub enum ProjectionError {
         callable_id: PackageCallableId,
         reasons: Vec<BoundaryUnavailableReason>,
     },
-    #[error(
-        "callable {callable_id} boundary contract for operation {operation_id} cannot be canonicalized: {message}"
-    )]
-    OperationContractCanonicalization {
-        operation_id: ContractOperationId,
-        callable_id: PackageCallableId,
-        message: String,
+    #[error("package schema record closure mismatch: missing {missing:?}, extra {extra:?}")]
+    PackageSchemaClosureMismatch {
+        missing: Vec<PackageSchemaTypeId>,
+        extra: Vec<PackageSchemaTypeId>,
+    },
+    #[error("package schema type {type_id} owner mismatch: expected {expected}, got {actual}")]
+    PackageSchemaOwnerMismatch {
+        type_id: PackageSchemaTypeId,
+        expected: String,
+        actual: String,
     },
     #[error(
         "callable {callable_id} boundary contract does not match operation {operation_id} descriptor"

@@ -13,5 +13,4 @@ sha2 = "0.10"
 skiff-artifact-identity = { path = "../artifact-identity" }
 skiff-artifact-model = { path = "../artifact-model" }
 skiff-canonical-json = { path = "../canonical-json" }
-skiff-compiler-contract = { path = "../compiler/contract" }
 thiserror = "2.0"

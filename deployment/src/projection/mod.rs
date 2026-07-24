@@ -9,9 +9,12 @@ mod operations;
 mod package_closure;
 mod requirements;
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use skiff_artifact_model::{
     websocket_ingress_context, DeploymentArtifactIdentity, IngressProtocol, PackageArtifact,
-    ServiceContract, ServiceDeployment, ServiceDeploymentInput, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, ServiceContract, ServiceDeployment,
+    ServiceDeploymentInput, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 pub use error::{ProjectionError, ProjectionResult};
@@ -21,9 +24,11 @@ pub fn project_service_deployment(
     input: ServiceDeploymentInput,
     contract: &ServiceContract,
     package_artifacts: &[PackageArtifact],
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 ) -> ProjectionResult<ServiceDeployment> {
     validate_contract_ref(&input, contract)?;
-    validate_ingress_contracts(&input, contract)?;
+    validate_package_schema_records(contract, package_schema_records)?;
+    validate_ingress_contracts(&input, contract, package_schema_records)?;
     let closure = package_closure::PackageClosure::resolve(&input, package_artifacts)?;
     let operations =
         operations::project_operation_bindings(&input, contract, closure.implementation(&input))?;
@@ -62,15 +67,57 @@ pub fn project_service_deployment(
 fn validate_ingress_contracts(
     input: &ServiceDeploymentInput,
     contract: &ServiceContract,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 ) -> ProjectionResult<()> {
     for binding in &input.ingress {
         if matches!(binding.selector.protocol, IngressProtocol::WebSocket) {
-            websocket_ingress_context(contract, &binding.contract_operation_id).map_err(
-                |error| ProjectionError::InvalidWebSocketIngressContract {
-                    operation_id: binding.contract_operation_id.clone(),
-                    message: error.to_string(),
-                },
-            )?;
+            websocket_ingress_context(
+                contract,
+                &binding.contract_operation_id,
+                package_schema_records,
+            )
+            .map_err(|error| ProjectionError::InvalidWebSocketIngressContract {
+                operation_id: binding.contract_operation_id.clone(),
+                message: error.to_string(),
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_package_schema_records(
+    contract: &ServiceContract,
+    records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+) -> ProjectionResult<()> {
+    skiff_artifact_identity::validate_package_schema_records(records).map_err(
+        |identity_error| ProjectionError::InvalidTypedArtifact {
+            artifact: "PackageSchemaTypeRecord closure",
+            identity_error,
+        },
+    )?;
+
+    let mut required = BTreeMap::new();
+    for requirement in &contract.package_type_requirements {
+        for type_id in &requirement.required_type_ids {
+            required.insert(type_id.clone(), requirement.package_id.as_str());
+        }
+    }
+    let actual = records.keys().cloned().collect::<BTreeSet<_>>();
+    let expected = required.keys().cloned().collect::<BTreeSet<_>>();
+    if actual != expected {
+        return Err(ProjectionError::PackageSchemaClosureMismatch {
+            missing: expected.difference(&actual).cloned().collect(),
+            extra: actual.difference(&expected).cloned().collect(),
+        });
+    }
+    for (type_id, record) in records {
+        let expected_owner = required[type_id];
+        if record.package_id != expected_owner {
+            return Err(ProjectionError::PackageSchemaOwnerMismatch {
+                type_id: type_id.clone(),
+                expected: expected_owner.to_string(),
+                actual: record.package_id.clone(),
+            });
         }
     }
     Ok(())

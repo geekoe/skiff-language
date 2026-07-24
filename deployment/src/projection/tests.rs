@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::{
     assign_package_artifact_identities, assign_service_contract_identities, contract_operation_id,
-    contract_type_id,
+    package_schema_index_identity, package_schema_type_id,
 };
 use skiff_artifact_model::*;
 
@@ -15,16 +15,30 @@ struct ProjectionFixture {
     contract: ServiceContract,
     implementation: PackageArtifact,
     callable_id: PackageCallableId,
+    package_schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 }
 
 impl ProjectionFixture {
     fn new() -> Self {
         let service_id = "example.echo";
         let contract_version = "1.0.0";
-        let payload_id = contract_type_id(service_id, contract_version, "payload").unwrap();
+        let package_id = "example.provider";
+        let payload_descriptor = PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([(
+                    "message".to_string(),
+                    ContractTypeRef::builtin("string"),
+                )]),
+            },
+        };
+        let payload_id =
+            package_schema_type_id(package_id, "payload", &payload_descriptor).unwrap();
+        let payload_ref =
+            ContractTypeRef::package_schema(package_id, "payload", payload_id.clone());
         let echo_id = contract_operation_id(service_id, contract_version, "echo").unwrap();
         let repeat_id = contract_operation_id(service_id, contract_version, "repeat").unwrap();
-        let operation_contract = operation_contract(payload_id.clone());
+        let operation_contract = operation_contract(payload_ref.clone());
         let mut contract = ServiceContract {
             schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
             service_id: service_id.to_string(),
@@ -48,23 +62,10 @@ impl ProjectionFixture {
                     },
                 ),
             ]),
-            boundary_schema: BTreeMap::from([(
-                payload_id.clone(),
-                ContractSchemaType {
-                    contract_type_id: payload_id.clone(),
-                    stable_key: "payload".to_string(),
-                    shape: ContractTypeShape {
-                        nameability: ContractTypeNameability::PublicNameable,
-                        type_params: Vec::new(),
-                        descriptor: ContractTypeDescriptor::Record {
-                            fields: BTreeMap::from([(
-                                "message".to_string(),
-                                ContractTypeRef::builtin("string"),
-                            )]),
-                        },
-                    },
-                },
-            )]),
+            package_type_requirements: vec![PackageTypeRequirement {
+                package_id: package_id.to_string(),
+                required_type_ids: vec![payload_id.clone()],
+            }],
             diagnostic_text: ContractDiagnosticText {
                 service: "Echo".to_string(),
                 operations: BTreeMap::new(),
@@ -105,7 +106,7 @@ impl ProjectionFixture {
         };
         let mut implementation = PackageArtifact {
             schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
-            package_id: "example.provider".to_string(),
+            package_id: package_id.to_string(),
             package_version: "2.0.0".to_string(),
             package_build_id: PackageBuildId::new("unassigned"),
             files: vec![file],
@@ -119,12 +120,16 @@ impl ProjectionFixture {
                         signature: PackageCallableSignature {
                             parameters: vec![PackageCallableParameter {
                                 name: "input".to_string(),
-                                ty: PackageTypeRef::Contract {
-                                    contract_type_id: payload_id.clone(),
+                                ty: PackageTypeRef::PackageSchema {
+                                    package_id: package_id.to_string(),
+                                    stable_schema_key: "payload".to_string(),
+                                    package_schema_type_id: payload_id.clone(),
                                 },
                             }],
-                            return_type: PackageTypeRef::Contract {
-                                contract_type_id: payload_id,
+                            return_type: PackageTypeRef::PackageSchema {
+                                package_id: package_id.to_string(),
+                                stable_schema_key: "payload".to_string(),
+                                package_schema_type_id: payload_id.clone(),
                             },
                             throw_types: Vec::new(),
                             may_suspend: true,
@@ -132,6 +137,28 @@ impl ProjectionFixture {
                     },
                 )]),
             },
+            package_schema_index: PackageSchemaIndexRef {
+                package_id: package_id.to_string(),
+                package_schema_index_identity: package_schema_index_identity(
+                    package_id,
+                    &BTreeMap::from([(
+                        "payload".to_string(),
+                        PackageSchemaIndexEntry {
+                            package_schema_type_id: payload_id.clone(),
+                            public_path: Some("payload".to_string()),
+                            nameability: ContractTypeNameability::PublicNameable,
+                        },
+                    )]),
+                )
+                .unwrap(),
+            },
+            package_schema_type_records: BTreeMap::from([(
+                payload_id.clone(),
+                PackageSchemaTypeRecordRef {
+                    package_id: package_id.to_string(),
+                    package_schema_type_id: payload_id.clone(),
+                },
+            )]),
             implementation_links: PackageImplementationLinks::default(),
             callable_links: BTreeMap::from([(
                 callable_id.clone(),
@@ -225,11 +252,21 @@ impl ProjectionFixture {
                 notes: BTreeMap::new(),
             },
         };
+        let package_schema_records = BTreeMap::from([(
+            payload_id.clone(),
+            PackageSchemaTypeRecord {
+                package_id: package_id.to_string(),
+                stable_schema_key: "payload".to_string(),
+                package_schema_type_id: payload_id,
+                canonical_descriptor: payload_descriptor,
+            },
+        )]);
         Self {
             input,
             contract,
             implementation,
             callable_id,
+            package_schema_records,
         }
     }
 
@@ -238,6 +275,7 @@ impl ProjectionFixture {
             self.input.clone(),
             &self.contract,
             std::slice::from_ref(&self.implementation),
+            &self.package_schema_records,
         )
     }
 
@@ -285,22 +323,30 @@ fn websocket_ingress_contract_validation_accepts_only_the_unified_abi() {
         contract_operation_id: operation_id.clone(),
     }];
     assert!(matches!(
-        validate_ingress_contracts(&fixture.input, &fixture.contract),
+        validate_ingress_contracts(
+            &fixture.input,
+            &fixture.contract,
+            &fixture.package_schema_records
+        ),
         Err(ProjectionError::InvalidWebSocketIngressContract { .. })
     ));
 
     let context = fixture
-        .contract
-        .boundary_schema
+        .package_schema_records
         .keys()
         .next()
         .expect("fixture context type")
         .clone();
+    let context_ref = package_context_ref(&fixture, &context);
     let descriptor = fixture.contract.operations.get_mut(&operation_id).unwrap();
     descriptor.stable_key = "websocket".to_string();
-    descriptor.contract = websocket_ingress_operation(ContractTypeRef::contract(context));
-    validate_ingress_contracts(&fixture.input, &fixture.contract)
-        .expect("exact unified WebSocket ABI should pass deployment projection validation");
+    descriptor.contract = websocket_ingress_operation(context_ref);
+    validate_ingress_contracts(
+        &fixture.input,
+        &fixture.contract,
+        &fixture.package_schema_records,
+    )
+    .expect("exact unified WebSocket ABI should pass deployment projection validation");
 
     let baseline = fixture.contract.operations[&operation_id].contract.clone();
     let mut invalid = baseline.clone();
@@ -311,7 +357,12 @@ fn websocket_ingress_contract_validation_accepts_only_the_unified_abi() {
         .get_mut(&operation_id)
         .unwrap()
         .contract = invalid;
-    assert!(validate_ingress_contracts(&fixture.input, &fixture.contract).is_err());
+    assert!(validate_ingress_contracts(
+        &fixture.input,
+        &fixture.contract,
+        &fixture.package_schema_records
+    )
+    .is_err());
 
     let mut invalid = baseline.clone();
     invalid.may_suspend = true;
@@ -321,7 +372,12 @@ fn websocket_ingress_contract_validation_accepts_only_the_unified_abi() {
         .get_mut(&operation_id)
         .unwrap()
         .contract = invalid;
-    assert!(validate_ingress_contracts(&fixture.input, &fixture.contract).is_err());
+    assert!(validate_ingress_contracts(
+        &fixture.input,
+        &fixture.contract,
+        &fixture.package_schema_records
+    )
+    .is_err());
 
     let mut invalid = baseline.clone();
     invalid.parameters.push(invalid.parameters[0].clone());
@@ -331,7 +387,12 @@ fn websocket_ingress_contract_validation_accepts_only_the_unified_abi() {
         .get_mut(&operation_id)
         .unwrap()
         .contract = invalid;
-    assert!(validate_ingress_contracts(&fixture.input, &fixture.contract).is_err());
+    assert!(validate_ingress_contracts(
+        &fixture.input,
+        &fixture.contract,
+        &fixture.package_schema_records
+    )
+    .is_err());
 
     let mut invalid = baseline.clone();
     invalid.errors = BoundaryErrorContract::Typed {
@@ -344,7 +405,12 @@ fn websocket_ingress_contract_validation_accepts_only_the_unified_abi() {
         .get_mut(&operation_id)
         .unwrap()
         .contract = invalid;
-    assert!(validate_ingress_contracts(&fixture.input, &fixture.contract).is_err());
+    assert!(validate_ingress_contracts(
+        &fixture.input,
+        &fixture.contract,
+        &fixture.package_schema_records
+    )
+    .is_err());
 
     let mut invalid = baseline.clone();
     invalid.parameters[0].ty = ContractTypeRef::Builtin {
@@ -357,7 +423,12 @@ fn websocket_ingress_contract_validation_accepts_only_the_unified_abi() {
         .get_mut(&operation_id)
         .unwrap()
         .contract = invalid;
-    assert!(validate_ingress_contracts(&fixture.input, &fixture.contract).is_err());
+    assert!(validate_ingress_contracts(
+        &fixture.input,
+        &fixture.contract,
+        &fixture.package_schema_records
+    )
+    .is_err());
 
     let mut invalid = baseline.clone();
     invalid.return_value.ty = ContractTypeRef::builtin("null");
@@ -367,7 +438,12 @@ fn websocket_ingress_contract_validation_accepts_only_the_unified_abi() {
         .get_mut(&operation_id)
         .unwrap()
         .contract = invalid;
-    assert!(validate_ingress_contracts(&fixture.input, &fixture.contract).is_err());
+    assert!(validate_ingress_contracts(
+        &fixture.input,
+        &fixture.contract,
+        &fixture.package_schema_records
+    )
+    .is_err());
 
     let mut invalid = baseline;
     invalid.stream = BoundaryStreamContract::ServerStream {
@@ -380,7 +456,12 @@ fn websocket_ingress_contract_validation_accepts_only_the_unified_abi() {
         .get_mut(&operation_id)
         .unwrap()
         .contract = invalid;
-    assert!(validate_ingress_contracts(&fixture.input, &fixture.contract).is_err());
+    assert!(validate_ingress_contracts(
+        &fixture.input,
+        &fixture.contract,
+        &fixture.package_schema_records
+    )
+    .is_err());
 }
 
 #[test]
@@ -403,8 +484,7 @@ fn websocket_ingress_admission_rejects_non_persistable_context_graphs() {
         contract_operation_id: operation_id.clone(),
     }];
     let context_id = fixture
-        .contract
-        .boundary_schema
+        .package_schema_records
         .keys()
         .next()
         .expect("fixture context type")
@@ -412,59 +492,71 @@ fn websocket_ingress_admission_rejects_non_persistable_context_graphs() {
     let descriptor = fixture.contract.operations.get_mut(&operation_id).unwrap();
     descriptor.stable_key = WEBSOCKET_INGRESS_OPERATION_NAME.to_string();
     descriptor.contract = websocket_ingress_operation(ContractTypeRef::builtin("null"));
-    validate_ingress_contracts(&fixture.input, &fixture.contract)
-        .expect("null Context must pass deployment admission");
+    validate_ingress_contracts(
+        &fixture.input,
+        &fixture.contract,
+        &fixture.package_schema_records,
+    )
+    .expect("null Context must pass deployment admission");
 
     fixture
         .contract
         .operations
         .get_mut(&operation_id)
         .unwrap()
-        .contract = websocket_ingress_operation(ContractTypeRef::contract(context_id.clone()));
-    validate_ingress_contracts(&fixture.input, &fixture.contract)
-        .expect("persistable nominal Context must pass deployment admission");
+        .contract = websocket_ingress_operation(package_context_ref(&fixture, &context_id));
+    validate_ingress_contracts(
+        &fixture.input,
+        &fixture.contract,
+        &fixture.package_schema_records,
+    )
+    .expect("persistable nominal Context must pass deployment admission");
 
     fixture
-        .contract
-        .boundary_schema
+        .package_schema_records
         .get_mut(&context_id)
         .unwrap()
-        .shape
+        .canonical_descriptor
         .descriptor = ContractTypeDescriptor::CallbackInterface {
         operations: BTreeMap::new(),
     };
     assert_websocket_admission_error_contains(&fixture, "CallbackInterface");
 
     fixture
-        .contract
-        .boundary_schema
+        .package_schema_records
         .get_mut(&context_id)
         .unwrap()
-        .shape
+        .canonical_descriptor
         .descriptor = ContractTypeDescriptor::Record {
         fields: BTreeMap::from([(
             "self".to_string(),
-            ContractTypeRef::contract(context_id.clone()),
+            package_context_ref(&fixture, &context_id),
         )]),
     };
-    assert_websocket_admission_error_contains(&fixture, "contract schema cycle");
+    assert_websocket_admission_error_contains(&fixture, "package schema cycle");
 
-    let missing_id = ContractTypeId::new("type:foreign-or-missing");
+    let missing_id = PackageSchemaTypeId::new("type:foreign-or-missing");
     fixture
-        .contract
-        .boundary_schema
+        .package_schema_records
         .get_mut(&context_id)
         .unwrap()
-        .shape
+        .canonical_descriptor
         .descriptor = ContractTypeDescriptor::Record {
-        fields: BTreeMap::from([("foreign".to_string(), ContractTypeRef::contract(missing_id))]),
+        fields: BTreeMap::from([(
+            "foreign".to_string(),
+            ContractTypeRef::package_schema("example.provider", "missing", missing_id),
+        )]),
     };
-    assert_websocket_admission_error_contains(&fixture, "missing or foreign ContractTypeId");
+    assert_websocket_admission_error_contains(&fixture, "outside ServiceContract requirements");
 }
 
 fn assert_websocket_admission_error_contains(fixture: &ProjectionFixture, expected: &str) {
-    let error = validate_ingress_contracts(&fixture.input, &fixture.contract)
-        .expect_err("invalid WebSocket Context must fail deployment admission");
+    let error = validate_ingress_contracts(
+        &fixture.input,
+        &fixture.contract,
+        &fixture.package_schema_records,
+    )
+    .expect_err("invalid WebSocket Context must fail deployment admission");
     let ProjectionError::InvalidWebSocketIngressContract { message, .. } = error else {
         panic!("expected WebSocket ingress admission error, got {error:?}")
     };
@@ -472,6 +564,18 @@ fn assert_websocket_admission_error_contains(fixture: &ProjectionFixture, expect
         message.contains(expected),
         "expected `{expected}` in `{message}`"
     );
+}
+
+fn package_context_ref(
+    fixture: &ProjectionFixture,
+    type_id: &PackageSchemaTypeId,
+) -> ContractTypeRef {
+    let record = &fixture.package_schema_records[type_id];
+    ContractTypeRef::package_schema(
+        record.package_id.clone(),
+        record.stable_schema_key.clone(),
+        type_id.clone(),
+    )
 }
 
 #[test]
@@ -545,52 +649,39 @@ fn unavailable_callable_and_nominal_descriptor_mismatch_fail_closed() {
 }
 
 #[test]
-fn generated_contract_accepts_its_package_owned_operation_and_rejects_other_nominals() {
-    let mut fixture = ProjectionFixture::new();
-    let BoundaryCallableProjection::Available {
-        operation_contract, ..
-    } = fixture
-        .implementation
-        .boundary_projections
-        .get_mut(&fixture.callable_id)
-        .unwrap()
-    else {
-        unreachable!()
-    };
-    operation_contract.parameters[0].ty = ContractTypeRef::PackagePublic {
-        local_type_id: "type:payload".to_string(),
-    };
-    operation_contract.return_value.ty = ContractTypeRef::PackagePublic {
-        local_type_id: "type:payload".to_string(),
-    };
-    fixture.refresh_implementation_ref();
-    fixture
+fn package_owned_operation_requires_exact_owner_key_and_type_id() {
+    ProjectionFixture::new()
         .project()
-        .expect("the generated service contract must accept its package-owned operation");
+        .expect("the exact Package-owned operation must pass");
 
-    for (replacement, add_public_type) in [
-        ("type:anotherPublicType", true),
-        ("type:missingOrPrivateType", false),
+    for replacement in [
+        ContractTypeRef::package_schema(
+            "example.foreign",
+            "payload",
+            ProjectionFixture::new()
+                .package_schema_records
+                .keys()
+                .next()
+                .unwrap()
+                .clone(),
+        ),
+        ContractTypeRef::package_schema(
+            "example.provider",
+            "other",
+            ProjectionFixture::new()
+                .package_schema_records
+                .keys()
+                .next()
+                .unwrap()
+                .clone(),
+        ),
+        ContractTypeRef::package_schema(
+            "example.provider",
+            "payload",
+            PackageSchemaTypeId::new("package-schema-type:wrong"),
+        ),
     ] {
         let mut fixture = ProjectionFixture::new();
-        if add_public_type {
-            fixture
-                .implementation
-                .package_local_abi
-                .public_symbols
-                .insert(
-                    "anotherPublicType".to_string(),
-                    PackageLocalAbiSymbol::Type {
-                        local_type_id: replacement.to_string(),
-                        descriptor: TypeDescriptorIr::Record {
-                            fields: BTreeMap::new(),
-                        },
-                        is_interface: false,
-                        type_params: Vec::new(),
-                        interface_methods: Vec::new(),
-                    },
-                );
-        }
         let BoundaryCallableProjection::Available {
             operation_contract, ..
         } = fixture
@@ -601,15 +692,76 @@ fn generated_contract_accepts_its_package_owned_operation_and_rejects_other_nomi
         else {
             unreachable!()
         };
-        operation_contract.parameters[0].ty = ContractTypeRef::PackagePublic {
-            local_type_id: replacement.to_string(),
-        };
+        operation_contract.parameters[0].ty = replacement;
         fixture.refresh_implementation_ref();
         assert!(matches!(
             fixture.project(),
             Err(ProjectionError::OperationContractMismatch { .. })
         ));
     }
+}
+
+#[test]
+fn deployment_requires_the_exact_validated_package_schema_closure() {
+    let mut missing = ProjectionFixture::new();
+    missing.package_schema_records.clear();
+    assert!(matches!(
+        missing.project(),
+        Err(ProjectionError::PackageSchemaClosureMismatch { .. })
+    ));
+
+    let mut extra = ProjectionFixture::new();
+    let descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Enumeration {
+            variants: vec!["extra".to_string()],
+        },
+    };
+    let extra_id =
+        package_schema_type_id("example.provider", "extra", &descriptor).expect("extra type id");
+    extra.package_schema_records.insert(
+        extra_id.clone(),
+        PackageSchemaTypeRecord {
+            package_id: "example.provider".to_string(),
+            stable_schema_key: "extra".to_string(),
+            package_schema_type_id: extra_id,
+            canonical_descriptor: descriptor,
+        },
+    );
+    assert!(matches!(
+        extra.project(),
+        Err(ProjectionError::PackageSchemaClosureMismatch { .. })
+    ));
+
+    let mut foreign_owner = ProjectionFixture::new();
+    foreign_owner
+        .package_schema_records
+        .values_mut()
+        .next()
+        .unwrap()
+        .package_id = "example.foreign".to_string();
+    assert!(matches!(
+        foreign_owner.project(),
+        Err(ProjectionError::InvalidTypedArtifact {
+            artifact: "PackageSchemaTypeRecord closure",
+            ..
+        })
+    ));
+
+    let mut bad_hash = ProjectionFixture::new();
+    bad_hash
+        .package_schema_records
+        .values_mut()
+        .next()
+        .unwrap()
+        .stable_schema_key = "tampered".to_string();
+    assert!(matches!(
+        bad_hash.project(),
+        Err(ProjectionError::InvalidTypedArtifact {
+            artifact: "PackageSchemaTypeRecord closure",
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -753,6 +905,7 @@ fn exact_package_closure_is_required_and_binding_changes_identity() {
             fixture.input.clone(),
             &fixture.contract,
             std::slice::from_ref(&fixture.implementation),
+            &fixture.package_schema_records,
         ),
         Err(ProjectionError::MissingRequirementBinding {
             kind: "package artifact",
@@ -764,6 +917,7 @@ fn exact_package_closure_is_required_and_binding_changes_identity() {
         fixture.input.clone(),
         &fixture.contract,
         &[fixture.implementation.clone(), dependency_a],
+        &fixture.package_schema_records,
     )
     .unwrap();
     let dependency_b = dependency_artifact("resource-b");
@@ -772,6 +926,7 @@ fn exact_package_closure_is_required_and_binding_changes_identity() {
         fixture.input,
         &fixture.contract,
         &[fixture.implementation, dependency_b],
+        &fixture.package_schema_records,
     )
     .unwrap();
     assert_ne!(
@@ -832,6 +987,7 @@ fn transitive_requirement_cannot_fill_an_invalid_callable_projection() {
             fixture.input,
             &fixture.contract,
             &[fixture.implementation, dependency],
+            &fixture.package_schema_records,
         ),
         Err(ProjectionError::CallableFactsMismatch { .. })
     ));
@@ -855,6 +1011,15 @@ fn dependency_artifact(resource_hash: &str) -> PackageArtifact {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: "example.util".to_string(),
+            package_schema_index_identity: package_schema_index_identity(
+                "example.util",
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+        },
+        package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
         package_requirements: Vec::new(),
@@ -925,15 +1090,15 @@ fn websocket_ingress_operation(context: ContractTypeRef) -> BoundaryOperationCon
     }
 }
 
-fn operation_contract(payload_id: ContractTypeId) -> BoundaryOperationContract {
+fn operation_contract(payload_type: ContractTypeRef) -> BoundaryOperationContract {
     BoundaryOperationContract {
         parameters: vec![BoundaryParameter {
             name: "input".to_string(),
-            ty: ContractTypeRef::contract(payload_id.clone()),
+            ty: payload_type.clone(),
             value_plan: linkable_plan(BoundaryValueOwner::Caller),
         }],
         return_value: BoundaryReturn {
-            ty: ContractTypeRef::contract(payload_id),
+            ty: payload_type,
             value_plan: linkable_plan(BoundaryValueOwner::Provider),
         },
         errors: BoundaryErrorContract::None,

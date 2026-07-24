@@ -9,8 +9,8 @@ use serde_json::json;
 use skiff_artifact_identity::{
     assign_file_ir_identity, assign_package_artifact_identities,
     assign_service_contract_identities, contract_operation_id, package_artifact_ref,
-    runtime_assembly_ref, service_contract_ref, service_deployment_ref,
-    EnvironmentActivationStatePath, PackageArtifactRecordPath,
+    package_schema_index_identity, runtime_assembly_ref, service_contract_ref,
+    service_deployment_ref, EnvironmentActivationStatePath, PackageArtifactRecordPath,
 };
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
@@ -18,8 +18,8 @@ use skiff_artifact_model::{
     BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
     BoundaryValueOwner, BoundaryValuePlan, ContractDiagnosticText, FileIrRef, FileIrUnit,
     PackageArtifact, PackageBuildId, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageRuntimeRequirements, ServiceContract, ServiceProtocolIdentity,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexRef, ServiceContract,
+    ServiceProtocolIdentity, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -71,6 +71,15 @@ fn package_fixture() -> PackageArtifact {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: "example.com/checkpoint".to_string(),
+            package_schema_index_identity: package_schema_index_identity(
+                "example.com/checkpoint",
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+        },
+        package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
         package_requirements: Vec::new(),
@@ -128,7 +137,7 @@ fn contract_fixture() -> ServiceContract {
         contract_version: version.to_string(),
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations: BTreeMap::from([(operation_id.clone(), descriptor)]),
-        boundary_schema: BTreeMap::new(),
+        package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: "Checkpoint".to_string(),
             operations: BTreeMap::from([(operation_id, "Health".to_string())]),
@@ -227,9 +236,25 @@ fn activation_storage_coordinate_collision_pair_has_independent_records_and_cas(
     let (_temp, store) = test_store();
     let mut slash = package_fixture();
     slash.package_id = "a.b/c/d".to_string();
+    slash.package_schema_index = PackageSchemaIndexRef {
+        package_id: slash.package_id.clone(),
+        package_schema_index_identity: package_schema_index_identity(
+            &slash.package_id,
+            &BTreeMap::new(),
+        )
+        .unwrap(),
+    };
     assign_package_artifact_identities(&mut slash).unwrap();
     let mut adjacent_dots = package_fixture();
     adjacent_dots.package_id = "a.b/c..d".to_string();
+    adjacent_dots.package_schema_index = PackageSchemaIndexRef {
+        package_id: adjacent_dots.package_id.clone(),
+        package_schema_index_identity: package_schema_index_identity(
+            &adjacent_dots.package_id,
+            &BTreeMap::new(),
+        )
+        .unwrap(),
+    };
     assign_package_artifact_identities(&mut adjacent_dots).unwrap();
 
     let slash_path = store.write_package_artifact(&slash).unwrap();
