@@ -122,6 +122,47 @@ fn synchronized_unsafe_effect_mutations_cannot_forge_available() {
 }
 
 #[test]
+fn canonical_return_materializes_only_a_fresh_wrapper_around_a_caller_value() {
+    let mut fixture = ProjectionFixture::new();
+    let mut effects = no_effects();
+    effects.returns_caller_alias = true;
+    fixture.synchronize_effects(effects);
+    fixture.synchronize_provenance(CallableProvenanceSummary::Analyzed {
+        return_origins: vec![
+            ValueProvenance::Fresh,
+            ValueProvenance::CallerParameter { index: 0 },
+        ],
+        throw_origins: Vec::new(),
+        escape_lanes: Vec::new(),
+    });
+    fixture.refresh_implementation_ref();
+    fixture
+        .project()
+        .expect("canonical encoding detaches the fresh return wrapper");
+
+    let mut escaping = ProjectionFixture::new();
+    let mut effects = no_effects();
+    effects.returns_caller_alias = true;
+    effects.escapes_caller_value = true;
+    escaping.synchronize_effects(effects);
+    escaping.synchronize_provenance(CallableProvenanceSummary::Analyzed {
+        return_origins: vec![
+            ValueProvenance::Fresh,
+            ValueProvenance::CallerParameter { index: 0 },
+        ],
+        throw_origins: Vec::new(),
+        escape_lanes: vec![ValueEscapeLane::Capture],
+    });
+    escaping.refresh_implementation_ref();
+    assert_eligibility_reason(
+        &escaping,
+        BoundaryUnavailableReason::EscapesCallerValue {
+            lane: ValueEscapeLane::Capture,
+        },
+    );
+}
+
+#[test]
 fn unknown_typed_facts_and_targets_cannot_forge_available() {
     let mut fixture = ProjectionFixture::new();
     fixture.synchronize_provenance(CallableProvenanceSummary::Unknown {

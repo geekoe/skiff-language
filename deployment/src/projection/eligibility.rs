@@ -1,10 +1,9 @@
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryImplementationRequirements, BoundaryOperationContract,
-    BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValuePlan,
-    BoundaryValuePlanUnavailableReason, CallableEffectSummary, CallableMayEffects,
-    CallableProvenanceSummary, CallableSemanticFacts, CallableTargetFact, PackageCallableId,
-    ValueEscapeLane, ValueProvenance,
+    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryErrorContract,
+    BoundaryImplementationRequirements, BoundaryOperationContract, BoundaryStreamContract,
+    BoundaryUnavailableReason, BoundaryValuePlan, BoundaryValuePlanUnavailableReason,
+    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
+    CallableTargetFact, PackageCallableId, ValueEscapeLane, ValueProvenance,
 };
 
 use super::{ProjectionError, ProjectionResult};
@@ -19,7 +18,7 @@ pub(super) fn validate_boundary_eligibility(
 ) -> ProjectionResult<()> {
     let mut reasons = Vec::new();
     validate_effects(contract, &facts.effects, &facts.provenance, &mut reasons);
-    validate_provenance(&contract.effect_guarantee, &facts.provenance, &mut reasons);
+    validate_provenance(contract, &facts.effects, &facts.provenance, &mut reasons);
     validate_call_targets(facts, &mut reasons);
     validate_contract_features(contract, &mut reasons);
 
@@ -55,29 +54,39 @@ fn validate_effects(
         push_reason(reasons, BoundaryUnavailableReason::UnknownEffect);
         return;
     };
-    effect_reasons(&contract.effect_guarantee, *effects, provenance, reasons);
+    effect_reasons(contract, *effects, provenance, reasons);
     if effects.may_suspend != contract.may_suspend {
         push_reason(reasons, BoundaryUnavailableReason::UnknownEffect);
     }
 }
 
 fn effect_reasons(
-    guarantee: &BoundaryEffectGuarantee,
+    contract: &BoundaryOperationContract,
     effects: CallableMayEffects,
     provenance: &CallableProvenanceSummary,
     reasons: &mut Vec<BoundaryUnavailableReason>,
 ) {
+    let guarantee = &contract.effect_guarantee;
     if effects.writes_caller_reachable && guarantee.no_caller_reachable_mutation {
         push_reason(reasons, BoundaryUnavailableReason::WritesCallerReachable);
     }
-    if effects.returns_caller_alias && guarantee.detached_return {
+    if effects.returns_caller_alias
+        && guarantee.detached_return
+        && !detached_wrapped_return_is_materialized(
+            provenance,
+            effects,
+            &contract.return_value.value_plan,
+        )
+    {
         push_reason(reasons, BoundaryUnavailableReason::ReturnsCallerAlias);
     }
     if effects.throws_caller_alias && guarantee.detached_error {
         push_reason(reasons, BoundaryUnavailableReason::ThrowsCallerAlias);
     }
+    let detached_parameters = canonical_detached_parameters(contract);
     if effects.escapes_caller_value
         && guarantee.no_caller_value_escape
+        && !(detached_parameters && has_only_database_escape(provenance))
         && !matches!(
             provenance,
             CallableProvenanceSummary::Analyzed { escape_lanes, .. } if !escape_lanes.is_empty()
@@ -85,7 +94,10 @@ fn effect_reasons(
     {
         push_reason(reasons, BoundaryUnavailableReason::UnknownEffect);
     }
-    if effects.requires_same_heap_identity && guarantee.no_same_heap_identity {
+    if effects.requires_same_heap_identity
+        && guarantee.no_same_heap_identity
+        && !(detached_parameters && has_only_database_escape(provenance))
+    {
         push_reason(reasons, BoundaryUnavailableReason::RequiresSameHeapIdentity);
     }
     if effects.invokes_unknown_target {
@@ -94,10 +106,12 @@ fn effect_reasons(
 }
 
 fn validate_provenance(
-    guarantee: &BoundaryEffectGuarantee,
+    contract: &BoundaryOperationContract,
+    effects: &CallableEffectSummary,
     provenance: &CallableProvenanceSummary,
     reasons: &mut Vec<BoundaryUnavailableReason>,
 ) {
+    let guarantee = &contract.effect_guarantee;
     match provenance {
         CallableProvenanceSummary::Unknown { reason } => match reason {
             skiff_artifact_model::CallableProvenanceUnknownReason::AnalysisPending => {
@@ -119,6 +133,18 @@ fn validate_provenance(
                 && return_origins
                     .iter()
                     .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. }))
+                && (matches!(
+                    effects,
+                    CallableEffectSummary::Analyzed {
+                        effects: CallableMayEffects {
+                            returns_caller_alias: true,
+                            ..
+                        }
+                    } | CallableEffectSummary::Unknown { .. }
+                ) || !return_origins
+                    .iter()
+                    .any(|origin| matches!(origin, ValueProvenance::Fresh)))
+                && !detached_wrapped_return_origins(return_origins, escape_lanes)
             {
                 push_reason(reasons, BoundaryUnavailableReason::ReturnsCallerAlias);
             }
@@ -131,6 +157,11 @@ fn validate_provenance(
             }
             if guarantee.no_caller_value_escape {
                 for lane in escape_lanes {
+                    if matches!(lane, ValueEscapeLane::Database)
+                        && canonical_detached_parameters(contract)
+                    {
+                        continue;
+                    }
                     push_reason(
                         reasons,
                         BoundaryUnavailableReason::EscapesCallerValue { lane: *lane },
@@ -139,6 +170,79 @@ fn validate_provenance(
             }
         }
     }
+}
+
+fn canonical_detached_parameters(contract: &BoundaryOperationContract) -> bool {
+    contract.parameters.iter().all(|parameter| {
+        matches!(
+            parameter.value_plan,
+            BoundaryValuePlan::Linkable {
+                carrier: skiff_artifact_model::BoundaryValueCarrier::DetachedValueGraph,
+                encoding: skiff_artifact_model::BoundaryValueEncoding::CanonicalValue,
+                ..
+            }
+        )
+    })
+}
+
+fn has_only_database_escape(provenance: &CallableProvenanceSummary) -> bool {
+    matches!(
+        provenance,
+        CallableProvenanceSummary::Analyzed { escape_lanes, .. }
+            if !escape_lanes.is_empty()
+                && escape_lanes
+                .iter()
+                .all(|lane| matches!(lane, ValueEscapeLane::Database))
+    )
+}
+
+fn detached_wrapped_return_is_materialized(
+    provenance: &CallableProvenanceSummary,
+    effects: CallableMayEffects,
+    return_plan: &BoundaryValuePlan,
+) -> bool {
+    matches!(
+        return_plan,
+        BoundaryValuePlan::Linkable {
+            carrier: skiff_artifact_model::BoundaryValueCarrier::DetachedValueGraph,
+            encoding: skiff_artifact_model::BoundaryValueEncoding::CanonicalValue,
+            ..
+        }
+    ) && !effects.invokes_unknown_target
+        && has_no_unmaterialized_escape(provenance)
+        && matches!(
+            provenance,
+            CallableProvenanceSummary::Analyzed {
+                return_origins,
+                escape_lanes,
+                ..
+            } if detached_wrapped_return_origins(return_origins, escape_lanes)
+        )
+}
+
+fn has_no_unmaterialized_escape(provenance: &CallableProvenanceSummary) -> bool {
+    matches!(
+        provenance,
+        CallableProvenanceSummary::Analyzed { escape_lanes, .. }
+            if escape_lanes
+                .iter()
+                .all(|lane| matches!(lane, ValueEscapeLane::Database))
+    )
+}
+
+fn detached_wrapped_return_origins(
+    return_origins: &[ValueProvenance],
+    escape_lanes: &[ValueEscapeLane],
+) -> bool {
+    escape_lanes
+        .iter()
+        .all(|lane| matches!(lane, ValueEscapeLane::Database))
+        && return_origins
+            .iter()
+            .any(|origin| matches!(origin, ValueProvenance::Fresh))
+        && return_origins
+            .iter()
+            .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. }))
 }
 
 fn validate_call_targets(

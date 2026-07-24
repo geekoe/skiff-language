@@ -1,5 +1,6 @@
 use skiff_artifact_model::{
-    BoundaryUnavailableReason, CallableEffectSummary, CallableMayEffects,
+    BoundaryOperationContract, BoundaryUnavailableReason, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValuePlan, CallableEffectSummary, CallableMayEffects,
     CallableProvenanceSummary, CallableSemanticFacts, CallableTargetFact, ValueProvenance,
 };
 
@@ -7,15 +8,25 @@ use super::ordering::escape_lane_rank;
 
 pub(super) fn semantic_unavailable_reasons(
     facts: &CallableSemanticFacts,
+    operation_contract: Option<&BoundaryOperationContract>,
 ) -> Vec<BoundaryUnavailableReason> {
     let mut reasons = Vec::new();
+    let detached_wrapped_return =
+        detached_wrapped_return_is_materialized(facts, operation_contract);
+    let detached_parameters = operation_contract.is_some_and(canonical_detached_parameters);
     match &facts.effects {
         CallableEffectSummary::Unknown { .. } => {
             push_reason(&mut reasons, BoundaryUnavailableReason::AnalysisPending);
             push_reason(&mut reasons, BoundaryUnavailableReason::UnknownEffect);
         }
         CallableEffectSummary::Analyzed { effects } => {
-            effect_unavailable_reasons(*effects, &mut reasons);
+            effect_unavailable_reasons(
+                *effects,
+                detached_wrapped_return,
+                detached_parameters,
+                facts,
+                &mut reasons,
+            );
         }
     }
     match &facts.provenance {
@@ -38,6 +49,11 @@ pub(super) fn semantic_unavailable_reasons(
             if return_origins
                 .iter()
                 .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. }))
+                && (analyzed_effects(facts).is_some_and(|effects| effects.returns_caller_alias)
+                    || !return_origins
+                        .iter()
+                        .any(|origin| matches!(origin, ValueProvenance::Fresh)))
+                && !detached_wrapped_return
             {
                 push_reason(&mut reasons, BoundaryUnavailableReason::ReturnsCallerAlias);
             }
@@ -48,6 +64,11 @@ pub(super) fn semantic_unavailable_reasons(
                 push_reason(&mut reasons, BoundaryUnavailableReason::ThrowsCallerAlias);
             }
             for lane in escape_lanes {
+                if matches!(lane, skiff_artifact_model::ValueEscapeLane::Database)
+                    && detached_parameters
+                {
+                    continue;
+                }
                 push_reason(
                     &mut reasons,
                     BoundaryUnavailableReason::EscapesCallerValue { lane: *lane },
@@ -66,6 +87,7 @@ pub(super) fn semantic_unavailable_reasons(
     ) && !reasons
         .iter()
         .any(|reason| matches!(reason, BoundaryUnavailableReason::EscapesCallerValue { .. }))
+        && !(detached_parameters && has_only_materialized_database_escape(facts))
     {
         push_reason(&mut reasons, BoundaryUnavailableReason::UnknownEffect);
     }
@@ -81,23 +103,116 @@ pub(super) fn semantic_unavailable_reasons(
 
 fn effect_unavailable_reasons(
     effects: CallableMayEffects,
+    detached_wrapped_return: bool,
+    detached_parameters: bool,
+    facts: &CallableSemanticFacts,
     reasons: &mut Vec<BoundaryUnavailableReason>,
 ) {
     if effects.writes_caller_reachable {
         push_reason(reasons, BoundaryUnavailableReason::WritesCallerReachable);
     }
-    if effects.returns_caller_alias {
+    if effects.returns_caller_alias && !detached_wrapped_return {
         push_reason(reasons, BoundaryUnavailableReason::ReturnsCallerAlias);
     }
     if effects.throws_caller_alias {
         push_reason(reasons, BoundaryUnavailableReason::ThrowsCallerAlias);
     }
-    if effects.requires_same_heap_identity {
+    if effects.requires_same_heap_identity
+        && !(detached_parameters && has_only_materialized_database_escape(facts))
+    {
         push_reason(reasons, BoundaryUnavailableReason::RequiresSameHeapIdentity);
     }
     if effects.invokes_unknown_target {
         push_reason(reasons, BoundaryUnavailableReason::UnknownCallTarget);
     }
+}
+
+fn detached_wrapped_return_is_materialized(
+    facts: &CallableSemanticFacts,
+    operation_contract: Option<&BoundaryOperationContract>,
+) -> bool {
+    let Some(operation_contract) = operation_contract else {
+        return false;
+    };
+    let BoundaryValuePlan::Linkable {
+        carrier: BoundaryValueCarrier::DetachedValueGraph,
+        encoding: BoundaryValueEncoding::CanonicalValue,
+        ..
+    } = &operation_contract.return_value.value_plan
+    else {
+        return false;
+    };
+    let CallableEffectSummary::Analyzed { effects } = &facts.effects else {
+        return false;
+    };
+    if !effects.returns_caller_alias
+        || effects.invokes_unknown_target
+        || !has_no_unmaterialized_escape(facts)
+    {
+        return false;
+    }
+    matches!(
+        &facts.provenance,
+        CallableProvenanceSummary::Analyzed {
+            return_origins,
+            escape_lanes,
+            ..
+        } if escape_lanes
+                .iter()
+                .all(|lane| matches!(lane, skiff_artifact_model::ValueEscapeLane::Database))
+            && return_origins
+                .iter()
+                .any(|origin| matches!(origin, ValueProvenance::Fresh))
+            && return_origins
+                .iter()
+                .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. }))
+    )
+}
+
+fn has_no_unmaterialized_escape(facts: &CallableSemanticFacts) -> bool {
+    matches!(
+        &facts.provenance,
+        CallableProvenanceSummary::Analyzed { escape_lanes, .. }
+            if escape_lanes
+                .iter()
+                .all(|lane| matches!(lane, skiff_artifact_model::ValueEscapeLane::Database))
+    )
+}
+
+fn analyzed_effects(facts: &CallableSemanticFacts) -> Option<CallableMayEffects> {
+    match facts.effects {
+        CallableEffectSummary::Analyzed { effects } => Some(effects),
+        CallableEffectSummary::Unknown { .. } => None,
+    }
+}
+
+fn has_only_materialized_database_escape(facts: &CallableSemanticFacts) -> bool {
+    matches!(
+        &facts.provenance,
+        CallableProvenanceSummary::Analyzed { escape_lanes, .. }
+            if !escape_lanes.is_empty()
+                && escape_lanes
+                .iter()
+                .all(|lane| matches!(lane, skiff_artifact_model::ValueEscapeLane::Database))
+    )
+}
+
+fn canonical_detached_parameters(contract: &BoundaryOperationContract) -> bool {
+    contract
+        .parameters
+        .iter()
+        .all(|parameter| canonical_detached_plan(&parameter.value_plan))
+}
+
+fn canonical_detached_plan(plan: &BoundaryValuePlan) -> bool {
+    matches!(
+        plan,
+        BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::DetachedValueGraph,
+            encoding: BoundaryValueEncoding::CanonicalValue,
+            ..
+        }
+    )
 }
 
 pub(super) fn push_reason(

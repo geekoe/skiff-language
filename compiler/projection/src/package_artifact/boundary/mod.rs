@@ -41,7 +41,7 @@ pub(super) fn project_boundary_callable_with_package_schemas(
     public_type_ids: &BTreeMap<(String, String), skiff_artifact_model::ContractTypeRef>,
     resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<BoundaryCallableProjection, ProjectionError> {
-    let mut reasons = eligibility::semantic_unavailable_reasons(facts);
+    let mut reasons = Vec::new();
     let operation_contract = types::project_operation_contract(
         owner_module,
         signature,
@@ -50,6 +50,10 @@ pub(super) fn project_boundary_callable_with_package_schemas(
         resolved_package_schemas,
         &mut reasons,
     );
+    reasons.extend(eligibility::semantic_unavailable_reasons(
+        facts,
+        operation_contract.as_ref(),
+    ));
     eligibility::normalize_reasons(&mut reasons);
     if !reasons.is_empty() {
         return Ok(BoundaryCallableProjection::Unavailable { reasons });
