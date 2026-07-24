@@ -72,6 +72,7 @@ fn router_bootstrap_shared_corpus_has_strict_parity() {
                 assert_eq!(header.envelope_type, "router.bootstrap");
                 assert_eq!(header.artifacts_path, "/opt/skiff/artifacts");
                 assert!(!header.service_db.mongo_url.is_empty());
+                assert_eq!(header.http.max_response_bytes, 67_108_864);
             }
             "reject" => assert!(
                 result.is_err(),

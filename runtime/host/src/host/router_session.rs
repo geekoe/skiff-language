@@ -111,6 +111,7 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
 struct ConnectionBootstrap {
     resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver,
     service_db: skiff_artifact_model::AssemblyActivationServiceDb,
+    max_response_bytes: u64,
 }
 
 fn decode_connection_bootstrap(
@@ -136,6 +137,7 @@ fn decode_connection_bootstrap(
     Ok(ConnectionBootstrap {
         resolver,
         service_db,
+        max_response_bytes: header.http.max_response_bytes,
     })
 }
 
@@ -265,6 +267,7 @@ async fn dispatch_router_binary_frame(
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
             mongo_url: "mongodb://127.0.0.1:27017".to_string(),
         },
+        max_response_bytes: 67_108_864,
     });
     dispatch_router_binary_frame_inner(
         host,

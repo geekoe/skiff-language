@@ -243,6 +243,14 @@ const routerBootstrapProperties = {
       mongoUrl: { type: 'string' }
     },
     additionalProperties: false
+  },
+  http: {
+    type: 'object',
+    required: ['maxResponseBytes'],
+    properties: {
+      maxResponseBytes: { type: 'integer' }
+    },
+    additionalProperties: false
   }
 } as const satisfies Record<string, ProtocolSchemaProperty>;
 
@@ -764,7 +772,7 @@ export const runtimeFrameHeaderSchemas = {
   },
   'router.bootstrap': {
     type: 'object',
-    required: ['schemaVersion', 'type', 'artifactsPath', 'serviceDb'],
+    required: ['schemaVersion', 'type', 'artifactsPath', 'serviceDb', 'http'],
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
       ...routerBootstrapProperties
@@ -1622,6 +1630,9 @@ export const runtimeFrameHeaderFixtures = {
     artifactsPath: '/opt/skiff/artifacts',
     serviceDb: {
       mongoUrl: 'mongodb://mongo.internal:27017/skiff?replicaSet=rs0'
+    },
+    http: {
+      maxResponseBytes: 67108864
     }
   },
   'router.control': {
@@ -2688,7 +2699,8 @@ function validateRouterBootstrap(envelope: Record<string, unknown>): string | nu
     'schemaVersion',
     'type',
     'artifactsPath',
-    'serviceDb'
+    'serviceDb',
+    'http'
   ]);
   if (fieldsError !== null) {
     return fieldsError;
@@ -2708,10 +2720,30 @@ function validateRouterBootstrap(envelope: Record<string, unknown>): string | nu
   if (serviceDbFieldsError !== null) {
     return serviceDbFieldsError;
   }
-  return typeof envelope.serviceDb.mongoUrl === 'string' &&
+  const serviceDbError = typeof envelope.serviceDb.mongoUrl === 'string' &&
     envelope.serviceDb.mongoUrl.trim().length > 0
     ? null
     : 'invalid router.bootstrap envelope: serviceDb.mongoUrl must be a non-empty string';
+  if (serviceDbError !== null) {
+    return serviceDbError;
+  }
+  if (!isRecord(envelope.http)) {
+    return 'invalid router.bootstrap envelope: http must be an object';
+  }
+  const httpFieldsError = rejectUnsupportedObjectFields(
+    envelope.http,
+    'router.bootstrap',
+    'http',
+    ['maxResponseBytes']
+  );
+  if (httpFieldsError !== null) {
+    return httpFieldsError;
+  }
+  return typeof envelope.http.maxResponseBytes === 'number' &&
+    Number.isSafeInteger(envelope.http.maxResponseBytes) &&
+    envelope.http.maxResponseBytes > 0
+    ? null
+    : 'invalid router.bootstrap envelope: http.maxResponseBytes must be a positive safe integer';
 }
 
 function isNormalizedAbsoluteArtifactsPath(value: unknown): value is string {

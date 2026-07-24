@@ -117,7 +117,8 @@ fn connection_bootstrap_fixes_exact_artifact_path_and_db_transport() {
         rest: serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(json!({
             "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
             "artifactsPath": artifact_path,
-            "serviceDb": { "mongoUrl": "mongodb://router-owned" }
+            "serviceDb": { "mongoUrl": "mongodb://router-owned" },
+            "http": { "maxResponseBytes": 67108864 }
         }))
         .expect("bootstrap fields should decode"),
     };
@@ -135,6 +136,7 @@ fn connection_bootstrap_fixes_exact_artifact_path_and_db_transport() {
         bootstrap.service_db.mongo_url,
         "mongodb://router-owned".to_string()
     );
+    assert_eq!(bootstrap.max_response_bytes, 67_108_864);
 }
 
 #[tokio::test]
@@ -482,13 +484,15 @@ async fn duplicate_connection_bootstrap_fails_closed() {
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
             mongo_url: "mongodb://127.0.0.1:27017".to_string(),
         },
+        max_response_bytes: 67_108_864,
     });
     let frame = encode_binary_frame(
         &json!({
             "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
             "type": "router.bootstrap",
             "artifactsPath": artifact_path,
-            "serviceDb": { "mongoUrl": "mongodb://127.0.0.1:27017" }
+            "serviceDb": { "mongoUrl": "mongodb://127.0.0.1:27017" },
+            "http": { "maxResponseBytes": 67108864 }
         }),
         &[],
     )
@@ -524,6 +528,7 @@ async fn activation_rejects_superseded_transient_service_db_wire() {
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
             mongo_url: "mongodb://bootstrap-owner".to_string(),
         },
+        max_response_bytes: 67_108_864,
     });
     let mut activation = serde_json::to_value(assembly_activation_control("prepare"))
         .expect("activation should encode as JSON");

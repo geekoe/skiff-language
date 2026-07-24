@@ -279,12 +279,19 @@ pub struct RouterBootstrapServiceDbFrameHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RouterBootstrapHttpFrameHeader {
+    pub max_response_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RouterBootstrapFrameHeader {
     pub schema_version: String,
     #[serde(rename = "type")]
     pub envelope_type: String,
     pub artifacts_path: String,
     pub service_db: RouterBootstrapServiceDbFrameHeader,
+    pub http: RouterBootstrapHttpFrameHeader,
 }
 
 pub fn decode_router_bootstrap_frame_header(
@@ -313,6 +320,12 @@ pub fn decode_router_bootstrap_frame_header(
     if header.service_db.mongo_url.trim().is_empty() {
         return Err(TransportError::decode(
             "invalid router.bootstrap frame header: serviceDb.mongoUrl must be a non-empty string",
+        ));
+    }
+    if header.http.max_response_bytes == 0 || header.http.max_response_bytes > 9_007_199_254_740_991
+    {
+        return Err(TransportError::decode(
+            "invalid router.bootstrap frame header: http.maxResponseBytes must be a positive safe integer",
         ));
     }
     Ok(header)

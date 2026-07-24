@@ -240,10 +240,15 @@ export interface RouterBootstrapServiceDb {
   mongoUrl: string;
 }
 
+export interface RouterBootstrapHttp {
+  maxResponseBytes: number;
+}
+
 export interface RouterBootstrapEnvelope {
   type: 'router.bootstrap';
   artifactsPath: string;
   serviceDb: RouterBootstrapServiceDb;
+  http: RouterBootstrapHttp;
 }
 
 export type RouterBootstrapFrameHeader = RuntimeFrameHeaderBase<'router.bootstrap'> &

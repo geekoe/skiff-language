@@ -10,6 +10,9 @@
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
           "mongoUrl": "mongodb://mongo.internal:27017/skiff?replicaSet=rs0"
+        },
+        "http": {
+          "maxResponseBytes": 67108864
         }
       }
     },
@@ -21,6 +24,9 @@
         "type": "router.bootstrap",
         "serviceDb": {
           "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        },
+        "http": {
+          "maxResponseBytes": 67108864
         }
       }
     },
@@ -33,6 +39,9 @@
         "artifactsPath": "",
         "serviceDb": {
           "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        },
+        "http": {
+          "maxResponseBytes": 67108864
         }
       }
     },
@@ -45,6 +54,9 @@
         "artifactsPath": "artifacts",
         "serviceDb": {
           "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        },
+        "http": {
+          "maxResponseBytes": 67108864
         }
       }
     },
@@ -57,6 +69,9 @@
         "artifactsPath": "/opt/skiff/../artifacts",
         "serviceDb": {
           "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        },
+        "http": {
+          "maxResponseBytes": 67108864
         }
       }
     },
@@ -66,7 +81,10 @@
       "header": {
         "schemaVersion": "skiff-runtime-frame-v1",
         "type": "router.bootstrap",
-        "artifactsPath": "/opt/skiff/artifacts"
+        "artifactsPath": "/opt/skiff/artifacts",
+        "http": {
+          "maxResponseBytes": 67108864
+        }
       }
     },
     {
@@ -76,7 +94,10 @@
         "schemaVersion": "skiff-runtime-frame-v1",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
-        "serviceDb": {}
+        "serviceDb": {},
+        "http": {
+          "maxResponseBytes": 67108864
+        }
       }
     },
     {
@@ -88,6 +109,95 @@
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
           "mongoUrl": "   "
+        },
+        "http": {
+          "maxResponseBytes": 67108864
+        }
+      }
+    },
+    {
+      "name": "missing-http",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        }
+      }
+    },
+    {
+      "name": "missing-max-response-bytes",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        },
+        "http": {}
+      }
+    },
+    {
+      "name": "zero-max-response-bytes",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        },
+        "http": {
+          "maxResponseBytes": 0
+        }
+      }
+    },
+    {
+      "name": "fractional-max-response-bytes",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        },
+        "http": {
+          "maxResponseBytes": 1.5
+        }
+      }
+    },
+    {
+      "name": "overflow-max-response-bytes",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        },
+        "http": {
+          "maxResponseBytes": 9007199254740992
+        }
+      }
+    },
+    {
+      "name": "max-request-bytes-is-router-only",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        },
+        "http": {
+          "maxResponseBytes": 67108864,
+          "maxRequestBytes": 67108864
         }
       }
     },
@@ -100,6 +210,9 @@
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
           "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        },
+        "http": {
+          "maxResponseBytes": 67108864
         },
         "registryEndpoint": "https://registry.internal"
       }
@@ -114,6 +227,9 @@
         "serviceDb": {
           "mongoUrl": "mongodb://mongo.internal:27017/skiff",
           "database": "skiff"
+        },
+        "http": {
+          "maxResponseBytes": 67108864
         }
       }
     },
@@ -128,6 +244,9 @@
         ],
         "serviceDb": {
           "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        },
+        "http": {
+          "maxResponseBytes": 67108864
         }
       }
     }
