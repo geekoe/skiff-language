@@ -1,4 +1,5 @@
 mod actor;
+mod actor_invocation;
 mod cancellation;
 mod capability_error;
 mod config;
@@ -20,6 +21,10 @@ mod websocket;
 
 pub use actor::{
     ActorCapabilityApi, ActorCapabilityContext, ActorClient, OwnedActorCapabilityContext,
+};
+pub use actor_invocation::{
+    ActorInvocationCancellation, ActorInvocationDeadline, ActorInvocationError,
+    ActorInvocationIdentity, ActorInvocationOutcome,
 };
 pub use cancellation::{
     flag_backed_cancel_waiters_active, CancellationPollingFallbackAllowlistEntry,

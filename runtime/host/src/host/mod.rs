@@ -1,3 +1,4 @@
+pub mod actor_method_handoff;
 pub mod blob_store;
 mod control_plane;
 pub mod file_runtime;

@@ -2621,6 +2621,7 @@ dependencies = [
 name = "skiff-runtime-transport"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "serde",
  "serde_json",
  "skiff-artifact-model",

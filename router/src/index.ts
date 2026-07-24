@@ -4,6 +4,7 @@ export * from './manifest/loadManifest.js';
 export * from './manifest/types.js';
 export * from './protocol/envelope.js';
 export * from './protocol/runtimeProtocol.js';
+export * from './protocol/actorMethodProtocol.js';
 export * from './protocol/assemblyActivationFrame.js';
 export * from './protocol/assemblyActivationProtocol.js';
 export * from './protocol/runtimeAssemblyRequest.js';
