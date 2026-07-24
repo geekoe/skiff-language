@@ -2175,6 +2175,7 @@ dependencies = [
  "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-canonical-json",
  "skiff-compiler-compiled",
  "skiff-compiler-contract",
  "skiff-compiler-core",

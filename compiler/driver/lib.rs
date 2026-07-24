@@ -1,9 +1,13 @@
 pub mod authoring;
+mod generated_deployment;
 pub(crate) mod input;
 pub(crate) mod pipeline;
 pub(crate) mod shared;
 pub(crate) mod source_compile;
 
+pub use generated_deployment::{
+    generate_service_deployment, GeneratedServiceDeploymentError, GeneratedServiceDeploymentInput,
+};
 pub use input::{
     CompilerPlatformSources, CompilerPlatformSourcesError, ManifestOwner, ManifestProvenance,
     PackageCompileInput, PackageContractCompileDependency, PackageDependency, PackageSourceInput,

@@ -98,9 +98,14 @@ path = "tests/websocket_ingress.rs"
 name = "test_artifact_identity"
 path = "tests/test_artifact_identity.rs"
 
+[[test]]
+name = "generated_service_deployment"
+path = "tests/generated_service_deployment.rs"
+
 [dependencies]
 skiff-artifact-identity = { path = "../artifact-identity" }
 skiff-artifact-model = { path = "../artifact-model" }
+skiff-canonical-json = { path = "../canonical-json" }
 skiff-compiler-core = { path = "core" }
 skiff-compiler-input = { path = "input" }
 skiff-compiler-input-model = { path = "input-model" }
@@ -117,6 +122,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_yaml = "0.9"
 thiserror = "2.0"
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 hex = "0.4"
