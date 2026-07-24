@@ -68,9 +68,10 @@ pub use deployment::{
 };
 pub use ecosystem_paths::{
     EnvironmentActivationStatePath, PackageArtifactPointerPath, PackageArtifactRecordPath,
-    PackageFileIrRecordPath, PackageResourceRecordPath, RuntimeAssemblyPointerPath,
-    RuntimeAssemblyRecordPath, ServiceContractPointerPath, ServiceContractRecordPath,
-    ServiceDeploymentPointerPath, ServiceDeploymentRecordPath,
+    PackageFileIrRecordPath, PackageResourceRecordPath, PackageSchemaIndexRecordPath,
+    PackageSchemaTypeRecordPath, RuntimeAssemblyPointerPath, RuntimeAssemblyRecordPath,
+    ServiceContractPointerPath, ServiceContractRecordPath, ServiceDeploymentPointerPath,
+    ServiceDeploymentRecordPath,
 };
 pub use error::{ArtifactIdentityError, Result};
 pub use file_ir::{

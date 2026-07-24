@@ -5,6 +5,7 @@ mod strict_json;
 
 pub use error::{EcosystemStorageError, StorageResult};
 pub use io::CanonicalArtifactStore;
+pub use records::ResolvedPackageSchema;
 
 mod activation;
 mod pointers;

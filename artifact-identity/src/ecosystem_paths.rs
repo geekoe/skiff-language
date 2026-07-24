@@ -1,12 +1,14 @@
 use skiff_artifact_model::{
-    runtime_assembly_identity_hash, FileIrRef, PackageArtifactRef, PublicationResourceRef,
-    RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
+    runtime_assembly_identity_hash, FileIrRef, PackageArtifactRef, PackageSchemaIndexRef,
+    PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssemblyRef, ServiceContractRef,
+    ServiceDeploymentRef,
 };
 
 use crate::{
     ArtifactIdentityError, ArtifactRelativePath, Result, DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
     FILE_IR_IDENTITY_PREFIX, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-    PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX, SERVICE_PROTOCOL_IDENTITY_PREFIX,
+    PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX, PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX,
+    PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX, SERVICE_PROTOCOL_IDENTITY_PREFIX,
 };
 
 macro_rules! typed_path {
@@ -33,6 +35,8 @@ macro_rules! typed_path {
 }
 
 typed_path!(PackageArtifactRecordPath);
+typed_path!(PackageSchemaIndexRecordPath);
+typed_path!(PackageSchemaTypeRecordPath);
 typed_path!(ServiceContractRecordPath);
 typed_path!(ServiceDeploymentRecordPath);
 typed_path!(RuntimeAssemblyRecordPath);
@@ -59,6 +63,36 @@ impl PackageArtifactRecordPath {
         )?;
         relative(format!(
             "records/package-artifacts/{coordinate}/{build}/package.json"
+        ))
+        .map(Self)
+    }
+}
+
+impl PackageSchemaIndexRecordPath {
+    pub fn new(reference: &PackageSchemaIndexRef) -> Result<Self> {
+        let package = coordinate_segment(&reference.package_id, "packageId")?;
+        let identity = identity_hash(
+            reference.package_schema_index_identity.as_str(),
+            PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX,
+            "packageSchemaIndexIdentity",
+        )?;
+        relative(format!(
+            "records/package-schema-indexes/{package}/{identity}.json"
+        ))
+        .map(Self)
+    }
+}
+
+impl PackageSchemaTypeRecordPath {
+    pub fn new(reference: &PackageSchemaTypeRecordRef) -> Result<Self> {
+        let package = coordinate_segment(&reference.package_id, "packageId")?;
+        let identity = identity_hash(
+            reference.package_schema_type_id.as_str(),
+            PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX,
+            "packageSchemaTypeId",
+        )?;
+        relative(format!(
+            "records/package-schema-types/{package}/{identity}.json"
         ))
         .map(Self)
     }
@@ -288,7 +322,8 @@ mod tests {
     use crate::ASSEMBLY_IDENTITY_PREFIX;
     use skiff_artifact_model::{
         AssemblyIdentity, DeploymentArtifactIdentity, DeploymentRevision, PackageBuildId,
-        PackageLocalAbiIdentity, ServiceProtocolIdentity,
+        PackageLocalAbiIdentity, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
+        PackageSchemaTypeId, PackageSchemaTypeRecordRef, ServiceProtocolIdentity,
     };
 
     fn hash(char: char) -> String {
@@ -350,6 +385,38 @@ mod tests {
         assert_eq!(
             RuntimeAssemblyRecordPath::new(&assembly).unwrap().as_str(),
             format!("records/runtime-assemblies/{}.json", hash('e'))
+        );
+    }
+
+    #[test]
+    fn package_schema_records_have_independent_content_addressed_paths() {
+        let index = PackageSchemaIndexRef {
+            package_id: "example.com/shared".to_string(),
+            package_schema_index_identity: PackageSchemaIndexIdentity::new(format!(
+                "{PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX}:{}",
+                hash('a')
+            )),
+        };
+        let record = PackageSchemaTypeRecordRef {
+            package_id: "example.com/shared".to_string(),
+            package_schema_type_id: PackageSchemaTypeId::new(format!(
+                "{PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX}:{}",
+                hash('b')
+            )),
+        };
+        assert_eq!(
+            PackageSchemaIndexRecordPath::new(&index).unwrap().as_str(),
+            format!(
+                "records/package-schema-indexes/example~dcom~sshared/{}.json",
+                hash('a')
+            )
+        );
+        assert_eq!(
+            PackageSchemaTypeRecordPath::new(&record).unwrap().as_str(),
+            format!(
+                "records/package-schema-types/example~dcom~sshared/{}.json",
+                hash('b')
+            )
         );
     }
 

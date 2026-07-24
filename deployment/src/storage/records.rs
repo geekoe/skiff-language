@@ -1,24 +1,36 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use serde_json::Value;
 use skiff_artifact_identity::{
-    package_artifact_ref, runtime_assembly_ref, service_contract_ref, service_deployment_ref,
-    validate_file_ir_identity, validate_package_artifact_identities,
+    package_artifact_ref, package_schema_type_id, runtime_assembly_ref, service_contract_ref,
+    service_deployment_ref, validate_file_ir_identity, validate_package_artifact_identities,
+    validate_package_schema_index, validate_package_schema_records,
     validate_runtime_assembly_identity, validate_service_contract_identities,
     validate_service_deployment_ref, PackageArtifactRecordPath, PackageFileIrRecordPath,
-    PackageResourceRecordPath, RuntimeAssemblyRecordPath, ServiceContractRecordPath,
-    ServiceDeploymentRecordPath,
+    PackageResourceRecordPath, PackageSchemaIndexRecordPath, PackageSchemaTypeRecordPath,
+    RuntimeAssemblyRecordPath, ServiceContractRecordPath, ServiceDeploymentRecordPath,
 };
 use skiff_artifact_model::{
-    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PublicationResourceRef,
-    RuntimeAssembly, RuntimeAssemblyRef, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef,
+    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageSchemaIndex,
+    PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssembly, RuntimeAssemblyRef,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 
 use super::{
     error::{EcosystemStorageError, StorageResult},
     io::{canonical_bytes, strict_value, typed_from_value, CanonicalArtifactStore},
 };
+
+#[derive(Debug, Clone)]
+pub struct ResolvedPackageSchema {
+    pub index: Arc<PackageSchemaIndex>,
+    pub records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+}
 
 impl CanonicalArtifactStore {
     pub fn write_package_artifact(&self, artifact: &PackageArtifact) -> StorageResult<PathBuf> {
@@ -47,6 +59,165 @@ impl CanonicalArtifactStore {
         }
         ensure_canonical(&host_path, &bytes, &artifact)?;
         Ok(Arc::new(artifact))
+    }
+
+    pub fn write_package_schema_index(&self, index: &PackageSchemaIndex) -> StorageResult<PathBuf> {
+        validate_package_schema_index(index)?;
+        let reference = PackageSchemaIndexRef {
+            package_id: index.package_id.clone(),
+            package_schema_index_identity: index.package_schema_index_identity.clone(),
+        };
+        let path = PackageSchemaIndexRecordPath::new(&reference)?;
+        self.write_immutable(path.as_relative_path(), &canonical_bytes(index)?)
+    }
+
+    pub fn read_package_schema_index(
+        &self,
+        reference: &PackageSchemaIndexRef,
+    ) -> StorageResult<Arc<PackageSchemaIndex>> {
+        let path = PackageSchemaIndexRecordPath::new(reference)?;
+        let bytes = self.read_bytes(path.as_relative_path())?;
+        let host_path = self.root().join(path.as_relative_path().as_path());
+        let value = strict_value(&host_path, &bytes)?;
+        raw_string(&host_path, &value, &["packageId"], &reference.package_id)?;
+        raw_string(
+            &host_path,
+            &value,
+            &["packageSchemaIndexIdentity"],
+            reference.package_schema_index_identity.as_str(),
+        )?;
+        let index = typed_from_value::<PackageSchemaIndex>(&host_path, value)?;
+        validate_package_schema_index(&index)?;
+        if index.package_id != reference.package_id
+            || index.package_schema_index_identity != reference.package_schema_index_identity
+        {
+            return invalid(
+                &host_path,
+                "typed PackageSchemaIndex does not match exact reference",
+            );
+        }
+        ensure_canonical(&host_path, &bytes, &index)?;
+        Ok(Arc::new(index))
+    }
+
+    pub fn write_package_schema_type_record(
+        &self,
+        record: &PackageSchemaTypeRecord,
+    ) -> StorageResult<PathBuf> {
+        validate_package_schema_type_record(&self.root().to_path_buf(), record)?;
+        let reference = PackageSchemaTypeRecordRef {
+            package_id: record.package_id.clone(),
+            package_schema_type_id: record.package_schema_type_id.clone(),
+        };
+        let path = PackageSchemaTypeRecordPath::new(&reference)?;
+        self.write_immutable(path.as_relative_path(), &canonical_bytes(record)?)
+    }
+
+    pub fn read_package_schema_type_record(
+        &self,
+        reference: &PackageSchemaTypeRecordRef,
+    ) -> StorageResult<Arc<PackageSchemaTypeRecord>> {
+        let path = PackageSchemaTypeRecordPath::new(reference)?;
+        let bytes = self.read_bytes(path.as_relative_path())?;
+        let host_path = self.root().join(path.as_relative_path().as_path());
+        let value = strict_value(&host_path, &bytes)?;
+        raw_string(&host_path, &value, &["packageId"], &reference.package_id)?;
+        raw_string(
+            &host_path,
+            &value,
+            &["packageSchemaTypeId"],
+            reference.package_schema_type_id.as_str(),
+        )?;
+        let record = typed_from_value::<PackageSchemaTypeRecord>(&host_path, value)?;
+        validate_package_schema_type_record(&host_path, &record)?;
+        if record.package_id != reference.package_id
+            || record.package_schema_type_id != reference.package_schema_type_id
+        {
+            return invalid(
+                &host_path,
+                "typed PackageSchemaTypeRecord does not match exact reference",
+            );
+        }
+        ensure_canonical(&host_path, &bytes, &record)?;
+        Ok(Arc::new(record))
+    }
+
+    /// Resolves the exact schema record closure declared by a PackageArtifact.
+    ///
+    /// This validates storage identity and artifact/index/ref agreement only;
+    /// compiler and runtime semantics deliberately remain outside the store.
+    pub fn resolve_package_artifact_schema(
+        &self,
+        artifact: &PackageArtifact,
+    ) -> StorageResult<ResolvedPackageSchema> {
+        validate_package_artifact_identities(artifact)?;
+        let index = self.read_package_schema_index(&artifact.package_schema_index)?;
+        if index.package_id != artifact.package_id {
+            return invalid(
+                self.root(),
+                "PackageSchemaIndex owner does not match PackageArtifact",
+            );
+        }
+
+        let index_type_ids = index
+            .types
+            .values()
+            .map(|entry| entry.package_schema_type_id.clone())
+            .collect::<BTreeSet<_>>();
+        let artifact_type_ids = artifact
+            .package_schema_type_records
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if index_type_ids != artifact_type_ids || index.types.len() != index_type_ids.len() {
+            return invalid(
+                self.root(),
+                "PackageArtifact schema record refs must exactly match PackageSchemaIndex entries",
+            );
+        }
+
+        let mut records = BTreeMap::new();
+        for (stable_schema_key, entry) in &index.types {
+            let reference = artifact
+                .package_schema_type_records
+                .get(&entry.package_schema_type_id)
+                .ok_or_else(|| EcosystemStorageError::InvalidRecord {
+                    path: self.root().to_path_buf(),
+                    message: format!(
+                        "PackageSchemaIndex entry {stable_schema_key} has no artifact record ref"
+                    ),
+                })?;
+            if reference.package_id != artifact.package_id
+                || reference.package_schema_type_id != entry.package_schema_type_id
+            {
+                return invalid(
+                    self.root(),
+                    format!(
+                        "PackageSchemaIndex entry {stable_schema_key} does not match artifact record ref"
+                    ),
+                );
+            }
+            let record = self.read_package_schema_type_record(reference)?;
+            if record.package_id != artifact.package_id
+                || record.stable_schema_key != *stable_schema_key
+                || record.package_schema_type_id != entry.package_schema_type_id
+            {
+                return invalid(
+                    self.root(),
+                    format!(
+                        "PackageSchemaIndex entry {stable_schema_key} does not match resolved type record"
+                    ),
+                );
+            }
+            records.insert(entry.package_schema_type_id.clone(), record);
+        }
+
+        let owned_records = records
+            .iter()
+            .map(|(type_id, record)| (type_id.clone(), record.as_ref().clone()))
+            .collect();
+        validate_package_schema_records(&owned_records)?;
+        Ok(ResolvedPackageSchema { index, records })
     }
 
     pub fn write_service_contract(&self, contract: &ServiceContract) -> StorageResult<PathBuf> {
@@ -191,6 +362,27 @@ impl CanonicalArtifactStore {
         validate_resource(&host_path, reference, &bytes)?;
         Ok(Arc::from(bytes))
     }
+}
+
+fn validate_package_schema_type_record(
+    path: &std::path::Path,
+    record: &PackageSchemaTypeRecord,
+) -> StorageResult<()> {
+    let expected = package_schema_type_id(
+        &record.package_id,
+        &record.stable_schema_key,
+        &record.canonical_descriptor,
+    )?;
+    if record.package_schema_type_id != expected {
+        return invalid(
+            path,
+            format!(
+                "PackageSchemaTypeRecord {} has identity {}, expected {expected}",
+                record.stable_schema_key, record.package_schema_type_id
+            ),
+        );
+    }
+    Ok(())
 }
 
 fn raw_package_ref(
@@ -351,4 +543,319 @@ fn ensure_canonical<T: serde::Serialize>(
         return invalid(path, "record bytes are not canonical JSON");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod package_schema_tests {
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use skiff_artifact_identity::{
+        assign_package_artifact_identities, package_schema_index_identity, package_schema_type_id,
+    };
+    use skiff_artifact_model::{
+        ContractTypeDescriptor, ContractTypeNameability, PackageBuildId,
+        PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+        PackageRuntimeRequirements, PackageSchemaCanonicalDescriptor, PackageSchemaIndexEntry,
+        PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    };
+
+    use super::*;
+
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    struct TestStore {
+        root: PathBuf,
+        store: CanonicalArtifactStore,
+    }
+
+    impl TestStore {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "skiff-package-schema-store-{}-{}",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            let store = CanonicalArtifactStore::create(&root).unwrap();
+            Self { root, store }
+        }
+    }
+
+    impl Drop for TestStore {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn record(package_id: &str, stable_key: &str) -> PackageSchemaTypeRecord {
+        let canonical_descriptor = PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([(
+                    "value".to_string(),
+                    skiff_artifact_model::ContractTypeRef::builtin("string"),
+                )]),
+            },
+        };
+        PackageSchemaTypeRecord {
+            package_id: package_id.to_string(),
+            stable_schema_key: stable_key.to_string(),
+            package_schema_type_id: package_schema_type_id(
+                package_id,
+                stable_key,
+                &canonical_descriptor,
+            )
+            .unwrap(),
+            canonical_descriptor,
+        }
+    }
+
+    fn index(record: &PackageSchemaTypeRecord) -> PackageSchemaIndex {
+        let types = BTreeMap::from([(
+            record.stable_schema_key.clone(),
+            PackageSchemaIndexEntry {
+                package_schema_type_id: record.package_schema_type_id.clone(),
+                public_path: Some(record.stable_schema_key.clone()),
+                nameability: ContractTypeNameability::PublicNameable,
+            },
+        )]);
+        PackageSchemaIndex {
+            package_id: record.package_id.clone(),
+            package_schema_index_identity: package_schema_index_identity(
+                &record.package_id,
+                &types,
+            )
+            .unwrap(),
+            types,
+        }
+    }
+
+    fn artifact(
+        package_version: &str,
+        index: &PackageSchemaIndex,
+        record_refs: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecordRef>,
+    ) -> PackageArtifact {
+        let mut artifact = PackageArtifact {
+            schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
+            package_id: index.package_id.clone(),
+            package_version: package_version.to_string(),
+            package_build_id: PackageBuildId::new("unassigned"),
+            files: Vec::new(),
+            static_resources: Vec::new(),
+            package_local_abi: PackageLocalAbi {
+                local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
+                public_symbols: BTreeMap::new(),
+            },
+            package_schema_index: PackageSchemaIndexRef {
+                package_id: index.package_id.clone(),
+                package_schema_index_identity: index.package_schema_index_identity.clone(),
+            },
+            package_schema_type_records: record_refs,
+            implementation_links: PackageImplementationLinks::default(),
+            callable_links: BTreeMap::new(),
+            package_requirements: Vec::new(),
+            contract_requirements: Vec::new(),
+            service_requirements: Vec::new(),
+            runtime_requirements: PackageRuntimeRequirements {
+                config: Vec::new(),
+                resources: Vec::new(),
+                runtime_capabilities: Vec::new(),
+            },
+            callable_semantic_facts: BTreeMap::new(),
+            boundary_projections: BTreeMap::new(),
+            service_call_refs: Vec::new(),
+        };
+        assign_package_artifact_identities(&mut artifact).unwrap();
+        artifact
+    }
+
+    fn record_ref(record: &PackageSchemaTypeRecord) -> PackageSchemaTypeRecordRef {
+        PackageSchemaTypeRecordRef {
+            package_id: record.package_id.clone(),
+            package_schema_type_id: record.package_schema_type_id.clone(),
+        }
+    }
+
+    #[test]
+    fn schema_records_round_trip_idempotently_and_conflicting_bytes_are_rejected() {
+        let test = TestStore::new();
+        let record = record("example.com/shared", "User");
+        let index = index(&record);
+
+        let first_record_path = test
+            .store
+            .write_package_schema_type_record(&record)
+            .unwrap();
+        assert_eq!(
+            first_record_path,
+            test.store
+                .write_package_schema_type_record(&record)
+                .unwrap()
+        );
+        let first_index_path = test.store.write_package_schema_index(&index).unwrap();
+        assert_eq!(
+            first_index_path,
+            test.store.write_package_schema_index(&index).unwrap()
+        );
+        assert_eq!(
+            test.store
+                .read_package_schema_type_record(&record_ref(&record))
+                .unwrap()
+                .as_ref(),
+            &record
+        );
+        assert_eq!(
+            test.store
+                .read_package_schema_index(&PackageSchemaIndexRef {
+                    package_id: index.package_id.clone(),
+                    package_schema_index_identity: index.package_schema_index_identity.clone(),
+                })
+                .unwrap()
+                .as_ref(),
+            &index
+        );
+
+        fs::write(&first_record_path, b"conflicting payload").unwrap();
+        assert!(matches!(
+            test.store.write_package_schema_type_record(&record),
+            Err(EcosystemStorageError::ImmutableConflict { .. })
+        ));
+    }
+
+    #[test]
+    fn schema_reads_reject_wrong_path_owner_stable_key_and_descriptor_hash() {
+        let test = TestStore::new();
+        let record = record("example.com/shared", "User");
+        let path = test
+            .store
+            .write_package_schema_type_record(&record)
+            .unwrap();
+
+        let wrong_owner = PackageSchemaTypeRecord {
+            package_id: "example.com/other".to_string(),
+            ..record.clone()
+        };
+        assert!(test
+            .store
+            .write_package_schema_type_record(&wrong_owner)
+            .is_err());
+
+        let other = record("example.com/shared", "Other");
+        let other_path = PackageSchemaTypeRecordPath::new(&record_ref(&other)).unwrap();
+        let other_host_path = test.root.join(other_path.as_relative_path().as_path());
+        fs::create_dir_all(other_host_path.parent().unwrap()).unwrap();
+        fs::copy(&path, &other_host_path).unwrap();
+        assert!(test
+            .store
+            .read_package_schema_type_record(&record_ref(&other))
+            .is_err());
+
+        let mut tampered = record.clone();
+        tampered.stable_schema_key = "Tampered".to_string();
+        fs::write(&path, canonical_bytes(&tampered).unwrap()).unwrap();
+        assert!(test
+            .store
+            .read_package_schema_type_record(&record_ref(&record))
+            .is_err());
+
+        tampered.stable_schema_key = record.stable_schema_key.clone();
+        tampered.canonical_descriptor = PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::Enumeration {
+                variants: vec!["changed".to_string()],
+            },
+        };
+        fs::write(&path, canonical_bytes(&tampered).unwrap()).unwrap();
+        assert!(test
+            .store
+            .read_package_schema_type_record(&record_ref(&record))
+            .is_err());
+    }
+
+    #[test]
+    fn package_artifact_schema_resolution_is_exact_and_deduplicated() {
+        let test = TestStore::new();
+        let record = record("example.com/shared", "User");
+        let index = index(&record);
+        let reference = record_ref(&record);
+        test.store.write_package_schema_index(&index).unwrap();
+        let stored_path = test
+            .store
+            .write_package_schema_type_record(&record)
+            .unwrap();
+        let refs = BTreeMap::from([(record.package_schema_type_id.clone(), reference.clone())]);
+        let first = artifact("1.0.0", &index, refs.clone());
+        let second = artifact("2.0.0", &index, refs);
+
+        let first_resolved = test.store.resolve_package_artifact_schema(&first).unwrap();
+        let second_resolved = test.store.resolve_package_artifact_schema(&second).unwrap();
+        assert_eq!(first_resolved.records.len(), 1);
+        assert_eq!(first_resolved.records, second_resolved.records);
+        assert_eq!(
+            stored_path,
+            test.store
+                .write_package_schema_type_record(&record)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn package_artifact_schema_resolution_fails_closed_on_missing_or_mismatched_refs() {
+        let test = TestStore::new();
+        let record = record("example.com/shared", "User");
+        let index = index(&record);
+        let reference = record_ref(&record);
+        let valid_refs =
+            BTreeMap::from([(record.package_schema_type_id.clone(), reference.clone())]);
+        let artifact = artifact("1.0.0", &index, valid_refs.clone());
+
+        assert!(test
+            .store
+            .resolve_package_artifact_schema(&artifact)
+            .is_err());
+        test.store.write_package_schema_index(&index).unwrap();
+        assert!(test
+            .store
+            .resolve_package_artifact_schema(&artifact)
+            .is_err());
+        test.store
+            .write_package_schema_type_record(&record)
+            .unwrap();
+
+        let missing_ref = artifact("1.0.1", &index, BTreeMap::new());
+        assert!(test
+            .store
+            .resolve_package_artifact_schema(&missing_ref)
+            .is_err());
+
+        let extra = record("example.com/shared", "Extra");
+        let mut extra_refs = valid_refs;
+        extra_refs.insert(extra.package_schema_type_id.clone(), record_ref(&extra));
+        let extra_ref = artifact("1.0.2", &index, extra_refs);
+        assert!(test
+            .store
+            .resolve_package_artifact_schema(&extra_ref)
+            .is_err());
+
+        let mut mismatched_index = index.clone();
+        let entry = mismatched_index.types.remove("User").unwrap();
+        mismatched_index.types.insert("WrongKey".to_string(), entry);
+        mismatched_index.package_schema_index_identity =
+            package_schema_index_identity(&mismatched_index.package_id, &mismatched_index.types)
+                .unwrap();
+        test.store
+            .write_package_schema_index(&mismatched_index)
+            .unwrap();
+        let mismatched = artifact(
+            "1.0.3",
+            &mismatched_index,
+            BTreeMap::from([(record.package_schema_type_id.clone(), reference)]),
+        );
+        assert!(test
+            .store
+            .resolve_package_artifact_schema(&mismatched)
+            .is_err());
+    }
 }
