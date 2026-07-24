@@ -114,14 +114,13 @@ impl Evaluator<'_, '_> {
                 value.with_fresh_container(reference)
             }
             Expr::DbOperation(operation) => {
-                let inputs = self.eval_db_operation(operation, env);
-                self.state.record_escape(&inputs, EscapeLane::Database);
+                let persisted = self.eval_db_operation(operation, env);
+                self.state.record_persistent_escape(&persisted);
                 self.state.effects.may_suspend = true;
                 AbstractValue::fresh(reference)
             }
             Expr::DbQuery(query) => {
-                let inputs = self.eval_db_query(&query.query, env);
-                self.state.record_escape(&inputs, EscapeLane::Database);
+                self.eval_db_query(&query.query, env);
                 self.state.effects.may_suspend = true;
                 AbstractValue::fresh(reference)
             }
@@ -135,8 +134,7 @@ impl Evaluator<'_, '_> {
                 AbstractValue::unknown(reference)
             }
             Expr::DbLeaseClaim(claim) => {
-                let key_value = self.eval_expr(&claim.key, env);
-                self.state.record_escape(&key_value, EscapeLane::Database);
+                self.eval_expr(&claim.key, env);
                 let mut body_env = env.clone();
                 if let Some(binding) = &claim.binding {
                     body_env.insert(binding.clone(), AbstractValue::fresh(true));
@@ -147,8 +145,7 @@ impl Evaluator<'_, '_> {
                 AbstractValue::fresh(reference)
             }
             Expr::DbLeaseRead(read) => {
-                let key_value = self.eval_expr(&read.key, env);
-                self.state.record_escape(&key_value, EscapeLane::Database);
+                self.eval_expr(&read.key, env);
                 self.state.effects.may_suspend = true;
                 AbstractValue::fresh(reference)
             }
@@ -162,12 +159,12 @@ impl Evaluator<'_, '_> {
         operation: &DbOperation,
         env: &mut Environment,
     ) -> AbstractValue {
-        let mut inputs = AbstractValue::default();
+        let mut persisted = AbstractValue::default();
         if let Some(selector) = &operation.selector {
-            inputs.join(&self.eval_db_selector(selector, env));
+            self.eval_db_selector(selector, env);
         }
         if let Some(query) = operation.independent_query() {
-            inputs.join(&self.eval_db_query(query, env));
+            self.eval_db_query(query, env);
         }
         for body in [&operation.body, &operation.insert_body]
             .into_iter()
@@ -176,10 +173,10 @@ impl Evaluator<'_, '_> {
             match body {
                 DbBody::ObjectFields { fields } => {
                     for field in fields {
-                        inputs.join(&self.eval_expr(&field.value, env));
+                        persisted.join(&self.eval_expr(&field.value, env));
                     }
                 }
-                DbBody::Values { value } => inputs.join(&self.eval_expr(value, env)),
+                DbBody::Values { value } => persisted.join(&self.eval_expr(value, env)),
             }
         }
         if let Some(change) = &operation.change {
@@ -189,13 +186,13 @@ impl Evaluator<'_, '_> {
                     | DbChangeOp::Inc { value, .. }
                     | DbChangeOp::AddToSet { value, .. }
                     | DbChangeOp::Remove { value, .. } => {
-                        inputs.join(&self.eval_expr(value, env));
+                        persisted.join(&self.eval_expr(value, env));
                     }
                     DbChangeOp::Unset { .. } => {}
                 }
             }
         }
-        inputs
+        persisted
     }
 
     fn eval_db_selector(&mut self, selector: &DbSelector, env: &mut Environment) -> AbstractValue {

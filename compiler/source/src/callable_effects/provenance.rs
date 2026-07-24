@@ -169,6 +169,19 @@ impl CallableState {
         }
     }
 
+    pub fn record_persistent_escape(&mut self, value: &AbstractValue) {
+        // Database writes materialize values. Scalar caller inputs and fresh
+        // containers assembled from them are detached at this boundary; an
+        // actual caller-owned reference graph must still be rejected.
+        if value.contains_caller_reference() || value.unknown {
+            self.effects.escapes_caller_value = true;
+            self.escape_lanes.insert(EscapeLane::Database);
+        }
+        if value.unknown {
+            self.mark_unknown_value_if_unowned();
+        }
+    }
+
     pub fn mark_unknown(&mut self, reason: CallableProvenanceUnknownReason) {
         self.unknown = join_unknown(self.unknown, Some(reason));
     }

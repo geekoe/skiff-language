@@ -353,6 +353,90 @@ fn stream_spawn_database_and_callback_escape_lanes_are_explicit() {
 }
 
 #[test]
+fn database_queries_and_detached_writes_do_not_escape_caller_values() {
+    let model = analyze(
+        r#"
+            type Payload { value: string }
+            type Stored { id: string, payload: Payload }
+
+            db object Stored {
+              primary key(id)
+            }
+
+            function read(id: string) -> Stored? {
+              return db optional Stored(id)
+            }
+
+            function history(id: string) -> Array<Stored> {
+              return db find many Stored { where id == id }
+            }
+
+            function put(id: string, value: string) -> Stored {
+              return db insert Stored {
+                id = id
+                payload = Payload { value: value }
+              }
+            }
+
+            function compareAndSet(id: string, value: string) -> Stored? {
+              return db update Stored(id) {
+                payload = Payload { value: value }
+              }
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    for callable in ["read", "history", "put", "compareAndSet"] {
+        assert_eq!(
+            effects(&model, callable),
+            suspend_only_effects(),
+            "{callable}"
+        );
+        let CallableProvenanceSummary::Analyzed {
+            return_origins,
+            escape_lanes,
+            ..
+        } = provenance(&model, callable)
+        else {
+            panic!("{callable} must retain exact database provenance");
+        };
+        assert_eq!(return_origins, &vec![ValueProvenance::Fresh], "{callable}");
+        assert!(escape_lanes.is_empty(), "{callable}: {escape_lanes:?}");
+    }
+}
+
+#[test]
+fn persisting_caller_owned_mutable_values_remains_a_database_escape() {
+    let model = analyze(
+        r#"
+            type Payload { value: string }
+            type Stored { id: string, payload: Payload }
+
+            db object Stored {
+              primary key(id)
+            }
+
+            function insertOwned(id: string, payload: Payload) -> Stored {
+              return db insert Stored { id = id payload = payload }
+            }
+
+            function replaceOwned(id: string, payload: Payload) -> Stored? {
+              return db update Stored(id) { payload = payload }
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    for callable in ["insertOwned", "replaceOwned"] {
+        let callable_effects = effects(&model, callable);
+        assert!(callable_effects.may_suspend, "{callable}");
+        assert!(callable_effects.escapes_caller_value, "{callable}");
+        assert_escape_lane(&model, callable, ValueEscapeLane::Database);
+    }
+}
+
+#[test]
 fn exact_context_free_native_uses_shared_callable_semantics() {
     let model = analyze(
         r#"

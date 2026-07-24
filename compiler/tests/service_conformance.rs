@@ -12,7 +12,7 @@ use skiff_artifact_model::{
     BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary,
     CallableMayEffects, CallableProvenanceSummary, ContractRequirement, ContractTypeDescriptor,
     ContractTypeNameability, ContractTypeRef, ContractTypeShape, PackageLocalAbiSymbol,
-    PackageTypeRef, ServiceCallRef, ServiceRequirement,
+    PackageTypeRef, ServiceCallRef, ServiceRequirement, ValueEscapeLane,
 };
 use skiff_compiler::{
     definition_contract_operation_id, definition_contract_type_id, definition_contract_type_ref,
@@ -427,6 +427,61 @@ function mutate(input: Box) -> void {
         public_callable_projection(&project.package.artifact, "run"),
         BoundaryCallableProjection::Available { .. }
     ));
+}
+
+#[test]
+fn database_reads_and_detached_writes_project_available_but_owned_writes_do_not() {
+    let package = TestDir::new("skiff-compiler", "database-boundary-provenance");
+    write_package(
+        &package,
+        "example.com/database-boundary-provenance",
+        "read: main.read\nput: main.put\nputOwned: main.putOwned\n",
+        r#"type Stored { id: string, value: string, tags: Array<string> }
+
+db object Stored {
+  primary key(id)
+}
+
+function read(id: string) -> string {
+  const stored = db require Stored(id)
+  return stored.value
+}
+
+function put(id: string, value: string) -> void {
+  db insert Stored {
+    id = id
+    value = value
+    tags = Array.empty<string>()
+  }
+}
+
+function putOwned(id: string, tags: Array<string>) -> void {
+  db insert Stored { id = id value = "owned" tags = tags }
+}
+"#,
+    );
+    let project =
+        compile_package_project_with_contract_dependencies(package.path(), &BTreeMap::new())
+            .expect("database provenance fixture should compile");
+
+    for callable in ["read", "put"] {
+        let projection = public_callable_projection(&project.package.artifact, callable);
+        assert!(
+            matches!(projection, BoundaryCallableProjection::Available { .. }),
+            "{callable} must remain boundary available: {projection:?}"
+        );
+    }
+    let BoundaryCallableProjection::Unavailable { reasons } =
+        public_callable_projection(&project.package.artifact, "putOwned")
+    else {
+        panic!("persisting a caller-owned payload must remain boundary unavailable");
+    };
+    assert_eq!(
+        reasons,
+        &vec![BoundaryUnavailableReason::EscapesCallerValue {
+            lane: ValueEscapeLane::Database,
+        }]
+    );
 }
 
 #[test]
