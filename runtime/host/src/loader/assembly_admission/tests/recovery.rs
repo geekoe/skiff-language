@@ -53,6 +53,13 @@ impl RuntimeAssemblyContentResolver for EmptyRecordResolver {
         self.unexpected("contract")
     }
 
+    fn resolve_package_schema_type(
+        &self,
+        _reference: &skiff_artifact_model::PackageSchemaTypeRecordRef,
+    ) -> anyhow::Result<Arc<skiff_artifact_model::PackageSchemaTypeRecord>> {
+        self.unexpected("package schema")
+    }
+
     fn resolve_package(
         &self,
         _reference: &PackageArtifactRef,

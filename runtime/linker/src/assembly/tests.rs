@@ -30,6 +30,13 @@ impl RuntimeAssemblyContentResolver for NoContent {
         panic!("empty assembly must not resolve contracts")
     }
 
+    fn resolve_package_schema_type(
+        &self,
+        _reference: &skiff_artifact_model::PackageSchemaTypeRecordRef,
+    ) -> anyhow::Result<Arc<skiff_artifact_model::PackageSchemaTypeRecord>> {
+        panic!("empty assembly must not resolve package schema")
+    }
+
     fn resolve_package(
         &self,
         _reference: &PackageArtifactRef,

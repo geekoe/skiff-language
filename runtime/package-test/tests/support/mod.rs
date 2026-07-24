@@ -283,6 +283,13 @@ impl RuntimeAssemblyContentResolver for FixtureResolver {
             .ok_or_else(|| anyhow::anyhow!("missing contract {reference:?}"))
     }
 
+    fn resolve_package_schema_type(
+        &self,
+        reference: &skiff_artifact_model::PackageSchemaTypeRecordRef,
+    ) -> anyhow::Result<Arc<skiff_artifact_model::PackageSchemaTypeRecord>> {
+        anyhow::bail!("missing package schema record {reference:?}")
+    }
+
     fn resolve_package(
         &self,
         reference: &PackageArtifactRef,

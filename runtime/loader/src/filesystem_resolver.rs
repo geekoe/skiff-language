@@ -1,9 +1,9 @@
 use std::{path::Path, sync::Arc};
 
 use skiff_artifact_model::{
-    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PublicationResourceRef,
-    RuntimeAssemblyRef, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef,
+    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageSchemaTypeRecord,
+    PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssemblyRef, ServiceContract,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
 
@@ -58,6 +58,13 @@ impl RuntimeAssemblyContentResolver for FilesystemRuntimeAssemblyContentResolver
         reference: &ServiceContractRef,
     ) -> anyhow::Result<Arc<ServiceContract>> {
         Ok(self.store.read_service_contract(reference)?)
+    }
+
+    fn resolve_package_schema_type(
+        &self,
+        reference: &PackageSchemaTypeRecordRef,
+    ) -> anyhow::Result<Arc<PackageSchemaTypeRecord>> {
+        Ok(self.store.read_package_schema_type_record(reference)?)
     }
 
     fn resolve_package(

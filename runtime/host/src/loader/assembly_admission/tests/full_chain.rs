@@ -57,6 +57,14 @@ impl RuntimeAssemblyContentResolver for CountingResolver {
             .ok_or_else(|| anyhow::anyhow!("missing contract"))
     }
 
+    fn resolve_package_schema_type(
+        &self,
+        reference: &skiff_artifact_model::PackageSchemaTypeRecordRef,
+    ) -> anyhow::Result<Arc<skiff_artifact_model::PackageSchemaTypeRecord>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        anyhow::bail!("missing package schema record {reference:?}")
+    }
+
     fn resolve_package(
         &self,
         reference: &PackageArtifactRef,

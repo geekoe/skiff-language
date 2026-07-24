@@ -5,6 +5,6 @@ mod utils;
 pub use filesystem_resolver::FilesystemRuntimeAssemblyContentResolver;
 pub use runtime_assembly::{
     HydratedPackageCodeSlot, HydratedRuntimeAssembly, HydratedStaticResource,
-    RuntimeAssemblyContentResolver, RuntimeAssemblyLoader, RuntimeAssemblyRecordResolver,
-    ServiceContractStore,
+    ResolvedServiceSchema, RuntimeAssemblyContentResolver, RuntimeAssemblyLoader,
+    RuntimeAssemblyRecordResolver, ServiceContractStore,
 };

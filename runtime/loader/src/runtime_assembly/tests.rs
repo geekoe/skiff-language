@@ -8,16 +8,19 @@ use skiff_artifact_model::{
     BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding,
     BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary,
     CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, ContractDiagnosticText,
-    ContractOperationId, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision, ExecutableBody, ExecutableIr,
-    ExecutableKind, FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBuildId,
-    PackageCallableId, PackageCallableLinkFact, PackageCallableSignature, PackageCodeSlot,
-    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
-    PackageRuntimeRequirements, PackageTypeRef, PublicationResourceRef, ResourcePolicy,
-    RuntimeAssembly, ServiceBindingTemplate, ServiceContract, ServiceContractRef,
-    ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity, SlotLayout, TypeRefIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    ContractOperationId, ContractTypeDescriptor, ContractTypeRef, DeploymentArtifactIdentity,
+    DeploymentDiagnosticText, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
+    ExecutableBody, ExecutableIr, ExecutableKind, FileIrRef, FileIrUnit, PackageArtifact,
+    PackageArtifactRef, PackageBuildId, PackageCallableId, PackageCallableLinkFact,
+    PackageCallableSignature, PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi,
+    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRuntimeRequirements,
+    PackageSchemaCanonicalDescriptor, PackageSchemaIndexRef, PackageSchemaTypeId,
+    PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, PackageTypeRef, PackageTypeRequirement,
+    PublicationResourceRef, ResourcePolicy, RuntimeAssembly, ServiceBindingTemplate,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceProtocolIdentity, SlotLayout, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -38,6 +41,13 @@ impl RuntimeAssemblyContentResolver for PanicResolver {
         _reference: &ServiceContractRef,
     ) -> anyhow::Result<Arc<ServiceContract>> {
         panic!("empty assembly must not resolve a contract")
+    }
+
+    fn resolve_package_schema_type(
+        &self,
+        _reference: &PackageSchemaTypeRecordRef,
+    ) -> anyhow::Result<Arc<PackageSchemaTypeRecord>> {
+        panic!("empty assembly must not resolve package schema")
     }
 
     fn resolve_package(
@@ -77,6 +87,8 @@ struct FixtureResolver {
     resource_ref: PublicationResourceRef,
     resource: Arc<[u8]>,
     package_loads: Cell<usize>,
+    schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    schema_loads: Cell<usize>,
 }
 
 impl RuntimeAssemblyContentResolver for FixtureResolver {
@@ -103,6 +115,18 @@ impl RuntimeAssemblyContentResolver for FixtureResolver {
             anyhow::bail!("missing contract")
         }
         Ok(Arc::clone(&self.contract))
+    }
+
+    fn resolve_package_schema_type(
+        &self,
+        reference: &PackageSchemaTypeRecordRef,
+    ) -> anyhow::Result<Arc<PackageSchemaTypeRecord>> {
+        self.schema_loads.set(self.schema_loads.get() + 1);
+        self.schema_records
+            .get(&reference.package_schema_type_id)
+            .filter(|record| record.package_id == reference.package_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing package schema type"))
     }
 
     fn resolve_package(
@@ -148,6 +172,7 @@ struct Fixture {
     resource: Arc<[u8]>,
     deployment: ServiceDeployment,
     assembly: RuntimeAssembly,
+    schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
 }
 
 impl Fixture {
@@ -169,7 +194,7 @@ impl Fixture {
             contract_version: contract_version.to_string(),
             service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
             operations: BTreeMap::from([(operation_id.clone(), descriptor)]),
-            boundary_schema: BTreeMap::new(),
+            package_type_requirements: Vec::new(),
             diagnostic_text: ContractDiagnosticText {
                 service: "Health".to_string(),
                 operations: BTreeMap::from([(operation_id.clone(), "Health".to_string())]),
@@ -245,6 +270,16 @@ impl Fixture {
                     },
                 )]),
             },
+            package_schema_index: PackageSchemaIndexRef {
+                package_id: "example.health-provider".to_string(),
+                package_schema_index_identity:
+                    skiff_artifact_identity::package_schema_index_identity(
+                        "example.health-provider",
+                        &BTreeMap::new(),
+                    )
+                    .unwrap(),
+            },
+            package_schema_type_records: BTreeMap::new(),
             implementation_links: PackageImplementationLinks::default(),
             callable_links: BTreeMap::from([(
                 callable_id.clone(),
@@ -354,6 +389,7 @@ impl Fixture {
             resource,
             deployment,
             assembly,
+            schema_records: BTreeMap::new(),
         }
     }
 
@@ -371,7 +407,55 @@ impl Fixture {
             resource_ref: self.package.static_resources[0].clone(),
             resource: Arc::clone(&self.resource),
             package_loads: Cell::new(0),
+            schema_records: self.schema_records.clone(),
+            schema_loads: Cell::new(0),
         }
+    }
+
+    fn add_schema_return(&mut self, record: PackageSchemaTypeRecord) {
+        let type_id = record.package_schema_type_id.clone();
+        self.contract
+            .operations
+            .get_mut(&self.operation_id)
+            .unwrap()
+            .contract
+            .return_value
+            .ty = ContractTypeRef::package_schema(
+            record.package_id.clone(),
+            record.stable_schema_key.clone(),
+            type_id.clone(),
+        );
+        self.contract.package_type_requirements = vec![PackageTypeRequirement {
+            package_id: record.package_id.clone(),
+            required_type_ids: vec![type_id.clone()],
+        }];
+        if let BoundaryCallableProjection::Available {
+            operation_contract, ..
+        } = self
+            .package
+            .boundary_projections
+            .get_mut(&self.callable_id)
+            .unwrap()
+        {
+            operation_contract.return_value.ty = ContractTypeRef::package_schema(
+                record.package_id.clone(),
+                record.stable_schema_key.clone(),
+                type_id.clone(),
+            );
+        }
+        self.package.package_schema_type_records.insert(
+            type_id.clone(),
+            PackageSchemaTypeRecordRef {
+                package_id: record.package_id.clone(),
+                package_schema_type_id: type_id.clone(),
+            },
+        );
+        skiff_artifact_identity::assign_service_contract_identities(&mut self.contract).unwrap();
+        self.schema_records.insert(type_id, Arc::new(record));
+        let contract_ref = contract_ref(&self.contract);
+        self.deployment.contract = contract_ref.clone();
+        self.assembly.resolved_contracts = vec![contract_ref];
+        self.refresh_package_chain();
     }
 
     fn refresh_deployment_chain(&mut self) {
@@ -489,6 +573,209 @@ fn typed_loader_preserves_contract_store_and_deterministic_code_lookup() {
 }
 
 #[test]
+fn loader_hydrates_and_pins_exact_package_schema_records() {
+    let mut fixture = Fixture::new();
+    let record = schema_record(
+        "example.health-provider",
+        "api.Health",
+        ContractTypeDescriptor::Enumeration {
+            variants: vec!["ok".to_string()],
+        },
+    );
+    let type_id = record.package_schema_type_id.clone();
+    fixture.add_schema_return(record);
+    let resolver = fixture.resolver();
+
+    let hydrated = RuntimeAssemblyLoader::new(&resolver)
+        .load(fixture.assembly.clone())
+        .unwrap();
+    let contract_ref = contract_ref(&fixture.contract);
+    let schema = hydrated
+        .contract_store()
+        .resolved_schema(&contract_ref)
+        .unwrap();
+    assert_eq!(resolver.schema_loads.get(), 1);
+    assert_eq!(schema.contract(), &contract_ref);
+    assert_eq!(
+        schema.record(&type_id).unwrap().stable_schema_key,
+        "api.Health"
+    );
+    assert!(Arc::ptr_eq(
+        schema.record(&type_id).unwrap(),
+        hydrated
+            .contract_store()
+            .shared_schema_record(&type_id)
+            .unwrap()
+    ));
+}
+
+#[test]
+fn schema_record_payload_is_shared_while_each_contract_closure_is_validated() {
+    let mut fixture = Fixture::new();
+    let record = schema_record(
+        "example.health-provider",
+        "api.Health",
+        ContractTypeDescriptor::Enumeration {
+            variants: vec!["ok".to_string()],
+        },
+    );
+    fixture.add_schema_return(record);
+    let resolver = fixture.resolver();
+    let loader = RuntimeAssemblyLoader::new(&resolver);
+    let reference = contract_ref(&fixture.contract);
+    let mut shared = BTreeMap::new();
+
+    let first = loader
+        .load_contract_schema(&reference, &fixture.contract, &mut shared)
+        .unwrap();
+    let second = loader
+        .load_contract_schema(&reference, &fixture.contract, &mut shared)
+        .unwrap();
+
+    assert_eq!(resolver.schema_loads.get(), 1);
+    let type_id = fixture.contract.package_type_requirements[0].required_type_ids[0].clone();
+    assert!(Arc::ptr_eq(
+        first.record(&type_id).unwrap(),
+        second.record(&type_id).unwrap()
+    ));
+}
+
+#[test]
+fn loader_rejects_missing_wrong_owner_key_and_hash_schema_records() {
+    let mut fixture = Fixture::new();
+    let record = schema_record(
+        "example.health-provider",
+        "api.Health",
+        ContractTypeDescriptor::Enumeration {
+            variants: vec!["ok".to_string()],
+        },
+    );
+    let type_id = record.package_schema_type_id.clone();
+    fixture.add_schema_return(record);
+
+    let mut resolver = fixture.resolver();
+    resolver.schema_records.clear();
+    assert!(RuntimeAssemblyLoader::new(&resolver)
+        .load(fixture.assembly.clone())
+        .unwrap_err()
+        .to_string()
+        .contains("failed to resolve package schema type"));
+
+    for mutate in [
+        |record: &mut PackageSchemaTypeRecord| record.package_id.push_str(".wrong"),
+        |record: &mut PackageSchemaTypeRecord| record.stable_schema_key.push_str(".wrong"),
+        |record: &mut PackageSchemaTypeRecord| {
+            record.package_schema_type_id = PackageSchemaTypeId::new("wrong")
+        },
+    ] as [fn(&mut PackageSchemaTypeRecord); 3]
+    {
+        let mut resolver = fixture.resolver();
+        mutate(Arc::make_mut(
+            resolver.schema_records.get_mut(&type_id).unwrap(),
+        ));
+        assert!(RuntimeAssemblyLoader::new(&resolver)
+            .load(fixture.assembly.clone())
+            .is_err());
+    }
+}
+
+#[test]
+fn schema_validation_rejects_missing_extra_unrequired_and_recursive_closure() {
+    let child = schema_record(
+        "example.health-provider",
+        "api.Child",
+        ContractTypeDescriptor::Enumeration {
+            variants: vec!["child".to_string()],
+        },
+    );
+    let root = schema_record(
+        "example.health-provider",
+        "api.Root",
+        ContractTypeDescriptor::Alias {
+            target: ContractTypeRef::package_schema(
+                child.package_id.clone(),
+                child.stable_schema_key.clone(),
+                child.package_schema_type_id.clone(),
+            ),
+        },
+    );
+    let mut fixture = Fixture::new();
+    fixture.add_schema_return(root.clone());
+    fixture.contract.package_type_requirements[0]
+        .required_type_ids
+        .push(child.package_schema_type_id.clone());
+    let records = BTreeMap::from([
+        (root.package_schema_type_id.clone(), Arc::new(root.clone())),
+        (
+            child.package_schema_type_id.clone(),
+            Arc::new(child.clone()),
+        ),
+    ]);
+    assert!(validate_resolved_service_schema(&fixture.contract, &records).is_ok());
+
+    let missing_child =
+        BTreeMap::from([(root.package_schema_type_id.clone(), Arc::new(root.clone()))]);
+    assert!(validate_resolved_service_schema(&fixture.contract, &missing_child).is_err());
+
+    let extra = schema_record(
+        "example.health-provider",
+        "api.Extra",
+        ContractTypeDescriptor::Enumeration {
+            variants: vec!["extra".to_string()],
+        },
+    );
+    let mut extra_records = records.clone();
+    extra_records.insert(extra.package_schema_type_id.clone(), Arc::new(extra));
+    assert!(validate_resolved_service_schema(&fixture.contract, &extra_records).is_err());
+
+    let mut unrequired = fixture.contract.clone();
+    unrequired.package_type_requirements[0]
+        .required_type_ids
+        .pop();
+    assert!(validate_resolved_service_schema(&unrequired, &records).is_err());
+
+    let first_id = PackageSchemaTypeId::new("cycle:first");
+    let second_id = PackageSchemaTypeId::new("cycle:second");
+    let first = PackageSchemaTypeRecord {
+        package_id: "example.health-provider".to_string(),
+        stable_schema_key: "api.First".to_string(),
+        package_schema_type_id: first_id.clone(),
+        canonical_descriptor: PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::Alias {
+                target: ContractTypeRef::package_schema(
+                    "example.health-provider",
+                    "api.Second",
+                    second_id.clone(),
+                ),
+            },
+        },
+    };
+    let second = PackageSchemaTypeRecord {
+        package_id: "example.health-provider".to_string(),
+        stable_schema_key: "api.Second".to_string(),
+        package_schema_type_id: second_id.clone(),
+        canonical_descriptor: PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::Alias {
+                target: ContractTypeRef::package_schema(
+                    "example.health-provider",
+                    "api.First",
+                    first_id.clone(),
+                ),
+            },
+        },
+    };
+    let cycle = BTreeMap::from([(first_id, first), (second_id, second)]);
+    assert!(
+        skiff_artifact_identity::validate_package_schema_records(&cycle)
+            .unwrap_err()
+            .to_string()
+            .contains("recursive type cycle")
+    );
+}
+
+#[test]
 fn tampered_assembly_contract_deployment_package_and_file_fail_closed() {
     let fixture = Fixture::new();
 
@@ -523,11 +810,13 @@ fn tampered_assembly_contract_deployment_package_and_file_fail_closed() {
 
     let mut resolver = fixture.resolver();
     Arc::make_mut(&mut resolver.package).package_version = "2.0.0".to_string();
-    assert!(RuntimeAssemblyLoader::new(&resolver)
+    let error = RuntimeAssemblyLoader::new(&resolver)
         .load(fixture.assembly.clone())
-        .unwrap_err()
-        .to_string()
-        .contains("package content is invalid"));
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("package content mismatches ref"),
+        "unexpected error: {error:#}"
+    );
 
     let mut resolver = fixture.resolver();
     Arc::make_mut(&mut resolver.file).executables[0].symbol = "tampered".to_string();
@@ -596,7 +885,16 @@ fn missing_file_link_target_and_contract_operation_mismatch_fail_closed() {
 
 #[test]
 fn runtime_assembly_filesystem_resolver_hydrates_exact_canonical_closure() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
+    let record = schema_record(
+        "example.health-provider",
+        "api.Health",
+        ContractTypeDescriptor::Enumeration {
+            variants: vec!["ok".to_string()],
+        },
+    );
+    let type_id = record.package_schema_type_id.clone();
+    fixture.add_schema_return(record.clone());
     let temp = TestArtifactRoot::new();
     let store = skiff_deployment::storage::CanonicalArtifactStore::create(temp.path()).unwrap();
     let package_ref = package_ref(&fixture.package);
@@ -605,6 +903,7 @@ fn runtime_assembly_filesystem_resolver_hydrates_exact_canonical_closure() {
     let assembly_ref = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
 
     store.write_service_contract(&fixture.contract).unwrap();
+    let record_path = store.write_package_schema_type_record(&record).unwrap();
     store.write_package_artifact(&fixture.package).unwrap();
     store
         .write_file_ir(&package_ref, &fixture.package.files[0], &fixture.file)
@@ -629,6 +928,16 @@ fn runtime_assembly_filesystem_resolver_hydrates_exact_canonical_closure() {
     assert!(hydrated.contract_store().contract(&contract_ref).is_some());
     assert_eq!(
         hydrated
+            .contract_store()
+            .resolved_schema(&contract_ref)
+            .unwrap()
+            .record(&type_id)
+            .unwrap()
+            .stable_schema_key,
+        "api.Health"
+    );
+    assert_eq!(
+        hydrated
             .package(&package_ref.package_build_id)
             .unwrap()
             .resource("assets/health.txt")
@@ -637,6 +946,23 @@ fn runtime_assembly_filesystem_resolver_hydrates_exact_canonical_closure() {
             .as_ref(),
         fixture.resource.as_ref()
     );
+
+    std::fs::remove_file(record_path).unwrap();
+    assert_eq!(
+        hydrated
+            .contract_store()
+            .resolved_schema(&contract_ref)
+            .unwrap()
+            .record(&type_id)
+            .unwrap()
+            .stable_schema_key,
+        "api.Health"
+    );
+    assert!(resolver
+        .load_runtime_assembly(&assembly_ref)
+        .unwrap_err()
+        .to_string()
+        .contains("failed to resolve package schema type"));
 }
 
 struct TestArtifactRoot(std::path::PathBuf);
@@ -705,6 +1031,28 @@ fn operation_contract() -> BoundaryOperationContract {
             no_caller_value_escape: true,
             no_same_heap_identity: true,
         },
+    }
+}
+
+fn schema_record(
+    package_id: &str,
+    stable_schema_key: &str,
+    descriptor: ContractTypeDescriptor,
+) -> PackageSchemaTypeRecord {
+    let canonical_descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor,
+    };
+    PackageSchemaTypeRecord {
+        package_id: package_id.to_string(),
+        stable_schema_key: stable_schema_key.to_string(),
+        package_schema_type_id: skiff_artifact_identity::package_schema_type_id(
+            package_id,
+            stable_schema_key,
+            &canonical_descriptor,
+        )
+        .unwrap(),
+        canonical_descriptor,
     }
 }
 

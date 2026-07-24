@@ -5,10 +5,12 @@ use std::{
 
 use anyhow::Context;
 use skiff_artifact_model::{
-    BoundaryOperationDescriptor, ContractOperationId, FileIrRef, FileIrUnit, PackageArtifact,
-    PackageArtifactRef, PackageBuildId, PublicationResourceRef, RuntimeAssembly,
-    RuntimeAssemblyRef, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef,
+    BoundaryCallbackContract, BoundaryErrorContract, BoundaryOperationDescriptor,
+    BoundaryStreamContract, ContractOperationId, ContractTypeDescriptor, ContractTypeRef,
+    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBuildId,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSchemaTypeRecordRef,
+    PublicationResourceRef, RuntimeAssembly, RuntimeAssemblyRef, ServiceContract,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 
 mod content_validation;
@@ -37,6 +39,11 @@ pub trait RuntimeAssemblyContentResolver {
         &self,
         reference: &ServiceContractRef,
     ) -> anyhow::Result<Arc<ServiceContract>>;
+
+    fn resolve_package_schema_type(
+        &self,
+        reference: &PackageSchemaTypeRecordRef,
+    ) -> anyhow::Result<Arc<PackageSchemaTypeRecord>>;
 
     fn resolve_package(
         &self,
@@ -71,6 +78,8 @@ pub trait RuntimeAssemblyRecordResolver: RuntimeAssemblyContentResolver {
 #[derive(Debug, Default)]
 pub struct ServiceContractStore {
     contracts: BTreeMap<ServiceContractRef, Arc<ServiceContract>>,
+    schemas: BTreeMap<ServiceContractRef, Arc<ResolvedServiceSchema>>,
+    shared_schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
 }
 
 impl ServiceContractStore {
@@ -84,6 +93,20 @@ impl ServiceContractStore {
 
     pub fn contract(&self, reference: &ServiceContractRef) -> Option<&Arc<ServiceContract>> {
         self.contracts.get(reference)
+    }
+
+    pub fn resolved_schema(
+        &self,
+        reference: &ServiceContractRef,
+    ) -> Option<&Arc<ResolvedServiceSchema>> {
+        self.schemas.get(reference)
+    }
+
+    pub fn shared_schema_record(
+        &self,
+        type_id: &PackageSchemaTypeId,
+    ) -> Option<&Arc<PackageSchemaTypeRecord>> {
+        self.shared_schema_records.get(type_id)
     }
 
     /// Typed operation lookup. The returned canonical descriptor owns all
@@ -111,6 +134,33 @@ impl ServiceContractStore {
         &self,
     ) -> impl ExactSizeIterator<Item = (&ServiceContractRef, &Arc<ServiceContract>)> {
         self.contracts.iter()
+    }
+}
+
+/// The exact immutable Package-owned type closure admitted for one contract.
+///
+/// Records may share their payload allocation with other admitted contracts,
+/// while membership remains contract-local and was validated before this value
+/// became observable.
+#[derive(Debug)]
+pub struct ResolvedServiceSchema {
+    contract: ServiceContractRef,
+    records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+}
+
+impl ResolvedServiceSchema {
+    pub fn contract(&self) -> &ServiceContractRef {
+        &self.contract
+    }
+
+    pub fn record(&self, type_id: &PackageSchemaTypeId) -> Option<&Arc<PackageSchemaTypeRecord>> {
+        self.records.get(type_id)
+    }
+
+    pub fn records(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&PackageSchemaTypeId, &Arc<PackageSchemaTypeRecord>)> {
+        self.records.iter()
     }
 }
 
@@ -281,17 +331,76 @@ where
 
     fn load_contracts(&self, assembly: &RuntimeAssembly) -> anyhow::Result<ServiceContractStore> {
         let mut contracts = BTreeMap::new();
+        let mut schemas = BTreeMap::new();
+        let mut shared_schema_records = BTreeMap::new();
         for reference in &assembly.resolved_contracts {
             let contract = self
                 .resolver
                 .resolve_contract(reference)
                 .with_context(|| format!("failed to resolve contract {reference:?}"))?;
             validate_contract_ref(reference, &contract)?;
+            let schema =
+                self.load_contract_schema(reference, &contract, &mut shared_schema_records)?;
             if contracts.insert(reference.clone(), contract).is_some() {
                 anyhow::bail!("duplicate resolved contract {reference:?}");
             }
+            schemas.insert(reference.clone(), Arc::new(schema));
         }
-        Ok(ServiceContractStore { contracts })
+        Ok(ServiceContractStore {
+            contracts,
+            schemas,
+            shared_schema_records,
+        })
+    }
+
+    fn load_contract_schema(
+        &self,
+        reference: &ServiceContractRef,
+        contract: &ServiceContract,
+        shared_records: &mut BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    ) -> anyhow::Result<ResolvedServiceSchema> {
+        let mut records = BTreeMap::new();
+        for requirement in &contract.package_type_requirements {
+            for type_id in &requirement.required_type_ids {
+                let record = if let Some(record) = shared_records.get(type_id) {
+                    Arc::clone(record)
+                } else {
+                    let record_ref = PackageSchemaTypeRecordRef {
+                        package_id: requirement.package_id.clone(),
+                        package_schema_type_id: type_id.clone(),
+                    };
+                    let record = self
+                        .resolver
+                        .resolve_package_schema_type(&record_ref)
+                        .with_context(|| {
+                            format!(
+                                "failed to resolve package schema type {} for contract {reference:?}",
+                                type_id
+                            )
+                        })?;
+                    shared_records.insert(type_id.clone(), Arc::clone(&record));
+                    record
+                };
+                if record.package_id != requirement.package_id
+                    || record.package_schema_type_id != *type_id
+                {
+                    anyhow::bail!(
+                        "package schema type {type_id} does not match required owner {} and identity",
+                        requirement.package_id
+                    );
+                }
+                if records.insert(type_id.clone(), record).is_some() {
+                    anyhow::bail!(
+                        "package schema type {type_id} is required more than once by contract {reference:?}"
+                    );
+                }
+            }
+        }
+        validate_resolved_service_schema(contract, &records)?;
+        Ok(ResolvedServiceSchema {
+            contract: reference.clone(),
+            records,
+        })
     }
 
     fn load_deployments(
@@ -449,6 +558,172 @@ where
         }
         Ok((resources, resource_slots))
     }
+}
+
+fn validate_resolved_service_schema(
+    contract: &ServiceContract,
+    records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+) -> anyhow::Result<()> {
+    let owned_records = records
+        .iter()
+        .map(|(type_id, record)| (type_id.clone(), record.as_ref().clone()))
+        .collect::<BTreeMap<_, _>>();
+    skiff_artifact_identity::validate_package_schema_records(&owned_records)
+        .map_err(anyhow::Error::from)
+        .context("invalid resolved package schema closure")?;
+
+    let required = contract
+        .package_type_requirements
+        .iter()
+        .flat_map(|requirement| {
+            requirement
+                .required_type_ids
+                .iter()
+                .map(move |type_id| (type_id.clone(), requirement.package_id.as_str()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    if required.len() != records.len()
+        || required.keys().ne(records.keys())
+        || records.iter().any(|(type_id, record)| {
+            required
+                .get(type_id)
+                .is_none_or(|package_id| *package_id != record.package_id)
+        })
+    {
+        anyhow::bail!("resolved package schema records do not exactly match contract requirements");
+    }
+
+    let mut reachable = BTreeSet::new();
+    for operation in contract.operations.values() {
+        for parameter in &operation.contract.parameters {
+            collect_reachable_type_refs(&parameter.ty, records, &mut reachable)?;
+        }
+        collect_reachable_type_refs(&operation.contract.return_value.ty, records, &mut reachable)?;
+        if let BoundaryErrorContract::Typed { payload_type, .. } = &operation.contract.errors {
+            collect_reachable_type_refs(payload_type, records, &mut reachable)?;
+        }
+        if let BoundaryStreamContract::ServerStream { item_type, .. } = &operation.contract.stream {
+            collect_reachable_type_refs(item_type, records, &mut reachable)?;
+        }
+        if let BoundaryCallbackContract::RequestScoped {
+            interface_types, ..
+        } = &operation.contract.callbacks
+        {
+            for reference in interface_types {
+                collect_reachable_package_type(
+                    &reference.package_id,
+                    &reference.stable_schema_key,
+                    &reference.package_schema_type_id,
+                    records,
+                    &mut reachable,
+                )?;
+            }
+        }
+    }
+    if reachable != records.keys().cloned().collect() {
+        anyhow::bail!(
+            "contract package type requirements do not exactly match operation descriptor closure"
+        );
+    }
+    Ok(())
+}
+
+fn collect_reachable_type_refs(
+    ty: &ContractTypeRef,
+    records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    reachable: &mut BTreeSet<PackageSchemaTypeId>,
+) -> anyhow::Result<()> {
+    match ty {
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => collect_reachable_package_type(
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+            records,
+            reachable,
+        ),
+        ContractTypeRef::Builtin { arguments, .. }
+        | ContractTypeRef::StructuralUnion {
+            variants: arguments,
+        } => {
+            for argument in arguments {
+                collect_reachable_type_refs(argument, records, reachable)?;
+            }
+            Ok(())
+        }
+        ContractTypeRef::Record { fields } => {
+            for field in fields.values() {
+                collect_reachable_type_refs(field, records, reachable)?;
+            }
+            Ok(())
+        }
+        ContractTypeRef::Nullable { inner } => {
+            collect_reachable_type_refs(inner, records, reachable)
+        }
+        ContractTypeRef::TypeParam { .. } | ContractTypeRef::Literal { .. } => Ok(()),
+    }
+}
+
+fn collect_reachable_package_type(
+    package_id: &str,
+    stable_schema_key: &str,
+    type_id: &PackageSchemaTypeId,
+    records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    reachable: &mut BTreeSet<PackageSchemaTypeId>,
+) -> anyhow::Result<()> {
+    let record = records
+        .get(type_id)
+        .with_context(|| format!("package schema closure is missing required type {type_id}"))?;
+    if record.package_id != package_id || record.stable_schema_key != stable_schema_key {
+        anyhow::bail!(
+            "package schema reference {type_id} owner or stable key does not match resolved record"
+        );
+    }
+    if !reachable.insert(type_id.clone()) {
+        return Ok(());
+    }
+    collect_descriptor_type_refs(&record.canonical_descriptor.descriptor, records, reachable)
+}
+
+fn collect_descriptor_type_refs(
+    descriptor: &ContractTypeDescriptor,
+    records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    reachable: &mut BTreeSet<PackageSchemaTypeId>,
+) -> anyhow::Result<()> {
+    match descriptor {
+        ContractTypeDescriptor::Record { fields } => {
+            for field in fields.values() {
+                collect_reachable_type_refs(field, records, reachable)?;
+            }
+        }
+        ContractTypeDescriptor::StructuralUnion { variants } => {
+            for variant in variants {
+                collect_reachable_type_refs(variant, records, reachable)?;
+            }
+        }
+        ContractTypeDescriptor::DiscriminatedUnion { branches, .. } => {
+            for branch in branches {
+                collect_reachable_type_refs(&branch.branch_type, records, reachable)?;
+            }
+        }
+        ContractTypeDescriptor::Representation { target }
+        | ContractTypeDescriptor::Alias { target } => {
+            collect_reachable_type_refs(target, records, reachable)?;
+        }
+        ContractTypeDescriptor::CallbackInterface { operations } => {
+            for operation in operations.values() {
+                for parameter in &operation.parameters {
+                    collect_reachable_type_refs(parameter, records, reachable)?;
+                }
+                collect_reachable_type_refs(&operation.return_type, records, reachable)?;
+            }
+        }
+        ContractTypeDescriptor::Enumeration { .. } => {}
+    }
+    Ok(())
 }
 
 #[cfg(test)]
