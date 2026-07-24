@@ -1,11 +1,16 @@
 use std::{cell::Cell, fs, path::PathBuf};
 
+use serde_json::json;
+use skiff_artifact_model::{PackageArtifact, PackageLocalAbiIdentity, PackageRequirement};
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_source::prelude_registry::{
     prelude_registry, PreludeRegistryInitializationError,
 };
 
-use super::{build_authoring_object, run_after_platform_context_guard, AuthoringObject};
+use super::{
+    build_authoring_object, resolve_reachable_package_closure, run_after_platform_context_guard,
+    AuthoringObject,
+};
 
 #[test]
 fn p5_f18b_authoring_mismatch_zero_source_reads() {
@@ -49,6 +54,139 @@ fn p5_f18b_authoring_mismatch_zero_source_reads() {
         Some(PreludeRegistryInitializationError::DifferentPlatformRoot { .. })
     ));
     assert!(!hostile_store.exists());
+}
+
+#[test]
+fn p5_f149_reachable_package_closure_is_transitive_and_excludes_unused_candidates() {
+    let leaf = package("example.com/leaf", "1.0.0", "leaf-abi", []);
+    let middle = package(
+        "example.com/middle",
+        "1.0.0",
+        "middle-abi",
+        [requirement("leaf", &leaf)],
+    );
+    let implementation = package(
+        "example.com/service",
+        "1.0.0",
+        "service-abi",
+        [requirement("middle", &middle)],
+    );
+    let unused = package("example.com/unused", "1.0.0", "unused-abi", []);
+    let mut resolutions = Vec::new();
+
+    let closure = resolve_reachable_package_closure(
+        &implementation,
+        &[middle.clone(), unused],
+        |id, version| {
+            resolutions.push((id.to_string(), version.to_string()));
+            if id == leaf.package_id && version == leaf.package_version {
+                Ok(leaf.clone())
+            } else {
+                Err(test_error("unexpected package resolution"))
+            }
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        closure
+            .iter()
+            .map(|artifact| artifact.package_id.as_str())
+            .collect::<Vec<_>>(),
+        ["example.com/leaf", "example.com/middle"]
+    );
+    assert_eq!(
+        resolutions,
+        [("example.com/leaf".to_string(), "1.0.0".to_string())]
+    );
+}
+
+#[test]
+fn p5_f149_reachable_package_closure_fails_closed_on_each_exact_edge() {
+    let expected = package("example.com/provider", "1.0.0", "expected-abi", []);
+    let implementation = package(
+        "example.com/service",
+        "1.0.0",
+        "service-abi",
+        [requirement("provider", &expected)],
+    );
+    let wrong_abi = package("example.com/provider", "1.0.0", "wrong-abi", []);
+    let error = resolve_reachable_package_closure(&implementation, &[wrong_abi], |_, _| {
+        panic!("a loaded coordinate with the wrong ABI must fail before store resolution")
+    })
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("expected local ABI expected-abi"));
+
+    let wrong_coordinate = package("example.com/other", "1.0.0", "expected-abi", []);
+    let error =
+        resolve_reachable_package_closure(
+            &implementation,
+            &[],
+            |_, _| Ok(wrong_coordinate.clone()),
+        )
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("resolved to example.com/other@1.0.0"));
+
+    let error = resolve_reachable_package_closure(&implementation, &[], |id, version| {
+        Err(test_error(format!(
+            "missing pointer/record for {id}@{version}"
+        )))
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("missing pointer/record"));
+}
+
+fn package(
+    id: &str,
+    version: &str,
+    local_abi: &str,
+    requirements: impl IntoIterator<Item = PackageRequirement>,
+) -> PackageArtifact {
+    serde_json::from_value(json!({
+        "schemaVersion": "skiff-package-artifact-v2",
+        "packageId": id,
+        "packageVersion": version,
+        "packageBuildId": format!("build:{id}:{version}:{local_abi}"),
+        "files": [],
+        "staticResources": [],
+        "packageLocalAbi": {
+            "localAbiIdentity": local_abi,
+            "publicSymbols": {}
+        },
+        "implementationLinks": {},
+        "callableLinks": {},
+        "packageRequirements": requirements.into_iter().collect::<Vec<_>>(),
+        "contractRequirements": [],
+        "serviceRequirements": [],
+        "runtimeRequirements": {
+            "config": [],
+            "resources": [],
+            "runtimeCapabilities": []
+        },
+        "callableSemanticFacts": {},
+        "boundaryProjections": {},
+        "serviceCallRefs": []
+    }))
+    .unwrap()
+}
+
+fn requirement(alias: &str, package: &PackageArtifact) -> PackageRequirement {
+    PackageRequirement {
+        alias: alias.to_string(),
+        package_id: package.package_id.clone(),
+        exact_version: package.package_version.clone(),
+        expected_local_abi: PackageLocalAbiIdentity::new(
+            package.package_local_abi.local_abi_identity.as_ref(),
+        ),
+    }
+}
+
+fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into()).into()
 }
 
 fn repository_platform_sources() -> CompilerPlatformSources {
