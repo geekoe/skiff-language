@@ -2275,14 +2275,9 @@ impl<'a> OwnerChecker<'a> {
         }
         if matches!(
             path.as_str(),
-            "std.actor.getOrCreate"
-                | "std.actor.replace"
-                | "std.actor.find"
-                | "std.actor.remove"
+            "std.actor.getOrCreate" | "std.actor.replace" | "std.actor.find" | "std.actor.remove"
         ) {
-            return self.actor_registry_intrinsic_call_type(
-                &path, type_args, args, arg_types,
-            );
+            return self.actor_registry_intrinsic_call_type(&path, type_args, args, arg_types);
         }
         match self.type_resolution.resolve_representation_constructor(
             &path,
@@ -2909,10 +2904,7 @@ impl<'a> OwnerChecker<'a> {
             ));
             return None;
         };
-        let needs_bootstrap = matches!(
-            path,
-            "std.actor.getOrCreate" | "std.actor.replace"
-        );
+        let needs_bootstrap = matches!(path, "std.actor.getOrCreate" | "std.actor.replace");
         let expected_arity = if needs_bootstrap { 2 } else { 1 };
         if args.len() != expected_arity {
             self.diagnostics.push(format!(
@@ -3760,14 +3752,15 @@ fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<ResolvedType
             }
             Some(resolved_type_from_ir(&union_type_ir(field_types)))
         }
-        TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => match field
-        {
-            "tag" => Some(resolved_type_from_ir(&union_type_ir(vec![
-                literal_string_type("ok"),
-                literal_string_type("err"),
-            ]))),
-            _ => None,
-        },
+        TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
+            match field {
+                "tag" => Some(resolved_type_from_ir(&union_type_ir(vec![
+                    literal_string_type("ok"),
+                    literal_string_type("err"),
+                ]))),
+                _ => None,
+            }
+        }
         TypeRefIr::Builtin { name, args } if name == "DbUpsertResult" && args.len() == 1 => {
             match field {
                 "inserted" => Some(resolved_type_from_ir(&TypeRefIr::Builtin {
@@ -3778,10 +3771,12 @@ fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<ResolvedType
                 _ => None,
             }
         }
-        TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => match field {
-            "error" => Some(resolved_type_from_ir(&args[0])),
-            _ => None,
-        },
+        TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => {
+            match field {
+                "error" => Some(resolved_type_from_ir(&args[0])),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -4398,9 +4393,15 @@ mod tests {
         let message = error.message();
         assert!(message.contains("is not an actor declaration"), "{message}");
         assert!(message.contains("argument 1"), "{message}");
-        assert!(message.contains("argument 2 object literal field"), "{message}");
+        assert!(
+            message.contains("argument 2 object literal field"),
+            "{message}"
+        );
         assert!(message.contains("unknown field `displayName`"), "{message}");
-        assert!(message.contains("cannot be used as a database object"), "{message}");
+        assert!(
+            message.contains("cannot be used as a database object"),
+            "{message}"
+        );
     }
 
     #[test]
