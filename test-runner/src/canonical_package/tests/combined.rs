@@ -69,6 +69,7 @@ fn p5_f18_compiler_repair_combined() {
         AuthoringObject::Package,
         &poison_package,
         &authoring_store,
+        "dev",
         false,
     )
     .unwrap_err();
@@ -122,6 +123,7 @@ fn p5_f76_contextual_callable_provenance_combined() {
             AuthoringObject::Package,
             &package_root,
             &artifacts,
+            "dev",
             true,
         )
         .unwrap();

@@ -287,24 +287,21 @@ fn read_contract_dependencies(
     manifest: &PackageManifest,
 ) -> Result<Vec<PackageContractCompileDependency>, CanonicalPackageProjectError> {
     manifest
-        .contracts
+        .services
         .iter()
         .map(|dependency| {
             let pointer = store
-                .read_service_contract_pointer(
-                    &dependency.service_id,
-                    &dependency.contract_version,
-                )?
+                .read_service_contract_pointer(&dependency.id, &dependency.version)?
                 .ok_or_else(|| CanonicalPackageProjectError::MissingContractPointer {
-                    service_id: dependency.service_id.clone(),
-                    contract_version: dependency.contract_version.clone(),
+                    service_id: dependency.id.clone(),
+                    contract_version: dependency.version.clone(),
                 })?;
             let contract = store.read_service_contract(&pointer.contract)?;
             Ok(PackageContractCompileDependency {
                 requirement: ContractRequirement {
-                    alias: dependency.alias.clone(),
-                    service_id: dependency.service_id.clone(),
-                    contract_version: dependency.contract_version.clone(),
+                    alias: dependency.effective_alias().to_string(),
+                    service_id: dependency.id.clone(),
+                    contract_version: dependency.version.clone(),
                     expected_protocol_identity: contract.service_protocol_identity.clone(),
                 },
                 contract: contract.as_ref().clone(),

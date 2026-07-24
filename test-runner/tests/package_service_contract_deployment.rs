@@ -258,10 +258,10 @@ fn contract_dependency_is_loaded_from_a_typed_pointer_and_record() {
         &package,
         r#"id: example.com/contract-consumer
 version: 1.0.0
-contracts:
-  - alias: payments
-    serviceId: example.com/payments
-    contractVersion: 1.0.0
+services:
+  - id: example.com/payments
+    version: 1.0.0
+    alias: payments
 "#,
         Some("run: main.run\n"),
         Some(
@@ -854,10 +854,10 @@ fn runtime_service_requirement_without_base_assembly_fails_before_activation() {
         &package,
         r#"id: example.com/base-required
 version: 1.0.0
-contracts:
-  - alias: payments
-    serviceId: example.com/payments
-    contractVersion: 1.0.0
+services:
+  - id: example.com/payments
+    version: 1.0.0
+    alias: payments
 "#,
         Some("run: main.run\n"),
         Some("function run(input: string) -> string { return payments/echo(input) }\n"),
@@ -1257,6 +1257,7 @@ fn publish_package(root: &Path, artifacts: &Path) -> PackageArtifactRef {
         AuthoringObject::Package,
         root,
         artifacts,
+        "dev",
         true,
     )
     .expect("production package authoring should publish pointer and records");
@@ -1265,16 +1266,40 @@ fn publish_package(root: &Path, artifacts: &Path) -> PackageArtifactRef {
 }
 
 fn publish_contract(artifacts: &Path) -> ServiceContractRef {
+    let work = TestRoot::new("service-contract");
+    let source = package_service_host_fixture_root().join("provider");
+    let provider = work.child("provider");
+    copy_tree(&source, &provider);
+    fs::write(
+        provider.join("config.dev.yml"),
+        "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nlifecycle: { maxConcurrency: 1 }\nprincipal: service:provider\n",
+    )
+    .unwrap();
     let output = build_authoring_object(
         &platform_sources(),
-        AuthoringObject::Contract,
-        &package_service_host_fixture_root().join("payments-contract"),
+        AuthoringObject::Package,
+        &provider,
         artifacts,
+        "dev",
         true,
     )
     .expect("production contract authoring should publish pointer and record");
     serde_json::from_value(output["serviceContractReceipt"]["contract"].clone())
         .expect("typed contract authoring receipt")
+}
+
+fn copy_tree(source: &Path, target: &Path) {
+    fs::create_dir_all(target).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&source_path, &target_path);
+        } else {
+            fs::copy(source_path, target_path).unwrap();
+        }
+    }
 }
 
 fn package_service_host_fixture_root() -> PathBuf {
