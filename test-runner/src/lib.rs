@@ -17,6 +17,7 @@ pub mod canonical_package;
 pub mod canonical_std_seed;
 pub mod canonical_store;
 pub mod ecosystem_smoke_fixture;
+mod package_schema_contract;
 pub mod package_service_host_fixture;
 pub mod package_test_assembly;
 pub mod runtime_execution;

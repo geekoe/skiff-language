@@ -21,6 +21,7 @@ use crate::{
     canonical_fixture::CanonicalFixtureError,
     canonical_package::CanonicalPackageProject,
     canonical_store::{CanonicalBaseAssembly, CanonicalTestRecords},
+    package_schema_contract::schema_closure,
     test_discovery::PackageTestCase,
     test_overlay::PublishedPackageTestOverlay,
 };
@@ -64,7 +65,7 @@ pub fn assemble_package_test_fixture_with_config(
     base: CanonicalBaseAssembly,
     test_config_literals: &[PackageTestConfigLiteral],
 ) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
-    let contract = compile_package_test_contract(&overlay)?;
+    let (contract, package_schema_records) = compile_package_test_contract(&overlay)?;
     let contract_ref = service_contract_ref(&contract)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     let overlay_ref = package_artifact_ref(&overlay.overlay.artifact)
@@ -99,6 +100,7 @@ pub fn assemble_package_test_fixture_with_config(
         ),
         &contract,
         &deployment_packages,
+        &package_schema_records,
     )
     .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     let deployment_ref = service_deployment_ref(&deployment);
@@ -148,7 +150,16 @@ pub fn assemble_package_test_fixture_with_config(
 
 fn compile_package_test_contract(
     overlay: &PublishedPackageTestOverlay,
-) -> Result<ServiceContract, CanonicalFixtureError> {
+) -> Result<
+    (
+        ServiceContract,
+        BTreeMap<
+            skiff_artifact_model::PackageSchemaTypeId,
+            skiff_artifact_model::PackageSchemaTypeRecord,
+        >,
+    ),
+    CanonicalFixtureError,
+> {
     let mut operations = BTreeMap::new();
     for (index, binding) in overlay.bindings.iter().enumerate() {
         let projection = overlay
@@ -175,21 +186,27 @@ fn compile_package_test_contract(
         };
         operations.insert(format!("case{index}"), operation_contract.clone());
     }
-    compile_contract(ServiceContractDefinition {
+    let (package_type_requirements, package_schema_records) = schema_closure(
+        &operations,
+        &overlay.overlay.resolved_package_schema_type_records,
+    )
+    .map_err(CanonicalFixtureError::InvalidInput)?;
+    let contract = compile_contract(ServiceContractDefinition {
         service_id: format!(
             "test.skiff/package/{}",
             safe_coordinate(&overlay.production.package_id)
         ),
         contract_version: overlay.production.package_version.clone(),
         operations,
-        boundary_schema: BTreeMap::new(),
+        package_type_requirements,
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
             service: format!("package tests for {}", overlay.production.package_id),
             operations: BTreeMap::new(),
             types: BTreeMap::new(),
         },
     })
-    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))
+    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    Ok((contract, package_schema_records))
 }
 
 fn package_test_operation_inputs(

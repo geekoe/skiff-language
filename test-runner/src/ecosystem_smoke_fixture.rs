@@ -27,6 +27,7 @@ use crate::{
         CanonicalTestRecords,
     },
     canonical_package::CanonicalPackageProject,
+    package_schema_contract::schema_closure,
     package_test_assembly::canonical_package_bindings,
     test_overlay::PublishedPackageTestOverlay,
 };
@@ -92,6 +93,7 @@ pub fn assemble_ecosystem_smoke_fixture(
         ),
         &smoke.contract,
         &packages,
+        &smoke.schema_records,
     )
     .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     let deployment_ref = service_deployment_ref(&deployment);
@@ -211,6 +213,10 @@ fn smoke_deployment_input(
 
 struct SmokeContract {
     contract: ServiceContract,
+    schema_records: BTreeMap<
+        skiff_artifact_model::PackageSchemaTypeId,
+        skiff_artifact_model::PackageSchemaTypeRecord,
+    >,
     reference: ServiceContractRef,
     operation: ContractOperationId,
     websocket_operation: Option<ContractOperationId>,
@@ -226,11 +232,16 @@ fn compile_smoke_contract(
     if let Some(websocket) = websocket_contract {
         operations.insert("websocket".to_string(), websocket);
     }
+    let (package_type_requirements, schema_records) = schema_closure(
+        &operations,
+        &project.package.resolved_package_schema_type_records,
+    )
+    .map_err(CanonicalFixtureError::InvalidInput)?;
     let contract = compile_contract(ServiceContractDefinition {
         service_id: SMOKE_SERVICE_ID.to_string(),
         contract_version: SMOKE_CONTRACT_VERSION.to_string(),
         operations,
-        boundary_schema: BTreeMap::new(),
+        package_type_requirements,
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
             service: "ecosystem smoke".to_string(),
             operations: BTreeMap::new(),
@@ -259,6 +270,7 @@ fn compile_smoke_contract(
             .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?,
         operation,
         websocket_operation,
+        schema_records,
         contract,
     })
 }
