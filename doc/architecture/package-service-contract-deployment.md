@@ -537,15 +537,26 @@ atomic reload在runtime层可观测。
 registry分别存储不可变PackageArtifact、ServiceContract、ServiceDeployment与RuntimeAssembly record。
 release pointer可以选择contract-compatible deployment revision和active assembly。
 
-生产Platform registry以Platform DB作为唯一durable source of truth；四类immutable record、typed release
-pointer current/history都只落该DB。Skiff Rust canonical typed validation、identity与CAS语义通过受信的
-DB-backed capability复用，Platform service不得复制identity、path、raw JSON或CAS算法。文件型
-`CanonicalArtifactStore`只作为local/dev/CLI backend，不参与Platform production，也不与Platform DB dual-write。
+生产registry由可选的普通Skiff service `skiff.run/registry`实现。它的service源码、contract与deployment
+和其它官方service一样独立author、编译、发布和部署，可以位于官方`skiff-packages`仓库；它不是
+`skiff.run/std`、compiler platform source、语言intrinsic、native adapter或拥有compiler特权的package。
+语言、compiler和runtime在没有该service时仍然完整可用。调用者通过普通typed ServiceContract调用registry；
+compiler不得为`skiff.run/registry`保留package id、注入native declaration、授予特殊capability或要求外部
+authoring descriptor。
 
-Router coordinator仍是environment activation prepare/commit/abort的唯一事务编排者。它通过同一受信DB backend
-持久化activation state，状态变更与Platform audit在同一事务中追加；registry service不能直接写prepared/connected
-集合、伪造participant ACK或维护第二份activation state。trusted capability必须按deployment principal、operation
-scope与request lifetime注入，普通package或仅声明binding但未获授权的service一律fail closed。
+`skiff.run/registry`以Platform DB作为四类immutable record及typed release pointer current/history的唯一
+production durable source of truth。它和其它需要数据库的service一样声明DB/state requirement，并只通过
+普通`std.db` capability访问数据库。Mongo URL的唯一配置owner是Router的`serviceDb.mongoUrl`；该值不进入
+service/package/compiler/deployment artifact，也不由runtime文件配置、环境变量或默认值提供。Router在
+activation provisioning时把当前activation所需的DB binding下发给Runtime；Runtime只消费该
+activation-scoped binding，service代码看不到provider URL。文件型`CanonicalArtifactStore`只作为
+local/dev/CLI backend，不参与production registry，也不与Platform DB dual-write。
+
+Router coordinator仍是environment activation prepare/commit/abort的唯一事务编排者。Router进程直接使用
+自己配置的MongoDB连接持久化activation state；状态CAS与Platform audit在同一事务中追加。不得为了复用其它
+语言实现而要求外部activation backend executable、子进程或NDJSON transport。registry service不能直接写
+prepared/connected集合、伪造participant ACK或维护第二份activation state；它与Router activation state通过
+明确的collection/schema owner隔离。
 
 `publish`是操作：校验typed artifact、写入不可变内容、更新允许更新的pointer。它不产生
 `Publication`对象，也不要求四类artifact实现共同kind enum。registry可以在一个事务/workflow中发布
