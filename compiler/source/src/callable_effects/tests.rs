@@ -1261,6 +1261,34 @@ fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
 }
 
 #[test]
+fn exact_string_contains_target_is_read_only_detached_and_non_suspending() {
+    let model = analyze_named(
+        r#"
+            function validEmail(value: string) -> bool {
+              return value.contains("@")
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "account",
+        "skiff.run/account",
+    );
+
+    assert_eq!(effects_in(&model, "account", "validEmail"), no_effects());
+    assert!(matches!(
+        provenance_in(&model, "account", "validEmail"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins == &vec![ValueProvenance::Fresh]
+    ));
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::ReceiverBuiltin { op }
+                if op.canonical_key == "receiver:string.contains@1"
+        )
+    }));
+}
+
+#[test]
 fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
     let model = analyze_named(
         r#"

@@ -595,6 +595,74 @@ version: 1.0.0
 }
 
 #[test]
+fn string_contains_enforces_exact_receiver_and_arity() {
+    let artifact = compile_package_file_ir(
+        r#"
+            function run(value: string) -> bool {
+                return value.contains("@")
+            }
+        "#,
+        "internal/string_contains.skiff",
+        "internal.string_contains",
+    )
+    .expect("string.contains with one string argument should compile");
+    let artifact_value = artifact.value();
+    let run = executable_entry(&artifact_value, "run");
+    assert!(
+        receiver_builtin_call(run, "string", "contains").is_some(),
+        "string.contains should lower to its exact receiver builtin target"
+    );
+
+    for (name, source, expected) in [
+        (
+            "wrong_receiver",
+            r#"
+                function run(value: number) -> bool {
+                    return value.contains("@")
+                }
+            "#,
+            "receiver method `contains`",
+        ),
+        (
+            "missing_argument",
+            r#"
+                function run(value: string) -> bool {
+                    return value.contains()
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run(value: string) -> bool {
+                    return value.contains("@", ".")
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "wrong_argument",
+            r#"
+                function run(value: string) -> bool {
+                    return value.contains(1)
+                }
+            "#,
+            "call `string.contains` argument 1",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/string_contains_{name}.skiff"),
+            format!("internal.string_contains_{name}"),
+        )
+        .expect_err("invalid string.contains call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
 fn array_empty_binding_receiver_call_lowers_to_receiver_builtin() {
     let artifact = compile_package_file_ir(
         r#"

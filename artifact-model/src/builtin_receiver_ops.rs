@@ -332,6 +332,10 @@ pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantic
     ),
     detached_scalar_receiver(
         BuiltinReceiverRoot::StringText,
+        BuiltinReceiverMethod::Contains,
+    ),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::StringText,
         BuiltinReceiverMethod::EndsWith,
     ),
     detached_scalar_receiver(
@@ -986,6 +990,7 @@ mod tests {
             "receiver:number.floor@1",
             "receiver:number.round@1",
             "receiver:string.concat@1",
+            "receiver:string.contains@1",
             "receiver:string.endsWith@1",
             "receiver:string.lowercase@1",
             "receiver:string.startsWith@1",
@@ -1040,6 +1045,7 @@ mod tests {
         for missing in [
             builtin_receiver_op_by_name("JsonObject", "get").unwrap(),
             builtin_receiver_op_by_name("JsonObject", "delete").unwrap(),
+            builtin_receiver_op_by_name("string", "replaceAll").unwrap(),
         ] {
             assert_eq!(
                 builtin_receiver_callable_semantics(missing),

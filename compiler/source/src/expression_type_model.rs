@@ -2809,10 +2809,20 @@ impl<'a> OwnerChecker<'a> {
         let offset = 1 + receiver_object_offset_in_callee(callee)?;
         let receiver_ty = self.expression_type_at_offset(key, offset)?;
         let return_type = builtin_receiver_call_return_type(&receiver_ty, method_name)?;
-        if runtime_receiver_root_from_type_ref(&receiver_ty.ir).as_deref() == Some("Array")
-            && method_name == "push"
-        {
+        let receiver_root = runtime_receiver_root_from_type_ref(&receiver_ty.ir);
+        if receiver_root.as_deref() == Some("Array") && method_name == "push" {
             self.validate_array_push_args(&receiver_ty, args, arg_types);
+        }
+        if receiver_root.as_deref() == Some("string") && method_name == "contains" {
+            self.validate_resolved_call_params(
+                "string.contains",
+                vec![(
+                    "needle".to_string(),
+                    resolved_type_from_ir(&builtin_type("string")),
+                )],
+                args,
+                arg_types,
+            );
         }
         if let Some(projected) =
             self.expression_projection_at_offset(key, offset)
