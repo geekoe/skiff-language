@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, BoundaryValuePlanUnavailableReason, ContractSchemaType, ContractTypeId,
-    ContractTypeRef,
+    BoundaryValuePlan, BoundaryValuePlanUnavailableReason, ContractTypeRef, PackageSchemaTypeId,
+    PackageSchemaTypeRecord,
 };
 use skiff_runtime_model::{
     request_heap::RequestHeap,
@@ -22,7 +22,7 @@ use crate::{
 /// It retains no File IR or runtime-inferred type descriptor.
 pub struct ServiceLinkableContractPlan<'a> {
     ty: &'a ContractTypeRef,
-    boundary_schema: &'a BTreeMap<ContractTypeId, ContractSchemaType>,
+    boundary_schema: &'a BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     value_plan: &'a BoundaryValuePlan,
     detached_value_plan: Option<ServiceValuePlan<'a>>,
 }
@@ -30,7 +30,7 @@ pub struct ServiceLinkableContractPlan<'a> {
 impl<'a> ServiceLinkableContractPlan<'a> {
     pub fn new(
         ty: &'a ContractTypeRef,
-        boundary_schema: &'a BTreeMap<ContractTypeId, ContractSchemaType>,
+        boundary_schema: &'a BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
         value_plan: &'a BoundaryValuePlan,
     ) -> Result<Self, ServiceLinkableMaterializationError> {
         validate_value_plan_shape(value_plan)?;
@@ -174,7 +174,7 @@ pub struct ServiceLinkableCapabilityRequest<'a> {
     pub value: &'a RuntimeValue,
     pub source_heap: &'a RequestHeap,
     pub ty: &'a ContractTypeRef,
-    pub boundary_schema: &'a BTreeMap<ContractTypeId, ContractSchemaType>,
+    pub boundary_schema: &'a BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     pub lifetime: BoundaryValueLifetime,
 }
 
@@ -314,19 +314,37 @@ pub enum ServiceLinkableMaterializationError {
         expected: BoundaryValueLifetime,
         actual: BoundaryValueLifetime,
     },
-    #[error("contract boundary schema is missing {contract_type_id}")]
-    MissingSchema { contract_type_id: ContractTypeId },
-    #[error("contract boundary schema identity mismatch for {requested}: got {actual}")]
-    SchemaIdentityMismatch {
-        requested: ContractTypeId,
-        actual: ContractTypeId,
+    #[error("package boundary schema is missing {package_schema_type_id}")]
+    MissingSchema {
+        package_schema_type_id: PackageSchemaTypeId,
     },
-    #[error("contract boundary schema contains a cycle at {contract_type_id}")]
-    CyclicSchema { contract_type_id: ContractTypeId },
-    #[error("contract boundary schema contains transparent alias {contract_type_id}")]
-    AliasSchema { contract_type_id: ContractTypeId },
-    #[error("ordinary service value cannot contain callback interface {contract_type_id}")]
-    CallbackInterfaceSchema { contract_type_id: ContractTypeId },
+    #[error("package boundary schema identity mismatch for {requested}: got {actual}")]
+    SchemaIdentityMismatch {
+        requested: PackageSchemaTypeId,
+        actual: PackageSchemaTypeId,
+    },
+    #[error(
+        "package boundary schema reference {package_schema_type_id} expects {expected_package_id}:{expected_stable_schema_key}, got {actual_package_id}:{actual_stable_schema_key}"
+    )]
+    SchemaOwnerOrKeyMismatch {
+        package_schema_type_id: PackageSchemaTypeId,
+        expected_package_id: String,
+        expected_stable_schema_key: String,
+        actual_package_id: String,
+        actual_stable_schema_key: String,
+    },
+    #[error("package boundary schema contains a cycle at {package_schema_type_id}")]
+    CyclicSchema {
+        package_schema_type_id: PackageSchemaTypeId,
+    },
+    #[error("package boundary schema contains transparent alias {package_schema_type_id}")]
+    AliasSchema {
+        package_schema_type_id: PackageSchemaTypeId,
+    },
+    #[error("ordinary service value cannot contain callback interface {package_schema_type_id}")]
+    CallbackInterfaceSchema {
+        package_schema_type_id: PackageSchemaTypeId,
+    },
     #[error("service-value contract plan is invalid: {message}")]
     InvalidContractPlan { message: String },
     #[error("runtime value does not match the canonical contract type")]

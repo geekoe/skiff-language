@@ -4,7 +4,7 @@ mod matcher;
 use std::collections::BTreeMap;
 
 use serde_json::Value;
-use skiff_artifact_model::{ContractSchemaType, ContractTypeId, ContractTypeRef};
+use skiff_artifact_model::{ContractTypeRef, PackageSchemaTypeId, PackageSchemaTypeRecord};
 use skiff_runtime_model::{
     request_heap::RequestHeap, type_plan::RuntimeTypePlan, value::RuntimeValue,
 };
@@ -29,7 +29,7 @@ pub struct ServiceValuePlan<'contract> {
 impl<'contract> ServiceValuePlan<'contract> {
     pub fn compile(
         contract_type: &'contract ContractTypeRef,
-        boundary_schema: &BTreeMap<ContractTypeId, ContractSchemaType>,
+        boundary_schema: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     ) -> Result<Self, ServiceLinkableMaterializationError> {
         let runtime_type = compile::compile(contract_type, boundary_schema)?;
         Ok(Self {
@@ -40,6 +40,11 @@ impl<'contract> ServiceValuePlan<'contract> {
 
     pub const fn contract_type(&self) -> &ContractTypeRef {
         self.contract_type
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_type_plan(&self) -> &RuntimeTypePlan {
+        &self.runtime_type
     }
 
     pub fn value_matches(

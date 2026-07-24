@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde_json::{json, Value};
 use skiff_artifact_model::{
     BoundaryCallbackOperation, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractSchemaType, ContractTypeDescriptor,
-    ContractTypeId, ContractTypeNameability, ContractTypeRef, ContractTypeShape,
+    BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor, ContractTypeRef,
+    PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord,
     WEBSOCKET_CONNECT_RESULT_TYPE, WEBSOCKET_INGRESS_EVENT_TYPE,
 };
 use skiff_runtime_model::value::{
@@ -25,6 +25,7 @@ use crate::{
 
 const CONTEXT_ID: &str = "contract-type:Context";
 const USER_ID: &str = "contract-type:UserId";
+const PACKAGE_ID: &str = "test.boundary";
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
 fn generic(name: &str, arguments: Vec<ContractTypeRef>) -> ContractTypeRef {
@@ -46,15 +47,15 @@ fn schema_type(
     id: &str,
     stable_key: &str,
     descriptor: ContractTypeDescriptor,
-) -> (ContractTypeId, ContractSchemaType) {
-    let id = ContractTypeId::new(id);
+) -> (PackageSchemaTypeId, PackageSchemaTypeRecord) {
+    let id = PackageSchemaTypeId::new(id);
     (
         id.clone(),
-        ContractSchemaType {
-            contract_type_id: id,
-            stable_key: stable_key.to_string(),
-            shape: ContractTypeShape {
-                nameability: ContractTypeNameability::PublicNameable,
+        PackageSchemaTypeRecord {
+            package_id: PACKAGE_ID.to_string(),
+            package_schema_type_id: id,
+            stable_schema_key: stable_key.to_string(),
+            canonical_descriptor: PackageSchemaCanonicalDescriptor {
                 type_params: Vec::new(),
                 descriptor,
             },
@@ -62,8 +63,8 @@ fn schema_type(
     )
 }
 
-fn rich_context_schema() -> BTreeMap<ContractTypeId, ContractSchemaType> {
-    let user_id = ContractTypeId::new(USER_ID);
+fn rich_context_schema() -> BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord> {
+    let user_id = PackageSchemaTypeId::new(USER_ID);
     BTreeMap::from([
         schema_type(
             USER_ID,
@@ -87,10 +88,7 @@ fn rich_context_schema() -> BTreeMap<ContractTypeId, ContractSchemaType> {
                         "labels".to_string(),
                         generic(
                             "Map",
-                            vec![
-                                ContractTypeRef::contract(user_id),
-                                ContractTypeRef::builtin("string"),
-                            ],
+                            vec![package_ref(user_id), ContractTypeRef::builtin("string")],
                         ),
                     ),
                     ("ttl".to_string(), ContractTypeRef::builtin("Duration")),
@@ -101,7 +99,16 @@ fn rich_context_schema() -> BTreeMap<ContractTypeId, ContractSchemaType> {
 }
 
 fn rich_context_ref() -> ContractTypeRef {
-    ContractTypeRef::contract(ContractTypeId::new(CONTEXT_ID))
+    package_ref(PackageSchemaTypeId::new(CONTEXT_ID))
+}
+
+fn package_ref(id: PackageSchemaTypeId) -> ContractTypeRef {
+    let stable_key = id
+        .as_str()
+        .rsplit(':')
+        .next()
+        .expect("test package schema id has a stable-key suffix");
+    ContractTypeRef::package_schema(PACKAGE_ID, stable_key, id.clone())
 }
 
 fn rich_context_json() -> Value {
@@ -620,7 +627,7 @@ fn service_value_plan_rejects_websocket_shape_and_value_mutations() {
 
 #[test]
 fn service_value_plan_rejects_alias_callback_cycle_foreign_and_invalid_map_key() {
-    let alias_id = ContractTypeId::new("contract-type:Alias");
+    let alias_id = PackageSchemaTypeId::new("contract-type:Alias");
     let alias_schema = BTreeMap::from([schema_type(
         alias_id.as_str(),
         "Alias",
@@ -629,11 +636,11 @@ fn service_value_plan_rejects_alias_callback_cycle_foreign_and_invalid_map_key()
         },
     )]);
     assert!(matches!(
-        ServiceValuePlan::compile(&ContractTypeRef::contract(alias_id), &alias_schema),
+        ServiceValuePlan::compile(&package_ref(alias_id), &alias_schema),
         Err(ServiceLinkableMaterializationError::AliasSchema { .. })
     ));
 
-    let callback_id = ContractTypeId::new("contract-type:Callback");
+    let callback_id = PackageSchemaTypeId::new("contract-type:Callback");
     let callback_schema = BTreeMap::from([schema_type(
         callback_id.as_str(),
         "Callback",
@@ -649,35 +656,32 @@ fn service_value_plan_rejects_alias_callback_cycle_foreign_and_invalid_map_key()
         },
     )]);
     assert!(matches!(
-        ServiceValuePlan::compile(&ContractTypeRef::contract(callback_id), &callback_schema),
+        ServiceValuePlan::compile(&package_ref(callback_id), &callback_schema),
         Err(ServiceLinkableMaterializationError::CallbackInterfaceSchema { .. })
     ));
 
-    let cycle_id = ContractTypeId::new("contract-type:Cycle");
+    let cycle_id = PackageSchemaTypeId::new("contract-type:Cycle");
     let cycle_schema = BTreeMap::from([schema_type(
         cycle_id.as_str(),
         "Cycle",
         ContractTypeDescriptor::Record {
-            fields: BTreeMap::from([(
-                "self".to_string(),
-                ContractTypeRef::contract(cycle_id.clone()),
-            )]),
+            fields: BTreeMap::from([("self".to_string(), package_ref(cycle_id.clone()))]),
         },
     )]);
     assert!(matches!(
-        ServiceValuePlan::compile(&ContractTypeRef::contract(cycle_id), &cycle_schema),
+        ServiceValuePlan::compile(&package_ref(cycle_id), &cycle_schema),
         Err(ServiceLinkableMaterializationError::CyclicSchema { .. })
     ));
 
     assert!(matches!(
         ServiceValuePlan::compile(
-            &ContractTypeRef::contract(ContractTypeId::new("contract-type:Foreign")),
+            &package_ref(PackageSchemaTypeId::new("contract-type:Foreign")),
             &BTreeMap::new()
         ),
         Err(ServiceLinkableMaterializationError::MissingSchema { .. })
     ));
 
-    let requested = ContractTypeId::new("contract-type:Requested");
+    let requested = PackageSchemaTypeId::new("contract-type:Requested");
     let identity_mismatch = BTreeMap::from([(
         requested.clone(),
         schema_type(
@@ -690,9 +694,48 @@ fn service_value_plan_rejects_alias_callback_cycle_foreign_and_invalid_map_key()
         .1,
     )]);
     assert!(matches!(
-        ServiceValuePlan::compile(&ContractTypeRef::contract(requested), &identity_mismatch),
+        ServiceValuePlan::compile(&package_ref(requested), &identity_mismatch),
         Err(ServiceLinkableMaterializationError::SchemaIdentityMismatch { .. })
     ));
+
+    let exact_id = PackageSchemaTypeId::new("contract-type:Exact");
+    let exact_schema = BTreeMap::from([schema_type(
+        exact_id.as_str(),
+        "Exact",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::new(),
+        },
+    )]);
+    for mismatched_ref in [
+        ContractTypeRef::package_schema("other.package", "Exact", exact_id.clone()),
+        ContractTypeRef::package_schema(PACKAGE_ID, "Renamed", exact_id.clone()),
+    ] {
+        assert!(matches!(
+            ServiceValuePlan::compile(&mismatched_ref, &exact_schema),
+            Err(ServiceLinkableMaterializationError::SchemaOwnerOrKeyMismatch { .. })
+        ));
+    }
+    let cached_then_mismatched = ContractTypeRef::Record {
+        fields: BTreeMap::from([
+            ("aExact".to_string(), package_ref(exact_id.clone())),
+            (
+                "zWrongOwner".to_string(),
+                ContractTypeRef::package_schema("other.package", "Exact", exact_id.clone()),
+            ),
+        ]),
+    };
+    assert!(matches!(
+        ServiceValuePlan::compile(&cached_then_mismatched, &exact_schema),
+        Err(ServiceLinkableMaterializationError::SchemaOwnerOrKeyMismatch { .. })
+    ));
+    let exact_ref = package_ref(exact_id.clone());
+    let exact_plan = ServiceValuePlan::compile(&exact_ref, &exact_schema).unwrap();
+    let expected_identity = format!("package-schema:{PACKAGE_ID}:Exact:{exact_id}");
+    assert_eq!(
+        exact_plan.runtime_type_plan().identity.nominal.as_deref(),
+        Some(expected_identity.as_str()),
+        "runtime nominal identity must retain Package owner, stable key and type id"
+    );
 
     let invalid_map = generic(
         "Map",
@@ -706,7 +749,7 @@ fn service_value_plan_rejects_alias_callback_cycle_foreign_and_invalid_map_key()
         Err(ServiceLinkableMaterializationError::InvalidContractPlan { .. })
     ));
 
-    let numeric_key_id = ContractTypeId::new("contract-type:NumericKey");
+    let numeric_key_id = PackageSchemaTypeId::new("contract-type:NumericKey");
     let numeric_key_schema = BTreeMap::from([schema_type(
         numeric_key_id.as_str(),
         "NumericKey",
@@ -717,7 +760,7 @@ fn service_value_plan_rejects_alias_callback_cycle_foreign_and_invalid_map_key()
     let invalid_nominal_map = generic(
         "Map",
         vec![
-            ContractTypeRef::contract(numeric_key_id),
+            package_ref(numeric_key_id),
             ContractTypeRef::builtin("string"),
         ],
     );
@@ -737,7 +780,7 @@ fn service_value_plan_rejects_alias_callback_cycle_foreign_and_invalid_map_key()
 
 #[test]
 fn service_value_plan_uses_expected_type_for_null_nominal_and_zero_byte_values() {
-    let empty_id = ContractTypeId::new("contract-type:EmptyContext");
+    let empty_id = PackageSchemaTypeId::new("contract-type:EmptyContext");
     let empty_schema = BTreeMap::from([schema_type(
         empty_id.as_str(),
         "EmptyContext",
@@ -745,7 +788,7 @@ fn service_value_plan_uses_expected_type_for_null_nominal_and_zero_byte_values()
             fields: BTreeMap::new(),
         },
     )]);
-    let nominal_type = ContractTypeRef::contract(empty_id);
+    let nominal_type = package_ref(empty_id);
     let nominal_plan = ServiceValuePlan::compile(&nominal_type, &empty_schema).unwrap();
     let null_type = ContractTypeRef::builtin("null");
     let null_plan = ServiceValuePlan::compile(&null_type, &BTreeMap::new()).unwrap();
@@ -847,8 +890,8 @@ fn service_value_plan_enforces_safe_integer_duration_date_and_recursive_json() {
 #[test]
 fn service_value_plan_accepts_acyclic_contract_recursion_and_rejects_runtime_cycles_and_interfaces()
 {
-    let child_id = ContractTypeId::new("contract-type:Child");
-    let parent_id = ContractTypeId::new("contract-type:Parent");
+    let child_id = PackageSchemaTypeId::new("contract-type:Child");
+    let parent_id = PackageSchemaTypeId::new("contract-type:Parent");
     let schema = BTreeMap::from([
         schema_type(
             child_id.as_str(),
@@ -867,20 +910,17 @@ fn service_value_plan_accepts_acyclic_contract_recursion_and_rejects_runtime_cyc
                         generic(
                             "Array",
                             vec![ContractTypeRef::Nullable {
-                                inner: Box::new(ContractTypeRef::contract(child_id.clone())),
+                                inner: Box::new(package_ref(child_id.clone())),
                             }],
                         ),
                     ),
-                    (
-                        "left".to_string(),
-                        ContractTypeRef::contract(child_id.clone()),
-                    ),
-                    ("right".to_string(), ContractTypeRef::contract(child_id)),
+                    ("left".to_string(), package_ref(child_id.clone())),
+                    ("right".to_string(), package_ref(child_id)),
                 ]),
             },
         ),
     ]);
-    let parent_type = ContractTypeRef::contract(parent_id);
+    let parent_type = package_ref(parent_id);
     let parent_plan = ServiceValuePlan::compile(&parent_type, &schema).unwrap();
     let mut heap = RequestHeap::default();
     let shared_child = heap

@@ -8,9 +8,8 @@ use std::{
 
 use skiff_artifact_model::{
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, BoundaryValuePlanUnavailableReason, ContractSchemaType,
-    ContractTypeDescriptor, ContractTypeId, ContractTypeNameability, ContractTypeRef,
-    ContractTypeShape,
+    BoundaryValuePlan, BoundaryValuePlanUnavailableReason, ContractTypeDescriptor, ContractTypeRef,
+    PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord,
 };
 use skiff_runtime_model::value::{
     CallbackCapabilityCarrier, HeapNode, InterfaceCarrier, InterfaceMethodTable, InterfaceValue,
@@ -40,17 +39,17 @@ fn callback_plan(lifetime: BoundaryValueLifetime) -> BoundaryValuePlan {
 
 fn callback_schema() -> (
     ContractTypeRef,
-    BTreeMap<ContractTypeId, ContractSchemaType>,
+    BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 ) {
-    let id = ContractTypeId::new("contract:reader");
-    let ty = ContractTypeRef::contract(id.clone());
+    let id = PackageSchemaTypeId::new("contract:reader");
+    let ty = ContractTypeRef::package_schema("test.callback", "Reader", id.clone());
     let schema = BTreeMap::from([(
         id.clone(),
-        ContractSchemaType {
-            contract_type_id: id,
-            stable_key: "Reader".to_string(),
-            shape: ContractTypeShape {
-                nameability: ContractTypeNameability::PublicNameable,
+        PackageSchemaTypeRecord {
+            package_id: "test.callback".to_string(),
+            package_schema_type_id: id,
+            stable_schema_key: "Reader".to_string(),
+            canonical_descriptor: PackageSchemaCanonicalDescriptor {
                 type_params: Vec::new(),
                 descriptor: ContractTypeDescriptor::CallbackInterface {
                     operations: BTreeMap::new(),
@@ -160,7 +159,11 @@ fn service_linkable_plan_rejects_unsupported_missing_schema_and_invalid_pair() {
         Err(ServiceLinkableMaterializationError::UnsupportedPlan { .. })
     ));
 
-    let missing = ContractTypeRef::contract(ContractTypeId::new("missing"));
+    let missing = ContractTypeRef::package_schema(
+        "test.callback",
+        "Missing",
+        PackageSchemaTypeId::new("missing"),
+    );
     assert!(matches!(
         ServiceLinkableContractPlan::new(
             &missing,

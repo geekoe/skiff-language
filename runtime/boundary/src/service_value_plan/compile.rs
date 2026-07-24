@@ -4,31 +4,37 @@ use skiff_artifact_model::{
     websocket_ingress::{
         canonical_websocket_shape_spec, WebSocketShape, WebSocketShapeId, WebSocketShapeType,
     },
-    ContractLiteral, ContractSchemaType, ContractTypeDescriptor, ContractTypeId, ContractTypeRef,
+    ContractLiteral, ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeId,
+    PackageSchemaTypeRecord,
 };
 use skiff_runtime_model::type_plan::{
     RuntimeRecordFieldPlan, RuntimeTypeIdentityPlan, RuntimeTypeNode, RuntimeTypePlan,
 };
 
 use super::codec_error;
-use crate::{json, service_linkable::ServiceLinkableMaterializationError};
+use crate::{
+    json, service_linkable::ServiceLinkableMaterializationError,
+    service_linkable_schema::resolve_record,
+};
+
+type PackageSchema = BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>;
 
 pub(super) fn compile(
     contract_type: &ContractTypeRef,
-    schema: &BTreeMap<ContractTypeId, ContractSchemaType>,
+    schema: &PackageSchema,
 ) -> Result<RuntimeTypePlan, ServiceLinkableMaterializationError> {
     ServiceValuePlanCompiler::new(schema).compile(contract_type)
 }
 
 struct ServiceValuePlanCompiler<'schema> {
-    schema: &'schema BTreeMap<ContractTypeId, ContractSchemaType>,
-    active_contract_types: BTreeSet<ContractTypeId>,
-    compiled_contract_types: BTreeMap<ContractTypeId, RuntimeTypePlan>,
+    schema: &'schema PackageSchema,
+    active_contract_types: BTreeSet<PackageSchemaTypeId>,
+    compiled_contract_types: BTreeMap<PackageSchemaTypeId, RuntimeTypePlan>,
     active_websocket_shapes: BTreeSet<WebSocketShapeId>,
 }
 
 impl<'schema> ServiceValuePlanCompiler<'schema> {
-    fn new(schema: &'schema BTreeMap<ContractTypeId, ContractSchemaType>) -> Self {
+    fn new(schema: &'schema PackageSchema) -> Self {
         Self {
             schema,
             active_contract_types: BTreeSet::new(),
@@ -43,12 +49,15 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
     ) -> Result<RuntimeTypePlan, ServiceLinkableMaterializationError> {
         match contract_type {
             ContractTypeRef::Builtin { name, arguments } => self.compile_builtin(name, arguments),
-            ContractTypeRef::Contract { contract_type_id } => {
-                self.compile_contract_type(contract_type_id)
-            }
-            ContractTypeRef::PackagePublic { local_type_id } => {
-                invalid_contract_plan(format!("unresolved package public type {local_type_id}"))
-            }
+            ContractTypeRef::PackageSchema {
+                package_id,
+                stable_schema_key,
+                package_schema_type_id,
+            } => self.compile_package_schema_type(
+                package_id,
+                stable_schema_key,
+                package_schema_type_id,
+            ),
             ContractTypeRef::TypeParam { name } => {
                 invalid_contract_plan(format!("unresolved contract type parameter {name}"))
             }
@@ -106,7 +115,7 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
                 .expect("canonical WebSocket builtins have one Context argument");
             if !is_websocket_context_type(context_type) {
                 return invalid_contract_plan(format!(
-                    "builtin {name} Context must be null or one exact ContractTypeId"
+                    "builtin {name} Context must be null or one exact PackageSchema type"
                 ));
             }
             let context = self.compile(context_type)?;
@@ -173,13 +182,18 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
             {
                 self.compile(key)
             }
-            ContractTypeRef::Contract { contract_type_id } => {
-                let schema_type = self.schema_type(contract_type_id)?;
+            ContractTypeRef::PackageSchema {
+                package_id,
+                stable_schema_key,
+                package_schema_type_id,
+            } => {
+                let schema_type =
+                    self.schema_type(package_id, stable_schema_key, package_schema_type_id)?;
                 let ContractTypeDescriptor::Representation { target } =
-                    &schema_type.shape.descriptor
+                    &schema_type.canonical_descriptor.descriptor
                 else {
                     return invalid_contract_plan(format!(
-                        "Map key {contract_type_id} must be one nominal representation over string"
+                        "Map key {package_schema_type_id} must be one nominal representation over string"
                     ));
                 };
                 if !matches!(
@@ -188,10 +202,14 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
                         if name == "string" && arguments.is_empty()
                 ) {
                     return invalid_contract_plan(format!(
-                        "Map key representation {contract_type_id} must target exact string"
+                        "Map key representation {package_schema_type_id} must target exact string"
                     ));
                 }
-                self.compile_contract_type(contract_type_id)
+                self.compile_package_schema_type(
+                    package_id,
+                    stable_schema_key,
+                    package_schema_type_id,
+                )
             }
             _ => invalid_contract_plan(
                 "Map key must be exact string or one nominal representation over string",
@@ -199,59 +217,59 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
         }
     }
 
-    fn compile_contract_type(
+    fn compile_package_schema_type(
         &mut self,
-        contract_type_id: &ContractTypeId,
+        package_id: &str,
+        stable_schema_key: &str,
+        package_schema_type_id: &PackageSchemaTypeId,
     ) -> Result<RuntimeTypePlan, ServiceLinkableMaterializationError> {
-        if let Some(plan) = self.compiled_contract_types.get(contract_type_id) {
+        let schema_type =
+            self.schema_type(package_id, stable_schema_key, package_schema_type_id)?;
+        if let Some(plan) = self.compiled_contract_types.get(package_schema_type_id) {
             return Ok(plan.clone());
         }
-        let schema_type = self.schema_type(contract_type_id)?;
-        if !self.active_contract_types.insert(contract_type_id.clone()) {
+        if !self
+            .active_contract_types
+            .insert(package_schema_type_id.clone())
+        {
             return Err(ServiceLinkableMaterializationError::CyclicSchema {
-                contract_type_id: contract_type_id.clone(),
+                package_schema_type_id: package_schema_type_id.clone(),
             });
         }
         let result = self.compile_descriptor(schema_type);
-        self.active_contract_types.remove(contract_type_id);
+        self.active_contract_types.remove(package_schema_type_id);
         let compiled = result?;
         self.compiled_contract_types
-            .insert(contract_type_id.clone(), compiled.clone());
+            .insert(package_schema_type_id.clone(), compiled.clone());
         Ok(compiled)
     }
 
     fn schema_type(
         &self,
-        contract_type_id: &ContractTypeId,
-    ) -> Result<&'schema ContractSchemaType, ServiceLinkableMaterializationError> {
-        let schema_type = self.schema.get(contract_type_id).ok_or_else(|| {
-            ServiceLinkableMaterializationError::MissingSchema {
-                contract_type_id: contract_type_id.clone(),
-            }
-        })?;
-        if schema_type.contract_type_id != *contract_type_id {
-            return Err(
-                ServiceLinkableMaterializationError::SchemaIdentityMismatch {
-                    requested: contract_type_id.clone(),
-                    actual: schema_type.contract_type_id.clone(),
-                },
-            );
-        }
-        Ok(schema_type)
+        package_id: &str,
+        stable_schema_key: &str,
+        package_schema_type_id: &PackageSchemaTypeId,
+    ) -> Result<&'schema PackageSchemaTypeRecord, ServiceLinkableMaterializationError> {
+        resolve_record(
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+            self.schema,
+        )
     }
 
     fn compile_descriptor(
         &mut self,
-        schema_type: &ContractSchemaType,
+        schema_type: &PackageSchemaTypeRecord,
     ) -> Result<RuntimeTypePlan, ServiceLinkableMaterializationError> {
-        let contract_type_id = &schema_type.contract_type_id;
-        let node = match &schema_type.shape.descriptor {
+        let package_schema_type_id = &schema_type.package_schema_type_id;
+        let node = match &schema_type.canonical_descriptor.descriptor {
             ContractTypeDescriptor::Record { fields } => RuntimeTypeNode::Record {
                 fields: self.compile_record_fields(fields)?,
-                boundary_record_kind: Some(contract_type_id.to_string()),
+                boundary_record_kind: Some(package_identity(schema_type)),
             },
             ContractTypeDescriptor::StructuralUnion { variants } => {
-                self.compile_structural_union(&schema_type.stable_key, variants)?
+                self.compile_structural_union(&schema_type.stable_schema_key, variants)?
                     .node
             }
             ContractTypeDescriptor::DiscriminatedUnion {
@@ -260,7 +278,7 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
             } => {
                 if branches.is_empty() {
                     return invalid_contract_plan(format!(
-                        "discriminated union {contract_type_id} has no branches"
+                        "discriminated union {package_schema_type_id} has no branches"
                     ));
                 }
                 let mut tags = BTreeSet::new();
@@ -268,7 +286,7 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
                 for branch in branches {
                     if !tags.insert(branch.tag.as_str()) {
                         return invalid_contract_plan(format!(
-                            "discriminated union {contract_type_id} repeats tag {}",
+                            "discriminated union {package_schema_type_id} repeats tag {}",
                             branch.tag
                         ));
                     }
@@ -277,29 +295,29 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
                         != Some(branch.tag.as_str())
                     {
                         return invalid_contract_plan(format!(
-                            "discriminated union {contract_type_id} branch {} has the wrong discriminator",
+                            "discriminated union {package_schema_type_id} branch {} has the wrong discriminator",
                             branch.tag
                         ));
                     }
                     branch_plan.identity.union_branch =
-                        Some(format!("{contract_type_id}:{}", branch.tag));
+                        Some(format!("{}:{}", package_identity(schema_type), branch.tag));
                     compiled.push(branch_plan);
                 }
                 RuntimeTypeNode::Union(compiled)
             }
             ContractTypeDescriptor::Representation { target } => RuntimeTypeNode::Representation {
-                type_name: schema_type.stable_key.clone(),
+                type_name: schema_type.stable_schema_key.clone(),
                 payload: Box::new(self.compile(target)?),
             },
             ContractTypeDescriptor::Alias { .. } => {
                 return Err(ServiceLinkableMaterializationError::AliasSchema {
-                    contract_type_id: contract_type_id.clone(),
+                    package_schema_type_id: package_schema_type_id.clone(),
                 })
             }
             ContractTypeDescriptor::Enumeration { variants } => {
                 if variants.is_empty() {
                     return invalid_contract_plan(format!(
-                        "enumeration {contract_type_id} has no variants"
+                        "enumeration {package_schema_type_id} has no variants"
                     ));
                 }
                 let mut seen = BTreeSet::new();
@@ -307,7 +325,7 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
                 for variant in variants {
                     if !seen.insert(variant.as_str()) {
                         return invalid_contract_plan(format!(
-                            "enumeration {contract_type_id} repeats variant {variant}"
+                            "enumeration {package_schema_type_id} repeats variant {variant}"
                         ));
                     }
                     compiled.push(literal_plan(variant));
@@ -317,21 +335,24 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
             ContractTypeDescriptor::CallbackInterface { .. } => {
                 return Err(
                     ServiceLinkableMaterializationError::CallbackInterfaceSchema {
-                        contract_type_id: contract_type_id.clone(),
+                        package_schema_type_id: package_schema_type_id.clone(),
                     },
                 )
             }
         };
         let mut identity = RuntimeTypeIdentityPlan {
-            nominal: Some(contract_type_id.to_string()),
+            nominal: Some(package_identity(schema_type)),
             ..RuntimeTypeIdentityPlan::default()
         };
         if matches!(node, RuntimeTypeNode::Union(_)) {
-            identity.union = Some(contract_type_id.to_string());
+            identity.union = Some(package_identity(schema_type));
         }
         Ok(RuntimeTypePlan {
-            label: format!("contract type {}", schema_type.stable_key),
-            named_type_name: Some(schema_type.stable_key.clone()),
+            label: format!(
+                "package type {}:{}",
+                schema_type.package_id, schema_type.stable_schema_key
+            ),
+            named_type_name: Some(schema_type.stable_schema_key.clone()),
             identity,
             node,
         })
@@ -514,6 +535,13 @@ fn plan(
     }
 }
 
+fn package_identity(record: &PackageSchemaTypeRecord) -> String {
+    format!(
+        "package-schema:{}:{}:{}",
+        record.package_id, record.stable_schema_key, record.package_schema_type_id
+    )
+}
+
 fn literal_plan(value: &str) -> RuntimeTypePlan {
     plan(
         format!("contract literal {value:?}"),
@@ -527,7 +555,7 @@ fn is_websocket_context_type(contract_type: &ContractTypeRef) -> bool {
         contract_type,
         ContractTypeRef::Builtin { name, arguments }
             if name == "null" && arguments.is_empty()
-    ) || matches!(contract_type, ContractTypeRef::Contract { .. })
+    ) || matches!(contract_type, ContractTypeRef::PackageSchema { .. })
 }
 
 fn record_literal_field<'a>(plan: &'a RuntimeTypePlan, field_name: &str) -> Option<&'a str> {
