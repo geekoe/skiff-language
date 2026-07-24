@@ -3,7 +3,10 @@ use skiff_artifact_model::{
     websocket_ingress_context, BoundaryOperationContract, ContractLiteral, ContractOperationId,
     ContractTypeRef, ServiceContract, WebSocketIngressContext,
 };
-use skiff_runtime_boundary::{payload::PayloadBoundary, service_value_plan::ServiceValuePlan};
+use skiff_runtime_boundary::{
+    payload::PayloadBoundary, service_schema_records::ServiceSchemaRecords,
+    service_value_plan::ServiceValuePlan,
+};
 use skiff_runtime_linked_program::{LinkedExecutable, LinkedTypeRef};
 use skiff_runtime_model::{request_heap::RequestHeap, runtime_value::RuntimeValue};
 
@@ -26,9 +29,11 @@ impl<'contract> PinnedWebSocketContractPlan<'contract> {
     pub(in crate::assembly_execution) fn compile(
         contract: &'contract ServiceContract,
         operation_id: &ContractOperationId,
+        package_schema_records: &ServiceSchemaRecords,
     ) -> Result<Self> {
-        let ingress_context = websocket_ingress_context(contract, operation_id)
-            .map_err(|error| RuntimeError::InvalidArtifact(error.to_string()))?;
+        let ingress_context =
+            websocket_ingress_context(contract, operation_id, package_schema_records)
+                .map_err(|error| RuntimeError::InvalidArtifact(error.to_string()))?;
         let descriptor = contract.operations.get(operation_id).ok_or_else(|| {
             RuntimeError::InvalidArtifact(format!(
                 "pinned ServiceContract has no WebSocket operation {operation_id}"
@@ -50,10 +55,20 @@ impl<'contract> PinnedWebSocketContractPlan<'contract> {
                 "canonical WebSocket operation {operation_id} has no nullable Result contract"
             )));
         };
-        let schema = &contract.boundary_schema;
-        let event = compile_value_plan(operation_id, "Event", &event_parameter.ty, schema)?;
-        let result = compile_value_plan(operation_id, "Result", result_type, schema)?;
-        let context = compile_value_plan(operation_id, "Context", context_type, schema)?;
+        let event = compile_value_plan(
+            operation_id,
+            "Event",
+            &event_parameter.ty,
+            package_schema_records,
+        )?;
+        let result =
+            compile_value_plan(operation_id, "Result", result_type, package_schema_records)?;
+        let context = compile_value_plan(
+            operation_id,
+            "Context",
+            context_type,
+            package_schema_records,
+        )?;
         Ok(Self {
             operation_id: &descriptor.operation_id,
             operation: &descriptor.contract,
@@ -218,10 +233,7 @@ fn compile_value_plan<'contract>(
     operation_id: &ContractOperationId,
     role: &str,
     ty: &'contract ContractTypeRef,
-    schema: &'contract std::collections::BTreeMap<
-        skiff_artifact_model::ContractTypeId,
-        skiff_artifact_model::ContractSchemaType,
-    >,
+    schema: &ServiceSchemaRecords,
 ) -> Result<ServiceValuePlan<'contract>> {
     ServiceValuePlan::compile(ty, schema).map_err(|error| {
         RuntimeError::InvalidArtifact(format!(
@@ -255,10 +267,10 @@ fn contract_type_matches_execution(contract: &ContractTypeRef, execution: &Linke
                     contract_type_matches_execution(contract, execution)
                 })
         }
-        (ContractTypeRef::Contract { .. }, LinkedTypeRef::Native { name, args }) => {
+        (ContractTypeRef::PackageSchema { .. }, LinkedTypeRef::Native { name, args }) => {
             name == "unknown" && args.is_empty()
         }
-        (ContractTypeRef::PackagePublic { .. } | ContractTypeRef::TypeParam { .. }, _) => false,
+        (ContractTypeRef::TypeParam { .. }, _) => false,
         (ContractTypeRef::Record { fields }, LinkedTypeRef::Record { fields: execution }) => {
             fields.len() == execution.len()
                 && fields.iter().all(|(name, contract)| {
@@ -290,26 +302,29 @@ fn contract_type_matches_execution(contract: &ContractTypeRef, execution: &Linke
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, sync::Arc};
 
     use skiff_artifact_model::{
         BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
         BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
         BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-        BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor, ContractTypeId,
-        ContractTypeNameability, ContractTypeRef, ContractTypeShape, ServiceContract,
-        ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
-        SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION, WEBSOCKET_CONNECT_RESULT_TYPE,
+        BoundaryValueOwner, BoundaryValuePlan, ContractDiagnosticText, ContractTypeDescriptor,
+        ContractTypeRef, PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord,
+        PackageSchemaTypeRef, PackageTypeRequirement, ServiceContract, ServiceProtocolIdentity,
+        SERVICE_CONTRACT_SCHEMA_VERSION, WEBSOCKET_CONNECT_RESULT_TYPE,
         WEBSOCKET_INGRESS_EVENT_TYPE,
     };
+    use skiff_runtime_boundary::service_schema_records::ServiceSchemaRecords;
 
     pub(crate) const TEST_SERVICE_ID: &str = "example.websocket";
     pub(crate) const TEST_CONTRACT_VERSION: &str = "1.0.0";
+    pub(crate) const TEST_PACKAGE_ID: &str = "example.websocket.package";
 
     pub(crate) struct TestContract {
         pub(crate) contract: ServiceContract,
         pub(crate) operation_id: skiff_artifact_model::ContractOperationId,
-        pub(crate) context_type_id: Option<ContractTypeId>,
+        pub(crate) context_type: Option<PackageSchemaTypeRef>,
+        pub(crate) package_schema_records: ServiceSchemaRecords,
     }
 
     pub(crate) fn null_contract() -> TestContract {
@@ -323,56 +338,88 @@ pub(crate) mod test_support {
     }
 
     fn contract_with_context(context: Option<ContractTypeDescriptor>) -> TestContract {
-        let context_type_id = context.as_ref().map(|_| {
-            skiff_artifact_identity::contract_type_id(
-                TEST_SERVICE_ID,
-                TEST_CONTRACT_VERSION,
-                "Context",
-            )
-            .expect("test Context identity should derive")
-        });
-        let context_type = context_type_id.as_ref().map_or_else(
-            || ContractTypeRef::builtin("null"),
-            |id| ContractTypeRef::contract(id.clone()),
-        );
-        let boundary_schema = context.map_or_else(BTreeMap::new, |descriptor| {
-            BTreeMap::from([(
-                "Context".to_string(),
-                ContractTypeShape {
-                    nameability: ContractTypeNameability::PublicNameable,
+        let (context_type, package_schema_records) = context.map_or_else(
+            || (None, BTreeMap::new()),
+            |descriptor| {
+                let canonical_descriptor = PackageSchemaCanonicalDescriptor {
                     type_params: Vec::new(),
                     descriptor,
+                };
+                let package_schema_type_id = skiff_artifact_identity::package_schema_type_id(
+                    TEST_PACKAGE_ID,
+                    "Context",
+                    &canonical_descriptor,
+                )
+                .expect("test Context identity should derive");
+                let reference = PackageSchemaTypeRef {
+                    package_id: TEST_PACKAGE_ID.to_string(),
+                    stable_schema_key: "Context".to_string(),
+                    package_schema_type_id: package_schema_type_id.clone(),
+                };
+                (
+                    Some(reference),
+                    BTreeMap::from([(
+                        package_schema_type_id.clone(),
+                        Arc::new(PackageSchemaTypeRecord {
+                            package_id: TEST_PACKAGE_ID.to_string(),
+                            stable_schema_key: "Context".to_string(),
+                            package_schema_type_id,
+                            canonical_descriptor,
+                        }),
+                    )]),
+                )
+            },
+        );
+        let operation_context = context_type.as_ref().map_or_else(
+            || ContractTypeRef::builtin("null"),
+            |reference| {
+                ContractTypeRef::package_schema(
+                    reference.package_id.clone(),
+                    reference.stable_schema_key.clone(),
+                    reference.package_schema_type_id.clone(),
+                )
+            },
+        );
+        let operation_id = skiff_artifact_identity::contract_operation_id(
+            TEST_SERVICE_ID,
+            TEST_CONTRACT_VERSION,
+            "websocket",
+        )
+        .expect("test operation identity should derive");
+        let mut contract = ServiceContract {
+            schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
+            service_id: TEST_SERVICE_ID.to_string(),
+            contract_version: TEST_CONTRACT_VERSION.to_string(),
+            service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
+            operations: BTreeMap::from([(
+                operation_id.clone(),
+                skiff_artifact_model::BoundaryOperationDescriptor {
+                    operation_id: operation_id.clone(),
+                    stable_key: "websocket".to_string(),
+                    contract: websocket_operation(operation_context),
                 },
-            )])
-        });
-        let contract =
-            skiff_artifact_identity::service_contract_from_definition(ServiceContractDefinition {
-                schema_version: SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION.to_string(),
-                service_id: TEST_SERVICE_ID.to_string(),
-                contract_version: TEST_CONTRACT_VERSION.to_string(),
-                operations: BTreeMap::from([(
-                    "websocket".to_string(),
-                    websocket_operation(context_type),
-                )]),
-                boundary_schema,
-                diagnostic_text: ServiceContractDefinitionDiagnosticText {
-                    service: "eval WebSocket pinned-plan test".to_string(),
-                    operations: BTreeMap::new(),
-                    types: BTreeMap::new(),
-                },
-            })
-            .expect("canonical test ServiceContract should compile from its definition");
-        let operation_id = contract
-            .operations
-            .values()
-            .find(|descriptor| descriptor.stable_key == "websocket")
-            .expect("test contract should contain websocket")
-            .operation_id
-            .clone();
+            )]),
+            package_type_requirements: context_type
+                .as_ref()
+                .map(|reference| PackageTypeRequirement {
+                    package_id: reference.package_id.clone(),
+                    required_type_ids: vec![reference.package_schema_type_id.clone()],
+                })
+                .into_iter()
+                .collect(),
+            diagnostic_text: ContractDiagnosticText {
+                service: "eval WebSocket pinned-plan test".to_string(),
+                operations: BTreeMap::new(),
+                types: BTreeMap::new(),
+            },
+        };
+        skiff_artifact_identity::assign_service_contract_identities(&mut contract)
+            .expect("canonical test ServiceContract should derive");
         TestContract {
             contract,
             operation_id,
-            context_type_id,
+            context_type,
+            package_schema_records,
         }
     }
 
@@ -434,8 +481,12 @@ mod tests {
     #[test]
     fn pinned_websocket_plan_accepts_only_the_contract_execution_projection() {
         let fixture = empty_nominal_contract();
-        let plan = PinnedWebSocketContractPlan::compile(&fixture.contract, &fixture.operation_id)
-            .expect("pinned nominal contract should compile all value plans");
+        let plan = PinnedWebSocketContractPlan::compile(
+            &fixture.contract,
+            &fixture.operation_id,
+            &fixture.package_schema_records,
+        )
+        .expect("pinned nominal contract should compile all value plans");
         let descriptor = &fixture.contract.operations[&fixture.operation_id].contract;
         let mut executable = LinkedExecutable {
             kind: ExecutableKind::Function,
@@ -471,18 +522,57 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_contract_refs_have_no_websocket_execution_projection() {
+    fn pinned_websocket_plan_rejects_missing_or_mismatched_package_context_records() {
+        let mut missing = empty_nominal_contract();
+        missing.package_schema_records.clear();
+        assert!(PinnedWebSocketContractPlan::compile(
+            &missing.contract,
+            &missing.operation_id,
+            &missing.package_schema_records,
+        )
+        .err()
+        .expect("missing admitted Context record must fail")
+        .to_string()
+        .contains("missing PackageSchemaTypeId"));
+
+        let mutations: [fn(&mut skiff_artifact_model::PackageSchemaTypeRecord); 3] = [
+            |record: &mut skiff_artifact_model::PackageSchemaTypeRecord| {
+                record.package_id = "example.other.package".to_string();
+            },
+            |record: &mut skiff_artifact_model::PackageSchemaTypeRecord| {
+                record.stable_schema_key = "OtherContext".to_string();
+            },
+            |record: &mut skiff_artifact_model::PackageSchemaTypeRecord| {
+                record.package_schema_type_id =
+                    skiff_artifact_model::PackageSchemaTypeId::new("package-schema-type:other");
+            },
+        ];
+        for mutate in mutations {
+            let mut fixture = empty_nominal_contract();
+            let record = fixture
+                .package_schema_records
+                .values_mut()
+                .next()
+                .expect("Context record");
+            mutate(std::sync::Arc::make_mut(record));
+            let error = PinnedWebSocketContractPlan::compile(
+                &fixture.contract,
+                &fixture.operation_id,
+                &fixture.package_schema_records,
+            )
+            .err()
+            .expect("owner, key, or id mismatch must fail");
+            assert!(error.to_string().contains("owner, key, or identity"));
+        }
+    }
+
+    #[test]
+    fn unresolved_type_params_have_no_websocket_execution_projection() {
         let erased_execution = LinkedTypeRef::Native {
             name: "unknown".to_string(),
             args: Vec::new(),
         };
 
-        assert!(!contract_type_matches_execution(
-            &ContractTypeRef::PackagePublic {
-                local_type_id: "package-type:Context".to_string(),
-            },
-            &erased_execution,
-        ));
         assert!(!contract_type_matches_execution(
             &ContractTypeRef::TypeParam {
                 name: "Context".to_string(),
@@ -497,13 +587,10 @@ mod tests {
                 name: name.clone(),
                 args: arguments.iter().map(execution_projection).collect(),
             },
-            ContractTypeRef::Contract { .. } => LinkedTypeRef::Native {
+            ContractTypeRef::PackageSchema { .. } => LinkedTypeRef::Native {
                 name: "unknown".to_string(),
                 args: Vec::new(),
             },
-            ContractTypeRef::PackagePublic { local_type_id } => {
-                panic!("unresolved package public type {local_type_id} has no execution projection")
-            }
             ContractTypeRef::TypeParam { name } => {
                 panic!("unresolved contract type parameter {name} has no execution projection")
             }

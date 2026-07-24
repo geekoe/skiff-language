@@ -69,18 +69,23 @@ pub(super) fn project_connect_response(
             }
             EvalWebSocketConnectContext::Null
         }
-        WebSocketIngressContext::Contract(contract_type_id) => EvalWebSocketConnectContext::Typed {
-            payload: pinned_plan.encode_context_binary(
-                &context_value,
-                &websocket_payload_boundary(),
-                heap,
-                request_target,
-            )?,
-            codec: EvalWebSocketContextCodec {
-                operation_abi_id: pinned_plan.operation_id().as_str().to_string(),
-                context_type_identity: contract_type_id.as_str().to_string(),
-            },
-        },
+        WebSocketIngressContext::PackageSchema(package_schema_type) => {
+            EvalWebSocketConnectContext::Typed {
+                payload: pinned_plan.encode_context_binary(
+                    &context_value,
+                    &websocket_payload_boundary(),
+                    heap,
+                    request_target,
+                )?,
+                codec: EvalWebSocketContextCodec {
+                    operation_abi_id: pinned_plan.operation_id().as_str().to_string(),
+                    context_type_identity: package_schema_type
+                        .package_schema_type_id
+                        .as_str()
+                        .to_string(),
+                },
+            }
+        }
     };
     let business_identity = wire_optional_string(request_target, fields, "businessIdentity")?;
     let connection_policy = match fields.get("connectionPolicy") {
@@ -206,8 +211,12 @@ mod tests {
     #[test]
     fn canonical_websocket_response_requires_non_null_connect_result() {
         let fixture = null_contract();
-        let plan =
-            PinnedWebSocketContractPlan::compile(&fixture.contract, &fixture.operation_id).unwrap();
+        let plan = PinnedWebSocketContractPlan::compile(
+            &fixture.contract,
+            &fixture.operation_id,
+            &fixture.package_schema_records,
+        )
+        .unwrap();
         let error = project_connect_response(
             "test-runtime",
             &RuntimeValue::Null,
@@ -223,8 +232,12 @@ mod tests {
     #[test]
     fn canonical_websocket_response_discriminates_null_accept_reject_and_policy() {
         let fixture = null_contract();
-        let plan =
-            PinnedWebSocketContractPlan::compile(&fixture.contract, &fixture.operation_id).unwrap();
+        let plan = PinnedWebSocketContractPlan::compile(
+            &fixture.contract,
+            &fixture.operation_id,
+            &fixture.package_schema_records,
+        )
+        .unwrap();
         let mut heap = RequestHeap::default();
         let accept = plan
             .result_value_plan()
@@ -270,8 +283,12 @@ mod tests {
     #[test]
     fn canonical_websocket_response_encodes_nominal_context_from_the_pinned_plan() {
         let fixture = empty_nominal_contract();
-        let plan =
-            PinnedWebSocketContractPlan::compile(&fixture.contract, &fixture.operation_id).unwrap();
+        let plan = PinnedWebSocketContractPlan::compile(
+            &fixture.contract,
+            &fixture.operation_id,
+            &fixture.package_schema_records,
+        )
+        .unwrap();
         let mut heap = RequestHeap::default();
         let value = plan
             .result_value_plan()
@@ -295,7 +312,11 @@ mod tests {
         assert_eq!(codec.operation_abi_id, fixture.operation_id.as_str());
         assert_eq!(
             codec.context_type_identity,
-            fixture.context_type_id.unwrap().as_str()
+            fixture
+                .context_type
+                .unwrap()
+                .package_schema_type_id
+                .as_str()
         );
         let decoded = plan
             .context_value_plan()

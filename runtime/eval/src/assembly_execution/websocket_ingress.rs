@@ -48,7 +48,11 @@ pub async fn dispatch_websocket_ingress_via_in_process_boundary(
 ) -> Result<EvalWebSocketAdapterResult> {
     let contract = std::sync::Arc::clone(target.contract());
     let operation_id = target.descriptor().operation_id.clone();
-    let pinned_plan = PinnedWebSocketContractPlan::compile(&contract, &operation_id)?;
+    let pinned_plan = PinnedWebSocketContractPlan::compile(
+        &contract,
+        &operation_id,
+        target.schema_records().as_ref(),
+    )?;
     validate_canonical_adapter(adapter, request.target())?;
     validate_admitted_identity(
         contract.service_id.as_str(),
@@ -234,7 +238,7 @@ fn canonical_receive_context_wire(
             }
             Ok(Value::Null)
         }
-        WebSocketIngressContext::Contract(contract_type_id) => {
+        WebSocketIngressContext::PackageSchema(package_schema_type) => {
             let codec = receive.context_codec.as_ref().ok_or_else(|| {
                 websocket_protocol_error(
                     request.target(),
@@ -242,7 +246,8 @@ fn canonical_receive_context_wire(
                 )
             })?;
             if codec.operation_abi_id != pinned_plan.operation_id().as_str()
-                || codec.context_type_identity != contract_type_id.as_str()
+                || codec.context_type_identity
+                    != package_schema_type.package_schema_type_id.as_str()
             {
                 return Err(websocket_protocol_error(
                     request.target(),
@@ -416,8 +421,12 @@ mod tests {
     #[test]
     fn websocket_adapter_materializes_null_connect_text_and_binary_from_pinned_contract() {
         let fixture = null_contract();
-        let plan =
-            PinnedWebSocketContractPlan::compile(&fixture.contract, &fixture.operation_id).unwrap();
+        let plan = PinnedWebSocketContractPlan::compile(
+            &fixture.contract,
+            &fixture.operation_id,
+            &fixture.package_schema_records,
+        )
+        .unwrap();
         let mut heap = RequestHeap::default();
         let connect_request = RequestPayloadContext::new("websocket", &[], None);
         let connect =
@@ -468,9 +477,18 @@ mod tests {
     #[test]
     fn websocket_adapter_decodes_nominal_context_for_text_and_binary_receive() {
         let fixture = empty_nominal_contract();
-        let context_type_id = fixture.context_type_id.clone().unwrap();
-        let plan =
-            PinnedWebSocketContractPlan::compile(&fixture.contract, &fixture.operation_id).unwrap();
+        let context_type_id = fixture
+            .context_type
+            .as_ref()
+            .unwrap()
+            .package_schema_type_id
+            .clone();
+        let plan = PinnedWebSocketContractPlan::compile(
+            &fixture.contract,
+            &fixture.operation_id,
+            &fixture.package_schema_records,
+        )
+        .unwrap();
         let mut context_heap = RequestHeap::default();
         let context = plan
             .context_value_plan()
@@ -536,9 +554,18 @@ mod tests {
     #[test]
     fn websocket_adapter_rejects_codec_identity_drift_and_preserves_zero_byte_presence() {
         let fixture = empty_nominal_contract();
-        let context_type_id = fixture.context_type_id.clone().unwrap();
-        let plan =
-            PinnedWebSocketContractPlan::compile(&fixture.contract, &fixture.operation_id).unwrap();
+        let context_type_id = fixture
+            .context_type
+            .as_ref()
+            .unwrap()
+            .package_schema_type_id
+            .clone();
+        let plan = PinnedWebSocketContractPlan::compile(
+            &fixture.contract,
+            &fixture.operation_id,
+            &fixture.package_schema_records,
+        )
+        .unwrap();
         let message = EvalInvocationBuildWebSocketMessage {
             tag: EvalInvocationBuildWebSocketMessageTag::Text,
             encoding: EvalInvocationBuildWebSocketMessageEncoding::Utf8,
