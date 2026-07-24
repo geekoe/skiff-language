@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    BoundaryCallableProjection, BoundaryErrorContract, BoundaryUnavailableReason,
-    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
-    CallableTargetFact, ContractTypeId, ContractTypeRef, LiteralIr, PackageCallableParameter,
-    PackageCallableSignature, PackageRuntimeRequirements, PackageTypeRef, TypeRefIr,
-    ValueEscapeLane, ValueProvenance,
+    BoundaryCallableProjection, BoundaryErrorContract, BoundaryStreamContract,
+    BoundaryUnavailableReason, BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary,
+    CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, CallableTargetFact,
+    ContractTypeId, ContractTypeRef, LiteralIr, PackageCallableParameter, PackageCallableSignature,
+    PackageRuntimeRequirements, PackageTypeRef, TypeRefIr, ValueEscapeLane, ValueProvenance,
 };
 
 use super::fixtures::{runtime_requirements, safe_facts, signature};
@@ -256,6 +256,181 @@ fn private_package_nominal_remains_boundary_unavailable() {
         safe_facts(),
         &[BoundaryUnavailableReason::UnsupportedBoundaryType],
     );
+}
+
+#[test]
+fn outer_service_stream_projects_directly_to_canonical_server_stream() {
+    let public_types = BTreeMap::from([(
+        ("model".to_string(), "Envelope".to_string()),
+        "type:Envelope".to_string(),
+    )]);
+    let mut stream_signature = signature(TypeRefIr::native("string"));
+    stream_signature.return_type = PackageTypeRef::Local {
+        local_type: TypeRefIr::Native {
+            name: "Stream".to_string(),
+            args: vec![TypeRefIr::ServiceSymbol {
+                symbol: skiff_artifact_model::ServiceSymbolRef {
+                    module_path: "model".to_string(),
+                    symbol: "Envelope".to_string(),
+                },
+            }],
+        },
+    };
+    let projection = project_boundary_callable(
+        "api",
+        &stream_signature,
+        &safe_facts(),
+        &empty_runtime_requirements(),
+        &[],
+        &public_types,
+    )
+    .unwrap();
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = projection
+    else {
+        panic!("outer Stream over a public nominal must be available");
+    };
+    assert_eq!(
+        operation_contract.return_value.ty,
+        ContractTypeRef::builtin("void")
+    );
+    assert!(matches!(
+        operation_contract.stream,
+        BoundaryStreamContract::ServerStream {
+            item_type: ContractTypeRef::PackagePublic { ref local_type_id },
+            item_value_plan: BoundaryValuePlan::Linkable {
+                owner: BoundaryValueOwner::Provider,
+                ..
+            },
+        } if local_type_id == "type:Envelope"
+    ));
+}
+
+#[test]
+fn service_stream_projection_is_deterministic_for_both_signature_encodings() {
+    let signatures = [
+        PackageTypeRef::Local {
+            local_type: TypeRefIr::Native {
+                name: "Stream".to_string(),
+                args: vec![TypeRefIr::native("string")],
+            },
+        },
+        PackageTypeRef::Container {
+            name: "Stream".to_string(),
+            arguments: vec![PackageTypeRef::Local {
+                local_type: TypeRefIr::native("string"),
+            }],
+        },
+    ];
+    let receipts = signatures.map(|return_type| {
+        let mut signature = signature(TypeRefIr::native("void"));
+        signature.return_type = return_type;
+        let projection = project_boundary_callable(
+            "api",
+            &signature,
+            &safe_facts(),
+            &empty_runtime_requirements(),
+            &[],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        serde_json::to_value(projection).unwrap()
+    });
+    assert_eq!(receipts[0], receipts[1]);
+}
+
+#[test]
+fn stream_is_fail_closed_outside_the_outer_return_boundary() {
+    let stream = TypeRefIr::Native {
+        name: "Stream".to_string(),
+        args: vec![TypeRefIr::native("string")],
+    };
+    let mut parameter_stream = signature(TypeRefIr::native("void"));
+    parameter_stream.parameters[0].ty = PackageTypeRef::Local {
+        local_type: stream.clone(),
+    };
+    assert_reasons(
+        parameter_stream,
+        safe_facts(),
+        &[BoundaryUnavailableReason::UnsupportedStream],
+    );
+    for return_type in [
+        TypeRefIr::Native {
+            name: "Stream".to_string(),
+            args: vec![stream.clone()],
+        },
+        TypeRefIr::Nullable {
+            inner: Box::new(stream.clone()),
+        },
+        TypeRefIr::Native {
+            name: "Array".to_string(),
+            args: vec![stream],
+        },
+        TypeRefIr::Native {
+            name: "Stream".to_string(),
+            args: Vec::new(),
+        },
+    ] {
+        let mut nested_stream = signature(TypeRefIr::native("string"));
+        nested_stream.return_type = PackageTypeRef::Local {
+            local_type: return_type,
+        };
+        assert_reasons(
+            nested_stream,
+            safe_facts(),
+            &[BoundaryUnavailableReason::UnsupportedStream],
+        );
+    }
+
+    let mut unavailable_item = signature(TypeRefIr::native("string"));
+    unavailable_item.return_type = PackageTypeRef::Local {
+        local_type: TypeRefIr::Native {
+            name: "Stream".to_string(),
+            args: vec![TypeRefIr::native("Socket")],
+        },
+    };
+    assert_reasons(
+        unavailable_item,
+        safe_facts(),
+        &[BoundaryUnavailableReason::NativeAdapterUnavailable],
+    );
+}
+
+#[test]
+fn http_stream_event_remains_only_the_service_stream_item_type() {
+    let mut stream_signature = signature(TypeRefIr::native("string"));
+    stream_signature.return_type = PackageTypeRef::Local {
+        local_type: TypeRefIr::Native {
+            name: "Stream".to_string(),
+            args: vec![TypeRefIr::native(
+                skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE,
+            )],
+        },
+    };
+    let projection = project_boundary_callable(
+        "api",
+        &stream_signature,
+        &safe_facts(),
+        &empty_runtime_requirements(),
+        &[],
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = projection
+    else {
+        panic!("HTTP event is a materializable service-stream item");
+    };
+    assert!(matches!(
+        operation_contract.stream,
+        BoundaryStreamContract::ServerStream {
+            item_type: ContractTypeRef::Builtin { ref name, ref arguments },
+            ..
+        } if name == skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE
+            && arguments.is_empty()
+    ));
 }
 
 #[test]
