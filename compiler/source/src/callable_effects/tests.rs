@@ -595,6 +595,38 @@ fn exact_context_free_native_uses_shared_callable_semantics() {
 }
 
 #[test]
+fn date_from_epoch_milliseconds_wrapper_uses_exact_native_semantics() {
+    let model = analyze(
+        r#"
+            function fromEpoch(milliseconds: integer) -> Date {
+              return Date.fromEpochMilliseconds(milliseconds)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(effects(&model, "fromEpoch"), no_effects());
+    let CallableProvenanceSummary::Analyzed {
+        return_origins,
+        throw_origins,
+        escape_lanes,
+    } = provenance(&model, "fromEpoch")
+    else {
+        panic!("Date constructor wrapper should retain exact native provenance");
+    };
+    assert_eq!(return_origins, &vec![ValueProvenance::Fresh]);
+    assert!(throw_origins.is_empty());
+    assert!(escape_lanes.is_empty());
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::NativeFunction { binding_key }
+                if binding_key == "core.date.fromEpochMilliseconds"
+        )
+    }));
+}
+
+#[test]
 fn exact_http_request_natives_transfer_through_local_helpers() {
     let model = analyze(
         r#"

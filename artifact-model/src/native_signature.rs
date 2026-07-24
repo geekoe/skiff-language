@@ -62,6 +62,7 @@ const fn detached_native(binding_key: &'static str, may_suspend: bool) -> Native
 pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_scalar_native("core.array.empty"),
     detached_scalar_native("core.bytes.fromUtf8"),
+    detached_scalar_native("core.date.fromEpochMilliseconds"),
     detached_scalar_native("core.date.now"),
     detached_scalar_native("core.duration.milliseconds"),
     detached_scalar_native("core.duration.seconds"),
@@ -828,6 +829,7 @@ mod tests {
         let expected = BTreeSet::from([
             "core.array.empty",
             "core.bytes.fromUtf8",
+            "core.date.fromEpochMilliseconds",
             "core.date.now",
             "core.duration.milliseconds",
             "core.duration.seconds",
@@ -888,6 +890,8 @@ mod tests {
         }
 
         for missing in [
+            "core.date.fromEpoch",
+            "core.date.fromEpochMilliseconds.custom",
             "std.file.readText",
             "std.http.request.header",
             "std.http.request.query",
@@ -896,6 +900,32 @@ mod tests {
         ] {
             assert_eq!(native_callable_semantics(missing), None, "{missing}");
         }
+    }
+
+    #[test]
+    fn date_from_epoch_milliseconds_semantics_match_exact_signature() {
+        let semantics = native_callable_semantics("core.date.fromEpochMilliseconds")
+            .expect("audited Date constructor should have exact semantics");
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+        let signature = STD_NATIVE_SIGNATURES
+            .iter()
+            .find(|signature| signature.binding_key == semantics.binding_key)
+            .expect("audited Date constructor should have a native signature");
+        assert_eq!(signature.params, &[super::INTEGER]);
+        assert_eq!(signature.return_type, super::DATE);
     }
 
     #[test]
