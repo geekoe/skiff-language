@@ -35,6 +35,8 @@ const EXCEPTION_DECLARED_PAYLOAD_TYPE_DEBUG_KEY: &str = "__skiffPayloadDeclaredT
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
+    #[error(transparent)]
+    ActorInstance(#[from] crate::actor_instance::ActorInstanceStoreError),
     #[error("{0}")]
     InvalidArtifact(String),
     #[error("{0}")]
@@ -428,6 +430,7 @@ fn runtime_error_from_model_ref(
 
 fn runtime_error_from_eval_ref(error: &RuntimeError) -> RuntimeError {
     match error {
+        RuntimeError::ActorInstance(error) => RuntimeError::InvalidArtifact(error.to_string()),
         RuntimeError::InvalidArtifact(message) => RuntimeError::InvalidArtifact(message.clone()),
         RuntimeError::Decode(message) => RuntimeError::Decode(message.clone()),
         RuntimeError::DecodeTarget { target, message } => RuntimeError::DecodeTarget {
@@ -1330,6 +1333,12 @@ impl RuntimeError {
     #[allow(dead_code)]
     pub fn payload(&self) -> RuntimeErrorPayload {
         match self {
+            RuntimeError::ActorInstance(error) => RuntimeErrorPayload {
+                code: "InvalidArtifact".to_string(),
+                message: error.to_string(),
+                status: None,
+                details: None,
+            },
             RuntimeError::WithSource {
                 source_id,
                 frame,
@@ -1616,7 +1625,8 @@ impl WirePayload for RuntimeError {
                 }),
             )),
             RuntimeError::Opaque(error) => error.catch_projection(),
-            RuntimeError::InvalidArtifact(_)
+            RuntimeError::ActorInstance(_)
+            | RuntimeError::InvalidArtifact(_)
             | RuntimeError::Decode(_)
             | RuntimeError::Unsupported(_)
             | RuntimeError::Recoverable(_)

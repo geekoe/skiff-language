@@ -57,13 +57,17 @@ impl Interpreter {
         loop {
             execution.add_instruction_units(1)?;
             check_cancelled(&execution, env)?;
-            let item = stream_runtime
-                .next_with_cancellation(
-                    &stream_value,
-                    cancel_signals,
-                    [execution.cancellation_token()],
-                )
-                .await?;
+            let actor_frame = context.actor_execution_frame().cloned();
+            let next = stream_runtime.next_with_cancellation(
+                &stream_value,
+                cancel_signals,
+                [execution.cancellation_token()],
+            );
+            let item = match actor_frame {
+                Some(frame) => frame.await_if_pending(heap, &execution, next).await?,
+                None => next.await,
+            };
+            let item = item?;
             let item_value = match item {
                 StreamPoll::InternalItem(item) => {
                     let (value, source_heap) = item.into_parts();

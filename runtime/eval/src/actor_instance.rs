@@ -214,6 +214,10 @@ impl Drop for ActorInstanceExecutionLease {
 }
 
 impl ActorInstanceExecutionLease {
+    pub(crate) fn instance_identity(&self) -> usize {
+        Arc::as_ptr(&self.instance) as usize
+    }
+
     pub(crate) fn token(&self) -> Arc<ActorExecutionToken> {
         Arc::clone(&self.token)
     }
@@ -227,11 +231,17 @@ impl ActorInstanceExecutionLease {
             .take()
             .expect("Actor execution heap may only be taken once")
     }
+
+    pub(crate) fn heap_mut(&mut self) -> &mut RequestHeap {
+        self.heap
+            .as_mut()
+            .expect("Actor execution heap is present until taken")
+    }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ActorInstanceStore {
-    state: Mutex<ActorInstanceStoreState>,
+    state: Arc<Mutex<ActorInstanceStoreState>>,
 }
 
 #[derive(Debug, Default)]
@@ -1075,8 +1085,18 @@ mod tests {
             .unwrap();
         let authority = ActorExecutorAuthority::new();
         let mut lease = store.acquire_execution(&authority, &handle).await.unwrap();
-        let frame = ActorExecutionFrame::new(lease.token(), lease.fields());
         let mut heap = lease.take_heap();
+        let plan = RuntimeTypePlan::from_linked(
+            &builtin("integer"),
+            &PlanContext::from_type_view(fixture.view(), &ExecutableAddr::service(0, 0)),
+        )
+        .unwrap();
+        let frame = ActorExecutionFrame::new(
+            store.clone(),
+            handle,
+            lease,
+            vec![("count".to_string(), plan)],
+        );
         let error = frame
             .write_field(
                 "count",
@@ -1092,7 +1112,7 @@ mod tests {
             frame.read_field("count").unwrap(),
             RuntimeValue::Number(7.0)
         );
-        drop(lease);
+        frame.suspend(&heap).unwrap();
         assert!(frame.read_field("count").is_err());
     }
 

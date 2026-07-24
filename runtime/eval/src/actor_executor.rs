@@ -1,4 +1,9 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::Poll,
+};
 
 use serde_json::Value;
 use skiff_artifact_model::ActorMethodIdentity;
@@ -18,8 +23,8 @@ use thiserror::Error;
 use crate::{
     actor_instance::{
         resolve_actor_declaration, validate_declaration_fence, ActorExecutionToken,
-        ActorExecutorAuthority, ActorFieldValue, ActorInstanceHandle, ActorInstanceStore,
-        ActorInstanceStoreError,
+        ActorExecutorAuthority, ActorFieldValue, ActorInstanceExecutionLease, ActorInstanceHandle,
+        ActorInstanceStore, ActorInstanceStoreError,
     },
     error::RuntimeError,
     program_execution::ProgramExecutionContext,
@@ -28,21 +33,49 @@ use crate::{
 
 #[derive(Clone)]
 pub(crate) struct ActorExecutionFrame {
-    token: Arc<ActorExecutionToken>,
-    fields: Arc<Mutex<Vec<ActorFieldValue>>>,
+    suspension: Arc<ActorSuspensionState>,
 }
 
 impl ActorExecutionFrame {
     pub(crate) fn new(
-        token: Arc<ActorExecutionToken>,
-        fields: Arc<Mutex<Vec<ActorFieldValue>>>,
+        store: ActorInstanceStore,
+        handle: ActorInstanceHandle,
+        lease: ActorInstanceExecutionLease,
+        field_plans: Vec<(String, RuntimeTypePlan)>,
     ) -> Self {
-        Self { token, fields }
+        Self {
+            suspension: Arc::new(ActorSuspensionState {
+                store,
+                handle,
+                continuation: ActorContinuationFence {
+                    instance_identity: lease.instance_identity(),
+                },
+                field_plans,
+                lease: Mutex::new(Some(lease)),
+            }),
+        }
+    }
+
+    fn current_access(
+        &self,
+    ) -> Result<(Arc<ActorExecutionToken>, Arc<Mutex<Vec<ActorFieldValue>>>), RuntimeError> {
+        let lease = self
+            .suspension
+            .lease
+            .lock()
+            .expect("actor suspension lease lock poisoned");
+        let lease = lease.as_ref().ok_or_else(|| {
+            RuntimeError::InvalidArtifact(
+                "Actor self field access attempted while its continuation is suspended".to_string(),
+            )
+        })?;
+        Ok((lease.token(), lease.fields()))
     }
 
     pub(crate) fn read_field(&self, field: &str) -> Result<RuntimeValue, RuntimeError> {
-        self.token.ensure_active().map_err(store_error)?;
-        self.fields
+        let (token, fields) = self.current_access()?;
+        token.ensure_active().map_err(store_error)?;
+        let value = fields
             .lock()
             .expect("actor execution fields lock poisoned")
             .iter()
@@ -52,7 +85,8 @@ impl ActorExecutionFrame {
                 RuntimeError::InvalidArtifact(format!(
                     "Actor execution field {field} is absent from the instance frame"
                 ))
-            })
+            });
+        value
     }
 
     pub(crate) fn write_field(
@@ -64,7 +98,8 @@ impl ActorExecutionFrame {
         value: &RuntimeValue,
         heap: &mut RequestHeap,
     ) -> Result<(), RuntimeError> {
-        self.token.ensure_active().map_err(store_error)?;
+        let (token, fields) = self.current_access()?;
+        token.ensure_active().map_err(store_error)?;
         let plan = RuntimeTypePlan::from_linked(
             field_type,
             &PlanContext::from_type_view(program, current_addr),
@@ -79,10 +114,7 @@ impl ActorExecutionFrame {
         );
         let wire = codec.to_wire_json(value, heap)?;
         let checked = codec.from_wire_json(&wire, heap)?;
-        let mut fields = self
-            .fields
-            .lock()
-            .expect("actor execution fields lock poisoned");
+        let mut fields = fields.lock().expect("actor execution fields lock poisoned");
         let target = fields
             .iter_mut()
             .find(|candidate| candidate.name == field)
@@ -94,6 +126,170 @@ impl ActorExecutionFrame {
         target.value = checked;
         Ok(())
     }
+
+    /// Commits the current synchronous segment and invalidates its execution
+    /// token before the caller starts waiting on an asynchronous capability.
+    pub(crate) fn suspend(&self, heap: &RequestHeap) -> Result<(), RuntimeError> {
+        let lease = self
+            .suspension
+            .lease
+            .lock()
+            .expect("actor suspension lease lock poisoned")
+            .take()
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(
+                    "Actor continuation attempted to suspend without an execution token"
+                        .to_string(),
+                )
+            })?;
+        self.suspension
+            .store
+            .commit_execution(&self.suspension.handle, lease, heap.clone())
+            .map_err(store_error)
+    }
+
+    /// Re-enters the instance scheduler and replaces the request heap with the
+    /// newly fenced instance snapshot. No old token, field view, or scheduler
+    /// guard survives this boundary.
+    pub(crate) async fn resume(
+        &self,
+        heap: &mut RequestHeap,
+        execution: &crate::capabilities::ExecutionControl<'_>,
+    ) -> Result<(), RuntimeError> {
+        execution
+            .poll_execution_budget()
+            .map_err(RuntimeError::from)?;
+        let cancel = execution.cancellation_token();
+        let authority = ActorExecutorAuthority::new();
+        let acquire = self
+            .suspension
+            .store
+            .acquire_execution(&authority, &self.suspension.handle);
+        tokio::pin!(acquire);
+        let mut budget_tick = tokio::time::interval(std::time::Duration::from_millis(5));
+        let mut lease = loop {
+            tokio::select! {
+                result = &mut acquire => break result.map_err(store_error)?,
+                () = cancel.wait_cancelled() => {
+                    execution.poll_execution_budget().map_err(RuntimeError::from)?;
+                    return Err(RuntimeError::from(
+                        skiff_runtime_capability_context::ExecutionControlError::Cancelled,
+                    ));
+                }
+                _ = budget_tick.tick() => {
+                    execution.poll_execution_budget().map_err(RuntimeError::from)?;
+                }
+            }
+        };
+        if lease.instance_identity() != self.suspension.continuation.instance_identity {
+            return Err(store_error(ActorInstanceStoreError::InstanceReplaced));
+        }
+        {
+            let fields = lease.fields();
+            let source_heap = lease.heap_mut();
+            let mut fields = fields.lock().expect("actor execution fields lock poisoned");
+            for field in fields.iter_mut() {
+                let (_, plan) = self
+                    .suspension
+                    .field_plans
+                    .iter()
+                    .find(|(name, _)| name == &field.name)
+                    .ok_or_else(|| {
+                        RuntimeError::InvalidArtifact(format!(
+                            "Actor continuation field {} has no linked type plan",
+                            field.name
+                        ))
+                    })?;
+                let codec = RuntimeBoundaryCodec::new(
+                    plan,
+                    BoundaryUse::NativeArg,
+                    format!("Actor resume field {}", field.name),
+                );
+                let wire = codec.to_wire_json(&field.value, source_heap)?;
+                field.value = codec.from_wire_json(&wire, heap)?;
+            }
+        }
+        let mut current = self
+            .suspension
+            .lease
+            .lock()
+            .expect("actor suspension lease lock poisoned");
+        if current.is_some() {
+            return Err(RuntimeError::InvalidArtifact(
+                "Actor continuation resumed with an execution token already installed".to_string(),
+            ));
+        }
+        *current = Some(lease);
+        Ok(())
+    }
+
+    /// Polls once while the current synchronous segment is still owned.
+    /// A buffered/ready operation therefore completes without introducing a
+    /// scheduler cut point. Only a real `Pending` result commits and yields.
+    pub(crate) async fn await_if_pending<F>(
+        &self,
+        heap: &mut RequestHeap,
+        execution: &crate::capabilities::ExecutionControl<'_>,
+        future: F,
+    ) -> Result<F::Output, RuntimeError>
+    where
+        F: Future,
+    {
+        tokio::pin!(future);
+        if let Some(output) = poll_once_without_yield(future.as_mut()).await {
+            return Ok(output);
+        }
+        self.suspend(heap)?;
+        let output = future.await;
+        self.resume(heap, execution).await?;
+        Ok(output)
+    }
+
+    pub(crate) fn finish(&self, heap: RequestHeap) -> Result<(), RuntimeError> {
+        let lease = self
+            .suspension
+            .lease
+            .lock()
+            .expect("actor suspension lease lock poisoned")
+            .take()
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(
+                    "Actor method completed while its continuation was suspended".to_string(),
+                )
+            })?;
+        self.suspension
+            .store
+            .commit_execution(&self.suspension.handle, lease, heap)
+            .map_err(store_error)
+    }
+}
+
+async fn poll_once_without_yield<F>(mut future: Pin<&mut F>) -> Option<F::Output>
+where
+    F: Future,
+{
+    std::future::poll_fn(|context| {
+        Poll::Ready(match future.as_mut().poll(context) {
+            Poll::Ready(output) => Some(output),
+            Poll::Pending => None,
+        })
+    })
+    .await
+}
+
+/// The continuation-owned fence deliberately contains only a plain instance
+/// identity. Actor fields, the execution token and the scheduler guard remain
+/// exclusively in `ActorSuspensionState::lease`, which is empty while waiting.
+struct ActorContinuationFence {
+    instance_identity: usize,
+}
+
+struct ActorSuspensionState {
+    store: ActorInstanceStore,
+    handle: ActorInstanceHandle,
+    continuation: ActorContinuationFence,
+    field_plans: Vec<(String, RuntimeTypePlan)>,
+    lease: Mutex<Option<ActorInstanceExecutionLease>>,
 }
 
 pub struct ActorMethodExecutionRequest<'a> {
@@ -111,8 +307,6 @@ pub enum ActorMethodExecutorError {
     MethodMissing,
     #[error("Actor method identity is ambiguous")]
     MethodAmbiguous,
-    #[error("Actor method requires coroutine suspension, which is not implemented")]
-    CoroutineNotImplemented,
     #[error("Actor argument payload must be a JSON array: {0}")]
     ArgumentsPayload(String),
     #[error("Actor method expected {expected} arguments, got {actual}")]
@@ -161,10 +355,6 @@ impl<'a> ActorMethodExecutor<'a> {
             .store
             .acquire_execution(&self.authority, request.instance)
             .await?;
-        if method.may_suspend {
-            return Err(ActorMethodExecutorError::CoroutineNotImplemented);
-        }
-
         let mut heap = lease.take_heap();
         let args = decode_arguments(
             request.arguments_payload,
@@ -173,8 +363,23 @@ impl<'a> ActorMethodExecutor<'a> {
             &executable_addr,
             &mut heap,
         )?;
-        let frame = ActorExecutionFrame::new(lease.token(), lease.fields());
-        let context = request.context.with_actor_execution_frame(frame);
+        let field_context = PlanContext::from_type_view(program.type_view(), &executable_addr);
+        let field_plans = declaration
+            .fields
+            .iter()
+            .map(|field| {
+                RuntimeTypePlan::from_linked(&field.ty, &field_context)
+                    .map(|plan| (field.name.clone(), plan))
+                    .map_err(|error| ActorMethodExecutorError::TypePlan(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let frame = ActorExecutionFrame::new(
+            self.store.clone(),
+            request.instance.clone(),
+            lease,
+            field_plans,
+        );
+        let context = request.context.with_actor_execution_frame(frame.clone());
         let value = interpreter
             .call_program_executable(
                 context,
@@ -186,14 +391,7 @@ impl<'a> ActorMethodExecutor<'a> {
                 args,
             )
             .await
-            .map_err(|error| match &error {
-                RuntimeError::Unsupported(message)
-                    if message.contains("coroutine suspension point") =>
-                {
-                    ActorMethodExecutorError::CoroutineNotImplemented
-                }
-                _ => ActorMethodExecutorError::Execution(error),
-            })?;
+            .map_err(actor_execution_error)?;
         let payload = encode_return(
             &value,
             &method.return_type,
@@ -201,7 +399,7 @@ impl<'a> ActorMethodExecutor<'a> {
             &executable_addr,
             &mut heap,
         )?;
-        self.store.commit_execution(request.instance, lease, heap)?;
+        frame.finish(heap)?;
         Ok(payload)
     }
 }
@@ -293,7 +491,37 @@ fn encode_return(
 }
 
 fn store_error(error: ActorInstanceStoreError) -> RuntimeError {
-    RuntimeError::InvalidArtifact(error.to_string())
+    RuntimeError::ActorInstance(error)
+}
+
+fn actor_execution_error(error: RuntimeError) -> ActorMethodExecutorError {
+    match extract_actor_instance_error(error) {
+        Ok(error) => ActorMethodExecutorError::Store(error),
+        Err(error) => ActorMethodExecutorError::Execution(error),
+    }
+}
+
+fn extract_actor_instance_error(
+    error: RuntimeError,
+) -> Result<ActorInstanceStoreError, RuntimeError> {
+    match error {
+        RuntimeError::ActorInstance(error) => Ok(error),
+        RuntimeError::WithSource {
+            source_id,
+            frame,
+            error,
+        } => extract_actor_instance_error(*error).map_err(|error| RuntimeError::WithSource {
+            source_id,
+            frame,
+            error: Box::new(error),
+        }),
+        RuntimeError::WithDiagnosticFrame { frame, error } => extract_actor_instance_error(*error)
+            .map_err(|error| RuntimeError::WithDiagnosticFrame {
+                frame,
+                error: Box::new(error),
+            }),
+        error => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -579,6 +807,36 @@ mod tests {
             .await
     }
 
+    async fn execution_frame(fixture: &Fixture) -> (ActorExecutionFrame, RequestHeap) {
+        let authority = ActorExecutorAuthority::new();
+        let mut lease = fixture
+            .store
+            .acquire_execution(&authority, &fixture.handle)
+            .await
+            .unwrap();
+        let heap = lease.take_heap();
+        let program = fixture.interpreter.program_projection().unwrap();
+        let addr = ExecutableAddr {
+            unit: UnitAddr::Service,
+            file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
+            executable: 0,
+        };
+        let plan = RuntimeTypePlan::from_linked(
+            &integer(),
+            &PlanContext::from_type_view(program.type_view(), &addr),
+        )
+        .unwrap();
+        (
+            ActorExecutionFrame::new(
+                fixture.store.clone(),
+                fixture.handle.clone(),
+                lease,
+                vec![("count".to_string(), plan)],
+            ),
+            heap,
+        )
+    }
+
     #[tokio::test]
     async fn real_linked_actor_method_commits_self_field_across_calls() {
         let fixture = fixture(integer(), false);
@@ -615,7 +873,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wrong_return_type_rolls_back_and_may_suspend_releases_scheduler() {
+    async fn wrong_return_type_rolls_back_and_may_suspend_method_executes() {
         let wrong_return = fixture(
             LinkedTypeRef::Native {
                 name: "string".to_string(),
@@ -628,20 +886,202 @@ mod tests {
             Err(ActorMethodExecutorError::ReturnEncode(_))
         ));
         let suspended = fixture(integer(), true);
+        assert_eq!(
+            execute(&suspended, &suspended.method, b"[9]")
+                .await
+                .unwrap(),
+            b"9"
+        );
+        assert_eq!(
+            execute(&suspended, &suspended.method, b"[10]")
+                .await
+                .unwrap(),
+            b"10"
+        );
+    }
+
+    #[tokio::test]
+    async fn suspended_segment_commits_releases_and_resumes_with_latest_field() {
+        let fixture = fixture(integer(), true);
+        let (frame, mut heap) = execution_frame(&fixture).await;
+        let local_handle = heap
+            .alloc_array(vec![RuntimeValue::String("continuation-local".to_string())])
+            .unwrap();
+        let program = fixture.interpreter.program_projection().unwrap();
+        frame
+            .write_field(
+                "count",
+                &integer(),
+                program.type_view(),
+                &ExecutableAddr {
+                    unit: UnitAddr::Service,
+                    file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
+                    executable: 0,
+                },
+                &RuntimeValue::Number(5.0),
+                &mut heap,
+            )
+            .unwrap();
+
+        frame.suspend(&heap).unwrap();
+        assert!(frame.suspension.lease.lock().unwrap().is_none());
+        assert!(frame.read_field("count").is_err());
+
+        assert_eq!(
+            execute(&fixture, &fixture.method, b"[9]").await.unwrap(),
+            b"9"
+        );
+        let execution = context(&fixture.interpreter).execution();
+        frame.resume(&mut heap, &execution).await.unwrap();
+        assert_eq!(
+            frame.read_field("count").unwrap(),
+            RuntimeValue::Number(9.0)
+        );
         assert!(matches!(
-            execute(&suspended, &suspended.method, b"[9]").await,
-            Err(ActorMethodExecutorError::CoroutineNotImplemented)
+            heap.get(local_handle).unwrap(),
+            skiff_runtime_model::runtime_value::HeapNode::Array(items)
+                if items == &[RuntimeValue::String("continuation-local".to_string())]
         ));
-        let retry = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            execute(&suspended, &suspended.method, b"[10]"),
-        )
-        .await
-        .expect("may-suspend rejection must release the instance scheduler");
-        assert!(matches!(
-            retry,
-            Err(ActorMethodExecutorError::CoroutineNotImplemented)
-        ));
+        frame.finish(heap).unwrap();
+    }
+
+    #[tokio::test]
+    async fn buffered_stream_next_does_not_create_a_scheduler_cut_point() {
+        let fixture = fixture(integer(), true);
+        let (frame, mut heap) = execution_frame(&fixture).await;
+        let execution = context(&fixture.interpreter).execution();
+
+        let item = frame
+            .await_if_pending(&mut heap, &execution, async {
+                RuntimeValue::String("buffered".to_string())
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(item, RuntimeValue::String("buffered".to_string()));
+        assert!(frame.suspension.lease.lock().unwrap().is_some());
+        assert_eq!(
+            frame.read_field("count").unwrap(),
+            RuntimeValue::Number(1.0)
+        );
+        frame.finish(heap).unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_stream_next_releases_scheduler_until_item_arrives() {
+        let fixture = fixture(integer(), true);
+        let (frame, mut heap) = execution_frame(&fixture).await;
+        let execution = context(&fixture.interpreter).execution();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+
+        let waiting = async {
+            frame
+                .await_if_pending(&mut heap, &execution, receiver)
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        let concurrent_method = async {
+            assert_eq!(
+                execute(&fixture, &fixture.method, b"[17]").await.unwrap(),
+                b"17"
+            );
+            sender.send("ready").unwrap();
+        };
+        let (item, ()) = tokio::join!(waiting, concurrent_method);
+
+        assert_eq!(item, "ready");
+        assert_eq!(
+            frame.read_field("count").unwrap(),
+            RuntimeValue::Number(17.0)
+        );
+        frame.finish(heap).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_epoch_resume_fails_without_reinstalling_execution_lease() {
+        let fixture = fixture(integer(), true);
+        let (frame, mut heap) = execution_frame(&fixture).await;
+        frame.suspend(&heap).unwrap();
+
+        let mut newer_fence = fixture.handle.fence().clone();
+        newer_fence.incarnation.epoch = 2;
+        let program = fixture.interpreter.program_projection().unwrap();
+        fixture
+            .store
+            .activate(ActorActivationRequest {
+                fence: newer_fence,
+                bootstrap_encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1,
+                bootstrap_payload: br#"{"count":20}"#,
+                program: program.type_view(),
+            })
+            .unwrap();
+
+        let execution = context(&fixture.interpreter).execution();
+        let error = frame.resume(&mut heap, &execution).await.unwrap_err();
+        assert!(error.to_string().contains("stale Actor epoch"));
+        assert!(frame.suspension.lease.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelled_resume_does_not_reinstall_execution_lease() {
+        use std::sync::atomic::Ordering;
+
+        let fixture = fixture(integer(), true);
+        let (frame, mut heap) = execution_frame(&fixture).await;
+        frame.suspend(&heap).unwrap();
+        let execution = context(&fixture.interpreter).execution();
+        execution.cancel_flag().store(true, Ordering::Release);
+
+        let error = frame.resume(&mut heap, &execution).await.unwrap_err();
+        assert!(error.is_cancelled());
+        assert!(frame.suspension.lease.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn suspension_probe_matrix_matches_only_real_async_native_paths() {
+        for target in [
+            "std.time.sleep",
+            "std.file.read",
+            "std.actor.find",
+            "std.http.client.request",
+            "std.http.client.stream",
+            "std.http.client.sse",
+            "std.http.stream.emitResponse",
+        ] {
+            assert!(
+                crate::eval_context::native_call_suspends(target),
+                "{target}"
+            );
+        }
+        for target in [
+            "core.date.now",
+            "std.http.request.header",
+            "std.websocket.sendTextToConnection",
+        ] {
+            assert!(
+                !crate::eval_context::native_call_suspends(target),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn connection_send_stays_inside_the_current_synchronous_segment() {
+        for target in [
+            "std.websocket.sendTextToConnection",
+            "std.websocket.sendBinaryToConnection",
+            "std.websocket.sendTextToBusinessIdentity",
+            "std.websocket.sendBinaryToBusinessIdentity",
+        ] {
+            let semantics = skiff_artifact_model::native_callable_semantics(target)
+                .expect("connection send has exact callable semantics");
+            assert!(!semantics.effects.may_suspend, "{target}");
+            assert!(
+                !crate::eval_context::native_call_suspends(target),
+                "{target}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -48,9 +48,28 @@ use super::{
 };
 use crate::error::RuntimeError;
 use promoted_runtime::dispatch::NativeDispatch;
+use skiff_artifact_model::STD_NATIVE_CALLABLE_SEMANTICS;
 use skiff_runtime_boundary::stream::is_stream_value;
 use skiff_runtime_native as promoted_runtime;
 use skiff_runtime_native_contract::{native_target_binding_key, native_target_name};
+
+pub(crate) fn native_call_suspends(binding_key: &str) -> bool {
+    if let Some(semantics) = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|semantics| semantics.binding_key == binding_key)
+    {
+        return semantics.effects.may_suspend;
+    }
+    // The callable-semantics table is intentionally sparse: it covers native
+    // detachment safety, not the complete capability route matrix. These
+    // contexts return real futures and therefore form coroutine boundaries.
+    binding_key.starts_with("std.file.")
+        || binding_key.starts_with("std.actor.")
+        || matches!(
+            binding_key,
+            "std.http.client.stream" | "std.http.client.sse" | "std.http.stream.emitResponse"
+        )
+}
 
 pub struct EvalContext<'a> {
     pub interpreter: &'a Interpreter,
@@ -91,6 +110,26 @@ impl<'a> EvalContext<'a> {
 
     fn type_projection(&self) -> EvalTypeProjection<'a> {
         EvalTypeProjection::from_execution_projection(self.projection.clone())
+    }
+
+    fn suspend_actor_segment(
+        &mut self,
+    ) -> Result<Option<crate::actor_executor::ActorExecutionFrame>> {
+        let Some(frame) = self.context.actor_execution_frame().cloned() else {
+            return Ok(None);
+        };
+        frame.suspend(self.heap)?;
+        Ok(Some(frame))
+    }
+
+    async fn resume_actor_segment(
+        &mut self,
+        frame: Option<crate::actor_executor::ActorExecutionFrame>,
+    ) -> Result<()> {
+        if let Some(frame) = frame {
+            frame.resume(self.heap, &self.execution).await?;
+        }
+        Ok(())
     }
 
     pub(crate) fn execution_projection(&self) -> &RuntimeExecutionProjection<'a> {
@@ -241,16 +280,27 @@ impl<'a> EvalContext<'a> {
             }
             LinkedStmtIr::Emit { value, .. } => {
                 let value = self.eval_program_expr_ref(*value).await?;
-                let sink = self.env.stream_sink.as_ref().ok_or_else(|| {
-                    RuntimeError::Decode("emit used outside a stream output context".to_string())
-                })?;
+                let sink = self
+                    .env
+                    .stream_sink
+                    .as_ref()
+                    .ok_or_else(|| {
+                        RuntimeError::Decode(
+                            "emit used outside a stream output context".to_string(),
+                        )
+                    })?
+                    .clone();
                 if let Some(item) = sink.project_runtime_item(value.clone(), self.heap)? {
-                    sink.send_internal_with_cancellation(
-                        item,
-                        &[],
-                        [self.execution.cancellation_token()],
-                    )
-                    .await?;
+                    let frame = self.suspend_actor_segment()?;
+                    let result = sink
+                        .send_internal_with_cancellation(
+                            item,
+                            &[],
+                            [self.execution.cancellation_token()],
+                        )
+                        .await;
+                    self.resume_actor_segment(frame).await?;
+                    result?;
                     return Ok(Flow::Continue);
                 }
                 let value = runtime_to_wire_required_plan(
@@ -259,8 +309,12 @@ impl<'a> EvalContext<'a> {
                     "stream emit item",
                     self.heap,
                 )?;
-                sink.send_with_cancellation(value, &[], [self.execution.cancellation_token()])
-                    .await?;
+                let frame = self.suspend_actor_segment()?;
+                let result = sink
+                    .send_with_cancellation(value, &[], [self.execution.cancellation_token()])
+                    .await;
+                self.resume_actor_segment(frame).await?;
+                result?;
                 Ok(Flow::Continue)
             }
             LinkedStmtIr::Throw {
@@ -362,7 +416,9 @@ impl<'a> EvalContext<'a> {
                 }
             }
             LinkedExprIr::DbOperation { operation } => {
-                self.interpreter
+                let frame = self.suspend_actor_segment()?;
+                let result = self
+                    .interpreter
                     .eval_program_db_operation(
                         self.context.clone(),
                         self.heap,
@@ -372,7 +428,9 @@ impl<'a> EvalContext<'a> {
                         self.executable,
                         operation,
                     )
-                    .await
+                    .await;
+                self.resume_actor_segment(frame).await?;
+                result
             }
             LinkedExprIr::DbQuery {
                 target,
@@ -380,7 +438,9 @@ impl<'a> EvalContext<'a> {
                 projection,
                 ..
             } => {
-                self.interpreter
+                let frame = self.suspend_actor_segment()?;
+                let result = self
+                    .interpreter
                     .eval_program_db_query_value(
                         self.context.clone(),
                         self.heap,
@@ -392,10 +452,14 @@ impl<'a> EvalContext<'a> {
                         query,
                         projection.as_ref(),
                     )
-                    .await
+                    .await;
+                self.resume_actor_segment(frame).await?;
+                result
             }
             LinkedExprIr::DbTransaction { transaction } => {
-                self.interpreter
+                let frame = self.suspend_actor_segment()?;
+                let result = self
+                    .interpreter
                     .eval_program_explicit_db_transaction(
                         self.context.clone(),
                         self.heap,
@@ -405,10 +469,14 @@ impl<'a> EvalContext<'a> {
                         self.executable,
                         transaction,
                     )
-                    .await
+                    .await;
+                self.resume_actor_segment(frame).await?;
+                result
             }
             LinkedExprIr::DbLeaseClaim { claim } => {
-                self.interpreter
+                let frame = self.suspend_actor_segment()?;
+                let result = self
+                    .interpreter
                     .eval_program_db_lease_claim(
                         self.context.clone(),
                         self.heap,
@@ -418,10 +486,14 @@ impl<'a> EvalContext<'a> {
                         self.executable,
                         claim,
                     )
-                    .await
+                    .await;
+                self.resume_actor_segment(frame).await?;
+                result
             }
             LinkedExprIr::DbLeaseRead { read } => {
-                self.interpreter
+                let frame = self.suspend_actor_segment()?;
+                let result = self
+                    .interpreter
                     .eval_program_db_lease_read(
                         self.context.clone(),
                         self.heap,
@@ -431,7 +503,9 @@ impl<'a> EvalContext<'a> {
                         self.executable,
                         read,
                     )
-                    .await
+                    .await;
+                self.resume_actor_segment(frame).await?;
+                result
             }
             LinkedExprIr::LoadConst { const_index } => {
                 self.interpreter
@@ -849,7 +923,8 @@ impl<'a> EvalContext<'a> {
                 let operation_abi_id = remote_slot.operation_abi_id().to_string();
                 let outbound_context = self.context.outbound_context();
                 let stream_runtime = self.context.stream_runtime();
-                super::service_dispatch::call_outbound_service_operation(
+                let frame = self.suspend_actor_segment()?;
+                let result = super::service_dispatch::call_outbound_service_operation(
                     self.interpreter,
                     &outbound_context,
                     &stream_runtime,
@@ -860,10 +935,13 @@ impl<'a> EvalContext<'a> {
                     &operation_abi_id,
                     args.to_vec(),
                 )
-                .await
+                .await;
+                self.resume_actor_segment(frame).await?;
+                result
             }
             InterfaceCarrier::CallbackCapability(carrier) => {
-                super::assembly_execution::dispatch_callback_capability(
+                let frame = self.suspend_actor_segment()?;
+                let result = super::assembly_execution::dispatch_callback_capability(
                     self,
                     call,
                     carrier,
@@ -871,7 +949,9 @@ impl<'a> EvalContext<'a> {
                     slot,
                     args.to_vec(),
                 )
-                .await
+                .await;
+                self.resume_actor_segment(frame).await?;
+                result
             }
         }
     }
@@ -977,8 +1057,16 @@ impl<'a> EvalContext<'a> {
                 super::assembly_execution::dispatch_package_direct(self, call, target, values).await
             }
             LinkedCallTarget::ActivationRelativeService { instruction } => {
-                super::assembly_execution::dispatch_service_call(self, call, instruction, values)
-                    .await
+                let frame = self.suspend_actor_segment()?;
+                let result = super::assembly_execution::dispatch_service_call(
+                    self,
+                    call,
+                    instruction,
+                    values,
+                )
+                .await;
+                self.resume_actor_segment(frame).await?;
+                result
             }
             LinkedCallTarget::LocalExecutable { .. }
             | LinkedCallTarget::PublicationExecutable { .. }
@@ -1000,7 +1088,8 @@ impl<'a> EvalContext<'a> {
                 self.ensure_legacy_service_path_allowed("service dependency dispatch")?;
                 let outbound_context = self.context.outbound_context();
                 let stream_runtime = self.context.stream_runtime();
-                super::service_dispatch::call_outbound_service(
+                let frame = self.suspend_actor_segment()?;
+                let result = super::service_dispatch::call_outbound_service(
                     self.interpreter,
                     &outbound_context,
                     &stream_runtime,
@@ -1011,7 +1100,9 @@ impl<'a> EvalContext<'a> {
                     symbol,
                     values,
                 )
-                .await
+                .await;
+                self.resume_actor_segment(frame).await?;
+                result
             }
             LinkedCallTarget::Native { target } => {
                 if is_db_builtin_op(&native_target_name(target)) {
@@ -1029,13 +1120,19 @@ impl<'a> EvalContext<'a> {
                     call,
                     target,
                 )?;
+                let suspends = native_call_suspends(invocation.binding_key());
+                let frame = if suspends {
+                    self.suspend_actor_segment()?
+                } else {
+                    None
+                };
                 let native_capability_context = project_runtime_execution_native_capability_context(
                     &self.context,
                     self.projection.clone(),
                     self.env.stream_capability_context(),
                     invocation.required_context(),
                 );
-                native_dispatch
+                let result = native_dispatch
                     .dispatch_resolved_native_call(
                         native_capability_context,
                         invocation,
@@ -1043,7 +1140,9 @@ impl<'a> EvalContext<'a> {
                         self.heap,
                     )
                     .await
-                    .map_err(RuntimeError::from)
+                    .map_err(RuntimeError::from);
+                self.resume_actor_segment(frame).await?;
+                result
             }
             LinkedCallTarget::Builtin { op } => {
                 if is_db_builtin_op(op) {
