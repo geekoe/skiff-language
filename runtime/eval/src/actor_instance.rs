@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex, Weak,
+    },
 };
 
 use serde_json::Value;
@@ -148,6 +151,8 @@ impl ActorInstanceHandle {
 struct ActorInstance {
     fence: ActorInstanceFence,
     state: Mutex<ActorInstanceState>,
+    scheduler: Arc<tokio::sync::Mutex<()>>,
+    next_execution_token: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -171,6 +176,56 @@ pub(crate) struct ActorExecutorAuthority(());
 impl ActorExecutorAuthority {
     pub(crate) fn new() -> Self {
         Self(())
+    }
+}
+
+/// One exclusive, rollback-capable execution snapshot.
+///
+/// The Tokio guard serializes only this incarnation. The field heap is cloned
+/// before execution so a failed method cannot leak partial mutations into the
+/// live instance.
+pub(crate) struct ActorInstanceExecutionLease {
+    instance: Arc<ActorInstance>,
+    _scheduler_guard: tokio::sync::OwnedMutexGuard<()>,
+    token: Arc<ActorExecutionToken>,
+    fields: Arc<Mutex<Vec<ActorFieldValue>>>,
+    heap: Option<RequestHeap>,
+}
+
+pub(crate) struct ActorExecutionToken {
+    nonce: u64,
+    active: AtomicBool,
+}
+
+impl ActorExecutionToken {
+    pub(crate) fn ensure_active(&self) -> Result<(), ActorInstanceStoreError> {
+        if self.active.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(ActorInstanceStoreError::ExecutionTokenExpired)
+        }
+    }
+}
+
+impl Drop for ActorInstanceExecutionLease {
+    fn drop(&mut self) {
+        self.token.active.store(false, Ordering::Release);
+    }
+}
+
+impl ActorInstanceExecutionLease {
+    pub(crate) fn token(&self) -> Arc<ActorExecutionToken> {
+        Arc::clone(&self.token)
+    }
+
+    pub(crate) fn fields(&self) -> Arc<Mutex<Vec<ActorFieldValue>>> {
+        Arc::clone(&self.fields)
+    }
+
+    pub(crate) fn take_heap(&mut self) -> RequestHeap {
+        self.heap
+            .take()
+            .expect("Actor execution heap may only be taken once")
     }
 }
 
@@ -441,6 +496,101 @@ impl ActorInstanceStore {
         let ActorInstanceState { fields, heap } = &mut *state;
         Ok(operation(fields, heap))
     }
+
+    /// Waits for this exact incarnation's scheduler without holding a standard
+    /// mutex across the await, then revalidates every fence before snapshotting.
+    pub(crate) async fn acquire_execution(
+        &self,
+        _authority: &ActorExecutorAuthority,
+        handle: &ActorInstanceHandle,
+    ) -> Result<ActorInstanceExecutionLease, ActorInstanceStoreError> {
+        let instance = self.resolve_current_instance(handle)?;
+        let scheduler_guard = Arc::clone(&instance.scheduler).lock_owned().await;
+        let instance = self.resolve_current_instance(handle)?;
+        let state = instance
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned");
+        let nonce = instance
+            .next_execution_token
+            .fetch_add(1, Ordering::Relaxed);
+        let token = Arc::new(ActorExecutionToken {
+            nonce,
+            active: AtomicBool::new(true),
+        });
+        let fields = Arc::new(Mutex::new(state.fields.clone()));
+        let heap = state.heap.clone();
+        drop(state);
+        Ok(ActorInstanceExecutionLease {
+            instance,
+            _scheduler_guard: scheduler_guard,
+            token,
+            fields,
+            heap: Some(heap),
+        })
+    }
+
+    pub(crate) fn commit_execution(
+        &self,
+        handle: &ActorInstanceHandle,
+        lease: ActorInstanceExecutionLease,
+        heap: RequestHeap,
+    ) -> Result<(), ActorInstanceStoreError> {
+        lease.token.ensure_active()?;
+        let current = self.resolve_current_instance(handle)?;
+        if !Arc::ptr_eq(&current, &lease.instance) {
+            return Err(ActorInstanceStoreError::InstanceReplaced);
+        }
+        let fields = lease
+            .fields
+            .lock()
+            .expect("actor execution fields lock poisoned")
+            .clone();
+        let mut state = current
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned");
+        // The nonce is private and monotonically issued by this instance. This
+        // check also makes accidental cross-instance frame reuse fail closed.
+        if lease.token.nonce == 0
+            || lease.token.nonce >= current.next_execution_token.load(Ordering::Acquire)
+        {
+            return Err(ActorInstanceStoreError::ExecutionTokenInvalid);
+        }
+        state.fields = fields;
+        state.heap = heap;
+        lease.token.active.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    fn resolve_current_instance(
+        &self,
+        handle: &ActorInstanceHandle,
+    ) -> Result<Arc<ActorInstance>, ActorInstanceStoreError> {
+        let state = self
+            .state
+            .lock()
+            .expect("actor instance store lock poisoned");
+        let current = state
+            .instances
+            .get(&handle.fence.incarnation)
+            .ok_or(ActorInstanceStoreError::InstanceNotFound)?;
+        if state
+            .latest_epochs
+            .get(&handle.fence.incarnation.logical_key)
+            .is_some_and(|latest| *latest != handle.fence.incarnation.epoch)
+        {
+            return Err(ActorInstanceStoreError::StaleEpoch {
+                requested: handle.fence.incarnation.epoch,
+                latest: state.latest_epochs[&handle.fence.incarnation.logical_key],
+            });
+        }
+        ensure_instance_fence(current, &handle.fence)?;
+        if !Arc::ptr_eq(current, &handle.instance) {
+            return Err(ActorInstanceStoreError::InstanceReplaced);
+        }
+        Ok(Arc::clone(current))
+    }
 }
 
 fn ensure_instance_fence(
@@ -532,10 +682,12 @@ fn materialize_instance(
     Ok(ActorInstance {
         fence: request.fence.clone(),
         state: Mutex::new(ActorInstanceState { fields, heap }),
+        scheduler: Arc::new(tokio::sync::Mutex::new(())),
+        next_execution_token: AtomicU64::new(1),
     })
 }
 
-fn validate_declaration_fence(
+pub(crate) fn validate_declaration_fence(
     declaration: &LinkedActorDeclaration,
     fence: &ActorInstanceFence,
 ) -> Result<(), ActorInstanceStoreError> {
@@ -556,7 +708,7 @@ fn validate_declaration_fence(
     Ok(())
 }
 
-fn resolve_actor_declaration<'a>(
+pub(crate) fn resolve_actor_declaration<'a>(
     program: ProgramTypeView<'a>,
     owner: &LinkedActorDeclarationOwner,
 ) -> Result<&'a LinkedActorDeclaration, ActorInstanceStoreError> {
@@ -640,6 +792,10 @@ pub enum ActorInstanceStoreError {
     InstanceNotFound,
     #[error("Actor instance handle was replaced")]
     InstanceReplaced,
+    #[error("Actor execution token is expired")]
+    ExecutionTokenExpired,
+    #[error("Actor execution token is invalid for this instance")]
+    ExecutionTokenInvalid,
 }
 
 #[cfg(test)]
@@ -656,6 +812,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::actor_executor::ActorExecutionFrame;
 
     struct ProgramFixture {
         service_files: Vec<Arc<LinkedFileUnit>>,
@@ -794,6 +951,16 @@ mod tests {
         }
     }
 
+    fn fence_for_id(id: &str, epoch: u64) -> ActorInstanceFence {
+        let mut result = fence(epoch);
+        let value = serde_json::to_value(id).unwrap();
+        let bytes = canonical_json_bytes(&value).unwrap();
+        result.incarnation.logical_key.actor_id_hash =
+            format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+        result.incarnation.logical_key.canonical_actor_id_key_bytes = bytes;
+        result
+    }
+
     #[test]
     fn real_linked_declaration_materializes_field_frame_in_declaration_order() {
         let fixture = fixture();
@@ -852,6 +1019,81 @@ mod tests {
         });
         assert!(pointers.windows(2).all(|pair| pair[0] == pair[1]));
         assert_eq!(store.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn execution_lease_serializes_one_instance_but_not_another() {
+        let fixture = fixture();
+        let bytes = payload();
+        let store = ActorInstanceStore::new();
+        let first = store
+            .activate(request(fixture.view(), fence_for_id("first", 1), &bytes))
+            .unwrap();
+        let second = store
+            .activate(request(fixture.view(), fence_for_id("second", 1), &bytes))
+            .unwrap();
+        let authority = ActorExecutorAuthority::new();
+
+        let first_lease = store.acquire_execution(&authority, &first).await.unwrap();
+        assert!(first.instance.scheduler.try_lock().is_err());
+        let second_lease = store.acquire_execution(&authority, &second).await.unwrap();
+        assert!(second.instance.scheduler.try_lock().is_err());
+
+        drop(first_lease);
+        assert!(first.instance.scheduler.try_lock().is_ok());
+        assert!(second.instance.scheduler.try_lock().is_err());
+        drop(second_lease);
+    }
+
+    #[tokio::test]
+    async fn failed_execution_snapshot_does_not_change_live_fields() {
+        let fixture = fixture();
+        let bytes = payload();
+        let store = ActorInstanceStore::new();
+        let handle = store
+            .activate(request(fixture.view(), fence(1), &bytes))
+            .unwrap();
+        let authority = ActorExecutorAuthority::new();
+        let lease = store.acquire_execution(&authority, &handle).await.unwrap();
+        let execution_fields = lease.fields();
+        execution_fields.lock().unwrap()[0].value = RuntimeValue::Number(99.0);
+        drop(lease);
+
+        let count = store
+            .with_fields_for_executor(&authority, &handle, |fields, _| fields[0].value.clone())
+            .unwrap();
+        assert_eq!(count, RuntimeValue::Number(7.0));
+    }
+
+    #[tokio::test]
+    async fn execution_frame_rejects_wrong_field_type_and_expires_with_lease() {
+        let fixture = fixture();
+        let bytes = payload();
+        let store = ActorInstanceStore::new();
+        let handle = store
+            .activate(request(fixture.view(), fence(1), &bytes))
+            .unwrap();
+        let authority = ActorExecutorAuthority::new();
+        let mut lease = store.acquire_execution(&authority, &handle).await.unwrap();
+        let frame = ActorExecutionFrame::new(lease.token(), lease.fields());
+        let mut heap = lease.take_heap();
+        let error = frame
+            .write_field(
+                "count",
+                &builtin("integer"),
+                fixture.view(),
+                &ExecutableAddr::service(0, 0),
+                &RuntimeValue::String("wrong".to_string()),
+                &mut heap,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("Actor self field count"));
+        assert_eq!(
+            frame.read_field("count").unwrap(),
+            RuntimeValue::Number(7.0)
+        );
+        drop(lease);
+        assert!(frame.read_field("count").is_err());
     }
 
     #[test]

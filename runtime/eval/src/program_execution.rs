@@ -73,6 +73,7 @@ pub struct ProgramExecutionContext<'a> {
     outbound: OutboundServiceContext,
     request_heap_limits: RequestHeapLimits,
     runtime_assembly_target: Option<RuntimeAssemblyEvalTarget>,
+    actor_execution_frame: Option<crate::actor_executor::ActorExecutionFrame>,
     _stream_runtime_owner: Option<StreamRuntimeOwner>,
 }
 
@@ -95,6 +96,7 @@ impl<'a> Clone for ProgramExecutionContext<'a> {
             outbound: self.outbound.clone(),
             request_heap_limits: self.request_heap_limits.clone(),
             runtime_assembly_target: self.runtime_assembly_target.clone(),
+            actor_execution_frame: self.actor_execution_frame.clone(),
             _stream_runtime_owner: None,
         }
     }
@@ -119,6 +121,7 @@ impl<'a> ProgramExecutionContext<'a> {
             outbound: input.outbound,
             request_heap_limits: input.request_heap_limits,
             runtime_assembly_target: None,
+            actor_execution_frame: None,
             _stream_runtime_owner: None,
         }
     }
@@ -136,6 +139,20 @@ impl<'a> ProgramExecutionContext<'a> {
         }
         self.runtime_assembly_target = Some(target);
         self
+    }
+
+    pub(crate) fn with_actor_execution_frame(
+        mut self,
+        frame: crate::actor_executor::ActorExecutionFrame,
+    ) -> Self {
+        self.actor_execution_frame = Some(frame);
+        self
+    }
+
+    pub(crate) fn actor_execution_frame(
+        &self,
+    ) -> Option<&crate::actor_executor::ActorExecutionFrame> {
+        self.actor_execution_frame.as_ref()
     }
 
     pub fn execution(&self) -> ExecutionControl<'a> {
@@ -654,7 +671,11 @@ impl Interpreter {
             .exec(self, context.clone(), heap, &mut env)
             .await?;
         context.execution().poll_execution_budget()?;
-        FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol)
+        if context.actor_execution_frame().is_some() {
+            FlowCompletionPolicy::actor_callable_value(flow, &invocation.executable.symbol)
+        } else {
+            FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol)
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -705,7 +726,11 @@ impl Interpreter {
             )
             .await?;
         context.execution().poll_execution_budget()?;
-        FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol)
+        if context.actor_execution_frame().is_some() {
+            FlowCompletionPolicy::actor_callable_value(flow, &invocation.executable.symbol)
+        } else {
+            FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol)
+        }
     }
 
     #[async_recursion]

@@ -294,6 +294,16 @@ impl<'a> EvalContext<'a> {
                 let object = self.eval_program_expr_ref(*object).await?;
                 runtime_member_access(&object, field, self.heap)
             }
+            LinkedExprIr::ActorSelfField { field, .. } => self
+                .context
+                .actor_execution_frame()
+                .ok_or_else(|| {
+                    RuntimeError::InvalidArtifact(
+                        "Actor self field read requires the current Actor execution token"
+                            .to_string(),
+                    )
+                })?
+                .read_field(field),
             LinkedExprIr::Construct { type_ref, fields } => {
                 self.eval_program_construct(type_ref, fields).await
             }
@@ -1383,6 +1393,21 @@ impl<'a> EvalContext<'a> {
                     },
                 )?;
                 Ok(())
+            }
+            AssignTargetIr::ActorSelfField { field, field_type } => {
+                let frame = self
+                    .context
+                    .actor_execution_frame()
+                    .cloned()
+                    .ok_or_else(|| {
+                        RuntimeError::InvalidArtifact(
+                            "Actor self field write requires the current Actor execution token"
+                                .to_string(),
+                        )
+                    })?;
+                let projection = self.execution_projection().clone();
+                let type_view = projection.type_view();
+                frame.write_field(field, field_type, type_view, self.addr, &value, self.heap)
             }
             AssignTargetIr::Index { object, index } => {
                 let object = self.eval_program_expr_ref(*object).await?;

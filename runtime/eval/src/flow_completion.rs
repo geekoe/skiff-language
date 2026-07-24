@@ -19,6 +19,15 @@ impl FlowCompletionPolicy {
         }
     }
 
+    pub fn actor_callable_value(flow: Flow, symbol: &str) -> Result<RuntimeValue> {
+        if matches!(flow, Flow::Parked) {
+            return Err(RuntimeError::Unsupported(format!(
+                "Actor method {symbol} reached a coroutine suspension point"
+            )));
+        }
+        Self::callable_value(flow, symbol)
+    }
+
     pub fn const_value(flow: Flow, name: &str) -> Result<RuntimeValue> {
         match flow {
             Flow::Return(value) => Ok(value),

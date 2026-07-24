@@ -2,6 +2,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+pub mod actor_executor;
 pub mod actor_instance;
 mod assembly_execution;
 mod assembly_seam;
