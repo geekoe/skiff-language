@@ -13,8 +13,9 @@ use crate::{
 
 use super::{
     table::{
-        validate_handler_entries, validate_native_callable_semantics_registry,
-        validate_receiver_callable_semantics_registry, NativeHandlerEntry, NATIVE_BINDINGS,
+        native_route_matches_required_context, validate_handler_entries,
+        validate_native_callable_semantics_registry, validate_receiver_callable_semantics_registry,
+        NativeHandlerEntry, NATIVE_BINDINGS,
     },
     NativeRegistry,
 };
@@ -275,6 +276,74 @@ fn native_callable_semantics_registry_accepts_http_suspend_detachment_route() {
         NATIVE_BINDINGS,
     )
     .expect("detached, suspending HTTP request should match its runtime route");
+}
+
+#[test]
+fn native_callable_semantics_registry_accepts_only_exact_context_free_http_request_helpers() {
+    for binding_key in ["std.http.request.headers", "std.http.request.cookie"] {
+        assert!(native_route_matches_required_context(
+            binding_key,
+            NativeRequiredContext::None,
+            RuntimeNativeRoute::Http,
+        ));
+    }
+
+    for binding_key in [
+        "std.http.request.header",
+        "std.http.request.query",
+        "std.http.request.decodeJson",
+        "std.http.request.headers.extra",
+        "std.http.request.cookie.extra",
+    ] {
+        assert!(
+            !native_route_matches_required_context(
+                binding_key,
+                NativeRequiredContext::None,
+                RuntimeNativeRoute::Http,
+            ),
+            "{binding_key} must not acquire a route-wide or prefix exception"
+        );
+    }
+}
+
+#[test]
+fn native_callable_semantics_registry_rejects_forged_http_helper_context_or_route() {
+    for binding_key in ["std.http.request.headers", "std.http.request.cookie"] {
+        assert!(!native_route_matches_required_context(
+            binding_key,
+            NativeRequiredContext::HttpClient,
+            RuntimeNativeRoute::Http,
+        ));
+        assert!(!native_route_matches_required_context(
+            binding_key,
+            NativeRequiredContext::None,
+            RuntimeNativeRoute::Json,
+        ));
+    }
+}
+
+#[test]
+fn native_callable_semantics_registry_keeps_contextful_http_route_matrix_strict() {
+    for (binding_key, required_context) in [
+        ("std.http.client.request", NativeRequiredContext::HttpClient),
+        ("std.http.client.stream", NativeRequiredContext::HttpClient),
+        ("std.http.client.sse", NativeRequiredContext::HttpClient),
+        (
+            "std.http.stream.emitResponse",
+            NativeRequiredContext::HttpResponseStream,
+        ),
+    ] {
+        assert!(native_route_matches_required_context(
+            binding_key,
+            required_context,
+            RuntimeNativeRoute::Http,
+        ));
+        assert!(!native_route_matches_required_context(
+            binding_key,
+            NativeRequiredContext::None,
+            RuntimeNativeRoute::Http,
+        ));
+    }
 }
 
 #[test]
