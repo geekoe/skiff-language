@@ -186,6 +186,133 @@ async fn typed_execution_async_stream_cancel_spawns_server_stream_from_admitted_
 }
 
 #[tokio::test]
+async fn typed_execution_service_stream_preserves_two_items_and_generic_substitution_full_chain() {
+    let fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::boolean_stream()).await;
+    let runtime = TypedExecutionRuntime::new(
+        &fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let interpreter = runtime.interpreter();
+    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let mut heap = context.request_heap();
+
+    let result = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect("admitted generic Stream<T> call should consume true then false");
+
+    assert_eq!(result, RuntimeValue::Null);
+    wait_for_stream_runtime_empty(&interpreter.stream_runtime).await;
+}
+
+#[tokio::test]
+async fn typed_execution_service_stream_propagates_provider_error_full_chain() {
+    let fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::boolean_stream_error()).await;
+    let runtime = TypedExecutionRuntime::new(
+        &fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let interpreter = runtime.interpreter();
+    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let mut heap = context.request_heap();
+
+    let error = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect_err("provider failure after its first item must terminate the consumer");
+
+    assert!(
+        error.to_string().contains("assertion failed"),
+        "provider terminal must retain the admitted provider diagnostic: {error}"
+    );
+    wait_for_stream_runtime_empty(&interpreter.stream_runtime).await;
+}
+
+#[tokio::test]
+async fn typed_execution_service_stream_request_cancel_cleans_provider_and_isolates_peer() {
+    let baseline = skiff_runtime_eval::provider_stream_tasks_active_for_test();
+    let cancelled_fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::unconsumed_boolean_stream())
+            .await;
+    let peer_fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::boolean_stream()).await;
+    let cancelled_runtime = TypedExecutionRuntime::new(
+        &cancelled_fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let cancelled_interpreter = cancelled_runtime.interpreter();
+    let cancelled_context =
+        cancelled_runtime.context(&cancelled_interpreter, &cancelled_fixture.eval_target);
+    let mut cancelled_heap = cancelled_context.request_heap();
+    let stream = cancelled_interpreter
+        .execute_runtime_assembly_addr(
+            cancelled_context,
+            &mut cancelled_heap,
+            &cancelled_fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect("first admitted call should return its stream before request cancellation");
+    assert!(matches!(stream, RuntimeValue::Heap(_)));
+
+    cancelled_runtime.cancel_request();
+
+    let peer_runtime = TypedExecutionRuntime::new(
+        &peer_fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let peer_context = peer_runtime.context(&cancelled_interpreter, &peer_fixture.eval_target);
+    let mut peer_heap = peer_context.request_heap();
+    let peer_result = cancelled_interpreter
+        .execute_runtime_assembly_addr(
+            peer_context,
+            &mut peer_heap,
+            &peer_fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect("cancelling one admitted request must not affect the peer stream");
+    assert_eq!(peer_result, RuntimeValue::Null);
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while skiff_runtime_eval::provider_stream_tasks_active_for_test() != baseline {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("request cancellation and peer completion must clean both provider tasks");
+    wait_for_stream_runtime_empty(&cancelled_interpreter.stream_runtime).await;
+}
+
+#[tokio::test]
 async fn typed_execution_async_stream_cancel_runtime_owner_drop_wakes_unconsumed_producer_clone() {
     let runtime = TypedExecutionRuntime::new("example.phase-four.consumer");
     let interpreter = runtime.interpreter();

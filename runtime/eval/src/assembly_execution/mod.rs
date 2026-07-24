@@ -158,6 +158,9 @@ pub fn take_in_process_boundary_dispatch_records_for_test(
         .unwrap_or_default()
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use async_stream_cancel::provider_stream_tasks_active_for_test;
+
 pub(crate) async fn dispatch_callback_capability(
     context: &mut EvalContext<'_>,
     call: &CallIr,
