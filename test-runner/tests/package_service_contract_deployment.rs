@@ -41,7 +41,7 @@ use skiff_test_runner::{
 const EXPECTED_PRELUDE_IDENTITY: &str =
     "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699";
 const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
-    "skiff-package-build-v4:sha256:0371792db391f3b0b236a433d2c3d2da81c0f550cde414c030ac566b7755171c";
+    "skiff-package-build-v4:sha256:6744fc2d69966814862e9092949d1b42a22b1a917967b91876dc03d660cd3c28";
 
 #[test]
 fn platform_source_context_contract() {
@@ -340,7 +340,8 @@ packages:
     let source_before_publish = read_tree(&artifacts);
     let cases = discover_package_test_cases(&consumer, &consumer, false).unwrap();
     let overlay =
-        compile_package_test_overlay(&platform_sources(), &consumer, &project, &cases).unwrap();
+        compile_package_test_overlay(&platform_sources(), &consumer, &artifacts, &project, &cases)
+            .unwrap();
     let fixture =
         assemble_package_test_fixture(&project, overlay, CanonicalBaseAssembly::default()).unwrap();
     fixture.records.publish(&artifacts, &runtime).unwrap();
@@ -375,8 +376,14 @@ fn official_platform_package_is_compiled_as_the_selected_source_root() {
 
     let cases = discover_package_test_cases(&platform_root, &platform_root, false).unwrap();
     assert_eq!(cases.len(), 11, "the canonical std root must stay complete");
-    let overlay =
-        compile_package_test_overlay(&platform_sources, &platform_root, &project, &cases).unwrap();
+    let overlay = compile_package_test_overlay(
+        &platform_sources,
+        &platform_root,
+        &artifacts,
+        &project,
+        &cases,
+    )
+    .unwrap();
     assert!(overlay.bindings.iter().all(|binding| matches!(
         overlay
             .overlay
@@ -461,7 +468,8 @@ fn base_assembly_supplies_provider_selectors_and_real_owner_bindings() {
         .expect("consumer service requirement");
     let cases = discover_package_test_cases(&consumer, &consumer, false).unwrap();
     let overlay =
-        compile_package_test_overlay(&platform_sources(), &consumer, &project, &cases).unwrap();
+        compile_package_test_overlay(&platform_sources(), &consumer, &artifacts, &project, &cases)
+            .unwrap();
     let fixture = assemble_package_test_fixture(&project, overlay, base).unwrap();
     let test_deployment = fixture
         .records
@@ -565,13 +573,20 @@ fn test_config_literals_are_exact_typed_and_test_deployment_owned() {
         skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
     let cases = discover_package_test_cases(&consumer, &consumer, false).unwrap();
     let probe_overlay =
-        compile_package_test_overlay(&platform_sources(), &consumer, &project, &cases).unwrap();
+        compile_package_test_overlay(&platform_sources(), &consumer, &artifacts, &project, &cases)
+            .unwrap();
     let exact_package =
         skiff_artifact_identity::package_artifact_ref(&probe_overlay.overlay.artifact).unwrap();
 
     let assemble = |literals: &[PackageTestConfigLiteral]| {
-        let overlay =
-            compile_package_test_overlay(&platform_sources(), &consumer, &project, &cases).unwrap();
+        let overlay = compile_package_test_overlay(
+            &platform_sources(),
+            &consumer,
+            &artifacts,
+            &project,
+            &cases,
+        )
+        .unwrap();
         assemble_package_test_fixture_with_config(&project, overlay, base.clone(), literals)
     };
     let required = PackageTestConfigLiteral {
@@ -703,8 +718,9 @@ fn overlay_is_a_separate_build_and_external_store_remains_read_only() {
     let production = skiff_artifact_identity::package_artifact_ref(&project.package.artifact)
         .expect("production ref");
     let cases = discover_package_test_cases(&package, &package, false).expect("test cases");
-    let overlay = compile_package_test_overlay(&platform_sources(), &package, &project, &cases)
-        .expect("overlay");
+    let overlay =
+        compile_package_test_overlay(&platform_sources(), &package, &artifacts, &project, &cases)
+            .expect("overlay");
     assert!(
         overlay
             .overlay
@@ -771,7 +787,8 @@ fn test_overlay_resolves_public_private_and_test_local_roots_in_one_compilation(
         skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
     let cases = discover_package_test_cases(&package, &package, false).unwrap();
     let overlay =
-        compile_package_test_overlay(&platform_sources(), &package, &project, &cases).unwrap();
+        compile_package_test_overlay(&platform_sources(), &package, &artifacts, &project, &cases)
+            .unwrap();
 
     assert_eq!(overlay.production, production);
     assert!(overlay.overlay.artifact.package_requirements.is_empty());
@@ -797,7 +814,8 @@ fn test_overlay_missing_root_target_fails_closed_without_self_dependency_fallbac
     let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
     let cases = discover_package_test_cases(&package, &package, false).unwrap();
     let error =
-        compile_package_test_overlay(&platform_sources(), &package, &project, &cases).unwrap_err();
+        compile_package_test_overlay(&platform_sources(), &package, &artifacts, &project, &cases)
+            .unwrap_err();
     let message = error.to_string();
     assert!(message.contains("root.main.missingHelper"), "{message}");
 }
@@ -871,7 +889,8 @@ services:
         .expect("consumer package");
     let cases = discover_package_test_cases(&package, &package, false).unwrap();
     let overlay =
-        compile_package_test_overlay(&platform_sources(), &package, &project, &cases).unwrap();
+        compile_package_test_overlay(&platform_sources(), &package, &artifacts, &project, &cases)
+            .unwrap();
     let error = assemble_package_test_fixture(&project, overlay, CanonicalBaseAssembly::default())
         .unwrap_err();
     assert!(error
@@ -974,7 +993,8 @@ fn fresh_helper_mutation_then_detached_service_call_projects_and_assembles() {
     let cases = discover_package_test_cases(&consumer, &consumer, false).unwrap();
     assert_eq!(cases.len(), 1);
     let overlay =
-        compile_package_test_overlay(&platform_sources(), &consumer, &project, &cases).unwrap();
+        compile_package_test_overlay(&platform_sources(), &consumer, &artifacts, &project, &cases)
+            .unwrap();
     assert!(matches!(
         overlay
             .overlay
@@ -1071,7 +1091,8 @@ function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.webs
         skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
     let cases = discover_package_test_cases(&package, &package, false).unwrap();
     let overlay =
-        compile_package_test_overlay(&platform_sources(), &package, &project, &cases).unwrap();
+        compile_package_test_overlay(&platform_sources(), &package, &artifacts, &project, &cases)
+            .unwrap();
     let fixture = assemble_ecosystem_smoke_fixture(&project, overlay).unwrap();
     assert_eq!(fixture.production, production);
     assert_eq!(fixture.unary.selector.path, "/probe");
@@ -1127,7 +1148,8 @@ fn i02_spawn_submit_fixture_splits_unary_and_websocket_effects() {
     let cases = discover_package_test_cases(&package, &package, false).unwrap();
     assert_eq!(cases.len(), 1);
     let overlay =
-        compile_package_test_overlay(&platform_sources(), &package, &project, &cases).unwrap();
+        compile_package_test_overlay(&platform_sources(), &package, &artifacts, &project, &cases)
+            .unwrap();
     let fixture = assemble_ecosystem_smoke_fixture(&project, overlay).unwrap();
     let websocket = fixture
         .websocket

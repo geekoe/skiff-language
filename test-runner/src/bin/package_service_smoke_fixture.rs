@@ -204,8 +204,13 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
     if cases.is_empty() {
         anyhow::bail!("smoke fixture package must contain at least one .test.skiff case");
     }
-    let overlay =
-        compile_package_test_overlay(&args.platform_sources, &package_root, &project, &cases)?;
+    let overlay = compile_package_test_overlay(
+        &args.platform_sources,
+        &package_root,
+        &args.artifact_root,
+        &project,
+        &cases,
+    )?;
     let fixture = assemble_ecosystem_smoke_fixture(&project, overlay)?;
     fixture
         .records

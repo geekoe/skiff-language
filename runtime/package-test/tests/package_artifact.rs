@@ -115,7 +115,11 @@ fn missing_and_tampered_package_artifacts_fail_closed() {
     let error = PackageTestRuntimeBuilder::new(&tampered)
         .load_template(fixture.assembly.clone(), [entrypoint(&fixture)])
         .unwrap_err();
-    assert!(format!("{error:#}").contains("package content is invalid"));
+    let error = format!("{error:#}");
+    assert!(
+        error.contains("package content mismatches ref") && error.contains("tampered"),
+        "unexpected tampered package error: {error}"
+    );
 }
 
 #[test]

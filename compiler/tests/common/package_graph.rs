@@ -8,7 +8,7 @@ use std::{
 use skiff_artifact_model::PackageArtifact;
 use skiff_compiler::{
     compile_package, PackageCompileInput, PackageContractCompileDependency, PackageSourceInput,
-    PublishedPackageArtifact,
+    PublishedPackageArtifact, ResolvedPackageSchema,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_input::{
@@ -18,12 +18,15 @@ use skiff_compiler_input::{
 };
 use skiff_compiler_source::source_graph::PublicationSourceGraph;
 
-use super::package_project::PackageProjectCompileError;
+use super::{
+    package_project::PackageProjectCompileError, package_schemas::resolved_package_schema,
+};
 
 pub(super) struct PackageGraphCompiler<'a> {
     platform_sources: &'a CompilerPlatformSources,
     manifests: BTreeMap<PackageManifestKey, PackageManifest>,
     contract_dependencies: &'a BTreeMap<PackageManifestKey, Vec<PackageContractCompileDependency>>,
+    explicit_package_schemas: &'a BTreeMap<PackageManifestKey, Vec<ResolvedPackageSchema>>,
     published: BTreeMap<PackageManifestKey, PublishedPackageArtifact>,
     visiting: Vec<PackageManifestKey>,
     visiting_set: BTreeSet<PackageManifestKey>,
@@ -37,11 +40,13 @@ impl<'a> PackageGraphCompiler<'a> {
             PackageManifestKey,
             Vec<PackageContractCompileDependency>,
         >,
+        explicit_package_schemas: &'a BTreeMap<PackageManifestKey, Vec<ResolvedPackageSchema>>,
     ) -> Self {
         Self {
             platform_sources,
             manifests,
             contract_dependencies,
+            explicit_package_schemas,
             published: BTreeMap::new(),
             visiting: Vec::new(),
             visiting_set: BTreeSet::new(),
@@ -127,11 +132,15 @@ impl<'a> PackageGraphCompiler<'a> {
         &mut self,
         manifest: &PackageManifest,
     ) -> Result<PublishedPackageArtifact, PackageProjectCompileError> {
-        let mut dependency_artifacts = Vec::with_capacity(manifest.dependencies.len());
+        let mut dependency_packages = Vec::with_capacity(manifest.dependencies.len());
         for dependency in &manifest.dependencies {
             let key = (dependency.id.clone(), dependency.version.clone());
-            dependency_artifacts.push(self.compile(&key)?.artifact);
+            dependency_packages.push((dependency, self.compile(&key)?));
         }
+        let dependency_artifacts = dependency_packages
+            .iter()
+            .map(|(_, package)| package.artifact.clone())
+            .collect::<Vec<_>>();
 
         let package = read_package_source_input(self.platform_sources, manifest)?;
         let package_id = manifest.id.to_string();
@@ -141,6 +150,44 @@ impl<'a> PackageGraphCompiler<'a> {
             .values()
             .map(|published| published.artifact.clone())
             .collect::<Vec<PackageArtifact>>();
+        let mut resolved_package_schemas = dependency_packages
+            .iter()
+            .map(|(dependency, package)| {
+                resolved_package_schema(dependency.effective_alias(), package)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if manifest.id.as_str() != SKIFF_STD_PUBLICATION_ID
+            && !resolved_package_schemas
+                .iter()
+                .any(|schema| schema.package_id() == SKIFF_STD_PUBLICATION_ID)
+        {
+            if let Some(std) = self
+                .published
+                .values()
+                .find(|published| published.artifact.package_id == SKIFF_STD_PUBLICATION_ID)
+            {
+                resolved_package_schemas.push(resolved_package_schema("std", std)?);
+            }
+        }
+        if let Some(explicit) = self
+            .explicit_package_schemas
+            .get(&(package_id.clone(), manifest.version.clone()))
+        {
+            for schema in explicit {
+                if let Some(position) = resolved_package_schemas
+                    .iter()
+                    .position(|candidate| {
+                        candidate.alias() == schema.alias()
+                            && candidate.package_id() == schema.package_id()
+                            && candidate.exact_version() == schema.exact_version()
+                    })
+                {
+                    resolved_package_schemas[position] = schema.clone();
+                } else {
+                    resolved_package_schemas.push(schema.clone());
+                }
+            }
+        }
         let contract_dependencies = self
             .contract_dependencies
             .get(&(package_id.clone(), manifest.version.clone()))
@@ -149,7 +196,8 @@ impl<'a> PackageGraphCompiler<'a> {
         let input =
             PackageCompileInput::new(self.platform_sources, &package, &aliases, &package_id)
                 .with_canonical_dependencies(&dependency_artifacts, contract_dependencies)
-                .with_available_canonical_packages(&available_artifacts);
+                .with_available_canonical_packages(&available_artifacts)
+                .with_resolved_package_schemas(&resolved_package_schemas);
         Ok(compile_package(input)?)
     }
 }

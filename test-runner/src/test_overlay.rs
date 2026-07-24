@@ -24,13 +24,14 @@ use skiff_compiler_source::{
     source_graph::{CompilerSourceFile, PublicationSourceGraph},
     SourceCompileError,
 };
+use skiff_deployment::storage::{CanonicalArtifactStore, EcosystemStorageError};
 use skiff_syntax::ast::{Block, FunctionDecl, SourceFile, TypeRef};
 use thiserror::Error;
 
 use crate::{
     canonical_fixture::PackageTestCase,
     canonical_package::{
-        compile_package_artifact, package_aliases, read_root_package_manifest,
+        compile_package_artifact_with_store, package_aliases, read_root_package_manifest,
         CanonicalPackageProject, CanonicalPackageProjectError,
     },
 };
@@ -59,6 +60,8 @@ pub enum PackageTestOverlayError {
     Source(#[from] SourceCompileError),
     #[error(transparent)]
     Compile(#[from] PackageCompileError),
+    #[error(transparent)]
+    Storage(#[from] EcosystemStorageError),
     #[error("invalid package-test overlay: {0}")]
     Invalid(String),
 }
@@ -66,6 +69,7 @@ pub enum PackageTestOverlayError {
 pub fn compile_package_test_overlay(
     platform_sources: &CompilerPlatformSources,
     package_root: &Path,
+    artifact_root: &Path,
     project: &CanonicalPackageProject,
     cases: &[PackageTestCase],
 ) -> Result<PublishedPackageTestOverlay, PackageTestOverlayError> {
@@ -78,7 +82,8 @@ pub fn compile_package_test_overlay(
         .map_err(|error| PackageTestOverlayError::Invalid(error.to_string()))?;
     let (source, manifest) =
         build_overlay_source(platform_sources, package_root, cases, production.clone())?;
-    let overlay = compile_overlay_artifact(platform_sources, project, &manifest, &source)?;
+    let store = CanonicalArtifactStore::open(artifact_root)?;
+    let overlay = compile_overlay_artifact(platform_sources, project, &manifest, &source, &store)?;
     let bindings = overlay_bindings(cases, &overlay)?;
     if package_artifact_ref(&project.package.artifact)
         .map_err(|error| PackageTestOverlayError::Invalid(error.to_string()))?
@@ -188,6 +193,7 @@ fn compile_overlay_artifact(
     project: &CanonicalPackageProject,
     manifest: &PackageManifest,
     source: &PackageSourceInput,
+    store: &CanonicalArtifactStore,
 ) -> Result<PublishedPackageArtifact, PackageTestOverlayError> {
     let aliases = package_aliases(manifest, &project.dependency_packages);
     let dependencies = manifest
@@ -206,13 +212,14 @@ fn compile_overlay_artifact(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let available = project.artifacts().cloned().collect::<Vec<_>>();
-    Ok(compile_package_artifact(
+    Ok(compile_package_artifact_with_store(
         platform_sources,
         source,
         &aliases,
         &dependencies,
         &available,
         &project.contract_dependencies,
+        Some(store),
     )?)
 }
 

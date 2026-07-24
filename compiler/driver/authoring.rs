@@ -19,7 +19,8 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     parse_runtime_assembly_yml, ContractRequirement, PackageArtifact, PackageArtifactRef,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, ServiceContract, ServiceContractRef,
+    ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_compiler_input::{
     package_config::{read_user_package_manifest, PackageManifest, PACKAGE_CONFIG_FILE},
@@ -175,6 +176,10 @@ fn build_package_after_platform_context_guard(
             }
         };
         let package_closure = reachable_package_closure(store, &published.artifact, &available)?;
+        let package_schema_records = contract_package_schema_records(
+            contract,
+            &published.resolved_package_schema_type_records,
+        )?;
         let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
             service: &service.service,
             profile_name: environment,
@@ -182,7 +187,7 @@ fn build_package_after_platform_context_guard(
             service_api: &service_api,
             implementation: &published.artifact,
             package_closure: &package_closure,
-            package_schema_records: &published.resolved_package_schema_type_records,
+            package_schema_records: &package_schema_records,
         })?;
         let deployment_path = store.write_service_deployment(&deployment)?;
         let deployment_ref = service_deployment_ref(&deployment);
@@ -602,6 +607,25 @@ fn read_assembly_packages(
         .collect::<BTreeSet<PackageArtifactRef>>()
         .iter()
         .map(|reference| Ok(store.read_package_artifact(reference)?.as_ref().clone()))
+        .collect()
+}
+
+fn contract_package_schema_records(
+    contract: &ServiceContract,
+    available: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+) -> AuthoringResult<BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>> {
+    contract
+        .package_type_requirements
+        .iter()
+        .flat_map(|requirement| requirement.required_type_ids.iter())
+        .map(|type_id| {
+            let record = available.get(type_id).ok_or_else(|| {
+                invalid_input(format!(
+                    "service contract requires unavailable Package schema record {type_id}"
+                ))
+            })?;
+            Ok((type_id.clone(), record.clone()))
+        })
         .collect()
 }
 

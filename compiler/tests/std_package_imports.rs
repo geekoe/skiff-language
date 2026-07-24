@@ -21,11 +21,7 @@ fn user_packages_reject_native_declarations() {
             "native function hostOnly() -> string\n",
             "cannot declare native function hostOnly",
         ),
-        (
-            "native-type",
-            "native type HostOnly\n",
-            "cannot declare native type HostOnly",
-        ),
+        ("native-type", "native type HostOnly\n", "expected function"),
     ] {
         let temp = TestDir::new("skiff-compiler", name);
         temp.write(
@@ -244,9 +240,8 @@ type Marker { request: std.http.HttpRequest }
         CallableEffectSummary::Analyzed { .. }
     ));
 
-    assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 99);
+    assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 97);
     for public_path in [
-        "std.actor.Actor",
         "std.bytes.DecodeError",
         "std.crypto.sha256",
         "std.db.ConflictError",

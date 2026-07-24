@@ -6,15 +6,17 @@ use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
     BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
     BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor, ContractTypeRef, ExecutableIr,
-    PackageSchemaCanonicalDescriptor, PackageTypeRequirement, TypeRefIr,
+    BoundaryValueOwner, BoundaryValuePlan, ExecutableIr, PackageTypeRequirement, TypeRefIr,
 };
 use skiff_compiler::{ServiceContractDefinition, ServiceContractDefinitionDiagnosticText};
 
 use common::{
     artifacts::module_artifact,
     contracts::{compile_service_contract, package_contract_dependency},
-    package_project::compile_package_project_with_contract_dependencies,
+    package_project::{
+        compile_package_project, compile_package_project_with_contract_dependencies_and_schemas,
+    },
+    package_schemas::{public_contract_type, resolved_package_schema},
     TestDir,
 };
 
@@ -61,7 +63,8 @@ fn contract_typed_executables_have_one_opaque_execution_representation() {
     assert_eq!(consume.return_type, opaque_unknown());
 
     assert!(baseline.unit.external_refs.service_symbols.is_empty());
-    let (_, contract_type_id) = request_type();
+    let contract_type_id = &without_external_symbol.package.package_schema_index.types["Request"]
+        .package_schema_type_id;
     let executable_wire = serde_json::to_string(&baseline.unit.executables).unwrap();
     assert!(!executable_wire.contains(contract_type_id.as_str()));
     assert!(!executable_wire.contains("serviceSymbol"));
@@ -87,9 +90,13 @@ impl Adapter {
 }
 "#,
     );
-    let dependencies = contract_dependencies();
-    let project = compile_package_project_with_contract_dependencies(temp.path(), &dependencies)
-        .expect("impl receiver fixture should compile");
+    let (dependencies, schemas) = contract_fixture();
+    let project = compile_package_project_with_contract_dependencies_and_schemas(
+        temp.path(),
+        &dependencies,
+        &schemas,
+    )
+    .expect("impl receiver fixture should compile");
     let main = module_artifact(&project.package, "main");
     let relay = executable(&main.unit.executables, "Adapter.relay");
 
@@ -137,15 +144,34 @@ function consume(request: payments.Request) -> payments.Request {{
 "#
         ),
     );
-    compile_package_project_with_contract_dependencies(temp.path(), &contract_dependencies())
-        .expect("contract execution type fixture should compile")
+    let (dependencies, schemas) = contract_fixture();
+    compile_package_project_with_contract_dependencies_and_schemas(
+        temp.path(),
+        &dependencies,
+        &schemas,
+    )
+    .expect("contract execution type fixture should compile")
 }
 
-fn contract_dependencies() -> BTreeMap<
-    skiff_compiler_input::package_config::PackageManifestKey,
-    Vec<skiff_compiler::PackageContractCompileDependency>,
-> {
-    let (request, request_id) = request_type();
+fn contract_fixture() -> (
+    BTreeMap<
+        skiff_compiler_input::package_config::PackageManifestKey,
+        Vec<skiff_compiler::PackageContractCompileDependency>,
+    >,
+    BTreeMap<
+        skiff_compiler_input::package_config::PackageManifestKey,
+        Vec<skiff_compiler::ResolvedPackageSchema>,
+    >,
+) {
+    let seed = TestDir::new("skiff-compiler", "file-ir-execution-schema-seed");
+    seed.write(
+        "package.yml",
+        format!("id: {PACKAGE_ID}\nversion: {VERSION}\n"),
+    );
+    seed.write("api.yml", "Request: main.Request\n");
+    seed.write("main.skiff", "type Request { message: string }\n");
+    let seed = compile_package_project(seed.path()).expect("schema seed should compile");
+    let (request, request_id) = public_contract_type(&seed.package, "Request");
     let contract = compile_service_contract(ServiceContractDefinition {
         service_id: SERVICE_ID.to_string(),
         contract_version: VERSION.to_string(),
@@ -187,24 +213,15 @@ fn contract_dependencies() -> BTreeMap<
         },
     })
     .unwrap();
-    BTreeMap::from([(
-        (PACKAGE_ID.to_string(), VERSION.to_string()),
-        vec![package_contract_dependency("payments", contract)],
-    )])
-}
-
-fn request_type() -> (ContractTypeRef, skiff_artifact_model::PackageSchemaTypeId) {
-    let descriptor = PackageSchemaCanonicalDescriptor {
-        type_params: Vec::new(),
-        descriptor: ContractTypeDescriptor::Record {
-            fields: BTreeMap::from([("message".to_string(), ContractTypeRef::builtin("string"))]),
-        },
-    };
-    let id = skiff_artifact_identity::package_schema_type_id(PACKAGE_ID, "Request", &descriptor)
-        .unwrap();
     (
-        ContractTypeRef::package_schema(PACKAGE_ID, "Request", id.clone()),
-        id,
+        BTreeMap::from([(
+            (PACKAGE_ID.to_string(), VERSION.to_string()),
+            vec![package_contract_dependency("payments", contract)],
+        )]),
+        BTreeMap::from([(
+            (PACKAGE_ID.to_string(), VERSION.to_string()),
+            vec![resolved_package_schema("self", &seed.package).unwrap()],
+        )]),
     )
 }
 

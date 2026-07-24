@@ -10,9 +10,9 @@ use skiff_artifact_model::{
     BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
     BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding,
     BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary,
-    CallableMayEffects, CallableProvenanceSummary, ContractRequirement, ContractTypeDescriptor,
-    ContractTypeRef, PackageLocalAbiSymbol, PackageSchemaCanonicalDescriptor, PackageSchemaTypeId,
-    PackageTypeRef, PackageTypeRequirement, ServiceCallRef, ServiceRequirement, ValueEscapeLane,
+    CallableMayEffects, CallableProvenanceSummary, ContractRequirement, ContractTypeRef,
+    PackageLocalAbiSymbol, PackageSchemaTypeId, PackageTypeRef, PackageTypeRequirement,
+    ServiceCallRef, ServiceRequirement, ValueEscapeLane,
 };
 use skiff_compiler::{
     definition_contract_operation_id, ContractDefinitionError, ServiceContractDefinition,
@@ -23,7 +23,11 @@ use skiff_compiler_contract::project_service_api;
 use common::{
     artifacts::module_artifact,
     contracts::{compile_service_contract, package_contract_dependency},
-    package_project::compile_package_project_with_contract_dependencies,
+    package_project::{
+        compile_package_project, compile_package_project_with_contract_dependencies,
+        compile_package_project_with_contract_dependencies_and_schemas,
+    },
+    package_schemas::{public_contract_type, resolved_package_schema},
     TestDir,
 };
 
@@ -33,7 +37,7 @@ const SCHEMA_PACKAGE_ID: &str = "example.com/echo-schema";
 
 #[test]
 fn generated_service_stream_contract_compiles_through_consumer_file_ir() {
-    let contract = compile_generated_stream_contract(
+    let (contract, schema) = compile_generated_stream_contract(
         "generated-service-stream-provider",
         "example.com/generated-service-stream-provider",
         "example.com/generated-stream",
@@ -88,9 +92,13 @@ fn generated_service_stream_contract_compiles_through_consumer_file_ir() {
         ),
         vec![package_contract_dependency("feed", contract.clone())],
     )]);
-    let consumer_project =
-        compile_package_project_with_contract_dependencies(consumer.path(), &dependencies)
-            .expect("consumer should type and lower a generated service stream contract call");
+    let schemas = schemas_for("example.com/generated-service-stream-consumer", schema);
+    let consumer_project = compile_package_project_with_contract_dependencies_and_schemas(
+        consumer.path(),
+        &dependencies,
+        &schemas,
+    )
+    .expect("consumer should type and lower a generated service stream contract call");
     let expected_call_ref = ServiceCallRef {
         service_requirement_slot: 0,
         contract_operation_id: operation_id.clone(),
@@ -134,7 +142,7 @@ fn generated_service_stream_contract_compiles_through_consumer_file_ir() {
 
 #[test]
 fn generated_service_stream_consumer_rejects_an_undeclared_alias() {
-    let contract = compile_generated_stream_contract(
+    let (contract, schema) = compile_generated_stream_contract(
         "generated-service-stream-wrong-alias-provider",
         "example.com/generated-service-stream-wrong-alias-provider",
         "example.com/generated-stream-wrong-alias",
@@ -162,9 +170,17 @@ fn generated_service_stream_consumer_rejects_an_undeclared_alias() {
         ),
         vec![package_contract_dependency("feed", contract)],
     )]);
-    let error = compile_package_project_with_contract_dependencies(consumer.path(), &dependencies)
-        .expect_err("an undeclared service alias must fail the package compile trust boundary")
-        .to_string();
+    let schemas = schemas_for(
+        "example.com/generated-service-stream-wrong-alias-consumer",
+        schema,
+    );
+    let error = compile_package_project_with_contract_dependencies_and_schemas(
+        consumer.path(),
+        &dependencies,
+        &schemas,
+    )
+    .expect_err("an undeclared service alias must fail the package compile trust boundary")
+    .to_string();
     assert!(
         error.contains("for iterable must be Array, Stream, or Map"),
         "wrong alias must not produce a typed stream iterable: {error}"
@@ -274,6 +290,7 @@ fn protocol_identity_tracks_semantics_but_not_diagnostic_text() {
 #[test]
 fn provider_and_consumer_compile_against_the_same_contract_without_provider_binding() {
     let contract = compile_service_contract(contract_definition()).unwrap();
+    let schema = echo_schema();
     let operation_id =
         definition_contract_operation_id(SERVICE_ID, CONTRACT_VERSION, "echo").unwrap();
     let request_type_id = request_type().1;
@@ -302,9 +319,13 @@ fn provider_and_consumer_compile_against_the_same_contract_without_provider_bind
         ),
         vec![package_contract_dependency("payments", contract.clone())],
     )]);
-    let provider_project =
-        compile_package_project_with_contract_dependencies(provider.path(), &provider_dependencies)
-            .expect("provider wrapper should compile from package source and contract only");
+    let provider_schemas = schemas_for("example.com/payments-provider", schema.clone());
+    let provider_project = compile_package_project_with_contract_dependencies_and_schemas(
+        provider.path(),
+        &provider_dependencies,
+        &provider_schemas,
+    )
+    .expect("provider wrapper should compile from package source and contract only");
     assert_eq!(
         provider_project.package.artifact.contract_requirements,
         vec![expected_requirement.clone()]
@@ -380,9 +401,13 @@ fn provider_and_consumer_compile_against_the_same_contract_without_provider_bind
         ),
         vec![package_contract_dependency("payments", contract.clone())],
     )]);
-    let consumer_project =
-        compile_package_project_with_contract_dependencies(consumer.path(), &consumer_dependencies)
-            .expect("consumer should compile from package source and ServiceContract only");
+    let consumer_schemas = schemas_for("example.com/payments-consumer", schema);
+    let consumer_project = compile_package_project_with_contract_dependencies_and_schemas(
+        consumer.path(),
+        &consumer_dependencies,
+        &consumer_schemas,
+    )
+    .expect("consumer should compile from package source and ServiceContract only");
     let expected_call_ref = ServiceCallRef {
         service_requirement_slot: 0,
         contract_operation_id: operation_id.clone(),
@@ -457,6 +482,8 @@ fn package_direct_mutation_then_detached_contract_projects_available() {
     let mut definition = contract_definition();
     definition.operations.get_mut("echo").unwrap().parameters[0].ty =
         ContractTypeRef::builtin("string");
+    definition.package_type_requirements.clear();
+    definition.diagnostic_text.types.clear();
     let contract = compile_service_contract(definition).unwrap();
 
     let provider = TestDir::new("skiff-compiler", "callable-effects-provider");
@@ -527,9 +554,13 @@ function mutate(input: Box) -> void {
         ),
         vec![package_contract_dependency("payments", contract)],
     )]);
-    let project =
-        compile_package_project_with_contract_dependencies(consumer.path(), &dependencies)
-            .expect("fresh helper value followed by detached contract call should compile");
+    let schemas = schemas_for("example.com/callable-effects-consumer", echo_schema());
+    let project = compile_package_project_with_contract_dependencies_and_schemas(
+        consumer.path(),
+        &dependencies,
+        &schemas,
+    )
+    .expect("fresh helper value followed by detached contract call should compile");
     let helper = project
         .dependency("example.com/callable-effects-helper", "1.0.0")
         .expect("helper artifact must be in the canonical dependency closure");
@@ -663,12 +694,17 @@ fn invalid_contract_type_operation_and_call_uses_fail_package_compilation() {
         let package_id = format!("example.com/service-contract-{name}");
         write_package(&temp, &package_id, "run: main.run\n", source);
         let dependencies = BTreeMap::from([(
-            (package_id, "1.0.0".to_string()),
+            (package_id.clone(), "1.0.0".to_string()),
             vec![package_contract_dependency("payments", contract.clone())],
         )]);
-        let error = compile_package_project_with_contract_dependencies(temp.path(), &dependencies)
-            .expect_err("invalid contract source must fail the package compile trust boundary")
-            .to_string();
+        let schemas = schemas_for(&package_id, echo_schema());
+        let error = compile_package_project_with_contract_dependencies_and_schemas(
+            temp.path(),
+            &dependencies,
+            &schemas,
+        )
+        .expect_err("invalid contract source must fail the package compile trust boundary")
+        .to_string();
         assert!(error.contains(expected), "unexpected {name} error: {error}");
     }
 }
@@ -713,9 +749,14 @@ packages:
         ),
         vec![package_contract_dependency("payments", contract)],
     )]);
-    let error = compile_package_project_with_contract_dependencies(temp.path(), &dependencies)
-        .expect_err("package/contract alias conflict must fail before source resolution")
-        .to_string();
+    let schemas = schemas_for("example.com/service-contract-alias-conflict", echo_schema());
+    let error = compile_package_project_with_contract_dependencies_and_schemas(
+        temp.path(),
+        &dependencies,
+        &schemas,
+    )
+    .expect_err("package/contract alias conflict must fail before source resolution")
+    .to_string();
     assert!(
         error.contains("dependency alias `payments` is declared by both a package and a contract"),
         "unexpected alias conflict error: {error}"
@@ -767,19 +808,34 @@ fn contract_definition() -> ServiceContractDefinition {
 }
 
 fn request_type() -> (ContractTypeRef, PackageSchemaTypeId) {
-    let descriptor = PackageSchemaCanonicalDescriptor {
-        type_params: Vec::new(),
-        descriptor: ContractTypeDescriptor::Record {
-            fields: BTreeMap::from([("message".to_string(), ContractTypeRef::builtin("string"))]),
-        },
-    };
-    let id =
-        skiff_artifact_identity::package_schema_type_id(SCHEMA_PACKAGE_ID, "Request", &descriptor)
-            .unwrap();
-    (
-        ContractTypeRef::package_schema(SCHEMA_PACKAGE_ID, "Request", id.clone()),
-        id,
-    )
+    let seed = echo_schema_seed();
+    public_contract_type(&seed.package, "Request")
+}
+
+fn echo_schema_seed() -> common::package_project::PublishedPackageProject {
+    let seed = TestDir::new("skiff-compiler", "echo-contract-schema-seed");
+    write_package(
+        &seed,
+        SCHEMA_PACKAGE_ID,
+        "Request: main.Request\n",
+        "type Request { message: string }\n",
+    );
+    compile_package_project(seed.path()).expect("echo schema seed should compile")
+}
+
+fn echo_schema() -> skiff_compiler::ResolvedPackageSchema {
+    resolved_package_schema("contract-schema", &echo_schema_seed().package)
+        .expect("echo schema seed should resolve")
+}
+
+fn schemas_for(
+    package_id: &str,
+    schema: skiff_compiler::ResolvedPackageSchema,
+) -> BTreeMap<
+    skiff_compiler_input::package_config::PackageManifestKey,
+    Vec<skiff_compiler::ResolvedPackageSchema>,
+> {
+    BTreeMap::from([((package_id.to_string(), "1.0.0".to_string()), vec![schema])])
 }
 
 fn linkable(owner: BoundaryValueOwner) -> BoundaryValuePlan {
@@ -804,7 +860,10 @@ fn compile_generated_stream_contract(
     fixture_name: &str,
     package_id: &str,
     service_id: &str,
-) -> skiff_artifact_model::ServiceContract {
+) -> (
+    skiff_artifact_model::ServiceContract,
+    skiff_compiler::ResolvedPackageSchema,
+) {
     let provider = TestDir::new("skiff-compiler", fixture_name);
     write_package(
         &provider,
@@ -832,7 +891,7 @@ fn compile_generated_stream_contract(
         public_callable_projection(&provider_project.package.artifact, "events")
     );
     assert_no_provider_binding_wire(&provider_project.package.artifact);
-    project_service_api(
+    let contract = project_service_api(
         service_id,
         &provider_project.package.artifact,
         &provider_project
@@ -840,7 +899,10 @@ fn compile_generated_stream_contract(
             .resolved_package_schema_type_records,
     )
     .expect("public stream API should project through the real contract pipeline")
-    .contract
+    .contract;
+    let schema = resolved_package_schema("contract-schema", &provider_project.package)
+        .expect("stream provider schema should resolve");
+    (contract, schema)
 }
 
 fn public_callable_projection<'a>(

@@ -8,10 +8,9 @@ use skiff_artifact_model::{
     BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryErrorContract,
     BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, ContractTypeDescriptor, ContractTypeRef, DeploymentDiagnosticText,
-    DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision, IngressProtocol,
-    IngressSelector, PackageBinding, PackageLocalAbiSymbol, PackageRequirementKey,
-    PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    BoundaryValuePlan, ContractTypeRef, DeploymentDiagnosticText, DeploymentIngressBinding,
+    DeploymentPolicy, DeploymentRevision, IngressProtocol, IngressSelector, PackageBinding,
+    PackageLocalAbiSymbol, PackageRequirementKey, PackageSchemaTypeId, PackageSchemaTypeRecord,
     PackageTypeRequirement, ResourcePolicy, ServiceDeploymentInput,
     ServiceDeploymentOperationInput, TypeRefIr, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
@@ -24,7 +23,11 @@ use skiff_deployment::projection::project_service_deployment;
 use common::{
     artifacts::module_artifact,
     contracts::{compile_service_contract, package_contract_dependency},
-    package_project::compile_package_project_with_contract_dependencies,
+    package_project::{
+        compile_package_project, compile_package_project_with_contract_dependencies,
+        compile_package_project_with_contract_dependencies_and_schemas,
+    },
+    package_schemas::{public_contract_type, resolved_package_schema},
     TestDir,
 };
 
@@ -116,23 +119,13 @@ function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.webs
 
 #[test]
 fn websocket_nominal_context_normal_source_reaches_exact_deployment_and_erased_execution() {
-    let context_descriptor = PackageSchemaCanonicalDescriptor {
-        type_params: Vec::new(),
-        descriptor: ContractTypeDescriptor::Record {
-            fields: BTreeMap::new(),
-        },
-    };
-    let context_id =
-        skiff_artifact_identity::package_schema_type_id(PACKAGE_ID, "Context", &context_descriptor)
-            .expect("nominal Context identity should derive before provider compile");
-    let context = ContractTypeRef::package_schema(PACKAGE_ID, "Context", context_id.clone());
-    let context_record = PackageSchemaTypeRecord {
-        package_id: PACKAGE_ID.to_string(),
-        stable_schema_key: "Context".to_string(),
-        package_schema_type_id: context_id.clone(),
-        canonical_descriptor: context_descriptor,
-    };
-    let schema_records = BTreeMap::from([(context_id.clone(), context_record)]);
+    let seed = TestDir::new("skiff-compiler", "websocket-context-schema-seed");
+    seed.write("package.yml", format!("id: {PACKAGE_ID}\nversion: 1.0.0\n"));
+    seed.write("api.yml", "Context: main.Context\n");
+    seed.write("main.skiff", "type Context {}\n");
+    let seed = compile_package_project(seed.path()).expect("Context schema seed should compile");
+    let (context, context_id) = public_contract_type(&seed.package, "Context");
+    let schema_records = seed.package.package_schema_type_records.clone();
     let expected = websocket_operation(context);
     let contract = compile_service_contract(ServiceContractDefinition {
         service_id: SERVICE_ID.to_string(),
@@ -173,20 +166,33 @@ function websocket(event: std.websocket.WebSocketIngressEvent<Context>) -> std.w
         (PACKAGE_ID.to_string(), "1.0.0".to_string()),
         vec![package_contract_dependency("gateway", contract.clone())],
     )]);
-    let project = compile_package_project_with_contract_dependencies(temp.path(), &dependencies)
-        .expect("normal provider source should preserve contract-owned nominal Context");
+    let schemas = BTreeMap::from([(
+        (PACKAGE_ID.to_string(), "1.0.0".to_string()),
+        vec![resolved_package_schema("contract-schema", &seed.package)
+            .expect("Context schema should resolve")],
+    )]);
+    let project = compile_package_project_with_contract_dependencies_and_schemas(
+        temp.path(),
+        &dependencies,
+        &schemas,
+    )
+    .expect("normal provider source should preserve contract-owned nominal Context");
     let PackageLocalAbiSymbol::Callable { callable_id, .. } =
         &project.package.artifact.package_local_abi.public_symbols["websocket"]
     else {
         panic!("websocket must project as a public callable")
     };
-    assert!(matches!(
-        &project.package.artifact.boundary_projections[callable_id],
-        BoundaryCallableProjection::Available {
-            operation_contract,
-            ..
-        } if operation_contract == &expected
-    ));
+    let projection = &project.package.artifact.boundary_projections[callable_id];
+    assert!(
+        matches!(
+            projection,
+            BoundaryCallableProjection::Available {
+                operation_contract,
+                ..
+            } if operation_contract == &expected
+        ),
+        "nominal websocket projection should remain available: {projection:?}"
+    );
 
     let websocket = module_artifact(&project.package, "main")
         .unit

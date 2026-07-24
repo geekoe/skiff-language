@@ -27,7 +27,7 @@ use crate::{
 const EXPECTED_PRELUDE_IDENTITY: &str =
     "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699";
 const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
-    "skiff-package-build-v4:sha256:0371792db391f3b0b236a433d2c3d2da81c0f550cde414c030ac566b7755171c";
+    "skiff-package-build-v4:sha256:6744fc2d69966814862e9092949d1b42a22b1a917967b91876dc03d660cd3c28";
 
 #[test]
 #[ignore = "merge-only F18A/F18B compiler repair probe"]
@@ -130,9 +130,14 @@ fn p5_f76_contextual_callable_provenance_combined() {
         let project =
             compile_package_project(&platform_sources, &package_root, &artifacts).unwrap();
         let cases = discover_package_test_cases(&package_root, &package_root, false).unwrap();
-        let overlay =
-            compile_package_test_overlay(&platform_sources, &package_root, &project, &cases)
-                .unwrap();
+        let overlay = compile_package_test_overlay(
+            &platform_sources,
+            &package_root,
+            &artifacts,
+            &project,
+            &cases,
+        )
+        .unwrap();
         let binding = overlay
             .bindings
             .iter()

@@ -34,6 +34,8 @@ fn compiler_output_deserializes_as_the_canonical_package_artifact() {
             "packageId",
             "packageLocalAbi",
             "packageRequirements",
+            "packageSchemaIndex",
+            "packageSchemaTypeRecords",
             "packageVersion",
             "runtimeRequirements",
             "schemaVersion",

@@ -89,10 +89,34 @@ pub fn compile_package_artifact(
     available_packages: &[PackageArtifact],
     contract_dependencies: &[PackageContractCompileDependency],
 ) -> Result<PublishedPackageArtifact, PackageCompileError> {
+    compile_package_artifact_with_store(
+        platform_sources,
+        package,
+        package_aliases,
+        dependency_packages,
+        available_packages,
+        contract_dependencies,
+        None,
+    )
+}
+
+pub(crate) fn compile_package_artifact_with_store(
+    platform_sources: &CompilerPlatformSources,
+    package: &PackageSourceInput,
+    package_aliases: &BTreeMap<String, Vec<String>>,
+    dependency_packages: &[PackageArtifact],
+    available_packages: &[PackageArtifact],
+    contract_dependencies: &[PackageContractCompileDependency],
+    canonical_artifact_store: Option<&CanonicalArtifactStore>,
+) -> Result<PublishedPackageArtifact, PackageCompileError> {
     let package_id = package.manifest().id.to_string();
-    let input = PackageCompileInput::new(platform_sources, package, package_aliases, &package_id)
-        .with_canonical_dependencies(dependency_packages, contract_dependencies)
-        .with_available_canonical_packages(available_packages);
+    let mut input =
+        PackageCompileInput::new(platform_sources, package, package_aliases, &package_id)
+            .with_canonical_dependencies(dependency_packages, contract_dependencies)
+            .with_available_canonical_packages(available_packages);
+    if let Some(store) = canonical_artifact_store {
+        input = input.with_canonical_artifact_store(store);
+    }
     compile_package(input)
 }
 
@@ -148,13 +172,14 @@ fn compile_package_project_after_platform_context_guard(
     let mut available = manifest_dependencies.clone();
     read_optional_platform_std(&store, &mut available)?;
     let source = read_package_source_input(platform_sources, &manifest)?;
-    let package = compile_package_artifact(
+    let package = compile_package_artifact_with_store(
         platform_sources,
         &source,
         &aliases,
         &direct_dependencies,
         &available,
         &contract_dependencies,
+        Some(&store),
     )?;
     let dependency_packages = read_compiled_dependency_closure(&store, &package.artifact)?;
     Ok(CanonicalPackageProject {

@@ -7,6 +7,7 @@ use std::{
 
 use skiff_compiler::{
     PackageCompileError, PackageContractCompileDependency, PublishedPackageArtifact,
+    ResolvedPackageSchema, ResolvedPackageSchemaError,
 };
 use skiff_compiler_input::{
     package_config::{
@@ -70,6 +71,8 @@ pub enum PackageProjectCompileError {
     Source(#[from] SourceCompileError),
     #[error(transparent)]
     Compile(#[from] PackageCompileError),
+    #[error(transparent)]
+    ResolvedPackageSchema(#[from] ResolvedPackageSchemaError),
     #[error("package dependency {package_id}@{package_version} has no discovered package.yml")]
     MissingDependencyManifest {
         package_id: String,
@@ -106,10 +109,28 @@ pub fn compile_package_project_with_contract_dependencies(
     let package_dirs = PackageResolutionDirs {
         package_dirs: store.is_dir().then_some(store).into_iter().collect(),
     };
-    compile_package_project_with_dirs_and_contract_dependencies(
+    compile_package_project_with_dirs_contract_dependencies_and_schemas(
         root,
         &package_dirs,
         contract_dependencies,
+        &BTreeMap::new(),
+    )
+}
+
+pub fn compile_package_project_with_contract_dependencies_and_schemas(
+    root: &Path,
+    contract_dependencies: &BTreeMap<PackageManifestKey, Vec<PackageContractCompileDependency>>,
+    resolved_package_schemas: &BTreeMap<PackageManifestKey, Vec<ResolvedPackageSchema>>,
+) -> Result<PublishedPackageProject, PackageProjectCompileError> {
+    let store = root.join(LOCAL_PACKAGE_STORE);
+    let package_dirs = PackageResolutionDirs {
+        package_dirs: store.is_dir().then_some(store).into_iter().collect(),
+    };
+    compile_package_project_with_dirs_contract_dependencies_and_schemas(
+        root,
+        &package_dirs,
+        contract_dependencies,
+        resolved_package_schemas,
     )
 }
 
@@ -120,17 +141,19 @@ pub fn compile_package_project_with_dirs(
     root: &Path,
     package_dirs: &PackageResolutionDirs,
 ) -> Result<PublishedPackageProject, PackageProjectCompileError> {
-    compile_package_project_with_dirs_and_contract_dependencies(
+    compile_package_project_with_dirs_contract_dependencies_and_schemas(
         root,
         package_dirs,
+        &BTreeMap::new(),
         &BTreeMap::new(),
     )
 }
 
-fn compile_package_project_with_dirs_and_contract_dependencies(
+fn compile_package_project_with_dirs_contract_dependencies_and_schemas(
     root: &Path,
     package_dirs: &PackageResolutionDirs,
     contract_dependencies: &BTreeMap<PackageManifestKey, Vec<PackageContractCompileDependency>>,
+    resolved_package_schemas: &BTreeMap<PackageManifestKey, Vec<ResolvedPackageSchema>>,
 ) -> Result<PublishedPackageProject, PackageProjectCompileError> {
     let platform_sources = repository_platform_sources()?;
     let root_manifest = read_user_package_manifest(&root.join(PACKAGE_CONFIG_FILE))?;
@@ -141,7 +164,12 @@ fn compile_package_project_with_dirs_and_contract_dependencies(
         package_dirs,
         &root_manifest.dependencies,
     )?;
-    let mut graph = PackageGraphCompiler::new(&platform_sources, manifests, contract_dependencies);
+    let mut graph = PackageGraphCompiler::new(
+        &platform_sources,
+        manifests,
+        contract_dependencies,
+        resolved_package_schemas,
+    );
     graph.compile_platform_std()?;
     let package = graph.compile(&root_key)?;
     let dependency_packages = graph.compiled_dependency_closure(&package)?;
