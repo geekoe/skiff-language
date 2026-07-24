@@ -89,6 +89,10 @@ struct SourceTypeResolution {
 #[derive(Clone, Debug)]
 enum SourceTypeKind {
     Record { fields: BTreeMap<String, String> },
+    Actor {
+        id_type: String,
+        fields: BTreeMap<String, String>,
+    },
     Representation { target: String },
     Alias { target: String },
     External,
@@ -211,6 +215,13 @@ pub struct ConstructorTargetResolution {
     pub ty: ResolvedTypeRef,
     pub fields: BTreeMap<String, ResolvedTypeRef>,
     pub type_params: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ActorTypeResolution {
+    pub ty: ResolvedTypeRef,
+    pub id_type: ResolvedTypeRef,
+    pub fields: BTreeMap<String, ResolvedTypeRef>,
 }
 
 #[derive(Clone, Debug)]
@@ -686,6 +697,63 @@ impl TypeResolutionModel {
         })
     }
 
+    pub fn actor_type_resolution(
+        &self,
+        ty: &ResolvedTypeRef,
+        context: &TypeResolutionContext<'_>,
+    ) -> Option<ActorTypeResolution> {
+        let key = self.actual_receiver_symbol(ty, context)?;
+        let resolution = self.source_types.get(&key)?;
+        let SourceTypeKind::Actor { id_type, fields } = &resolution.kind else {
+            return None;
+        };
+        let declaration_context = TypeResolutionContext::source(&resolution.module_path);
+        let id_type = self
+            .resolve_type_text(id_type, &declaration_context)
+            .ok()
+            .map(|resolved| {
+                if resolution.module_path == context.module_path {
+                    resolved
+                } else {
+                    self.externalize_local_type_refs(&resolved, &resolution.module_path)
+                }
+            })?;
+        let fields = fields
+            .iter()
+            .map(|(name, ty)| {
+                let resolved = self.resolve_type_text(ty, &declaration_context).ok()?;
+                let resolved = if resolution.module_path == context.module_path {
+                    resolved
+                } else {
+                    self.externalize_local_type_refs(&resolved, &resolution.module_path)
+                };
+                Some((name.clone(), resolved))
+            })
+            .collect::<Option<BTreeMap<_, _>>>()?;
+        Some(ActorTypeResolution {
+            ty: ty.clone(),
+            id_type,
+            fields,
+        })
+    }
+
+    pub fn actor_method_signature(
+        &self,
+        ty: &ResolvedTypeRef,
+        method_name: &str,
+        context: &TypeResolutionContext<'_>,
+    ) -> Option<(Vec<FunctionTypeParamIr>, TypeRefIr)> {
+        let key = self.actual_receiver_symbol(ty, context)?;
+        if !matches!(
+            self.source_types.get(&key)?.kind,
+            SourceTypeKind::Actor { .. }
+        ) {
+            return None;
+        }
+        let method = self.local_impl_methods.get(&key)?.get(method_name)?;
+        Some((method.params.clone(), method.return_type.clone()))
+    }
+
     pub fn resolve_constructor_target_text(
         &self,
         raw: &str,
@@ -978,7 +1046,7 @@ impl TypeResolutionModel {
                     &source_context,
                     visited,
                 ),
-            SourceTypeKind::External => false,
+            SourceTypeKind::Actor { .. } | SourceTypeKind::External => false,
         };
         visited.remove(&named.visit_key);
         contains
@@ -1234,6 +1302,9 @@ impl TypeResolutionModel {
                     fields,
                 })
             }
+            SourceTypeKind::Actor { .. } => Err(format!(
+                "actor `{type_name}` is a nominal handle and cannot be constructed directly; use std.actor.getOrCreate or std.actor.replace"
+            )),
             SourceTypeKind::Representation { .. } => Err(format!(
                 "constructor target `{type_name}` is not a nominal record"
             )),
@@ -1308,7 +1379,9 @@ impl TypeResolutionModel {
                 );
                 self.representation_shape(target, &alias_context)
             }
-            SourceTypeKind::Record { .. } | SourceTypeKind::External => Ok(None),
+            SourceTypeKind::Record { .. }
+            | SourceTypeKind::Actor { .. }
+            | SourceTypeKind::External => Ok(None),
         }
     }
 
@@ -2881,6 +2954,7 @@ fn interface_symbol_type_ref(symbol: &SourceSymbolKey) -> TypeRefIr {
 fn source_type_kind_label(kind: &SourceTypeKind) -> &'static str {
     match kind {
         SourceTypeKind::Record { .. } => "concrete type",
+        SourceTypeKind::Actor { .. } => "actor nominal handle",
         SourceTypeKind::Representation { .. } => "concrete representation type",
         SourceTypeKind::Alias { .. } => "alias",
         SourceTypeKind::External => "non-interface type",
@@ -2964,6 +3038,26 @@ fn index_source_types(
         source_types.insert(
             SourceSymbolKey::new(module_path, &ty.name),
             source_type_resolution(module_path, &ty.name, &ty.type_params, ty),
+        );
+    }
+    for actor in &ast.actors {
+        source_types.insert(
+            SourceSymbolKey::new(module_path, &actor.name),
+            SourceTypeResolution {
+                name: actor.name.clone(),
+                type_params: Vec::new(),
+                local_type_names: BTreeSet::new(),
+                kind: SourceTypeKind::Actor {
+                    id_type: actor.id_type.name.clone(),
+                    fields: actor
+                        .fields
+                        .iter()
+                        .map(|field| (field.name.clone(), field.ty.name.clone()))
+                        .collect(),
+                },
+                module_path: module_path.to_string(),
+                public_path: None,
+            },
         );
     }
     for alias in &ast.aliases {
@@ -3292,6 +3386,7 @@ fn local_type_names(ast: &SourceFile) -> BTreeSet<String> {
         .iter()
         .map(|ty| ty.name.clone())
         .chain(ast.aliases.iter().map(|alias| alias.name.clone()))
+        .chain(ast.actors.iter().map(|actor| actor.name.clone()))
         .chain(
             ast.interfaces
                 .iter()

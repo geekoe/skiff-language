@@ -44,13 +44,13 @@ fn build_index_with_module(module: &str, ast: &SourceFile) -> RootRefIndex {
 
 fn module_with_exported_type(name: &str) -> SourceFile {
     SourceFile {
+        actors: Vec::new(),
         provider_capability: None,
         functions: vec![],
         function_signatures: vec![],
         imports: vec![],
         types: vec![TypeDecl {
             exported: true,
-            is_native: false,
             name: name.to_string(),
             type_params: vec![],
             discriminator: None,
@@ -76,6 +76,7 @@ fn resolves_root_path_in_type_ref_to_canonical_path() {
     let module_ast = module_with_exported_type("UserDoc");
     let index = build_index_with_module("api.user", &module_ast);
     let mut consumer = SourceFile {
+        actors: Vec::new(),
         functions: vec![FunctionDecl {
             exported: false,
             name: "f".to_string(),
@@ -191,6 +192,7 @@ fn resolves_root_path_in_expression_to_canonical_path() {
     let module_ast = module_with_exported_type("Foo");
     let index = build_index_with_module("a.b", &module_ast);
     let mut consumer = SourceFile {
+        actors: Vec::new(),
         functions: vec![FunctionDecl {
             exported: false,
             name: "f".to_string(),
@@ -249,6 +251,7 @@ fn read_only_resolution_matches_mutable_resolution_without_changing_ast() {
     let module_ast = module_with_exported_type("Foo");
     let index = build_index_with_module("a.b", &module_ast);
     let consumer = SourceFile {
+        actors: Vec::new(),
         functions: vec![FunctionDecl {
             exported: false,
             name: "f".to_string(),
@@ -310,13 +313,13 @@ fn read_only_resolution_matches_mutable_resolution_without_changing_ast() {
 fn unknown_module_produces_error() {
     let index = RootRefIndex::new();
     let mut consumer = SourceFile {
+        actors: Vec::new(),
         provider_capability: None,
         functions: vec![],
         function_signatures: vec![],
         imports: vec![],
         types: vec![TypeDecl {
             exported: false,
-            is_native: false,
             name: "Holder".to_string(),
             type_params: vec![],
             discriminator: None,
@@ -350,13 +353,13 @@ fn unknown_symbol_produces_error() {
     let module_ast = module_with_exported_type("Real");
     let index = build_index_with_module("m", &module_ast);
     let mut consumer = SourceFile {
+        actors: Vec::new(),
         provider_capability: None,
         functions: vec![],
         function_signatures: vec![],
         imports: vec![],
         types: vec![TypeDecl {
             exported: false,
-            is_native: false,
             name: "Holder".to_string(),
             type_params: vec![],
             discriminator: None,
@@ -394,6 +397,7 @@ fn does_not_duplicate_existing_import() {
     let module_ast = module_with_exported_type("Foo");
     let index = build_index_with_module("a.b", &module_ast);
     let mut consumer = SourceFile {
+        actors: Vec::new(),
         provider_capability: None,
         functions: vec![],
         function_signatures: vec![],
@@ -406,7 +410,6 @@ fn does_not_duplicate_existing_import() {
         }],
         types: vec![TypeDecl {
             exported: false,
-            is_native: false,
             name: "Holder".to_string(),
             type_params: vec![],
             discriminator: None,
@@ -481,6 +484,7 @@ fn resolves_root_path_in_alias_target_type() {
     let module_ast = module_with_exported_type("UserDoc");
     let index = build_index_with_module("api.user", &module_ast);
     let mut consumer = SourceFile {
+        actors: Vec::new(),
         provider_capability: None,
         functions: vec![],
         function_signatures: vec![],
@@ -516,6 +520,7 @@ fn package_spelling_is_rejected() {
     let module_ast = module_with_exported_type("UserDoc");
     let index = build_index_with_module("api.user", &module_ast);
     let mut consumer = SourceFile {
+        actors: Vec::new(),
         functions: vec![FunctionDecl {
             exported: false,
             name: "f".to_string(),

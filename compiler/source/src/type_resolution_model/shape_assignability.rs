@@ -585,14 +585,24 @@ impl TypeResolutionModel {
         match &actual.ir {
             TypeRefIr::LocalType { type_index } => self
                 .local_type_resolution(context.module_path, *type_index)
-                .filter(|resolution| matches!(resolution.kind, SourceTypeKind::Record { .. }))
+                .filter(|resolution| {
+                    matches!(
+                        resolution.kind,
+                        SourceTypeKind::Record { .. } | SourceTypeKind::Actor { .. }
+                    )
+                })
                 .map(|resolution| SourceSymbolKey::new(&resolution.module_path, &resolution.name)),
             TypeRefIr::PublicationType {
                 module_path,
                 type_index,
             } => self
                 .local_type_resolution(module_path, *type_index)
-                .filter(|resolution| matches!(resolution.kind, SourceTypeKind::Record { .. }))
+                .filter(|resolution| {
+                    matches!(
+                        resolution.kind,
+                        SourceTypeKind::Record { .. } | SourceTypeKind::Actor { .. }
+                    )
+                })
                 .map(|resolution| SourceSymbolKey::new(&resolution.module_path, &resolution.name)),
             TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
                 let module_path = symbol
@@ -602,7 +612,12 @@ impl TypeResolutionModel {
                 let key = SourceSymbolKey::new(module_path, &symbol.symbol);
                 self.source_types
                     .get(&key)
-                    .filter(|resolution| matches!(resolution.kind, SourceTypeKind::Record { .. }))
+                    .filter(|resolution| {
+                        matches!(
+                            resolution.kind,
+                            SourceTypeKind::Record { .. } | SourceTypeKind::Actor { .. }
+                        )
+                    })
                     .map(|_| key)
             }
             _ => None,
@@ -995,7 +1010,7 @@ impl TypeResolutionModel {
                     .unwrap_or_else(|| target.clone());
                 self.resolve_type_text(&target, &source_context).ok()?.ir
             }
-            SourceTypeKind::External => return None,
+            SourceTypeKind::Actor { .. } | SourceTypeKind::External => return None,
         };
         Some(if source_module_path == caller_context.module_path {
             resolved
@@ -1249,6 +1264,7 @@ impl TypeResolutionModel {
         let target = match &resolved.kind {
             SourceTypeKind::Alias { target } => target,
             SourceTypeKind::Record { .. }
+            | SourceTypeKind::Actor { .. }
             | SourceTypeKind::Representation { .. }
             | SourceTypeKind::External => return None,
         };

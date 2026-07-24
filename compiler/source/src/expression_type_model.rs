@@ -2186,6 +2186,11 @@ impl<'a> OwnerChecker<'a> {
             return Some(return_type);
         }
         if let Some(return_type) =
+            self.actor_receiver_call_type(key, callee, type_args, args, arg_types)
+        {
+            return Some(return_type);
+        }
+        if let Some(return_type) =
             self.any_interface_receiver_call_type(key, callee, type_args, args, arg_types)
         {
             return Some(return_type);
@@ -2235,6 +2240,17 @@ impl<'a> OwnerChecker<'a> {
         }
         if let Some(return_type) = self.config_intrinsic_call_type(&path, type_args) {
             return Some(return_type);
+        }
+        if matches!(
+            path.as_str(),
+            "std.actor.getOrCreate"
+                | "std.actor.replace"
+                | "std.actor.find"
+                | "std.actor.remove"
+        ) {
+            return self.actor_registry_intrinsic_call_type(
+                &path, type_args, args, arg_types,
+            );
         }
         match self.type_resolution.resolve_representation_constructor(
             &path,
@@ -2775,6 +2791,127 @@ impl<'a> OwnerChecker<'a> {
                 .record_expression_type(key.clone(), projected);
         }
         Some(return_type)
+    }
+
+    fn actor_receiver_call_type(
+        &mut self,
+        key: &ExpressionKey,
+        callee: &Expr,
+        type_args: &[TypeRef],
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) -> Option<ResolvedTypeRef> {
+        let (_, method_name) = receiver_call_parts(callee)?;
+        let offset = 1 + receiver_object_offset_in_callee(callee)?;
+        let receiver_ty = self.expression_type_at_offset(key, offset)?;
+        let (params, return_type) = self.type_resolution.actor_method_signature(
+            &receiver_ty,
+            method_name,
+            &self.type_context,
+        )?;
+        let callable = format!("{}.{}", receiver_ty.source_text, method_name);
+        if !type_args.is_empty() {
+            self.diagnostics.push(format!(
+                "{}: actor method `{callable}` does not accept explicit method type arguments",
+                self.module_path
+            ));
+        }
+        let params = params
+            .iter()
+            .skip(usize::from(
+                params.first().is_some_and(|param| param.name == "self"),
+            ))
+            .enumerate()
+            .map(|(index, param)| {
+                (
+                    format!("arg{index}"),
+                    ResolvedTypeRef {
+                        source_text: type_ref_debug_text(&param.ty),
+                        ir: param.ty.clone(),
+                    },
+                )
+            })
+            .collect();
+        self.validate_resolved_call_params(&callable, params, args, arg_types);
+        Some(ResolvedTypeRef {
+            source_text: type_ref_debug_text(&return_type),
+            ir: return_type,
+        })
+    }
+
+    fn actor_registry_intrinsic_call_type(
+        &mut self,
+        path: &str,
+        type_args: &[TypeRef],
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) -> Option<ResolvedTypeRef> {
+        if type_args.len() != 1 {
+            self.diagnostics.push(format!(
+                "{}: actor registry intrinsic `{path}` expects exactly one actor type argument, found {}",
+                self.module_path,
+                type_args.len()
+            ));
+            return None;
+        }
+        let actor_ty = match self
+            .type_resolution
+            .resolve_type_ref(&type_args[0], &self.type_context)
+        {
+            Ok(actor_ty) => actor_ty,
+            Err(error) => {
+                self.diagnostics.push(format!(
+                    "{}: actor registry intrinsic `{path}` has unresolved actor type: {error}",
+                    self.module_path
+                ));
+                return None;
+            }
+        };
+        let Some(actor) = self
+            .type_resolution
+            .actor_type_resolution(&actor_ty, &self.type_context)
+        else {
+            self.diagnostics.push(format!(
+                "{}: actor registry intrinsic `{path}` type argument `{}` is not an actor declaration",
+                self.module_path, actor_ty.source_text
+            ));
+            return None;
+        };
+        let needs_bootstrap = matches!(
+            path,
+            "std.actor.getOrCreate" | "std.actor.replace"
+        );
+        let expected_arity = if needs_bootstrap { 2 } else { 1 };
+        if args.len() != expected_arity {
+            self.diagnostics.push(format!(
+                "{}: actor registry intrinsic `{path}` expects {expected_arity} arguments, found {}",
+                self.module_path,
+                args.len()
+            ));
+        } else {
+            let mut params = vec![("id".to_string(), actor.id_type.clone())];
+            if needs_bootstrap {
+                params.push((
+                    "bootstrap".to_string(),
+                    ResolvedTypeRef {
+                        source_text: format!("{} bootstrap", actor.ty.source_text),
+                        ir: TypeRefIr::Record {
+                            fields: actor
+                                .fields
+                                .iter()
+                                .map(|(name, ty)| (name.clone(), ty.ir.clone()))
+                                .collect(),
+                        },
+                    },
+                ));
+            }
+            self.validate_resolved_call_params(path, params, args, arg_types);
+        }
+        match path {
+            "std.actor.find" => Some(nullable_type(actor.ty)),
+            "std.actor.remove" => self.resolve_builtin("void"),
+            _ => Some(actor.ty),
+        }
     }
 
     fn validate_array_push_args(
@@ -4069,8 +4206,11 @@ fn record_field_value_source_span(
 mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
+    use skiff_compiler_input::CompilerPlatformSources;
+
     use crate::{
         parsed_sources::parse_publication_sources, publication_db_metadata_index,
+        prelude_registry::initialize_prelude_registry,
         source_graph::CompilerSourceFile, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
     };
 
@@ -4081,6 +4221,13 @@ mod tests {
     fn expression_type_result(
         source_text: &str,
     ) -> Result<ExpressionTypeModel, ExpressionTypeModelBuildError> {
+        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root");
+        let platform_sources =
+            CompilerPlatformSources::new(&platform_root).expect("platform sources");
+        initialize_prelude_registry(&platform_sources).expect("prelude registry");
         let source = CompilerSourceFile::parse(
             PathBuf::from("internal/any_interface.skiff"),
             ANY_INTERFACE_MODULE.to_string(),
@@ -4142,6 +4289,73 @@ mod tests {
               {body}
             "#
         )
+    }
+
+    #[test]
+    fn explicit_actor_registry_intrinsics_return_nominal_handles() {
+        expression_type_result(
+            r#"
+              actor UserActor id string {
+                displayName: string,
+                loginCount: number,
+              }
+
+              impl UserActor {
+                function label() -> string { return "user" }
+              }
+
+              function load(id: string) -> UserActor {
+                const actor: UserActor = std.actor.getOrCreate<UserActor>(
+                  id,
+                  { displayName: "Ada", loginCount: 1 }
+                )
+                const label: string = actor.label()
+                const found: UserActor? = std.actor.find<UserActor>(id)
+                return actor
+              }
+            "#,
+        )
+        .expect("actor declarations should be nominal handle types for registry results");
+    }
+
+    #[test]
+    fn actor_registry_intrinsics_reject_non_actor_wrong_id_and_bootstrap_shape() {
+        let error = expression_type_result(
+            r#"
+              type User { id: string }
+              actor UserActor id string { displayName: string }
+
+              function invalid() -> void {
+                std.actor.find<User>("u1")
+                std.actor.find<UserActor>(42)
+                std.actor.replace<UserActor>("u1", { displayName: 42 })
+              }
+            "#,
+        )
+        .expect_err("invalid actor registry uses must fail");
+        let message = error.message();
+        assert!(message.contains("is not an actor declaration"), "{message}");
+        assert!(message.contains("argument 1"), "{message}");
+        assert!(message.contains("bootstrap"), "{message}");
+    }
+
+    #[test]
+    fn explicit_actor_cannot_be_constructed_as_a_record() {
+        let error = expression_type_result(
+            r#"
+              actor UserActor id string { displayName: string }
+              function invalid() -> UserActor {
+                return UserActor { displayName: "Ada" }
+              }
+            "#,
+        )
+        .expect_err("ordinary actor construction must fail");
+        assert!(
+            error.message().contains("nominal handle")
+                && error.message().contains("cannot be constructed directly"),
+            "{}",
+            error.message()
+        );
     }
 
     #[test]

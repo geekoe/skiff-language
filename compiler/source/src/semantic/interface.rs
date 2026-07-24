@@ -607,6 +607,20 @@ impl InterfaceIndex {
                 },
             );
         }
+        for actor in &ast.actors {
+            let symbol = SourceSymbolKey::new(module_path, &actor.name);
+            self.types_by_bare
+                .entry(actor.name.clone())
+                .or_default()
+                .push(symbol.clone());
+            self.source_types.insert(
+                symbol,
+                SourceTypeFact {
+                    type_params: Vec::new(),
+                    kind: SourceTypeKind::Nominal,
+                },
+            );
+        }
         for alias in &ast.aliases {
             let symbol = SourceSymbolKey::new(module_path, &alias.name);
             self.types_by_bare
