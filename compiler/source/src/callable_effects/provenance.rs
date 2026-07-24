@@ -39,6 +39,10 @@ pub(super) struct CallableState {
     pub return_origins: BTreeSet<Origin>,
     pub throw_origins: BTreeSet<Origin>,
     pub escape_lanes: BTreeSet<EscapeLane>,
+    /// Formal parameters whose caller-owned graph makes an identity-sensitive
+    /// operation observable. An empty set with the public effect set means the
+    /// dependency could not be attributed and must remain conservative.
+    pub same_heap_identity_parameters: BTreeSet<u32>,
     pub unknown: Option<CallableProvenanceUnknownReason>,
 }
 
@@ -115,6 +119,7 @@ impl CallableState {
             return_origins: BTreeSet::new(),
             throw_origins: BTreeSet::new(),
             escape_lanes: BTreeSet::new(),
+            same_heap_identity_parameters: BTreeSet::new(),
             unknown: None,
         }
     }
@@ -125,6 +130,7 @@ impl CallableState {
             return_origins: BTreeSet::new(),
             throw_origins: BTreeSet::new(),
             escape_lanes: BTreeSet::from([EscapeLane::External]),
+            same_heap_identity_parameters: BTreeSet::new(),
             unknown: Some(reason),
         }
     }
@@ -137,6 +143,8 @@ impl CallableState {
         self.throw_origins
             .extend(other.throw_origins.iter().cloned());
         self.escape_lanes.extend(other.escape_lanes.iter().copied());
+        self.same_heap_identity_parameters
+            .extend(other.same_heap_identity_parameters.iter().copied());
         self.unknown = join_unknown(self.unknown, other.unknown);
         *self != before
     }
@@ -179,6 +187,14 @@ impl CallableState {
         }
         if value.unknown {
             self.mark_unknown_value_if_unowned();
+        }
+    }
+
+    pub fn record_same_heap_identity(&mut self, value: &AbstractValue) {
+        if value.contains_caller_reference() || value.unknown {
+            self.effects.requires_same_heap_identity = true;
+            self.same_heap_identity_parameters
+                .extend(value.caller_references.iter().copied());
         }
     }
 
