@@ -846,6 +846,17 @@ mod tests {
     const PACKAGE_ID: &str = "example.com/reader";
     const PACKAGE_MODULE: &str = "pkg.reader";
 
+    fn initialize_test_prelude() {
+        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root should resolve");
+        initialize_prelude_registry(
+            &CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load"),
+        )
+        .expect("prelude registry should initialize");
+    }
+
     fn any_interface_source() -> &'static str {
         r#"
           interface Provider {
@@ -918,6 +929,7 @@ mod tests {
     }
 
     fn lowered_unit(source_text: &str) -> FileIrUnit {
+        initialize_test_prelude();
         let root = PathBuf::from("/test");
         let source = CompilerSourceFile::parse(
             PathBuf::from("internal/any_lowering.skiff"),
@@ -996,6 +1008,7 @@ mod tests {
         package_id: &str,
         sources: Vec<(&str, &str, &str)>,
     ) -> Vec<FileIrUnit> {
+        initialize_test_prelude();
         let root = PathBuf::from("/test");
         let production_sources = sources
             .into_iter()
@@ -1034,6 +1047,7 @@ mod tests {
     }
 
     fn lowered_unit_with_package_facts(source_text: &str) -> FileIrUnit {
+        initialize_test_prelude();
         let package_root = PathBuf::from("/package");
         let package_source = CompilerSourceFile::parse(
             PathBuf::from("pkg/reader.skiff"),
@@ -1149,14 +1163,7 @@ mod tests {
 
     #[test]
     fn emits_actor_declaration_and_exact_registry_type_arguments() {
-        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .expect("workspace root should resolve");
-        initialize_prelude_registry(
-            &CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load"),
-        )
-        .expect("prelude registry should initialize");
+        initialize_test_prelude();
         let unit = lowered_unit(
             r#"
               actor UserActor id string {
@@ -1811,6 +1818,7 @@ mod tests {
         package_aliases: &BTreeMap<String, Vec<String>>,
         targets: &skiff_compiler_source::ResolvedCallTargetFacts,
     ) -> skiff_syntax::error::Result<FileIrUnit> {
+        initialize_test_prelude();
         let source = package_call_source();
         let ast = parse_source(source)?;
         compile_parsed_source_file_ir_unit_with_lowering_context(

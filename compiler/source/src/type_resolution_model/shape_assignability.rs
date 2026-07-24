@@ -4,6 +4,12 @@ use super::*;
 use skiff_artifact_model::{FunctionTypeParamIr, LiteralIr};
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref;
 
+#[derive(Clone, Copy)]
+enum PackageMethodTypeOwner {
+    Consumer,
+    Package,
+}
+
 impl TypeResolutionModel {
     pub fn assignable_in_context(
         &self,
@@ -293,20 +299,24 @@ impl TypeResolutionModel {
                             receiver.module_path(),
                             &actual.ty,
                             &package_id,
+                            PackageMethodTypeOwner::Consumer,
                         ) != self.canonicalize_package_method_type_ref_for_module(
                             &package_interface_module,
                             &expected.ty,
                             &package_id,
+                            PackageMethodTypeOwner::Package,
                         )
                     })
                 || self.canonicalize_package_method_type_ref_for_module(
                     receiver.module_path(),
                     &actual_return,
                     &package_id,
+                    PackageMethodTypeOwner::Consumer,
                 ) != self.canonicalize_package_method_type_ref_for_module(
                     &package_interface_module,
                     &expected_return,
                     &package_id,
+                    PackageMethodTypeOwner::Package,
                 )
             {
                 return Ok(None);
@@ -328,10 +338,16 @@ impl TypeResolutionModel {
         module_path: &str,
         ty: &TypeRefIr,
         package_id: &str,
+        owner: PackageMethodTypeOwner,
     ) -> TypeRefIr {
         let context = TypeResolutionContext::source(module_path);
         let transparent = self.transparent_alias_ir(ty, &context);
-        self.canonicalize_package_method_type_ref(module_path, &transparent, package_id)
+        self.canonicalize_package_method_type_ref(
+            module_path,
+            &transparent,
+            package_id,
+            owner,
+        )
     }
 
     fn canonicalize_package_method_type_ref(
@@ -339,18 +355,31 @@ impl TypeResolutionModel {
         module_path: &str,
         ty: &TypeRefIr,
         package_id: &str,
+        owner: PackageMethodTypeOwner,
     ) -> TypeRefIr {
-        let recurse = |ty| self.canonicalize_package_method_type_ref(module_path, ty, package_id);
+        let recurse = |ty| {
+            self.canonicalize_package_method_type_ref(
+                module_path,
+                ty,
+                package_id,
+                owner,
+            )
+        };
         match ty {
-            TypeRefIr::LocalType { type_index } => self
+            TypeRefIr::LocalType { type_index }
+                if matches!(owner, PackageMethodTypeOwner::Package) =>
+            {
+                self
                 .canonical_package_local_type_slot(package_id, module_path, *type_index)
-                .unwrap_or_else(|| self.canonicalize_type_ref_for_module(module_path, ty)),
+                .unwrap_or_else(|| self.canonicalize_type_ref_for_module(module_path, ty))
+            }
             TypeRefIr::PublicationType {
                 module_path: owner_module,
                 type_index,
-            } => self
-                .canonical_package_local_type_slot(package_id, owner_module, *type_index)
-                .unwrap_or_else(|| self.canonicalize_type_ref_for_module(module_path, ty)),
+            } if matches!(owner, PackageMethodTypeOwner::Package) => {
+                self.canonical_package_local_type_slot(package_id, owner_module, *type_index)
+                    .unwrap_or_else(|| self.canonicalize_type_ref_for_module(module_path, ty))
+            }
             TypeRefIr::PackageSymbol { symbol } => {
                 let dependency_ref = match &symbol.package {
                     PackageRefIr::Dependency { dependency_ref } => dependency_ref.as_str(),
@@ -563,6 +592,7 @@ impl TypeResolutionModel {
                     interface_module,
                     local_type,
                     package_id,
+                    PackageMethodTypeOwner::Package,
                 ),
             },
             PackageTypeRef::PackageSchema {

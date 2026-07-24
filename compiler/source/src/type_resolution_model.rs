@@ -3343,6 +3343,19 @@ fn package_source_type_resolution(
                 .find(|alias| alias.name == source_symbol)
                 .map(|alias| alias_type_resolution(module_path, alias))
         })
+        .or_else(|| {
+            ast.interfaces
+                .iter()
+                .find(|interface| interface.name == source_symbol)
+                .map(|interface| SourceTypeResolution {
+                    name: interface.name.clone(),
+                    type_params: interface.type_params.clone(),
+                    local_type_names: BTreeSet::new(),
+                    kind: SourceTypeKind::External,
+                    module_path: module_path.to_string(),
+                    public_path: None,
+                })
+        })
         .map(|mut resolution| {
             resolution.local_type_names = local_type_names;
             resolution.public_path = public_path;

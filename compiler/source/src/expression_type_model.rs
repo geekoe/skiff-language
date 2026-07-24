@@ -1441,16 +1441,21 @@ impl<'a> OwnerChecker<'a> {
                     self.check_callee_expr(object)
                 };
                 object_ty.and_then(|object_ty| {
-                    let field_ty = if matches!(object.as_ref(), Expr::Identifier(name) if name == "self")
-                    {
-                        self.type_resolution.actor_state_field_type(
-                            &object_ty,
-                            field,
-                            &self.type_context,
-                        )
-                    } else {
-                        self.record_field_type(&object_ty, field)
-                    };
+                    let field_ty =
+                        if matches!(object.as_ref(), Expr::Identifier(name) if name == "self")
+                            && self
+                                .type_resolution
+                                .actor_type_resolution(&object_ty, &self.type_context)
+                                .is_some()
+                        {
+                            self.type_resolution.actor_state_field_type(
+                                &object_ty,
+                                field,
+                                &self.type_context,
+                            )
+                        } else {
+                            self.record_field_type(&object_ty, field)
+                        };
                     if diagnose_unknown_field && field_ty.is_none() {
                         self.diagnostics.push(format!(
                             "{}: unknown field `{field}` on {} at {}",
@@ -4371,6 +4376,49 @@ mod tests {
                 && error.message().contains("cannot be constructed directly"),
             "{}",
             error.message()
+        );
+    }
+
+    #[test]
+    fn self_field_resolution_keeps_actor_and_record_owners_distinct() {
+        expression_type_result(
+            r#"
+              type User { name: string }
+              type Box<T> { value: T }
+              actor UserActor id string { name: string }
+
+              impl User {
+                function name() -> string { return self.name }
+              }
+              impl Box<T> {
+                function get() -> T { return self.value }
+              }
+              impl UserActor {
+                function name() -> string { return self.name }
+              }
+            "#,
+        )
+        .expect("ordinary, generic, and actor self fields must use their canonical static owner");
+
+        let error = expression_type_result(
+            r#"
+              type User { name: string }
+              actor UserActor id string { name: string }
+
+              impl User {
+                function invalid() -> string { return self.missing }
+              }
+              impl UserActor {
+                function invalid() -> string { return self.missing }
+              }
+            "#,
+        )
+        .expect_err("unknown ordinary and actor self fields must both fail closed")
+        .message();
+        assert!(error.contains("unknown field `missing` on User"), "{error}");
+        assert!(
+            error.contains("unknown field `missing` on UserActor"),
+            "{error}"
         );
     }
 
