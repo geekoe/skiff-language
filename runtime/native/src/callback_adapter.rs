@@ -4,12 +4,12 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    BoundaryCallbackOperation, ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, PackageSchemaTypeRef,
+    BoundaryCallbackOperation, ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeRef,
 };
 use skiff_runtime_boundary::service_linkable::{
     ServiceLinkableContractPlan, ServiceLinkableMaterializationError,
 };
+use skiff_runtime_boundary::service_schema_records::ServiceSchemaRecords;
 use skiff_runtime_model::{
     callback_projection::{
         CallbackContractOperationProjection, CallbackContractProjection,
@@ -164,7 +164,7 @@ pub struct InProcessCallbackAdapter {
     projection: CallbackContractProjection,
     kind: InProcessCallbackAdapterKind,
     receiver: RuntimeValue,
-    package_schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    package_schema_records: ServiceSchemaRecords,
     owner_heap: Arc<tokio::sync::Mutex<RequestHeap>>,
 }
 
@@ -173,7 +173,7 @@ impl InProcessCallbackAdapter {
         canonical_package_schema_type: PackageSchemaTypeRef,
         interface: &InterfaceValue,
         contract_operations: &BTreeMap<String, BoundaryCallbackOperation>,
-        package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+        package_schema_records: &ServiceSchemaRecords,
         source_heap: &RequestHeap,
     ) -> Result<Self, CallbackAdapterError> {
         Self::from_interface(
@@ -192,7 +192,7 @@ impl InProcessCallbackAdapter {
         canonical_package_schema_type: PackageSchemaTypeRef,
         contract_operations: &BTreeMap<String, BoundaryCallbackOperation>,
         interface: &InterfaceValue,
-        package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+        package_schema_records: &ServiceSchemaRecords,
         source_heap: &RequestHeap,
     ) -> Result<Self, CallbackAdapterError> {
         let adapter_identity = explicit_native_adapter_identity(interface)?;
@@ -234,7 +234,7 @@ impl InProcessCallbackAdapter {
         interface: &InterfaceValue,
         contract_operations: &BTreeMap<String, BoundaryCallbackOperation>,
         native_mappings: Option<&BTreeMap<String, ExplicitNativeCallbackOperation>>,
-        package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+        package_schema_records: &ServiceSchemaRecords,
         source_heap: &RequestHeap,
         require_native_adapter: bool,
     ) -> Result<Self, CallbackAdapterError> {
@@ -322,9 +322,7 @@ impl InProcessCallbackAdapter {
         &self.receiver
     }
 
-    pub fn package_schema_records(
-        &self,
-    ) -> &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord> {
+    pub fn package_schema_records(&self) -> &ServiceSchemaRecords {
         &self.package_schema_records
     }
 
@@ -397,7 +395,7 @@ pub enum CallbackAdapterError {
 fn validate_callback_schema(
     canonical_type: &PackageSchemaTypeRef,
     operations: &BTreeMap<String, BoundaryCallbackOperation>,
-    records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    records: &ServiceSchemaRecords,
 ) -> Result<(), CallbackAdapterError> {
     let record = records
         .get(&canonical_type.package_schema_type_id)
@@ -467,7 +465,9 @@ fn explicit_native_adapter_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skiff_artifact_model::PackageSchemaCanonicalDescriptor;
+    use skiff_artifact_model::{
+        PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    };
     use skiff_runtime_model::addr::ExecutableAddr;
     use skiff_runtime_model::runtime_value::{
         InterfaceMethodSignature, InterfaceMethodSlot, InterfaceMethodTable, InterfaceMethodTarget,
@@ -505,11 +505,11 @@ mod tests {
         }
     }
 
-    fn schema() -> BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord> {
+    fn schema() -> ServiceSchemaRecords {
         let reference = package_schema_type();
         BTreeMap::from([(
             reference.package_schema_type_id.clone(),
-            PackageSchemaTypeRecord {
+            Arc::new(PackageSchemaTypeRecord {
                 package_id: reference.package_id,
                 stable_schema_key: reference.stable_schema_key,
                 package_schema_type_id: reference.package_schema_type_id,
@@ -519,7 +519,7 @@ mod tests {
                         operations: operations(),
                     },
                 },
-            },
+            }),
         )])
     }
 
@@ -660,6 +660,36 @@ mod tests {
     }
 
     #[test]
+    fn callback_adapter_retains_the_admitted_shared_record_without_payload_clone() {
+        let records = schema();
+        let id = package_schema_type().package_schema_type_id;
+        let admitted = Arc::clone(
+            records
+                .get(&id)
+                .expect("callback record should be admitted"),
+        );
+        let owners_before = Arc::strong_count(&admitted);
+
+        let adapter = InProcessCallbackAdapter::from_local_interface(
+            package_schema_type(),
+            &interface("local:shared-record".to_string()),
+            &operations(),
+            &records,
+            &RequestHeap::default(),
+        )
+        .expect("adapter should retain shared schema records");
+
+        assert_eq!(Arc::strong_count(&admitted), owners_before + 1);
+        assert!(Arc::ptr_eq(
+            adapter
+                .package_schema_records()
+                .get(&id)
+                .expect("adapter should retain the callback record"),
+            &admitted,
+        ));
+    }
+
+    #[test]
     fn callback_adapter_rejects_explicit_native_mapping_that_disagrees_with_admitted_abi() {
         let identity = "builtin:wrong-mapping";
         let wrong_mapping = BTreeMap::from([(
@@ -737,7 +767,9 @@ mod tests {
         ] as [fn(&mut PackageSchemaTypeRecord); 3]
         {
             let mut invalid = schema();
-            mutate(invalid.get_mut(&canonical.package_schema_type_id).unwrap());
+            mutate(Arc::make_mut(
+                invalid.get_mut(&canonical.package_schema_type_id).unwrap(),
+            ));
             assert!(matches!(
                 InProcessCallbackAdapter::from_local_interface(
                     canonical.clone(),
@@ -751,11 +783,13 @@ mod tests {
         }
 
         let mut non_callback = schema();
-        non_callback
-            .get_mut(&canonical.package_schema_type_id)
-            .unwrap()
-            .canonical_descriptor
-            .descriptor = ContractTypeDescriptor::Enumeration {
+        Arc::make_mut(
+            non_callback
+                .get_mut(&canonical.package_schema_type_id)
+                .unwrap(),
+        )
+        .canonical_descriptor
+        .descriptor = ContractTypeDescriptor::Enumeration {
             variants: vec!["value".to_string()],
         };
         assert!(matches!(
@@ -780,11 +814,13 @@ mod tests {
         let mut missing_closure = schema();
         let ContractTypeDescriptor::CallbackInterface {
             operations: admitted,
-        } = &mut missing_closure
-            .get_mut(&canonical.package_schema_type_id)
-            .unwrap()
-            .canonical_descriptor
-            .descriptor
+        } = &mut Arc::make_mut(
+            missing_closure
+                .get_mut(&canonical.package_schema_type_id)
+                .unwrap(),
+        )
+        .canonical_descriptor
+        .descriptor
         else {
             unreachable!()
         };
@@ -836,7 +872,7 @@ mod tests {
         let schema_for = |canonical: &PackageSchemaTypeRef| {
             BTreeMap::from([(
                 canonical.package_schema_type_id.clone(),
-                PackageSchemaTypeRecord {
+                Arc::new(PackageSchemaTypeRecord {
                     package_id: canonical.package_id.clone(),
                     stable_schema_key: canonical.stable_schema_key.clone(),
                     package_schema_type_id: canonical.package_schema_type_id.clone(),
@@ -846,7 +882,7 @@ mod tests {
                             operations: operations(),
                         },
                     },
-                },
+                }),
             )])
         };
         let first_adapter = InProcessCallbackAdapter::from_registered_explicit_native_interface(
