@@ -142,8 +142,6 @@ pub(super) fn validate_package_manifest(
             violations.push("ext root has been removed".to_string());
         }
         if ((is_standard_package_id(id) || id.starts_with("std.")) && !is_compiler_standard_package)
-            || (id == skiff_trusted_registry_contract::TRUSTED_REGISTRY_PACKAGE_ID
-                && !is_compiler_standard_package)
             || id == "connect"
             || (!is_compiler_standard_package
                 && !id.contains(['.', '/'])

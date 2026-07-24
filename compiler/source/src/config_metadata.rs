@@ -54,7 +54,6 @@ pub fn source_config_metadata_from_parsed_sources(
         policy: input.policy,
         publication_api: input.publication_api,
         dependency_analysis: &crate::SourceDependencyAnalysisInput::default(),
-        platform_package_authority: None,
     })?;
     let config_usage_seed = crate::config_usage::collect_config_usage_seed_from_parsed_sources(
         input.diagnostic_root,
@@ -84,7 +83,6 @@ pub fn source_config_metadata_batches_from_parsed_sources(
         policy: input.policy,
         publication_api: input.publication_api,
         dependency_analysis: &crate::SourceDependencyAnalysisInput::default(),
-        platform_package_authority: None,
     })?;
     crate::config_usage::collect_config_usage_seed_batches_from_parsed_sources(
         input.diagnostic_root,

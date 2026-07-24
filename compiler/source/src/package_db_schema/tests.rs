@@ -40,7 +40,6 @@ fn compile_sources(sources: &[(&str, &str, &str)]) -> Result<PackageSourceModel,
         package_facts: None,
         package_artifacts: None,
         policy: PackageCompilePolicy::new("example.com/package-db-schema"),
-        platform_package_authority: None,
     })
 }
 

@@ -310,7 +310,6 @@ pub(super) fn runtime_requirements(capability: &str) -> PackageRuntimeRequiremen
         runtime_capabilities: vec![PackageRuntimeCapabilityRequirement {
             capability: capability.to_string(),
             required_version: "1".to_string(),
-            operation_scopes: Vec::new(),
         }],
     }
 }

@@ -17,7 +17,6 @@ use crate::{
     source_name_resolution::collect_unresolved_dotted_root_violations_from_facts,
 };
 use compiler_input_model::{is_standard_package_id, PackageDependency};
-use skiff_compiler_input::CompilerPlatformPackageAuthority;
 
 mod import_validation;
 mod reserved_validation;
@@ -69,26 +68,6 @@ pub(crate) fn validate_package_sources_with_dependency_analysis(
     parsed_sources: &[ParsedCompilerSource],
     dependency_analysis: &crate::SourceDependencyAnalysisInput,
 ) -> Result<(), PublicationError> {
-    validate_package_sources_with_platform_authority(
-        package_id,
-        dependencies,
-        package_root,
-        parsed_sources,
-        dependency_analysis,
-        None,
-    )
-}
-
-pub(crate) fn validate_package_sources_with_platform_authority(
-    package_id: &str,
-    dependencies: &[PackageDependency],
-    package_root: &Path,
-    parsed_sources: &[ParsedCompilerSource],
-    dependency_analysis: &crate::SourceDependencyAnalysisInput,
-    platform_authority: Option<&CompilerPlatformPackageAuthority>,
-) -> Result<(), PublicationError> {
-    let compiler_native_authorized =
-        platform_authority.is_some_and(|authority| authority.package_id() == package_id);
     let mut violations = Vec::new();
     let package_type_names = package_source_type_names(parsed_sources);
     let std_implicit_projection_roots = is_standard_package_id(package_id)
@@ -179,20 +158,18 @@ pub(crate) fn validate_package_sources_with_platform_authority(
             parsed.ast(),
             &mut violations,
         );
-        if !compiler_native_authorized {
-            collect_non_std_package_native_function_violations(
-                package_id,
-                &path,
-                parsed.ast(),
-                &mut violations,
-            );
-            collect_non_std_package_native_type_violations(
-                package_id,
-                &path,
-                parsed.ast(),
-                &mut violations,
-            );
-        }
+        collect_non_std_package_native_function_violations(
+            package_id,
+            &path,
+            parsed.ast(),
+            &mut violations,
+        );
+        collect_non_std_package_native_type_violations(
+            package_id,
+            &path,
+            parsed.ast(),
+            &mut violations,
+        );
     }
 
     if violations.is_empty() {
@@ -347,73 +324,6 @@ mod tests {
             &parsed_sources,
         )
         .expect("package dependency alias should be available through NameResolutionModel");
-    }
-
-    #[test]
-    fn compiler_platform_authority_is_required_for_registry_native_declarations() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .unwrap();
-        let bindings = serde_json::json!([{
-            "packageId": "skiff.run/registry",
-            "packageRoot": root.join("registry"),
-            "manifestPath": root.join("registry/package.yml"),
-        }]);
-        let descriptor = std::env::temp_dir().join(format!(
-            "skiff-package-rules-authority-{}.json",
-            std::process::id()
-        ));
-        std::fs::write(
-            &descriptor,
-            serde_json::to_vec(&serde_json::json!({
-                "schemaVersion": "skiff-official-package-authority-v1",
-                "configIdentity": format!(
-                    "skiff-official-package-authority-v1:sha256:{}",
-                    skiff_compiler_core::json_utils::sha256_hex(
-                        &serde_json::to_vec(&bindings).unwrap()
-                    )
-                ),
-                "bindings": bindings,
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        let platform =
-            skiff_compiler_input::CompilerPlatformSources::new_with_official_package_authority(
-                &root,
-                Some(&descriptor),
-            )
-            .unwrap();
-        crate::prelude_registry::initialize_prelude_registry(&platform).unwrap();
-        let authority = platform.trusted_registry_package_authority().unwrap();
-        let sources = vec![test_source(
-            "read.skiff",
-            "skiff.registry.packageArtifact",
-            "native function read(request: string) -> string\n",
-        )];
-        let parsed =
-            parse_publication_sources(Path::new("/tmp/registry-native"), &sources).unwrap();
-
-        validate_package_sources_with_platform_authority(
-            authority.package_id(),
-            &[],
-            Path::new("/tmp/registry-native"),
-            &parsed,
-            &crate::SourceDependencyAnalysisInput::default(),
-            Some(&authority),
-        )
-        .expect("compiler platform authority must admit its synthetic native declaration");
-
-        let error = validate_package_sources(
-            authority.package_id(),
-            &[],
-            Path::new("/tmp/registry-native"),
-            &parsed,
-        )
-        .expect_err("the exact package id without authority must fail closed")
-        .to_string();
-        assert!(error.contains("cannot declare native function read"));
     }
 
     #[test]

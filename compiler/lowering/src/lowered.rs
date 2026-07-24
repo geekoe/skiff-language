@@ -118,7 +118,6 @@ impl LoweredPackage {
                     executable_signatures: model.executable_signatures(),
                     interface_signatures: Some(model.interface_signatures()),
                     service_calls: Some(&service_calls),
-                    compiler_native_binding_keys: model.compiler_native_binding_keys(),
                 })
                 .map_err(|error| {
                     plan.diagnostics

@@ -4,19 +4,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use serde::Deserialize;
 use skiff_compiler_core::{
     id::SKIFF_STD_PUBLICATION_ID,
     registry_helpers::{validate_official_registry_package_path, validate_std_registry_package_id},
 };
-use skiff_trusted_registry_contract::TRUSTED_REGISTRY_PACKAGE_ID;
 use thiserror::Error;
 
 use crate::{package_config::PackageManifest, ManifestOwner};
 
 const STD_REGISTRY_SCHEMA_VERSION: &str = "skiff-std-registry-v1";
-const OFFICIAL_PACKAGE_AUTHORITY_SCHEMA_VERSION: &str = "skiff-official-package-authority-v1";
 
 /// Runtime-validated authority for every compiler-owned platform source.
 ///
@@ -29,7 +26,6 @@ pub struct CompilerPlatformSources {
     prelude_dir: PathBuf,
     registry_path: PathBuf,
     prelude_error_path: PathBuf,
-    authority_descriptor: Option<PathBuf>,
     packages: BTreeMap<String, PlatformPackageSource>,
 }
 
@@ -40,32 +36,6 @@ pub struct CompilerPlatformSources {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompilerPlatformSourceSnapshot {
     sources: Box<[(PathBuf, String)]>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompilerPlatformPackageAuthority {
-    package_id: &'static str,
-    platform_root: PathBuf,
-    package_root: PathBuf,
-}
-
-impl CompilerPlatformPackageAuthority {
-    pub fn package_id(&self) -> &'static str {
-        self.package_id
-    }
-
-    pub(crate) fn platform_root(&self) -> &Path {
-        &self.platform_root
-    }
-
-    pub fn package_root(&self) -> &Path {
-        &self.package_root
-    }
-
-    pub fn native_signatures(&self) -> &'static [skiff_artifact_model::NativeSignatureDef] {
-        debug_assert_eq!(self.package_id, TRUSTED_REGISTRY_PACKAGE_ID);
-        skiff_trusted_registry_contract::TRUSTED_REGISTRY_NATIVE_SIGNATURES
-    }
 }
 
 impl CompilerPlatformSourceSnapshot {
@@ -110,31 +80,8 @@ struct PlatformRegistryPackage {
     path: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct OfficialPackageAuthorityDescriptor {
-    schema_version: String,
-    config_identity: String,
-    bindings: Vec<OfficialPackageAuthorityBinding>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct OfficialPackageAuthorityBinding {
-    package_id: String,
-    package_root: PathBuf,
-    manifest_path: PathBuf,
-}
-
 impl CompilerPlatformSources {
     pub fn new(root: &Path) -> Result<Self, CompilerPlatformSourcesError> {
-        Self::new_with_official_package_authority(root, None)
-    }
-
-    pub fn new_with_official_package_authority(
-        root: &Path,
-        authority_descriptor: Option<&Path>,
-    ) -> Result<Self, CompilerPlatformSourcesError> {
         if !root.is_absolute() {
             return Err(CompilerPlatformSourcesError::RootNotAbsolute {
                 root: root.to_path_buf(),
@@ -153,13 +100,7 @@ impl CompilerPlatformSources {
             "prelude error source",
         )?;
 
-        let mut packages = load_platform_packages(&root, &std_dir, &registry_path)?;
-        let authority_descriptor = authority_descriptor
-            .map(|descriptor| canonical_file(descriptor, "official package authority descriptor"))
-            .transpose()?;
-        if let Some(descriptor) = &authority_descriptor {
-            load_official_package_authority(descriptor, &mut packages)?;
-        }
+        let packages = load_platform_packages(&root, &std_dir, &registry_path)?;
 
         Ok(Self {
             root,
@@ -167,7 +108,6 @@ impl CompilerPlatformSources {
             prelude_dir,
             registry_path,
             prelude_error_path,
-            authority_descriptor,
             packages,
         })
     }
@@ -203,10 +143,7 @@ impl CompilerPlatformSources {
     }
 
     pub fn revalidate(&self) -> Result<(), CompilerPlatformSourcesError> {
-        let current = Self::new_with_official_package_authority(
-            &self.root,
-            self.authority_descriptor.as_deref(),
-        )?;
+        let current = Self::new(&self.root)?;
         if current != *self {
             return Err(invalid_layout(format!(
                 "platform source provenance changed after validation for {}",
@@ -214,26 +151,6 @@ impl CompilerPlatformSources {
             )));
         }
         Ok(())
-    }
-
-    pub fn trusted_registry_package_authority(
-        &self,
-    ) -> Result<CompilerPlatformPackageAuthority, CompilerPlatformSourcesError> {
-        self.revalidate()?;
-        let package = self
-            .packages
-            .get(TRUSTED_REGISTRY_PACKAGE_ID)
-            .ok_or_else(|| {
-                invalid_layout(format!(
-                    "{}: missing registry package {TRUSTED_REGISTRY_PACKAGE_ID}",
-                    self.registry_path.display()
-                ))
-            })?;
-        Ok(CompilerPlatformPackageAuthority {
-            package_id: TRUSTED_REGISTRY_PACKAGE_ID,
-            platform_root: self.root.clone(),
-            package_root: package.root.clone(),
-        })
     }
 
     /// Captures every official `.skiff` source consumed by PreludeRegistry.
@@ -250,9 +167,6 @@ impl CompilerPlatformSources {
             &mut sources,
         )?;
         for (package_id, package) in &self.packages {
-            if package_id == TRUSTED_REGISTRY_PACKAGE_ID {
-                continue;
-            }
             if package_id != SKIFF_STD_PUBLICATION_ID {
                 return Err(invalid_layout(format!(
                     "official package {package_id} has no prelude registry logical root"
@@ -349,10 +263,8 @@ fn load_platform_packages(
 
     let mut packages = BTreeMap::new();
     for package in registry.packages {
-        if package.id != TRUSTED_REGISTRY_PACKAGE_ID {
-            validate_std_registry_package_id(&package.id)
-                .map_err(|error| invalid_layout(format!("{}: {error}", registry_path.display())))?;
-        }
+        validate_std_registry_package_id(&package.id)
+            .map_err(|error| invalid_layout(format!("{}: {error}", registry_path.display())))?;
         validate_official_registry_package_path(&package.id, &package.path)
             .map_err(|error| invalid_layout(format!("{}: {error}", registry_path.display())))?;
         let package_root = canonical_contained_directory(
@@ -397,86 +309,6 @@ fn load_platform_packages(
         )));
     }
     Ok(packages)
-}
-
-fn load_official_package_authority(
-    descriptor_path: &Path,
-    packages: &mut BTreeMap<String, PlatformPackageSource>,
-) -> Result<(), CompilerPlatformSourcesError> {
-    if !descriptor_path.is_absolute() {
-        return Err(invalid_layout(
-            "official package authority descriptor path must be absolute".to_string(),
-        ));
-    }
-    let descriptor_path = canonical_file(descriptor_path, "official package authority descriptor")?;
-    let bytes =
-        fs::read(&descriptor_path).map_err(|source| CompilerPlatformSourcesError::Inspect {
-            path: descriptor_path.clone(),
-            source,
-        })?;
-    let descriptor =
-        serde_json::from_slice::<OfficialPackageAuthorityDescriptor>(&bytes).map_err(|source| {
-            CompilerPlatformSourcesError::RegistryParse {
-                path: descriptor_path.clone(),
-                message: source.to_string(),
-            }
-        })?;
-    if descriptor.schema_version != OFFICIAL_PACKAGE_AUTHORITY_SCHEMA_VERSION {
-        return Err(invalid_layout(format!(
-            "{}: schemaVersion must be {OFFICIAL_PACKAGE_AUTHORITY_SCHEMA_VERSION}",
-            descriptor_path.display()
-        )));
-    }
-    let identity_payload = serde_json::to_vec(&descriptor.bindings).map_err(|source| {
-        CompilerPlatformSourcesError::RegistryParse {
-            path: descriptor_path.clone(),
-            message: source.to_string(),
-        }
-    })?;
-    let expected_identity = format!(
-        "{OFFICIAL_PACKAGE_AUTHORITY_SCHEMA_VERSION}:sha256:{:x}",
-        Sha256::digest(identity_payload)
-    );
-    if descriptor.config_identity != expected_identity {
-        return Err(invalid_layout(format!(
-            "{}: configIdentity does not match the exact authority bindings",
-            descriptor_path.display()
-        )));
-    }
-    for binding in descriptor.bindings {
-        if binding.package_id != TRUSTED_REGISTRY_PACKAGE_ID {
-            return Err(invalid_layout(format!(
-                "{}: unsupported official package binding {}",
-                descriptor_path.display(),
-                binding.package_id
-            )));
-        }
-        if packages.contains_key(&binding.package_id) {
-            return Err(invalid_layout(format!(
-                "{}: duplicate official package owner {}",
-                descriptor_path.display(),
-                binding.package_id
-            )));
-        }
-        let package_root = canonical_directory(&binding.package_root, "official package root")?;
-        let manifest_path = canonical_file(&binding.manifest_path, "official package manifest")?;
-        if manifest_path != package_root.join("package.yml") {
-            return Err(invalid_layout(format!(
-                "{}: binding manifest {} is not canonical package.yml for {}",
-                descriptor_path.display(),
-                manifest_path.display(),
-                package_root.display()
-            )));
-        }
-        packages.insert(
-            binding.package_id,
-            PlatformPackageSource {
-                root: package_root,
-                manifest_path,
-            },
-        );
-    }
-    Ok(())
 }
 
 fn canonical_file(path: &Path, description: &str) -> Result<PathBuf, CompilerPlatformSourcesError> {

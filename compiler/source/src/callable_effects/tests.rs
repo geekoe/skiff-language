@@ -1345,7 +1345,6 @@ fn analyze_named_result(
             package_facts: None,
             package_artifacts: None,
             policy: PackageCompilePolicy::new(package_id),
-            platform_package_authority: None,
         },
         &dependency_analysis,
     )

@@ -43,7 +43,6 @@ pub fn project_compiled_package_artifact(
     let runtime_requirements = project_runtime_requirements(
         input.package_id,
         input.projection.source().config_requirements(),
-        &file_ir_units,
     )?;
     project_package_artifact_facts(ProjectedPackageFacts {
         package_id: input.package_id,

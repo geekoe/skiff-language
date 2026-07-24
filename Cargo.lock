@@ -2187,7 +2187,6 @@ dependencies = [
  "skiff-compiler-source",
  "skiff-deployment",
  "skiff-syntax",
- "skiff-trusted-registry-contract",
  "thiserror",
 ]
 
@@ -2258,7 +2257,6 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-compiler-core",
  "skiff-compiler-input-model",
- "skiff-trusted-registry-contract",
  "thiserror",
 ]
 
@@ -2298,7 +2296,6 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-compiler-core",
  "skiff-compiler-projection-input",
- "skiff-trusted-registry-contract",
  "thiserror",
 ]
 

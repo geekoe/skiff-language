@@ -73,7 +73,6 @@ fn build<'a>(
                 package_facts: None,
                 package_artifacts: Some(input.dependency_packages),
                 policy: PackageCompilePolicy::new(input.package_id),
-                platform_package_authority: input.platform_package_authority(),
             },
             dependency_analysis,
         )?,

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { cp, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
@@ -69,64 +69,6 @@ test('public four-object CLI does not expose the internal platform trust option'
       ]),
       /unknown option --platform-source-root/,
     );
-  }
-});
-
-test('official package authority is transported only as an absolute descriptor binding', () => {
-  const descriptor = '/tmp/skiff-official-package-authority.json';
-  const parsed = parseObjectArgs('package', 'build', [
-    '/tmp/official-package',
-    '--artifact-root',
-    '/tmp/artifacts',
-    '--official-package-authority',
-    descriptor,
-  ]);
-  assert.equal(parsed.officialPackageAuthority, descriptor);
-  const invocation = compilerAuthoringInvocation({
-    skiffRoot,
-    kind: 'package',
-    action: 'build',
-    root: parsed.root,
-    artifactRoot: parsed.artifactRoot,
-    officialPackageAuthority: parsed.officialPackageAuthority,
-  });
-  const position = invocation.args.indexOf('--official-package-authority');
-  assert.notEqual(position, -1);
-  assert.equal(invocation.args[position + 1], descriptor);
-  assert.equal(invocation.args.includes('--official-package-root'), false);
-  assert.throws(
-    () => compilerAuthoringInvocation({
-      skiffRoot,
-      kind: 'package',
-      action: 'build',
-      root: '/tmp/official-package',
-      artifactRoot: '/tmp/artifacts',
-      officialPackageAuthority: 'relative/authority.json',
-    }),
-    /descriptor must be absolute/,
-  );
-});
-
-test('real compiler CLI rejects original and copied registry roots without authority', async () => {
-  const temp = await mkdtemp(join(tmpdir(), 'skiff-registry-no-authority-'));
-  const copiedRoot = join(temp, 'registry-copy');
-  await cp(join(skiffRoot, 'registry'), copiedRoot, { recursive: true });
-  for (const [name, root] of [
-    ['original', join(skiffRoot, 'registry')],
-    ['copy', copiedRoot],
-  ]) {
-    const artifactRoot = join(temp, `${name}-artifacts`);
-    await assert.rejects(
-      runCompilerAuthoring({
-        skiffRoot,
-        kind: 'package',
-        action: 'build',
-        root,
-        artifactRoot,
-      }),
-      /package id skiff\.run\/registry is reserved/,
-    );
-    await assert.rejects(readFile(join(artifactRoot, 'store.json')), /ENOENT/);
   }
 });
 

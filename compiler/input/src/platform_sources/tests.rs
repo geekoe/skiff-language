@@ -253,62 +253,6 @@ fn platform_sources_read_canonical_prelude_content_in_stable_order() {
     );
 }
 
-#[test]
-fn external_official_package_requires_exact_descriptor_binding() {
-    let fixture = PlatformFixture::new("external-official-authority");
-    let package_root = fixture.base().join("external-registry");
-    fs::create_dir_all(&package_root).unwrap();
-    fs::write(
-        package_root.join("package.yml"),
-        "id: skiff.run/registry\nversion: 1.0.0\n",
-    )
-    .unwrap();
-
-    let missing = fixture.context().unwrap();
-    assert!(missing.trusted_registry_package_authority().is_err());
-
-    let bindings = vec![OfficialPackageAuthorityBinding {
-        package_id: TRUSTED_REGISTRY_PACKAGE_ID.to_string(),
-        package_root: package_root.clone(),
-        manifest_path: package_root.join("package.yml"),
-    }];
-    let identity = format!(
-        "{OFFICIAL_PACKAGE_AUTHORITY_SCHEMA_VERSION}:sha256:{:x}",
-        Sha256::digest(serde_json::to_vec(&bindings).unwrap())
-    );
-    let descriptor_path = fixture.base().join("official-authority.json");
-    fs::write(
-        &descriptor_path,
-        serde_json::to_vec(&OfficialPackageAuthorityDescriptor {
-            schema_version: OFFICIAL_PACKAGE_AUTHORITY_SCHEMA_VERSION.to_string(),
-            config_identity: identity,
-            bindings,
-        })
-        .unwrap(),
-    )
-    .unwrap();
-
-    let authorized = CompilerPlatformSources::new_with_official_package_authority(
-        fixture.root(),
-        Some(&descriptor_path),
-    )
-    .unwrap();
-    let authority = authorized.trusted_registry_package_authority().unwrap();
-    assert_eq!(authority.package_id(), TRUSTED_REGISTRY_PACKAGE_ID);
-    assert_eq!(
-        authority.package_root(),
-        package_root.canonicalize().unwrap()
-    );
-
-    let mut tampered: serde_json::Value =
-        serde_json::from_slice(&fs::read(&descriptor_path).unwrap()).unwrap();
-    tampered["bindings"][0]["manifestPath"] =
-        serde_json::Value::String(fixture.root().join("std/package.yml").display().to_string());
-    fs::write(&descriptor_path, serde_json::to_vec(&tampered).unwrap()).unwrap();
-    let error = authorized.revalidate().unwrap_err().to_string();
-    assert!(error.contains("configIdentity does not match"), "{error}");
-}
-
 struct PlatformFixture {
     base: PathBuf,
     root: PathBuf,

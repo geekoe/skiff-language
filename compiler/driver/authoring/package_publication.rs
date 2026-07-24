@@ -13,8 +13,7 @@ use skiff_compiler_emission::package_artifact::{
 use skiff_compiler_input::{
     package_config::{discover_package_manifests, package_alias_bindings, PackageManifest},
     package_sources::read_official_package_sources,
-    read_publication_resources, trusted_registry_native_sources, CompilerPlatformSources,
-    ManifestOwner,
+    read_publication_resources, CompilerPlatformSources, ManifestOwner,
 };
 use skiff_compiler_source::{
     prelude_registry::initialize_prelude_registry, source_graph::PublicationSourceGraph,
@@ -46,36 +45,6 @@ pub fn author_official_std_package(
 ) -> AuthoringResult<PublishedPackageArtifact> {
     initialize_prelude_registry(platform_sources)?;
     author_official_std_package_after_platform_context_guard(platform_sources)
-}
-
-pub fn author_official_registry_package(
-    platform_sources: &CompilerPlatformSources,
-) -> AuthoringResult<PublishedPackageArtifact> {
-    initialize_prelude_registry(platform_sources)?;
-    let authority = platform_sources.trusted_registry_package_authority()?;
-    let manifests = discover_package_manifests(platform_sources, authority.package_root())?;
-    let manifest = exact_official_registry_manifest(&manifests)?;
-    let raw_sources = trusted_registry_native_sources(&authority)?;
-    let source_tree = raw_sources.source_tree();
-    let source_graph =
-        PublicationSourceGraph::parse_raw_publication_sources(&raw_sources.into_source_graph())?;
-    let package = PackageSourceInput::new(
-        manifest.publication.clone(),
-        source_tree,
-        source_graph,
-        Vec::new(),
-    );
-    let aliases = package_alias_bindings(&manifest.dependencies, &manifests);
-    let input = PackageCompileInput::new(
-        platform_sources,
-        &package,
-        &aliases,
-        skiff_trusted_registry_contract::TRUSTED_REGISTRY_PACKAGE_ID,
-    )
-    .with_platform_package_authority(&authority)
-    .with_canonical_dependencies(&[], &[])
-    .with_available_canonical_packages(&[]);
-    Ok(compile_package(input)?)
 }
 
 fn author_official_std_package_after_platform_context_guard(
@@ -279,36 +248,6 @@ fn exact_official_std_manifest(
     if !manifest.dependencies.is_empty() || !manifest.contracts.is_empty() {
         return Err(invalid_input(
             "official std manifest must not declare package or contract dependencies",
-        ));
-    }
-    Ok(manifest)
-}
-
-fn exact_official_registry_manifest(
-    manifests: &BTreeMap<(String, String), PackageManifest>,
-) -> AuthoringResult<&PackageManifest> {
-    let package_id = skiff_trusted_registry_contract::TRUSTED_REGISTRY_PACKAGE_ID;
-    let mut matches = manifests
-        .values()
-        .filter(|manifest| manifest.id.as_str() == package_id);
-    let manifest = matches
-        .next()
-        .ok_or_else(|| invalid_input("validated platform sources contain no official registry"))?;
-    if matches.next().is_some() {
-        return Err(invalid_input(
-            "validated platform sources contain multiple official registry manifests",
-        ));
-    }
-    if manifest.provenance.owner != ManifestOwner::CompilerStandardPackage
-        || manifest.provenance.synthetic
-    {
-        return Err(invalid_input(
-            "official registry manifest is not compiler-owned source provenance",
-        ));
-    }
-    if !manifest.dependencies.is_empty() || !manifest.contracts.is_empty() {
-        return Err(invalid_input(
-            "official registry manifest must not declare package or contract dependencies",
         ));
     }
     Ok(manifest)

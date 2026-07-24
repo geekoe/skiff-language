@@ -68,17 +68,6 @@ pub(super) fn native_target_from_symbol(symbol: &str) -> NativeTarget {
     }
 }
 
-pub(super) fn native_target_from_compiler_declaration(
-    symbol: &str,
-    binding_key: Option<&str>,
-) -> NativeTarget {
-    let mut target = native_target_from_symbol(symbol);
-    if let Some(binding_key) = binding_key {
-        target.binding_key = Some(binding_key.to_string());
-    }
-    target
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct Binding {
     slot: u32,

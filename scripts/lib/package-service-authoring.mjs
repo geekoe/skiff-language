@@ -34,7 +34,6 @@ export async function runAuthoringObjectCommand(kind, rawArgs, {
     action: compilerAction,
     root: parsed.root,
     artifactRoot: parsed.artifactRoot,
-    officialPackageAuthority: parsed.officialPackageAuthority,
   });
 
   let result = receipt;
@@ -121,7 +120,6 @@ export async function runCompilerAuthoring({
   action,
   root,
   artifactRoot,
-  officialPackageAuthority,
 }) {
   const invocation = compilerAuthoringInvocation({
     skiffRoot,
@@ -129,7 +127,6 @@ export async function runCompilerAuthoring({
     action,
     root,
     artifactRoot,
-    officialPackageAuthority,
   });
   const outcome = await captureAttachedCommand(invocation.command, invocation.args, {
     cwd: invocation.cwd,
@@ -156,38 +153,30 @@ export function compilerAuthoringInvocation({
   action,
   root,
   artifactRoot,
-  officialPackageAuthority,
 }) {
   if (!isAbsolute(skiffRoot)) {
     throw new Error('compiler authoring requires an absolute skiffRoot');
   }
-  const args = [
-    'run',
-    '--quiet',
-    '--manifest-path',
-    resolve(skiffRoot, 'compiler', 'Cargo.toml'),
-    '--bin',
-    'skiff-compiler',
-    '--',
-    kind,
-    action,
-    root,
-    '--artifact-root',
-    artifactRoot,
-    '--platform-source-root',
-    skiffRoot,
-  ];
-  if (officialPackageAuthority !== undefined) {
-    if (!isAbsolute(officialPackageAuthority)) {
-      throw new Error('official package authority descriptor must be absolute');
-    }
-    args.push('--official-package-authority', officialPackageAuthority);
-  }
-  args.push('--json');
   return {
     command: 'cargo',
     cwd: skiffRoot,
-    args,
+    args: [
+      'run',
+      '--quiet',
+      '--manifest-path',
+      resolve(skiffRoot, 'compiler', 'Cargo.toml'),
+      '--bin',
+      'skiff-compiler',
+      '--',
+      kind,
+      action,
+      root,
+      '--artifact-root',
+      artifactRoot,
+      '--platform-source-root',
+      skiffRoot,
+      '--json',
+    ],
   };
 }
 
@@ -195,7 +184,7 @@ export function parseObjectArgs(kind, action, rawArgs) {
   const options = new Map();
   const flags = new Set();
   let root;
-  const optionsWithValues = new Set(['--artifact-root', '--official-package-authority']);
+  const optionsWithValues = new Set(['--artifact-root']);
   if (action === 'activate') {
     optionsWithValues.add('--activation-url');
     optionsWithValues.add('--activation-id');
@@ -262,9 +251,6 @@ export function parseObjectArgs(kind, action, rawArgs) {
   return {
     root,
     artifactRoot: resolve(artifactRoot),
-    officialPackageAuthority: options.has('--official-package-authority')
-      ? resolve(options.get('--official-package-authority'))
-      : undefined,
     activationUrl: options.get('--activation-url') ?? defaultAssemblyActivationUrl,
     activationId: options.get('--activation-id'),
     expectedGeneration,
@@ -273,7 +259,7 @@ export function parseObjectArgs(kind, action, rawArgs) {
 }
 
 export function objectUsage(kind) {
-  const base = `skiff ${kind} <build|publish> <root> --artifact-root <dir> [--official-package-authority <descriptor.json>] [--json]`;
+  const base = `skiff ${kind} <build|publish> <root> --artifact-root <dir> [--json]`;
   if (kind !== 'assembly') {
     return `usage: ${base}`;
   }

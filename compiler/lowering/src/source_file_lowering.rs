@@ -56,7 +56,6 @@ pub struct PackageSourceLoweringInput<'a, 'context, 'publication> {
     /// closed instead of rebuilding its signature from syntax.
     pub interface_signatures: Option<&'a SourceInterfaceSignatureFacts>,
     pub service_calls: Option<&'a LoweredServiceCalls>,
-    pub compiler_native_binding_keys: &'a BTreeMap<String, String>,
 }
 
 struct SourceFileLoweringContext<'a> {
@@ -116,7 +115,6 @@ pub fn compile_package_source_file_ir_unit(
         input.executable_signatures,
         input.interface_signatures,
         input.service_calls,
-        input.compiler_native_binding_keys,
     )?;
     assign_file_ir_identity(&mut unit);
     Ok(unit)
@@ -223,7 +221,6 @@ fn compile_parsed_source_file_ir_unit_with_lowering_context(
         executable_signatures: &executable_signatures,
         interface_signatures: None,
         service_calls: ctx.service_calls,
-        compiler_native_binding_keys: &BTreeMap::new(),
     })
 }
 
@@ -378,7 +375,6 @@ fn lower_source_file_ir_unit(
     exact_executable_signatures: &SourceExecutableSignatureFacts,
     exact_interface_signatures: Option<&SourceInterfaceSignatureFacts>,
     service_calls: Option<&LoweredServiceCalls>,
-    compiler_native_binding_keys: &BTreeMap<String, String>,
 ) -> Result<FileIrUnit> {
     let source = semantic_context.source;
     let ast = source.ast;
@@ -487,7 +483,6 @@ fn lower_source_file_ir_unit(
         &local_type_fields,
         &executable_signatures,
         service_calls,
-        compiler_native_binding_keys,
         &mut unit,
         &mut next_span_id,
     )?;
@@ -700,7 +695,6 @@ mod tests {
             package_facts: None,
             package_artifacts: None,
             policy: PackageCompilePolicy::new("example.com/any-lowering"),
-            platform_package_authority: None,
         })
         .expect("source model should build");
         let lowered = crate::lower(&model).expect("publication should lower");
@@ -783,7 +777,6 @@ mod tests {
             package_facts: None,
             package_artifacts: None,
             policy: PackageCompilePolicy::new(package_id),
-            platform_package_authority: None,
         })
         .expect("source model should build");
         crate::lower(&model)
@@ -824,7 +817,6 @@ mod tests {
             package_facts: None,
             package_artifacts: None,
             policy: PackageCompilePolicy::new(PACKAGE_ID),
-            platform_package_authority: None,
         })
         .expect("package source model should build");
         assert_eq!(
@@ -873,7 +865,6 @@ mod tests {
             package_facts: Some(&package_facts),
             package_artifacts: None,
             policy: PackageCompilePolicy::new("example.com/any-lowering"),
-            platform_package_authority: None,
         })
         .expect("source model with package facts should build");
         let lowered = crate::lower(&model).expect("publication should lower");

@@ -5,7 +5,6 @@ use crate::{
     SourceCompilePackageFacts,
 };
 use compiler_input_model::{PackageCompilePolicy, PackageDependency, PublicationApiSpec};
-use skiff_compiler_input::CompilerPlatformPackageAuthority;
 use skiff_artifact_model::PackageArtifact;
 
 pub struct LinkedPackage<'a, 'facts> {
@@ -18,7 +17,6 @@ pub struct LinkedPackage<'a, 'facts> {
     pub package_facts: Option<&'facts [SourceCompilePackageFacts<'a>]>,
     pub package_artifacts: Option<&'facts [PackageArtifact]>,
     pub policy: PackageCompilePolicy<'a>,
-    pub platform_package_authority: Option<&'a CompilerPlatformPackageAuthority>,
 }
 
 pub struct CompileParsedPackageSourcesInput<'a, 'facts> {
@@ -31,7 +29,6 @@ pub struct CompileParsedPackageSourcesInput<'a, 'facts> {
     pub package_facts: Option<&'facts [SourceCompilePackageFacts<'a>]>,
     pub package_artifacts: Option<&'facts [PackageArtifact]>,
     pub policy: PackageCompilePolicy<'a>,
-    pub platform_package_authority: Option<&'a CompilerPlatformPackageAuthority>,
 }
 
 impl<'a, 'facts> LinkedPackage<'a, 'facts> {
@@ -46,7 +43,6 @@ impl<'a, 'facts> LinkedPackage<'a, 'facts> {
             package_facts: input.package_facts,
             package_artifacts: input.package_artifacts,
             policy: input.policy,
-            platform_package_authority: input.platform_package_authority,
         }
     }
 }

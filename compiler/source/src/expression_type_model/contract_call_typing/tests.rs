@@ -587,7 +587,6 @@ fn build_model(
             package_facts: None,
             package_artifacts: None,
             policy: PackageCompilePolicy::new("example.com/contract-call-type-checking"),
-            platform_package_authority: None,
         },
         dependency_analysis,
     )

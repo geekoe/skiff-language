@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::{
+    package_rules::validate_package_sources_with_dependency_analysis,
     parsed_sources::ParsedCompilerSource,
     shared::{id::STD_SOURCE_ALIAS, publication_error::PublicationError},
     source_graph::CompilerSourceFile,
@@ -8,7 +9,6 @@ use crate::{
 use compiler_input_model::{
     is_standard_package_id, PackageCompilePolicy, PackageDependency, PublicationApiSpec,
 };
-use skiff_compiler_input::CompilerPlatformPackageAuthority;
 
 use super::{
     config_requirements::DependencyPackageConfigFacts, ConfigRequirementSet, PublicationApiSeed,
@@ -28,19 +28,17 @@ pub struct SourceCompileLinkedFactsInput<'a, 'source> {
     pub policy: PackageCompilePolicy<'a>,
     pub publication_api: Option<&'a PublicationApiSpec>,
     pub dependency_analysis: &'a crate::SourceDependencyAnalysisInput,
-    pub platform_package_authority: Option<&'a CompilerPlatformPackageAuthority>,
 }
 
 impl SourceCompileLinkedFacts {
     pub fn build(input: SourceCompileLinkedFactsInput<'_, '_>) -> Result<Self, PublicationError> {
         let package_id = input.policy.package_id();
-        crate::package_rules::validate_package_sources_with_platform_authority(
+        validate_package_sources_with_dependency_analysis(
             package_id,
             input.package_dependencies,
             input.diagnostic_root,
             input.parsed_sources,
             input.dependency_analysis,
-            input.platform_package_authority,
         )?;
         let publication_api_seed = match input.publication_api {
             Some(spec) => PublicationApiSeed::from_publication_sources_with_resolved_modules(

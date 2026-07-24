@@ -12,7 +12,7 @@ use skiff_artifact_identity::{
     assign_package_artifact_identities, PackageArtifactRecordPath, PackageFileIrRecordPath,
     PackageResourceRecordPath,
 };
-use skiff_artifact_model::{CallTargetIr, ExprIr, PublicationResourceRef};
+use skiff_artifact_model::PublicationResourceRef;
 use skiff_compiler_core::json_utils::sha256_hex;
 use skiff_compiler_emission::artifact::PublishedResourceArtifact;
 use skiff_compiler_input::CompilerPlatformSources;
@@ -103,92 +103,6 @@ fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
 }
 
 #[test]
-fn official_registry_cli_authoring_path_compiles_all_canonical_native_declarations() {
-    let platform = repository_platform_sources();
-    let authority = platform.trusted_registry_package_authority().unwrap();
-    let artifact_root = TestDir::new("official-registry-cli-authoring");
-    let result = build_authoring_object(
-        &platform,
-        AuthoringObject::Package,
-        authority.package_root(),
-        artifact_root.path(),
-        false,
-    )
-    .expect("official registry package build must use compiler-owned authoring");
-    let reference: skiff_artifact_model::PackageArtifactRef =
-        serde_json::from_value(result["packageArtifactReceipt"]["artifact"].clone()).unwrap();
-    assert_eq!(
-        reference.package_id,
-        skiff_trusted_registry_contract::TRUSTED_REGISTRY_PACKAGE_ID
-    );
-
-    let store = CanonicalArtifactStore::open(artifact_root.path()).unwrap();
-    let artifact = store.read_package_artifact(&reference).unwrap();
-    let file_ir_units = artifact
-        .files
-        .iter()
-        .map(|file| store.read_file_ir(&reference, file).unwrap())
-        .collect::<Vec<_>>();
-    let executable_count = file_ir_units
-        .iter()
-        .map(|unit| unit.declarations.executables.len())
-        .sum::<usize>();
-    assert_eq!(
-        executable_count,
-        skiff_trusted_registry_contract::TRUSTED_REGISTRY_NATIVE_SIGNATURES.len()
-    );
-
-    let mut actual_binding_keys = file_ir_units
-        .iter()
-        .flat_map(|unit| &unit.executables)
-        .flat_map(|executable| &executable.body.expressions)
-        .filter_map(|expression| {
-            let ExprIr::Call { call } = expression else {
-                return None;
-            };
-            let CallTargetIr::Native { target } = &call.target else {
-                return None;
-            };
-            Some(
-                target
-                    .binding_key
-                    .clone()
-                    .expect("compiler-owned native target must carry its canonical binding key"),
-            )
-        })
-        .collect::<Vec<_>>();
-    actual_binding_keys.sort();
-    let mut expected_binding_keys =
-        skiff_trusted_registry_contract::TRUSTED_REGISTRY_NATIVE_SIGNATURES
-            .iter()
-            .map(|signature| signature.binding_key.to_string())
-            .collect::<Vec<_>>();
-    expected_binding_keys.sort();
-    assert_eq!(actual_binding_keys, expected_binding_keys);
-
-    let mut expected_scopes =
-        skiff_trusted_registry_contract::TRUSTED_REGISTRY_NATIVE_CAPABILITY_SPECS
-            .iter()
-            .map(|spec| spec.operation_scope.as_str().to_string())
-            .collect::<Vec<_>>();
-    expected_scopes.sort();
-    expected_scopes.dedup();
-    assert_eq!(
-        artifact.runtime_requirements.runtime_capabilities,
-        vec![skiff_artifact_model::PackageRuntimeCapabilityRequirement {
-            capability: skiff_trusted_registry_contract::TRUSTED_REGISTRY_CAPABILITY_ID.to_string(),
-            required_version: skiff_trusted_registry_contract::TRUSTED_REGISTRY_CAPABILITY_VERSION
-                .to_string(),
-            operation_scopes: expected_scopes,
-        }]
-    );
-    assert!(
-        !artifact_root.path().join("pointers").exists(),
-        "build must not publish a pointer"
-    );
-}
-
-#[test]
 fn package_record_writer_validates_the_complete_candidate_before_writing() {
     let mut incomplete = repository_std();
     incomplete.file_ir_units.pop();
@@ -274,34 +188,6 @@ fn copied_std_remains_a_rejected_user_package_with_zero_record_writes() {
 }
 
 #[test]
-fn registry_without_matching_authority_is_rejected_before_store_creation() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .canonicalize()
-        .unwrap();
-    let platform_sources = CompilerPlatformSources::new(&root).unwrap();
-    let artifact_root = TestDir::new("unauthorized-registry-records");
-    let records = artifact_root.path().join("records");
-
-    let error = build_authoring_object(
-        &platform_sources,
-        AuthoringObject::Package,
-        &root.join("registry"),
-        &records,
-        false,
-    )
-    .unwrap_err()
-    .to_string();
-
-    assert!(
-        error.contains("package id skiff.run/registry is reserved"),
-        "{error}"
-    );
-    assert!(!records.exists());
-}
-
-#[test]
 fn official_std_route_fails_closed_on_wrong_platform_manifest_and_source_facts() {
     let changed_registry = MinimalPlatformFixture::new("changed-registry");
     let changed_registry_context = changed_registry.context();
@@ -375,34 +261,7 @@ fn repository_platform_sources() -> CompilerPlatformSources {
         .unwrap()
         .canonicalize()
         .unwrap();
-    static DESCRIPTOR: OnceLock<PathBuf> = OnceLock::new();
-    let descriptor = DESCRIPTOR.get_or_init(|| {
-        let bindings = serde_json::json!([{
-            "packageId": skiff_trusted_registry_contract::TRUSTED_REGISTRY_PACKAGE_ID,
-            "packageRoot": root.join("registry"),
-            "manifestPath": root.join("registry/package.yml"),
-        }]);
-        let identity = format!(
-            "skiff-official-package-authority-v1:sha256:{}",
-            skiff_compiler_core::json_utils::sha256_hex(&serde_json::to_vec(&bindings).unwrap())
-        );
-        let path = std::env::temp_dir().join(format!(
-            "skiff-p5-f71-repository-authority-{}.json",
-            std::process::id()
-        ));
-        fs::write(
-            &path,
-            serde_json::to_vec(&serde_json::json!({
-                "schemaVersion": "skiff-official-package-authority-v1",
-                "configIdentity": identity,
-                "bindings": bindings,
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        path
-    });
-    CompilerPlatformSources::new_with_official_package_authority(&root, Some(descriptor)).unwrap()
+    CompilerPlatformSources::new(&root).unwrap()
 }
 
 fn record_bytes(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {

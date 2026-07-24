@@ -25,8 +25,8 @@ use super::{
     db_lowering::{DbMetadataIr, LoweredPackageDbMetadataIndex},
     executable_type_projection::execution_type_ref,
     function_lowering::{
-        native_target_from_compiler_declaration, BindingReadonlyFlags, FunctionLowerer,
-        LocalTypeFieldIndex, LoweredExecutableSignature,
+        native_target_from_symbol, BindingReadonlyFlags, FunctionLowerer, LocalTypeFieldIndex,
+        LoweredExecutableSignature,
     },
     service_call_lowering::LoweredServiceCalls,
     source_unit_lowering::{push_source_span, source_span_ref, symbol, type_param_scope},
@@ -344,7 +344,6 @@ pub(super) fn lower_executables(
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
     service_calls: &LoweredServiceCalls,
-    compiler_native_binding_keys: &BTreeMap<String, String>,
     unit: &mut FileIrUnit,
     next_span_id: &mut u64,
 ) -> Result<()> {
@@ -382,7 +381,6 @@ pub(super) fn lower_executables(
             local_type_fields,
             executable_signatures,
             service_calls,
-            compiler_native_binding_keys,
             unit,
             next_span_id,
         )?;
@@ -446,7 +444,6 @@ pub(super) fn lower_executables(
                 local_type_fields,
                 executable_signatures,
                 service_calls,
-                compiler_native_binding_keys,
                 unit,
                 next_span_id,
             )?;
@@ -525,7 +522,6 @@ fn push_executable(
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
     service_calls: &LoweredServiceCalls,
-    compiler_native_binding_keys: &BTreeMap<String, String>,
     unit: &mut FileIrUnit,
     next_span_id: &mut u64,
 ) -> Result<()> {
@@ -557,7 +553,6 @@ fn push_executable(
         local_type_fields,
         executable_signatures,
         service_calls,
-        compiler_native_binding_keys,
     )?;
     let source_span = source_span_ref(function.span);
 
@@ -610,7 +605,6 @@ fn lower_function_with_params(
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
     service_calls: &LoweredServiceCalls,
-    compiler_native_binding_keys: &BTreeMap<String, String>,
 ) -> Result<ExecutableIr> {
     validate_bare_return_statements(function, &executable_symbol)?;
     let type_params = type_param_scope(inherited_type_params.iter(), function.type_params.iter());
@@ -721,12 +715,7 @@ fn lower_function_with_params(
         let call = lowerer.push_expr(ExprIr::Call {
             call: CallIr {
                 target: CallTargetIr::Native {
-                    target: native_target_from_compiler_declaration(
-                        &executable_symbol,
-                        compiler_native_binding_keys
-                            .get(&executable_symbol)
-                            .map(String::as_str),
-                    ),
+                    target: native_target_from_symbol(&executable_symbol),
                 },
                 args,
                 type_args,

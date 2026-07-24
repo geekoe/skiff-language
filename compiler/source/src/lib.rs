@@ -136,21 +136,6 @@ fn build_from_linked(
     linked: linked_publication::LinkedPackage<'_, '_>,
     dependency_analysis: &SourceDependencyAnalysisInput,
 ) -> Result<PackageSourceModel, PublicationError> {
-    let compiler_native_binding_keys = linked
-        .platform_package_authority
-        .map(|authority| {
-            authority
-                .native_signatures()
-                .iter()
-                .map(|signature| {
-                    (
-                        signature.target.to_string(),
-                        signature.binding_key.to_string(),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
     let mut package_aliases = linked.package_aliases.clone();
     for alias in dependency_analysis.package_aliases() {
         package_aliases.entry(alias.to_string()).or_default();
@@ -206,7 +191,6 @@ fn build_from_linked(
         package_dependencies: linked.package_dependencies,
         dependency_package_config_facts: dependency_package_config_facts.as_deref(),
         policy: linked.policy,
-        platform_package_authority: linked.platform_package_authority,
         publication_api: linked.publication_api,
         dependency_analysis,
     })?;
@@ -231,7 +215,6 @@ fn build_from_linked(
         config_usage_seed,
         dependency_config_requirements: linked_facts.dependency_config_requirements,
         dependency_analysis,
-        compiler_native_binding_keys,
     })
 }
 

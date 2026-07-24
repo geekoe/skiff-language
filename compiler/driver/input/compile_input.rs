@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, ops::Deref};
 
 use skiff_artifact_model::PackageArtifact;
-use skiff_compiler_input::{CompilerPlatformPackageAuthority, CompilerPlatformSources};
+use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_input_model::{PackageCompileInputMetadata, PackageContractCompileDependency};
 
 use crate::input::{PackageDependency, PackageSourceInput};
@@ -18,7 +18,6 @@ type CanonicalPackageCompileInput<'a> =
 /// The compiler-library package input plus its explicit platform trust owner.
 pub struct PackageCompileInput<'a> {
     platform_sources: &'a CompilerPlatformSources,
-    platform_package_authority: Option<&'a CompilerPlatformPackageAuthority>,
     canonical: CanonicalPackageCompileInput<'a>,
 }
 
@@ -31,30 +30,12 @@ impl<'a> PackageCompileInput<'a> {
     ) -> Self {
         Self {
             platform_sources,
-            platform_package_authority: None,
             canonical: CanonicalPackageCompileInput::new(package, package_aliases, package_id),
         }
     }
 
-    pub fn with_platform_package_authority(
-        mut self,
-        authority: &'a CompilerPlatformPackageAuthority,
-    ) -> Self {
-        assert_eq!(
-            self.canonical.package_id,
-            authority.package_id(),
-            "compiler platform authority must match the exact package"
-        );
-        self.platform_package_authority = Some(authority);
-        self
-    }
-
     pub fn platform_sources(&self) -> &CompilerPlatformSources {
         self.platform_sources
-    }
-
-    pub(crate) fn platform_package_authority(&self) -> Option<&CompilerPlatformPackageAuthority> {
-        self.platform_package_authority
     }
 
     pub fn with_canonical_dependencies(

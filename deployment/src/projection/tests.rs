@@ -155,7 +155,6 @@ impl ProjectionFixture {
                 runtime_capabilities: vec![PackageRuntimeCapabilityRequirement {
                     capability: "async".to_string(),
                     required_version: "1".to_string(),
-                    operation_scopes: Vec::new(),
                 }],
             },
             callable_semantic_facts: BTreeMap::from([(callable_id.clone(), facts)]),

@@ -140,7 +140,6 @@ pub struct PackageSourceModel {
     #[allow(dead_code)]
     dependency_config_requirements: ConfigRequirementSet,
     effective_config_requirements: ConfigRequirementSet,
-    compiler_native_binding_keys: BTreeMap<String, String>,
 }
 
 pub struct PackageSourceModelInput<'a> {
@@ -160,7 +159,6 @@ pub struct PackageSourceModelInput<'a> {
     pub config_usage_seed: ConfigUsageSeed,
     pub dependency_config_requirements: ConfigRequirementSet,
     pub dependency_analysis: &'a super::SourceDependencyAnalysisInput,
-    pub compiler_native_binding_keys: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -303,7 +301,6 @@ impl PackageSourceModel {
             own_config_requirements,
             dependency_config_requirements,
             effective_config_requirements,
-            compiler_native_binding_keys: input.compiler_native_binding_keys,
         })
     }
 
@@ -413,10 +410,6 @@ impl PackageSourceModel {
     #[allow(dead_code)]
     pub fn effective_config_requirements(&self) -> &ConfigRequirementSet {
         &self.effective_config_requirements
-    }
-
-    pub fn compiler_native_binding_keys(&self) -> &BTreeMap<String, String> {
-        &self.compiler_native_binding_keys
     }
 
     pub fn legacy_config_projection_requirements(&self) -> ConfigRequirementSet {
