@@ -104,6 +104,7 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) expression_types: Option<&'a ExpressionTypeModel>,
     pub(super) callable_return_types: &'a BTreeMap<String, CallableReturnType>,
     pub(super) local_type_fields: &'a LocalTypeFieldIndex,
+    pub(super) actor_self_fields: Option<&'a BTreeMap<String, TypeRefIr>>,
     pub(super) expected_return_type: Option<TypeRefIr>,
     executable_signatures: &'a BTreeMap<u32, LoweredExecutableSignature>,
     service_calls: &'a LoweredServiceCalls,
@@ -149,6 +150,7 @@ impl<'a> FunctionLowerer<'a> {
         expression_types: Option<&'a ExpressionTypeModel>,
         callable_return_types: &'a BTreeMap<String, CallableReturnType>,
         local_type_fields: &'a LocalTypeFieldIndex,
+        actor_self_fields: Option<&'a BTreeMap<String, TypeRefIr>>,
         executable_signatures: &'a BTreeMap<u32, LoweredExecutableSignature>,
         service_calls: &'a LoweredServiceCalls,
     ) -> Self {
@@ -173,6 +175,7 @@ impl<'a> FunctionLowerer<'a> {
             expression_types,
             callable_return_types,
             local_type_fields,
+            actor_self_fields,
             expected_return_type: None,
             executable_signatures,
             service_calls,
@@ -645,6 +648,16 @@ impl<'a> FunctionLowerer<'a> {
             }
             Expr::Field { object, field } => {
                 self.next_expression_key();
+                if matches!(object.as_ref(), Expr::Identifier(name) if name == "self") {
+                    if let Some(field_type) =
+                        self.actor_self_fields.and_then(|fields| fields.get(field))
+                    {
+                        return Ok(AssignTargetIr::ActorSelfField {
+                            field: field.clone(),
+                            field_type: field_type.clone(),
+                        });
+                    }
+                }
                 Ok(AssignTargetIr::Field {
                     object: {
                         if let Some(name) = self.readonly_assignment_base_identifier(object) {
@@ -1043,10 +1056,29 @@ impl<'a> FunctionLowerer<'a> {
                 type_args,
                 fields,
             } => self.lower_record_construct(expression_key.as_ref(), type_name, type_args, fields)?,
-            Expr::Field { object, field } => ExprIr::Field {
-                object: self.lower_expr(object)?,
-                field: field.clone(),
-            },
+            Expr::Field { object, field } => {
+                if matches!(object.as_ref(), Expr::Identifier(name) if name == "self") {
+                    if let Some(field_type) = self
+                        .actor_self_fields
+                        .and_then(|fields| fields.get(field))
+                    {
+                        ExprIr::ActorSelfField {
+                            field: field.clone(),
+                            field_type: field_type.clone(),
+                        }
+                    } else {
+                        ExprIr::Field {
+                            object: self.lower_expr(object)?,
+                            field: field.clone(),
+                        }
+                    }
+                } else {
+                    ExprIr::Field {
+                        object: self.lower_expr(object)?,
+                        field: field.clone(),
+                    }
+                }
+            }
             Expr::Call { callee, args } => {
                 if let Some(payload) =
                     self.lower_representation_constructor_call(expression_key.as_ref(), callee, args)?

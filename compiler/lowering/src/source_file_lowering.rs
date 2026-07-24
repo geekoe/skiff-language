@@ -700,7 +700,7 @@ fn lower_actor_declarations(
                         parameters: signature
                             .params
                             .iter()
-                            .skip(1)
+                            .skip(usize::from(method.implicit_self.is_none()))
                             .map(|parameter| FunctionTypeParamIr {
                                 name: parameter.name.clone(),
                                 ty: parameter.ty.clone(),
@@ -1173,7 +1173,13 @@ mod tests {
 
               impl UserActor {
                 function rename(self: UserActor, value: string) -> string {
-                  return value
+                  self.displayName = value
+                  return self.displayName
+                }
+
+                function increment(delta: number) -> number {
+                  self.loginCount = self.loginCount + delta
+                  return self.loginCount
                 }
               }
 
@@ -1207,13 +1213,33 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["displayName", "loginCount"]
         );
-        assert_eq!(declaration.abi.public_methods.len(), 1);
-        let rename = &declaration.abi.public_methods[0];
+        assert_eq!(declaration.abi.public_methods.len(), 2);
+        let rename = declaration
+            .abi
+            .public_methods
+            .iter()
+            .find(|method| method.name == "rename")
+            .unwrap();
         assert_eq!(rename.name, "rename");
         assert_eq!(rename.parameters.len(), 1);
         assert_eq!(rename.parameters[0].name, "value");
         assert_eq!(rename.return_type, TypeRefIr::builtin("string"));
         assert!(!rename.may_suspend);
+        let increment = declaration
+            .abi
+            .public_methods
+            .iter()
+            .find(|method| method.name == "increment")
+            .unwrap();
+        assert_eq!(
+            increment
+                .parameters
+                .iter()
+                .map(|parameter| parameter.name.as_str())
+                .collect::<Vec<_>>(),
+            ["delta"]
+        );
+        assert_eq!(increment.return_type, TypeRefIr::builtin("number"));
         assert_eq!(
             declaration
                 .method_implementations
@@ -1227,6 +1253,27 @@ mod tests {
             .actor_implementation_identity
             .as_str()
             .contains("pending"));
+
+        let rename_executable = executable(&unit, "UserActor.rename");
+        assert!(rename_executable.body.expressions.iter().any(|expression| {
+            matches!(
+                expression,
+                ExprIr::ActorSelfField { field, field_type }
+                    if field == "displayName" && field_type == &TypeRefIr::builtin("string")
+            )
+        }));
+        assert!(rename_executable.body.statements.iter().any(|statement| {
+            matches!(
+                statement,
+                skiff_artifact_model::StmtIr::Assign {
+                    target: skiff_artifact_model::AssignTargetIr::ActorSelfField {
+                        field,
+                        field_type,
+                    },
+                    ..
+                } if field == "displayName" && field_type == &TypeRefIr::builtin("string")
+            )
+        }));
 
         let load = executable(&unit, "load");
         let calls = load

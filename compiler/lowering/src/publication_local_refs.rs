@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::file_ir::{
-    BoxSourceIr, CallTargetIr, DbBodyIr, DbChangeIr, DbLeaseClaimIr, DbLeaseReadIr, DbOperationIr,
-    DbPredicateIr, DbQueryIr, DbQueryValueIr, DbSelectorIr, DbTransactionIr, ExprIr,
+    AssignTargetIr, BoxSourceIr, CallTargetIr, DbBodyIr, DbChangeIr, DbLeaseClaimIr, DbLeaseReadIr,
+    DbOperationIr, DbPredicateIr, DbQueryIr, DbQueryValueIr, DbSelectorIr, DbTransactionIr, ExprIr,
     FileIrServiceCallValidationError, FileIrUnit, InterfaceDeclIr, PackageRefIr, PatternIr, StmtIr,
     TypeDescriptorIr, TypeRefIr,
 };
@@ -211,6 +211,12 @@ fn rewrite_stmt(index: &PublicationLocalRefIndex, module_path: &str, stmt: &mut 
         StmtIr::Throw { payload_type, .. } => {
             rewrite_type_ref(index, module_path, payload_type);
         }
+        StmtIr::Assign {
+            target: AssignTargetIr::ActorSelfField { field_type, .. },
+            ..
+        } => {
+            rewrite_type_ref(index, module_path, field_type);
+        }
         StmtIr::Let { .. }
         | StmtIr::Assign { .. }
         | StmtIr::If { .. }
@@ -273,6 +279,9 @@ fn rewrite_expr(index: &PublicationLocalRefIndex, module_path: &str, expr: &mut 
         }
         ExprIr::DbLeaseRead { read } => {
             rewrite_db_lease_read(index, module_path, read);
+        }
+        ExprIr::ActorSelfField { field_type, .. } => {
+            rewrite_type_ref(index, module_path, field_type);
         }
         ExprIr::Literal { .. }
         | ExprIr::LoadSlot { .. }

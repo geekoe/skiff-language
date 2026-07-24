@@ -208,6 +208,7 @@ fn lower_const_initializer_body(
         expression_types,
         callable_return_types,
         local_type_fields,
+        None,
         executable_signatures,
         service_calls,
     );
@@ -348,6 +349,21 @@ pub(super) fn lower_executables(
     next_span_id: &mut u64,
 ) -> Result<()> {
     let executable_indices = executable_index.indices();
+    let actor_fields = unit
+        .actor_declarations
+        .iter()
+        .map(|declaration| {
+            (
+                declaration.abi.actor_name.clone(),
+                declaration
+                    .abi
+                    .fields
+                    .iter()
+                    .map(|field| (field.name.clone(), field.ty.clone()))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     for function in functions {
         let name = function.name.clone();
         let symbol = executable_symbol(module_path, &name);
@@ -379,6 +395,7 @@ pub(super) fn lower_executables(
             expression_types,
             callable_return_types,
             local_type_fields,
+            None,
             executable_signatures,
             service_calls,
             unit,
@@ -442,6 +459,7 @@ pub(super) fn lower_executables(
                 expression_types,
                 callable_return_types,
                 local_type_fields,
+                actor_fields.get(&implementation.target),
                 executable_signatures,
                 service_calls,
                 unit,
@@ -520,6 +538,7 @@ fn push_executable(
     expression_types: Option<&ExpressionTypeModel>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
+    actor_self_fields: Option<&BTreeMap<String, TypeRefIr>>,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
     service_calls: &LoweredServiceCalls,
     unit: &mut FileIrUnit,
@@ -551,6 +570,7 @@ fn push_executable(
         expression_types,
         callable_return_types,
         local_type_fields,
+        actor_self_fields,
         executable_signatures,
         service_calls,
     )?;
@@ -603,6 +623,7 @@ fn lower_function_with_params(
     expression_types: Option<&ExpressionTypeModel>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
+    actor_self_fields: Option<&BTreeMap<String, TypeRefIr>>,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
     service_calls: &LoweredServiceCalls,
 ) -> Result<ExecutableIr> {
@@ -630,6 +651,7 @@ fn lower_function_with_params(
         expression_types,
         callable_return_types,
         local_type_fields,
+        actor_self_fields,
         executable_signatures,
         service_calls,
     );

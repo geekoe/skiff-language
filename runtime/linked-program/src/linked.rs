@@ -742,9 +742,21 @@ pub enum LinkedStmtIr {
     tag = "kind"
 )]
 pub enum AssignTargetIr {
-    Slot { slot: u32 },
-    Field { object: ExprRefIr, field: String },
-    Index { object: ExprRefIr, index: ExprRefIr },
+    Slot {
+        slot: u32,
+    },
+    ActorSelfField {
+        field: String,
+        field_type: LinkedTypeRef,
+    },
+    Field {
+        object: ExprRefIr,
+        field: String,
+    },
+    Index {
+        object: ExprRefIr,
+        index: ExprRefIr,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -782,6 +794,10 @@ pub enum LinkedExprIr {
     },
     LoadConst {
         const_index: u32,
+    },
+    ActorSelfField {
+        field: String,
+        field_type: LinkedTypeRef,
     },
     Field {
         object: ExprRefIr,

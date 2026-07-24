@@ -21,7 +21,101 @@ pub(crate) fn linked_file_unit_from_assembly_artifact(
         );
     }
     validate_receiver_builtin_ops(unit)?;
+    validate_actor_self_fields(unit)?;
     linked_file_unit_from_artifact_with_canonical_calls(unit, canonical_call)
+}
+
+fn validate_actor_self_fields(unit: &artifact::FileIrUnit) -> anyhow::Result<()> {
+    let mut actor_fields_by_executable = BTreeMap::new();
+    for declaration in &unit.actor_declarations {
+        let fields = declaration
+            .abi
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), &field.ty))
+            .collect::<BTreeMap<_, _>>();
+        for executable_index in declaration.method_implementations.values() {
+            if actor_fields_by_executable
+                .insert(
+                    *executable_index,
+                    (&declaration.abi.actor_name, fields.clone()),
+                )
+                .is_some()
+            {
+                anyhow::bail!(
+                    "File IR {} executable index {} is claimed by more than one Actor method",
+                    unit.file_ir_identity,
+                    executable_index
+                );
+            }
+        }
+    }
+
+    for (const_index, constant) in unit.constants.iter().enumerate() {
+        validate_actor_self_body(
+            unit,
+            &constant.body,
+            None,
+            &format!("constant index {const_index}"),
+        )?;
+    }
+    for (executable_index, executable) in unit.executables.iter().enumerate() {
+        let actor_fields = actor_fields_by_executable
+            .get(&(executable_index as u32))
+            .map(|(_, fields)| fields);
+        validate_actor_self_body(
+            unit,
+            &executable.body,
+            actor_fields,
+            &format!("executable `{}`", executable.symbol),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_actor_self_body(
+    unit: &artifact::FileIrUnit,
+    body: &artifact::ExecutableBody,
+    actor_fields: Option<&BTreeMap<&str, &artifact::TypeRefIr>>,
+    owner: &str,
+) -> anyhow::Result<()> {
+    let validate = |field: &str, field_type: &artifact::TypeRefIr| -> anyhow::Result<()> {
+        let Some(fields) = actor_fields else {
+            anyhow::bail!(
+                "File IR {} {owner} uses Actor self field `{field}` outside an Actor method",
+                unit.file_ir_identity
+            );
+        };
+        let Some(declared_type) = fields.get(field) else {
+            anyhow::bail!(
+                "File IR {} {owner} uses undeclared Actor self field `{field}`",
+                unit.file_ir_identity
+            );
+        };
+        if *declared_type != field_type {
+            anyhow::bail!(
+                "File IR {} {owner} Actor self field `{field}` type does not match its declaration",
+                unit.file_ir_identity
+            );
+        }
+        Ok(())
+    };
+
+    for statement in &body.statements {
+        if let artifact::StmtIr::Assign {
+            target: artifact::AssignTargetIr::ActorSelfField { field, field_type },
+            ..
+        } = statement
+        {
+            validate(field, field_type)?;
+        }
+    }
+    for expression in &body.expressions {
+        if let artifact::ExprIr::ActorSelfField { field, field_type } = expression {
+            validate(field, field_type)?;
+        }
+    }
+    Ok(())
 }
 
 fn linked_file_unit_from_artifact_with_canonical_calls(
@@ -619,6 +713,12 @@ fn linked_stmt(statement: &artifact::StmtIr) -> LinkedStmtIr {
 fn linked_assign_target(target: &artifact::AssignTargetIr) -> AssignTargetIr {
     match target {
         artifact::AssignTargetIr::Slot { slot } => AssignTargetIr::Slot { slot: *slot },
+        artifact::AssignTargetIr::ActorSelfField { field, field_type } => {
+            AssignTargetIr::ActorSelfField {
+                field: field.clone(),
+                field_type: linked_type_ref(field_type),
+            }
+        }
         artifact::AssignTargetIr::Field { object, field } => AssignTargetIr::Field {
             object: linked_expr_ref(object),
             field: field.clone(),
@@ -654,6 +754,10 @@ fn linked_expr(
         artifact::ExprIr::LoadSlot { slot } => LinkedExprIr::LoadSlot { slot: *slot },
         artifact::ExprIr::LoadConst { const_index } => LinkedExprIr::LoadConst {
             const_index: *const_index,
+        },
+        artifact::ExprIr::ActorSelfField { field, field_type } => LinkedExprIr::ActorSelfField {
+            field: field.clone(),
+            field_type: linked_type_ref(field_type),
         },
         artifact::ExprIr::Field { object, field } => LinkedExprIr::Field {
             object: linked_expr_ref(object),
@@ -1274,6 +1378,45 @@ mod tests {
         file
     }
 
+    fn actor_file_with_method() -> artifact::FileIrUnit {
+        let mut file = actor_file();
+        let method_identity = artifact::ActorMethodIdentity::new("actor-method:read");
+        file.executables.push(artifact::ExecutableIr {
+            kind: artifact::ExecutableKind::ImplMethod,
+            symbol: "actors.DocHub.read".to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: artifact::TypeRefIr::builtin("number"),
+            self_type: Some(artifact::TypeRefIr::builtin("number")),
+            slots: artifact::SlotLayout::default(),
+            may_suspend: false,
+            body: artifact::ExecutableBody {
+                expressions: vec![artifact::ExprIr::ActorSelfField {
+                    field: "nextSeq".to_string(),
+                    field_type: artifact::TypeRefIr::builtin("number"),
+                }],
+                ..artifact::ExecutableBody::default()
+            },
+            source_span: None,
+        });
+        file.actor_declarations[0]
+            .abi
+            .public_methods
+            .push(artifact::ActorPublicMethodIr {
+                method_identity: method_identity.clone(),
+                name: "read".to_string(),
+                parameters: Vec::new(),
+                return_type: artifact::TypeRefIr::builtin("number"),
+                may_suspend: false,
+            });
+        file.actor_declarations[0]
+            .method_implementations
+            .insert(method_identity, 0);
+        file.actor_declarations[0].actor_abi_identity =
+            skiff_artifact_identity::actor_abi_identity(&file.actor_declarations[0].abi).unwrap();
+        file
+    }
+
     #[test]
     fn linked_file_conversion_preserves_actor_declaration_owner_and_encoding() {
         let artifact = actor_file();
@@ -1289,6 +1432,56 @@ mod tests {
         assert_eq!(
             actor.fields[0].encoding,
             artifact::ActorFieldEncodingIr::CanonicalValueV1
+        );
+    }
+
+    #[test]
+    fn linked_file_conversion_preserves_validated_actor_self_field() {
+        let file = actor_file_with_method();
+        let linked = linked_file_unit_from_assembly_artifact(&file, &|_| unreachable!()).unwrap();
+        assert!(matches!(
+            &linked.executables[0].body.expressions[0],
+            LinkedExprIr::ActorSelfField { field, field_type }
+                if field == "nextSeq"
+                    && field_type == &linked_type_ref(&artifact::TypeRefIr::builtin("number"))
+        ));
+    }
+
+    #[test]
+    fn linked_file_conversion_rejects_actor_self_field_outside_actor_method() {
+        let mut file = actor_file();
+        file.constants.push(artifact::ConstIr {
+            name: "forged".to_string(),
+            ty: artifact::TypeRefIr::builtin("number"),
+            body: artifact::ExecutableBody {
+                expressions: vec![artifact::ExprIr::ActorSelfField {
+                    field: "nextSeq".to_string(),
+                    field_type: artifact::TypeRefIr::builtin("number"),
+                }],
+                ..artifact::ExecutableBody::default()
+            },
+            source_span: None,
+        });
+        assert!(
+            linked_file_unit_from_assembly_artifact(&file, &|_| unreachable!())
+                .unwrap_err()
+                .to_string()
+                .contains("outside an Actor method")
+        );
+    }
+
+    #[test]
+    fn linked_file_conversion_rejects_actor_self_field_type_forgery() {
+        let mut file = actor_file_with_method();
+        file.executables[0].body.expressions[0] = artifact::ExprIr::ActorSelfField {
+            field: "nextSeq".to_string(),
+            field_type: artifact::TypeRefIr::builtin("string"),
+        };
+        assert!(
+            linked_file_unit_from_assembly_artifact(&file, &|_| unreachable!())
+                .unwrap_err()
+                .to_string()
+                .contains("type does not match")
         );
     }
 

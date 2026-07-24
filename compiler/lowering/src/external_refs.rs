@@ -175,6 +175,9 @@ fn collect_stmt_external_refs(stmt: &StmtIr, refs: &mut ExternalRefTable) {
 
 fn collect_assign_target_external_refs(target: &AssignTargetIr, refs: &mut ExternalRefTable) {
     match target {
+        AssignTargetIr::ActorSelfField { field_type, .. } => {
+            collect_type_ref_external_refs(field_type, refs);
+        }
         AssignTargetIr::Slot { .. }
         | AssignTargetIr::Field { .. }
         | AssignTargetIr::Index { .. } => {
@@ -226,6 +229,9 @@ fn collect_expr_external_refs(expr: &ExprIr, refs: &mut ExternalRefTable) {
         ExprIr::DbLeaseRead { read } => {
             collect_type_ref_external_refs(&read.target.type_ref, refs);
             collect_type_ref_external_refs(&read.result_type, refs);
+        }
+        ExprIr::ActorSelfField { field_type, .. } => {
+            collect_type_ref_external_refs(field_type, refs);
         }
         ExprIr::Literal { .. }
         | ExprIr::LoadSlot { .. }

@@ -770,9 +770,27 @@ impl<'a> OwnerChecker<'a> {
                 false
             }
             Stmt::Assign { target, value } => {
-                self.check_expr(target);
+                let expected = self.check_expr(target);
                 let value_key = self.peek_key();
                 let actual = self.check_expr(value);
+                if matches!(
+                    target,
+                    Expr::Field { object, .. }
+                        if matches!(object.as_ref(), Expr::Identifier(name) if name == "self")
+                ) {
+                    if let (Some(actual), Some(expected)) = (actual.as_ref(), expected.as_ref()) {
+                        self.check_value_assignable_to_expected(
+                            None,
+                            value,
+                            &value_key,
+                            actual,
+                            expected,
+                            None,
+                            "self field assignment",
+                            self.expression_span(&value_key),
+                        );
+                    }
+                }
                 if let (Expr::Identifier(name), Some(actual)) = (target, actual) {
                     self.env.insert(name.clone(), actual);
                     let projected = self
@@ -4304,6 +4322,31 @@ mod tests {
               {body}
             "#
         )
+    }
+
+    #[test]
+    fn actor_self_field_assignment_requires_declared_field_type() {
+        let error = expression_type_result(
+            r#"
+              actor Counter id string {
+                count: number,
+              }
+
+              impl Counter {
+                function corrupt() -> void {
+                  self.count = "not a number"
+                }
+              }
+            "#,
+        )
+        .expect_err("Actor self field assignment must be type checked");
+        assert!(
+            error
+                .message()
+                .contains("self field assignment type mismatch"),
+            "unexpected diagnostic: {}",
+            error.message()
+        );
     }
 
     #[test]

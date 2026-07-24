@@ -190,9 +190,23 @@ pub enum StmtIr {
     tag = "kind"
 )]
 pub enum AssignTargetIr {
-    Slot { slot: u32 },
-    Field { object: ExprRefIr, field: String },
-    Index { object: ExprRefIr, index: ExprRefIr },
+    Slot {
+        slot: u32,
+    },
+    /// An Actor's durable field frame. This target is only valid in an
+    /// executable owned by an Actor method implementation.
+    ActorSelfField {
+        field: String,
+        field_type: TypeRefIr,
+    },
+    Field {
+        object: ExprRefIr,
+        field: String,
+    },
+    Index {
+        object: ExprRefIr,
+        index: ExprRefIr,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -232,6 +246,12 @@ pub enum ExprIr {
     },
     LoadConst {
         const_index: u32,
+    },
+    /// Reads the current Actor instance's durable field frame. The linker
+    /// validates that only the owning Actor method can carry this expression.
+    ActorSelfField {
+        field: String,
+        field_type: TypeRefIr,
     },
     Field {
         object: ExprRefIr,
