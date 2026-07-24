@@ -288,12 +288,9 @@ fn project_boundary_schema(
         let source = package
             .implementation_links
             .types
-            .iter()
-            .find(|(key, export)| {
-                key.strip_prefix(&format!("{}/", package.package_id)) == Some(public_path.as_str())
-                    && export.descriptor.as_ref() == Some(descriptor)
-            })
-            .map(|(_, export)| (export.file.module_path.clone(), export.symbol.clone()))
+            .get(public_path)
+            .filter(|export| export.descriptor.as_ref() == Some(descriptor))
+            .map(|export| (export.file.module_path.clone(), export.symbol.clone()))
             .ok_or_else(|| ContractDefinitionError::MissingPublicTypeSource {
                 public_path: public_path.clone(),
             })?;
@@ -806,7 +803,7 @@ mod tests {
         schema_changed
             .implementation_links
             .types
-            .get_mut("example.registry.impl/Details")
+            .get_mut("Details")
             .unwrap()
             .descriptor = Some(descriptor.clone());
         let schema_changed = project_service_api("example.registry", &schema_changed).unwrap();
@@ -844,7 +841,7 @@ mod tests {
         let details = package
             .implementation_links
             .types
-            .get_mut("example.registry.impl/Details")
+            .get_mut("Details")
             .unwrap();
         details.descriptor = Some(generic_descriptor);
         details.type_params = vec!["T".to_string()];
@@ -878,7 +875,7 @@ mod tests {
             },
         );
         package.implementation_links.types.insert(
-            "example.registry.impl/Observer".to_string(),
+            "Observer".to_string(),
             TypeExport {
                 file: skiff_artifact_model::FileIrRef::new("file:model", "model"),
                 type_index: 4,
@@ -1008,12 +1005,68 @@ mod tests {
         private
             .implementation_links
             .types
-            .get_mut("example.registry.impl/Request")
+            .get_mut("Request")
             .unwrap()
             .descriptor = Some(descriptor.clone());
         assert!(matches!(
             project_service_api("example.registry", &private),
             Err(ContractDefinitionError::MissingReachablePackageType { .. })
+        ));
+    }
+
+    #[test]
+    fn public_type_source_lookup_is_exact_and_validates_descriptor() {
+        let mut canonical = package_fixture("1.0.0");
+        let event_descriptor = TypeDescriptorIr::Record {
+            fields: BTreeMap::from([("kind".to_string(), TypeRefIr::native("string"))]),
+        };
+        canonical.package_local_abi.public_symbols.insert(
+            "Event".to_string(),
+            package_type("Event", event_descriptor.clone()),
+        );
+        canonical.implementation_links.types.insert(
+            "Event".to_string(),
+            type_export("Event", 4, event_descriptor),
+        );
+        project_service_api("example.registry", &canonical).unwrap();
+
+        let mut missing = package_fixture("1.0.0");
+        missing.implementation_links.types.remove("Request");
+        assert!(matches!(
+            project_service_api("example.registry", &missing),
+            Err(ContractDefinitionError::MissingPublicTypeSource { public_path })
+                if public_path == "Request"
+        ));
+
+        let mut wrong_descriptor = package_fixture("1.0.0");
+        wrong_descriptor
+            .implementation_links
+            .types
+            .get_mut("Request")
+            .unwrap()
+            .descriptor = Some(TypeDescriptorIr::Record {
+            fields: BTreeMap::new(),
+        });
+        assert!(matches!(
+            project_service_api("example.registry", &wrong_descriptor),
+            Err(ContractDefinitionError::MissingPublicTypeSource { public_path })
+                if public_path == "Request"
+        ));
+
+        let mut legacy_only = package_fixture("1.0.0");
+        let request = legacy_only
+            .implementation_links
+            .types
+            .remove("Request")
+            .unwrap();
+        legacy_only
+            .implementation_links
+            .types
+            .insert("example.registry.impl/Request".to_string(), request);
+        assert!(matches!(
+            project_service_api("example.registry", &legacy_only),
+            Err(ContractDefinitionError::MissingPublicTypeSource { public_path })
+                if public_path == "Request"
         ));
     }
 
@@ -1133,7 +1186,7 @@ mod tests {
             implementation_links: PackageImplementationLinks {
                 types: BTreeMap::from([
                     (
-                        "example.registry.impl/Details".to_string(),
+                        "Details".to_string(),
                         type_export(
                             "Details",
                             0,
@@ -1146,7 +1199,7 @@ mod tests {
                         ),
                     ),
                     (
-                        "example.registry.impl/Request".to_string(),
+                        "Request".to_string(),
                         type_export(
                             "Request",
                             1,
@@ -1182,7 +1235,7 @@ mod tests {
                         ),
                     ),
                     (
-                        "example.registry.impl/Status".to_string(),
+                        "Status".to_string(),
                         type_export(
                             "Status",
                             2,
@@ -1203,7 +1256,7 @@ mod tests {
                         ),
                     ),
                     (
-                        "example.registry.impl/Unused".to_string(),
+                        "Unused".to_string(),
                         type_export(
                             "Unused",
                             3,
