@@ -17,6 +17,7 @@ export * from './router/httpGateway.js';
 export * from './router/pathPattern.js';
 export * from './router/rewrite.js';
 export * from './router/runtimeRegistry.js';
+export * from './router/actorMethodDispatcher.js';
 export * from './router/runtimeAssemblySnapshot.js';
 export * from './router/assemblyActivationStateStore.js';
 export * from './router/mongoAssemblyActivationStateStore.js';

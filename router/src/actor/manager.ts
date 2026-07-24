@@ -60,13 +60,62 @@ export class ActorManager {
     now?: Date | undefined;
   }): Promise<ActorRegistryEntry | undefined> {
     const now = input.now ?? new Date();
-    return this.store.acquireOwnerLease({
+    const acquired = await this.store.acquireOwnerLease({
       actorKey: makeActorKey(input.actorKey),
       expectedEpoch: input.expectedEpoch,
       ownerRuntimeId: input.ownerRuntimeId,
       ownerLeaseId: `actor-owner-${randomUUID()}`,
       ownerLeaseExpiresAt: new Date(now.getTime() + input.leaseTtlMs),
       now,
+    });
+    return acquired.ok ? acquired.entry : undefined;
+  }
+
+  async acquireOwner(input: {
+    actorKey: ActorKeyInput;
+    expectedEpoch: number;
+    actorImplementationIdentity: string;
+    ownerRuntimeId: string;
+    ownerLeaseId: string;
+    ownerLeaseExpiresAt: Date;
+    now?: Date | undefined;
+  }) {
+    return this.store.acquireOwnerLease({
+      ...input,
+      actorKey: makeActorKey(input.actorKey),
+    });
+  }
+
+  async markOwnerLive(
+    input: Omit<Parameters<ActorRegistryStore['markOwnerLive']>[0], 'actorKey'> & {
+      actorKey: ActorKeyInput;
+    }
+  ) {
+    return this.store.markOwnerLive({
+      ...input,
+      actorKey: makeActorKey(input.actorKey),
+    });
+  }
+
+  async renewOwner(
+    input: Omit<Parameters<ActorRegistryStore['renewOwnerLease']>[0], 'actorKey'> & {
+      actorKey: ActorKeyInput;
+    }
+  ) {
+    return this.store.renewOwnerLease({
+      ...input,
+      actorKey: makeActorKey(input.actorKey),
+    });
+  }
+
+  async releaseOwner(
+    input: Omit<Parameters<ActorRegistryStore['releaseOwnerLease']>[0], 'actorKey'> & {
+      actorKey: ActorKeyInput;
+    }
+  ) {
+    return this.store.releaseOwnerLease({
+      ...input,
+      actorKey: makeActorKey(input.actorKey),
     });
   }
 

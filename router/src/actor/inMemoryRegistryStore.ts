@@ -5,8 +5,12 @@ import {
   cloneActorKey,
   type ActorKey,
 } from './identity.js';
+import { InMemoryActorInvocationLedger } from './inMemoryInvocationLedger.js';
 import {
   type AcceptActorExecutionResult,
+  type AcquireActorOwnerResult,
+  type ActorInvocationLedger,
+  type ActorMethodAdmissionInput,
   type ActorExecution,
   type ActorExecutionDraft,
   type ActorRegistryEntry,
@@ -15,11 +19,17 @@ import {
   type FinishActorExecutionResult,
   type FinishSpawnActorExecutionInput,
   type ActorBootstrapInput,
+  type AdmitActorMethodResult,
+  type RenewActorOwnerResult,
+  type TransitionActorInvocationResult,
 } from './registryStore.js';
+
+const ACTOR_UPGRADE_RETRY_AFTER_MS = 100;
 
 export class InMemoryActorRegistryStore implements ActorRegistryStore {
   private readonly entries = new Map<string, ActorRegistryEntry>();
   private readonly executions = new Map<string, ActorExecution>();
+  private readonly invocationLedger = new InMemoryActorInvocationLedger();
 
   async getOrCreate(input: ActorBootstrapInput): Promise<ActorRegistryEntry> {
     const now = input.now ?? new Date();
@@ -53,6 +63,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
       actorIdTypeIdentity: input.actorKey.actorIdTypeIdentity,
       actorAbiIdentity: input.actorAbiIdentity,
       actorImplementationIdentity: input.actorImplementationIdentity,
+      lifecycleState: 'inactive',
       bootstrapEncodingVersion: input.bootstrapEncodingVersion,
       encodedBootstrapBytes: new Uint8Array(input.encodedBootstrapBytes),
       createdAt,
@@ -80,6 +91,8 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     entry.ownerRuntimeId = undefined;
     entry.ownerLeaseId = undefined;
     entry.ownerLeaseExpiresAt = undefined;
+    entry.lifecycleState = 'inactive';
+    entry.targetImplementationIdentity = undefined;
     entry.updatedAt = now;
     this.finalizeRemoveIfIdle(entry, now);
     return true;
@@ -92,43 +105,238 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     ownerLeaseId: string;
     ownerLeaseExpiresAt: Date;
     now?: Date | undefined;
-  }): Promise<ActorRegistryEntry | undefined> {
+    actorImplementationIdentity?: string | undefined;
+  }): Promise<AcquireActorOwnerResult> {
     const entry = this.entries.get(actorLogicalKey(input.actorKey));
+    if (entry === undefined || entry.status !== 'present') {
+      return { ok: false, reason: 'NotPresent' };
+    }
+    if (entry.epoch !== input.expectedEpoch) {
+      return { ok: false, reason: 'EpochMismatch', entry: cloneEntry(entry) };
+    }
+    const implementationIdentity =
+      input.actorImplementationIdentity ?? entry.actorImplementationIdentity;
     if (
-      entry === undefined ||
-      entry.status !== 'present' ||
-      entry.epoch !== input.expectedEpoch
+      implementationIdentity !== entry.actorImplementationIdentity ||
+      entry.lifecycleState === 'upgrading'
     ) {
-      return undefined;
+      return { ok: false, reason: 'ImplementationMismatch', entry: cloneEntry(entry) };
     }
     const now = input.now ?? new Date();
+    if (
+      entry.ownerLeaseId !== undefined &&
+      entry.ownerLeaseExpiresAt !== undefined &&
+      entry.ownerLeaseExpiresAt.getTime() > now.getTime()
+    ) {
+      return { ok: false, reason: 'OwnerLeaseHeld', entry: cloneEntry(entry) };
+    }
     entry.ownerRuntimeId = input.ownerRuntimeId;
     entry.ownerLeaseId = input.ownerLeaseId;
     entry.ownerLeaseExpiresAt = new Date(input.ownerLeaseExpiresAt);
+    entry.lifecycleState = 'activating';
     entry.updatedAt = now;
-    return cloneEntry(entry);
+    const cloned = cloneEntry(entry);
+    return { ok: true, entry: cloned, fence: ownerFence(cloned) };
   }
 
-  async releaseOwnerLease(input: {
+  async markOwnerLive(input: {
     actorKey: ActorKey;
     expectedEpoch: number;
+    actorImplementationIdentity: string;
+    ownerRuntimeId: string;
     ownerLeaseId: string;
     now?: Date | undefined;
   }): Promise<boolean> {
     const entry = this.entries.get(actorLogicalKey(input.actorKey));
     if (
       entry === undefined ||
-      entry.epoch !== input.expectedEpoch ||
-      entry.ownerLeaseId !== input.ownerLeaseId
+      entry.status !== 'present' ||
+      entry.lifecycleState !== 'activating' ||
+      !ownerFenceMatches(entry, input)
     ) {
       return false;
     }
     const now = input.now ?? new Date();
+    if (
+      entry.ownerLeaseExpiresAt === undefined ||
+      entry.ownerLeaseExpiresAt.getTime() <= now.getTime()
+    ) {
+      return false;
+    }
+    entry.lifecycleState = 'live';
+    entry.updatedAt = now;
+    return true;
+  }
+
+  async renewOwnerLease(input: {
+    actorKey: ActorKey;
+    expectedEpoch: number;
+    actorImplementationIdentity: string;
+    ownerRuntimeId: string;
+    ownerLeaseId: string;
+    ownerLeaseExpiresAt: Date;
+    now?: Date | undefined;
+  }): Promise<RenewActorOwnerResult> {
+    const entry = this.entries.get(actorLogicalKey(input.actorKey));
+    if (entry === undefined || entry.status !== 'present') {
+      return { ok: false, reason: 'NotPresent' };
+    }
+    if (!ownerFenceMatches(entry, input)) {
+      return { ok: false, reason: 'FenceMismatch' };
+    }
+    const now = input.now ?? new Date();
+    if (
+      entry.ownerLeaseExpiresAt === undefined ||
+      entry.ownerLeaseExpiresAt.getTime() <= now.getTime()
+    ) {
+      return { ok: false, reason: 'LeaseExpired' };
+    }
+    entry.ownerLeaseExpiresAt = new Date(input.ownerLeaseExpiresAt);
+    entry.updatedAt = now;
+    const cloned = cloneEntry(entry);
+    return { ok: true, entry: cloned, fence: ownerFence(cloned) };
+  }
+
+  async releaseOwnerLease(input: {
+    actorKey: ActorKey;
+    expectedEpoch: number;
+    actorImplementationIdentity: string;
+    ownerRuntimeId: string;
+    ownerLeaseId: string;
+    now?: Date | undefined;
+  }): Promise<boolean> {
+    const entry = this.entries.get(actorLogicalKey(input.actorKey));
+    if (entry === undefined || !ownerFenceMatches(entry, input)) {
+      return false;
+    }
+    const now = input.now ?? new Date();
+    const wasUpgrading = entry.lifecycleState === 'upgrading';
     entry.ownerRuntimeId = undefined;
     entry.ownerLeaseId = undefined;
     entry.ownerLeaseExpiresAt = undefined;
+    if (entry.status === 'present' && !wasUpgrading) {
+      entry.lifecycleState = 'inactive';
+    }
     entry.updatedAt = now;
     return true;
+  }
+
+  async admitActorMethod(
+    input: ActorMethodAdmissionInput
+  ): Promise<AdmitActorMethodResult> {
+    const entry = this.entries.get(actorLogicalKey(input.actorKey));
+    if (entry === undefined || entry.status !== 'present') {
+      return { ok: false, rejection: { reason: 'NotPresent' } };
+    }
+    if (entry.epoch !== input.expectedEpoch) {
+      return {
+        ok: false,
+        rejection: { reason: 'IncarnationReplaced', currentEpoch: entry.epoch },
+      };
+    }
+    if (entry.actorAbiIdentity !== input.actorAbiIdentity) {
+      return {
+        ok: false,
+        rejection: {
+          reason: 'AbiMismatch',
+          acceptedActorAbiIdentity: entry.actorAbiIdentity,
+        },
+      };
+    }
+    if (!input.methodKnown) {
+      return { ok: false, rejection: { reason: 'UnknownMethod' } };
+    }
+    if (this.invocationLedger.has(input.invocationId)) {
+      return { ok: false, rejection: { reason: 'InvocationAlreadyExists' } };
+    }
+
+    if (entry.lifecycleState === 'upgrading') {
+      if (input.requestedImplementationIdentity === entry.targetImplementationIdentity) {
+        return {
+          ok: false,
+          rejection: { reason: 'Upgrading', retryAfterMs: ACTOR_UPGRADE_RETRY_AFTER_MS },
+        };
+      }
+      return {
+        ok: false,
+        rejection: {
+          reason: 'VersionRejected',
+          acceptedImplementationIdentity:
+            entry.targetImplementationIdentity ?? entry.actorImplementationIdentity,
+        },
+      };
+    }
+
+    if (input.requestedImplementationIdentity !== entry.actorImplementationIdentity) {
+      entry.lifecycleState = 'upgrading';
+      entry.targetImplementationIdentity = input.requestedImplementationIdentity;
+      entry.updatedAt = input.now ?? new Date();
+      return {
+        ok: false,
+        rejection: { reason: 'Upgrading', retryAfterMs: ACTOR_UPGRADE_RETRY_AFTER_MS },
+      };
+    }
+
+    const now = input.now ?? new Date();
+    if (
+      entry.lifecycleState !== 'live' ||
+      entry.ownerRuntimeId === undefined ||
+      entry.ownerLeaseId === undefined ||
+      entry.ownerLeaseExpiresAt === undefined ||
+      entry.ownerLeaseExpiresAt.getTime() <= now.getTime()
+    ) {
+      return { ok: false, rejection: { reason: 'OwnerUnavailable' } };
+    }
+
+    const invocation: ActorInvocationLedger = {
+      invocationId: input.invocationId,
+      actorKey: cloneActorKey(input.actorKey),
+      epoch: input.expectedEpoch,
+      actorAbiIdentity: input.actorAbiIdentity,
+      implementationIdentity: input.requestedImplementationIdentity,
+      methodIdentity: input.methodIdentity,
+      ownerRuntimeId: entry.ownerRuntimeId,
+      ownerLeaseId: entry.ownerLeaseId,
+      state: 'admitted',
+      admittedAt: now,
+      updatedAt: now,
+    };
+    this.invocationLedger.recordAdmitted(invocation);
+    entry.lastBusyAt = now;
+    entry.updatedAt = now;
+    const clonedEntry = cloneEntry(entry);
+    return {
+      ok: true,
+      ownerFence: ownerFence(clonedEntry),
+      invocation: this.invocationLedger.find(invocation.invocationId)!,
+    };
+  }
+
+  async transitionActorInvocation(input: {
+    invocationId: string;
+    actorKey: ActorKey;
+    expectedEpoch: number;
+    actorImplementationIdentity: string;
+    ownerRuntimeId: string;
+    ownerLeaseId: string;
+    nextState: 'dispatched' | 'completed' | 'cancelled' | 'failed';
+    terminalReason?: string | undefined;
+    now?: Date | undefined;
+  }): Promise<TransitionActorInvocationResult> {
+    return this.invocationLedger.transition(input);
+  }
+
+  async actorInvocation(invocationId: string): Promise<ActorInvocationLedger | undefined> {
+    return this.invocationLedger.find(invocationId);
+  }
+
+  async failInvocationsForOwner(input: {
+    ownerRuntimeId: string;
+    ownerLeaseId: string;
+    now?: Date | undefined;
+    terminalReason: string;
+  }): Promise<ActorInvocationLedger[]> {
+    return this.invocationLedger.failForOwner(input);
   }
 
   async acceptActorExecution(
@@ -260,6 +468,8 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
       return;
     }
     entry.status = 'removed';
+    entry.lifecycleState = 'inactive';
+    entry.targetImplementationIdentity = undefined;
     entry.ownerRuntimeId = undefined;
     entry.ownerLeaseId = undefined;
     entry.ownerLeaseExpiresAt = undefined;
@@ -304,4 +514,39 @@ function cloneExecution(execution: ActorExecution): ActorExecution {
     cancelRequestedAt:
       execution.cancelRequestedAt === undefined ? undefined : new Date(execution.cancelRequestedAt),
   };
+}
+
+function ownerFence(entry: ActorRegistryEntry) {
+  if (
+    entry.ownerRuntimeId === undefined ||
+    entry.ownerLeaseId === undefined ||
+    entry.ownerLeaseExpiresAt === undefined
+  ) {
+    throw new Error('actor owner fence requires a complete owner lease');
+  }
+  return {
+    actorKey: cloneActorKey(entry.actorKey),
+    epoch: entry.epoch,
+    implementationIdentity: entry.actorImplementationIdentity,
+    ownerRuntimeId: entry.ownerRuntimeId,
+    ownerLeaseId: entry.ownerLeaseId,
+    ownerLeaseExpiresAt: new Date(entry.ownerLeaseExpiresAt),
+  };
+}
+
+function ownerFenceMatches(
+  entry: ActorRegistryEntry,
+  input: {
+    expectedEpoch: number;
+    actorImplementationIdentity: string;
+    ownerRuntimeId: string;
+    ownerLeaseId: string;
+  }
+): boolean {
+  return (
+    entry.epoch === input.expectedEpoch &&
+    entry.actorImplementationIdentity === input.actorImplementationIdentity &&
+    entry.ownerRuntimeId === input.ownerRuntimeId &&
+    entry.ownerLeaseId === input.ownerLeaseId
+  );
 }
