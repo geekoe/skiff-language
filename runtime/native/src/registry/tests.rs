@@ -68,6 +68,30 @@ fn native_callable_semantics_registry_validates_exact_builtin_matrix() {
 }
 
 #[test]
+fn date_from_epoch_milliseconds_semantics_has_exact_runtime_handler() {
+    let binding_key = "core.date.fromEpochMilliseconds";
+    let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|entry| entry.binding_key == binding_key)
+        .expect("audited Date constructor semantics should be registered");
+
+    validate_native_callable_semantics_registry(
+        std::slice::from_ref(semantics),
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect("Date constructor semantics should match its canonical runtime route");
+    assert_eq!(
+        NATIVE_BINDINGS
+            .iter()
+            .filter(|entry| entry.binding_key == binding_key)
+            .count(),
+        1,
+        "Date constructor should have exactly one native registry handler"
+    );
+}
+
+#[test]
 fn native_callable_semantics_registry_validates_exact_receiver_matrix() {
     validate_receiver_callable_semantics_registry(
         BUILTIN_RECEIVER_CALLABLE_SEMANTICS,
