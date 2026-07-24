@@ -2451,7 +2451,7 @@ impl<'a> OwnerChecker<'a> {
                     .resolve_type_ref(ty, &self.type_context)
                     .ok()
                     .map(|item| ResolvedTypeRef {
-                        ir: TypeRefIr::Native {
+                        ir: TypeRefIr::Builtin {
                             name: "Array".to_string(),
                             args: vec![item.ir],
                         },
@@ -3431,7 +3431,7 @@ fn generic_type_params(name: &str) -> Vec<String> {
 }
 
 fn single_for_item_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
-    let TypeRefIr::Native { name, args } = &ty.ir else {
+    let TypeRefIr::Builtin { name, args } = &ty.ir else {
         return None;
     };
     match name.as_str() {
@@ -3450,7 +3450,7 @@ fn single_for_item_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
 }
 
 fn stream_chunk_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
-    let TypeRefIr::Native { name, args } = &ty.ir else {
+    let TypeRefIr::Builtin { name, args } = &ty.ir else {
         return None;
     };
     matches!(name.as_str(), "Stream" | "std.stream.Stream")
@@ -3463,7 +3463,7 @@ fn stream_chunk_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
 }
 
 fn map_entry_types(ty: &ResolvedTypeRef) -> Option<(ResolvedTypeRef, ResolvedTypeRef)> {
-    let TypeRefIr::Native { name, args } = &ty.ir else {
+    let TypeRefIr::Builtin { name, args } = &ty.ir else {
         return None;
     };
     if name != "Map" || args.len() != 2 {
@@ -3507,7 +3507,7 @@ fn map_entry_projections(ty: &PackageTypeRef) -> Option<(PackageTypeRef, Package
 fn type_contains_type_param(ty: &TypeRefIr) -> bool {
     match ty {
         TypeRefIr::TypeParam { .. } => true,
-        TypeRefIr::Native { args, .. } | TypeRefIr::Union { items: args } => {
+        TypeRefIr::Builtin { args, .. } | TypeRefIr::Union { items: args } => {
             args.iter().any(type_contains_type_param)
         }
         TypeRefIr::Nullable { inner } => type_contains_type_param(inner),
@@ -3552,7 +3552,7 @@ fn native_return_type_context<'a>(
 
 fn projection_record_type(name: &str, target: &ResolvedTypeRef) -> ResolvedTypeRef {
     ResolvedTypeRef {
-        ir: TypeRefIr::Native {
+        ir: TypeRefIr::Builtin {
             name: name.to_string(),
             args: vec![target.ir.clone()],
         },
@@ -3562,7 +3562,7 @@ fn projection_record_type(name: &str, target: &ResolvedTypeRef) -> ResolvedTypeR
 
 fn catch_result_type(value: ResolvedTypeRef, error: ResolvedTypeRef) -> ResolvedTypeRef {
     ResolvedTypeRef {
-        ir: TypeRefIr::Native {
+        ir: TypeRefIr::Builtin {
             name: "CatchResult".to_string(),
             args: vec![value.ir, error.ir],
         },
@@ -3580,7 +3580,7 @@ fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<ResolvedType
             }
             Some(resolved_type_from_ir(&union_type_ir(field_types)))
         }
-        TypeRefIr::Native { name, args } if name == "CatchResult" && args.len() == 2 => match field
+        TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => match field
         {
             "tag" => Some(resolved_type_from_ir(&union_type_ir(vec![
                 literal_string_type("ok"),
@@ -3588,9 +3588,9 @@ fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<ResolvedType
             ]))),
             _ => None,
         },
-        TypeRefIr::Native { name, args } if name == "DbUpsertResult" && args.len() == 1 => {
+        TypeRefIr::Builtin { name, args } if name == "DbUpsertResult" && args.len() == 1 => {
             match field {
-                "inserted" => Some(resolved_type_from_ir(&TypeRefIr::Native {
+                "inserted" => Some(resolved_type_from_ir(&TypeRefIr::Builtin {
                     name: "bool".to_string(),
                     args: Vec::new(),
                 })),
@@ -3598,7 +3598,7 @@ fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<ResolvedType
                 _ => None,
             }
         }
-        TypeRefIr::Native { name, args } if name == "Exception" && args.len() == 1 => match field {
+        TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => match field {
             "error" => Some(resolved_type_from_ir(&args[0])),
             _ => None,
         },
@@ -3637,7 +3637,7 @@ fn builtin_receiver_call_return_type(
         BuiltinReceiverPublicReturnType::Receiver => receiver_ty.ir.clone(),
         BuiltinReceiverPublicReturnType::ArrayItem => array_item_type_ir(&receiver_ty.ir)?,
         BuiltinReceiverPublicReturnType::MapValue => map_value_type_ir(&receiver_ty.ir)?,
-        BuiltinReceiverPublicReturnType::MapKeyArray => TypeRefIr::Native {
+        BuiltinReceiverPublicReturnType::MapKeyArray => TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![map_key_type_ir(&receiver_ty.ir)?],
         },
@@ -3684,7 +3684,7 @@ fn builtin_receiver_call_return_projection(
 
 pub fn runtime_receiver_root_from_type_ref(ty: &TypeRefIr) -> Option<String> {
     match ty {
-        TypeRefIr::Native { name, .. } => Some(canonical_runtime_receiver_root(name).to_string()),
+        TypeRefIr::Builtin { name, .. } => Some(canonical_runtime_receiver_root(name).to_string()),
         TypeRefIr::PackageSymbol { symbol } if is_official_std_package_ref(&symbol.package) => {
             Some(canonical_runtime_receiver_root(&symbol.symbol_path).to_string())
         }
@@ -3713,7 +3713,7 @@ fn canonical_runtime_receiver_root(root: &str) -> &str {
 }
 
 fn array_item_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
-    let TypeRefIr::Native { name, args } = ty else {
+    let TypeRefIr::Builtin { name, args } = ty else {
         return None;
     };
     (matches!(
@@ -3724,7 +3724,7 @@ fn array_item_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
 }
 
 fn map_value_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
-    let TypeRefIr::Native { name, args } = ty else {
+    let TypeRefIr::Builtin { name, args } = ty else {
         return None;
     };
     (matches!(name.as_str(), "Map" | "std.collection.Map") && args.len() == 2)
@@ -3732,7 +3732,7 @@ fn map_value_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
 }
 
 fn map_key_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
-    let TypeRefIr::Native { name, args } = ty else {
+    let TypeRefIr::Builtin { name, args } = ty else {
         return None;
     };
     (matches!(name.as_str(), "Map" | "std.collection.Map") && args.len() == 2)
@@ -3786,7 +3786,7 @@ fn narrow_type_by_tag(
 fn discriminated_record_branches(ty: &TypeRefIr) -> Option<Vec<TypeRefIr>> {
     match ty {
         TypeRefIr::Union { items } => Some(items.clone()),
-        TypeRefIr::Native { name, args } if name == "CatchResult" && args.len() == 2 => {
+        TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
             Some(catch_result_branch_types(&args[0], &args[1]))
         }
         TypeRefIr::Record { .. } => Some(vec![ty.clone()]),
@@ -3841,7 +3841,7 @@ fn union_type_ir(mut items: Vec<TypeRefIr>) -> TypeRefIr {
 }
 
 fn exception_type_ir(error: TypeRefIr) -> TypeRefIr {
-    TypeRefIr::Native {
+    TypeRefIr::Builtin {
         name: "Exception".to_string(),
         args: vec![error],
     }
@@ -3857,7 +3857,7 @@ fn nullable_type(inner: ResolvedTypeRef) -> ResolvedTypeRef {
 }
 
 fn db_lease_read_type() -> ResolvedTypeRef {
-    let string = TypeRefIr::Native {
+    let string = TypeRefIr::Builtin {
         name: "string".to_string(),
         args: Vec::new(),
     };
@@ -3875,7 +3875,7 @@ fn db_lease_read_type() -> ResolvedTypeRef {
 
 fn array_type(item: ResolvedTypeRef) -> ResolvedTypeRef {
     ResolvedTypeRef {
-        ir: TypeRefIr::Native {
+        ir: TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![item.ir],
         },
@@ -3956,8 +3956,8 @@ fn qualify_package_signature_type_text(
 
 fn type_ref_debug_text(ty: &TypeRefIr) -> String {
     match ty {
-        TypeRefIr::Native { name, args } if args.is_empty() => name.clone(),
-        TypeRefIr::Native { name, args } => format!(
+        TypeRefIr::Builtin { name, args } if args.is_empty() => name.clone(),
+        TypeRefIr::Builtin { name, args } => format!(
             "{name}<{}>",
             args.iter()
                 .map(type_ref_debug_text)
@@ -4014,7 +4014,7 @@ fn type_ref_debug_text(ty: &TypeRefIr) -> String {
 }
 
 fn builtin_type(name: &str) -> TypeRefIr {
-    TypeRefIr::Native {
+    TypeRefIr::Builtin {
         name: name.to_string(),
         args: Vec::new(),
     }
@@ -4029,16 +4029,16 @@ fn literal_string_type(value: &str) -> TypeRefIr {
 }
 
 fn type_ir_is_void_or_null(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Native { name, args } if args.is_empty() && (name == "void" || name == "null"))
+    matches!(ty, TypeRefIr::Builtin { name, args } if args.is_empty() && (name == "void" || name == "null"))
         || type_ir_is_null(ty)
 }
 
 fn type_ir_is_never(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Native { name, args } if args.is_empty() && name == "never")
+    matches!(ty, TypeRefIr::Builtin { name, args } if args.is_empty() && name == "never")
 }
 
 fn type_ir_is_null(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Native { name, .. } if name == "null")
+    matches!(ty, TypeRefIr::Builtin { name, .. } if name == "null")
         || matches!(
             ty,
             TypeRefIr::Literal {
@@ -4673,13 +4673,13 @@ mod tests {
         let user_ir = TypeRefIr::Record {
             fields: BTreeMap::from([(
                 "name".to_string(),
-                TypeRefIr::Native {
+                TypeRefIr::Builtin {
                     name: "string".to_string(),
                     args: Vec::new(),
                 },
             )]),
         };
-        let result_ir = TypeRefIr::Native {
+        let result_ir = TypeRefIr::Builtin {
             name: "DbUpsertResult".to_string(),
             args: vec![user_ir.clone()],
         };
@@ -4687,7 +4687,7 @@ mod tests {
             record_field_type_from_ir(&result_ir, "inserted")
                 .expect("inserted field should resolve")
                 .ir,
-            TypeRefIr::Native {
+            TypeRefIr::Builtin {
                 name: "bool".to_string(),
                 args: Vec::new(),
             }

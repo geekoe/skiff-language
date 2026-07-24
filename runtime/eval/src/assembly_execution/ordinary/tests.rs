@@ -59,7 +59,7 @@ async fn package_direct_same_heap_uses_canonical_executor_and_exposes_callee_mut
 async fn object_materialization_interpreter_heap_shape_distinguishes_construct_and_map_literal() {
     let (object, object_heap) = execute_materialization_expression(ExprIr::Construct {
         type_ref: TypeRefIr::Record {
-            fields: BTreeMap::from([("value".to_string(), TypeRefIr::native("string"))]),
+            fields: BTreeMap::from([("value".to_string(), TypeRefIr::builtin("string"))]),
         },
         fields: BTreeMap::from([("value".to_string(), ExprRefIr { expression: 0 })]),
     })
@@ -144,7 +144,7 @@ fn materialization_fixture(expression: ExprIr) -> PackageDirectFixture {
         symbol: "heapShape".to_string(),
         type_params: Vec::new(),
         params: Vec::new(),
-        return_type: TypeRefIr::native("Json"),
+        return_type: TypeRefIr::builtin("Json"),
         self_type: None,
         slots: SlotLayout::default(),
         may_suspend: false,
@@ -586,9 +586,9 @@ fn no_effects() -> CallableMayEffects {
 }
 
 fn array_type() -> TypeRefIr {
-    TypeRefIr::Native {
+    TypeRefIr::Builtin {
         name: "Array".to_string(),
-        args: vec![TypeRefIr::native("string")],
+        args: vec![TypeRefIr::builtin("string")],
     }
 }
 

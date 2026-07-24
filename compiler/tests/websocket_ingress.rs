@@ -286,9 +286,9 @@ fn project_websocket_fixture_deployment(
 }
 
 fn generic_execution_type(name: &str) -> TypeRefIr {
-    TypeRefIr::Native {
+    TypeRefIr::Builtin {
         name: name.to_string(),
-        args: vec![TypeRefIr::native("unknown")],
+        args: vec![TypeRefIr::builtin("unknown")],
     }
 }
 

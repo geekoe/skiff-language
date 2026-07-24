@@ -158,10 +158,10 @@ impl<'a> DbProjectionTypeResolver<'a> {
                 }
 
                 match &resolved.ir {
-                    TypeRefIr::Native {
+                    TypeRefIr::Builtin {
                         name: resolved_name,
                         args: resolved_args,
-                    } if args.len() == resolved_args.len() => Ok(TypeRefIr::Native {
+                    } if args.len() == resolved_args.len() => Ok(TypeRefIr::Builtin {
                         name: resolved_name.clone(),
                         args: args
                             .iter()

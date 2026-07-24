@@ -20,7 +20,7 @@ pub fn any_type_ref(ty: &TypeRefIr, predicate: &mut impl FnMut(&TypeRefIr) -> bo
 
 pub fn map_type_ref(ty: TypeRefIr, map: &mut impl FnMut(TypeRefIr) -> TypeRefIr) -> TypeRefIr {
     let ty = match ty {
-        TypeRefIr::Native { name, args } => TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
             name,
             args: args.into_iter().map(|arg| map_type_ref(arg, map)).collect(),
         },
@@ -88,7 +88,7 @@ pub fn substitute_type_params_in_type_ref(
             .get(&name)
             .cloned()
             .unwrap_or(TypeRefIr::TypeParam { name }),
-        TypeRefIr::Native { name, args } => TypeRefIr::Native { name, args },
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin { name, args },
         TypeRefIr::LocalType { type_index } => TypeRefIr::LocalType { type_index },
         TypeRefIr::PublicationType {
             module_path,
@@ -149,7 +149,7 @@ pub struct TypeRefChild<'a> {
 
 pub fn type_ref_children(ty: &TypeRefIr) -> Vec<TypeRefChild<'_>> {
     match ty {
-        TypeRefIr::Native { name, args } => args
+        TypeRefIr::Builtin { name, args } => args
             .iter()
             .enumerate()
             .map(|(index, ty)| TypeRefChild {
@@ -279,7 +279,7 @@ mod tests {
     }
 
     fn native(name: &str) -> TypeRefIr {
-        TypeRefIr::native(name)
+        TypeRefIr::builtin(name)
     }
 
     fn any_interface(args: Vec<TypeRefIr>) -> TypeRefIr {
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn substitutes_nested_type_params_in_all_structural_variants() {
-        let ty = TypeRefIr::Native {
+        let ty = TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![TypeRefIr::Record {
                 fields: BTreeMap::from([
@@ -338,7 +338,7 @@ mod tests {
 
         assert_eq!(
             actual,
-            TypeRefIr::Native {
+            TypeRefIr::Builtin {
                 name: "Array".to_string(),
                 args: vec![TypeRefIr::Record {
                     fields: BTreeMap::from([
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn map_type_ref_is_bottom_up_and_does_not_recurse_into_returned_value() {
-        let ty = TypeRefIr::Native {
+        let ty = TypeRefIr::Builtin {
             name: "Box".to_string(),
             args: vec![type_param("T")],
         };
@@ -411,7 +411,7 @@ mod tests {
         let actual = map_type_ref(ty, &mut |ty| {
             match &ty {
                 TypeRefIr::TypeParam { name } => visited.push(format!("param:{name}")),
-                TypeRefIr::Native { name, .. } => visited.push(format!("native:{name}")),
+                TypeRefIr::Builtin { name, .. } => visited.push(format!("native:{name}")),
                 TypeRefIr::LocalType { .. } => visited.push("local".to_string()),
                 TypeRefIr::PublicationType { .. } => visited.push("publication".to_string()),
                 TypeRefIr::ServiceSymbol { .. } => visited.push("service".to_string()),
@@ -425,7 +425,7 @@ mod tests {
                 TypeRefIr::Function { .. } => visited.push("function".to_string()),
             }
             match ty {
-                TypeRefIr::TypeParam { name } if name == "T" => TypeRefIr::Native {
+                TypeRefIr::TypeParam { name } if name == "T" => TypeRefIr::Builtin {
                     name: "Wrapper".to_string(),
                     args: vec![type_param("SHOULD_NOT_VISIT")],
                 },
@@ -436,9 +436,9 @@ mod tests {
         assert_eq!(visited, vec!["param:T", "native:Box"]);
         assert_eq!(
             actual,
-            TypeRefIr::Native {
+            TypeRefIr::Builtin {
                 name: "Box".to_string(),
-                args: vec![TypeRefIr::Native {
+                args: vec![TypeRefIr::Builtin {
                     name: "Wrapper".to_string(),
                     args: vec![type_param("SHOULD_NOT_VISIT")],
                 }],

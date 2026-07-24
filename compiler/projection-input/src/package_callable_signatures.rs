@@ -154,7 +154,7 @@ mod tests {
         let signature = PackageCallableSignature {
             parameters: Vec::new(),
             return_type: PackageTypeRef::Local {
-                local_type: TypeRefIr::native("string"),
+                local_type: TypeRefIr::builtin("string"),
             },
             throw_types: Vec::new(),
             may_suspend: false,

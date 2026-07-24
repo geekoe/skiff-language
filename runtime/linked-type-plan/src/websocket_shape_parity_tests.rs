@@ -141,9 +141,9 @@ fn descriptor_corpus(spec: &CanonicalWebSocketShapeSpec) -> Vec<ShapeFingerprint
 }
 
 fn linked_builtin_plan(name: &str) -> RuntimeTypePlan {
-    let type_ref = TypeRefIr::Native {
+    let type_ref = TypeRefIr::Builtin {
         name: name.to_string(),
-        args: vec![TypeRefIr::native(CONTEXT_MARKER)],
+        args: vec![TypeRefIr::builtin(CONTEXT_MARKER)],
     };
     <RuntimeTypePlan as RuntimeTypePlanLinkedExt>::from_artifact_type_ref(&type_ref)
         .expect("linked WebSocket builtin plan must build")
@@ -160,7 +160,7 @@ fn descriptor_builtin_plan(name: &str) -> RuntimeTypePlan {
 }
 
 fn context_marker_plan() -> RuntimeTypePlan {
-    let type_ref = TypeRefIr::native(CONTEXT_MARKER);
+    let type_ref = TypeRefIr::builtin(CONTEXT_MARKER);
     <RuntimeTypePlan as RuntimeTypePlanLinkedExt>::from_artifact_type_ref(&type_ref)
         .expect("Context placeholder plan must build")
 }

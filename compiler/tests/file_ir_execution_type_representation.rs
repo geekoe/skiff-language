@@ -39,14 +39,14 @@ fn contract_typed_executables_have_one_opaque_execution_representation() {
     let wrapper = executable(&baseline.unit.executables, "wrapper");
     assert_eq!(wrapper.params.len(), 2);
     assert_eq!(wrapper.params[0].name, "label");
-    assert_eq!(wrapper.params[0].ty, TypeRefIr::native("string"));
+    assert_eq!(wrapper.params[0].ty, TypeRefIr::builtin("string"));
     assert_eq!(wrapper.params[1].name, "request");
     assert_eq!(wrapper.params[1].ty, opaque_unknown());
     assert_eq!(wrapper.return_type, opaque_unknown());
     assert!(!wrapper.may_suspend);
 
     let private_helper = executable(&baseline.unit.executables, "private_helper");
-    let nested = TypeRefIr::Native {
+    let nested = TypeRefIr::Builtin {
         name: "Array".to_string(),
         args: vec![TypeRefIr::Nullable {
             inner: Box::new(opaque_unknown()),
@@ -225,7 +225,7 @@ fn assert_execution_signature_eq(left: &ExecutableIr, right: &ExecutableIr) {
 }
 
 fn opaque_unknown() -> TypeRefIr {
-    TypeRefIr::native("unknown")
+    TypeRefIr::builtin("unknown")
 }
 
 fn linkable(owner: BoundaryValueOwner) -> BoundaryValuePlan {

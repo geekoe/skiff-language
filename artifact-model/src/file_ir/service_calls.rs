@@ -242,7 +242,7 @@ mod tests {
         if unit.constants.is_empty() {
             unit.constants.push(crate::ConstIr {
                 name: "calls".to_string(),
-                ty: crate::TypeRefIr::native("void"),
+                ty: crate::TypeRefIr::builtin("void"),
                 body: crate::ExecutableBody::default(),
                 source_span: None,
             });

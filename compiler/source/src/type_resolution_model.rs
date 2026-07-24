@@ -898,7 +898,7 @@ impl TypeResolutionModel {
             return true;
         }
         match ty {
-            TypeRefIr::Native { args, .. } => args
+            TypeRefIr::Builtin { args, .. } => args
                 .iter()
                 .any(|arg| self.contains_interface_type_ref_inner(arg, None, context, visited)),
             TypeRefIr::Record { fields } => fields
@@ -1037,7 +1037,7 @@ impl TypeResolutionModel {
                     &self.canonical_symbol_path(&format!("{module_path}.{}", symbol.symbol)),
                 )
             }
-            TypeRefIr::Native { name, args } => TypeRefIr::Native {
+            TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
                 name: name.clone(),
                 args: args
                     .iter()
@@ -1086,7 +1086,7 @@ impl TypeResolutionModel {
                 .local_type_name_for_index(owner_module, *type_index)
                 .map(|name| canonical_named_symbol(&source_path(owner_module, name)))
                 .unwrap_or_else(|| ty.clone()),
-            TypeRefIr::Native { name, args } => TypeRefIr::Native {
+            TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
                 name: name.clone(),
                 args: args
                     .iter()
@@ -1841,7 +1841,7 @@ impl TypeResolutionModel {
                     args[0].to_type_string()
                 ));
             }
-            return Ok(TypeRefIr::Native {
+            return Ok(TypeRefIr::Builtin {
                 name: canonical_name,
                 args: resolved_args,
             });
@@ -2660,10 +2660,10 @@ fn reconstruct_artifact_interface_methods(
 fn canonicalize_artifact_self_type(ty: &mut TypeRefIr) -> Result<(), String> {
     match ty {
         TypeRefIr::TypeParam { name } if name == "Self" => {
-            *ty = TypeRefIr::native("Self");
+            *ty = TypeRefIr::builtin("Self");
             Ok(())
         }
-        TypeRefIr::Native { name, args } if name == "Self" && args.is_empty() => Ok(()),
+        TypeRefIr::Builtin { name, args } if name == "Self" && args.is_empty() => Ok(()),
         actual => Err(format!("{actual:?}")),
     }
 }
@@ -2771,8 +2771,8 @@ fn artifact_type_text(
     symbolic_types: &ArtifactSymbolicTypeIndex,
 ) -> Result<String, String> {
     match ty {
-        TypeRefIr::Native { name, args } if args.is_empty() => Ok(name.clone()),
-        TypeRefIr::Native { name, args } => Ok(format!(
+        TypeRefIr::Builtin { name, args } if args.is_empty() => Ok(name.clone()),
+        TypeRefIr::Builtin { name, args } => Ok(format!(
             "{name}<{}>",
             args.iter()
                 .map(|arg| artifact_type_text(arg, symbolic_types))
@@ -3175,10 +3175,10 @@ fn normalize_package_interface_self_receiver(method: &mut InterfaceMethodSignatu
         .first_mut()
         .filter(|param| param.name == "self")
     {
-        param.ty = TypeRefIr::native("Self");
+        param.ty = TypeRefIr::builtin("Self");
         method.implicit_self = None;
     } else {
-        method.implicit_self = Some(TypeRefIr::native("Self"));
+        method.implicit_self = Some(TypeRefIr::builtin("Self"));
     }
 }
 
@@ -3594,13 +3594,13 @@ fn type_assignable(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
         return items.iter().all(|item| type_assignable(item, expected));
     }
     match expected {
-        TypeRefIr::Native { name, .. } if name == "unknown" => true,
-        TypeRefIr::Native { name, .. } if name == "void" => is_null_type_ir(actual),
-        TypeRefIr::Native { name, .. } if name == "Stream" => is_null_type_ir(actual),
-        TypeRefIr::Native { name, .. } if name == "Json" => json_assignable(actual),
-        TypeRefIr::Native { name, .. } if name == "JsonObject" => json_object_assignable(actual),
-        TypeRefIr::Native { name, .. } if name == "number" => {
-            matches!(actual, TypeRefIr::Native { name, .. } if name == "integer")
+        TypeRefIr::Builtin { name, .. } if name == "unknown" => true,
+        TypeRefIr::Builtin { name, .. } if name == "void" => is_null_type_ir(actual),
+        TypeRefIr::Builtin { name, .. } if name == "Stream" => is_null_type_ir(actual),
+        TypeRefIr::Builtin { name, .. } if name == "Json" => json_assignable(actual),
+        TypeRefIr::Builtin { name, .. } if name == "JsonObject" => json_object_assignable(actual),
+        TypeRefIr::Builtin { name, .. } if name == "number" => {
+            matches!(actual, TypeRefIr::Builtin { name, .. } if name == "integer")
         }
         TypeRefIr::Nullable { inner } => is_null_type_ir(actual) || type_assignable(actual, inner),
         TypeRefIr::Union { items } => items
@@ -3635,7 +3635,7 @@ fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<TypeRefIr> {
             }
             Some(union_type_ir(field_types))
         }
-        TypeRefIr::Native { name, args } if name == "Exception" && args.len() == 1 => match field {
+        TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => match field {
             "error" => Some(args[0].clone()),
             _ => None,
         },
@@ -3654,8 +3654,8 @@ fn union_type_ir(mut items: Vec<TypeRefIr>) -> TypeRefIr {
 
 fn type_ref_debug_text(ty: &TypeRefIr) -> String {
     match ty {
-        TypeRefIr::Native { name, args } if args.is_empty() => name.clone(),
-        TypeRefIr::Native { name, args } => format!(
+        TypeRefIr::Builtin { name, args } if args.is_empty() => name.clone(),
+        TypeRefIr::Builtin { name, args } => format!(
             "{name}<{}>",
             args.iter()
                 .map(type_ref_debug_text)
@@ -3792,7 +3792,7 @@ fn contract_type_shape_ir(
 
 fn contract_type_ref_ir(alias: &str, ty: &ContractTypeRef) -> Result<TypeRefIr, String> {
     match ty {
-        ContractTypeRef::Builtin { name, arguments } => Ok(TypeRefIr::Native {
+        ContractTypeRef::Builtin { name, arguments } => Ok(TypeRefIr::Builtin {
             name: name.clone(),
             args: arguments
                 .iter()
@@ -3844,13 +3844,13 @@ fn literal_assignable_to(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
             TypeRefIr::Literal {
                 value: LiteralIr::String { .. },
             },
-            TypeRefIr::Native { name, .. },
+            TypeRefIr::Builtin { name, .. },
         ) if name == "string" => true,
         (
             TypeRefIr::Literal {
                 value: LiteralIr::Null,
             },
-            TypeRefIr::Native { name, .. },
+            TypeRefIr::Builtin { name, .. },
         ) if name == "null" => true,
         _ => false,
     }
@@ -3858,12 +3858,12 @@ fn literal_assignable_to(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
 
 fn json_assignable(actual: &TypeRefIr) -> bool {
     match actual {
-        TypeRefIr::Native { name, .. } => {
+        TypeRefIr::Builtin { name, .. } => {
             matches!(
                 name.as_str(),
                 "string" | "integer" | "number" | "bool" | "null" | "Json" | "JsonObject"
-            ) || matches!(actual, TypeRefIr::Native { name, args } if name == "Array" && args.len() == 1 && json_assignable(&args[0]))
-                || matches!(actual, TypeRefIr::Native { name, args } if name == "Map" && args.len() == 2 && json_assignable(&args[1]))
+            ) || matches!(actual, TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 && json_assignable(&args[0]))
+                || matches!(actual, TypeRefIr::Builtin { name, args } if name == "Map" && args.len() == 2 && json_assignable(&args[1]))
         }
         TypeRefIr::Literal { value } => matches!(
             value,
@@ -3881,14 +3881,14 @@ fn json_assignable(actual: &TypeRefIr) -> bool {
 
 fn json_object_assignable(actual: &TypeRefIr) -> bool {
     match actual {
-        TypeRefIr::Native { name, .. } if name == "JsonObject" => true,
+        TypeRefIr::Builtin { name, .. } if name == "JsonObject" => true,
         TypeRefIr::Record { fields } => fields.values().all(json_assignable),
         _ => false,
     }
 }
 
 fn is_null_type_ir(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Native { name, .. } if name == "null")
+    matches!(ty, TypeRefIr::Builtin { name, .. } if name == "null")
         || matches!(
             ty,
             TypeRefIr::Literal {
@@ -3898,7 +3898,7 @@ fn is_null_type_ir(ty: &TypeRefIr) -> bool {
 }
 
 fn is_self_type_ref(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Native { name, args } if name == "Self" && args.is_empty())
+    matches!(ty, TypeRefIr::Builtin { name, args } if name == "Self" && args.is_empty())
 }
 
 fn interface_method_signature_params(
@@ -3912,7 +3912,7 @@ fn interface_method_signature_params(
     if !has_explicit_self && method.implicit_self.is_some() {
         params.push(FunctionTypeParamIr {
             name: "self".to_string(),
-            ty: TypeRefIr::native("Self"),
+            ty: TypeRefIr::builtin("Self"),
         });
     }
     params.extend(method.params.iter().cloned());
@@ -3921,7 +3921,7 @@ fn interface_method_signature_params(
 
 fn type_ref_contains_self(ty: &TypeRefIr) -> bool {
     match ty {
-        TypeRefIr::Native { args, .. } => {
+        TypeRefIr::Builtin { args, .. } => {
             is_self_type_ref(ty) || args.iter().any(type_ref_contains_self)
         }
         TypeRefIr::Record { fields } => fields.values().any(type_ref_contains_self),
@@ -3951,7 +3951,7 @@ fn type_ref_contains_self(ty: &TypeRefIr) -> bool {
 fn type_ref_contains_any_interface(ty: &TypeRefIr) -> bool {
     match ty {
         TypeRefIr::AnyInterface { .. } => true,
-        TypeRefIr::Native { args, .. } => args.iter().any(type_ref_contains_any_interface),
+        TypeRefIr::Builtin { args, .. } => args.iter().any(type_ref_contains_any_interface),
         TypeRefIr::Record { fields } => fields.values().any(type_ref_contains_any_interface),
         TypeRefIr::Union { items } => items.iter().any(type_ref_contains_any_interface),
         TypeRefIr::Nullable { inner } => type_ref_contains_any_interface(inner),
@@ -4016,10 +4016,10 @@ fn contextual_prelude_type_ref(
 
 fn prelude_symbol_type_ref(symbol: String, args: Vec<TypeRefIr>) -> TypeRefIr {
     if let Some(name) = canonical_native_prelude_type_symbol(&symbol) {
-        return TypeRefIr::Native { name, args };
+        return TypeRefIr::Builtin { name, args };
     }
     if is_std_abi_generic_type_symbol(&symbol) {
-        return TypeRefIr::Native { name: symbol, args };
+        return TypeRefIr::Builtin { name: symbol, args };
     }
     TypeRefIr::PackageSymbol {
         symbol: PackageSymbolRef {
@@ -4184,7 +4184,7 @@ mod tests {
                     params: vec![
                         FunctionTypeParamIr {
                             name: "self".to_string(),
-                            ty: TypeRefIr::native("Self"),
+                            ty: TypeRefIr::builtin("Self"),
                         },
                         FunctionTypeParamIr {
                             name: "fallback".to_string(),
@@ -4373,10 +4373,10 @@ mod tests {
 
         assert_eq!(read.params.len(), 2);
         assert_eq!(read.params[0].name, "self");
-        assert_eq!(read.params[0].ty, TypeRefIr::native("Self"));
+        assert_eq!(read.params[0].ty, TypeRefIr::builtin("Self"));
         assert_eq!(read.params[1].name, "fallback");
-        assert_eq!(read.params[1].ty, TypeRefIr::native("string"));
-        assert_eq!(read.return_type, TypeRefIr::native("string"));
+        assert_eq!(read.params[1].ty, TypeRefIr::builtin("string"));
+        assert_eq!(read.return_type, TypeRefIr::builtin("string"));
         assert!(!read.method_abi_id.is_empty());
     }
 
@@ -4407,7 +4407,7 @@ mod tests {
         ));
         assert_eq!(
             conformance.interface.canonical_type_args,
-            vec![TypeRefIr::native("string")]
+            vec![TypeRefIr::builtin("string")]
         );
         assert_eq!(conformance.slots.len(), 1);
         let slot = &conformance.slots[0];
@@ -4426,11 +4426,11 @@ mod tests {
                 },
                 FunctionTypeParamIr {
                     name: "fallback".to_string(),
-                    ty: TypeRefIr::native("string"),
+                    ty: TypeRefIr::builtin("string"),
                 },
             ]
         );
-        assert_eq!(slot.return_type, TypeRefIr::native("string"));
+        assert_eq!(slot.return_type, TypeRefIr::builtin("string"));
     }
 
     #[test]
@@ -4520,14 +4520,14 @@ mod tests {
                     params: vec![
                         FunctionTypeParamIr {
                             name: "self".to_string(),
-                            ty: TypeRefIr::native("Self"),
+                            ty: TypeRefIr::builtin("Self"),
                         },
                         FunctionTypeParamIr {
                             name: "input".to_string(),
                             ty: api_request,
                         },
                     ],
-                    return_type: TypeRefIr::Native {
+                    return_type: TypeRefIr::Builtin {
                         name: "Stream".to_string(),
                         args: vec![api_event],
                     },
@@ -4711,11 +4711,11 @@ mod tests {
         );
         assert_eq!(
             matched.implemented_interface_args,
-            vec![TypeRefIr::native("string")]
+            vec![TypeRefIr::builtin("string")]
         );
         assert_eq!(
             matched.expected_interface_args,
-            vec![TypeRefIr::native("string")]
+            vec![TypeRefIr::builtin("string")]
         );
     }
 
@@ -4755,7 +4755,7 @@ mod tests {
             .expect("union actual should resolve");
         let record = ResolvedTypeRef {
             ir: TypeRefIr::Record {
-                fields: BTreeMap::from([("value".to_string(), TypeRefIr::native("string"))]),
+                fields: BTreeMap::from([("value".to_string(), TypeRefIr::builtin("string"))]),
             },
             source_text: "{ value: string }".to_string(),
         };
@@ -4845,12 +4845,12 @@ mod tests {
             fields: BTreeMap::from([
                 (
                     "items".to_string(),
-                    TypeRefIr::Native {
+                    TypeRefIr::Builtin {
                         name: "Array".to_string(),
                         args: vec![TypeRefIr::Record {
                             fields: BTreeMap::from([(
                                 "label".to_string(),
-                                TypeRefIr::native("string"),
+                                TypeRefIr::builtin("string"),
                             )]),
                         }],
                     },
@@ -4884,9 +4884,9 @@ mod tests {
 
         let alias = artifact_type_kind(
             &TypeDescriptorIr::Alias {
-                target: TypeRefIr::Native {
+                target: TypeRefIr::Builtin {
                     name: "Array".to_string(),
-                    args: vec![TypeRefIr::native("string")],
+                    args: vec![TypeRefIr::builtin("string")],
                 },
             },
             &BTreeMap::new(),
@@ -4919,7 +4919,7 @@ mod tests {
         let descriptor = TypeDescriptorIr::Record {
             fields: BTreeMap::from([(
                 "content".to_string(),
-                TypeRefIr::Native {
+                TypeRefIr::Builtin {
                     name: "Array".to_string(),
                     args: vec![TypeRefIr::ServiceSymbol {
                         symbol: symbol.clone(),
@@ -4987,7 +4987,7 @@ mod tests {
                 },
                 FunctionTypeParamIr {
                     name: "input".to_string(),
-                    ty: TypeRefIr::Native {
+                    ty: TypeRefIr::Builtin {
                         name: "Array".to_string(),
                         args: vec![TypeRefIr::Nullable {
                             inner: Box::new(TypeRefIr::LocalType { type_index: 7 }),
@@ -4998,7 +4998,7 @@ mod tests {
             return_type: TypeRefIr::Union {
                 items: vec![
                     TypeRefIr::LocalType { type_index: 7 },
-                    TypeRefIr::native("null"),
+                    TypeRefIr::builtin("null"),
                 ],
             },
             may_suspend: false,
@@ -5011,7 +5011,7 @@ mod tests {
             symbol: "interface:LlmClient".to_string(),
         };
         let tool_descriptor = TypeDescriptorIr::Record {
-            fields: BTreeMap::from([("name".to_string(), TypeRefIr::native("string"))]),
+            fields: BTreeMap::from([("name".to_string(), TypeRefIr::builtin("string"))]),
         };
         let artifact = PackageArtifact {
             schema_version: "skiff-package-artifact-v2".to_string(),
@@ -5115,7 +5115,7 @@ mod tests {
             TypeRefIr::Union { .. }
         ));
         assert_eq!(interface.methods[0].params[0].name, "self");
-        assert_eq!(interface.methods[0].params[0].ty, TypeRefIr::native("Self"));
+        assert_eq!(interface.methods[0].params[0].ty, TypeRefIr::builtin("Self"));
 
         let consumer_sources = parsed_sources(
             r#"
@@ -5189,7 +5189,7 @@ mod tests {
             name: "streamChat".to_string(),
             type_params: vec!["Chunk".to_string()],
             params,
-            return_type: TypeRefIr::native("string"),
+            return_type: TypeRefIr::builtin("string"),
             may_suspend: false,
             is_native: false,
             is_provider: false,
@@ -5217,7 +5217,7 @@ mod tests {
             &[method(
                 vec![FunctionTypeParamIr {
                     name: "self".to_string(),
-                    ty: TypeRefIr::native("string"),
+                    ty: TypeRefIr::builtin("string"),
                 }],
                 None,
             )],

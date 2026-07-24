@@ -43,7 +43,7 @@ pub enum PackageAbiTypeDescriptor {
 impl EntryTypeSpec {
     pub fn response_type_ir(&self) -> TypeRefIr {
         match &self.ir {
-            TypeRefIr::Native { name, args } if name == "Stream" && args.len() == 1 => {
+            TypeRefIr::Builtin { name, args } if name == "Stream" && args.len() == 1 => {
                 args[0].clone()
             }
             _ => self.ir.clone(),
@@ -80,8 +80,8 @@ fn type_ref_ir_source_text_with_named_types(
     named_type: &impl Fn(&str) -> String,
 ) -> String {
     match ty {
-        TypeRefIr::Native { name, args } if args.is_empty() => named_type(name),
-        TypeRefIr::Native { name, args } => format!(
+        TypeRefIr::Builtin { name, args } if args.is_empty() => named_type(name),
+        TypeRefIr::Builtin { name, args } => format!(
             "{}<{}>",
             named_type(name),
             args.iter()
@@ -229,7 +229,7 @@ mod tests {
                         symbol: "Provider".to_string(),
                     },
                 },
-                vec![TypeRefIr::native("string")],
+                vec![TypeRefIr::builtin("string")],
             ),
         };
 

@@ -5,8 +5,8 @@ use skiff_artifact_model::{PackageTypeRef, TypeRefIr};
 pub(crate) fn execution_type_ref(ty: &PackageTypeRef) -> TypeRefIr {
     match ty {
         PackageTypeRef::Local { local_type } => local_type.clone(),
-        PackageTypeRef::PackageSchema { .. } => TypeRefIr::native("unknown"),
-        PackageTypeRef::Container { name, arguments } => TypeRefIr::Native {
+        PackageTypeRef::PackageSchema { .. } => TypeRefIr::builtin("unknown"),
+        PackageTypeRef::Container { name, arguments } => TypeRefIr::Builtin {
             name: name.clone(),
             args: arguments.iter().map(execution_type_ref).collect(),
         },
@@ -40,10 +40,10 @@ mod tests {
 
         assert_eq!(
             projected,
-            TypeRefIr::Native {
+            TypeRefIr::Builtin {
                 name: "Array".to_string(),
                 args: vec![TypeRefIr::Nullable {
-                    inner: Box::new(TypeRefIr::native("unknown")),
+                    inner: Box::new(TypeRefIr::builtin("unknown")),
                 }],
             }
         );

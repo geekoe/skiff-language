@@ -414,28 +414,25 @@ fn is_legacy_http_root_alias(alias: &str) -> bool {
 }
 
 #[cfg(test)]
-fn native_type_expr_def_name(expr: &skiff_artifact_model::NativeTypeExprDef) -> String {
-    use skiff_artifact_model::NativeTypeExprDef;
+fn native_type_expr_def_name(expr: &skiff_artifact_model::NativeSignatureTypeExpr) -> String {
+    use skiff_artifact_model::NativeSignatureTypeExpr;
 
     match expr {
-        NativeTypeExprDef::TypeParam(index) => format!("T{index}"),
-        NativeTypeExprDef::Builtin(name) => name.to_string(),
-        NativeTypeExprDef::Array(item) => format!("Array<{}>", native_type_expr_def_name(item)),
-        NativeTypeExprDef::Map(key, value) => format!(
+        NativeSignatureTypeExpr::TypeParam(index) => format!("T{index}"),
+        NativeSignatureTypeExpr::Builtin(name) => name.to_string(),
+        NativeSignatureTypeExpr::Array(item) => format!("Array<{}>", native_type_expr_def_name(item)),
+        NativeSignatureTypeExpr::Map(key, value) => format!(
             "Map<{}, {}>",
             native_type_expr_def_name(key),
             native_type_expr_def_name(value)
         ),
-        NativeTypeExprDef::Nullable(inner) => format!("{}?", native_type_expr_def_name(inner)),
-        NativeTypeExprDef::Stream(item) => format!("Stream<{}>", native_type_expr_def_name(item)),
-        NativeTypeExprDef::ActorRef(item) => {
-            format!("ActorRef<{}>", native_type_expr_def_name(item))
-        }
+        NativeSignatureTypeExpr::Nullable(inner) => format!("{}?", native_type_expr_def_name(inner)),
+        NativeSignatureTypeExpr::Stream(item) => format!("Stream<{}>", native_type_expr_def_name(item)),
     }
 }
 
 #[cfg(test)]
-fn native_type_expr_def_normalized_name(expr: &skiff_artifact_model::NativeTypeExprDef) -> String {
+fn native_type_expr_def_normalized_name(expr: &skiff_artifact_model::NativeSignatureTypeExpr) -> String {
     normalize_native_type_name(&native_type_expr_def_name(expr))
 }
 

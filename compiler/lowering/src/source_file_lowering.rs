@@ -1101,7 +1101,7 @@ mod tests {
         );
         assert_eq!(slot.signature.params.len(), 1);
         assert_eq!(slot.signature.params[0].name, "self");
-        assert_eq!(slot.signature.return_type, TypeRefIr::native("string"));
+        assert_eq!(slot.signature.return_type, TypeRefIr::builtin("string"));
         assert!(!slot.method_abi_id.is_empty());
     }
 
@@ -1141,7 +1141,7 @@ mod tests {
         ));
         assert_eq!(
             interface.canonical_type_args,
-            vec![TypeRefIr::native("string")]
+            vec![TypeRefIr::builtin("string")]
         );
         assert_eq!(&method_table.interface, interface);
         assert_eq!(&method_table.concrete_type, concrete_type);
@@ -1156,8 +1156,8 @@ mod tests {
         );
         assert_eq!(slot.signature.params.len(), 2);
         assert_eq!(slot.signature.params[1].name, "fallback");
-        assert_eq!(slot.signature.params[1].ty, TypeRefIr::native("string"));
-        assert_eq!(slot.signature.return_type, TypeRefIr::native("string"));
+        assert_eq!(slot.signature.params[1].ty, TypeRefIr::builtin("string"));
+        assert_eq!(slot.signature.return_type, TypeRefIr::builtin("string"));
         assert!(!slot.method_abi_id.is_empty());
     }
 
@@ -1203,7 +1203,7 @@ mod tests {
         ));
         assert_eq!(
             interface.canonical_type_args,
-            vec![TypeRefIr::native("string")]
+            vec![TypeRefIr::builtin("string")]
         );
     }
 

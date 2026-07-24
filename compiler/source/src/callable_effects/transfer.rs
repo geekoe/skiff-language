@@ -178,7 +178,7 @@ fn type_ir_may_be_reference(ty: &TypeRefIr) -> bool {
 
 fn type_ir_is_definitely_scalar(ty: &TypeRefIr) -> bool {
     match ty {
-        TypeRefIr::Native { name, args } => {
+        TypeRefIr::Builtin { name, args } => {
             args.is_empty()
                 && matches!(
                     name.as_str(),

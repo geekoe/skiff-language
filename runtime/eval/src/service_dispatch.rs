@@ -531,7 +531,7 @@ impl OutboundServiceDispatch {
             plan_from_artifact_type_ref(
                 program,
                 caller_addr,
-                &skiff_artifact_model::TypeRefIr::Native {
+                &skiff_artifact_model::TypeRefIr::Builtin {
                     name: "Stream".to_string(),
                     args: vec![response_type.clone()],
                 },
@@ -718,7 +718,7 @@ fn operation_mode_and_response_type(
     return_type: &skiff_artifact_model::TypeRefIr,
 ) -> (&'static str, &skiff_artifact_model::TypeRefIr) {
     match return_type {
-        skiff_artifact_model::TypeRefIr::Native { name, args }
+        skiff_artifact_model::TypeRefIr::Builtin { name, args }
             if name.rsplit('.').next() == Some("Stream") && args.len() == 1 =>
         {
             ("serverStream", &args[0])

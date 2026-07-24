@@ -365,7 +365,7 @@ type Envelope {
     assert!(file_contains_type_ref(consumer, &|ty| {
         matches!(
             ty,
-            TypeRefIr::Native { name, .. }
+            TypeRefIr::Builtin { name, .. }
                 if name == "std.websocket.WebSocketConnectResult"
         )
     }));
@@ -427,7 +427,7 @@ fn implicit_std_types_close_requirements_while_prelude_json_object_stays_local()
     assert!(project.dependency_packages.is_empty());
     assert!(file_contains_type_ref(
         module_artifact(&project.package, "types"),
-        &|ty| matches!(ty, TypeRefIr::Native { name, args } if name == "JsonObject" && args.is_empty())
+        &|ty| matches!(ty, TypeRefIr::Builtin { name, args } if name == "JsonObject" && args.is_empty())
     ));
 }
 
@@ -614,7 +614,7 @@ fn type_ref_contains(ty: &TypeRefIr, predicate: &impl Fn(&TypeRefIr) -> bool) ->
         return true;
     }
     match ty {
-        TypeRefIr::Native { args, .. } => args.iter().any(|arg| type_ref_contains(arg, predicate)),
+        TypeRefIr::Builtin { args, .. } => args.iter().any(|arg| type_ref_contains(arg, predicate)),
         TypeRefIr::Record { fields } => fields
             .values()
             .any(|field| type_ref_contains(field, predicate)),

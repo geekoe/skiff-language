@@ -416,7 +416,7 @@ fn projection_visible_type_ref(
                 },
             })
             .unwrap_or_else(|| ty.clone()),
-        TypeRefIr::Native { name, args } => TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
             name: name.clone(),
             args: args
                 .iter()
@@ -863,7 +863,7 @@ fn collect_type_ref_named_locations(
     out: &mut Vec<PublicationTypeLocation>,
 ) {
     match ty {
-        TypeRefIr::Native { args, .. } => {
+        TypeRefIr::Builtin { args, .. } => {
             for arg in args {
                 collect_type_ref_named_locations(index, module_path, arg, out);
             }

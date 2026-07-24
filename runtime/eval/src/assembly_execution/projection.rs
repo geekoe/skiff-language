@@ -517,7 +517,7 @@ mod tests {
         });
         file.constants.push(skiff_artifact_model::ConstIr {
             name: "projection.value".to_string(),
-            ty: TypeRefIr::native("bool"),
+            ty: TypeRefIr::builtin("bool"),
             body: ExecutableBody::default(),
             source_span: None,
         });
@@ -527,7 +527,7 @@ mod tests {
                 symbol: symbol.to_string(),
                 type_params: Vec::new(),
                 params: Vec::new(),
-                return_type: TypeRefIr::native("bool"),
+                return_type: TypeRefIr::builtin("bool"),
                 self_type: None,
                 slots: SlotLayout::default(),
                 may_suspend: false,

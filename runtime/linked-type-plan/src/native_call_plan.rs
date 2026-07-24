@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{NativeSignatureDef, NativeTypeExprDef};
+use skiff_artifact_model::{NativeSignatureDef, NativeSignatureTypeExpr};
 use skiff_runtime_linked_program::{
     CallIr, ExecutableAddr, LinkedInterfaceInstantiationRef, LinkedTypeRef, NativeTarget, TypeAddr,
 };
@@ -160,13 +160,13 @@ fn resolve_native_type_args<'a>(
 }
 
 fn resolve_native_type_expr_plan(
-    expr: &NativeTypeExprDef,
+    expr: &NativeSignatureTypeExpr,
     type_args: &[ResolvedNativeTypeArg],
     program: ProgramTypeView<'_>,
     current_addr: &ExecutableAddr,
 ) -> Result<RuntimeTypePlan> {
     match expr {
-        NativeTypeExprDef::TypeParam(index) => type_args
+        NativeSignatureTypeExpr::TypeParam(index) => type_args
             .get(*index)
             .map(|arg| arg.plan.clone())
             .ok_or_else(|| {
@@ -174,7 +174,7 @@ fn resolve_native_type_expr_plan(
                     "native signature references missing T{index}"
                 ))
             }),
-        NativeTypeExprDef::Builtin(name) => {
+        NativeSignatureTypeExpr::Builtin(name) => {
             if let Some(addr) = std_package_type_addr(program, name) {
                 return RuntimeTypePlan::from_linked(
                     &LinkedTypeRef::Address { addr },
@@ -183,30 +183,22 @@ fn resolve_native_type_expr_plan(
             }
             native_builtin_fallback_plan(name)
         }
-        NativeTypeExprDef::Array(item) => {
+        NativeSignatureTypeExpr::Array(item) => {
             let item = resolve_native_type_expr_plan(item, type_args, program, current_addr)?;
             Ok(RuntimeTypePlan::synthetic_array(item))
         }
-        NativeTypeExprDef::Map(key, value) => {
+        NativeSignatureTypeExpr::Map(key, value) => {
             let key = resolve_native_type_expr_plan(key, type_args, program, current_addr)?;
             let value = resolve_native_type_expr_plan(value, type_args, program, current_addr)?;
             Ok(RuntimeTypePlan::synthetic_map(key, value))
         }
-        NativeTypeExprDef::Nullable(inner) => {
+        NativeSignatureTypeExpr::Nullable(inner) => {
             let inner = resolve_native_type_expr_plan(inner, type_args, program, current_addr)?;
             Ok(RuntimeTypePlan::synthetic_nullable(inner))
         }
-        NativeTypeExprDef::Stream(item) => {
+        NativeSignatureTypeExpr::Stream(item) => {
             let item = resolve_native_type_expr_plan(item, type_args, program, current_addr)?;
             Ok(RuntimeTypePlan::synthetic_stream(item))
-        }
-        NativeTypeExprDef::ActorRef(item) => {
-            let item = resolve_native_type_expr_plan(item, type_args, program, current_addr)?;
-            Ok(RuntimeTypePlan::synthetic_named_builtin(
-                "ActorRef",
-                RuntimeTypeNode::Unknown,
-                vec![item],
-            ))
         }
     }
 }

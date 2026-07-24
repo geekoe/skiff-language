@@ -86,15 +86,15 @@ pub(super) fn project_fixture_with_runtime_requirements(
     let mut signature_entries = vec![
         (
             callable_key("run", 0),
-            signature(TypeRefIr::native("string")),
+            signature(TypeRefIr::builtin("string")),
         ),
         (
             callable_key("mutate", 1),
-            signature(TypeRefIr::native("string")),
+            signature(TypeRefIr::builtin("string")),
         ),
         (
             callable_key("worker.handle", 2),
-            signature(TypeRefIr::native("string")),
+            signature(TypeRefIr::builtin("string")),
         ),
     ];
     match signature_set {
@@ -105,7 +105,7 @@ pub(super) fn project_fixture_with_runtime_requirements(
         }
         SignatureSet::Extra => signature_entries.push((
             callable_key("internal", 9),
-            signature(TypeRefIr::native("string")),
+            signature(TypeRefIr::builtin("string")),
         )),
         SignatureSet::TargetMismatch => {
             signature_entries[0].0 = callable_key("run", 9);
@@ -184,16 +184,16 @@ pub(super) fn project_fixture_with_runtime_requirements(
 }
 
 fn public_instance(file: &FileIrRef) -> PackagePublicInstanceExecutionLink {
-    let interface_type = TypeRefIr::native("WorkerInterface");
+    let interface_type = TypeRefIr::builtin("WorkerInterface");
     PackagePublicInstanceExecutionLink {
         public_path: "worker".to_string(),
-        declared_receiver_type: TypeRefIr::native("Worker"),
+        declared_receiver_type: TypeRefIr::builtin("Worker"),
         interfaces: vec![interface_type],
         receiver: ConstExport {
             file: file.clone(),
             const_index: 0,
             symbol: "worker".to_string(),
-            ty: TypeRefIr::native("Worker"),
+            ty: TypeRefIr::builtin("Worker"),
         },
         methods: vec![PackagePublicInstanceMethodExecutionLink {
             name: "handle".to_string(),
@@ -204,7 +204,7 @@ fn public_instance(file: &FileIrRef) -> PackagePublicInstanceExecutionLink {
 }
 
 fn receiver_export(file: &FileIrRef) -> ExecutableExport {
-    let self_ty = TypeRefIr::native("Worker");
+    let self_ty = TypeRefIr::builtin("Worker");
     ExecutableExport {
         file: file.clone(),
         executable_index: 2,
@@ -219,10 +219,10 @@ fn receiver_export(file: &FileIrRef) -> ExecutableExport {
                 skiff_artifact_model::ParamIr {
                     name: "value".to_string(),
                     slot: 1,
-                    ty: TypeRefIr::native("string"),
+                    ty: TypeRefIr::builtin("string"),
                 },
             ],
-            return_type: TypeRefIr::native("string"),
+            return_type: TypeRefIr::builtin("string"),
             self_type: Some(self_ty),
             may_suspend: false,
         },
@@ -238,9 +238,9 @@ fn executable_export(file: &FileIrRef, index: u32, symbol: &str) -> ExecutableEx
             params: vec![skiff_artifact_model::ParamIr {
                 name: "value".to_string(),
                 slot: 0,
-                ty: TypeRefIr::native("string"),
+                ty: TypeRefIr::builtin("string"),
             }],
-            return_type: TypeRefIr::native("string"),
+            return_type: TypeRefIr::builtin("string"),
             self_type: None,
             may_suspend: false,
         },
@@ -254,7 +254,7 @@ pub(super) fn signature(ty: TypeRefIr) -> PackageCallableSignature {
             ty: PackageTypeRef::Local { local_type: ty },
         }],
         return_type: PackageTypeRef::Local {
-            local_type: TypeRefIr::native("string"),
+            local_type: TypeRefIr::builtin("string"),
         },
         throw_types: Vec::new(),
         may_suspend: false,

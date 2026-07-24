@@ -663,7 +663,7 @@ fn implementation_file(
         symbol: symbol.to_string(),
         type_params: Vec::new(),
         params: Vec::new(),
-        return_type: TypeRefIr::native("bool"),
+        return_type: TypeRefIr::builtin("bool"),
         self_type: None,
         slots: SlotLayout::default(),
         may_suspend,
@@ -745,7 +745,7 @@ fn configure_consumer_entry(
             },
             args: call_args,
             type_args: if matches!(behavior, ConsumerBehavior::ConsumeBooleanSequence) {
-                BTreeMap::from([("T".to_string(), TypeRefIr::native("bool"))])
+                BTreeMap::from([("T".to_string(), TypeRefIr::builtin("bool"))])
             } else {
                 BTreeMap::new()
             },
@@ -829,7 +829,7 @@ fn install_consumer_support(
 
 fn configure_boolean_stream_provider_entry(entry: &mut ExecutableIr, fail_after_first: bool) {
     entry.type_params = vec!["T".to_string()];
-    entry.return_type = TypeRefIr::Native {
+    entry.return_type = TypeRefIr::Builtin {
         name: "Stream".to_string(),
         args: vec![TypeRefIr::TypeParam {
             name: "T".to_string(),
@@ -911,7 +911,7 @@ fn configure_boolean_stream_consumer_entry(entry: &mut ExecutableIr, stream_expr
         },
         StmtIr::ForIn {
             item_slot: 0,
-            item_type: Some(TypeRefIr::native("bool")),
+            item_type: Some(TypeRefIr::builtin("bool")),
             value_slot: None,
             iterable: ExprRefIr {
                 expression: stream_expression,
@@ -979,9 +979,9 @@ fn configure_async_typed_error_provider_entry(
 ) {
     let fields = BTreeMap::from([(
         "messages".to_string(),
-        TypeRefIr::Native {
+        TypeRefIr::Builtin {
             name: "Array".to_string(),
-            args: vec![TypeRefIr::native("string")],
+            args: vec![TypeRefIr::builtin("string")],
         },
     )]);
     file.declarations.types.insert(
@@ -1035,7 +1035,7 @@ fn configure_callback_stream_provider_entry(
     owner_executable_index: u32,
 ) {
     let callback_interface = callback_interface_ref(module_path);
-    entry.return_type = TypeRefIr::Native {
+    entry.return_type = TypeRefIr::Builtin {
         name: "Stream".to_string(),
         args: vec![TypeRefIr::AnyInterface {
             interface: callback_interface,
@@ -1212,7 +1212,7 @@ fn append_callback_preimage_at(
                                 name: "self".to_string(),
                                 ty: concrete_type,
                             }],
-                            return_type: TypeRefIr::native("bool"),
+                            return_type: TypeRefIr::builtin("bool"),
                         },
                         target: InterfaceMethodSlotTargetIr {
                             executable_index: owner_executable_index,
@@ -1256,9 +1256,9 @@ fn install_callback_interface_fixture(
                 type_params: Vec::new(),
                 params: vec![FunctionTypeParamIr {
                     name: "self".to_string(),
-                    ty: TypeRefIr::native("Self"),
+                    ty: TypeRefIr::builtin("Self"),
                 }],
-                return_type: TypeRefIr::native("bool"),
+                return_type: TypeRefIr::builtin("bool"),
                 is_native: false,
                 is_provider: false,
                 is_static: false,
@@ -1293,7 +1293,7 @@ fn install_callback_interface_fixture(
             symbol: format!("{CALLBACK_INTERFACE_SYMBOL}.{CALLBACK_INTERFACE_METHOD}"),
             type_params: Vec::new(),
             params: Vec::new(),
-            return_type: TypeRefIr::native("bool"),
+            return_type: TypeRefIr::builtin("bool"),
             self_type: Some(TypeRefIr::LocalType { type_index: 0 }),
             slots: SlotLayout::default(),
             may_suspend: false,
@@ -1315,7 +1315,7 @@ fn checkpoint_call_executable(
         symbol,
         type_params: Vec::new(),
         params: Vec::new(),
-        return_type: TypeRefIr::native("bool"),
+        return_type: TypeRefIr::builtin("bool"),
         self_type: None,
         slots: SlotLayout::default(),
         may_suspend: false,
@@ -1457,7 +1457,7 @@ fn implementation_package(
                     signature: PackageCallableSignature {
                         parameters: Vec::new(),
                         return_type: PackageTypeRef::Local {
-                            local_type: TypeRefIr::native("bool"),
+                            local_type: TypeRefIr::builtin("bool"),
                         },
                         throw_types: Vec::new(),
                         may_suspend,

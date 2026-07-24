@@ -1936,9 +1936,9 @@ async fn runtime_program_create_from_stream_items_use_request_heap_budget() {
         .await
         .expect("stream item should enqueue");
     let stream_plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::Native {
+        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![skiff_artifact_model::TypeRefIr::native("bytes")],
+            args: vec![skiff_artifact_model::TypeRefIr::builtin("bytes")],
         })
         .expect("stream plan should build");
     let mut heap = RequestHeap::default();
@@ -2985,7 +2985,7 @@ async fn runtime_program_service_dependency_server_stream_returns_stream_handle(
         })
         .expect("response.start should send");
     let item_plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::native("string"))
+        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::builtin("string"))
             .expect("string item plan should build");
     let payload = encode_payload_plan(
         &RuntimeValue::String("stream-item".to_string()),
@@ -3004,9 +3004,9 @@ async fn runtime_program_service_dependency_server_stream_returns_stream_handle(
         .expect("response.end should send");
 
     let stream_plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::Native {
+        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![skiff_artifact_model::TypeRefIr::native("string")],
+            args: vec![skiff_artifact_model::TypeRefIr::builtin("string")],
         })
         .expect("stream plan should build");
     let stream_value = RuntimeBoundaryCodec::new(
@@ -3083,9 +3083,9 @@ async fn runtime_program_service_dependency_server_stream_chunks_use_request_hea
     let mut dependency = account_service_dependency("serverStream");
     dependency.publication_abi.operation_abi[0]
         .public_signature
-        .return_type = skiff_artifact_model::TypeRefIr::Native {
+        .return_type = skiff_artifact_model::TypeRefIr::Builtin {
         name: "Stream".to_string(),
-        args: vec![skiff_artifact_model::TypeRefIr::native("bytes")],
+        args: vec![skiff_artifact_model::TypeRefIr::builtin("bytes")],
     };
     let mut program = program_with_executable(run_executable());
     program.service_dependencies = vec![dependency];
@@ -3133,7 +3133,7 @@ async fn runtime_program_service_dependency_server_stream_chunks_use_request_hea
         })
         .expect("response.start should send");
     let item_plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::native("bytes"))
+        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::builtin("bytes"))
             .expect("bytes item plan should build");
     let mut encode_heap = RequestHeap::default();
     let bytes_handle = encode_heap
@@ -3151,9 +3151,9 @@ async fn runtime_program_service_dependency_server_stream_chunks_use_request_hea
         .expect("response.chunk should send");
 
     let stream_plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::Native {
+        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![skiff_artifact_model::TypeRefIr::native("bytes")],
+            args: vec![skiff_artifact_model::TypeRefIr::builtin("bytes")],
         })
         .expect("stream plan should build");
     let stream_value = RuntimeBoundaryCodec::new(
@@ -3234,9 +3234,9 @@ async fn runtime_program_service_dependency_server_stream_decode_error_cancels_o
         .expect("invalid response.chunk should send");
 
     let stream_plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::Native {
+        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![skiff_artifact_model::TypeRefIr::native("string")],
+            args: vec![skiff_artifact_model::TypeRefIr::builtin("string")],
         })
         .expect("stream plan should build");
     let stream_value = RuntimeBoundaryCodec::new(
@@ -3778,7 +3778,7 @@ fn send_outbound_stream_strings<const N: usize>(
 
 fn encode_string_payload(value: &str) -> Vec<u8> {
     let plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::native("string"))
+        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::builtin("string"))
             .expect("string payload plan should build");
     encode_payload_plan(
         &RuntimeValue::String(value.to_string()),
@@ -4583,16 +4583,16 @@ fn outbound_service_dependency_call(
 fn account_service_dependency(mode: &str) -> ServiceDependencyConstraint {
     let operation = account_lookup_operation_ref();
     let return_type = match mode {
-        "serverStream" => skiff_artifact_model::TypeRefIr::Native {
+        "serverStream" => skiff_artifact_model::TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![skiff_artifact_model::TypeRefIr::native("string")],
+            args: vec![skiff_artifact_model::TypeRefIr::builtin("string")],
         },
-        _ => skiff_artifact_model::TypeRefIr::native("string"),
+        _ => skiff_artifact_model::TypeRefIr::builtin("string"),
     };
     let public_signature = skiff_artifact_model::CanonicalPublicCallableSignature {
         params: vec![skiff_artifact_model::FunctionTypeParamIr {
             name: "userId".to_string(),
-            ty: skiff_artifact_model::TypeRefIr::native("string"),
+            ty: skiff_artifact_model::TypeRefIr::builtin("string"),
         }],
         return_type,
         may_suspend: false,
@@ -4619,11 +4619,11 @@ fn account_service_dependency(mode: &str) -> ServiceDependencyConstraint {
 fn remote_reader_service_dependency(mode: &str) -> ServiceDependencyConstraint {
     let operation = remote_reader_operation_ref();
     let return_type = match mode {
-        "serverStream" => skiff_artifact_model::TypeRefIr::Native {
+        "serverStream" => skiff_artifact_model::TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![skiff_artifact_model::TypeRefIr::native("string")],
+            args: vec![skiff_artifact_model::TypeRefIr::builtin("string")],
         },
-        _ => skiff_artifact_model::TypeRefIr::native("string"),
+        _ => skiff_artifact_model::TypeRefIr::builtin("string"),
     };
     let public_signature = skiff_artifact_model::CanonicalPublicCallableSignature {
         params: Vec::new(),

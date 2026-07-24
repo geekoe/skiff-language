@@ -91,7 +91,7 @@ impl TypeClosureGuardPolicy for RepresentationIndirectionGuards {
     ) -> bool {
         inherited
             || matches!(segment, TypeClosureTraceSegment::NullableInner)
-            || matches!(parent, TypeRefIr::Native { name, .. } if matches!(name.as_str(), "Array" | "Map"))
+            || matches!(parent, TypeRefIr::Builtin { name, .. } if matches!(name.as_str(), "Array" | "Map"))
             || matches!(
                 (parent, segment),
                 (
@@ -105,7 +105,7 @@ impl TypeClosureGuardPolicy for RepresentationIndirectionGuards {
 fn is_null(ty: &TypeRefIr) -> bool {
     matches!(
         ty,
-        TypeRefIr::Native { name, args } if name == "null" && args.is_empty()
+        TypeRefIr::Builtin { name, args } if name == "null" && args.is_empty()
     ) || matches!(
         ty,
         TypeRefIr::Literal {

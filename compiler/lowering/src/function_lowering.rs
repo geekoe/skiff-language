@@ -1604,7 +1604,7 @@ impl<'a> FunctionLowerer<'a> {
         field: &str,
     ) -> Option<TypeRefIr> {
         let direct = match ty {
-            TypeRefIr::Native { name, args } => self.builtin_field_type(name, args, field),
+            TypeRefIr::Builtin { name, args } => self.builtin_field_type(name, args, field),
             TypeRefIr::LocalType { type_index } => self
                 .local_type_fields
                 .get(type_index)
@@ -1660,7 +1660,7 @@ impl<'a> FunctionLowerer<'a> {
     fn builtin_field_type(&self, name: &str, args: &[TypeRefIr], field: &str) -> Option<TypeRefIr> {
         if name == "DbUpsertResult" {
             return match field {
-                "inserted" => Some(TypeRefIr::native("bool")),
+                "inserted" => Some(TypeRefIr::builtin("bool")),
                 "value" => args.first().cloned(),
                 _ => None,
             };
@@ -1887,7 +1887,7 @@ impl<'a> FunctionLowerer<'a> {
 
     fn is_actor_ref_receiver_type(ty: &TypeRefIr) -> bool {
         match ty {
-            TypeRefIr::Native { name, .. } if name == "ActorRef" => true,
+            TypeRefIr::Builtin { name, .. } if name == "ActorRef" => true,
             TypeRefIr::PackageSymbol { symbol } if is_actor_ref_package_symbol(symbol) => true,
             _ => false,
         }

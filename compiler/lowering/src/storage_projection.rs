@@ -213,7 +213,7 @@ fn actor_method_metadata(
 
 fn actor_method_return_type(ty: &TypeRefIr) -> Option<TypeRefIr> {
     match ty {
-        TypeRefIr::Native { name, args }
+        TypeRefIr::Builtin { name, args }
             if args.is_empty() && (name == "void" || name == "null") =>
         {
             None

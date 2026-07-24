@@ -135,8 +135,8 @@ fn package_type_symbol_ref(
 
 pub(super) fn type_ref_ir_type_text(ty: &TypeRefIr) -> String {
     match ty {
-        TypeRefIr::Native { name, args } if args.is_empty() => name.clone(),
-        TypeRefIr::Native { name, args } => format!(
+        TypeRefIr::Builtin { name, args } if args.is_empty() => name.clone(),
+        TypeRefIr::Builtin { name, args } => format!(
             "{name}<{}>",
             args.iter()
                 .map(type_ref_ir_type_text)
@@ -210,7 +210,7 @@ pub(super) fn type_ref_ir_type_text(ty: &TypeRefIr) -> String {
 }
 
 pub(super) fn is_unknown_type_ref(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Native { name, args } if name == "unknown" && args.is_empty())
+    matches!(ty, TypeRefIr::Builtin { name, args } if name == "unknown" && args.is_empty())
 }
 
 pub(super) fn prelude_field_type_text(raw: &str, module_path: &str) -> String {
@@ -235,7 +235,7 @@ pub(super) fn union_type_ir(mut items: Vec<TypeRefIr>) -> TypeRefIr {
     items.sort_by_key(type_ref_ir_type_text);
     items.dedup();
     match items.len() {
-        0 => TypeRefIr::Native {
+        0 => TypeRefIr::Builtin {
             name: "never".to_string(),
             args: Vec::new(),
         },
@@ -498,7 +498,7 @@ pub(super) fn lower_type_text(
     if let Some(parts) = generic_parts(ty) {
         if let Some(name) = canonical_builtin_std_type_name(parts.root) {
             if is_file_ir_native_builtin_type(&name) || is_std_abi_generic_type_name(&name) {
-                return Ok(TypeRefIr::Native {
+                return Ok(TypeRefIr::Builtin {
                     name,
                     args: parts
                         .args
@@ -686,7 +686,7 @@ fn lower_generic_type_text(
         }
         return Err(unsupported_file_ir_generic_root(root));
     }
-    Ok(TypeRefIr::Native {
+    Ok(TypeRefIr::Builtin {
         name: root.to_string(),
         args: args
             .iter()
@@ -720,7 +720,7 @@ pub(super) fn lower_named_type(
     let name = name.trim();
     if let Some(canonical_name) = canonical_builtin_std_type_name(name) {
         if is_file_ir_native_builtin_type(&canonical_name) {
-            return Ok(TypeRefIr::Native {
+            return Ok(TypeRefIr::Builtin {
                 name: canonical_name,
                 args: type_args
                     .iter()
@@ -764,7 +764,7 @@ pub(super) fn lower_named_type(
             return Ok(TypeRefIr::LocalType { type_index: *index });
         }
         if is_file_ir_builtin_type(name) {
-            return Ok(TypeRefIr::Native {
+            return Ok(TypeRefIr::Builtin {
                 name: service_name.to_string(),
                 args: Vec::new(),
             });
@@ -830,7 +830,7 @@ pub(super) fn lower_named_type(
             "unresolved type `{name}` in File IR unit"
         )));
     }
-    Ok(TypeRefIr::Native {
+    Ok(TypeRefIr::Builtin {
         name: service_name.to_string(),
         args: type_args
             .iter()

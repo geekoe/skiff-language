@@ -114,7 +114,7 @@ fn project_return(
             )?)
         }
         PackageTypeRef::Local {
-            local_type: TypeRefIr::Native { name, args },
+            local_type: TypeRefIr::Builtin { name, args },
         } if name == "Stream" => {
             let [item] = args.as_slice() else {
                 return Err(BoundaryUnavailableReason::UnsupportedStream);
@@ -216,7 +216,7 @@ impl TypeClosurePolicy for BoundaryProjectionTypePolicy<'_> {
         visit: TypeClosureVisit<'_>,
     ) -> Result<TypeClosureControl, Self::Error> {
         match visit.ty {
-            TypeRefIr::Native { name, args } => {
+            TypeRefIr::Builtin { name, args } => {
                 classify_native(name, args.len())?;
                 Ok(TypeClosureControl::Continue)
             }
@@ -256,7 +256,7 @@ fn project_local_type(
     public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
 ) -> Result<ContractTypeRef, BoundaryUnavailableReason> {
     match ty {
-        TypeRefIr::Native { name, args } => {
+        TypeRefIr::Builtin { name, args } => {
             classify_native(name, args.len())?;
             Ok(ContractTypeRef::Builtin {
                 name: name.clone(),

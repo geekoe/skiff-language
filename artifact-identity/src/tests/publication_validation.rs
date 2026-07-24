@@ -3,7 +3,7 @@ use super::*;
 fn valid_publication() -> PublicationAbiUnit {
     let signature = CanonicalPublicCallableSignature {
         params: Vec::new(),
-        return_type: TypeRefIr::native("string"),
+        return_type: TypeRefIr::builtin("string"),
         may_suspend: false,
     };
     let operation_id = public_function_operation_abi_id("run", &signature, &[], &BTreeMap::new())
@@ -71,7 +71,7 @@ fn duplicate_and_dangling_operation_refs_fail_closed() {
 #[test]
 fn descriptor_operation_identity_is_recomputed() {
     let mut publication = valid_publication();
-    publication.operation_abi[0].public_signature.return_type = TypeRefIr::native("number");
+    publication.operation_abi[0].public_signature.return_type = TypeRefIr::builtin("number");
 
     let error = validate_publication_abi_surface(&publication)
         .expect_err("descriptor tampering must fail")
@@ -88,7 +88,7 @@ fn schema_closure_keys_are_unique_and_closed() {
     let schema = PublicationSchemaType {
         abi_type_id: "type:Payload".to_string(),
         nameability: PublicationSchemaTypeNameability::PublicNameable,
-        ty: TypeRefIr::native("Payload"),
+        ty: TypeRefIr::builtin("Payload"),
         descriptor: None,
     };
     duplicate.schema_closure = vec![schema.clone(), schema.clone()];
@@ -111,11 +111,11 @@ fn schema_closure_keys_are_unique_and_closed() {
 #[test]
 fn public_instance_method_targets_are_validated() {
     let mut publication = valid_publication();
-    let interface = interface_instantiation_ref(TypeRefIr::native("pkg.Reader"), Vec::new());
+    let interface = interface_instantiation_ref(TypeRefIr::builtin("pkg.Reader"), Vec::new());
     let method_id = canonical_interface_method_abi_id(&interface, "read");
     let signature = CanonicalPublicCallableSignature {
         params: Vec::new(),
-        return_type: TypeRefIr::native("string"),
+        return_type: TypeRefIr::builtin("string"),
         may_suspend: false,
     };
     let operation_id = public_instance_method_operation_abi_id(

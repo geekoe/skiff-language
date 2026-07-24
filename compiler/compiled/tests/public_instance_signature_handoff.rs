@@ -102,9 +102,9 @@ fn public_instance_exact_signature_reaches_package_local_abi() {
         .expect("public-instance implementation executable");
     assert!(matches!(
         execution.params.iter().find(|param| param.name == "input"),
-        Some(param) if param.ty == TypeRefIr::native("unknown")
+        Some(param) if param.ty == TypeRefIr::builtin("unknown")
     ));
-    assert_eq!(execution.return_type, TypeRefIr::native("unknown"));
+    assert_eq!(execution.return_type, TypeRefIr::builtin("unknown"));
     let projection = build_projection_input(&compiled).unwrap();
     let projected = project_compiled_package_artifact(PackageArtifactProjectionInput {
         package_id: "example.com/public-instance",

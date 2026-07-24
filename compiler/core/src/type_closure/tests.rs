@@ -47,7 +47,7 @@ fn walks_complete_structural_path() {
     let resolver = ArtifactNominalTypeSource::new(&[], &[]);
     let guards = NoTypeClosureGuards;
     let walker = TypeClosureWalker::new(&resolver, &guards);
-    let ty = TypeRefIr::Native {
+    let ty = TypeRefIr::Builtin {
         name: "Array".to_string(),
         args: vec![TypeRefIr::Record {
             fields: BTreeMap::from([(
@@ -60,11 +60,11 @@ fn walks_complete_structural_path() {
                                 ty: TypeRefIr::AnyInterface {
                                     interface: InterfaceInstantiationRef {
                                         interface_abi_id: "I".to_string(),
-                                        canonical_type_args: vec![TypeRefIr::native("string")],
+                                        canonical_type_args: vec![TypeRefIr::builtin("string")],
                                     },
                                 },
                             }],
-                            return_type: Box::new(TypeRefIr::native("void")),
+                            return_type: Box::new(TypeRefIr::builtin("void")),
                         }),
                     }],
                 },
@@ -130,7 +130,7 @@ fn resolves_local_publication_service_and_db_nominal_refs() {
     unit.type_table.push(type_decl(
         "Payload",
         TypeDescriptorIr::Alias {
-            target: TypeRefIr::native("string"),
+            target: TypeRefIr::builtin("string"),
         },
     ));
     unit.declarations.types.insert(
@@ -217,7 +217,7 @@ fn resolves_package_dependency_and_records_nominal_trace() {
     package_file.type_table.push(type_decl(
         "Payload",
         TypeDescriptorIr::Alias {
-            target: TypeRefIr::native("string"),
+            target: TypeRefIr::builtin("string"),
         },
     ));
     package_file.declarations.types.insert(

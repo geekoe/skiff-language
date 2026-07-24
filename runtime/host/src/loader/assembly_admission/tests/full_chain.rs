@@ -525,7 +525,7 @@ fn implementation_file(
         symbol: symbol.to_string(),
         type_params: Vec::new(),
         params: Vec::new(),
-        return_type: TypeRefIr::native("bool"),
+        return_type: TypeRefIr::builtin("bool"),
         self_type: None,
         slots: SlotLayout::default(),
         may_suspend: false,
@@ -592,7 +592,7 @@ fn implementation_package(
                     signature: PackageCallableSignature {
                         parameters: Vec::new(),
                         return_type: PackageTypeRef::Local {
-                            local_type: TypeRefIr::native("bool"),
+                            local_type: TypeRefIr::builtin("bool"),
                         },
                         throw_types: Vec::new(),
                         may_suspend: false,

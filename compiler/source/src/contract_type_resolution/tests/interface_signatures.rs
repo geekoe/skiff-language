@@ -320,7 +320,7 @@ fn package_interface_dependency() -> (PackageSourceModel, Vec<FileIrUnit>) {
                 params: vec![
                     FunctionTypeParamIr {
                         name: "self".to_string(),
-                        ty: TypeRefIr::native("Self"),
+                        ty: TypeRefIr::builtin("Self"),
                     },
                     FunctionTypeParamIr {
                         name: "fallback".to_string(),
@@ -421,16 +421,16 @@ fn package_interface_conformance_stays_owned_by_canonical_package_facts() {
     ));
     assert_eq!(
         conformance.interface.canonical_type_args,
-        vec![TypeRefIr::native("string")]
+        vec![TypeRefIr::builtin("string")]
     );
     assert_eq!(conformance.slots.len(), 1);
     assert_eq!(
         conformance.slots[0].params[1].ty,
-        TypeRefIr::native("string")
+        TypeRefIr::builtin("string")
     );
     assert_eq!(
         conformance.slots[0].return_type,
-        TypeRefIr::native("string")
+        TypeRefIr::builtin("string")
     );
 }
 

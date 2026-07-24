@@ -305,8 +305,8 @@ fn prelude_builtin_schema_is_typed_in_file_ir() {
     let TypeDescriptorIr::Record { fields } = &builtins.descriptor else {
         panic!("Builtins should remain a record");
     };
-    assert_eq!(fields["flag"], TypeRefIr::native("bool"));
-    assert_eq!(fields["count"], TypeRefIr::native("integer"));
+    assert_eq!(fields["flag"], TypeRefIr::builtin("bool"));
+    assert_eq!(fields["count"], TypeRefIr::builtin("integer"));
 }
 
 #[test]

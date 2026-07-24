@@ -449,7 +449,7 @@ fn encode_package_target_segment(value: &str) -> String {
 
 fn spawn_function_return_type(target_identity: &str, ty: &TypeRefIr) -> Result<Option<TypeRefIr>> {
     match ty {
-        TypeRefIr::Native { name, args }
+        TypeRefIr::Builtin { name, args }
             if args.is_empty() && (name == "void" || name == "null") =>
         {
             Ok(None)
@@ -628,7 +628,7 @@ mod tests {
                 symbol: "app.run".to_string(),
                 type_params: Vec::new(),
                 params: Vec::new(),
-                return_type: TypeRefIr::Native {
+                return_type: TypeRefIr::Builtin {
                     name: return_type.to_string(),
                     args: Vec::new(),
                 },
@@ -643,7 +643,7 @@ mod tests {
     }
 
     fn void_type() -> TypeRefIr {
-        TypeRefIr::Native {
+        TypeRefIr::Builtin {
             name: "void".to_string(),
             args: Vec::new(),
         }

@@ -397,7 +397,7 @@ fn parse_fields(
 fn is_plain_string_type(ty: &TypeRefIr) -> bool {
     matches!(
         ty,
-        TypeRefIr::Native { name, args } if name == "string" && args.is_empty()
+        TypeRefIr::Builtin { name, args } if name == "string" && args.is_empty()
     )
 }
 
@@ -491,7 +491,7 @@ fn collect_immutable_file_paths(ty: &TypeRefIr, path: Vec<String>, paths: &mut V
 
 fn is_immutable_file_type(ty: &TypeRefIr) -> bool {
     match ty {
-        TypeRefIr::Native { name, .. } => {
+        TypeRefIr::Builtin { name, .. } => {
             matches!(name.as_str(), "std.file.ImmutableFile" | "ImmutableFile")
         }
         TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {

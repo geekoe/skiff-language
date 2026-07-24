@@ -910,7 +910,7 @@ fn linked_field_path(path: &artifact::FieldPathIr) -> FieldPathIr {
 
 fn linked_type_ref(ty: &artifact::TypeRefIr) -> LinkedTypeRef {
     match ty {
-        artifact::TypeRefIr::Native { name, args } => LinkedTypeRef::Native {
+        artifact::TypeRefIr::Builtin { name, args } => LinkedTypeRef::Native {
             name: name.clone(),
             args: args.iter().map(linked_type_ref).collect(),
         },
@@ -1089,17 +1089,17 @@ mod tests {
         artifact.declarations.db.insert(
             "Credential".to_string(),
             artifact::DbDeclarationIr {
-                type_ref: artifact::TypeRefIr::native("Credential"),
+                type_ref: artifact::TypeRefIr::builtin("Credential"),
                 type_name: "Credential".to_string(),
                 collection_name: "credential".to_string(),
                 kind: artifact::DbObjectKindIr::Object,
                 key: artifact::DbObjectKeyIr {
                     name: "id".to_string(),
-                    ty: artifact::TypeRefIr::native("string"),
+                    ty: artifact::TypeRefIr::builtin("string"),
                 },
                 fields: vec![artifact::DbObjectFieldIr {
                     name: "apiKey".to_string(),
-                    ty: artifact::TypeRefIr::native("string"),
+                    ty: artifact::TypeRefIr::builtin("string"),
                     storage: artifact::DbFieldStorageIr::Encrypted,
                 }],
                 retention: None,

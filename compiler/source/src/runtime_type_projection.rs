@@ -121,14 +121,14 @@ fn named_type_descriptor(
     let canonical = canonical_package_type_name(name, runtime_bindings);
     let registry = prelude_registry();
     if is_language_primitive(&canonical) || registry.is_native_type_name(&canonical) {
-        return TypeRefIr::Native {
+        return TypeRefIr::Builtin {
             name: canonical,
             args,
         };
     }
     if let Some(symbol_path) = registry.known_type_symbol(&canonical) {
         if let Some(native_name) = canonical_native_prelude_symbol(&symbol_path) {
-            return TypeRefIr::Native {
+            return TypeRefIr::Builtin {
                 name: native_name,
                 args,
             };
@@ -143,7 +143,7 @@ fn named_type_descriptor(
             },
         };
     }
-    TypeRefIr::Native {
+    TypeRefIr::Builtin {
         name: canonical,
         args,
     }
@@ -326,7 +326,7 @@ fn prelude_type_text_descriptor(
 
 fn substitute_prelude_type_params_in_ir(ty: &mut TypeRefIr, type_params: &BTreeSet<String>) {
     match ty {
-        TypeRefIr::Native { name, args } => {
+        TypeRefIr::Builtin { name, args } => {
             if args.is_empty() && type_params.contains(name) {
                 *ty = TypeRefIr::TypeParam { name: name.clone() };
                 return;

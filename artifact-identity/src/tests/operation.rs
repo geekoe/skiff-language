@@ -4,7 +4,7 @@ use super::*;
 fn operation_abi_helpers_share_the_canonical_operation_input() {
     let public_signature = CanonicalPublicCallableSignature {
         params: Vec::new(),
-        return_type: TypeRefIr::native("string"),
+        return_type: TypeRefIr::builtin("string"),
         may_suspend: false,
     };
     let stream_effect_throw_config = BTreeMap::new();
@@ -29,7 +29,7 @@ fn operation_abi_helpers_share_the_canonical_operation_input() {
 
     let changed_signature = CanonicalPublicCallableSignature {
         params: Vec::new(),
-        return_type: TypeRefIr::native("number"),
+        return_type: TypeRefIr::builtin("number"),
         may_suspend: false,
     };
     assert_ne!(

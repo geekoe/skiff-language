@@ -314,7 +314,7 @@ mod tests {
         unit.external_refs.service_call_refs = vec![later.clone(), earlier.clone()];
         unit.constants.push(skiff_artifact_model::ConstIr {
             name: "calls".to_string(),
-            ty: TypeRefIr::native("void"),
+            ty: TypeRefIr::builtin("void"),
             body: ExecutableBody {
                 expressions: vec![service_call(0), service_call(1), service_call(0)],
                 ..ExecutableBody::default()
@@ -417,7 +417,7 @@ fn collect_type_ref_external_refs(ty: &TypeRefIr, refs: &mut ExternalRefTable) {
         TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
             push_unique(&mut refs.service_symbols, symbol.clone());
         }
-        TypeRefIr::Native { args, .. } => {
+        TypeRefIr::Builtin { args, .. } => {
             for arg in args {
                 collect_type_ref_external_refs(arg, refs);
             }

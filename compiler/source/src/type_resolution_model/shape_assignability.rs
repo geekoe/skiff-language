@@ -404,7 +404,7 @@ impl TypeResolutionModel {
                     self.canonicalize_type_ref_for_module(module_path, ty)
                 }
             }
-            TypeRefIr::Native { name, args } => TypeRefIr::Native {
+            TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
                 name: name.clone(),
                 args: args.iter().map(recurse).collect(),
             },
@@ -666,10 +666,10 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> bool {
         match expected {
-            TypeRefIr::Native { name, .. } if name == "Json" => {
+            TypeRefIr::Builtin { name, .. } if name == "Json" => {
                 self.json_assignable_in_context(actual, context)
             }
-            TypeRefIr::Native { name, .. } if name == "JsonObject" => {
+            TypeRefIr::Builtin { name, .. } if name == "JsonObject" => {
                 self.json_object_assignable_in_context(actual, context)
             }
             TypeRefIr::Nullable { inner } => {
@@ -700,7 +700,7 @@ impl TypeResolutionModel {
             return false;
         }
         match actual {
-            TypeRefIr::Native { name, args } => {
+            TypeRefIr::Builtin { name, args } => {
                 matches!(
                     name.as_str(),
                     "string" | "integer" | "number" | "bool" | "null" | "Json" | "JsonObject"
@@ -759,7 +759,7 @@ impl TypeResolutionModel {
             return false;
         }
         match actual {
-            TypeRefIr::Native { name, .. } if name == "JsonObject" => true,
+            TypeRefIr::Builtin { name, .. } if name == "JsonObject" => true,
             TypeRefIr::Record { fields } => fields
                 .values()
                 .all(|field| self.json_assignable_in_context_inner(field, context, depth + 1)),
@@ -901,7 +901,7 @@ impl TypeResolutionModel {
                         )
                     })
             }
-            TypeRefIr::Native { name, args } => self
+            TypeRefIr::Builtin { name, args } => self
                 .prelude_type_shape_ir(name, args, context)
                 .or_else(|| self.prelude_type_shape_ir(&ty.source_text, args, context)),
             _ => None,
@@ -1080,7 +1080,7 @@ impl TypeResolutionModel {
                     },
                 })
                 .unwrap_or_else(|| ty.clone()),
-            TypeRefIr::Native { name, args } => TypeRefIr::Native {
+            TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
                 name: name.clone(),
                 args: args
                     .iter()
@@ -1190,7 +1190,7 @@ impl TypeResolutionModel {
                     })
                     .unwrap_or_else(|| ty.clone())
             }
-            TypeRefIr::Native { name, args } => TypeRefIr::Native {
+            TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
                 name: name.clone(),
                 args: args
                     .iter()
@@ -1283,7 +1283,7 @@ fn replace_self_type_ref(ty: TypeRefIr, concrete_self: &TypeRefIr) -> TypeRefIr 
         return concrete_self.clone();
     }
     match ty {
-        TypeRefIr::Native { name, args } => TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
             name,
             args: args
                 .into_iter()

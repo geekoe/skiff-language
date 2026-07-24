@@ -101,7 +101,7 @@ impl TypeGraphAnalyzer {
 
     fn node_kind(&self, ty: &TypeRefIr) -> TypeGraphNodeKind {
         match ty {
-            TypeRefIr::Native { name, .. } => TypeGraphNodeKind::Native { name: name.clone() },
+            TypeRefIr::Builtin { name, .. } => TypeGraphNodeKind::Native { name: name.clone() },
             TypeRefIr::LocalType { .. } => TypeGraphNodeKind::LocalType,
             TypeRefIr::PublicationType { .. } => TypeGraphNodeKind::PublicationType,
             TypeRefIr::ServiceSymbol { .. } => TypeGraphNodeKind::ServiceSymbol,
@@ -119,7 +119,7 @@ impl TypeGraphAnalyzer {
 
     fn apply_facts(&self, facts: &mut TypeGraphFacts, ty: &TypeRefIr) {
         match ty {
-            TypeRefIr::Native { name, .. } => {
+            TypeRefIr::Builtin { name, .. } => {
                 facts.contains_native = true;
                 if !self.schema_projectable_native_names.contains(name) {
                     facts.schema_projectable_plain_data = false;
@@ -182,7 +182,7 @@ mod tests {
     }
 
     fn native(name: &str) -> TypeRefIr {
-        TypeRefIr::native(name)
+        TypeRefIr::builtin(name)
     }
 
     #[test]
@@ -290,7 +290,7 @@ mod tests {
         let ty = TypeRefIr::Record {
             fields: BTreeMap::from([(
                 "values".to_string(),
-                TypeRefIr::Native {
+                TypeRefIr::Builtin {
                     name: "Array".to_string(),
                     args: vec![TypeRefIr::Nullable {
                         inner: Box::new(native("string")),

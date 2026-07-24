@@ -188,7 +188,7 @@ impl SchemaBuilder<'_> {
 
     fn project_ref(&mut self, ty: &TypeRefIr) -> Result<ContractTypeRef, ProjectionError> {
         Ok(match ty {
-            TypeRefIr::Native { name, args } => ContractTypeRef::Builtin {
+            TypeRefIr::Builtin { name, args } => ContractTypeRef::Builtin {
                 name: name.clone(),
                 arguments: args
                     .iter()
@@ -319,7 +319,7 @@ mod tests {
         let projected = project_package_schema(
             "example.pkg",
             &exports(TypeDescriptorIr::Record {
-                fields: BTreeMap::from([("name".to_string(), TypeRefIr::native("string"))]),
+                fields: BTreeMap::from([("name".to_string(), TypeRefIr::builtin("string"))]),
             }),
             &[],
         )

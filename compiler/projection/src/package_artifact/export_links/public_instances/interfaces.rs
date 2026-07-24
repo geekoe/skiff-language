@@ -223,7 +223,7 @@ fn nominal_service_symbol(
             )?;
             Some(symbol.clone())
         }
-        TypeRefIr::Native { .. }
+        TypeRefIr::Builtin { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Record { .. }

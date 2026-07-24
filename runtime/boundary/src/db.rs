@@ -506,7 +506,7 @@ pub fn runtime_type_plan_from_artifact_type_ref(type_ref: &TypeRefIr) -> Runtime
 
 fn schema_projectable_db_type_ref(type_ref: &TypeRefIr) -> bool {
     match type_ref {
-        TypeRefIr::Native { name, args } => match bare_type_name(name) {
+        TypeRefIr::Builtin { name, args } => match bare_type_name(name) {
             "string" | "integer" | "number" | "bool" | "boolean" | "null" | "void" | "Date"
             | "bytes" | "Bytes" | "Json" | "JsonObject" => args.is_empty(),
             "Array" => matches!(
@@ -537,13 +537,13 @@ fn schema_projectable_db_type_ref(type_ref: &TypeRefIr) -> bool {
 fn is_plain_db_string_key(type_ref: &TypeRefIr) -> bool {
     matches!(
         type_ref,
-        TypeRefIr::Native { name, args } if args.is_empty() && bare_type_name(name) == "string"
+        TypeRefIr::Builtin { name, args } if args.is_empty() && bare_type_name(name) == "string"
     )
 }
 
 fn runtime_type_node_from_artifact_type_ref(type_ref: &TypeRefIr) -> RuntimeTypeNode {
     match type_ref {
-        TypeRefIr::Native { name, args } => runtime_native_type_node_from_artifact(name, args),
+        TypeRefIr::Builtin { name, args } => runtime_native_type_node_from_artifact(name, args),
         TypeRefIr::Record { fields } => RuntimeTypeNode::Record {
             fields: fields
                 .iter()
@@ -622,7 +622,7 @@ fn runtime_native_type_node_from_artifact(name: &str, args: &[TypeRefIr]) -> Run
 
 fn artifact_type_ref_label(type_ref: &TypeRefIr) -> &'static str {
     match type_ref {
-        TypeRefIr::Native { .. } => "builtin",
+        TypeRefIr::Builtin { .. } => "builtin",
         TypeRefIr::LocalType { .. } => "localType",
         TypeRefIr::PublicationType { .. } => "publicationType",
         TypeRefIr::ServiceSymbol { .. } => "serviceSymbol",
@@ -640,7 +640,7 @@ fn artifact_type_ref_label(type_ref: &TypeRefIr) -> &'static str {
 
 fn artifact_type_ref_named_type_name(type_ref: &TypeRefIr) -> Option<String> {
     match type_ref {
-        TypeRefIr::Native { name, .. } => Some(name.clone()),
+        TypeRefIr::Builtin { name, .. } => Some(name.clone()),
         _ => None,
     }
 }
@@ -707,7 +707,7 @@ mod tests {
                     ("recoverAt", native("Date")),
                     (
                         "attempts",
-                        TypeRefIr::Native {
+                        TypeRefIr::Builtin {
                             name: "Array".to_string(),
                             args: vec![record([("at", native("Date"))])],
                         },
@@ -889,7 +889,7 @@ mod tests {
             ("createdAt", nullable(native("Date"))),
             (
                 "tags",
-                TypeRefIr::Native {
+                TypeRefIr::Builtin {
                     name: "Array".to_string(),
                     args: vec![native("string")],
                 },
@@ -943,7 +943,7 @@ mod tests {
             ("label", native("string")),
             (
                 "tags",
-                TypeRefIr::Native {
+                TypeRefIr::Builtin {
                     name: "Array".to_string(),
                     args: vec![native("string")],
                 },
@@ -1047,7 +1047,7 @@ mod tests {
     }
 
     fn native(name: &str) -> TypeRefIr {
-        TypeRefIr::Native {
+        TypeRefIr::Builtin {
             name: name.to_string(),
             args: Vec::new(),
         }

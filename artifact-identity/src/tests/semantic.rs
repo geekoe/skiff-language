@@ -93,12 +93,12 @@ fn public_path_is_not_a_nominal_identity_input() {
 
 #[test]
 fn interface_and_method_ids_preserve_ordered_generic_args() {
-    let declaration = TypeRefIr::Native {
+    let declaration = TypeRefIr::Builtin {
         name: "pkg.Pair".to_string(),
         args: Vec::new(),
     };
-    let string = TypeRefIr::native("string");
-    let number = TypeRefIr::native("number");
+    let string = TypeRefIr::builtin("string");
+    let number = TypeRefIr::builtin("number");
     let left =
         interface_instantiation_ref(declaration.clone(), vec![string.clone(), number.clone()]);
     let right = interface_instantiation_ref(declaration, vec![number, string]);
@@ -112,13 +112,13 @@ fn interface_and_method_ids_preserve_ordered_generic_args() {
 
 #[test]
 fn interface_instantiation_splits_native_declaration_from_args() {
-    let string_ref = interface_instantiation_ref_for_type_ref(&TypeRefIr::Native {
+    let string_ref = interface_instantiation_ref_for_type_ref(&TypeRefIr::Builtin {
         name: "pkg.Boxed".to_string(),
-        args: vec![TypeRefIr::native("string")],
+        args: vec![TypeRefIr::builtin("string")],
     });
-    let number_ref = interface_instantiation_ref_for_type_ref(&TypeRefIr::Native {
+    let number_ref = interface_instantiation_ref_for_type_ref(&TypeRefIr::Builtin {
         name: "pkg.Boxed".to_string(),
-        args: vec![TypeRefIr::native("number")],
+        args: vec![TypeRefIr::builtin("number")],
     });
 
     assert_eq!(string_ref.interface_abi_id, number_ref.interface_abi_id);

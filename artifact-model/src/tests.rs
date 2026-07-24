@@ -79,11 +79,11 @@ fn interface_method_signature_requires_exact_suspend_flag() {
 }
 
 fn string_type() -> TypeRefIr {
-    TypeRefIr::native("string")
+    TypeRefIr::builtin("string")
 }
 
 fn number_type() -> TypeRefIr {
-    TypeRefIr::native("number")
+    TypeRefIr::builtin("number")
 }
 
 fn reader_interface_ref() -> InterfaceInstantiationRef {
@@ -209,7 +209,7 @@ fn sample_recoverable_metadata() -> RecoverableArtifactMetadata {
 
     let expected = RecoverableExpectedTypePlan {
         root: RecoverableExpectedTypeRoot::TypeRef {
-            ty: TypeRefIr::native("User"),
+            ty: TypeRefIr::builtin("User"),
         },
         root_type_identity_ref: Some(type_ref.clone()),
         runtime_carrier_check_required: true,
@@ -234,7 +234,7 @@ fn sample_recoverable_metadata() -> RecoverableArtifactMetadata {
     metadata.identity_tables.types.insert(
         type_ref.0.clone(),
         RecoverableTypeIdentityFact {
-            ty: TypeRefIr::native("User"),
+            ty: TypeRefIr::builtin("User"),
             abi_type_id: Some("abiType:user".to_owned()),
             contract_revision: Some("contract:user:v1".to_owned()),
         },
@@ -242,8 +242,8 @@ fn sample_recoverable_metadata() -> RecoverableArtifactMetadata {
     metadata.identity_tables.interface_projections.insert(
         interface_projection_ref.0.clone(),
         RecoverableInterfaceProjectionIdentityFact {
-            interface_type: TypeRefIr::native("ManagedUser"),
-            implemented_by: Some(TypeRefIr::native("User")),
+            interface_type: TypeRefIr::builtin("ManagedUser"),
+            implemented_by: Some(TypeRefIr::builtin("User")),
             interface_abi_id: Some("abiInterface:managedUser".to_owned()),
         },
     );
@@ -253,7 +253,7 @@ fn sample_recoverable_metadata() -> RecoverableArtifactMetadata {
             interface_projection_ref,
             method_name: "send".to_owned(),
             method_abi_id: Some("abiMethod:send".to_owned()),
-            signature: Some(recoverable_type_ref_plan(TypeRefIr::native("SendResult"))),
+            signature: Some(recoverable_type_ref_plan(TypeRefIr::builtin("SendResult"))),
         },
     );
     metadata.identity_tables.union_branches.insert(
@@ -261,7 +261,7 @@ fn sample_recoverable_metadata() -> RecoverableArtifactMetadata {
         RecoverableUnionBranchIdentityFact {
             union_type_ref: type_ref.clone(),
             branch_index: 0,
-            branch_type: TypeRefIr::native("User"),
+            branch_type: TypeRefIr::builtin("User"),
             branch_abi_id: Some("abiBranch:userResult.ok".to_owned()),
         },
     );
@@ -299,7 +299,7 @@ fn sample_recoverable_metadata() -> RecoverableArtifactMetadata {
             adapter_identity: "adapter:std.date".to_owned(),
             adapter_schema_version: "1".to_owned(),
             native_type_identity: "native:std.Date".to_owned(),
-            durable_state_type_plan: recoverable_type_ref_plan(TypeRefIr::native("Json")),
+            durable_state_type_plan: recoverable_type_ref_plan(TypeRefIr::builtin("Json")),
             encode_hook_id: "adapter:std.date.encode".to_owned(),
             decode_hook_id: "adapter:std.date.decode".to_owned(),
             owner: RecoverableNativeAdapterOwner {
@@ -338,7 +338,7 @@ fn sample_recoverable_metadata() -> RecoverableArtifactMetadata {
 
 #[test]
 fn recoverable_expected_type_compatibility_matrix_fails_closed() {
-    let base = recoverable_identity_plan(TypeRefIr::native("User"), "type:user");
+    let base = recoverable_identity_plan(TypeRefIr::builtin("User"), "type:user");
     assert!(crate::recoverable_expected_type_plans_compatible(
         &base, &base
     ));
@@ -466,7 +466,7 @@ fn recoverable_expected_type_compatibility_matrix_fails_closed() {
         &method_a, &method_b
     ));
 
-    let other_nominal = recoverable_identity_plan(TypeRefIr::native("User"), "type:account");
+    let other_nominal = recoverable_identity_plan(TypeRefIr::builtin("User"), "type:account");
     assert!(!crate::recoverable_expected_type_plans_compatible(
         &base,
         &other_nominal
@@ -481,8 +481,8 @@ fn recoverable_expected_type_compatibility_matrix_fails_closed() {
     ));
 
     assert!(!crate::recoverable_expected_type_plans_compatible(
-        &recoverable_type_ref_plan(TypeRefIr::native("number")),
-        &recoverable_type_ref_plan(TypeRefIr::native("string"))
+        &recoverable_type_ref_plan(TypeRefIr::builtin("number")),
+        &recoverable_type_ref_plan(TypeRefIr::builtin("string"))
     ));
 }
 
@@ -493,7 +493,7 @@ fn recoverable_custom_and_native_plans_validate_required_fields() {
         "restore:user".to_string(),
         RecoverableCustomRestorePlan {
             concrete_type_identity: String::new(),
-            durable_state_type_plan: recoverable_type_ref_plan(TypeRefIr::native("Json")),
+            durable_state_type_plan: recoverable_type_ref_plan(TypeRefIr::builtin("Json")),
             encode_hook_id: String::new(),
             decode_hook_id: "restore:user.decode".to_string(),
             restore_capability: RecoverableRestoreCapability::Exact,
@@ -505,7 +505,7 @@ fn recoverable_custom_and_native_plans_validate_required_fields() {
             adapter_identity: "adapter:date".to_string(),
             adapter_schema_version: String::new(),
             native_type_identity: "native:Date".to_string(),
-            durable_state_type_plan: recoverable_type_ref_plan(TypeRefIr::native("Json")),
+            durable_state_type_plan: recoverable_type_ref_plan(TypeRefIr::builtin("Json")),
             encode_hook_id: "adapter:date.encode".to_string(),
             decode_hook_id: String::new(),
             owner: RecoverableNativeAdapterOwner {
@@ -530,7 +530,7 @@ fn recoverable_custom_and_native_plans_validate_required_fields() {
 fn recoverable_custom_plan_rejects_missing_required_schema_fields() {
     let value = json!({
         "concreteTypeIdentity": "type:user",
-        "durableStateTypePlan": recoverable_type_ref_plan(TypeRefIr::native("Json")),
+        "durableStateTypePlan": recoverable_type_ref_plan(TypeRefIr::builtin("Json")),
         "encodeHookId": "restore:user.encode",
         "restoreCapability": "exact"
     });
@@ -552,7 +552,7 @@ fn recoverable_native_plan_rejects_missing_required_schema_fields() {
         "adapterIdentity": "adapter:date",
         "adapterSchemaVersion": "1",
         "nativeTypeIdentity": "native:Date",
-        "durableStateTypePlan": recoverable_type_ref_plan(TypeRefIr::native("Json")),
+        "durableStateTypePlan": recoverable_type_ref_plan(TypeRefIr::builtin("Json")),
         "encodeHookId": "adapter:date.encode",
         "decodeHookId": "adapter:date.decode",
         "schemaCompatibility": "exact"
@@ -774,7 +774,7 @@ fn for_in_value_slot_round_trips_and_defaults_to_single_binding() {
             assert_eq!(*item_slot, 0);
             assert_eq!(
                 *item_type,
-                Some(TypeRefIr::Native {
+                Some(TypeRefIr::Builtin {
                     name: "string".to_string(),
                     args: Vec::new(),
                 })
@@ -1603,7 +1603,7 @@ fn service_unit_round_trips_canonical_operation_shape() {
             package_version: None,
             file_ir_identity: None,
             kind: DbObjectKindIr::Object,
-            ty: TypeRefIr::native("User"),
+            ty: TypeRefIr::builtin("User"),
             type_name: "User".to_owned(),
             collection_name: "user".to_owned(),
             key: Some(DbObjectKeyIr {
@@ -2043,6 +2043,18 @@ fn type_refs_and_descriptors_reject_unknown_fields() {
         "target": { "kind": "builtin", "name": "string" },
         "legacyTarget": "String"
     }));
+
+    serde_json::from_value::<TypeRefIr>(json!({
+        "kind": "native",
+        "name": "string"
+    }))
+    .expect_err("legacy native type-ref wire must fail closed");
+
+    serde_json::from_value::<TypeDescriptorIr>(json!({
+        "kind": "external",
+        "symbol": "opaque.Handle"
+    }))
+    .expect_err("removed native type descriptor wire must fail closed");
 }
 
 #[test]

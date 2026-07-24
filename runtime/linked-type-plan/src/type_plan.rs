@@ -269,7 +269,7 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
         use skiff_artifact_model::TypeRefIr;
 
         let node = match type_ref {
-            TypeRefIr::Native { name, args } => Self::artifact_builtin_node(name, args)?,
+            TypeRefIr::Builtin { name, args } => Self::artifact_builtin_node(name, args)?,
             TypeRefIr::Record { fields } => RuntimeTypeNode::Record {
                 fields: fields
                     .iter()
@@ -343,7 +343,7 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
         use skiff_artifact_model::TypeRefIr;
 
         let node = match type_ref {
-            TypeRefIr::Native { name, args } => {
+            TypeRefIr::Builtin { name, args } => {
                 Self::artifact_builtin_node_in_program(name, args, ctx)?
             }
             TypeRefIr::Record { fields } => RuntimeTypeNode::Record {
@@ -1278,7 +1278,7 @@ fn linked_type_descriptor_label(descriptor: &LinkedTypeDescriptor) -> &'static s
 fn artifact_type_ref_label(type_ref: &skiff_artifact_model::TypeRefIr) -> &'static str {
     use skiff_artifact_model::TypeRefIr;
     match type_ref {
-        TypeRefIr::Native { .. } => "builtin",
+        TypeRefIr::Builtin { .. } => "builtin",
         TypeRefIr::LocalType { .. } => "localType",
         TypeRefIr::PublicationType { .. } => "publicationType",
         TypeRefIr::ServiceSymbol { .. } => "serviceSymbol",
@@ -1296,7 +1296,7 @@ fn artifact_type_ref_label(type_ref: &skiff_artifact_model::TypeRefIr) -> &'stat
 
 fn artifact_type_ref_named_type_name(type_ref: &skiff_artifact_model::TypeRefIr) -> Option<String> {
     match type_ref {
-        skiff_artifact_model::TypeRefIr::Native { name, .. } => Some(name.clone()),
+        skiff_artifact_model::TypeRefIr::Builtin { name, .. } => Some(name.clone()),
         _ => None,
     }
 }

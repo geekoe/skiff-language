@@ -839,6 +839,30 @@ fn parses_native_function_without_body() {
 }
 
 #[test]
+fn rejects_removed_native_type_declaration() {
+    let error = parse_source("native type Handle<T>").unwrap_err();
+    assert!(
+        error.to_string().contains("expected function"),
+        "unexpected native type rejection: {error}"
+    );
+}
+
+#[test]
+fn type_declaration_ast_has_no_native_compatibility_field() {
+    let declaration = parse_source("type User { name: string }")
+        .unwrap()
+        .types
+        .remove(0);
+    let mut wire = serde_json::to_value(&declaration).unwrap();
+    assert!(wire.get("is_native").is_none());
+    wire.as_object_mut()
+        .unwrap()
+        .insert("is_native".to_string(), serde_json::Value::Bool(true));
+    serde_json::from_value::<crate::ast::TypeDecl>(wire)
+        .expect_err("removed native type AST field must fail closed");
+}
+
+#[test]
 fn parses_static_native_impl_methods_and_implicit_self() {
     let source = r#"
             impl Array<T> {

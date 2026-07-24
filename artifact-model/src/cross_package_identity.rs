@@ -134,7 +134,7 @@ fn canonicalize_inner(
         TypeRefIr::PackageSymbol { symbol } => {
             canonicalize_package_symbol(symbol, owner_package_id, consumer_deps, index)
         }
-        TypeRefIr::Native { name, args } => TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
             name: name.clone(),
             args: args
                 .iter()

@@ -733,7 +733,7 @@ fn projection_visible_type_ref(
                 },
             })
             .unwrap_or_else(|| ty.clone()),
-        TypeRefIr::Native { name, args } => TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
             name: name.clone(),
             args: args
                 .iter()
@@ -818,8 +818,8 @@ fn type_ref_ir_source_text_with_named_types(
     named_type: &impl Fn(&str) -> String,
 ) -> String {
     match ty {
-        TypeRefIr::Native { name, args } if args.is_empty() => named_type(name),
-        TypeRefIr::Native { name, args } => format!(
+        TypeRefIr::Builtin { name, args } if args.is_empty() => named_type(name),
+        TypeRefIr::Builtin { name, args } => format!(
             "{}<{}>",
             named_type(name),
             args.iter()

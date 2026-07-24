@@ -81,7 +81,7 @@ fn substitute_local_type(
             )),
             None => Ok(ty.clone()),
         },
-        TypeRefIr::Native { name, args } => Ok(TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => Ok(TypeRefIr::Builtin {
             name: name.clone(),
             args: args
                 .iter()

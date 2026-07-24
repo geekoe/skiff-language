@@ -200,20 +200,20 @@ fn non_nullable_materialization_target(target: &TypeRefIr) -> TypeRefIr {
 
 fn map_materialization_value_type(target: &TypeRefIr) -> Option<TypeRefIr> {
     match target {
-        TypeRefIr::Native { name, args }
+        TypeRefIr::Builtin { name, args }
             if name == "Map"
                 && matches!(
                     args.as_slice(),
-                    [TypeRefIr::Native { name, args: key_args }, _]
+                    [TypeRefIr::Builtin { name, args: key_args }, _]
                         if name == "string" && key_args.is_empty()
                 ) =>
         {
             args.get(1).cloned()
         }
-        TypeRefIr::Native { name, args }
+        TypeRefIr::Builtin { name, args }
             if args.is_empty() && matches!(name.as_str(), "Json" | "JsonObject") =>
         {
-            Some(TypeRefIr::Native {
+            Some(TypeRefIr::Builtin {
                 name: "Json".to_string(),
                 args: Vec::new(),
             })
@@ -241,7 +241,7 @@ pub(super) fn type_is_nullable(ty: &TypeRefIr) -> bool {
 }
 
 fn type_is_null(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Native { name, args } if name == "null" && args.is_empty())
+    matches!(ty, TypeRefIr::Builtin { name, args } if name == "null" && args.is_empty())
         || matches!(
             ty,
             TypeRefIr::Literal {

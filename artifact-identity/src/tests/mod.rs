@@ -191,7 +191,7 @@ fn package_fixture(body_seed: &str) -> PackageUnit {
             symbol: "run".to_string(),
             signature: skiff_artifact_model::ExecutableSignatureIr {
                 params: Vec::new(),
-                return_type: TypeRefIr::native("string"),
+                return_type: TypeRefIr::builtin("string"),
                 self_type: None,
                 may_suspend: false,
             },
@@ -216,7 +216,7 @@ fn package_fixture(body_seed: &str) -> PackageUnit {
 fn publication_abi_fixture() -> PublicationAbiUnit {
     let public_signature = CanonicalPublicCallableSignature {
         params: Vec::new(),
-        return_type: TypeRefIr::native("string"),
+        return_type: TypeRefIr::builtin("string"),
         may_suspend: false,
     };
     let operation = OperationAbiRef {

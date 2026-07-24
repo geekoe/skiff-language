@@ -37,8 +37,7 @@ pub struct FunctionTypeParamIr {
     tag = "kind"
 )]
 pub enum TypeRefIr {
-    #[serde(rename = "builtin")]
-    Native {
+    Builtin {
         name: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         args: Vec<TypeRefIr>,
@@ -84,8 +83,8 @@ pub enum TypeRefIr {
 }
 
 impl TypeRefIr {
-    pub fn native(name: impl Into<String>) -> Self {
-        Self::Native {
+    pub fn builtin(name: impl Into<String>) -> Self {
+        Self::Builtin {
             name: name.into(),
             args: Vec::new(),
         }
@@ -143,17 +142,7 @@ pub struct TypeDeclIr {
     tag = "kind"
 )]
 pub enum TypeDescriptorIr {
-    Record {
-        fields: BTreeMap<String, TypeRefIr>,
-    },
-    Alias {
-        target: TypeRefIr,
-    },
-    Union {
-        variants: Vec<TypeRefIr>,
-    },
-    #[serde(rename = "external")]
-    Native {
-        symbol: String,
-    },
+    Record { fields: BTreeMap<String, TypeRefIr> },
+    Alias { target: TypeRefIr },
+    Union { variants: Vec<TypeRefIr> },
 }

@@ -105,7 +105,7 @@ fn package_type_ref_from_resolved_ir(
     dependency_analysis: &SourceDependencyAnalysisInput,
 ) -> Result<PackageTypeRef, String> {
     match ty {
-        TypeRefIr::Native { name, args } => Ok(PackageTypeRef::Container {
+        TypeRefIr::Builtin { name, args } => Ok(PackageTypeRef::Container {
             name: name.clone(),
             arguments: args
                 .iter()
@@ -176,7 +176,7 @@ fn resolved_ir_contains_contract_symbol(
         TypeRefIr::ServiceSymbol { symbol } => dependency_analysis
             .contract_requirement(&symbol.module_path)
             .is_ok(),
-        TypeRefIr::Native { args, .. } | TypeRefIr::Union { items: args } => args
+        TypeRefIr::Builtin { args, .. } | TypeRefIr::Union { items: args } => args
             .iter()
             .any(|argument| resolved_ir_contains_contract_symbol(argument, dependency_analysis)),
         TypeRefIr::Record { fields } => fields
@@ -296,7 +296,7 @@ pub(super) fn resolved_contract_type(
                             .join(", ")
                     )
                 },
-                ir: TypeRefIr::Native {
+                ir: TypeRefIr::Builtin {
                     name: name.clone(),
                     args: arguments.into_iter().map(|argument| argument.ir).collect(),
                 },

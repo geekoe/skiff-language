@@ -1,6 +1,6 @@
 use serde_json::json;
 use skiff_artifact_model::{
-    BuiltinReceiverCallableSemantics, NativeCallableSemantics, NativeTypeExprDef,
+    BuiltinReceiverCallableSemantics, NativeCallableSemantics, NativeSignatureTypeExpr,
     BUILTIN_RECEIVER_CALLABLE_SEMANTICS, STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
 };
 use skiff_runtime_model::error::{TypeIdentity, WirePayload};
@@ -194,7 +194,7 @@ fn native_callable_semantics_registry_rejects_signature_mismatch() {
         .iter()
         .find(|signature| signature.binding_key == "std.string.truncateUtf8Bytes")
         .expect("truncate signature should exist");
-    signature.return_type = NativeTypeExprDef::Builtin("number");
+    signature.return_type = NativeSignatureTypeExpr::Builtin("number");
     let error = validate_native_callable_semantics_registry(
         &[detached_native_semantics("std.string.truncateUtf8Bytes")],
         &[signature],

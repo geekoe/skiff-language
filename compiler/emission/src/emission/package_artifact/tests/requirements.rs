@@ -166,7 +166,7 @@ fn push_package_call(file: &mut PublishedFileIrArtifact, package_ref: PackageRef
     if file.unit.constants.is_empty() {
         file.unit.constants.push(ConstIr {
             name: "package_calls".to_string(),
-            ty: TypeRefIr::native("void"),
+            ty: TypeRefIr::builtin("void"),
             body: ExecutableBody::default(),
             source_span: None,
         });

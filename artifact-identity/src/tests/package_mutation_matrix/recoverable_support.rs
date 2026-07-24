@@ -12,7 +12,7 @@ use skiff_artifact_model::{
 pub(super) fn recoverable_plan(reverse: bool) -> RecoverableExpectedTypePlan {
     let mut plan = RecoverableExpectedTypePlan {
         root: RecoverableExpectedTypeRoot::TypeRef {
-            ty: TypeRefIr::native("string"),
+            ty: TypeRefIr::builtin("string"),
         },
         root_type_identity_ref: Some(RecoverableTypeIdentityRef("type:string".to_string())),
         runtime_carrier_check_required: true,

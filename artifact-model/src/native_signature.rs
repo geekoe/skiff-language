@@ -11,19 +11,21 @@ pub struct NativeSignatureDef {
     pub binding_key: &'static str,
     pub aliases: &'static [&'static str],
     pub type_param_count: usize,
-    pub params: &'static [NativeTypeExprDef],
-    pub return_type: NativeTypeExprDef,
+    pub params: &'static [NativeSignatureTypeExpr],
+    pub return_type: NativeSignatureTypeExpr,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeTypeExprDef {
+pub enum NativeSignatureTypeExpr {
     TypeParam(usize),
     Builtin(&'static str),
-    Array(&'static NativeTypeExprDef),
-    Map(&'static NativeTypeExprDef, &'static NativeTypeExprDef),
-    Nullable(&'static NativeTypeExprDef),
-    Stream(&'static NativeTypeExprDef),
-    ActorRef(&'static NativeTypeExprDef),
+    Array(&'static NativeSignatureTypeExpr),
+    Map(
+        &'static NativeSignatureTypeExpr,
+        &'static NativeSignatureTypeExpr,
+    ),
+    Nullable(&'static NativeSignatureTypeExpr),
+    Stream(&'static NativeSignatureTypeExpr),
 }
 
 /// Audited callable semantics for an exact native binding.
@@ -96,88 +98,61 @@ pub fn native_callable_semantics(binding_key: &str) -> Option<&'static NativeCal
         .find(|semantics| semantics.binding_key == binding_key)
 }
 
-const T0: NativeTypeExprDef = NativeTypeExprDef::TypeParam(0);
-const T1: NativeTypeExprDef = NativeTypeExprDef::TypeParam(1);
-const STRING: NativeTypeExprDef = NativeTypeExprDef::Builtin("string");
-const BOOL: NativeTypeExprDef = NativeTypeExprDef::Builtin("bool");
-const NUMBER: NativeTypeExprDef = NativeTypeExprDef::Builtin("number");
-const INTEGER: NativeTypeExprDef = NativeTypeExprDef::Builtin("integer");
-const BYTES: NativeTypeExprDef = NativeTypeExprDef::Builtin("bytes");
-const DATE: NativeTypeExprDef = NativeTypeExprDef::Builtin("Date");
-const DURATION: NativeTypeExprDef = NativeTypeExprDef::Builtin("Duration");
-const JSON: NativeTypeExprDef = NativeTypeExprDef::Builtin("Json");
-const JSON_OBJECT: NativeTypeExprDef = NativeTypeExprDef::Builtin("JsonObject");
-const VOID: NativeTypeExprDef = NativeTypeExprDef::Builtin("void");
-const DATE_NULLABLE: NativeTypeExprDef = NativeTypeExprDef::Nullable(&DATE);
-const STRING_ARRAY: NativeTypeExprDef = NativeTypeExprDef::Array(&STRING);
-const BYTES_ARRAY: NativeTypeExprDef = NativeTypeExprDef::Array(&BYTES);
-const HTTP_HEADER_ARRAY: NativeTypeExprDef = NativeTypeExprDef::Array(&HTTP_HEADER);
-const STRING_NULLABLE: NativeTypeExprDef = NativeTypeExprDef::Nullable(&STRING);
-const HTTP_RESPONSE_NULLABLE: NativeTypeExprDef = NativeTypeExprDef::Nullable(&HTTP_RESPONSE);
-const JSON_NULLABLE: NativeTypeExprDef = NativeTypeExprDef::Nullable(&JSON);
-const HTTP_HEADER: NativeTypeExprDef = NativeTypeExprDef::Builtin("std.http.HttpHeader");
-const HTTP_REQUEST: NativeTypeExprDef = NativeTypeExprDef::Builtin("std.http.HttpRequest");
-const HTTP_RESPONSE: NativeTypeExprDef = NativeTypeExprDef::Builtin("std.http.HttpResponse");
-const HTTP_CLIENT_REQUEST: NativeTypeExprDef =
-    NativeTypeExprDef::Builtin("std.http.HttpClientRequest");
-const HTTP_CLIENT_RESPONSE: NativeTypeExprDef =
-    NativeTypeExprDef::Builtin("std.http.HttpClientResponse");
-const HTTP_CLIENT_STREAM_HANDLE: NativeTypeExprDef =
-    NativeTypeExprDef::Builtin("std.http.HttpClientStreamHandle");
-const HTTP_SSE_EVENT: NativeTypeExprDef = NativeTypeExprDef::Builtin("std.http.HttpSseEvent");
-const HTTP_RESPONSE_STREAM_EVENT: NativeTypeExprDef =
-    NativeTypeExprDef::Builtin("std.http.HttpResponseStreamEvent");
-const HTTP_SSE_STREAM: NativeTypeExprDef = NativeTypeExprDef::Stream(&HTTP_SSE_EVENT);
-const BYTE_STREAM: NativeTypeExprDef = NativeTypeExprDef::Stream(&BYTES);
-const FILE_IMMUTABLE: NativeTypeExprDef = NativeTypeExprDef::Builtin("std.file.ImmutableFile");
-const FILE_CREATE_OPTIONS: NativeTypeExprDef = NativeTypeExprDef::Builtin("std.file.CreateOptions");
-const FILE_CREATE_OPTIONS_NULLABLE: NativeTypeExprDef =
-    NativeTypeExprDef::Nullable(&FILE_CREATE_OPTIONS);
-const FILE_INFO: NativeTypeExprDef = NativeTypeExprDef::Builtin("std.file.FileInfo");
-const RESOURCE_INFO: NativeTypeExprDef = NativeTypeExprDef::Builtin("std.resource.ResourceInfo");
-const ACTOR_REF_T0: NativeTypeExprDef = NativeTypeExprDef::ActorRef(&T0);
-const ACTOR_REF_T0_NULLABLE: NativeTypeExprDef = NativeTypeExprDef::Nullable(&ACTOR_REF_T0);
-
+const T0: NativeSignatureTypeExpr = NativeSignatureTypeExpr::TypeParam(0);
+const T1: NativeSignatureTypeExpr = NativeSignatureTypeExpr::TypeParam(1);
+const STRING: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("string");
+const BOOL: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("bool");
+const NUMBER: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("number");
+const INTEGER: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("integer");
+const BYTES: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("bytes");
+const DATE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("Date");
+const DURATION: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("Duration");
+const JSON: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("Json");
+const JSON_OBJECT: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("JsonObject");
+const VOID: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("void");
+const DATE_NULLABLE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Nullable(&DATE);
+const STRING_ARRAY: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Array(&STRING);
+const BYTES_ARRAY: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Array(&BYTES);
+const HTTP_HEADER_ARRAY: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Array(&HTTP_HEADER);
+const STRING_NULLABLE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Nullable(&STRING);
+const HTTP_RESPONSE_NULLABLE: NativeSignatureTypeExpr =
+    NativeSignatureTypeExpr::Nullable(&HTTP_RESPONSE);
+const JSON_NULLABLE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Nullable(&JSON);
+const HTTP_HEADER: NativeSignatureTypeExpr =
+    NativeSignatureTypeExpr::Builtin("std.http.HttpHeader");
+const HTTP_REQUEST: NativeSignatureTypeExpr =
+    NativeSignatureTypeExpr::Builtin("std.http.HttpRequest");
+const HTTP_RESPONSE: NativeSignatureTypeExpr =
+    NativeSignatureTypeExpr::Builtin("std.http.HttpResponse");
+const HTTP_CLIENT_REQUEST: NativeSignatureTypeExpr =
+    NativeSignatureTypeExpr::Builtin("std.http.HttpClientRequest");
+const HTTP_CLIENT_RESPONSE: NativeSignatureTypeExpr =
+    NativeSignatureTypeExpr::Builtin("std.http.HttpClientResponse");
+const HTTP_CLIENT_STREAM_HANDLE: NativeSignatureTypeExpr =
+    NativeSignatureTypeExpr::Builtin("std.http.HttpClientStreamHandle");
+const HTTP_SSE_EVENT: NativeSignatureTypeExpr =
+    NativeSignatureTypeExpr::Builtin("std.http.HttpSseEvent");
+const HTTP_RESPONSE_STREAM_EVENT: NativeSignatureTypeExpr =
+    NativeSignatureTypeExpr::Builtin("std.http.HttpResponseStreamEvent");
+const HTTP_SSE_STREAM: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Stream(&HTTP_SSE_EVENT);
+const BYTE_STREAM: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Stream(&BYTES);
+const FILE_IMMUTABLE: NativeSignatureTypeExpr =
+    NativeSignatureTypeExpr::Builtin("std.file.ImmutableFile");
+const FILE_CREATE_OPTIONS: NativeSignatureTypeExpr =
+    NativeSignatureTypeExpr::Builtin("std.file.CreateOptions");
+const FILE_CREATE_OPTIONS_NULLABLE: NativeSignatureTypeExpr =
+    NativeSignatureTypeExpr::Nullable(&FILE_CREATE_OPTIONS);
+const FILE_INFO: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("std.file.FileInfo");
+const RESOURCE_INFO: NativeSignatureTypeExpr =
+    NativeSignatureTypeExpr::Builtin("std.resource.ResourceInfo");
 pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
-    NativeSignatureDef {
-        target: "std.actor.put",
-        binding_key: "actor.put",
-        aliases: &[],
-        type_param_count: 2,
-        params: &[T1, T0],
-        return_type: ACTOR_REF_T0,
-    },
-    NativeSignatureDef {
-        target: "std.actor.get",
-        binding_key: "actor.get",
-        aliases: &[],
-        type_param_count: 2,
-        params: &[T1],
-        return_type: ACTOR_REF_T0,
-    },
-    NativeSignatureDef {
-        target: "std.actor.find",
-        binding_key: "actor.find",
-        aliases: &[],
-        type_param_count: 2,
-        params: &[T1],
-        return_type: ACTOR_REF_T0_NULLABLE,
-    },
-    NativeSignatureDef {
-        target: "std.actor.remove",
-        binding_key: "actor.remove",
-        aliases: &[],
-        type_param_count: 2,
-        params: &[T1],
-        return_type: BOOL,
-    },
     NativeSignatureDef {
         target: "Array.empty",
         binding_key: "core.array.empty",
         aliases: &[],
         type_param_count: 1,
         params: &[],
-        return_type: NativeTypeExprDef::Array(&T0),
+        return_type: NativeSignatureTypeExpr::Array(&T0),
     },
     NativeSignatureDef {
         target: "Map.empty",
@@ -185,7 +160,7 @@ pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
         aliases: &[],
         type_param_count: 2,
         params: &[],
-        return_type: NativeTypeExprDef::Map(&T0, &T1),
+        return_type: NativeSignatureTypeExpr::Map(&T0, &T1),
     },
     NativeSignatureDef {
         target: "Date.now",
@@ -305,7 +280,7 @@ pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
         aliases: &["number.parse"],
         type_param_count: 0,
         params: &[STRING],
-        return_type: NativeTypeExprDef::Nullable(&NUMBER),
+        return_type: NativeSignatureTypeExpr::Nullable(&NUMBER),
     },
     NativeSignatureDef {
         target: "std.number.isInteger",
@@ -744,7 +719,11 @@ pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
         binding_key: "std.telemetry.emit",
         aliases: &[],
         type_param_count: 0,
-        params: &[STRING, STRING, NativeTypeExprDef::Nullable(&JSON_OBJECT)],
+        params: &[
+            STRING,
+            STRING,
+            NativeSignatureTypeExpr::Nullable(&JSON_OBJECT),
+        ],
         return_type: VOID,
     },
     NativeSignatureDef {
@@ -933,7 +912,7 @@ mod tests {
         for (binding_key, return_type) in [
             (
                 "std.http.request.headers",
-                super::NativeTypeExprDef::Array(&super::STRING),
+                super::NativeSignatureTypeExpr::Array(&super::STRING),
             ),
             ("std.http.request.cookie", super::STRING_NULLABLE),
         ] {

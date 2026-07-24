@@ -160,7 +160,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             TypeRefIr::Union { items } => items
                 .iter()
                 .any(|item| self.object_fields_assignable_to_expected(actual_fields, item)),
-            TypeRefIr::Native { name, args } => builtin_object_literal_targets(name, args)
+            TypeRefIr::Builtin { name, args } => builtin_object_literal_targets(name, args)
                 .iter()
                 .any(|fields| self.object_fields_assignable_to_ir_fields(actual_fields, fields)),
             TypeRefIr::PackageSymbol { symbol }
@@ -644,7 +644,7 @@ fn substitute_std_type_params_in_ir(
             .get(name)
             .cloned()
             .unwrap_or_else(|| ty.clone()),
-        TypeRefIr::Native { name, args } => TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
             name: name.clone(),
             args: args
                 .iter()
@@ -735,7 +735,7 @@ fn object_literal_target_candidates_from_ir(
                 )
             })
             .collect(),
-        TypeRefIr::Native { name, args } => {
+        TypeRefIr::Builtin { name, args } => {
             let targets = builtin_object_literal_targets(name, args);
             let is_union = union_branch || targets.len() > 1;
             targets
@@ -815,22 +815,22 @@ fn non_nullable_object_target(target: &ResolvedTypeRef) -> ResolvedTypeRef {
 
 fn map_object_value_target(target: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
     match &target.ir {
-        TypeRefIr::Native { name, args }
+        TypeRefIr::Builtin { name, args }
             if name == "Map"
                 && matches!(
                     args.as_slice(),
-                    [TypeRefIr::Native { name, args: key_args }, _]
+                    [TypeRefIr::Builtin { name, args: key_args }, _]
                         if name == "string" && key_args.is_empty()
                 ) =>
         {
             args.get(1).map(resolved_type_from_ir)
         }
-        TypeRefIr::Native { name, args }
+        TypeRefIr::Builtin { name, args }
             if args.is_empty() && matches!(name.as_str(), "Json" | "JsonObject") =>
         {
             Some(ResolvedTypeRef {
                 source_text: "Json".to_string(),
-                ir: TypeRefIr::Native {
+                ir: TypeRefIr::Builtin {
                     name: "Json".to_string(),
                     args: Vec::new(),
                 },

@@ -526,7 +526,7 @@ fn rewrite_type_ref(
                 false
             }
         }
-        TypeRefIr::Native { args, .. } => {
+        TypeRefIr::Builtin { args, .. } => {
             let mut changed = false;
             for arg in args {
                 changed |= rewrite_type_ref(index, module_path, arg);
@@ -661,7 +661,7 @@ mod tests {
         unit.external_refs.service_call_refs = vec![call_ref.clone()];
         unit.constants.push(skiff_artifact_model::ConstIr {
             name: "call".to_string(),
-            ty: TypeRefIr::native("void"),
+            ty: TypeRefIr::builtin("void"),
             body: ExecutableBody {
                 expressions: vec![ExprIr::Call {
                     call: CallIr {

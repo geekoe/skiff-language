@@ -216,10 +216,10 @@ fn source_error(error: impl std::fmt::Display) -> skiff_compiler_source::SourceC
 
 fn nested_contract_execution_type() -> TypeRefIr {
     TypeRefIr::Nullable {
-        inner: Box::new(TypeRefIr::Native {
+        inner: Box::new(TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![TypeRefIr::Nullable {
-                inner: Box::new(TypeRefIr::native("unknown")),
+                inner: Box::new(TypeRefIr::builtin("unknown")),
             }],
         }),
     }

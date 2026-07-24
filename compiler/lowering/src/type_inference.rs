@@ -39,7 +39,7 @@ fn single_for_item_type_text(type_text: &str) -> Option<&str> {
 }
 
 fn array_item_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
-    let TypeRefIr::Native { name, args } = ty else {
+    let TypeRefIr::Builtin { name, args } = ty else {
         return None;
     };
     if !matches!(name.as_str(), "Array" | "Stream") || args.len() != 1 {
@@ -49,7 +49,7 @@ fn array_item_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
 }
 
 fn single_for_item_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
-    let TypeRefIr::Native { name, args } = ty else {
+    let TypeRefIr::Builtin { name, args } = ty else {
         return None;
     };
     match name.as_str() {
@@ -88,7 +88,7 @@ fn map_entry_type_text(type_text: &str) -> Option<(String, String)> {
 }
 
 fn map_entry_type_ir(ty: &TypeRefIr) -> Option<(TypeRefIr, TypeRefIr)> {
-    let TypeRefIr::Native { name, args } = ty else {
+    let TypeRefIr::Builtin { name, args } = ty else {
         return None;
     };
     (name == "Map" && args.len() == 2).then(|| (args[0].clone(), args[1].clone()))
@@ -374,7 +374,7 @@ impl<'a> FunctionLowerer<'a> {
                 .ok()?;
                 Some(db_query_type_ref(target))
             }
-            Expr::DbLeaseClaim(_) => Some(TypeRefIr::native("bool")),
+            Expr::DbLeaseClaim(_) => Some(TypeRefIr::builtin("bool")),
             Expr::DbLeaseRead(_) => Some(db_lease_read_result_type_ir()),
             _ => self.infer_expr_type_text(expr).and_then(|type_text| {
                 lower_type_text(

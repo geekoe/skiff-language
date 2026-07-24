@@ -84,7 +84,7 @@ impl ContractAwareTypeResolver<'_> {
                         }
                     }
                 }
-                if let TypeRefIr::Native { name, .. } = resolved.ir {
+                if let TypeRefIr::Builtin { name, .. } = resolved.ir {
                     let arguments = args
                         .iter()
                         .map(|arg| self.resolve_expanded_expr(arg, context))

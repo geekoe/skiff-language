@@ -16,7 +16,7 @@ use crate::package_artifact::project_boundary_callable;
 fn safe_detached_callable_is_available_with_contract_agnostic_body_and_requirements() {
     let parameter_type = ContractTypeId::new("contract-type:request");
     let error_type = ContractTypeId::new("contract-type:error");
-    let mut signature = signature(TypeRefIr::native("string"));
+    let mut signature = signature(TypeRefIr::builtin("string"));
     signature.parameters[0].ty = PackageTypeRef::Contract {
         contract_type_id: parameter_type.clone(),
     };
@@ -80,7 +80,7 @@ fn every_frozen_unavailable_reason_is_projected_fail_closed() {
         resolved_call_targets: BTreeMap::new(),
     };
     assert_reasons(
-        signature(TypeRefIr::native("string")),
+        signature(TypeRefIr::builtin("string")),
         unknown,
         &[
             BoundaryUnavailableReason::AnalysisPending,
@@ -106,7 +106,7 @@ fn every_frozen_unavailable_reason_is_projected_fail_closed() {
         escape_lanes: vec![ValueEscapeLane::Capture],
     };
     assert_reasons(
-        signature(TypeRefIr::native("string")),
+        signature(TypeRefIr::builtin("string")),
         unsafe_facts,
         &[
             BoundaryUnavailableReason::UnknownCallTarget,
@@ -125,20 +125,20 @@ fn every_frozen_unavailable_reason_is_projected_fail_closed() {
         .resolved_call_targets
         .insert(0, CallableTargetFact::Unknown);
     assert_reasons(
-        signature(TypeRefIr::native("string")),
+        signature(TypeRefIr::builtin("string")),
         unknown_target,
         &[BoundaryUnavailableReason::UnknownCallTarget],
     );
     assert_reasons(
         signature(TypeRefIr::Function {
             params: Vec::new(),
-            return_type: Box::new(TypeRefIr::native("void")),
+            return_type: Box::new(TypeRefIr::builtin("void")),
         }),
         safe_facts(),
         &[BoundaryUnavailableReason::CallbackAdapterUnavailable],
     );
     assert_reasons(
-        signature(TypeRefIr::native("Socket")),
+        signature(TypeRefIr::builtin("Socket")),
         safe_facts(),
         &[BoundaryUnavailableReason::NativeAdapterUnavailable],
     );
@@ -148,9 +148,9 @@ fn every_frozen_unavailable_reason_is_projected_fail_closed() {
         &[BoundaryUnavailableReason::UnsupportedBoundaryType],
     );
     assert_reasons(
-        signature(TypeRefIr::Native {
+        signature(TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![TypeRefIr::native("string")],
+            args: vec![TypeRefIr::builtin("string")],
         }),
         safe_facts(),
         &[BoundaryUnavailableReason::UnsupportedStream],
@@ -210,7 +210,7 @@ fn exported_package_nominal_projects_as_exact_public_type_reference() {
     let projection = project_boundary_callable(
         "api",
         &signature(TypeRefIr::Nullable {
-            inner: Box::new(TypeRefIr::Native {
+            inner: Box::new(TypeRefIr::Builtin {
                 name: "Array".to_string(),
                 args: vec![TypeRefIr::ServiceSymbol {
                     symbol: skiff_artifact_model::ServiceSymbolRef {
@@ -265,9 +265,9 @@ fn outer_service_stream_projects_directly_to_canonical_server_stream() {
         ("model".to_string(), "Envelope".to_string()),
         "type:Envelope".to_string(),
     )]);
-    let mut stream_signature = signature(TypeRefIr::native("string"));
+    let mut stream_signature = signature(TypeRefIr::builtin("string"));
     stream_signature.return_type = PackageTypeRef::Local {
-        local_type: TypeRefIr::Native {
+        local_type: TypeRefIr::Builtin {
             name: "Stream".to_string(),
             args: vec![TypeRefIr::ServiceSymbol {
                 symbol: skiff_artifact_model::ServiceSymbolRef {
@@ -312,20 +312,20 @@ fn outer_service_stream_projects_directly_to_canonical_server_stream() {
 fn service_stream_projection_is_deterministic_for_both_signature_encodings() {
     let signatures = [
         PackageTypeRef::Local {
-            local_type: TypeRefIr::Native {
+            local_type: TypeRefIr::Builtin {
                 name: "Stream".to_string(),
-                args: vec![TypeRefIr::native("string")],
+                args: vec![TypeRefIr::builtin("string")],
             },
         },
         PackageTypeRef::Container {
             name: "Stream".to_string(),
             arguments: vec![PackageTypeRef::Local {
-                local_type: TypeRefIr::native("string"),
+                local_type: TypeRefIr::builtin("string"),
             }],
         },
     ];
     let receipts = signatures.map(|return_type| {
-        let mut signature = signature(TypeRefIr::native("void"));
+        let mut signature = signature(TypeRefIr::builtin("void"));
         signature.return_type = return_type;
         let projection = project_boundary_callable(
             "api",
@@ -343,11 +343,11 @@ fn service_stream_projection_is_deterministic_for_both_signature_encodings() {
 
 #[test]
 fn stream_is_fail_closed_outside_the_outer_return_boundary() {
-    let stream = TypeRefIr::Native {
+    let stream = TypeRefIr::Builtin {
         name: "Stream".to_string(),
-        args: vec![TypeRefIr::native("string")],
+        args: vec![TypeRefIr::builtin("string")],
     };
-    let mut parameter_stream = signature(TypeRefIr::native("void"));
+    let mut parameter_stream = signature(TypeRefIr::builtin("void"));
     parameter_stream.parameters[0].ty = PackageTypeRef::Local {
         local_type: stream.clone(),
     };
@@ -357,23 +357,23 @@ fn stream_is_fail_closed_outside_the_outer_return_boundary() {
         &[BoundaryUnavailableReason::UnsupportedStream],
     );
     for return_type in [
-        TypeRefIr::Native {
+        TypeRefIr::Builtin {
             name: "Stream".to_string(),
             args: vec![stream.clone()],
         },
         TypeRefIr::Nullable {
             inner: Box::new(stream.clone()),
         },
-        TypeRefIr::Native {
+        TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![stream],
         },
-        TypeRefIr::Native {
+        TypeRefIr::Builtin {
             name: "Stream".to_string(),
             args: Vec::new(),
         },
     ] {
-        let mut nested_stream = signature(TypeRefIr::native("string"));
+        let mut nested_stream = signature(TypeRefIr::builtin("string"));
         nested_stream.return_type = PackageTypeRef::Local {
             local_type: return_type,
         };
@@ -384,11 +384,11 @@ fn stream_is_fail_closed_outside_the_outer_return_boundary() {
         );
     }
 
-    let mut unavailable_item = signature(TypeRefIr::native("string"));
+    let mut unavailable_item = signature(TypeRefIr::builtin("string"));
     unavailable_item.return_type = PackageTypeRef::Local {
-        local_type: TypeRefIr::Native {
+        local_type: TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![TypeRefIr::native("Socket")],
+            args: vec![TypeRefIr::builtin("Socket")],
         },
     };
     assert_reasons(
@@ -400,11 +400,11 @@ fn stream_is_fail_closed_outside_the_outer_return_boundary() {
 
 #[test]
 fn http_stream_event_remains_only_the_service_stream_item_type() {
-    let mut stream_signature = signature(TypeRefIr::native("string"));
+    let mut stream_signature = signature(TypeRefIr::builtin("string"));
     stream_signature.return_type = PackageTypeRef::Local {
-        local_type: TypeRefIr::Native {
+        local_type: TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![TypeRefIr::native(
+            args: vec![TypeRefIr::builtin(
                 skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE,
             )],
         },
@@ -489,7 +489,7 @@ fn websocket_ingress_generic_types_project_to_the_exact_contract_abi() {
 fn websocket_ingress_generic_types_reject_wrong_arity() {
     let projection = project_boundary_callable(
         "api",
-        &signature(TypeRefIr::Native {
+        &signature(TypeRefIr::Builtin {
             name: "std.websocket.WebSocketIngressEvent".to_string(),
             args: Vec::new(),
         }),
@@ -512,13 +512,13 @@ fn canonical_http_ingress_types_are_boundary_available_and_exact() {
         parameters: vec![PackageCallableParameter {
             name: "request".to_string(),
             ty: PackageTypeRef::Local {
-                local_type: TypeRefIr::native(
+                local_type: TypeRefIr::builtin(
                     skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE,
                 ),
             },
         }],
         return_type: PackageTypeRef::Local {
-            local_type: TypeRefIr::native(skiff_artifact_model::http_boundary::HTTP_RESPONSE_TYPE),
+            local_type: TypeRefIr::builtin(skiff_artifact_model::http_boundary::HTTP_RESPONSE_TYPE),
         },
         throw_types: Vec::new(),
         may_suspend: false,
@@ -574,7 +574,7 @@ fn official_imported_http_symbols_project_to_the_existing_boundary_types() {
             },
         ],
         return_type: PackageTypeRef::Local {
-            local_type: TypeRefIr::Native {
+            local_type: TypeRefIr::Builtin {
                 name: "Stream".to_string(),
                 args: vec![official_std_symbol(
                     skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE,
@@ -639,9 +639,9 @@ fn imported_http_symbol_admission_is_exact_and_fail_closed() {
                 abi_expectation: None,
             },
         },
-        TypeRefIr::Native {
+        TypeRefIr::Builtin {
             name: skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE.to_string(),
-            args: vec![TypeRefIr::native("string")],
+            args: vec![TypeRefIr::builtin("string")],
         },
     ] {
         assert_reasons(
@@ -652,11 +652,11 @@ fn imported_http_symbol_admission_is_exact_and_fail_closed() {
     }
 
     assert_reasons(
-        signature(TypeRefIr::Native {
+        signature(TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![TypeRefIr::Function {
                 params: Vec::new(),
-                return_type: Box::new(TypeRefIr::native("void")),
+                return_type: Box::new(TypeRefIr::builtin("void")),
             }],
         }),
         safe_facts(),
@@ -668,7 +668,7 @@ fn imported_http_symbol_admission_is_exact_and_fail_closed() {
 fn http_stream_event_is_available_but_arbitrary_native_handles_remain_rejected() {
     let projection = project_boundary_callable(
         "api",
-        &signature(TypeRefIr::native(
+        &signature(TypeRefIr::builtin(
             skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE,
         )),
         &safe_facts(),
@@ -684,7 +684,7 @@ fn http_stream_event_is_available_but_arbitrary_native_handles_remain_rejected()
 
     for native in ["Socket", "FileHandle", "std.db.Connection"] {
         assert_reasons(
-            signature(TypeRefIr::native(native)),
+            signature(TypeRefIr::builtin(native)),
             safe_facts(),
             &[BoundaryUnavailableReason::NativeAdapterUnavailable],
         );

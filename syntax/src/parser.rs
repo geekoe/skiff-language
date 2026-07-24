@@ -322,13 +322,9 @@ impl Parser {
             } else if self.check_ident("const") {
                 self.reject_export_modifier_if_needed(exported, export_token_start)?;
                 consts.push(self.parse_const_decl(exported)?);
-            } else if self.check_native_type_start() {
-                self.reject_export_modifier_if_needed(exported, export_token_start)?;
-                self.advance();
-                types.push(self.parse_type_decl(exported, true)?);
             } else if self.check_ident("type") {
                 self.reject_export_modifier_if_needed(exported, export_token_start)?;
-                types.push(self.parse_type_decl(exported, false)?);
+                types.push(self.parse_type_decl(exported)?);
             } else if self.check_ident("alias") {
                 self.reject_export_modifier_if_needed(exported, export_token_start)?;
                 aliases.push(self.parse_alias_decl(exported)?);
@@ -468,15 +464,8 @@ impl Parser {
             || self.check_function_start()
     }
 
-    fn parse_type_decl(&mut self, exported: bool, is_native: bool) -> Result<TypeDecl> {
-        let start = if is_native {
-            self.previous().span.start
-        } else {
-            self.expect_ident_value("type")?.span.start
-        };
-        if is_native {
-            self.expect_ident_value("type")?;
-        }
+    fn parse_type_decl(&mut self, exported: bool) -> Result<TypeDecl> {
+        let start = self.expect_ident_value("type")?.span.start;
         let name = self.expect_ident("expected type name")?;
         let type_params = if self.check_symbol("<") {
             self.parse_type_param_names()?
@@ -504,22 +493,6 @@ impl Parser {
                 "discriminator can only be used on type representation declarations",
                 self.peek().span.start,
             ));
-        }
-
-        if is_native {
-            self.match_symbol(";");
-            let end = self.previous().span.end;
-            return Ok(TypeDecl {
-                exported,
-                is_native: true,
-                name,
-                type_params,
-                discriminator: None,
-                alias: None,
-                implements: Vec::new(),
-                fields: Vec::new(),
-                span: SourceSpan { start, end },
-            });
         }
 
         if self.match_symbol("=") {
@@ -553,7 +526,6 @@ impl Parser {
         let end = self.previous().span.end;
         Ok(TypeDecl {
             exported,
-            is_native: false,
             name,
             type_params,
             discriminator,
@@ -3243,24 +3215,10 @@ impl Parser {
     }
 
     fn check_function_start(&self) -> bool {
-        if self.check_ident("native") {
-            if let Some(token) = self.tokens.get(self.current + 1) {
-                if matches!(&token.kind, TokenKind::Ident(value) if value == "type") {
-                    return false;
-                }
-            }
-        }
         self.check_ident("function")
             || self.check_ident("native")
             || self.check_ident("provider")
             || self.check_ident("static")
-    }
-
-    fn check_native_type_start(&self) -> bool {
-        self.check_ident("native")
-            && self.tokens.get(self.current + 1).is_some_and(
-                |token| matches!(&token.kind, TokenKind::Ident(value) if value == "type"),
-            )
     }
 
     fn check_provider_capability_start(&self) -> bool {

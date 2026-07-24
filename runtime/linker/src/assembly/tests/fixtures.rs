@@ -137,7 +137,7 @@ impl CycleFixture {
             symbol: "localHelper".to_string(),
             type_params: Vec::new(),
             params: Vec::new(),
-            return_type: TypeRefIr::native("bool"),
+            return_type: TypeRefIr::builtin("bool"),
             self_type: None,
             slots: SlotLayout::default(),
             may_suspend: false,
@@ -646,7 +646,7 @@ fn package(
                     signature: PackageCallableSignature {
                         parameters: Vec::new(),
                         return_type: PackageTypeRef::Local {
-                            local_type: TypeRefIr::native("bool"),
+                            local_type: TypeRefIr::builtin("bool"),
                         },
                         throw_types: Vec::new(),
                         may_suspend: false,
@@ -815,7 +815,7 @@ fn file(module_path: &str) -> FileIrUnit {
         symbol: "entry".to_string(),
         type_params: Vec::new(),
         params: Vec::new(),
-        return_type: TypeRefIr::native("bool"),
+        return_type: TypeRefIr::builtin("bool"),
         self_type: None,
         slots: SlotLayout::default(),
         may_suspend: false,

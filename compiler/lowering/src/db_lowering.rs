@@ -545,7 +545,7 @@ fn expand_db_storage_type_ref(
                 })
                 .collect::<Result<BTreeMap<_, _>>>()?,
         }),
-        TypeRefIr::Native { name, args } => Ok(TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => Ok(TypeRefIr::Builtin {
             name: name.clone(),
             args: args
                 .iter()
@@ -693,30 +693,30 @@ pub(super) fn db_operation_result_type_ir(
     };
     let write_target = target;
     match operation.op {
-        DbOperationKind::Find if operation.many => Ok(TypeRefIr::Native {
+        DbOperationKind::Find if operation.many => Ok(TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![read_target],
         }),
         DbOperationKind::Find | DbOperationKind::Optional => Ok(TypeRefIr::Nullable {
             inner: Box::new(read_target),
         }),
-        DbOperationKind::Insert if operation.many => Ok(TypeRefIr::native("DbInsertManyResult")),
-        DbOperationKind::Update if operation.many => Ok(TypeRefIr::native("DbUpdateManyResult")),
-        DbOperationKind::Delete if operation.many => Ok(TypeRefIr::native("DbDeleteManyResult")),
+        DbOperationKind::Insert if operation.many => Ok(TypeRefIr::builtin("DbInsertManyResult")),
+        DbOperationKind::Update if operation.many => Ok(TypeRefIr::builtin("DbUpdateManyResult")),
+        DbOperationKind::Delete if operation.many => Ok(TypeRefIr::builtin("DbDeleteManyResult")),
         DbOperationKind::Require => Ok(read_target),
         DbOperationKind::Insert => Ok(write_target),
         DbOperationKind::Update | DbOperationKind::Replace => Ok(TypeRefIr::Nullable {
             inner: Box::new(write_target),
         }),
-        DbOperationKind::Upsert => Ok(TypeRefIr::Native {
+        DbOperationKind::Upsert => Ok(TypeRefIr::Builtin {
             name: "DbUpsertResult".to_string(),
             args: vec![write_target],
         }),
-        DbOperationKind::Delete | DbOperationKind::Exists => Ok(TypeRefIr::Native {
+        DbOperationKind::Delete | DbOperationKind::Exists => Ok(TypeRefIr::Builtin {
             name: "bool".to_string(),
             args: Vec::new(),
         }),
-        DbOperationKind::Count => Ok(TypeRefIr::Native {
+        DbOperationKind::Count => Ok(TypeRefIr::Builtin {
             name: "number".to_string(),
             args: Vec::new(),
         }),
@@ -750,7 +750,7 @@ fn db_read_result_type_text(db: &DbMetadataIr, projection: Option<&DbProjectionI
         return db_full_result_type_text(db);
     };
     type_ref_ir_type_text(
-        &db_read_result_type_ir(db, TypeRefIr::native(&db.type_name), Some(projection))
+        &db_read_result_type_ir(db, TypeRefIr::builtin(&db.type_name), Some(projection))
             .expect("validated DB projection must have a result type"),
     )
 }
@@ -760,7 +760,7 @@ fn db_full_result_type_text(db: &DbMetadataIr) -> String {
 }
 
 pub(super) fn db_query_type_ref(object: TypeRefIr) -> TypeRefIr {
-    TypeRefIr::Native {
+    TypeRefIr::Builtin {
         name: "DbQuery".to_string(),
         args: vec![object],
     }
@@ -982,7 +982,7 @@ impl<'a> FunctionLowerer<'a> {
                 slot: claim.slot.clone(),
                 binding_slot,
                 body,
-                result_type: TypeRefIr::native("bool"),
+                result_type: TypeRefIr::builtin("bool"),
                 source_span: None,
             },
         })
@@ -1637,14 +1637,14 @@ impl<'a> FunctionLowerer<'a> {
                         .then(|| self.infer_expr_type_ir(value))
                         .flatten()
                 })
-                .unwrap_or_else(|| TypeRefIr::native("Json"));
+                .unwrap_or_else(|| TypeRefIr::builtin("Json"));
             (self.lower_expr(value)?, result_type)
         } else {
             (
                 self.push_expr(ExprIr::Literal {
                     value: LiteralIr::Null,
                 }),
-                TypeRefIr::native("null"),
+                TypeRefIr::builtin("null"),
             )
         };
 
@@ -1896,14 +1896,14 @@ fn is_parent_db_path(parent: &FieldPath, child: &FieldPath) -> bool {
 fn is_numeric_db_field(ty: &TypeRefIr) -> bool {
     matches!(
         ty,
-        TypeRefIr::Native { name, args } if args.is_empty() && matches!(name.as_str(), "number" | "integer")
+        TypeRefIr::Builtin { name, args } if args.is_empty() && matches!(name.as_str(), "number" | "integer")
     )
 }
 
 fn is_array_db_field(ty: &TypeRefIr) -> bool {
     matches!(
         ty,
-        TypeRefIr::Native { name, .. } if name == "Array"
+        TypeRefIr::Builtin { name, .. } if name == "Array"
     )
 }
 
@@ -1936,9 +1936,9 @@ pub(super) fn db_lease_read_result_type_ir() -> TypeRefIr {
     TypeRefIr::Nullable {
         inner: Box::new(TypeRefIr::Record {
             fields: BTreeMap::from([
-                ("expiresAt".to_string(), TypeRefIr::native("string")),
-                ("owner".to_string(), TypeRefIr::native("string")),
-                ("requestId".to_string(), TypeRefIr::native("string")),
+                ("expiresAt".to_string(), TypeRefIr::builtin("string")),
+                ("owner".to_string(), TypeRefIr::builtin("string")),
+                ("requestId".to_string(), TypeRefIr::builtin("string")),
             ]),
         }),
     }

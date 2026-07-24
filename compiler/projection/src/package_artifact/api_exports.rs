@@ -722,7 +722,7 @@ fn collect_package_type_ref_abi_violations(
     violations: &mut BTreeSet<String>,
 ) {
     match ty {
-        TypeRefIr::Native { args, .. } => {
+        TypeRefIr::Builtin { args, .. } => {
             for arg in args {
                 collect_package_type_ref_abi_violations(
                     manifest,

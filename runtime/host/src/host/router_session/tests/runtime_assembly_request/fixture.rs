@@ -264,7 +264,7 @@ fn void_file(may_suspend: bool, submits_spawn: bool) -> FileIrUnit {
         symbol: "invoke".to_string(),
         type_params: Vec::new(),
         params: Vec::new(),
-        return_type: TypeRefIr::native("void"),
+        return_type: TypeRefIr::builtin("void"),
         self_type: None,
         slots: SlotLayout::default(),
         may_suspend,
@@ -288,7 +288,7 @@ fn void_file(may_suspend: bool, submits_spawn: bool) -> FileIrUnit {
             symbol: "canonical.void.spawnTarget".to_string(),
             type_params: Vec::new(),
             params: Vec::new(),
-            return_type: TypeRefIr::native("void"),
+            return_type: TypeRefIr::builtin("void"),
             self_type: None,
             slots: SlotLayout::default(),
             may_suspend: false,
@@ -343,7 +343,7 @@ fn void_package(
                     signature: PackageCallableSignature {
                         parameters: Vec::new(),
                         return_type: PackageTypeRef::Local {
-                            local_type: TypeRefIr::native("void"),
+                            local_type: TypeRefIr::builtin("void"),
                         },
                         throw_types: Vec::new(),
                         may_suspend,

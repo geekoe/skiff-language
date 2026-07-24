@@ -208,7 +208,7 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
                 BoundaryStreamContract::ServerStream { .. } => (
                     ResolvedTypeRef {
                         source_text: format!("Stream<{}>", resolved.source_text),
-                        ir: skiff_artifact_model::TypeRefIr::Native {
+                        ir: skiff_artifact_model::TypeRefIr::Builtin {
                             name: "Stream".to_string(),
                             args: vec![resolved.ir],
                         },

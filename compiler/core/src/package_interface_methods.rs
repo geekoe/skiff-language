@@ -276,7 +276,7 @@ fn package_interface_type_ref(
     context: &str,
 ) -> Result<TypeRefIr, String> {
     match ty {
-        TypeRefIr::Native { name, args } => Ok(TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => Ok(TypeRefIr::Builtin {
             name: name.clone(),
             args: args
                 .iter()
@@ -448,7 +448,7 @@ mod tests {
     }
 
     fn native(name: &str, args: Vec<TypeRefIr>) -> TypeRefIr {
-        TypeRefIr::Native {
+        TypeRefIr::Builtin {
             name: name.to_string(),
             args,
         }

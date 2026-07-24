@@ -143,10 +143,9 @@ impl PackageId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TypeDecl {
     pub exported: bool,
-    #[serde(default)]
-    pub is_native: bool,
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_params: Vec<String>,

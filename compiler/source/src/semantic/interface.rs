@@ -1009,7 +1009,7 @@ fn contains_external_nominal(ty: &TypeRefIr, index: &InterfaceIndex) -> bool {
             );
             !index.source_types.contains_key(&key) && !index.interfaces.contains_key(&key)
         }
-        TypeRefIr::Native { args, .. } => {
+        TypeRefIr::Builtin { args, .. } => {
             args.iter().any(|arg| contains_external_nominal(arg, index))
         }
         TypeRefIr::Record { fields } => fields
@@ -1123,7 +1123,7 @@ fn substitute_requirement_type(
         }
     }
     Ok(match ty {
-        TypeRefIr::Native { name, args } => TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
             name: name.clone(),
             args: args
                 .iter()
@@ -1201,12 +1201,12 @@ fn receiver_type_ref(conformance: &InterfaceConformanceFact) -> TypeRefIr {
 }
 
 fn is_self_type(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Native { name, args } if name == "Self" && args.is_empty())
+    matches!(ty, TypeRefIr::Builtin { name, args } if name == "Self" && args.is_empty())
 }
 
 fn contains_self_type(ty: &TypeRefIr) -> bool {
     match ty {
-        TypeRefIr::Native { args, .. } => is_self_type(ty) || args.iter().any(contains_self_type),
+        TypeRefIr::Builtin { args, .. } => is_self_type(ty) || args.iter().any(contains_self_type),
         TypeRefIr::Record { fields } => fields.values().any(contains_self_type),
         TypeRefIr::Union { items } => items.iter().any(contains_self_type),
         TypeRefIr::Nullable { inner } => contains_self_type(inner),
@@ -1325,7 +1325,7 @@ fn resolve_type_expr(
                 });
             }
             if is_builtin_type(normalized) || is_builtin_generic_type(normalized) {
-                return Ok(TypeRefIr::Native {
+                return Ok(TypeRefIr::Builtin {
                     name: normalized.to_string(),
                     args: resolved_args,
                 });
@@ -1348,7 +1348,7 @@ fn resolve_type_expr(
                     },
                 });
             }
-            TypeRefIr::Native {
+            TypeRefIr::Builtin {
                 name: normalized.to_string(),
                 args: resolved_args,
             }
@@ -1696,8 +1696,8 @@ pub fn object_safety_diagnostics_display(
 
 fn type_ref_display(ty: &TypeRefIr) -> String {
     match ty {
-        TypeRefIr::Native { name, args } if args.is_empty() => name.clone(),
-        TypeRefIr::Native { name, args } => format!(
+        TypeRefIr::Builtin { name, args } if args.is_empty() => name.clone(),
+        TypeRefIr::Builtin { name, args } => format!(
             "{name}<{}>",
             args.iter()
                 .map(type_ref_display)
@@ -1934,7 +1934,7 @@ mod tests {
             }
             "#,
         );
-        let interface = inst("Reader", vec![TypeRefIr::native("string")]);
+        let interface = inst("Reader", vec![TypeRefIr::builtin("string")]);
 
         let slots = semantics.method_slots_for_interface(&interface).unwrap();
 
@@ -1946,19 +1946,19 @@ mod tests {
             vec![
                 FunctionTypeParamIr {
                     name: "self".to_string(),
-                    ty: TypeRefIr::native("Self"),
+                    ty: TypeRefIr::builtin("Self"),
                 },
                 FunctionTypeParamIr {
                     name: "fallback".to_string(),
-                    ty: TypeRefIr::native("string"),
+                    ty: TypeRefIr::builtin("string"),
                 },
             ]
         );
         assert_eq!(
             slots[0].return_type,
-            TypeRefIr::Native {
+            TypeRefIr::Builtin {
                 name: "Array".to_string(),
-                args: vec![TypeRefIr::native("string")],
+                args: vec![TypeRefIr::builtin("string")],
             }
         );
         assert_eq!(
@@ -1985,9 +1985,9 @@ mod tests {
         );
         let receiver = TypeInstantiationPattern {
             symbol: SourceSymbolKey::new("test", "Box"),
-            args: vec![TypeRefIr::native("string")],
+            args: vec![TypeRefIr::builtin("string")],
         };
-        let interface = inst("Reader", vec![TypeRefIr::native("string")]);
+        let interface = inst("Reader", vec![TypeRefIr::builtin("string")]);
 
         let conformance = semantics
             .local_conformance_for_receiver_instantiation(&receiver, &interface)

@@ -138,7 +138,7 @@ pub(super) fn actor_file_ir() -> FileIrUnit {
     });
     file.constants.push(ConstIr {
         name: "DEFAULT_ACTOR".to_string(),
-        ty: TypeRefIr::native("string"),
+        ty: TypeRefIr::builtin("string"),
         body: ExecutableBody::default(),
         source_span: None,
     });
@@ -147,7 +147,7 @@ pub(super) fn actor_file_ir() -> FileIrUnit {
         symbol: "run".to_string(),
         type_params: Vec::new(),
         params: Vec::new(),
-        return_type: TypeRefIr::native("void"),
+        return_type: TypeRefIr::builtin("void"),
         self_type: None,
         slots: SlotLayout::default(),
         may_suspend: false,
@@ -223,9 +223,9 @@ pub(super) fn public_instance_file_ir() -> FileIrUnit {
                 type_params: Vec::new(),
                 params: vec![FunctionTypeParamIr {
                     name: "value".to_string(),
-                    ty: TypeRefIr::native("string"),
+                    ty: TypeRefIr::builtin("string"),
                 }],
-                return_type: TypeRefIr::native("string"),
+                return_type: TypeRefIr::builtin("string"),
                 is_native: false,
                 is_provider: false,
                 is_static: false,
@@ -263,10 +263,10 @@ pub(super) fn public_instance_file_ir() -> FileIrUnit {
             ParamIr {
                 name: "value".to_string(),
                 slot: 1,
-                ty: TypeRefIr::native("string"),
+                ty: TypeRefIr::builtin("string"),
             },
         ],
-        return_type: TypeRefIr::native("string"),
+        return_type: TypeRefIr::builtin("string"),
         self_type: Some(worker_type),
         slots: SlotLayout::default(),
         may_suspend: false,

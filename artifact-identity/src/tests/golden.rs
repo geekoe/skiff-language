@@ -5,22 +5,22 @@ fn complex_artifact_identity_outputs_match_exact_golden() {
     let schema_type = PublicationSchemaType {
         abi_type_id: "type:Payload".to_string(),
         nameability: PublicationSchemaTypeNameability::PublicNameable,
-        ty: TypeRefIr::native("Payload"),
+        ty: TypeRefIr::builtin("Payload"),
         descriptor: Some(skiff_artifact_model::TypeDescriptorIr::Alias {
-            target: TypeRefIr::native("string"),
+            target: TypeRefIr::builtin("string"),
         }),
     };
     let public_signature = CanonicalPublicCallableSignature {
         params: vec![FunctionTypeParamIr {
             name: "input".to_string(),
-            ty: TypeRefIr::native("Payload"),
+            ty: TypeRefIr::builtin("Payload"),
         }],
-        return_type: TypeRefIr::native("string"),
+        return_type: TypeRefIr::builtin("string"),
         may_suspend: true,
     };
     let interface = InterfaceInstantiationRef {
         interface_abi_id: "interface:Runner".to_string(),
-        canonical_type_args: vec![TypeRefIr::native("Payload")],
+        canonical_type_args: vec![TypeRefIr::builtin("Payload")],
     };
     let mut operation_metadata = BTreeMap::new();
     operation_metadata.insert(

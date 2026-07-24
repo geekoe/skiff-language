@@ -556,7 +556,7 @@ fn assembly_execution_call_validation_rejects_identity_valid_native_tamper() {
                     },
                 },
                 args: vec![ExprRefIr { expression: 0 }],
-                type_args: BTreeMap::from([("T0".to_string(), TypeRefIr::native("Json"))]),
+                type_args: BTreeMap::from([("T0".to_string(), TypeRefIr::builtin("Json"))]),
                 metadata: BTreeMap::new(),
             },
         });
@@ -608,7 +608,7 @@ fn assembly_execution_call_validation_rejects_identity_valid_interface_tamper() 
                             name: "Self".to_string(),
                         },
                     }],
-                    return_type: TypeRefIr::native("string"),
+                    return_type: TypeRefIr::builtin("string"),
                     is_native: false,
                     is_provider: false,
                     is_static: false,

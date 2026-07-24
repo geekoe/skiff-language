@@ -48,17 +48,17 @@ fn encrypted_db_field_storage_participates_in_file_ir_identity() {
     identity.declarations.db.insert(
         "Credential".to_string(),
         DbDeclarationIr {
-            type_ref: TypeRefIr::native("Credential"),
+            type_ref: TypeRefIr::builtin("Credential"),
             type_name: "Credential".to_string(),
             collection_name: "credential".to_string(),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),
-                ty: TypeRefIr::native("string"),
+                ty: TypeRefIr::builtin("string"),
             },
             fields: vec![DbObjectFieldIr {
                 name: "apiKey".to_string(),
-                ty: TypeRefIr::native("string"),
+                ty: TypeRefIr::builtin("string"),
                 storage: DbFieldStorageIr::Identity,
             }],
             retention: None,
@@ -222,7 +222,7 @@ fn service_call_file_ir_fixture() -> FileIrUnit {
     ];
     unit.constants.push(skiff_artifact_model::ConstIr {
         name: "calls".to_string(),
-        ty: TypeRefIr::native("void"),
+        ty: TypeRefIr::builtin("void"),
         body: skiff_artifact_model::ExecutableBody {
             blocks: Vec::new(),
             statements: Vec::new(),
@@ -257,7 +257,7 @@ fn package_call_file_ir_fixture() -> FileIrUnit {
     }];
     unit.constants.push(skiff_artifact_model::ConstIr {
         name: "package-call".to_string(),
-        ty: TypeRefIr::native("void"),
+        ty: TypeRefIr::builtin("void"),
         body: skiff_artifact_model::ExecutableBody {
             blocks: Vec::new(),
             statements: Vec::new(),

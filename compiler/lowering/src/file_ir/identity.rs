@@ -62,7 +62,7 @@ mod tests {
         unit.type_table.push(TypeDeclIr {
             name: "Payload".to_string(),
             descriptor: TypeDescriptorIr::Alias {
-                target: TypeRefIr::native("string"),
+                target: TypeRefIr::builtin("string"),
             },
             type_params: Vec::new(),
             discriminator: None,
@@ -71,7 +71,7 @@ mod tests {
         });
         unit.constants.push(ConstIr {
             name: "greeting".to_string(),
-            ty: TypeRefIr::native("string"),
+            ty: TypeRefIr::builtin("string"),
             body: ExecutableBody::default(),
             source_span: None,
         });

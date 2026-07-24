@@ -659,7 +659,7 @@ fn file(identity: &str, module_path: &str) -> FileIrUnit {
         symbol: format!("{module_path}.entry"),
         type_params: Vec::new(),
         params: Vec::new(),
-        return_type: TypeRefIr::native("unknown"),
+        return_type: TypeRefIr::builtin("unknown"),
         self_type: None,
         slots: SlotLayout::default(),
         may_suspend: false,
