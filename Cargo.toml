@@ -4,7 +4,6 @@ members = [
   "canonical-json",
   "artifact-model",
   "artifact-identity",
-  "trusted-registry-contract",
   "deployment",
   "syntax",
   "compiler/core",

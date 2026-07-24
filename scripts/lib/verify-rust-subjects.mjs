@@ -7,7 +7,6 @@ const rustImplementationSubjects = [
       rustPackage('canonical-json', 'skiff-canonical-json'),
       rustPackage('artifact-model', 'skiff-artifact-model'),
       rustPackage('artifact-identity', 'skiff-artifact-identity'),
-      rustPackage('trusted-registry-contract', 'skiff-trusted-registry-contract'),
       rustPackage('deployment', 'skiff-deployment'),
       rustPackage('syntax', 'skiff-syntax'),
     ],

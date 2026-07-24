@@ -11,7 +11,6 @@ pub enum NativeRequiredContext {
     Websocket,
     Telemetry,
     Resource,
-    TrustedRegistry,
 }
 
 impl NativeRequiredContext {

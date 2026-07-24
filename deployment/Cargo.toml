@@ -7,15 +7,10 @@ publish = false
 [dependencies]
 fs2 = "0.4"
 hex = "0.4"
-mongodb = "3.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 skiff-artifact-identity = { path = "../artifact-identity" }
 skiff-artifact-model = { path = "../artifact-model" }
 skiff-canonical-json = { path = "../canonical-json" }
-skiff-trusted-registry-contract = { path = "../trusted-registry-contract" }
 thiserror = "2.0"
-
-[dev-dependencies]
-tokio = { version = "1.44", features = ["macros", "rt-multi-thread"] }

@@ -184,9 +184,6 @@ where
         NativeRequiredContext::Websocket => NativeCapabilityContexts::Websocket(source.websocket()),
         NativeRequiredContext::Telemetry => NativeCapabilityContexts::Telemetry(source.telemetry()),
         NativeRequiredContext::Resource => NativeCapabilityContexts::Resource(source.resource()),
-        NativeRequiredContext::TrustedRegistry => {
-            panic!("trusted registry capability projection is not wired")
-        }
     }
 }
 
