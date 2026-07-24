@@ -545,7 +545,9 @@ atomic reload在runtime层可观测。
 
 Router与Runtime只通过共享artifact文件系统装载上述不可变记录，不依赖或感知registry service：
 
-- Router配置唯一`artifactsPath`，并在runtime连接/装配控制面把同一个规范化路径下发给Runtime；
+- Router配置唯一`artifactsPath`与`serviceDb.mongoUrl`。Runtime连接后，Router必须先发送一次连接级
+  bootstrap control，其中包含规范化的绝对`artifactsPath`和`serviceDb: { mongoUrl }`；Runtime在任何
+  activation/register之前固定二者，同一连接内缺失、重复冲突或变更一律fail closed；
 - Router与Runtime可以位于不同机器，但该路径在所有机器上具有相同字符串和内容语义；当前生产部署以网络文件
   系统共享该路径；
 - Router从该路径读取release/assembly routing projection，只持有请求路由、generation与activation协调所需
@@ -554,8 +556,10 @@ Router与Runtime只通过共享artifact文件系统装载上述不可变记录�
 - 路径中的immutable record必须先完整写入并校验identity，再原子更新pointer。Router reload只观察已经完成的
   pointer，不接受半写入record。
 
-`artifactsPath`是部署拓扑配置，不进入PackageArtifact、ServiceContract、ServiceDeployment或
-RuntimeAssembly identity。Runtime不得另设会产生不同artifact namespace的独立路径配置。
+`artifactsPath`和`serviceDb.mongoUrl`都是部署拓扑配置，不进入PackageArtifact、ServiceContract、
+ServiceDeployment或RuntimeAssembly identity。Runtime不得为二者另设独立文件配置、环境变量或默认值。
+Runtime持有bootstrap DB transport binding不表示所有activation获得DB：只有声明并被deployment绑定DB
+requirement的activation才能得到`std.db` capability，service代码始终看不到URL。
 
 未来若需要独立扩缩容，平台可以为不同root set生成多个assembly。届时assembly projection把当前完整
 本地闭包拆成`LocalExecutableClosure`与`RemoteBindingRefs`；只有跨assembly service edge选择
@@ -582,8 +586,9 @@ Router和Runtime不知道registry service，也不通过它读取artifact。正�
 production durable source of truth。它和其它需要数据库的service一样声明DB/state requirement，并只通过
 普通`std.db` capability访问数据库。Mongo URL的唯一配置owner是Router的`serviceDb.mongoUrl`；该值不进入
 service/package/compiler/deployment artifact，也不由runtime文件配置、环境变量或默认值提供。Router在
-activation provisioning时把当前activation所需的DB binding下发给Runtime；Runtime只消费该
-activation-scoped binding，service代码看不到provider URL。文件型`CanonicalArtifactStore`只作为
+连接级bootstrap中把DB transport binding与`artifactsPath`一并下发给Runtime；Runtime只为当前activation中
+已经声明并绑定的DB requirement建立activation-scoped capability，service代码看不到provider URL。文件型
+`CanonicalArtifactStore`只作为
 local/dev/CLI backend，不参与production registry，也不与Platform DB dual-write。
 
 Router coordinator仍是environment activation prepare/commit/abort的唯一事务编排者。Router进程直接使用
