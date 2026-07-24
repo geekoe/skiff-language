@@ -43,8 +43,11 @@ pub(crate) async fn execute_service_call(
     args: Vec<RuntimeValue>,
 ) -> Result<RuntimeValue> {
     validate_ordinary_operation(target.descriptor(), call)?;
-    let boundary =
-        CanonicalServiceBoundaryPlan::new(target.descriptor(), target.contract(), args.len())?;
+    let boundary = CanonicalServiceBoundaryPlan::new(
+        target.descriptor(),
+        target.schema_records().as_ref(),
+        args.len(),
+    )?;
     let mut provider_heap = boundary.fresh_provider_heap(context.context.request_heap_limits());
     let caller_hooks = CallbackNativeCapabilityHooks::new(&context.context);
     let provider_args =

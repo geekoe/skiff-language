@@ -1,12 +1,12 @@
 use skiff_artifact_model::{
     BoundaryErrorContract, BoundaryOperationDescriptor, BoundaryValueCarrier,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractSchemaType,
-    ContractTypeId, ContractTypeRef, ServiceContract,
+    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
 };
 use skiff_runtime_boundary::service_linkable::{
     ServiceLinkableCapabilityHooks, ServiceLinkableContractPlan,
     ServiceLinkableMaterializationError, ServiceLinkableMaterializationScope,
 };
+use skiff_runtime_boundary::service_schema_records::ServiceSchemaRecords;
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
     runtime_value::RuntimeValue,
@@ -32,11 +32,10 @@ pub(crate) struct CanonicalServiceBoundaryPlan<'a> {
 impl<'a> CanonicalServiceBoundaryPlan<'a> {
     pub(crate) fn new(
         operation: &'a BoundaryOperationDescriptor,
-        contract: &'a ServiceContract,
+        schema: &'a ServiceSchemaRecords,
         arg_count: usize,
     ) -> Result<Self> {
         preflight_boundary_contract(operation, arg_count)?;
-        let schema = &contract.boundary_schema;
         let parameter_plans = operation
             .contract
             .parameters
@@ -204,7 +203,7 @@ struct DirectionalMaterializationPlan<'a> {
 impl<'a> DirectionalMaterializationPlan<'a> {
     fn new(
         ty: &'a ContractTypeRef,
-        schema: &'a std::collections::BTreeMap<ContractTypeId, ContractSchemaType>,
+        schema: &'a ServiceSchemaRecords,
         value_plan: &'a BoundaryValuePlan,
         detached_owner: BoundaryValueOwner,
         operation: &str,

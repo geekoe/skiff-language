@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use serde_json::json;
 use skiff_artifact_model::{
@@ -6,8 +6,8 @@ use skiff_artifact_model::{
     BoundaryErrorContract, BoundaryOperationContract, BoundaryOperationDescriptor,
     BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractDiagnosticText, ContractOperationId, ContractSchemaType, ContractTypeId,
-    ContractTypeRef, ServiceContract, ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
+    ContractOperationId, ContractTypeDescriptor, ContractTypeRef, PackageSchemaCanonicalDescriptor,
+    PackageSchemaTypeId, PackageSchemaTypeRecord,
 };
 use skiff_runtime_boundary::service_linkable::FailClosedServiceLinkableCapabilityHooks;
 use skiff_runtime_model::{
@@ -29,13 +29,13 @@ fn ordinary_in_process_uses_shared_planner_for_detached_parameters_and_return() 
         array_type,
         BoundaryErrorContract::None,
     );
-    let service_contract = contract(&descriptor, BTreeMap::new());
+    let schema = BTreeMap::new();
     let mut caller_heap = RequestHeap::default();
     let source = caller_heap
         .alloc_array(vec![RuntimeValue::String("caller".to_string())])
         .expect("caller array should allocate");
     let args = vec![RuntimeValue::Heap(source)];
-    let planner = CanonicalServiceBoundaryPlan::new(&descriptor, &service_contract, args.len())
+    let planner = CanonicalServiceBoundaryPlan::new(&descriptor, &schema, args.len())
         .expect("canonical descriptor plans should pass shared preflight");
     let mut provider_heap = planner.fresh_provider_heap(Default::default());
 
@@ -77,19 +77,22 @@ fn ordinary_in_process_uses_shared_planner_for_detached_parameters_and_return() 
     assert_array_item(&provider_heap, provider_value, "provider");
     assert_array_item(&caller_heap, source, "caller");
 
-    let arg_error = CanonicalServiceBoundaryPlan::new(&descriptor, &service_contract, 0)
+    let arg_error = CanonicalServiceBoundaryPlan::new(&descriptor, &schema, 0)
         .err()
         .expect("argument mismatch must fail shared preflight");
     assert!(matches!(arg_error, RuntimeError::InvalidArtifact(_)));
 
-    let missing_type = ContractTypeRef::contract(ContractTypeId::new("contract:missing"));
+    let missing_type = ContractTypeRef::package_schema(
+        "example.missing",
+        "api.Missing",
+        PackageSchemaTypeId::new("schema:missing"),
+    );
     let invalid_operation = operation(
         vec![missing_type],
         ContractTypeRef::builtin("void"),
         BoundaryErrorContract::None,
     );
-    let invalid_contract = contract(&invalid_operation, BTreeMap::new());
-    let schema_error = CanonicalServiceBoundaryPlan::new(&invalid_operation, &invalid_contract, 1)
+    let schema_error = CanonicalServiceBoundaryPlan::new(&invalid_operation, &schema, 1)
         .err()
         .expect("schema mismatch must fail shared preflight");
     assert!(matches!(schema_error, RuntimeError::InvalidArtifact(_)));
@@ -101,11 +104,9 @@ fn ordinary_in_process_uses_shared_planner_for_detached_parameters_and_return() 
     );
     invalid_plan_operation.contract.parameters[0].value_plan =
         detached_plan(BoundaryValueOwner::Provider);
-    let invalid_plan_contract = contract(&invalid_plan_operation, BTreeMap::new());
-    let plan_error =
-        CanonicalServiceBoundaryPlan::new(&invalid_plan_operation, &invalid_plan_contract, 1)
-            .err()
-            .expect("owner mismatch must fail shared plan preflight");
+    let plan_error = CanonicalServiceBoundaryPlan::new(&invalid_plan_operation, &schema, 1)
+        .err()
+        .expect("owner mismatch must fail shared plan preflight");
     assert!(matches!(plan_error, RuntimeError::InvalidArtifact(_)));
 }
 
@@ -131,8 +132,8 @@ fn service_error_boundary_classification_is_shared_across_lanes() {
             value_plan: detached_plan(BoundaryValueOwner::Provider),
         },
     );
-    let service_contract = contract(&descriptor, BTreeMap::new());
-    let planner = CanonicalServiceBoundaryPlan::new(&descriptor, &service_contract, 0)
+    let schema = BTreeMap::new();
+    let planner = CanonicalServiceBoundaryPlan::new(&descriptor, &schema, 0)
         .expect("typed error plan should pass shared preflight");
     let identity = TypeIdentity::builtin("ProviderProblem");
     let mut provider_heap = planner.fresh_provider_heap(Default::default());
@@ -225,10 +226,8 @@ fn service_error_boundary_classification_is_shared_across_lanes() {
         ContractTypeRef::builtin("void"),
         BoundaryErrorContract::None,
     );
-    let no_error_contract = contract(&no_error_operation, BTreeMap::new());
-    let no_error_planner =
-        CanonicalServiceBoundaryPlan::new(&no_error_operation, &no_error_contract, 0)
-            .expect("no-error descriptor should pass shared preflight");
+    let no_error_planner = CanonicalServiceBoundaryPlan::new(&no_error_operation, &schema, 0)
+        .expect("no-error descriptor should pass shared preflight");
     let undeclared = no_error_planner
         .materialize_provider_result(
             Err(RuntimeError::UserException(typed_exception(
@@ -245,6 +244,56 @@ fn service_error_boundary_classification_is_shared_across_lanes() {
         undeclared,
         RuntimeError::Protocol { ref target, .. }
             if target == "operation:shared-boundary-test"
+    ));
+}
+
+#[test]
+fn package_named_parameter_return_and_typed_error_keep_full_owner_identity() {
+    let first = package_record("example.first", "api.Payload", "schema:first");
+    let second = package_record("example.second", "api.Payload", "schema:second");
+    let first_ref = ContractTypeRef::package_schema(
+        first.package_id.clone(),
+        first.stable_schema_key.clone(),
+        first.package_schema_type_id.clone(),
+    );
+    let second_ref = ContractTypeRef::package_schema(
+        second.package_id.clone(),
+        second.stable_schema_key.clone(),
+        second.package_schema_type_id.clone(),
+    );
+    let descriptor = operation(
+        vec![first_ref.clone()],
+        second_ref,
+        BoundaryErrorContract::Typed {
+            payload_type: first_ref,
+            value_plan: detached_plan(BoundaryValueOwner::Provider),
+        },
+    );
+    let schema = BTreeMap::from([
+        (
+            first.package_schema_type_id.clone(),
+            Arc::new(first.clone()),
+        ),
+        (
+            second.package_schema_type_id.clone(),
+            Arc::new(second.clone()),
+        ),
+    ]);
+    CanonicalServiceBoundaryPlan::new(&descriptor, &schema, 1)
+        .expect("same stable key from different Package owners must remain isolated");
+
+    let mut wrong_owner = second;
+    wrong_owner.package_id = "example.first".to_string();
+    let invalid = BTreeMap::from([
+        (first.package_schema_type_id.clone(), Arc::new(first)),
+        (
+            wrong_owner.package_schema_type_id.clone(),
+            Arc::new(wrong_owner),
+        ),
+    ]);
+    assert!(matches!(
+        CanonicalServiceBoundaryPlan::new(&descriptor, &invalid, 1),
+        Err(RuntimeError::InvalidArtifact(_))
     ));
 }
 
@@ -296,21 +345,20 @@ fn detached_plan(owner: BoundaryValueOwner) -> BoundaryValuePlan {
     }
 }
 
-fn contract(
-    operation: &BoundaryOperationDescriptor,
-    boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
-) -> ServiceContract {
-    ServiceContract {
-        schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
-        service_id: "example.shared-boundary-test".to_string(),
-        contract_version: "1.0.0".to_string(),
-        service_protocol_identity: ServiceProtocolIdentity::new("protocol:shared-boundary-test"),
-        operations: BTreeMap::from([(operation.operation_id.clone(), operation.clone())]),
-        boundary_schema,
-        diagnostic_text: ContractDiagnosticText {
-            service: "shared boundary test".to_string(),
-            operations: BTreeMap::new(),
-            types: BTreeMap::new(),
+fn package_record(
+    package_id: &str,
+    stable_schema_key: &str,
+    type_id: &str,
+) -> PackageSchemaTypeRecord {
+    PackageSchemaTypeRecord {
+        package_id: package_id.to_string(),
+        stable_schema_key: stable_schema_key.to_string(),
+        package_schema_type_id: PackageSchemaTypeId::new(type_id),
+        canonical_descriptor: PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::Record {
+                fields: BTreeMap::new(),
+            },
         },
     }
 }

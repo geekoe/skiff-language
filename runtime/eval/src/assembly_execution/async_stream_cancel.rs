@@ -12,14 +12,14 @@ use std::{
 use serde_json::Value;
 use skiff_artifact_model::{
     BoundaryCancellationContract, BoundaryStreamContract, BoundaryValueCarrier,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractSchemaType,
-    ContractTypeId, ContractTypeRef,
+    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
 };
 use skiff_runtime_activation::RequestStreamLease;
 use skiff_runtime_boundary::service_linkable::{
     ServiceLinkableContractPlan, ServiceLinkableMaterializationError,
     ServiceLinkableMaterializationScope,
 };
+use skiff_runtime_boundary::service_schema_records::ServiceSchemaRecords;
 use skiff_runtime_capability_context::{
     CancellationToken, StreamCancelSignal, StreamInternalItem, StreamLifetimeGuard,
     StreamLifetimeGuardApi, StreamRuntimeError, StreamRuntimeResult,
@@ -93,8 +93,11 @@ async fn execute_provider_unary(
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,
 ) -> Result<RuntimeValue> {
-    let boundary =
-        CanonicalServiceBoundaryPlan::new(target.descriptor(), target.contract(), args.len())?;
+    let boundary = CanonicalServiceBoundaryPlan::new(
+        target.descriptor(),
+        target.schema_records().as_ref(),
+        args.len(),
+    )?;
     let mut provider_heap = boundary.fresh_provider_heap(context.context.request_heap_limits());
     let caller_hooks = CallbackNativeCapabilityHooks::new(&context.context);
     let provider_args =
@@ -184,8 +187,11 @@ fn start_provider_stream(
             "stream-contract",
         ));
     };
-    let boundary =
-        CanonicalServiceBoundaryPlan::new(target.descriptor(), target.contract(), args.len())?;
+    let boundary = CanonicalServiceBoundaryPlan::new(
+        target.descriptor(),
+        target.schema_records().as_ref(),
+        args.len(),
+    )?;
     canonical_scope(
         item_value_plan,
         BoundaryValueOwner::Provider,
@@ -233,7 +239,7 @@ fn start_provider_stream(
         inner: concrete_sink,
         item_type: item_type.clone(),
         item_value_plan: item_value_plan.clone(),
-        boundary_schema: target.contract().boundary_schema.clone(),
+        schema_records: Arc::clone(target.schema_records()),
         execution_item_type: provider_stream_item_type.clone(),
         provider_context: Arc::clone(&owned_provider),
     });
@@ -460,7 +466,7 @@ fn provider_execution_context<'a>(
 fn materialize_value(
     stage: &str,
     ty: &ContractTypeRef,
-    boundary_schema: &BTreeMap<ContractTypeId, ContractSchemaType>,
+    schema_records: &ServiceSchemaRecords,
     value_plan: &BoundaryValuePlan,
     value: &RuntimeValue,
     source_heap: &RequestHeap,
@@ -468,7 +474,7 @@ fn materialize_value(
     scope: ServiceLinkableMaterializationScope,
     hooks: &dyn skiff_runtime_boundary::service_linkable::ServiceLinkableCapabilityHooks,
 ) -> Result<RuntimeValue> {
-    ServiceLinkableContractPlan::new(ty, boundary_schema, value_plan)
+    ServiceLinkableContractPlan::new(ty, schema_records, value_plan)
         .and_then(|plan| plan.materialize(value, source_heap, destination_heap, scope, hooks))
         .map_err(|error| materialization_error(stage, error))
 }
@@ -528,7 +534,7 @@ struct BoundaryStreamSink {
     inner: StreamSink,
     item_type: ContractTypeRef,
     item_value_plan: BoundaryValuePlan,
-    boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+    schema_records: crate::AdmittedServiceSchemaRecords,
     execution_item_type: Option<RuntimeTypePlan>,
     provider_context: Arc<OwnedProgramExecutionContext>,
 }
@@ -549,7 +555,7 @@ impl BoundaryStreamSink {
         let materialized = materialize_value(
             "stream item",
             &self.item_type,
-            &self.boundary_schema,
+            self.schema_records.as_ref(),
             &self.item_value_plan,
             &source,
             &source_heap,
@@ -586,7 +592,7 @@ impl BoundaryStreamSink {
         let materialized = materialize_value(
             "stream item",
             &self.item_type,
-            &self.boundary_schema,
+            self.schema_records.as_ref(),
             &self.item_value_plan,
             &item,
             source_heap,
@@ -716,7 +722,8 @@ mod tests {
 
     use skiff_artifact_model::{
         ActivationPolicy, AssemblyIdentity, DeploymentArtifactIdentity, DeploymentPolicy,
-        DeploymentRevision, PackageBuildId, ResourcePolicy, ServiceDeploymentRef,
+        DeploymentRevision, PackageBuildId, PackageSchemaCanonicalDescriptor, PackageSchemaTypeId,
+        PackageSchemaTypeRecord, ResourcePolicy, ServiceDeploymentRef,
     };
     use skiff_runtime_activation::{
         ActivationContext, ActivationIdentity, ActivationOwnedBindings, RequestActivationContext,
@@ -962,6 +969,74 @@ mod tests {
         .unwrap();
 
         assert_eq!(materialized, RuntimeValue::Date(1_234));
+    }
+
+    #[test]
+    fn in_process_stream_named_item_uses_admitted_package_record() {
+        let type_id = PackageSchemaTypeId::new("schema:stream-item");
+        let ty =
+            ContractTypeRef::package_schema("example.stream", "api.StreamItem", type_id.clone());
+        let schema = BTreeMap::from([(
+            type_id.clone(),
+            Arc::new(PackageSchemaTypeRecord {
+                package_id: "example.stream".to_string(),
+                stable_schema_key: "api.StreamItem".to_string(),
+                package_schema_type_id: type_id,
+                canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                    type_params: Vec::new(),
+                    descriptor: skiff_artifact_model::ContractTypeDescriptor::Record {
+                        fields: BTreeMap::new(),
+                    },
+                },
+            }),
+        )]);
+        let plan = BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::DetachedValueGraph,
+            encoding: skiff_artifact_model::BoundaryValueEncoding::CanonicalValue,
+            owner: BoundaryValueOwner::Provider,
+            lifetime: BoundaryValueLifetime::Stream,
+        };
+        let mut provider_heap = RequestHeap::default();
+        let source = provider_heap
+            .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::new()))
+            .unwrap();
+        let mut receiver_heap = RequestHeap::default();
+
+        materialize_value(
+            "stream item",
+            &ty,
+            &schema,
+            &plan,
+            &RuntimeValue::Heap(source),
+            &provider_heap,
+            &mut receiver_heap,
+            canonical_scope(
+                &plan,
+                BoundaryValueOwner::Provider,
+                BoundaryValueLifetime::Stream,
+            )
+            .unwrap(),
+            &FailClosedServiceLinkableCapabilityHooks,
+        )
+        .expect("admitted Package stream item should materialize");
+
+        assert!(materialize_value(
+            "stream item",
+            &ty,
+            &BTreeMap::new(),
+            &plan,
+            &RuntimeValue::Heap(source),
+            &provider_heap,
+            &mut receiver_heap,
+            canonical_scope(
+                &plan,
+                BoundaryValueOwner::Provider,
+                BoundaryValueLifetime::Stream,
+            )
+            .unwrap(),
+            &FailClosedServiceLinkableCapabilityHooks,
+        )
+        .is_err());
     }
 
     fn activation(service: &str, package_build: &str) -> Arc<ActivationContext> {
