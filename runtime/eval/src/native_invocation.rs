@@ -242,7 +242,9 @@ fn actor_declaration_for_owner<'a>(
 mod actor_declaration_resolution_tests {
     use std::sync::Arc;
 
-    use skiff_artifact_model::{ActorAbiIdentity, ACTOR_RUNTIME_ABI_VERSION_V1};
+    use skiff_artifact_model::{
+        ActorAbiIdentity, ActorImplementationIdentity, ACTOR_RUNTIME_ABI_VERSION_V1,
+    };
     use skiff_runtime_linked_program::{
         ExternalRefTable, FileDeclarations, FileLinkTargets, LinkOverlay, LinkedActorDeclaration,
         LinkedActorDeclarationOwner, LinkedFileUnit, RuntimeTypeContext, ServiceSymbolRef,
@@ -269,6 +271,9 @@ mod actor_declaration_resolution_tests {
                 },
                 implementation_owner: Some(owner.clone()),
                 actor_abi_identity: ActorAbiIdentity::new("actor-abi:doc-hub"),
+                actor_implementation_identity: ActorImplementationIdentity::new(
+                    "actor-implementation:doc-hub",
+                ),
                 actor_name: "DocHub".to_string(),
                 actor_id_type: LinkedTypeRef::Native {
                     name: "string".to_string(),
