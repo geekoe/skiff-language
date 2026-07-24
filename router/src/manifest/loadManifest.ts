@@ -26,7 +26,6 @@ import type {
   LoadedWebSocketEntry,
   LoadedWebSocketReceive,
   OperationManifest,
-  ServiceAccessManifest,
   WebSocketConnectManifest,
   WebSocketEntryManifest,
   WebSocketReceiveManifest
@@ -99,7 +98,7 @@ export function loadManifest(value: unknown): LoadedManifest {
   assertRevisionId(manifest.service.revisionId, 'manifest.service.revisionId');
   requireString(manifest.service.protocolIdentity, 'manifest.service.protocolIdentity');
   assertProtocolIdentity(manifest.service.protocolIdentity, 'manifest.service.protocolIdentity');
-  const serviceAccess = readServiceAccess(manifest.service.access, 'manifest.service.access');
+  rejectLegacyServiceMetadata(manifest.service, 'manifest.service');
 
   if (!Array.isArray(manifest.operations)) {
     throw new Error('manifest.operations must be an array');
@@ -151,10 +150,7 @@ export function loadManifest(value: unknown): LoadedManifest {
 
   const loadedManifest = {
     ...manifest,
-    service: {
-      ...manifest.service,
-      access: serviceAccess
-    },
+    service: manifest.service,
     operations,
     operationsByName,
     operationsByTarget,
@@ -212,10 +208,7 @@ export function mergeLoadedManifests(manifests: LoadedManifest[]): LoadedManifes
     service: {
       id: '__multi__',
       revisionId: multiManifestRevisionId(manifests),
-      protocolIdentity: multiManifestProtocolIdentity(manifests),
-      access: {
-        visibility: 'public'
-      }
+      protocolIdentity: multiManifestProtocolIdentity(manifests)
     },
     operations,
     gateway: {},
@@ -229,39 +222,18 @@ export function mergeLoadedManifests(manifests: LoadedManifest[]): LoadedManifes
   };
 }
 
-function readServiceAccess(value: unknown, label: string): ServiceAccessManifest {
-  if (value === undefined || value === null) {
-    return { visibility: 'public' };
-  }
-  assertRecord(value, label);
-  const keys = Object.keys(value).filter(
-    (key) => key !== 'visibility' && key !== 'organizationRole'
+function rejectLegacyServiceMetadata(
+  service: Record<string, unknown>,
+  label: string
+): void {
+  const unsupported = ['access', 'visibility', 'organizationRole'].filter(
+    (key) => Object.prototype.hasOwnProperty.call(service, key)
   );
-  if (keys.length > 0) {
+  if (unsupported.length > 0) {
     throw new Error(
-      `${label} does not support ${keys.map((key) => JSON.stringify(key)).join(', ')}`
+      `${label} does not support ${unsupported.map((key) => JSON.stringify(key)).join(', ')}`
     );
   }
-  const visibility =
-    value.visibility === undefined || value.visibility === null
-      ? 'public'
-      : readServiceAccessVisibility(value.visibility, `${label}.visibility`);
-  const organizationRole =
-    value.organizationRole === undefined || value.organizationRole === null
-      ? undefined
-      : readServiceAccessOrganizationRole(
-          value.organizationRole,
-          `${label}.organizationRole`
-        );
-  if (visibility === 'public' && organizationRole !== undefined) {
-    throw new Error(`${label}.organizationRole is only allowed when visibility is internal`);
-  }
-  return {
-    visibility,
-    ...(visibility === 'internal'
-      ? { organizationRole: organizationRole ?? 'viewer' }
-      : {})
-  };
 }
 
 function rejectUnsupportedManifestKeys(
@@ -275,26 +247,6 @@ function rejectUnsupportedManifestKeys(
       `${label} does not support ${unsupported.map((key) => JSON.stringify(key)).join(', ')}`
     );
   }
-}
-
-function readServiceAccessVisibility(
-  value: unknown,
-  label: string
-): ServiceAccessManifest['visibility'] {
-  if (value === 'public' || value === 'internal') {
-    return value;
-  }
-  throw new Error(`${label} must be public or internal`);
-}
-
-function readServiceAccessOrganizationRole(
-  value: unknown,
-  label: string
-): NonNullable<ServiceAccessManifest['organizationRole']> {
-  if (value === 'viewer' || value === 'maintainer' || value === 'owner') {
-    return value;
-  }
-  throw new Error(`${label} must be viewer, maintainer, or owner`);
 }
 
 function withGatewayOperationDefaults(

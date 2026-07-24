@@ -1,7 +1,6 @@
 import type {
   HttpRouteHandlerManifest,
   JsonSchema,
-  ServiceAccessManifest,
   SkiffRuntimeManifest,
   WebSocketEntryManifest,
 } from "../manifest/types.js";
@@ -578,68 +577,6 @@ export function timeoutFromServiceAssembly(
   return isRecord(assembly.timeout)
     ? (assembly.timeout as NonNullable<SkiffRuntimeManifest["timeout"]>)
     : undefined;
-}
-
-export function accessFromServiceAssembly(
-  service: Record<string, unknown>,
-): SkiffRuntimeManifest["service"]["access"] | undefined {
-  if (service.access === undefined || service.access === null) {
-    return undefined;
-  }
-  assertRecord(service.access, "serviceAssembly.service.access");
-  const keys = Object.keys(service.access).filter(
-    (key) => key !== "visibility" && key !== "organizationRole",
-  );
-  if (keys.length > 0) {
-    throw new Error(
-      `serviceAssembly.service.access does not support ${keys
-        .map((key) => JSON.stringify(key))
-        .join(", ")}`,
-    );
-  }
-  const visibility = readServiceAccessVisibility(
-    service.access.visibility,
-    "serviceAssembly.service.access.visibility",
-  );
-  const organizationRole =
-    service.access.organizationRole === undefined ||
-    service.access.organizationRole === null
-      ? undefined
-      : readServiceAccessOrganizationRole(
-          service.access.organizationRole,
-          "serviceAssembly.service.access.organizationRole",
-        );
-  if (visibility === "public" && organizationRole !== undefined) {
-    throw new Error(
-      "serviceAssembly.service.access.organizationRole is only allowed when visibility is internal",
-    );
-  }
-  return {
-    visibility,
-    ...(visibility === "internal"
-      ? { organizationRole: organizationRole ?? "viewer" }
-      : {}),
-  };
-}
-
-function readServiceAccessVisibility(
-  value: unknown,
-  label: string,
-): ServiceAccessManifest["visibility"] {
-  if (value === "public" || value === "internal") {
-    return value;
-  }
-  throw new Error(`${label} must be public or internal`);
-}
-
-function readServiceAccessOrganizationRole(
-  value: unknown,
-  label: string,
-): NonNullable<ServiceAccessManifest["organizationRole"]> {
-  if (value === "viewer" || value === "maintainer" || value === "owner") {
-    return value;
-  }
-  throw new Error(`${label} must be viewer, maintainer, or owner`);
 }
 
 function readDispatchMode(

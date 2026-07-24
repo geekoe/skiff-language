@@ -83,6 +83,7 @@ fn read_service_manifest(
     let text = read(path)?;
     let manifest = serde_yaml::from_str::<ServiceManifestAuthoring>(&text)
         .map_err(|source| parse_error(path, source))?;
+    reject_legacy_http_policy(path, manifest.http.as_ref())?;
     let mut violations = Vec::new();
     let id =
         parse_publication_id_field("service.yml id", Some(manifest.id.clone()), &mut violations);
@@ -93,6 +94,27 @@ fn read_service_manifest(
         id: id.expect("validated service id").into_string(),
         ..manifest
     })
+}
+
+fn reject_legacy_http_policy(
+    path: &Path,
+    http: Option<&serde_json::Value>,
+) -> Result<(), ServiceSourceConfigError> {
+    let Some(http) = http else {
+        return Ok(());
+    };
+    let Some(http) = http.as_object() else {
+        return Ok(());
+    };
+    if http.contains_key("response") {
+        return Err(ServiceSourceConfigError::Validation {
+            message: format!(
+                "- {}: service.yml http.response is not supported; HTTP byte ceilings belong to Router instance config",
+                path.display()
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn read_config_profiles(
@@ -261,6 +283,27 @@ mod tests {
             "functions: {}",
         ] {
             let root = fixture_root("service-owned-fields");
+            write(&root, "package.yml", "id: example.com/a\nversion: 1.0.0\n");
+            write(&root, "api.yml", "functions: {}\n");
+            write(
+                &root,
+                "service.yml",
+                &format!("id: example.com/a\n{field}\n"),
+            );
+            assert!(read_service_package_root(&root).is_err(), "{field}");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn service_manifest_rejects_removed_access_and_http_response_metadata() {
+        for field in [
+            "access: { visibility: internal, organizationRole: viewer }",
+            "visibility: internal",
+            "organizationRole: viewer",
+            "http: { response: { maxBytes: 1024 }, routes: [] }",
+        ] {
+            let root = fixture_root("removed-service-metadata");
             write(&root, "package.yml", "id: example.com/a\nversion: 1.0.0\n");
             write(&root, "api.yml", "functions: {}\n");
             write(

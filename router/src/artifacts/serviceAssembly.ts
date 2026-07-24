@@ -2,7 +2,6 @@ import type { SkiffRuntimeManifest } from "../manifest/types.js";
 import { assertRevisionId } from "../manifest/revisionId.js";
 import { readConfigShape } from "../config/index.js";
 import {
-  accessFromServiceAssembly,
   gatewayFromServiceAssembly,
   operationsFromServiceUnitRoutes,
   timeoutFromServiceAssembly,
@@ -25,7 +24,6 @@ import {
   type PackageConfigActivationInput,
 } from "./configActivation.js";
 import { readServiceTestConfigActivations } from "./serviceTestActivations.js";
-import { validateServiceHttp } from "./serviceHttp.js";
 
 export async function readRouterArtifactValue(
   pointer: SourcedArtifactPointer,
@@ -80,7 +78,7 @@ async function routerManifestFromServiceAssembly(
       `${pointer.indexPath} serviceAssembly.service must be an object`,
     );
   }
-  validateServiceHttp(
+  rejectLegacyServiceMetadata(
     service,
     `${pointer.indexPath} serviceAssembly.service`,
   );
@@ -146,14 +144,12 @@ async function routerManifestFromServiceAssembly(
     pointer.indexPath,
     operations,
   );
-  const access = accessFromServiceAssembly(service);
   const manifest: SkiffRuntimeManifest = {
     schemaVersion: "skiff-runtime-manifest-v1",
     service: {
       id: serviceId,
       revisionId,
       protocolIdentity,
-      ...(access !== undefined ? { access } : {}),
     },
     operations,
   };
@@ -218,6 +214,25 @@ async function routerManifestFromServiceAssembly(
         }
       : {}),
   };
+}
+
+function rejectLegacyServiceMetadata(
+  service: Record<string, unknown>,
+  label: string,
+): void {
+  const unsupported = [
+    "access",
+    "visibility",
+    "organizationRole",
+    "http",
+  ].filter((key) => Object.prototype.hasOwnProperty.call(service, key));
+  if (unsupported.length > 0) {
+    throw new Error(
+      `${label} does not support ${unsupported
+        .map((key) => JSON.stringify(key))
+        .join(", ")}`,
+    );
+  }
 }
 
 function packageConfigActivationInputs(

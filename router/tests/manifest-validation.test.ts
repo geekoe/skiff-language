@@ -49,47 +49,23 @@ function testOperationAbiId(target: string): string {
 }
 
 describe('router manifest validation', () => {
-  it('defaults service access metadata to public', () => {
+  it.each(['access', 'visibility', 'organizationRole'])(
+    'rejects removed service metadata field %s',
+    (field) => {
+      const manifestValue = webSocketManifestValue() as any;
+      manifestValue.service[field] =
+        field === 'access' ? { visibility: 'internal' } : 'legacy';
+
+      expect(() => loadManifest(manifestValue)).toThrow(
+        new RegExp(`manifest\\.service does not support .*"${field}"`)
+      );
+    }
+  );
+
+  it('loads manifests without removed service metadata', () => {
     const loaded = loadManifest(webSocketManifestValue());
 
-    expect(loaded.service.access).toEqual({ visibility: 'public' });
-  });
-
-  it('accepts internal service access metadata and defaults organization role', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.service.access = { visibility: 'internal' };
-
-    const loaded = loadManifest(manifestValue);
-
-    expect(loaded.service.access).toEqual({
-      visibility: 'internal',
-      organizationRole: 'viewer'
-    });
-  });
-
-  it('rejects invalid service access metadata', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.service.access = {
-      visibility: 'public',
-      organizationRole: 'viewer'
-    };
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /manifest\.service\.access\.organizationRole is only allowed/
-    );
-
-    manifestValue.service.access = { visibility: 'private' };
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /manifest\.service\.access\.visibility must be public or internal/
-    );
-
-    manifestValue.service.access = {
-      visibility: 'internal',
-      organizationRole: 'admin'
-    };
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /manifest\.service\.access\.organizationRole must be viewer, maintainer, or owner/
-    );
+    expect(loaded.service).not.toHaveProperty('access');
   });
 
   it('accepts typed HTTP route metadata and exposes it on loaded routes', () => {

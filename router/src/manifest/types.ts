@@ -42,14 +42,6 @@ export interface OperationManifest {
   timeoutMs?: number;
 }
 
-export type ServiceAccessVisibility = 'public' | 'internal';
-export type ServiceAccessOrganizationRole = 'viewer' | 'maintainer' | 'owner';
-
-export interface ServiceAccessManifest {
-  visibility: ServiceAccessVisibility;
-  organizationRole?: ServiceAccessOrganizationRole;
-}
-
 export interface RawHttpGatewayManifest {
   operation: string;
   target: string;
@@ -221,7 +213,6 @@ export interface SkiffRuntimeManifest {
     id: string;
     revisionId: string;
     protocolIdentity: string;
-    access?: ServiceAccessManifest;
   };
   operations: OperationManifest[];
   gateway?: {

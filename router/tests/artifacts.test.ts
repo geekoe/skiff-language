@@ -281,7 +281,7 @@ describe("router artifact root", () => {
     );
   }, 120_000);
 
-  it("projects service assembly access metadata into the loaded manifest", async () => {
+  it("rejects removed service assembly access metadata", async () => {
     const root = await createArtifactRoot();
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
     const assembly = serviceAssembly(SERVICE_ID) as any;
@@ -293,12 +293,9 @@ describe("router artifact root", () => {
     await writeIndexPointer(root, serviceAssemblyIndex(writtenAssembly));
     await writeContractFile(root);
 
-    const loaded = await loadRouterArtifactRoot(root);
-
-    expect(loaded.manifest.service.access).toEqual({
-      visibility: "internal",
-      organizationRole: "owner",
-    });
+    await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
+      /serviceAssembly\.service does not support "access"/,
+    );
   }, 120_000);
 
   it("loads dev reload services from ordered multiple artifact roots", async () => {
@@ -2959,7 +2956,7 @@ describe("router artifact root", () => {
     );
   });
 
-  it("loads compiler service assemblies with http response maxBytes", async () => {
+  it("rejects removed service HTTP response byte metadata", async () => {
     const root = await createArtifactRoot();
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
     await mkdir(join(root, "files"), { recursive: true });
@@ -2973,10 +2970,9 @@ describe("router artifact root", () => {
     await writeIndexPointer(root, serviceAssemblyIndex(writtenAssembly));
     await writeContractFile(root);
 
-    const loaded = await loadRouterArtifactRoot(root);
-
-    expect(loaded.manifest.service.id).toBe(SERVICE_ID);
-    expect(loaded.control.fingerprint).toBe(writtenAssembly.identity);
+    await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
+      /serviceAssembly\.service does not support "http"/,
+    );
   });
 
   it("rejects service assemblies with unsupported service http request metadata", async () => {
@@ -2994,7 +2990,7 @@ describe("router artifact root", () => {
     await writeContractFile(root);
 
     await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /serviceAssembly\.service\.http does not support .*serviceAssembly\.service\.http\.request/,
+      /serviceAssembly\.service does not support "http"/,
     );
   });
 
@@ -3014,7 +3010,7 @@ describe("router artifact root", () => {
     await writeContractFile(root);
 
     await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /serviceAssembly\.service\.http\.response does not support .*serviceAssembly\.service\.http\.response\.foo/,
+      /serviceAssembly\.service does not support "http"/,
     );
   });
 
