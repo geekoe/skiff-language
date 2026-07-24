@@ -173,13 +173,14 @@ fn build_package_after_platform_context_guard(
                 )))
             }
         };
+        let package_closure = reachable_package_closure(store, &published.artifact, &available)?;
         let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
             service: &service.service,
             profile_name: environment,
             profile,
             service_api: &service_api,
             implementation: &published.artifact,
-            package_closure: &dependencies,
+            package_closure: &package_closure,
         })?;
         let deployment_path = store.write_service_deployment(&deployment)?;
         let deployment_ref = service_deployment_ref(&deployment);
@@ -384,6 +385,108 @@ fn read_optional_platform_std(
                 .as_ref()
                 .clone(),
         );
+    }
+    Ok(())
+}
+
+fn reachable_package_closure(
+    store: &CanonicalArtifactStore,
+    implementation: &PackageArtifact,
+    loaded: &[PackageArtifact],
+) -> AuthoringResult<Vec<PackageArtifact>> {
+    resolve_reachable_package_closure(implementation, loaded, |package_id, package_version| {
+        let pointer = store
+            .read_package_artifact_pointer(package_id, package_version)?
+            .ok_or_else(|| {
+                invalid_input(format!(
+                    "exact package requirement {package_id}@{package_version} has no published PackageArtifact pointer"
+                ))
+            })?;
+        Ok(store
+            .read_package_artifact(&pointer.artifact)?
+            .as_ref()
+            .clone())
+    })
+}
+
+fn resolve_reachable_package_closure(
+    implementation: &PackageArtifact,
+    loaded: &[PackageArtifact],
+    mut resolve: impl FnMut(&str, &str) -> AuthoringResult<PackageArtifact>,
+) -> AuthoringResult<Vec<PackageArtifact>> {
+    let mut candidates = loaded.to_vec();
+    let mut pending = VecDeque::from_iter([implementation.clone()]);
+    let mut visited = BTreeSet::new();
+    let mut reachable = BTreeMap::new();
+
+    while let Some(caller) = pending.pop_front() {
+        if !visited.insert(caller.package_build_id.clone()) {
+            continue;
+        }
+        for requirement in &caller.package_requirements {
+            let matching_coordinates = candidates
+                .iter()
+                .filter(|candidate| {
+                    candidate.package_id == requirement.package_id
+                        && candidate.package_version == requirement.exact_version
+                })
+                .collect::<Vec<_>>();
+            let candidate = if let Some(candidate) = matching_coordinates.iter().find(|candidate| {
+                candidate.package_local_abi.local_abi_identity == requirement.expected_local_abi
+            }) {
+                (*candidate).clone()
+            } else if matching_coordinates.is_empty() {
+                let candidate = resolve(&requirement.package_id, &requirement.exact_version)?;
+                validate_package_requirement_candidate(requirement, &candidate)?;
+                candidates.push(candidate.clone());
+                candidate
+            } else {
+                return Err(invalid_input(format!(
+                    "exact package requirement {}@{} expected local ABI {}, but the loaded candidate has {}",
+                    requirement.package_id,
+                    requirement.exact_version,
+                    requirement.expected_local_abi,
+                    matching_coordinates[0]
+                        .package_local_abi
+                        .local_abi_identity
+                )));
+            };
+            validate_package_requirement_candidate(requirement, &candidate)?;
+            if candidate.package_build_id != implementation.package_build_id {
+                reachable
+                    .entry(candidate.package_build_id.clone())
+                    .or_insert_with(|| candidate.clone());
+            }
+            pending.push_back(candidate);
+        }
+    }
+
+    Ok(reachable.into_values().collect())
+}
+
+fn validate_package_requirement_candidate(
+    requirement: &skiff_artifact_model::PackageRequirement,
+    candidate: &PackageArtifact,
+) -> AuthoringResult<()> {
+    if candidate.package_id != requirement.package_id
+        || candidate.package_version != requirement.exact_version
+    {
+        return Err(invalid_input(format!(
+            "exact package requirement {}@{} resolved to {}@{}",
+            requirement.package_id,
+            requirement.exact_version,
+            candidate.package_id,
+            candidate.package_version
+        )));
+    }
+    if candidate.package_local_abi.local_abi_identity != requirement.expected_local_abi {
+        return Err(invalid_input(format!(
+            "exact package requirement {}@{} expected local ABI {}, but resolved candidate has {}",
+            requirement.package_id,
+            requirement.exact_version,
+            requirement.expected_local_abi,
+            candidate.package_local_abi.local_abi_identity
+        )));
     }
     Ok(())
 }
