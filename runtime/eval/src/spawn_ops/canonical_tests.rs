@@ -8,9 +8,10 @@ use skiff_artifact_model::{
     DeploymentArtifactIdentity, DeploymentPolicy, DeploymentRevision, ExecutableBody, ExecutableIr,
     ExecutableKind, ExprIr, ExprRefIr, FileIrRef, FileIrUnit, MetadataValue, PackageArtifact,
     PackageArtifactRef, PackageBuildId, PackageCodeSlot, PackageImplementationLinks,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, ResourcePolicy,
-    RuntimeAssembly, ServiceContract, ServiceContractRef, ServiceDeploymentRef, SlotLayout, StmtIr,
-    StmtRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexRef,
+    ResourcePolicy, RuntimeAssembly, ServiceContract, ServiceContractRef, ServiceDeploymentRef,
+    SlotLayout, StmtIr, StmtRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_activation::{
     ActivationContext, ActivationId, ActivationIdentity, ActivationOwnedBindings,
@@ -427,6 +428,15 @@ fn private_package(file: &FileIrUnit) -> PackageArtifact {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: PACKAGE_ID.to_string(),
+            package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+                PACKAGE_ID,
+                &BTreeMap::new(),
+            )
+            .expect("empty Package schema index is canonical"),
+        },
+        package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
         package_requirements: Vec::new(),

@@ -417,8 +417,9 @@ mod tests {
         AssemblyIdentity, CanonicalPackageLinkPlan, ExecutableBody, ExecutableIr, ExecutableKind,
         FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBuildId,
         PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-        PackageRuntimeRequirements, RuntimeAssembly, SlotLayout, TypeDeclIr, TypeDescriptorIr,
-        TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+        PackageRuntimeRequirements, PackageSchemaIndexRef, RuntimeAssembly, SlotLayout, TypeDeclIr,
+        TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     };
 
     #[test]
@@ -551,6 +552,16 @@ mod tests {
                 local_abi_identity: PackageLocalAbiIdentity::new("projection-abi"),
                 public_symbols: BTreeMap::new(),
             },
+            package_schema_index: PackageSchemaIndexRef {
+                package_id: "projection.package".to_string(),
+                package_schema_index_identity:
+                    skiff_artifact_identity::package_schema_index_identity(
+                        "projection.package",
+                        &BTreeMap::new(),
+                    )
+                    .expect("empty Package schema index is canonical"),
+            },
+            package_schema_type_records: BTreeMap::new(),
             implementation_links: PackageImplementationLinks::default(),
             callable_links: BTreeMap::new(),
             package_requirements: Vec::new(),
