@@ -20,11 +20,13 @@ admission结果。
 
 ## 必须实现
 
-- Host从已hydrated candidate/store取得每个`ServiceContractRef`对应的
-  `Arc<ResolvedServiceSchema>`，与contract一起固定在同一assembly generation的immutable context。
-- `RuntimeAssemblyEvalResolver`提供按精确`ServiceContractRef`获取admitted schema的typed接口。
+- eval seam定义自身拥有的只读record集合类型
+  `Arc<BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>>`；不得让eval依赖loader类型。
+- Host从已hydrated candidate/store的`ResolvedServiceSchema`取得每个contract已经admit的records，
+  转成上述只读集合并与contract固定在同一assembly generation的immutable context。
+- `RuntimeAssemblyEvalResolver`提供按精确`ServiceContractRef`获取admitted record集合的typed接口。
 - ingress与internal service call构造`RuntimeAssemblyServiceCallTarget`时都绑定同一
-  `Arc<ResolvedServiceSchema>`，target提供只读accessor。
+  record集合`Arc`，target提供只读accessor。
 - 校验contract ref、schema contract identity及generation assembly owner一致；缺失或错配在target
   构造时fail closed。
 - 不得传Package index、artifact root、resolver或文件系统能力进入eval；不得复制records或重新
@@ -34,7 +36,7 @@ admission结果。
 ## 验证
 
 - `cargo test -p skiff-runtime-eval assembly_seam`及Host active-context聚焦测试；
-- ingress/internal call同schema Arc、缺失、错配及generation隔离覆盖；
+- ingress/internal call同record集合Arc、缺失、错配及generation隔离覆盖；
 - `cargo check -p skiff-runtime-host`；
 - `git diff --check`；
 - 独立提交并写`P5-F171A-runtime-schema-eval-handoff-result.md`。
