@@ -23,4 +23,3 @@ prelude 与官方 std 源码只继续提供函数和方法表面，不再承担 
 - `cargo check --workspace`：通过。
 - `rg -n '^native type' prelude std`：无匹配。
 - `git diff --check`：通过。
-
