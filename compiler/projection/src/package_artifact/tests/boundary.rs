@@ -353,6 +353,7 @@ fn canonical_http_ingress_types_are_boundary_available_and_exact() {
         &safe_facts(),
         &empty_runtime_requirements(),
         &[],
+        &BTreeMap::new(),
     )
     .unwrap();
     let BoundaryCallableProjection::Available {
@@ -385,6 +386,7 @@ fn http_stream_event_is_available_but_arbitrary_native_handles_remain_rejected()
         &safe_facts(),
         &empty_runtime_requirements(),
         &[],
+        &BTreeMap::new(),
     )
     .unwrap();
     assert!(matches!(
