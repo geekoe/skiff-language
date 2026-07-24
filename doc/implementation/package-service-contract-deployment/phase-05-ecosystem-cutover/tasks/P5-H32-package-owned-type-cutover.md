@@ -12,6 +12,9 @@
 ServiceContract只选择operations并引用这些Package类型，不能复制descriptor、重写成service-owned
 `ContractTypeId`或在HTTP位置展开匿名结构。
 
+后续用户决策：第一版所有boundary可达named types必须在owner Package的`api.yml`显式公开；不支持
+closure-only内部命名类型进入boundary。compiler必须拒绝它，不能从模块/文件路径或遍历顺序造稳定键。
+
 完整规范见：
 
 - `../../../../../architecture/package-service-contract-deployment.md`
@@ -63,4 +66,3 @@ Skiff尚未发布，不保留旧artifact wire兼容层。
 - 被引用类型descriptor变化必须改变PackageSchemaTypeId和ServiceProtocolIdentity；
 - std HTTP类型保持`skiff.run/std` owner，不内联、不复制；
 - 全仓搜索不得残留“service projection must replace Package type with service-owned ContractTypeId”的生产规则。
-
