@@ -22,6 +22,8 @@ enum ProviderBehavior {
     ThrowTypedError,
     InvokeCallback,
     EmitCallbackStream,
+    EmitBooleanSequence,
+    EmitBooleanThenError,
 }
 
 #[derive(Clone, Copy)]
@@ -29,6 +31,7 @@ enum ConsumerBehavior {
     ReturnCall,
     InvokeCallback,
     ConsumeCallbackStream { break_after_item: bool },
+    ConsumeBooleanSequence,
 }
 
 enum ImplementationRole {
@@ -200,6 +203,34 @@ impl TypedExecutionContract {
         fixture.consumer_behavior = ConsumerBehavior::ConsumeCallbackStream {
             break_after_item: true,
         };
+        fixture
+    }
+
+    pub(super) fn boolean_stream() -> Self {
+        let mut fixture = Self::with_provider_behavior(
+            boolean_stream_contract(),
+            BTreeMap::new(),
+            ProviderBehavior::EmitBooleanSequence,
+        );
+        fixture.consumer_behavior = ConsumerBehavior::ConsumeBooleanSequence;
+        fixture
+    }
+
+    pub(super) fn unconsumed_boolean_stream() -> Self {
+        Self::with_provider_behavior(
+            boolean_stream_contract(),
+            BTreeMap::new(),
+            ProviderBehavior::EmitBooleanSequence,
+        )
+    }
+
+    pub(super) fn boolean_stream_error() -> Self {
+        let mut fixture = Self::with_provider_behavior(
+            boolean_stream_contract(),
+            BTreeMap::new(),
+            ProviderBehavior::EmitBooleanThenError,
+        );
+        fixture.consumer_behavior = ConsumerBehavior::ConsumeBooleanSequence;
         fixture
     }
 
@@ -619,6 +650,12 @@ fn configure_provider_entry(
             module_path,
             CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX,
         ),
+        ProviderBehavior::EmitBooleanSequence => {
+            configure_boolean_stream_provider_entry(entry, false);
+        }
+        ProviderBehavior::EmitBooleanThenError => {
+            configure_boolean_stream_provider_entry(entry, true);
+        }
     }
 }
 
@@ -632,7 +669,9 @@ fn configure_consumer_entry(
     file.external_refs.service_call_refs.push(service_call);
     let call_args = match behavior {
         ConsumerBehavior::InvokeCallback => append_callback_preimage(entry, module_path),
-        ConsumerBehavior::ReturnCall | ConsumerBehavior::ConsumeCallbackStream { .. } => Vec::new(),
+        ConsumerBehavior::ReturnCall
+        | ConsumerBehavior::ConsumeCallbackStream { .. }
+        | ConsumerBehavior::ConsumeBooleanSequence => Vec::new(),
     };
     let call_expression = u32::try_from(entry.body.expressions.len())
         .expect("fixture expression count should fit u32");
@@ -642,7 +681,11 @@ fn configure_consumer_entry(
                 service_call_ref_index: ServiceCallRefIndex::new(0),
             },
             args: call_args,
-            type_args: BTreeMap::new(),
+            type_args: if matches!(behavior, ConsumerBehavior::ConsumeBooleanSequence) {
+                BTreeMap::from([("T".to_string(), TypeRefIr::native("bool"))])
+            } else {
+                BTreeMap::new()
+            },
             metadata: BTreeMap::new(),
         },
     });
@@ -660,6 +703,9 @@ fn configure_consumer_entry(
         }
         ConsumerBehavior::ConsumeCallbackStream { break_after_item } => {
             configure_callback_stream_consumer_entry(entry, call_expression, break_after_item);
+        }
+        ConsumerBehavior::ConsumeBooleanSequence => {
+            configure_boolean_stream_consumer_entry(entry, call_expression);
         }
     }
 }
@@ -716,6 +762,125 @@ fn install_consumer_support(
         matches!(behavior, ConsumerBehavior::InvokeCallback),
         CALLBACK_OWNER_EXECUTABLE_INDEX,
     );
+}
+
+fn configure_boolean_stream_provider_entry(entry: &mut ExecutableIr, fail_after_first: bool) {
+    entry.type_params = vec!["T".to_string()];
+    entry.return_type = TypeRefIr::Native {
+        name: "Stream".to_string(),
+        args: vec![TypeRefIr::TypeParam {
+            name: "T".to_string(),
+        }],
+    };
+    entry.body.expressions = vec![
+        ExprIr::Literal {
+            value: LiteralIr::Bool { value: true },
+        },
+        ExprIr::Literal {
+            value: LiteralIr::Bool { value: false },
+        },
+    ];
+    entry.body.statements.push(StmtIr::Emit {
+        operation: "provide".to_string(),
+        value: ExprRefIr { expression: 0 },
+    });
+    if fail_after_first {
+        entry.body.statements.push(StmtIr::Assert {
+            condition: ExprRefIr { expression: 1 },
+            message: None,
+        });
+    } else {
+        entry.body.statements.push(StmtIr::Emit {
+            operation: "provide".to_string(),
+            value: ExprRefIr { expression: 1 },
+        });
+    }
+    entry.body.blocks.push(BlockIr {
+        label: "entry".to_string(),
+        statements: (0..entry.body.statements.len())
+            .map(|statement| StmtRefIr {
+                statement: u32::try_from(statement)
+                    .expect("fixture statement index should fit u32"),
+            })
+            .collect(),
+    });
+}
+
+fn configure_boolean_stream_consumer_entry(entry: &mut ExecutableIr, stream_expression: u32) {
+    let item = u32::try_from(entry.body.expressions.len()).expect("fixture index should fit u32");
+    entry.body.expressions.push(ExprIr::LoadSlot { slot: 0 });
+    let seen = u32::try_from(entry.body.expressions.len()).expect("fixture index should fit u32");
+    entry.body.expressions.push(ExprIr::LoadSlot { slot: 1 });
+    let first = u32::try_from(entry.body.expressions.len()).expect("fixture index should fit u32");
+    entry.body.expressions.push(ExprIr::Literal {
+        value: LiteralIr::Bool { value: true },
+    });
+    let second = u32::try_from(entry.body.expressions.len()).expect("fixture index should fit u32");
+    entry.body.expressions.push(ExprIr::Literal {
+        value: LiteralIr::Bool { value: false },
+    });
+    let ordered =
+        u32::try_from(entry.body.expressions.len()).expect("fixture index should fit u32");
+    entry.body.expressions.push(ExprIr::Binary {
+        op: BinaryOpIr::Equal,
+        left: ExprRefIr { expression: item },
+        right: ExprRefIr { expression: seen },
+    });
+    entry.slots = SlotLayout {
+        slots: vec![
+            SlotIr {
+                index: 0,
+                name: "item".to_string(),
+                kind: SlotKind::Pattern,
+            },
+            SlotIr {
+                index: 1,
+                name: "seenFirst".to_string(),
+                kind: SlotKind::Local,
+            },
+        ],
+        frame_size: 2,
+    };
+    entry.body.statements.extend([
+        StmtIr::Let {
+            slot: 1,
+            value: ExprRefIr { expression: first },
+        },
+        StmtIr::ForIn {
+            item_slot: 0,
+            item_type: Some(TypeRefIr::native("bool")),
+            value_slot: None,
+            iterable: ExprRefIr {
+                expression: stream_expression,
+            },
+            body: "consume_boolean".to_string(),
+        },
+        StmtIr::Assert {
+            condition: ExprRefIr {
+                expression: ordered,
+            },
+            message: None,
+        },
+        StmtIr::Assign {
+            target: AssignTargetIr::Slot { slot: 1 },
+            value: ExprRefIr { expression: second },
+        },
+        StmtIr::Return { value: None },
+    ]);
+    entry.body.blocks.extend([
+        BlockIr {
+            label: "entry".to_string(),
+            statements: vec![
+                StmtRefIr { statement: 0 },
+                StmtRefIr { statement: 1 },
+                StmtRefIr { statement: 4 },
+            ],
+        },
+        BlockIr {
+            label: "consume_boolean".to_string(),
+            statements: vec![StmtRefIr { statement: 2 }, StmtRefIr { statement: 3 }],
+        },
+    ]);
 }
 
 fn configure_return_true_entry(entry: &mut ExecutableIr) {
@@ -1301,6 +1466,29 @@ fn unary_contract() -> BoundaryOperationContract {
             no_same_heap_identity: true,
         },
     }
+}
+
+fn boolean_stream_contract() -> BoundaryOperationContract {
+    let mut contract = unary_contract();
+    contract.return_value.ty = ContractTypeRef::builtin("void");
+    contract.return_value.value_plan = BoundaryValuePlan::Linkable {
+        carrier: BoundaryValueCarrier::DetachedValueGraph,
+        encoding: BoundaryValueEncoding::CanonicalValue,
+        owner: BoundaryValueOwner::Provider,
+        lifetime: BoundaryValueLifetime::Call,
+    };
+    contract.stream = BoundaryStreamContract::ServerStream {
+        item_type: ContractTypeRef::builtin("bool"),
+        item_value_plan: BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::DetachedValueGraph,
+            encoding: BoundaryValueEncoding::CanonicalValue,
+            owner: BoundaryValueOwner::Provider,
+            lifetime: BoundaryValueLifetime::Stream,
+        },
+    };
+    contract.cancellation = BoundaryCancellationContract::Cooperative;
+    contract.may_suspend = true;
+    contract
 }
 
 fn no_effects(may_suspend: bool) -> CallableMayEffects {

@@ -48,6 +48,11 @@ use crate::{
 
 static PROVIDER_STREAM_TASKS_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn provider_stream_tasks_active_for_test() -> usize {
+    PROVIDER_STREAM_TASKS_ACTIVE.load(Ordering::Acquire)
+}
+
 pub(crate) async fn execute_service_call(
     context: &mut EvalContext<'_>,
     call: &CallIr,

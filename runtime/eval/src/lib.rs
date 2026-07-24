@@ -60,6 +60,10 @@ pub use assembly_execution::{
     start_in_process_boundary_dispatch_probe_for_test,
     take_in_process_boundary_dispatch_records_for_test, InProcessBoundaryDispatchRecord,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub fn provider_stream_tasks_active_for_test() -> usize {
+    assembly_execution::provider_stream_tasks_active_for_test()
+}
 pub use assembly_seam::{
     RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalSeamError, RuntimeAssemblyEvalTarget,
     RuntimeAssemblyServiceCallTarget,

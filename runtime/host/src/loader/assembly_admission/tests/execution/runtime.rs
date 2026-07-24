@@ -107,6 +107,10 @@ impl TypedExecutionRuntime {
         Interpreter::for_runtime_assembly(eval_capability_adapter::runtime_factory())
     }
 
+    pub(super) fn cancel_request(&self) {
+        self.cancellation.cancel();
+    }
+
     pub(super) fn context<'a>(
         &'a self,
         interpreter: &Interpreter,
