@@ -3,16 +3,82 @@ use std::collections::BTreeMap;
 use serde_json::json;
 use skiff_artifact_identity::validate_service_contract_identities;
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCallbackOperation, BoundaryCancellationContract,
-    BoundaryEffectGuarantee, BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter,
-    BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor,
+    BoundaryCallbackContract, BoundaryCallbackExpirationError, BoundaryCallbackLifetime,
+    BoundaryCallbackOperation, BoundaryCancellationContract, BoundaryEffectGuarantee,
+    BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
+    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor, ContractTypeId,
     ContractTypeNameability, ContractTypeRef, ContractTypeShape,
 };
 
 use super::*;
 
 mod schema_fidelity;
+
+#[test]
+fn service_owned_operation_canonicalization_closes_every_nominal_position() {
+    let package_public = |path: &str| ContractTypeRef::PackagePublic {
+        local_type_id: format!("type:{path}"),
+    };
+    let mut operation = BoundaryOperationContract {
+        parameters: vec![BoundaryParameter {
+            name: "input".to_string(),
+            ty: ContractTypeRef::Nullable {
+                inner: Box::new(ContractTypeRef::Builtin {
+                    name: "list".to_string(),
+                    arguments: vec![package_public("Parameter")],
+                }),
+            },
+            value_plan: linkable(BoundaryValueOwner::Caller),
+        }],
+        return_value: BoundaryReturn {
+            ty: ContractTypeRef::Record {
+                fields: BTreeMap::from([("value".to_string(), package_public("Return"))]),
+            },
+            value_plan: linkable(BoundaryValueOwner::Provider),
+        },
+        errors: BoundaryErrorContract::Typed {
+            payload_type: package_public("Error"),
+            value_plan: linkable(BoundaryValueOwner::Provider),
+        },
+        stream: BoundaryStreamContract::ServerStream {
+            item_type: package_public("Item"),
+            item_value_plan: linkable(BoundaryValueOwner::Provider),
+        },
+        cancellation: BoundaryCancellationContract::Cooperative,
+        callbacks: BoundaryCallbackContract::RequestScoped {
+            interface_type_ids: vec![ContractTypeId::new("type:Callback")],
+            lifetime: BoundaryCallbackLifetime::Stream,
+            expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
+        },
+        may_suspend: true,
+        effect_guarantee: BoundaryEffectGuarantee {
+            detached_parameters: true,
+            detached_return: true,
+            detached_error: true,
+            no_caller_reachable_mutation: true,
+            no_caller_value_escape: true,
+            no_same_heap_identity: true,
+        },
+    };
+
+    let canonical =
+        canonicalize_service_owned_operation_contract("example.echo", "1.0.0", &operation).unwrap();
+    let relabeled =
+        canonicalize_service_owned_operation_contract("example.echo", "9.9.9", &operation).unwrap();
+    assert_eq!(canonical, relabeled, "contract type IDs are version-free");
+
+    operation.parameters[0].ty = canonical.parameters[0].ty.clone();
+    operation.return_value.ty = canonical.return_value.ty.clone();
+    operation.errors = canonical.errors.clone();
+    operation.stream = canonical.stream.clone();
+    operation.callbacks = canonical.callbacks.clone();
+    assert_eq!(
+        canonicalize_service_owned_operation_contract("example.echo", "1.0.0", &operation).unwrap(),
+        canonical,
+        "canonicalization is idempotent"
+    );
+}
 
 #[test]
 fn definition_compiles_without_any_provider_code_or_artifact() {

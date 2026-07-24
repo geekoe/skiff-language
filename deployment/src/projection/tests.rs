@@ -545,6 +545,74 @@ fn unavailable_callable_and_nominal_descriptor_mismatch_fail_closed() {
 }
 
 #[test]
+fn generated_contract_accepts_its_package_owned_operation_and_rejects_other_nominals() {
+    let mut fixture = ProjectionFixture::new();
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = fixture
+        .implementation
+        .boundary_projections
+        .get_mut(&fixture.callable_id)
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    operation_contract.parameters[0].ty = ContractTypeRef::PackagePublic {
+        local_type_id: "type:payload".to_string(),
+    };
+    operation_contract.return_value.ty = ContractTypeRef::PackagePublic {
+        local_type_id: "type:payload".to_string(),
+    };
+    fixture.refresh_implementation_ref();
+    fixture
+        .project()
+        .expect("the generated service contract must accept its package-owned operation");
+
+    for (replacement, add_public_type) in [
+        ("type:anotherPublicType", true),
+        ("type:missingOrPrivateType", false),
+    ] {
+        let mut fixture = ProjectionFixture::new();
+        if add_public_type {
+            fixture
+                .implementation
+                .package_local_abi
+                .public_symbols
+                .insert(
+                    "anotherPublicType".to_string(),
+                    PackageLocalAbiSymbol::Type {
+                        local_type_id: replacement.to_string(),
+                        descriptor: TypeDescriptorIr::Record {
+                            fields: BTreeMap::new(),
+                        },
+                        is_interface: false,
+                        type_params: Vec::new(),
+                        interface_methods: Vec::new(),
+                    },
+                );
+        }
+        let BoundaryCallableProjection::Available {
+            operation_contract, ..
+        } = fixture
+            .implementation
+            .boundary_projections
+            .get_mut(&fixture.callable_id)
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        operation_contract.parameters[0].ty = ContractTypeRef::PackagePublic {
+            local_type_id: replacement.to_string(),
+        };
+        fixture.refresh_implementation_ref();
+        assert!(matches!(
+            fixture.project(),
+            Err(ProjectionError::OperationContractMismatch { .. })
+        ));
+    }
+}
+
+#[test]
 fn required_activation_bindings_and_protocol_identity_are_exact() {
     let mut fixture = ProjectionFixture::new();
     fixture.input.config_literals.clear();

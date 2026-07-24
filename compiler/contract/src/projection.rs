@@ -93,7 +93,7 @@ pub fn project_service_api(
             } => {
                 operations.insert(
                     public_path.clone(),
-                    service_owned_operation_contract(
+                    canonicalize_service_owned_operation_contract(
                         &service_id,
                         &package.package_version,
                         operation_contract,
@@ -137,7 +137,12 @@ pub fn project_service_api(
     })
 }
 
-fn service_owned_operation_contract(
+/// Canonicalizes a package boundary operation for ownership by one service.
+///
+/// Package-public nominal references are projected to the service's
+/// version-free contract type identities. Deployment validation uses this same
+/// projection before comparing a generated contract with its implementation.
+pub fn canonicalize_service_owned_operation_contract(
     service_id: &str,
     version_label: &str,
     operation: &skiff_artifact_model::BoundaryOperationContract,
@@ -153,6 +158,17 @@ fn service_owned_operation_contract(
     }
     if let BoundaryStreamContract::ServerStream { item_type, .. } = &mut operation.stream {
         *item_type = service_owned_type_ref(service_id, version_label, item_type.clone())?;
+    }
+    if let BoundaryCallbackContract::RequestScoped {
+        interface_type_ids, ..
+    } = &mut operation.callbacks
+    {
+        for interface_type_id in interface_type_ids {
+            if let Some(public_path) = interface_type_id.as_str().strip_prefix("type:") {
+                *interface_type_id =
+                    definition_contract_type_id(service_id, version_label, public_path)?;
+            }
+        }
     }
     Ok(operation)
 }
