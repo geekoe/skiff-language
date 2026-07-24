@@ -60,8 +60,38 @@ export async function runAuthoringObjectCommand(kind, rawArgs, {
     };
   }
 
-  stdout(parsed.json ? JSON.stringify(result, null, 2) : JSON.stringify(result));
+  stdout(parsed.json ? JSON.stringify(result, null, 2) : renderAuthoringResult(result));
   return result;
+}
+
+export function renderAuthoringResult(result) {
+  const receipt = result?.serviceApiReceipt;
+  const functions = receipt?.projection?.functions;
+  if (!Array.isArray(functions)) {
+    return JSON.stringify(result);
+  }
+  const available = functions.filter((entry) => entry?.status === 'available');
+  const unavailable = functions.filter((entry) => entry?.status === 'unavailable');
+  if (available.length + unavailable.length !== functions.length) {
+    throw new Error('compiler returned an invalid service API projection status');
+  }
+  const owner = receipt.serviceId ?? '<package only>';
+  const lines = [
+    `Service API for ${owner}`,
+    `Available: ${available.length}`,
+    `Package-only: ${unavailable.length}`,
+  ];
+  for (const entry of functions) {
+    if (entry.status === 'available') {
+      lines.push(`  available ${entry.publicPath}`);
+      continue;
+    }
+    lines.push(`  package-only ${entry.publicPath}`);
+    for (const reason of entry.reasons ?? []) {
+      lines.push(`    - ${JSON.stringify(reason)}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 export async function requestAssemblyActivation({

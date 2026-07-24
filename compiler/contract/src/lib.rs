@@ -9,7 +9,10 @@ pub use compile::{
 };
 pub use definition::{ServiceContractDefinition, ServiceContractDefinitionDiagnosticText};
 pub use error::{ContractDefinitionError, Result};
-pub use projection::{project_service_api, ServiceApiProjection};
+pub use projection::{
+    project_package_api_visibility, project_service_api, ServiceApiFunction,
+    ServiceApiFunctionStatus, ServiceApiProjection, ServiceApiVisibility,
+};
 
 #[cfg(test)]
 mod tests;

@@ -8,6 +8,7 @@ import {
   compilerAuthoringInvocation,
   objectUsage,
   parseObjectArgs,
+  renderAuthoringResult,
   requestAssemblyActivation,
   runCompilerAuthoring,
 } from '../lib/package-service-authoring.mjs';
@@ -70,6 +71,98 @@ test('public four-object CLI does not expose the internal platform trust option'
       /unknown option --platform-source-root/,
     );
   }
+});
+
+test('human service API output renders the exact compiler projection', () => {
+  const result = {
+    serviceApiReceipt: {
+      serviceId: 'example.com/account',
+      serviceProtocolIdentity: 'protocol',
+      projection: {
+        functions: [
+          {
+            publicPath: 'create',
+            callableId: 'create-id',
+            status: 'available',
+            serviceOperationId: 'create-operation',
+          },
+          {
+            publicPath: 'mutate',
+            callableId: 'mutate-id',
+            status: 'unavailable',
+            reasons: ['writesCallerReachable'],
+          },
+        ],
+      },
+    },
+  };
+  assert.equal(
+    renderAuthoringResult(result),
+    'Service API for example.com/account\n'
+      + 'Available: 1\n'
+      + 'Package-only: 1\n'
+      + '  available create\n'
+      + '  package-only mutate\n'
+      + '    - "writesCallerReachable"',
+  );
+  assert.equal(
+    renderAuthoringResult({
+      serviceApiReceipt: {
+        serviceId: 'example.com/empty',
+        projection: { functions: [] },
+      },
+    }),
+    'Service API for example.com/empty\nAvailable: 0\nPackage-only: 0',
+  );
+  assert.equal(
+    renderAuthoringResult({
+      serviceApiReceipt: {
+        serviceId: 'example.com/package-only',
+        projection: {
+          functions: [{
+            publicPath: 'mutate',
+            callableId: 'mutate-id',
+            status: 'unavailable',
+            reasons: ['writesCallerReachable'],
+          }],
+        },
+      },
+    }),
+    'Service API for example.com/package-only\nAvailable: 0\nPackage-only: 1\n'
+      + '  package-only mutate\n'
+      + '    - "writesCallerReachable"',
+  );
+});
+
+test('service package build returns one stable API receipt with operation identities', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'skiff-service-api-receipt-'));
+  const root = join(temp, 'service');
+  await writePackageRoot(root, {
+    packageId: 'example.com/ping-implementation',
+    api: 'ping: main.ping\n',
+    source: 'function ping() -> string { return "pong" }\n',
+  });
+  await writeFile(join(root, 'service.yml'), 'id: example.com/ping\n');
+  const result = await runCompilerAuthoring({
+    skiffRoot,
+    kind: 'package',
+    action: 'build',
+    root,
+    artifactRoot: join(temp, 'artifacts'),
+  });
+  assert.equal(result.serviceApiReceipt.serviceId, 'example.com/ping');
+  assert.match(
+    result.serviceApiReceipt.serviceProtocolIdentity,
+    /^skiff-service-protocol-v2:sha256:/,
+  );
+  assert.deepEqual(
+    result.serviceApiReceipt.projection.functions.map((entry) => ({
+      path: entry.publicPath,
+      status: entry.status,
+      hasOperationId: typeof entry.serviceOperationId === 'string',
+    })),
+    [{ path: 'ping', status: 'available', hasOperationId: true }],
+  );
 });
 
 test('contract-first publish compiles a consumer with no provider package', async () => {

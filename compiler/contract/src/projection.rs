@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
-    BoundaryCallableProjection, BoundaryUnavailableReason, PackageArtifact, PackageCallableId,
-    PackageLocalAbiSymbol, ServiceContract,
+    BoundaryCallableProjection, BoundaryUnavailableReason, ContractOperationId, PackageArtifact,
+    PackageCallableId, PackageLocalAbiSymbol, ServiceContract,
 };
 
 use crate::{
@@ -15,12 +15,52 @@ use crate::{
 ///
 /// `contract` contains every boundary-available public callable. `unavailable`
 /// retains every package-only public callable and its canonical reasons.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceApiProjection {
     pub contract: ServiceContract,
+    pub visibility: ServiceApiVisibility,
     pub available: BTreeMap<String, PackageCallableId>,
     pub unavailable: BTreeMap<String, Vec<BoundaryUnavailableReason>>,
+}
+
+/// Stable developer-facing view of every public callable from `api.yml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceApiVisibility {
+    pub functions: Vec<ServiceApiFunction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceApiFunction {
+    pub public_path: String,
+    pub callable_id: PackageCallableId,
+    #[serde(flatten)]
+    pub status: ServiceApiFunctionStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ServiceApiFunctionStatus {
+    Available {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        service_operation_id: Option<ContractOperationId>,
+    },
+    Unavailable {
+        reasons: Vec<BoundaryUnavailableReason>,
+    },
+}
+
+/// Produces the canonical visibility DTO for an ordinary package.
+///
+/// A package has boundary eligibility but no service operation identity.
+pub fn project_package_api_visibility(package: &PackageArtifact) -> Result<ServiceApiVisibility> {
+    project_api_visibility(package, None)
 }
 
 /// Projects the code-free ServiceContract from the already compiled package.
@@ -78,11 +118,56 @@ pub fn project_service_api(
             types: BTreeMap::new(),
         },
     })?;
+    let visibility = project_api_visibility(package, Some(&contract))?;
     Ok(ServiceApiProjection {
         contract,
+        visibility,
         available,
         unavailable,
     })
+}
+
+fn project_api_visibility(
+    package: &PackageArtifact,
+    contract: Option<&ServiceContract>,
+) -> Result<ServiceApiVisibility> {
+    let public_callables = public_callable_paths(package)?;
+    let operation_ids = contract
+        .map(|contract| {
+            contract
+                .diagnostic_text
+                .operations
+                .iter()
+                .map(|(operation_id, public_path)| (public_path.clone(), operation_id.clone()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let mut functions = Vec::with_capacity(public_callables.len());
+    for (callable_id, public_path) in public_callables {
+        let projection = package
+            .boundary_projections
+            .get(&callable_id)
+            .ok_or_else(|| ContractDefinitionError::MissingBoundaryProjection {
+                callable_id: callable_id.to_string(),
+            })?;
+        let status = match projection {
+            BoundaryCallableProjection::Available { .. } => ServiceApiFunctionStatus::Available {
+                service_operation_id: operation_ids.get(&public_path).cloned(),
+            },
+            BoundaryCallableProjection::Unavailable { reasons } => {
+                ServiceApiFunctionStatus::Unavailable {
+                    reasons: reasons.clone(),
+                }
+            }
+        };
+        functions.push(ServiceApiFunction {
+            public_path,
+            callable_id,
+            status,
+        });
+    }
+    functions.sort_by(|left, right| left.public_path.cmp(&right.public_path));
+    Ok(ServiceApiVisibility { functions })
 }
 
 fn public_callable_paths(package: &PackageArtifact) -> Result<BTreeMap<PackageCallableId, String>> {
@@ -144,6 +229,53 @@ mod tests {
             "read"
         );
         assert!(projected.contract.boundary_schema.is_empty());
+        assert_eq!(
+            projected
+                .visibility
+                .functions
+                .iter()
+                .map(|function| function.public_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["mutate", "read"]
+        );
+        assert!(matches!(
+            projected.visibility.functions[0].status,
+            ServiceApiFunctionStatus::Unavailable { .. }
+        ));
+        assert!(matches!(
+            projected.visibility.functions[1].status,
+            ServiceApiFunctionStatus::Available {
+                service_operation_id: Some(_)
+            }
+        ));
+        let wire = serde_json::to_value(&projected.visibility).unwrap();
+        assert_eq!(
+            wire.pointer("/functions/0/publicPath"),
+            Some(&serde_json::json!("mutate"))
+        );
+    }
+
+    #[test]
+    fn package_visibility_is_explicit_for_empty_and_unavailable_only_api() {
+        let mut empty = package_fixture("1.0.0");
+        empty.package_local_abi.public_symbols.clear();
+        empty.boundary_projections.clear();
+        assert!(project_package_api_visibility(&empty)
+            .unwrap()
+            .functions
+            .is_empty());
+
+        let mut unavailable = package_fixture("1.0.0");
+        unavailable.package_local_abi.public_symbols.remove("read");
+        unavailable.boundary_projections.remove(&callable("read"));
+        let visibility = project_package_api_visibility(&unavailable).unwrap();
+        assert_eq!(visibility.functions.len(), 1);
+        assert!(matches!(
+            visibility.functions[0].status,
+            ServiceApiFunctionStatus::Unavailable {
+                ref reasons
+            } if reasons == &[BoundaryUnavailableReason::WritesCallerReachable]
+        ));
     }
 
     #[test]

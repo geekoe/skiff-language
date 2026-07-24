@@ -25,7 +25,7 @@ use skiff_artifact_model::{
 use skiff_compiler_input::{
     package_config::{read_user_package_manifest, PackageManifest, PACKAGE_CONFIG_FILE},
     package_sources::read_package_sources,
-    read_publication_resources, CompilerPlatformSources,
+    read_publication_resources, read_service_package_root, CompilerPlatformSources,
 };
 use skiff_compiler_source::prelude_registry::initialize_prelude_registry;
 use skiff_compiler_source::source_graph::PublicationSourceGraph;
@@ -39,9 +39,11 @@ use skiff_deployment::{
 };
 
 use crate::{
-    compile_contract, compile_package, PackageCompileInput, PackageContractCompileDependency,
-    PackageSourceInput, ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
+    compile_contract, compile_package, compile_service_package, PackageCompileInput,
+    PackageContractCompileDependency, PackageSourceInput, ServiceContractDefinition,
+    ServiceContractDefinitionDiagnosticText,
 };
+use skiff_compiler_contract::project_package_api_visibility;
 
 mod package_publication;
 
@@ -128,12 +130,36 @@ fn build_package_after_platform_context_guard(
     let input = PackageCompileInput::new(platform_sources, &package, &aliases, &package_id)
         .with_canonical_dependencies(&dependencies, &contracts)
         .with_available_canonical_packages(&available);
-    let published = compile_package(input)?;
+    let service_root = root.join("service.yml").is_file();
+    let (published, service_api) = if service_root {
+        let service = read_service_package_root(root)?;
+        let compiled = compile_service_package(input, &service.service.id)?;
+        let receipt = json!({
+            "serviceId": &compiled.service_api.contract.service_id,
+            "serviceProtocolIdentity": &compiled.service_api.contract.service_protocol_identity,
+            "projection": &compiled.service_api.visibility,
+        });
+        (compiled.package, receipt)
+    } else {
+        let published = compile_package(input)?;
+        let visibility = project_package_api_visibility(&published.artifact)?;
+        (
+            published,
+            json!({
+                "serviceId": null,
+                "serviceProtocolIdentity": null,
+                "projection": visibility,
+            }),
+        )
+    };
     let receipt = publish_package_artifact_records(store, &published)?;
-    let mut output = Map::from_iter([(
-        "packageArtifactReceipt".to_string(),
-        serde_json::to_value(receipt)?,
-    )]);
+    let mut output = Map::from_iter([
+        (
+            "packageArtifactReceipt".to_string(),
+            serde_json::to_value(receipt)?,
+        ),
+        ("serviceApiReceipt".to_string(), service_api),
+    ]);
 
     if publish_pointer {
         let reference = package_artifact_ref(&published.artifact)?;
