@@ -121,7 +121,7 @@ impl ContractTypeUseValidator<'_> {
                             ));
                         } else if let Err(error) = self
                             .dependency_analysis
-                            .public_contract_type_id_by_stable_key(alias, stable_key)
+                            .public_package_type_by_stable_key(alias, stable_key)
                         {
                             self.violations.insert(error.to_string());
                         }

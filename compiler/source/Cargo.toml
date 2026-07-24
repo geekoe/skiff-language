@@ -24,3 +24,6 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_yaml = "0.9"
 sha2 = "0.10"
 thiserror = "2.0"
+
+[dev-dependencies]
+skiff-compiler-projection-input = { path = "../projection-input" }

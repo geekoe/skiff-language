@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use skiff_artifact_model::{ContractOperationId, ContractTypeId};
+use skiff_artifact_model::{ContractOperationId, PackageSchemaTypeId};
 
 #[derive(Debug, Error)]
 pub enum ContractDependencyError {
@@ -25,6 +25,59 @@ pub enum ContractDependencyError {
         alias: String,
         #[source]
         source: skiff_artifact_identity::ArtifactIdentityError,
+    },
+    #[error("ServiceContract dependency `{alias}` package schema records failed canonical validation: {source}")]
+    InvalidSchemaRecords {
+        alias: String,
+        #[source]
+        source: skiff_artifact_identity::ArtifactIdentityError,
+    },
+    #[error(
+        "ServiceContract dependency `{alias}` requires Package schema owner `{package_id}` without a validated public schema bundle"
+    )]
+    MissingPackageSchema { alias: String, package_id: String },
+    #[error(
+        "ServiceContract dependency `{alias}` repeats package schema type identity {package_schema_type_id} across owners"
+    )]
+    DuplicateSchemaTypeId {
+        alias: String,
+        package_schema_type_id: PackageSchemaTypeId,
+    },
+    #[error(
+        "ServiceContract dependency `{alias}` package schema record set has {actual} records, expected exactly {expected}"
+    )]
+    SchemaRecordSetMismatch {
+        alias: String,
+        expected: usize,
+        actual: usize,
+    },
+    #[error(
+        "ServiceContract dependency `{alias}` package schema requirements are not the exact operation-reachable closure"
+    )]
+    SchemaReachabilityMismatch { alias: String },
+    #[error(
+        "ServiceContract dependency `{alias}` is missing package schema record {package_id}:{package_schema_type_id}"
+    )]
+    MissingSchemaRecord {
+        alias: String,
+        package_id: String,
+        package_schema_type_id: PackageSchemaTypeId,
+    },
+    #[error(
+        "ServiceContract dependency `{alias}` package schema record {package_schema_type_id} owner is {actual_package_id}, expected {expected_package_id}"
+    )]
+    SchemaRecordOwnerMismatch {
+        alias: String,
+        package_schema_type_id: PackageSchemaTypeId,
+        expected_package_id: String,
+        actual_package_id: String,
+    },
+    #[error(
+        "ServiceContract dependency `{alias}` package schema reference {package_schema_type_id} does not match its record owner or stable key"
+    )]
+    SchemaReferenceMismatch {
+        alias: String,
+        package_schema_type_id: PackageSchemaTypeId,
     },
     #[error(
         "ServiceContract dependency `{alias}` coordinates {actual_service_id}@{actual_version} do not match requirement {expected_service_id}@{expected_version}"
@@ -53,19 +106,19 @@ pub enum ContractDependencyError {
     },
     #[error("contract dependency `{alias}` has no operation stable key `{stable_key}`")]
     UnknownOperationStableKey { alias: String, stable_key: String },
-    #[error("contract dependency `{alias}` has no contract type {contract_type_id}")]
+    #[error("contract dependency `{alias}` has no package schema type {package_schema_type_id}")]
     UnknownType {
         alias: String,
-        contract_type_id: ContractTypeId,
+        package_schema_type_id: PackageSchemaTypeId,
     },
     #[error("contract dependency `{alias}` has no contract type stable key `{stable_key}`")]
     UnknownTypeStableKey { alias: String, stable_key: String },
     #[error(
-        "contract dependency `{alias}` type stable key `{stable_key}` resolves to closure-only type {contract_type_id}"
+        "contract dependency `{alias}` type stable key `{stable_key}` is not a public Package type {package_schema_type_id}"
     )]
     ContractTypeNotPublicNameable {
         alias: String,
         stable_key: String,
-        contract_type_id: ContractTypeId,
+        package_schema_type_id: PackageSchemaTypeId,
     },
 }

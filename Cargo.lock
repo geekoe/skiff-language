@@ -2258,6 +2258,8 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-compiler-core",
  "skiff-compiler-input-model",
+ "skiff-compiler-projection-input",
+ "skiff-deployment",
  "thiserror",
 ]
 
@@ -2325,6 +2327,7 @@ dependencies = [
  "skiff-compiler-core",
  "skiff-compiler-input",
  "skiff-compiler-input-model",
+ "skiff-compiler-projection-input",
  "skiff-syntax",
  "thiserror",
 ]

@@ -1,5 +1,5 @@
 use skiff_artifact_model::{
-    ContractTypeRef, PackageTypeRef, ServiceContract, ServiceSymbolRef, TypeRefIr,
+    ContractTypeRef, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 
 pub(super) use crate::contract_type_resolution::package_type_contains_contract;
@@ -120,19 +120,38 @@ fn package_type_ref_from_resolved_ir(
                 dependency_analysis,
             )?),
         }),
-        TypeRefIr::ServiceSymbol { symbol }
-            if dependency_analysis
-                .contract_requirement(&symbol.module_path)
-                .is_ok() =>
-        {
-            let contract_type_id = dependency_analysis
-                .public_contract_type_id_by_stable_key(
+        TypeRefIr::ServiceSymbol { symbol } if dependency_analysis
+            .contract_requirement(&symbol.module_path)
+            .is_ok() => {
+            let record = dependency_analysis
+                .public_package_type_by_stable_key(
                     &symbol.module_path,
                     &symbol.symbol,
                 )
-                .map_err(|error| error.to_string())?
-                .clone();
-            Ok(PackageTypeRef::Contract { contract_type_id })
+                .map_err(|error| error.to_string())?;
+            Ok(PackageTypeRef::PackageSchema {
+                package_id: record.package_id.clone(),
+                stable_schema_key: record.stable_schema_key.clone(),
+                package_schema_type_id: record.package_schema_type_id.clone(),
+            })
+        }
+        TypeRefIr::PackageSymbol { symbol } => {
+            let record = match &symbol.package {
+                PackageRefIr::PackageId { package_id } => dependency_analysis
+                    .package_type_by_owner_and_stable_key(package_id, &symbol.symbol_path),
+                PackageRefIr::Dependency { dependency_ref } => dependency_analysis
+                    .direct_package_type(dependency_ref, &symbol.symbol_path),
+            };
+            let Some(record) = record else {
+                return Ok(PackageTypeRef::Local {
+                    local_type: ty.clone(),
+                });
+            };
+            Ok(PackageTypeRef::PackageSchema {
+                package_id: record.package_id.clone(),
+                stable_schema_key: record.stable_schema_key.clone(),
+                package_schema_type_id: record.package_schema_type_id.clone(),
+            })
         }
         TypeRefIr::Record { .. }
         | TypeRefIr::Union { .. }
@@ -190,13 +209,21 @@ fn resolved_ir_contains_contract_symbol(
 pub(super) fn package_type_assignable(actual: &PackageTypeRef, expected: &PackageTypeRef) -> bool {
     match (actual, expected) {
         (
-            PackageTypeRef::Contract {
-                contract_type_id: actual,
+            PackageTypeRef::PackageSchema {
+                package_id: actual_package,
+                stable_schema_key: actual_key,
+                package_schema_type_id: actual_id,
             },
-            PackageTypeRef::Contract {
-                contract_type_id: expected,
+            PackageTypeRef::PackageSchema {
+                package_id: expected_package,
+                stable_schema_key: expected_key,
+                package_schema_type_id: expected_id,
             },
-        ) => actual == expected,
+        ) => {
+            actual_package == expected_package
+                && actual_key == expected_key
+                && actual_id == expected_id
+        }
         (
             PackageTypeRef::Container {
                 name: actual_name,
@@ -249,13 +276,12 @@ fn package_type_is_null(ty: &PackageTypeRef) -> bool {
 pub(super) fn resolved_contract_type(
     ty: &ContractTypeRef,
     alias: &str,
-    contract: &ServiceContract,
 ) -> Result<ResolvedTypeRef, String> {
     match ty {
         ContractTypeRef::Builtin { name, arguments } => {
             let arguments = arguments
                 .iter()
-                .map(|argument| resolved_contract_type(argument, alias, contract))
+                .map(|argument| resolved_contract_type(argument, alias))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(ResolvedTypeRef {
                 source_text: if arguments.is_empty() {
@@ -276,32 +302,28 @@ pub(super) fn resolved_contract_type(
                 },
             })
         }
-        ContractTypeRef::Contract { contract_type_id } => {
-            let schema_type = contract
-                .boundary_schema
-                .get(contract_type_id)
-                .ok_or_else(|| {
-                    format!("validated contract is missing boundary type `{contract_type_id}`")
-                })?;
-            Ok(ResolvedTypeRef {
-                source_text: format!("{alias}.{}", schema_type.stable_key),
-                ir: TypeRefIr::ServiceSymbol {
-                    symbol: ServiceSymbolRef {
-                        module_path: alias.to_string(),
-                        symbol: schema_type.stable_key.clone(),
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => Ok(ResolvedTypeRef {
+            source_text: format!("{alias}.{stable_schema_key}"),
+            ir: TypeRefIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::PackageId {
+                        package_id: package_id.clone(),
                     },
+                    symbol_path: stable_schema_key.clone(),
+                    abi_expectation: None,
                 },
-            })
-        }
-        ContractTypeRef::PackagePublic { local_type_id } => Err(format!(
-            "unresolved package public type `{local_type_id}` is not valid in a ServiceContract"
-        )),
+            },
+        }),
         ContractTypeRef::TypeParam { name } => Ok(ResolvedTypeRef {
             source_text: name.clone(),
             ir: TypeRefIr::TypeParam { name: name.clone() },
         }),
         ContractTypeRef::Nullable { inner } => {
-            let inner = resolved_contract_type(inner, alias, contract)?;
+            let inner = resolved_contract_type(inner, alias)?;
             Ok(ResolvedTypeRef {
                 source_text: format!("{}?", inner.source_text),
                 ir: TypeRefIr::Nullable {

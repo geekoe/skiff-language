@@ -2,10 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::{canonical_interface_method_abi_id, interface_instantiation_ref};
 use skiff_artifact_model::{
-    ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef, FileIrUnit,
-    FunctionTypeParamIr, InterfaceInstantiationRef, LiteralIr, PackageArtifact,
-    PackageLocalAbiSymbol, PackageRefIr, PackageSymbolRef, ServiceContract, ServiceSymbolRef,
-    TypeDescriptorIr, TypeRefIr,
+    ContractTypeDescriptor, ContractTypeRef, FileIrUnit, FunctionTypeParamIr,
+    InterfaceInstantiationRef, LiteralIr, PackageArtifact, PackageLocalAbiSymbol, PackageRefIr,
+    PackageSchemaTypeRecord, PackageSymbolRef, ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
 };
 
 use crate::{
@@ -67,7 +66,7 @@ pub struct TypeResolutionModel {
     /// package can expose an internal module under a different public api name and the
     /// public and internal references otherwise produce non-matching `TypeRefIr`s.
     package_public_to_internal: BTreeMap<String, String>,
-    service_api_contracts: BTreeMap<String, ServiceContract>,
+    service_api_schemas: BTreeMap<String, BTreeMap<String, PackageSchemaTypeRecord>>,
 }
 
 #[derive(Clone, Debug)]
@@ -373,7 +372,7 @@ impl TypeResolutionModel {
             interface_conformances: Vec::new(),
             local_impl_methods: BTreeMap::new(),
             package_public_to_internal,
-            service_api_contracts: BTreeMap::new(),
+            service_api_schemas: BTreeMap::new(),
         };
         model.local_impl_methods = model.index_local_impl_methods(parsed_sources)?;
         model.interface_conformances = model.index_source_interface_conformances(parsed_sources)?;
@@ -387,7 +386,7 @@ impl TypeResolutionModel {
         &mut self,
         dependencies: &SourceDependencyAnalysisInput,
     ) -> Result<(), String> {
-        let mut contracts = BTreeMap::new();
+        let mut schemas = BTreeMap::new();
         for dependency in dependencies.contract_dependencies().dependencies() {
             let alias = dependency.requirement().alias.clone();
             if self.package_aliases.contains_key(&alias) {
@@ -395,16 +394,18 @@ impl TypeResolutionModel {
                     "dependency alias `{alias}` is declared by both a package and a service"
                 ));
             }
-            if contracts
-                .insert(alias.clone(), dependency.contract().clone())
-                .is_some()
-            {
+            let records = dependency
+                .schema_records()
+                .values()
+                .map(|record| (record.stable_schema_key.clone(), record.clone()))
+                .collect();
+            if schemas.insert(alias.clone(), records).is_some() {
                 return Err(format!(
                     "service dependency alias `{alias}` is declared more than once"
                 ));
             }
         }
-        self.service_api_contracts = contracts;
+        self.service_api_schemas = schemas;
         Ok(())
     }
 
@@ -1155,14 +1156,16 @@ impl TypeResolutionModel {
     ) -> Result<ConstructorShape, String> {
         let name = strip_generic(type_name.trim());
         if let Some((alias, schema_type)) = self.service_api_type(name)? {
-            let ContractTypeDescriptor::Record { fields } = &schema_type.shape.descriptor else {
+            let ContractTypeDescriptor::Record { fields } =
+                &schema_type.canonical_descriptor.descriptor
+            else {
                 return Err(format!(
                     "constructor target `{type_name}` is not a nominal record"
                 ));
             };
             return Ok(ConstructorShape {
                 module_path: alias.to_string(),
-                type_params: schema_type.shape.type_params.clone(),
+                type_params: schema_type.canonical_descriptor.type_params.clone(),
                 fields: fields
                     .iter()
                     .map(|(field, ty)| {
@@ -1459,7 +1462,8 @@ impl TypeResolutionModel {
             );
         }
         if let Some((alias, schema_type)) = self.service_api_type(name)? {
-            let Some(interface) = self.service_api_interface(alias, &schema_type.stable_key) else {
+            let Some(interface) = self.service_api_interface(alias, &schema_type.stable_schema_key)
+            else {
                 return Err(format!(
                     "interface selector `{selector_text}` targets a non-interface service API type"
                 ));
@@ -1865,18 +1869,21 @@ impl TypeResolutionModel {
         if let Some(type_ref) = prelude_known_type_ref(name, resolved_args.clone()) {
             return Ok(type_ref);
         }
-        if let Some((alias, schema_type)) = self.service_api_type(name)? {
-            if schema_type.shape.type_params.len() != resolved_args.len() {
+        if let Some((_alias, schema_type)) = self.service_api_type(name)? {
+            if schema_type.canonical_descriptor.type_params.len() != resolved_args.len() {
                 return Err(format!(
                     "service API type `{name}` expects {} type arguments, found {}",
-                    schema_type.shape.type_params.len(),
+                    schema_type.canonical_descriptor.type_params.len(),
                     resolved_args.len()
                 ));
             }
-            return Ok(TypeRefIr::ServiceSymbol {
-                symbol: ServiceSymbolRef {
-                    module_path: alias.to_string(),
-                    symbol: schema_type.stable_key.clone(),
+            return Ok(TypeRefIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::PackageId {
+                        package_id: schema_type.package_id.clone(),
+                    },
+                    symbol_path: schema_type.stable_schema_key.clone(),
+                    abi_expectation: None,
                 },
             });
         }
@@ -1912,27 +1919,17 @@ impl TypeResolutionModel {
     fn service_api_type(
         &self,
         name: &str,
-    ) -> Result<Option<(&str, &skiff_artifact_model::ContractSchemaType)>, String> {
+    ) -> Result<Option<(&str, &PackageSchemaTypeRecord)>, String> {
         let name = name.strip_prefix("root.").unwrap_or(name);
         let Some((alias, stable_key)) = name.split_once('.') else {
             return Ok(None);
         };
-        let Some((canonical_alias, contract)) = self.service_api_contracts.get_key_value(alias)
-        else {
+        let Some((canonical_alias, records)) = self.service_api_schemas.get_key_value(alias) else {
             return Ok(None);
         };
-        let schema_type = contract
-            .boundary_schema
-            .values()
-            .find(|schema_type| schema_type.stable_key == stable_key)
-            .ok_or_else(|| {
-                format!("service dependency `{alias}` has no public API type `{stable_key}`")
-            })?;
-        if schema_type.shape.nameability != ContractTypeNameability::PublicNameable {
-            return Err(format!(
-                "service API type `{name}` is closure-only and cannot be named from source"
-            ));
-        }
+        let schema_type = records.get(stable_key).ok_or_else(|| {
+            format!("service dependency `{alias}` has no public API type `{stable_key}`")
+        })?;
         Ok(Some((canonical_alias.as_str(), schema_type)))
     }
 
@@ -1941,13 +1938,9 @@ impl TypeResolutionModel {
         alias: &str,
         stable_key: &str,
     ) -> Option<PackageInterfaceResolution> {
-        let contract = self.service_api_contracts.get(alias)?;
-        let schema_type = contract
-            .boundary_schema
-            .values()
-            .find(|schema_type| schema_type.stable_key == stable_key)?;
+        let schema_type = self.service_api_schemas.get(alias)?.get(stable_key)?;
         let ContractTypeDescriptor::CallbackInterface { operations } =
-            &schema_type.shape.descriptor
+            &schema_type.canonical_descriptor.descriptor
         else {
             return None;
         };
@@ -1964,12 +1957,11 @@ impl TypeResolutionModel {
                         .map(|(index, ty)| {
                             Some(FunctionTypeParamIr {
                                 name: format!("arg{index}"),
-                                ty: contract_type_ref_ir(contract, alias, ty).ok()?,
+                                ty: contract_type_ref_ir(alias, ty).ok()?,
                             })
                         })
                         .collect::<Option<Vec<_>>>()?,
-                    return_type: contract_type_ref_ir(contract, alias, &operation.return_type)
-                        .ok()?,
+                    return_type: contract_type_ref_ir(alias, &operation.return_type).ok()?,
                     may_suspend: operation.may_suspend,
                     is_native: false,
                     is_provider: false,
@@ -1979,13 +1971,16 @@ impl TypeResolutionModel {
             })
             .collect::<Option<Vec<_>>>()?;
         Some(PackageInterfaceResolution {
-            identity: TypeRefIr::ServiceSymbol {
-                symbol: ServiceSymbolRef {
-                    module_path: alias.to_string(),
-                    symbol: stable_key.to_string(),
+            identity: TypeRefIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::PackageId {
+                        package_id: schema_type.package_id.clone(),
+                    },
+                    symbol_path: stable_key.to_string(),
+                    abi_expectation: None,
                 },
             },
-            type_params: schema_type.shape.type_params.clone(),
+            type_params: schema_type.canonical_descriptor.type_params.clone(),
             methods,
             source_module: alias.to_string(),
         })
@@ -1996,11 +1991,7 @@ impl TypeResolutionModel {
         alias: &str,
         ty: &ContractTypeRef,
     ) -> Result<String, String> {
-        let contract = self
-            .service_api_contracts
-            .get(alias)
-            .ok_or_else(|| format!("unknown service dependency alias `{alias}`"))?;
-        contract_type_source_text(contract, alias, ty)
+        contract_type_source_text(alias, ty)
     }
 
     fn package_type_resolution(
@@ -3720,53 +3711,35 @@ fn type_ref_debug_text(ty: &TypeRefIr) -> String {
     }
 }
 
-fn contract_type_source_text(
-    contract: &ServiceContract,
-    alias: &str,
-    ty: &ContractTypeRef,
-) -> Result<String, String> {
+fn contract_type_source_text(alias: &str, ty: &ContractTypeRef) -> Result<String, String> {
     Ok(match ty {
         ContractTypeRef::Builtin { name, arguments } if arguments.is_empty() => name.clone(),
         ContractTypeRef::Builtin { name, arguments } => format!(
             "{name}<{}>",
             arguments
                 .iter()
-                .map(|argument| contract_type_source_text(contract, alias, argument))
+                .map(|argument| contract_type_source_text(alias, argument))
                 .collect::<Result<Vec<_>, _>>()?
                 .join(", ")
         ),
-        ContractTypeRef::Contract { contract_type_id } => {
-            let schema_type = contract
-                .boundary_schema
-                .get(contract_type_id)
-                .ok_or_else(|| {
-                    format!("service API schema is missing type `{contract_type_id}`")
-                })?;
-            format!("{alias}.{}", schema_type.stable_key)
-        }
-        ContractTypeRef::PackagePublic { local_type_id } => {
-            return Err(format!(
-                "unresolved package public type `{local_type_id}` is not valid in a ServiceContract"
-            ));
-        }
+        ContractTypeRef::PackageSchema {
+            stable_schema_key, ..
+        } => format!("{alias}.{stable_schema_key}"),
         ContractTypeRef::TypeParam { name } => name.clone(),
         ContractTypeRef::Nullable { inner } => {
-            format!("{}?", contract_type_source_text(contract, alias, inner)?)
+            format!("{}?", contract_type_source_text(alias, inner)?)
         }
         ContractTypeRef::Record { fields } => format!(
             "{{ {} }}",
             fields
                 .iter()
-                .map(|(name, ty)| Ok(format!(
-                    "{name}: {}",
-                    contract_type_source_text(contract, alias, ty)?
-                )))
+                .map(|(name, ty)| Ok(format!("{name}: {}", contract_type_source_text(alias, ty)?)))
                 .collect::<Result<Vec<_>, String>>()?
                 .join(", ")
         ),
         ContractTypeRef::StructuralUnion { variants } => variants
             .iter()
-            .map(|ty| contract_type_source_text(contract, alias, ty))
+            .map(|ty| contract_type_source_text(alias, ty))
             .collect::<Result<Vec<_>, _>>()?
             .join(" | "),
         ContractTypeRef::Literal {
@@ -3777,7 +3750,6 @@ fn contract_type_source_text(
 }
 
 fn contract_type_shape_ir(
-    contract: &ServiceContract,
     alias: &str,
     descriptor: &ContractTypeDescriptor,
 ) -> Result<TypeRefIr, String> {
@@ -3785,23 +3757,21 @@ fn contract_type_shape_ir(
         ContractTypeDescriptor::Record { fields } => Ok(TypeRefIr::Record {
             fields: fields
                 .iter()
-                .map(|(name, ty)| Ok((name.clone(), contract_type_ref_ir(contract, alias, ty)?)))
+                .map(|(name, ty)| Ok((name.clone(), contract_type_ref_ir(alias, ty)?)))
                 .collect::<Result<_, String>>()?,
         }),
         ContractTypeDescriptor::Alias { target }
-        | ContractTypeDescriptor::Representation { target } => {
-            contract_type_ref_ir(contract, alias, target)
-        }
+        | ContractTypeDescriptor::Representation { target } => contract_type_ref_ir(alias, target),
         ContractTypeDescriptor::StructuralUnion { variants } => Ok(TypeRefIr::Union {
             items: variants
                 .iter()
-                .map(|ty| contract_type_ref_ir(contract, alias, ty))
+                .map(|ty| contract_type_ref_ir(alias, ty))
                 .collect::<Result<_, _>>()?,
         }),
         ContractTypeDescriptor::DiscriminatedUnion { branches, .. } => Ok(TypeRefIr::Union {
             items: branches
                 .iter()
-                .map(|branch| contract_type_ref_ir(contract, alias, &branch.branch_type))
+                .map(|branch| contract_type_ref_ir(alias, &branch.branch_type))
                 .collect::<Result<_, _>>()?,
         }),
         ContractTypeDescriptor::Enumeration { variants } => Ok(TypeRefIr::Union {
@@ -3820,51 +3790,43 @@ fn contract_type_shape_ir(
     }
 }
 
-fn contract_type_ref_ir(
-    contract: &ServiceContract,
-    alias: &str,
-    ty: &ContractTypeRef,
-) -> Result<TypeRefIr, String> {
+fn contract_type_ref_ir(alias: &str, ty: &ContractTypeRef) -> Result<TypeRefIr, String> {
     match ty {
         ContractTypeRef::Builtin { name, arguments } => Ok(TypeRefIr::Native {
             name: name.clone(),
             args: arguments
                 .iter()
-                .map(|argument| contract_type_ref_ir(contract, alias, argument))
+                .map(|argument| contract_type_ref_ir(alias, argument))
                 .collect::<Result<_, _>>()?,
         }),
-        ContractTypeRef::Contract { contract_type_id } => {
-            let schema_type = contract
-                .boundary_schema
-                .get(contract_type_id)
-                .ok_or_else(|| {
-                    format!("service API schema is missing type `{contract_type_id}`")
-                })?;
-            Ok(TypeRefIr::ServiceSymbol {
-                symbol: ServiceSymbolRef {
-                    module_path: alias.to_string(),
-                    symbol: schema_type.stable_key.clone(),
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => Ok(TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.clone(),
                 },
-            })
-        }
-        ContractTypeRef::PackagePublic { local_type_id } => Err(format!(
-            "unresolved package public type `{local_type_id}` is not valid in a ServiceContract"
-        )),
+                symbol_path: stable_schema_key.clone(),
+                abi_expectation: None,
+            },
+        }),
         ContractTypeRef::TypeParam { name } => Ok(TypeRefIr::TypeParam { name: name.clone() }),
         ContractTypeRef::Record { fields } => Ok(TypeRefIr::Record {
             fields: fields
                 .iter()
-                .map(|(name, ty)| Ok((name.clone(), contract_type_ref_ir(contract, alias, ty)?)))
+                .map(|(name, ty)| Ok((name.clone(), contract_type_ref_ir(alias, ty)?)))
                 .collect::<Result<_, String>>()?,
         }),
         ContractTypeRef::StructuralUnion { variants } => Ok(TypeRefIr::Union {
             items: variants
                 .iter()
-                .map(|ty| contract_type_ref_ir(contract, alias, ty))
+                .map(|ty| contract_type_ref_ir(alias, ty))
                 .collect::<Result<_, _>>()?,
         }),
         ContractTypeRef::Nullable { inner } => Ok(TypeRefIr::Nullable {
-            inner: Box::new(contract_type_ref_ir(contract, alias, inner)?),
+            inner: Box::new(contract_type_ref_ir(alias, inner)?),
         }),
         ContractTypeRef::Literal {
             value: skiff_artifact_model::ContractLiteral::String { value },
@@ -5083,6 +5045,11 @@ mod tests {
                     ),
                 ]),
             },
+            package_schema_index: skiff_artifact_model::PackageSchemaIndexRef {
+                package_id: "llm-api".to_string(),
+                package_schema_index_identity: "index".into(),
+            },
+            package_schema_type_records: BTreeMap::new(),
             implementation_links: PackageImplementationLinks {
                 types: BTreeMap::from([
                     (

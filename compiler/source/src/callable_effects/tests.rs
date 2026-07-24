@@ -10,7 +10,9 @@ use skiff_compiler_input::{CompilerPlatformSources, ResolvedContractDependency};
 
 use crate::{
     build_package_from_parsed_sources_with_dependency_analysis,
-    contract_dependency_test_fixture::{contract_fixture, requirement, resolved_contract_fixture},
+    contract_dependency_test_fixture::{
+        contract_and_schema, requirement, resolved_contract_fixture,
+    },
     parsed_sources::parse_publication_sources,
     prelude_registry::initialize_prelude_registry,
     source_graph::CompilerSourceFile,
@@ -1439,7 +1441,7 @@ fn exact_dependency_field_callee_does_not_poison_known_target() {
 
 #[test]
 fn exact_contract_field_callee_uses_detached_descriptor() {
-    let mut contract = contract_fixture(
+    let (mut contract, schema) = contract_and_schema(
         "example.echo",
         "1.0.0",
         "tools.send",
@@ -1454,9 +1456,26 @@ fn exact_contract_field_callee_uses_detached_descriptor() {
         .contract
         .return_value
         .ty = ContractTypeRef::builtin("string");
+    let required = match &contract
+        .operations
+        .values()
+        .next()
+        .unwrap()
+        .contract
+        .parameters[0]
+        .ty
+    {
+        ContractTypeRef::PackageSchema {
+            package_schema_type_id,
+            ..
+        } => package_schema_type_id.clone(),
+        _ => unreachable!(),
+    };
+    contract.package_type_requirements[0].required_type_ids = vec![required];
     assign_service_contract_identities(&mut contract).unwrap();
     let dependency =
-        ResolvedContractDependency::validated(requirement("echo", &contract), contract).unwrap();
+        ResolvedContractDependency::validated(requirement("echo", &contract), contract, &[schema])
+            .unwrap();
     let expected_requirement = dependency.requirement().clone();
     let expected_operation = dependency
         .contract()
@@ -1513,14 +1532,23 @@ fn dependency_field_first_class_value_remains_fail_closed() {
 
 #[test]
 fn detached_contract_target_uses_descriptor_effect_guarantees() {
-    let mut contract =
-        contract_fixture("example.echo", "1.0.0", "send", "payload", "payloadClosure");
+    let (mut contract, schema) =
+        contract_and_schema("example.echo", "1.0.0", "send", "payload", "payloadClosure");
     let operation = contract.operations.values_mut().next().unwrap();
     operation.contract.return_value.ty = ContractTypeRef::builtin("string");
     operation.contract.may_suspend = true;
+    let required = match &operation.contract.parameters[0].ty {
+        ContractTypeRef::PackageSchema {
+            package_schema_type_id,
+            ..
+        } => package_schema_type_id.clone(),
+        _ => unreachable!(),
+    };
+    contract.package_type_requirements[0].required_type_ids = vec![required];
     assign_service_contract_identities(&mut contract).unwrap();
     let dependency =
-        ResolvedContractDependency::validated(requirement("echo", &contract), contract).unwrap();
+        ResolvedContractDependency::validated(requirement("echo", &contract), contract, &[schema])
+            .unwrap();
     let expected_requirement = dependency.requirement().clone();
     let expected_operation = dependency
         .contract()
@@ -1559,8 +1587,8 @@ fn detached_contract_target_uses_descriptor_effect_guarantees() {
 
 #[test]
 fn non_detached_or_unsupported_contract_remains_fail_closed() {
-    let mut contract =
-        contract_fixture("example.echo", "1.0.0", "send", "payload", "payloadClosure");
+    let (mut contract, schema) =
+        contract_and_schema("example.echo", "1.0.0", "send", "payload", "payloadClosure");
     contract
         .operations
         .values_mut()
@@ -1571,7 +1599,8 @@ fn non_detached_or_unsupported_contract_remains_fail_closed() {
         .no_caller_value_escape = false;
     assign_service_contract_identities(&mut contract).unwrap();
     let dependency =
-        ResolvedContractDependency::validated(requirement("echo", &contract), contract).unwrap();
+        ResolvedContractDependency::validated(requirement("echo", &contract), contract, &[schema])
+            .unwrap();
     let model = analyze(
         r#"
             function wrapper(input: echo.payload) -> void {

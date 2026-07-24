@@ -51,12 +51,15 @@ impl ContractAwareTypeResolver<'_> {
                                 "contract dependency type `{name}` has no stable type key"
                             ));
                         }
-                        let contract_type_id = self
+                        let record = self
                             .dependency_analysis
-                            .public_contract_type_id_by_stable_key(alias, stable_key)
-                            .map_err(|error| error.to_string())?
-                            .clone();
-                        return Ok(PackageTypeRef::Contract { contract_type_id });
+                            .public_package_type_by_stable_key(alias, stable_key)
+                            .map_err(|error| error.to_string())?;
+                        return Ok(PackageTypeRef::PackageSchema {
+                            package_id: record.package_id.clone(),
+                            stable_schema_key: record.stable_schema_key.clone(),
+                            package_schema_type_id: record.package_schema_type_id.clone(),
+                        });
                     }
                 }
 
@@ -65,6 +68,22 @@ impl ContractAwareTypeResolver<'_> {
                     .type_resolution
                     .resolve_type_text(&text, context)
                     .map_err(|error| format!("cannot resolve source type `{text}`: {error}"))?;
+                if let TypeRefIr::PackageSymbol { symbol } = &resolved.ir {
+                    if let skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } =
+                        &symbol.package
+                    {
+                        if let Some(record) = self
+                            .dependency_analysis
+                            .direct_package_type(dependency_ref, &symbol.symbol_path)
+                        {
+                            return Ok(PackageTypeRef::PackageSchema {
+                                package_id: record.package_id.clone(),
+                                stable_schema_key: record.stable_schema_key.clone(),
+                                package_schema_type_id: record.package_schema_type_id.clone(),
+                            });
+                        }
+                    }
+                }
                 if let TypeRefIr::Native { name, .. } = resolved.ir {
                     let arguments = args
                         .iter()
@@ -158,7 +177,7 @@ impl ContractAwareTypeResolver<'_> {
 
 pub(crate) fn package_type_contains_contract(ty: &PackageTypeRef) -> bool {
     match ty {
-        PackageTypeRef::Contract { .. } => true,
+        PackageTypeRef::PackageSchema { .. } => true,
         PackageTypeRef::Container { arguments, .. } => {
             arguments.iter().any(package_type_contains_contract)
         }
@@ -181,12 +200,15 @@ pub(super) fn package_type_ref_from_validated_contract_ref(
                 .map(package_type_ref_from_validated_contract_ref)
                 .collect::<Result<Vec<_>, _>>()?,
         }),
-        ContractTypeRef::Contract { contract_type_id } => Ok(PackageTypeRef::Contract {
-            contract_type_id: contract_type_id.clone(),
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => Ok(PackageTypeRef::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
         }),
-        ContractTypeRef::PackagePublic { local_type_id } => Err(format!(
-            "unresolved package public type `{local_type_id}` is not valid in a ServiceContract"
-        )),
         ContractTypeRef::TypeParam { name } => Ok(PackageTypeRef::Local {
             local_type: TypeRefIr::TypeParam { name: name.clone() },
         }),

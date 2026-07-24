@@ -72,13 +72,18 @@ fn package_analysis(
         })?;
         let alias = dependency.effective_alias().to_string();
         let callables = package_callable_analysis(dependency, artifact)?;
-        facts.push((
-            alias,
-            PackageDependencyAnalysisFacts::new(
-                artifact.package_local_abi.local_abi_identity.clone(),
-                callables,
-            ),
-        ));
+        let mut analysis = PackageDependencyAnalysisFacts::new(
+            artifact.package_local_abi.local_abi_identity.clone(),
+            callables,
+        );
+        if let Some(schema) = input.resolved_package_schemas().iter().find(|schema| {
+            schema.alias() == alias
+                && schema.package_id() == dependency.id
+                && schema.exact_version() == dependency.version
+        }) {
+            analysis = analysis.with_schema_records(schema.records().values().cloned());
+        }
+        facts.push((alias, analysis));
     }
     Ok(facts)
 }

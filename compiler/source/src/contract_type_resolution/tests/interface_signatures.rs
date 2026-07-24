@@ -71,10 +71,10 @@ fn exact_interface_query_preserves_local_contract_and_nested_substitution() {
     let conformance = facts
         .conformance(&conformance_key)
         .expect("validated conformance");
-    let expected_id = contract_type_id("example.payments", "1.0.0", "User").unwrap();
+    let expected_id = fixture_type_id("example.payments", "User");
     assert!(matches!(
         conformance.canonical_substitutions.get("T"),
-        Some(PackageTypeRef::Contract { contract_type_id }) if contract_type_id == &expected_id
+        Some(PackageTypeRef::PackageSchema { package_schema_type_id, .. }) if package_schema_type_id == &expected_id
     ));
     assert!(matches!(
         conformance.canonical_substitutions.get("Self"),
@@ -85,7 +85,7 @@ fn exact_interface_query_preserves_local_contract_and_nested_substitution() {
         .expect("validated method query");
     assert!(matches!(
         &method.exact_requirement.return_type,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &expected_id
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &expected_id
     ));
     assert!(matches!(
         &method.exact_requirement.parameters[2].ty,
@@ -93,8 +93,8 @@ fn exact_interface_query_preserves_local_contract_and_nested_substitution() {
             if matches!(inner.as_ref(), PackageTypeRef::Container { name, arguments }
                 if name == "Array"
                 && matches!(arguments.as_slice(), [PackageTypeRef::Nullable { inner }]
-                    if matches!(inner.as_ref(), PackageTypeRef::Contract { contract_type_id }
-                        if contract_type_id == &expected_id)))
+                    if matches!(inner.as_ref(), PackageTypeRef::PackageSchema { package_schema_type_id, .. }
+                        if package_schema_type_id == &expected_id)))
     ));
     assert!(matches!(method.receiver_type, PackageTypeRef::Local { .. }));
 }
@@ -117,7 +117,7 @@ fn different_aliases_for_the_same_contract_identity_conform_exactly() {
         .expect("validated exact method");
     assert!(matches!(
         &method.exact_requirement.return_type,
-        PackageTypeRef::Contract { .. }
+        PackageTypeRef::PackageSchema { .. }
     ));
     assert!(!matches!(
         &method.exact_requirement.return_type,

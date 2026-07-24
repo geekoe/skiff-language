@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryErrorContract,
-    BoundaryOperationDescriptor, BoundaryStreamContract, PackageTypeRef, ServiceContract,
+    BoundaryOperationDescriptor, BoundaryStreamContract, PackageTypeRef,
 };
 
 use crate::{
@@ -36,7 +36,6 @@ pub(super) struct ContractCallTyping<'a, 'ctx> {
 
 struct ResolvedContractCall<'a> {
     alias: String,
-    contract: &'a ServiceContract,
     operation: &'a BoundaryOperationDescriptor,
 }
 
@@ -92,14 +91,13 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
 
     fn lookup_call(&self, path: &str) -> Option<ResolvedContractCall<'_>> {
         let (alias, stable_key) = dependency_source_address_parts(path)?;
-        let contract = self.dependency_analysis.contract(alias).ok()?;
+        self.dependency_analysis.contract(alias).ok()?;
         let operation = self
             .dependency_analysis
             .contract_operation_by_stable_key(alias, stable_key)
             .ok()?;
         Some(ResolvedContractCall {
             alias: alias.to_string(),
-            contract,
             operation,
         })
     }
@@ -172,10 +170,9 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
                 },
             };
             if !package_type_assignable(&actual_projected, &expected) {
-                let expected_label =
-                    resolved_contract_type(&parameter.ty, &call.alias, call.contract)
-                        .map(|ty| ty.source_text)
-                        .unwrap_or_else(|_| format!("{:?}", parameter.ty));
+                let expected_label = resolved_contract_type(&parameter.ty, &call.alias)
+                    .map(|ty| ty.source_text)
+                    .unwrap_or_else(|_| format!("{:?}", parameter.ty));
                 diagnostics.push(format!(
                     "contract call `{path}` argument {} type mismatch: expected {expected_label}, found {}",
                     index + 1,
@@ -206,7 +203,7 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
                 return None;
             }
         };
-        match resolved_contract_type(return_type, &call.alias, call.contract) {
+        match resolved_contract_type(return_type, &call.alias) {
             Ok(resolved) => Some(match call.operation.contract.stream {
                 BoundaryStreamContract::ServerStream { .. } => (
                     ResolvedTypeRef {

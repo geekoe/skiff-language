@@ -4,12 +4,12 @@ use compiler_input_model::{
     PackageCompilePolicy, PackageDependency, PublicationApiEntry,
     PublicationApiPublicInstanceEntry, PublicationApiSpec,
 };
-use skiff_artifact_identity::{assign_service_contract_identities, contract_type_id};
+use skiff_artifact_identity::package_schema_type_id;
 use skiff_artifact_model::{
     ContractLiteral, ContractTypeRef, FileIrUnit, FunctionTypeParamIr, InterfaceDeclIr,
     InterfaceOperationIr, PackageTypeRef, TypeRefIr,
 };
-use skiff_compiler_input::{CompilerPlatformSources, ResolvedContractDependency};
+use skiff_compiler_input::CompilerPlatformSources;
 
 use crate::{
     build_package_from_parsed_sources_with_dependency_analysis,
@@ -24,9 +24,22 @@ use super::*;
 mod executable_signatures;
 mod interface_signatures;
 
+fn fixture_type_id(
+    service_id: &str,
+    stable_key: &str,
+) -> skiff_artifact_model::PackageSchemaTypeId {
+    let descriptor = skiff_artifact_model::PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: skiff_artifact_model::ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([("value".to_string(), ContractTypeRef::builtin("string"))]),
+        },
+    };
+    package_schema_type_id(&format!("{service_id}.package"), stable_key, &descriptor).unwrap()
+}
+
 #[test]
 fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain() {
-    let user_id = contract_type_id("example.payments", "1.0.0", "User").unwrap();
+    let user_id = fixture_type_id("example.payments", "User");
     let dependency_analysis = contract_dependencies();
     let model = build_model(
         r#"
@@ -64,11 +77,11 @@ fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain()
     ));
     assert!(matches!(
         &signature.parameters[1].ty,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &user_id
     ));
     assert!(matches!(
         &signature.parameters[2].ty,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &user_id
     ));
     assert!(matches!(
             &signature.parameters[3].ty,
@@ -76,12 +89,12 @@ fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain()
             if matches!(inner.as_ref(), PackageTypeRef::Container { name, arguments }
                 if name == "Array"
                 && matches!(arguments.as_slice(), [PackageTypeRef::Nullable { inner }]
-                    if matches!(inner.as_ref(), PackageTypeRef::Contract { contract_type_id }
-                        if contract_type_id == &user_id)))
+                    if matches!(inner.as_ref(), PackageTypeRef::PackageSchema { package_schema_type_id, .. }
+                        if package_schema_type_id == &user_id)))
     ));
     assert!(matches!(
         &signature.return_type,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &user_id
     ));
     assert!(!signature.may_suspend);
 
@@ -96,7 +109,7 @@ fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain()
     ));
     assert!(matches!(
         &private_sink.parameters[0].ty,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &user_id
     ));
     let suspended = executable_signatures
         .signature(&crate::SourceSymbolKey::new("api", "suspendedHelper"))
@@ -124,10 +137,10 @@ fn service_api_nominal_record_uses_ordinary_constructor_and_field_paths() {
         .callable_signatures()
         .signature("submit")
         .expect("public signature");
-    let expected = contract_type_id("example.payments", "1.0.0", "User").unwrap();
+    let expected = fixture_type_id("example.payments", "User");
     assert!(matches!(
         &signature.return_type,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &expected
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &expected
     ));
     assert!(matches!(
         model
@@ -165,48 +178,18 @@ fn service_api_nominal_record_rejects_unknown_constructor_and_read_fields() {
 }
 
 #[test]
-fn generic_service_api_record_reuses_constructor_type_substitution() {
-    let mut contract = crate::contract_dependency_test_fixture::contract_fixture(
-        "example.generic",
-        "1.0.0",
-        "submit",
-        "Box",
-        "Secret",
-    );
-    let boxed = contract
-        .boundary_schema
-        .values_mut()
-        .find(|schema_type| schema_type.stable_key == "Box")
-        .expect("Box schema");
-    boxed.shape.type_params = vec!["T".to_string()];
-    boxed.shape.descriptor = skiff_artifact_model::ContractTypeDescriptor::Record {
-        fields: BTreeMap::from([(
-            "value".to_string(),
-            ContractTypeRef::TypeParam {
-                name: "T".to_string(),
-            },
-        )]),
-    };
-    assign_service_contract_identities(&mut contract).expect("generic contract identity");
-    let requirement = crate::contract_dependency_test_fixture::requirement("generic", &contract);
-    let dependency = ResolvedContractDependency::validated(requirement, contract).unwrap();
-    let dependency_analysis = SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap();
-
-    build_model(
-        r#"
-            function submit(input: generic.Box<string>) -> generic.Box<string> {
-                return generic.Box<string> { value: input.value }
-            }
-        "#,
-        &dependency_analysis,
-        &BTreeMap::new(),
-    )
-    .expect("generic service API record uses ordinary constructor substitution");
+fn service_alias_selects_validated_package_schema_record() {
+    let dependencies = contract_dependencies();
+    let record = dependencies
+        .public_package_type_by_stable_key("payments", "User")
+        .unwrap();
+    assert_eq!(record.package_id, "example.payments.package");
+    assert_eq!(record.stable_schema_key, "User");
 }
 
 #[test]
 fn public_instance_operations_receive_exact_source_owned_signatures() {
-    let user_id = contract_type_id("example.payments", "1.0.0", "User").unwrap();
+    let user_id = fixture_type_id("example.payments", "User");
     let dependency_analysis = contract_dependencies();
     let publication_api = PublicationApiSpec::from_public_instances(vec![
         PublicationApiPublicInstanceEntry::for_source(
@@ -249,7 +232,7 @@ fn public_instance_operations_receive_exact_source_owned_signatures() {
         .expect("derived public instance operation signature");
     assert!(matches!(
         &signature.parameters[0].ty,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &user_id
     ));
     assert!(matches!(
         &signature.parameters[1].ty,
@@ -257,12 +240,12 @@ fn public_instance_operations_receive_exact_source_owned_signatures() {
             if matches!(inner.as_ref(), PackageTypeRef::Container { name, arguments }
                 if name == "Array"
                 && matches!(arguments.as_slice(), [PackageTypeRef::Nullable { inner }]
-                    if matches!(inner.as_ref(), PackageTypeRef::Contract { contract_type_id }
-                        if contract_type_id == &user_id)))
+                    if matches!(inner.as_ref(), PackageTypeRef::PackageSchema { package_schema_type_id, .. }
+                        if package_schema_type_id == &user_id)))
     ));
     assert!(matches!(
         &signature.return_type,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &user_id
     ));
 
     let executable = model
@@ -279,21 +262,16 @@ fn public_instance_operations_receive_exact_source_owned_signatures() {
 }
 
 #[test]
-fn unknown_and_closure_only_contract_types_fail_closed() {
-    for (source_type, expected) in [
-        ("payments.Missing", "no contract type stable key `Missing`"),
-        ("payments.Secret", "closure-only type"),
-    ] {
-        let dependency_analysis = contract_dependencies();
-        let error = build_model(
-            &format!("function submit(input: {source_type}) -> void {{}}"),
-            &dependency_analysis,
-            &BTreeMap::new(),
-        )
-        .expect_err("invalid contract type must fail source compilation")
-        .to_string();
-        assert!(error.contains(expected), "unexpected error: {error}");
-    }
+fn unknown_service_package_type_fails_closed() {
+    let dependency_analysis = contract_dependencies();
+    let error = build_model(
+        "function submit(input: payments.Missing) -> void {}",
+        &dependency_analysis,
+        &BTreeMap::new(),
+    )
+    .expect_err("unknown public package type must fail source compilation")
+    .to_string();
+    assert!(error.contains("Missing"), "unexpected error: {error}");
 }
 
 #[test]

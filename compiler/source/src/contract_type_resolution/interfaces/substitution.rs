@@ -55,7 +55,7 @@ pub(crate) fn substitute_package_type(
                 local_type: substituted,
             })
         }
-        PackageTypeRef::Contract { .. } => Ok(ty.clone()),
+        PackageTypeRef::PackageSchema { .. } => Ok(ty.clone()),
         PackageTypeRef::Container { name, arguments } => Ok(PackageTypeRef::Container {
             name: name.clone(),
             arguments: arguments

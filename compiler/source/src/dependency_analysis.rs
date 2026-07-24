@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     BoundaryOperationDescriptor, CallableSemanticFacts, ContractOperationId, ContractRequirement,
-    ContractTypeId, PackageCallableId, PackageLocalAbiIdentity, ServiceContract,
+    PackageCallableId, PackageLocalAbiIdentity, PackageSchemaTypeRecord, ServiceContract,
 };
 use skiff_compiler_input::{
     ContractDependencyError, ContractDependencyIndex, ResolvedContractDependency,
@@ -36,6 +36,7 @@ pub struct SourceDependencyAnalysisInput {
 pub struct PackageDependencyAnalysisFacts {
     expected_local_abi: PackageLocalAbiIdentity,
     callables: BTreeMap<String, PackageDependencyCallableAnalysis>,
+    schema_records: BTreeMap<String, skiff_artifact_model::PackageSchemaTypeRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -171,17 +172,34 @@ impl SourceDependencyAnalysisInput {
             .ok()
     }
 
-    pub fn public_contract_type_id_by_stable_key(
+    pub fn public_package_type_by_stable_key(
         &self,
         alias: &str,
         stable_key: &str,
-    ) -> Result<&ContractTypeId, ContractDependencyError> {
+    ) -> Result<&PackageSchemaTypeRecord, ContractDependencyError> {
         self.contracts
-            .public_contract_type_id_by_stable_key(alias, stable_key)
+            .public_package_type_by_stable_key(alias, stable_key)
     }
 
     pub fn contract_dependencies(&self) -> &ContractDependencyIndex {
         &self.contracts
+    }
+
+    pub fn package_type_by_owner_and_stable_key(
+        &self,
+        package_id: &str,
+        stable_key: &str,
+    ) -> Option<&PackageSchemaTypeRecord> {
+        self.contracts
+            .package_type_by_owner_and_stable_key(package_id, stable_key)
+    }
+
+    pub fn direct_package_type(
+        &self,
+        alias: &str,
+        stable_key: &str,
+    ) -> Option<&PackageSchemaTypeRecord> {
+        self.packages.get(alias)?.schema_records.get(stable_key)
     }
 
     pub(crate) fn package_callable(
@@ -221,7 +239,19 @@ impl PackageDependencyAnalysisFacts {
         Self {
             expected_local_abi,
             callables,
+            schema_records: BTreeMap::new(),
         }
+    }
+
+    pub fn with_schema_records(
+        mut self,
+        records: impl IntoIterator<Item = skiff_artifact_model::PackageSchemaTypeRecord>,
+    ) -> Self {
+        self.schema_records = records
+            .into_iter()
+            .map(|record| (record.stable_schema_key.clone(), record))
+            .collect();
+        self
     }
 }
 
@@ -244,12 +274,12 @@ impl PackageDependencyCallableAnalysis {
 
 #[cfg(test)]
 mod tests {
-    use skiff_artifact_identity::{contract_operation_id, contract_type_id};
+    use skiff_artifact_identity::contract_operation_id;
     use skiff_artifact_model::{
         CallableEffectSummary, CallableProvenanceSummary, CallableSemanticFacts,
     };
 
-    use crate::contract_dependency_test_fixture::{contract_fixture, requirement};
+    use crate::contract_dependency_test_fixture::resolved_contract_fixture;
 
     use super::*;
 
@@ -268,30 +298,27 @@ mod tests {
 
     #[test]
     fn canonical_contract_facts_preserve_requirement_descriptor_and_public_nominal_type() {
-        let contract = contract_fixture("example.svc", "1.0.0", "run", "payload", "payloadClosure");
-        let expected_requirement = requirement("svc", &contract);
-        let input =
-            SourceDependencyAnalysisInput::new(
-                [(
-                    "pkg".to_string(),
-                    PackageDependencyAnalysisFacts::new(
-                        PackageLocalAbiIdentity::new("abi:pkg"),
-                        BTreeMap::from([
-                            ("run".to_string(), package_callable("callable:run")),
-                            (
-                                "nested.run".to_string(),
-                                package_callable("callable:nested-run"),
-                            ),
-                        ]),
-                    ),
-                )],
-                [ResolvedContractDependency::validated(
-                    expected_requirement.clone(),
-                    contract.clone(),
-                )
-                .unwrap()],
-            )
-            .unwrap();
+        let dependency =
+            resolved_contract_fixture("svc", "example.svc", "run", "payload", "payloadClosure");
+        let contract = dependency.contract().clone();
+        let expected_requirement = dependency.requirement().clone();
+        let input = SourceDependencyAnalysisInput::new(
+            [(
+                "pkg".to_string(),
+                PackageDependencyAnalysisFacts::new(
+                    PackageLocalAbiIdentity::new("abi:pkg"),
+                    BTreeMap::from([
+                        ("run".to_string(), package_callable("callable:run")),
+                        (
+                            "nested.run".to_string(),
+                            package_callable("callable:nested-run"),
+                        ),
+                    ]),
+                ),
+            )],
+            [dependency],
+        )
+        .unwrap();
 
         assert_eq!(
             input.contract_requirement("svc").unwrap(),
@@ -307,9 +334,12 @@ mod tests {
         );
         assert_eq!(
             input
-                .public_contract_type_id_by_stable_key("svc", "payload")
+                .public_package_type_by_stable_key("svc", "payload")
                 .unwrap(),
-            &contract_type_id("example.svc", "1.0.0", "payload").unwrap()
+            input
+                .contract_dependencies()
+                .public_package_type_by_stable_key("svc", "payload")
+                .unwrap()
         );
         assert!(matches!(
             input.resolve_path("pkg/run"),
@@ -357,10 +387,9 @@ mod tests {
                 stable_key: None,
             } if alias == "svc"
         ));
-        assert!(matches!(
-            input.public_contract_type_id_by_stable_key("svc", "payloadClosure"),
-            Err(ContractDependencyError::ContractTypeNotPublicNameable { .. })
-        ));
+        assert!(input
+            .public_package_type_by_stable_key("svc", "payloadClosure")
+            .is_ok());
     }
 
     #[test]
@@ -374,42 +403,25 @@ mod tests {
             Err(SourceDependencyAnalysisError::DuplicatePackageAlias { alias }) if alias == "dup"
         ));
 
-        let first = contract_fixture("example.first", "1.0.0", "run", "payload", "payloadClosure");
-        let second = contract_fixture(
-            "example.second",
-            "1.0.0",
-            "run",
-            "payload",
-            "payloadClosure",
-        );
+        let first = resolved_contract_fixture("dup", "example.first", "run", "payload", "result");
+        let second = resolved_contract_fixture("dup", "example.second", "run", "payload", "result");
         assert!(matches!(
             SourceDependencyAnalysisInput::new(
                 Vec::new(),
                 [
-                    ResolvedContractDependency::validated(requirement("dup", &first), first)
-                        .unwrap(),
-                    ResolvedContractDependency::validated(requirement("dup", &second), second)
-                        .unwrap(),
+                    first,
+                    second,
                 ],
             ),
             Err(SourceDependencyAnalysisError::DuplicateContractAlias { alias }) if alias == "dup"
         ));
 
-        let contract = contract_fixture(
-            "example.conflict",
-            "1.0.0",
-            "run",
-            "payload",
-            "payloadClosure",
-        );
+        let dependency =
+            resolved_contract_fixture("same", "example.conflict", "run", "payload", "result");
         assert!(matches!(
             SourceDependencyAnalysisInput::new(
                 [("same".to_string(), package())],
-                [ResolvedContractDependency::validated(
-                    requirement("same", &contract),
-                    contract,
-                )
-                .unwrap()],
+                [dependency],
             ),
             Err(SourceDependencyAnalysisError::AliasKindConflict { alias }) if alias == "same"
         ));
@@ -445,16 +457,44 @@ mod tests {
     }
 
     #[test]
-    fn exact_contract_lookup_requires_full_requirement_and_operation_identity() {
-        let contract =
-            contract_fixture("example.exact", "1.0.0", "run", "payload", "payloadClosure");
-        let exact_requirement = requirement("svc", &contract);
-        let operation_id = contract_operation_id("example.exact", "1.0.0", "run").unwrap();
+    fn package_and_service_aliases_select_the_same_package_owned_type() {
+        let dependency =
+            resolved_contract_fixture("svc", "example.shared", "run", "Payload", "Result");
+        let record = dependency
+            .schema_records()
+            .values()
+            .find(|record| record.stable_schema_key == "Payload")
+            .unwrap()
+            .clone();
         let input = SourceDependencyAnalysisInput::new(
-            Vec::new(),
-            [ResolvedContractDependency::validated(exact_requirement.clone(), contract).unwrap()],
+            [(
+                "pkg".to_string(),
+                PackageDependencyAnalysisFacts::new(
+                    PackageLocalAbiIdentity::new("abi"),
+                    BTreeMap::new(),
+                )
+                .with_schema_records([record]),
+            )],
+            [dependency],
         )
         .unwrap();
+        assert_eq!(
+            input.direct_package_type("pkg", "Payload"),
+            Some(
+                input
+                    .public_package_type_by_stable_key("svc", "Payload")
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn exact_contract_lookup_requires_full_requirement_and_operation_identity() {
+        let dependency =
+            resolved_contract_fixture("svc", "example.exact", "run", "payload", "result");
+        let exact_requirement = dependency.requirement().clone();
+        let operation_id = contract_operation_id("example.exact", "1.0.0", "run").unwrap();
+        let input = SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap();
 
         assert!(input
             .exact_contract_operation(&exact_requirement, &operation_id)

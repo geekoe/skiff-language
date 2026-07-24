@@ -518,8 +518,14 @@ impl TypeResolutionModel {
                     ),
                 ),
             },
-            PackageTypeRef::Contract { contract_type_id } => PackageTypeRef::Contract {
-                contract_type_id: contract_type_id.clone(),
+            PackageTypeRef::PackageSchema {
+                package_id,
+                stable_schema_key,
+                package_schema_type_id,
+            } => PackageTypeRef::PackageSchema {
+                package_id: package_id.clone(),
+                stable_schema_key: stable_schema_key.clone(),
+                package_schema_type_id: package_schema_type_id.clone(),
             },
         }
     }
@@ -559,8 +565,14 @@ impl TypeResolutionModel {
                     package_id,
                 ),
             },
-            PackageTypeRef::Contract { contract_type_id } => PackageTypeRef::Contract {
-                contract_type_id: contract_type_id.clone(),
+            PackageTypeRef::PackageSchema {
+                package_id,
+                stable_schema_key,
+                package_schema_type_id,
+            } => PackageTypeRef::PackageSchema {
+                package_id: package_id.clone(),
+                stable_schema_key: stable_schema_key.clone(),
+                package_schema_type_id: package_schema_type_id.clone(),
             },
         })
     }
@@ -832,18 +844,6 @@ impl TypeResolutionModel {
                     self.source_type_shape_ir(resolution, context, None, module_path)
                 }),
             TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
-                if let Some(contract) = self.service_api_contracts.get(&symbol.module_path) {
-                    let schema_type = contract
-                        .boundary_schema
-                        .values()
-                        .find(|schema_type| schema_type.stable_key == symbol.symbol)?;
-                    return contract_type_shape_ir(
-                        contract,
-                        &symbol.module_path,
-                        &schema_type.shape.descriptor,
-                    )
-                    .ok();
-                }
                 let key = SourceSymbolKey::new(&symbol.module_path, &symbol.symbol);
                 self.source_types
                     .get(&key)
@@ -868,6 +868,20 @@ impl TypeResolutionModel {
                     })
             }
             TypeRefIr::PackageSymbol { symbol } => {
+                if let PackageRefIr::PackageId { package_id } = &symbol.package {
+                    if let Some(record) = self
+                        .service_api_schemas
+                        .values()
+                        .filter_map(|records| records.get(&symbol.symbol_path))
+                        .find(|record| record.package_id == *package_id)
+                    {
+                        return contract_type_shape_ir(
+                            &symbol.symbol_path,
+                            &record.canonical_descriptor.descriptor,
+                        )
+                        .ok();
+                    }
+                }
                 if let Some(shape) = self.std_package_symbol_shape_ir(symbol, context) {
                     return Some(shape);
                 }
