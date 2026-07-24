@@ -145,7 +145,7 @@ function binding(
     contract: {
       serviceId: `service/${host}`,
       contractVersion: '1.0.0',
-      serviceProtocolIdentity: `skiff-service-protocol-v2:sha256:${host.startsWith('codex') ? '1'.repeat(64) : host.startsWith('aihub') ? '2'.repeat(64) : '3'.repeat(64)}`
+      serviceProtocolIdentity: `skiff-service-protocol-v3:sha256:${host.startsWith('codex') ? '1'.repeat(64) : host.startsWith('aihub') ? '2'.repeat(64) : '3'.repeat(64)}`
     },
     operationMode: 'unary',
     contractOperationId: operation

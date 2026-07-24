@@ -78,6 +78,38 @@ pub(crate) struct ActiveAssemblyRoute {
     provider_target: OperationTargetRef,
 }
 
+/// Immutable committed-assembly snapshot for one Actor owner execution.
+#[derive(Debug, Clone)]
+pub(crate) struct ActiveActorExecutionRoute {
+    active: Arc<ActiveAssembly>,
+    activation: Arc<ActivationContext>,
+}
+
+impl ActiveActorExecutionRoute {
+    pub(crate) fn activation(&self) -> &Arc<ActivationContext> {
+        &self.activation
+    }
+
+    pub(crate) fn execution_image(
+        &self,
+    ) -> &Arc<skiff_runtime_linked_program::AssemblyExecutionImage> {
+        self.active.candidate.execution_image()
+    }
+
+    pub(crate) fn resolver(&self) -> Arc<dyn RuntimeAssemblyEvalResolver> {
+        Arc::clone(&self.active.contexts) as _
+    }
+
+    pub(crate) fn db_source(
+        &self,
+    ) -> anyhow::Result<skiff_runtime_capability_context::DbCapabilitySource> {
+        self.active
+            .contexts
+            .db_source(self.activation.activation_id())
+            .ok_or_else(|| anyhow::anyhow!("Actor activation has no DB capability source"))
+    }
+}
+
 impl ActiveAssemblyRoute {
     pub(crate) fn assembly_identity(&self) -> &AssemblyIdentity {
         self.active.identity()
@@ -602,6 +634,35 @@ impl RuntimeHost {
         selector: &IngressSelector,
     ) -> anyhow::Result<Option<ActiveAssemblyRoute>> {
         self.assembly_admission.route(selector)
+    }
+
+    pub(crate) fn active_actor_execution_route(
+        &self,
+        service_id: &str,
+    ) -> anyhow::Result<Option<ActiveActorExecutionRoute>> {
+        let Some(active) = self.assembly_admission.active()? else {
+            return Ok(None);
+        };
+        let deployments = active
+            .candidate
+            .activations()
+            .filter(|(deployment, _)| deployment.service_id == service_id)
+            .map(|(deployment, _)| deployment.clone())
+            .collect::<Vec<_>>();
+        let Some(deployment) = deployments.first() else {
+            return Ok(None);
+        };
+        if deployments.len() != 1 {
+            anyhow::bail!(
+                "Actor service {service_id} has multiple active deployments; invocation is ambiguous"
+            );
+        }
+        let activation = active
+            .contexts
+            .activation_for_deployment(deployment)
+            .ok_or_else(|| anyhow::anyhow!("Actor service activation context is missing"))?;
+        drop(deployments);
+        Ok(Some(ActiveActorExecutionRoute { active, activation }))
     }
 }
 

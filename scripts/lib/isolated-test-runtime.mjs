@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +20,8 @@ import {
   ISOLATED_RUNTIME_LOG_EVIDENCE_PROPERTY,
   retainIsolatedRuntimeLogEvidence,
 } from './isolated-test-runtime-log-evidence.mjs';
+import { runtimeBinaryName } from './dev-runtime-paths.mjs';
+import { renderRuntimeConfig } from './runtime-stack-config.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const defaultSkiffRoot = resolve(scriptDir, '..', '..');
@@ -36,8 +39,12 @@ export async function runInIsolatedTestRuntime({
   environment = 'skiff-test',
   signalTarget = process,
   validateBootstrapReceipt,
+  runtimeReplicas = 1,
   dependencies = {},
 }) {
+  if (!Number.isSafeInteger(runtimeReplicas) || runtimeReplicas < 1 || runtimeReplicas > 2) {
+    throw new Error('isolated test runtimeReplicas must be 1 or 2');
+  }
   const absoluteSkiffRoot = resolve(skiffRoot);
   const absoluteCargoTarget = cargoTargetDir(absoluteSkiffRoot, baseEnv);
   const isolatedBaseEnv = {
@@ -70,6 +77,7 @@ export async function runInIsolatedTestRuntime({
       ops,
       signal: abortController.signal,
       validateBootstrapReceipt,
+      runtimeReplicas,
     });
     value = await runTest(stack.testRunnerEnv, abortController.signal, stack);
   } catch (error) {
@@ -122,11 +130,13 @@ async function startIsolatedTestRuntime({
   ops,
   signal,
   validateBootstrapReceipt,
+  runtimeReplicas,
 }) {
   const portLease = await ops.leasePorts();
   let tempRoot;
   let ownershipReceipt;
   let supervisor;
+  let additionalRuntimes = [];
   let configOwnershipRequired = false;
   let supervisorAttempted = false;
   try {
@@ -176,11 +186,36 @@ async function startIsolatedTestRuntime({
     await ops.waitReady({
       controlUrl,
       routerHttpUrl,
+      mongoPort,
       artifactRoot,
       bootstrap,
       supervisor,
       signal,
     });
+    for (let replica = 1; replica < runtimeReplicas; replica += 1) {
+      const runtimeHome = join(tempRoot, `runtime-${replica + 1}-home`);
+      const runtimeConfig = join(tempRoot, `runtime-${replica + 1}.yml`);
+      await mkdir(runtimeHome, { recursive: true });
+      await writeFile(runtimeConfig, renderRuntimeConfig({
+        routerUrl: `ws://127.0.0.1:${controlPort}/runtime`,
+        runtimeHome,
+        environment,
+      }), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+      const child = spawn(
+        join(devHome, 'bin', runtimeBinaryName()),
+        [runtimeConfig],
+        { cwd: skiffRoot, env: isolatedEnv, stdio: 'inherit' },
+      );
+      additionalRuntimes.push(child);
+    }
+    if (additionalRuntimes.length > 0) {
+      await waitForRuntimeReplicaCount({
+        controlUrl,
+        expected: runtimeReplicas,
+        children: additionalRuntimes,
+        signal,
+      });
+    }
     console.log(`[skiff-test] isolated runtime control: ${controlUrl}`);
     console.log(`[skiff-test] isolated runtime workspace: ${tempRoot}`);
     return {
@@ -193,6 +228,7 @@ async function startIsolatedTestRuntime({
       portLease,
       ports: portLease.ports,
       supervisor,
+      additionalRuntimes,
       tempRoot,
       environment,
       instanceOwnership: ownershipReceipt,
@@ -207,6 +243,7 @@ async function startIsolatedTestRuntime({
       portLease,
       ports: portLease.ports,
       supervisor,
+      additionalRuntimes,
       tempRoot,
     };
     try {
@@ -223,6 +260,10 @@ async function startIsolatedTestRuntime({
 
 async function cleanupIsolatedTestRuntime(stack, ops, testError) {
   const errors = [];
+  for (const child of stack.additionalRuntimes ?? []) {
+    await settleCleanupStep(errors, `stop additional Runtime ${child.pid}`, () =>
+      stopAdditionalRuntime(child));
+  }
   if (stack.supervisor !== undefined) {
     await settleCleanupStep(errors, 'stop supervisor', async () => {
       const stopped = await ops.stopSupervisor(stack.supervisor);
@@ -278,6 +319,66 @@ async function cleanupIsolatedTestRuntime(stack, ops, testError) {
     const details = errors.map(errorMessage).join('; ');
     throw new AggregateError(errors, `isolated runtime cleanup failed: ${details}${evidence}`);
   }
+}
+
+async function waitForRuntimeReplicaCount({
+  controlUrl,
+  expected,
+  children,
+  signal,
+}) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 120_000) {
+    signal.throwIfAborted();
+    const exited = children.find(
+      (child) => child.exitCode !== null || child.signalCode !== null,
+    );
+    if (exited !== undefined) {
+      throw new Error(
+        `additional Runtime ${exited.pid} exited before readiness with ${
+          exited.signalCode ?? exited.exitCode
+        }`,
+      );
+    }
+    try {
+      const response = await fetch(`${controlUrl}/__router/health`, { signal });
+      if (response.ok) {
+        const health = await response.json();
+        const replicas = (health.replicas ?? []).filter(
+          (replica) => replica?.connected === true && replica?.state === 'healthy',
+        );
+        const connections = (health.capabilityConnections ?? []).filter(
+          (connection) => connection?.connected === true,
+        );
+        if (
+          new Set(replicas.map((replica) => replica.replicaId)).size >= expected
+          && new Set(connections.map((connection) => connection.runtimeId)).size >= expected
+        ) {
+          return;
+        }
+      }
+    } catch {
+      // The Router health endpoint may be between assembly transitions.
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  throw new Error(`isolated runtime did not reach ${expected} healthy replicas`);
+}
+
+async function stopAdditionalRuntime(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((resolvePromise, reject) => {
+    child.once('error', reject);
+    child.once('exit', resolvePromise);
+  });
+  child.kill('SIGTERM');
+  const stopped = await Promise.race([
+    exited.then(() => true),
+    new Promise((resolvePromise) => setTimeout(() => resolvePromise(false), 20_000)),
+  ]);
+  if (stopped) return;
+  child.kill('SIGKILL');
+  await exited;
 }
 
 function isolatedRuntimeOperations(overrides, skiffRoot, baseEnv) {

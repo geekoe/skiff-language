@@ -66,6 +66,10 @@ const fn detached_native(binding_key: &'static str, may_suspend: bool) -> Native
 }
 
 pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
+    detached_native("std.actor.getOrCreate", true),
+    detached_native("std.actor.replace", true),
+    detached_native("std.actor.find", true),
+    detached_native("std.actor.remove", true),
     detached_scalar_native("core.array.empty"),
     detached_scalar_native("core.bytes.fromUtf8"),
     detached_scalar_native("core.date.fromEpochMilliseconds"),
@@ -871,6 +875,10 @@ mod tests {
     #[test]
     fn native_callable_semantics_registry_is_sparse_exact_and_safe() {
         let expected = BTreeSet::from([
+            "std.actor.find",
+            "std.actor.getOrCreate",
+            "std.actor.remove",
+            "std.actor.replace",
             "core.array.empty",
             "core.bytes.fromUtf8",
             "core.date.fromEpochMilliseconds",
@@ -922,7 +930,12 @@ mod tests {
                     invokes_unknown_target: false,
                     may_suspend: matches!(
                         semantics.binding_key,
-                        "std.http.client.request" | "std.time.sleep"
+                        "std.actor.getOrCreate"
+                            | "std.actor.replace"
+                            | "std.actor.find"
+                            | "std.actor.remove"
+                            | "std.http.client.request"
+                            | "std.time.sleep"
                     ),
                 }
             );

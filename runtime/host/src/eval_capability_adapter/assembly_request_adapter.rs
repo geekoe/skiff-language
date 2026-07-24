@@ -15,6 +15,7 @@ pub(crate) struct RuntimeAssemblyRequestEvalAdapterInput {
     pub(crate) file_source: concrete::FileCapabilitySource,
     pub(crate) http_options: concrete::HttpRuntimeOptions,
     pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
+    pub(crate) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
     pub(crate) spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     pub(crate) telemetry_context: Option<RequestTelemetryContext>,
     pub(crate) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
@@ -62,6 +63,7 @@ pub(crate) fn assembly_request_eval_adapter(
         file_source: input.file_source,
         http_options: input.http_options,
         outbound_requests: input.outbound_requests,
+        actor_method_outbound: input.actor_method_outbound,
         spawn_workers: input.spawn_workers,
         telemetry_context: input.telemetry_context,
         router_sender: input.router_sender,
@@ -80,6 +82,7 @@ struct RuntimeAssemblyRequestEvalAdapter {
     file_source: concrete::FileCapabilitySource,
     http_options: concrete::HttpRuntimeOptions,
     outbound_requests: Arc<OutboundRequestRegistry>,
+    actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
     spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     telemetry_context: Option<RequestTelemetryContext>,
     router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
@@ -146,6 +149,7 @@ impl AssemblyRequestEvalAdapter for RuntimeAssemblyRequestEvalAdapter {
             Some(&self.activation_identity),
             self.router_sender.as_ref(),
             &self.outbound_requests,
+            &self.actor_method_outbound,
             &self.spawn_workers,
             cancellation.clone(),
         );
@@ -182,7 +186,7 @@ impl AssemblyRequestEvalAdapter for RuntimeAssemblyRequestEvalAdapter {
     }
 }
 
-fn package_config_views(
+pub(super) fn package_config_views(
     image: &skiff_runtime_linked_program::AssemblyExecutionImage,
     literals: &[skiff_artifact_model::ConfigLiteralBinding],
 ) -> anyhow::Result<Vec<crate::config_view::RuntimeConfigView>> {

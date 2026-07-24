@@ -1,4 +1,24 @@
 use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity};
+use skiff_runtime_model::runtime_value::ActorRef;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActorInvocationOwnerUnit {
+    Service,
+    Package(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActorInvocationOwnerFile {
+    LoadedFileIndex(u64),
+    FileIrIdentity(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorInvocationDeclarationOwner {
+    pub unit: ActorInvocationOwnerUnit,
+    pub file: ActorInvocationOwnerFile,
+    pub actor_symbol: String,
+}
 
 /// Identity facts which must survive the Router/Runtime boundary unchanged.
 /// Payload bytes deliberately remain outside this value.
@@ -15,7 +35,15 @@ pub struct ActorInvocationIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorInvocationDeadline {
     pub timeout_ms: u64,
-    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorInvocationRequest {
+    pub actor_ref: ActorRef,
+    pub declaration_owner: ActorInvocationDeclarationOwner,
+    pub identity: ActorInvocationIdentity,
+    pub deadline: ActorInvocationDeadline,
+    pub arguments_payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

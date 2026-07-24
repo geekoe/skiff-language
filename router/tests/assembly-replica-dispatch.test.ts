@@ -17,7 +17,7 @@ import {
 
 const ASSEMBLY_A = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
 const ASSEMBLY_B = `skiff-runtime-assembly-v1:sha256:${'b'.repeat(64)}`;
-const PROTOCOL = `skiff-service-protocol-v2:sha256:${'c'.repeat(64)}`;
+const PROTOCOL = `skiff-service-protocol-v3:sha256:${'c'.repeat(64)}`;
 const OPERATION = `skiff-contract-operation-v1:sha256:${'e'.repeat(64)}`;
 const binding: RuntimeAssemblyIngressBinding = {
   selector: { protocol: 'http', host: 'api.localhost', method: 'GET', path: '/v1/models' },
@@ -44,6 +44,11 @@ it('round-robins only healthy replicas of the exact committed assembly generatio
   const socketB = fakeSocket();
   register(registry, socketA, 'replica-a', 1, ASSEMBLY_A);
   register(registry, socketB, 'replica-b', 1, ASSEMBLY_A);
+  expect(registry.actorRuntimeCandidates('example/models')).toEqual([
+    { runtimeId: 'replica-a', ws: socketA },
+    { runtimeId: 'replica-b', ws: socketB }
+  ]);
+  expect(registry.actorRuntimeCandidates('example/other')).toEqual([]);
   const request = assemblyHttpRequestHeader({
     snapshot: snapshots.get(),
     binding,
@@ -57,6 +62,9 @@ it('round-robins only healthy replicas of the exact committed assembly generatio
   expect(registry.pickDispatchConnection(request)).toMatchObject({ runtimeId: 'replica-a' });
 
   registry.removeRuntimeConnection(socketA);
+  expect(registry.actorRuntimeCandidates('example/models')).toEqual([
+    { runtimeId: 'replica-b', ws: socketB }
+  ]);
   expect(registry.pickDispatchConnection(request)).toMatchObject({ runtimeId: 'replica-b' });
   expect(() => register(registry, fakeSocket(), 'stale', 0, ASSEMBLY_A)).toThrow(
     /stale assembly registration/

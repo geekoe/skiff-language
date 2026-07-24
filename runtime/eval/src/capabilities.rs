@@ -652,10 +652,6 @@ impl NativeActorCapability for RuntimeNativeActorCapabilityContext<'_> {
         self.0.service_id()
     }
 
-    fn actor_implementation_identity(&self) -> &str {
-        self.0.request_build_id()
-    }
-
     fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
         self.0.activation_identity()
     }

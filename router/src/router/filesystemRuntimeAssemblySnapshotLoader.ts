@@ -7,12 +7,13 @@ import { sha256Hex, stableStringify } from '../manifest/identity.js';
 import {
   decodeRouterSnapshot,
   type LoadedRuntimeAssembly,
+  type RuntimeAssemblyActorMethod,
   type RuntimeAssemblySnapshotLoader
 } from './runtimeAssemblySnapshot.js';
 
 const MAX_RECORD_BYTES = 64 * 1024 * 1024;
 const ASSEMBLY_IDENTITY = /^skiff-runtime-assembly-v1:sha256:([0-9a-f]{64})$/;
-const SERVICE_PROTOCOL_IDENTITY = /^skiff-service-protocol-v2:sha256:([0-9a-f]{64})$/;
+const SERVICE_PROTOCOL_IDENTITY = /^skiff-service-protocol-v3:sha256:([0-9a-f]{64})$/;
 const SERVICE_ID = /^[a-z0-9_.-]+(?:\/[a-z0-9_.-]+)*$/;
 const VERSION = /^[A-Za-z0-9_.-]{1,200}$/;
 
@@ -90,7 +91,81 @@ implements RuntimeAssemblySnapshotLoader {
         return loaded;
       })
     );
-    return decodeRouterSnapshot({ assembly, serviceContracts }, ref).assembly;
+    const decoded = decodeRouterSnapshot({ assembly, serviceContracts }, ref).assembly;
+    const actorMethods = await this.loadActorMethods(assemblyObject);
+    return actorMethods.length === 0 ? decoded : { ...decoded, actorMethods };
+  }
+
+  private async loadActorMethods(
+    assembly: Record<string, unknown>
+  ): Promise<RuntimeAssemblyActorMethod[]> {
+    const plan = record(assembly.packageLinkPlan, 'RuntimeAssembly.packageLinkPlan');
+    if (!Array.isArray(plan.codeSlots)) return [];
+    const methods: RuntimeAssemblyActorMethod[] = [];
+    for (const [codeSlot, rawSlot] of plan.codeSlots.entries()) {
+      const slot = record(rawSlot, `RuntimeAssembly.packageLinkPlan.codeSlots[${codeSlot}]`);
+      const implementation = record(slot.package, 'PackageCodeSlot.package');
+      const packageId = requiredString(implementation, 'packageId');
+      const packageVersion = requiredString(implementation, 'packageVersion');
+      const packageBuildId = requiredString(implementation, 'packageBuildId');
+      const buildHash = identityHash(
+        packageBuildId,
+        'skiff-package-build-v4:sha256:',
+        'packageBuildId'
+      );
+      const packageRecord = record(
+        await this.readRecord(
+          `records/package-artifacts/${coordinate(packageId)}/${packageVersion}/${buildHash}/package.json`,
+          `PackageArtifact ${packageId}@${packageVersion}`
+        ),
+        'PackageArtifact'
+      );
+      if (!Array.isArray(packageRecord.files)) continue;
+      for (const [fileIndex, rawFile] of packageRecord.files.entries()) {
+        const fileRef = record(rawFile, `PackageArtifact.files[${fileIndex}]`);
+        const fileIdentity = requiredString(fileRef, 'fileIrIdentity');
+        const fileHash = identityHash(
+          fileIdentity,
+          'skiff-file-ir-v5:sha256:',
+          'fileIrIdentity'
+        );
+        const file = record(
+          await this.readRecord(
+            `records/package-artifacts/${coordinate(packageId)}/${packageVersion}/${buildHash}/file-ir/${fileHash}.json`,
+            `FileIr ${fileIdentity}`
+          ),
+          'FileIr'
+        );
+        if (!Array.isArray(file.actorDeclarations)) continue;
+        for (const rawActor of file.actorDeclarations) {
+          const actor = record(rawActor, 'ActorDeclaration');
+          const abi = record(actor.abi, 'ActorDeclaration.abi');
+          const actorSymbol = requiredString(abi, 'actorName');
+          const actorAbiIdentity = requiredString(actor, 'actorAbiIdentity');
+          const actorImplementationIdentity = requiredString(
+            actor,
+            'actorImplementationIdentity'
+          );
+          const implementations = record(
+            actor.methodImplementations,
+            'ActorDeclaration.methodImplementations'
+          );
+          for (const methodIdentity of Object.keys(implementations)) {
+            methods.push({
+              declarationOwner: {
+                unit: { kind: 'package', value: codeSlot },
+                file: { kind: 'loadedFileIndex', value: fileIndex },
+                actorSymbol,
+              },
+              actorAbiIdentity,
+              actorImplementationIdentity,
+              methodIdentity,
+            });
+          }
+        }
+      }
+    }
+    return methods;
   }
 
   private async readRecord(relativePath: string, label: string): Promise<unknown> {
@@ -116,8 +191,19 @@ implements RuntimeAssemblySnapshotLoader {
   }
 }
 
+function coordinate(value: string): string {
+  return value.replaceAll('.', '~d').replaceAll('/', '~s');
+}
+
+function identityHash(value: string, prefix: string, label: string): string {
+  if (!value.startsWith(prefix) || !/^[0-9a-f]{64}$/.test(value.slice(prefix.length))) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value.slice(prefix.length);
+}
+
 function computeRuntimeAssemblyIdentity(value: Record<string, unknown>): string {
-  const projection = {
+  const projection = canonicalRuntimeAssemblyIdentityValue({
     schema: 'skiff-runtime-assembly-identity-v1',
     roots: value.roots,
     resolvedDeployments: value.resolvedDeployments,
@@ -127,19 +213,39 @@ function computeRuntimeAssemblyIdentity(value: Record<string, unknown>): string 
     serviceBindingTemplates: value.serviceBindingTemplates,
     activationTemplates: value.activationTemplates,
     globalIngress: value.globalIngress
-  };
+  });
   return `skiff-runtime-assembly-v1:sha256:${sha256Hex(stableStringify(projection))}`;
+}
+
+function canonicalRuntimeAssemblyIdentityValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value
+      .map(canonicalRuntimeAssemblyIdentityValue)
+      .sort((left, right) => {
+        const leftJson = stableStringify(left);
+        const rightJson = stableStringify(right);
+        return leftJson < rightJson ? -1 : leftJson > rightJson ? 1 : 0;
+      });
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) =>
+          !['packageVersion', 'contractVersion', 'exactVersion'].includes(key))
+        .map(([key, item]) => [key, canonicalRuntimeAssemblyIdentityValue(item)])
+    );
+  }
+  return value;
 }
 
 function computeServiceProtocolIdentity(value: Record<string, unknown>): string {
   const projection = {
-    schema: 'skiff-service-protocol-identity-v2',
+    schema: 'skiff-service-protocol-identity-v3',
     serviceId: value.serviceId,
-    contractVersion: value.contractVersion,
     operations: value.operations,
-    boundarySchema: value.boundarySchema
+    packageTypeRequirements: value.packageTypeRequirements
   };
-  return `skiff-service-protocol-v2:sha256:${sha256Hex(stableStringify(projection))}`;
+  return `skiff-service-protocol-v3:sha256:${sha256Hex(stableStringify(projection))}`;
 }
 
 function assertContained(root: string, candidate: string, label: string): void {

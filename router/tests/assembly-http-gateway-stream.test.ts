@@ -40,7 +40,7 @@ const binding: RuntimeAssemblyIngressBinding = {
     serviceId: 'example.com/stream',
     contractVersion: '1.0.0',
     serviceProtocolIdentity:
-      `skiff-service-protocol-v2:sha256:${'d'.repeat(64)}`
+      `skiff-service-protocol-v3:sha256:${'d'.repeat(64)}`
   },
   contractOperationId: OPERATION,
   operationMode: 'serverStream'

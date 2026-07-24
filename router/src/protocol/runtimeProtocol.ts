@@ -119,7 +119,7 @@ const routerToRuntimeFrameHeaderTypes = [
 ] as const satisfies readonly RouterToRuntimeFrameHeaderName[];
 
 const SERVICE_PROTOCOL_IDENTITY_PATTERN =
-  /^skiff-service-protocol-v2:sha256:[0-9a-f]{64}$/;
+  /^skiff-service-protocol-v3:sha256:[0-9a-f]{64}$/;
 const GATEWAY_IDENTITY_PATTERN = /^skiff-gateway-v1:sha256:[0-9a-f]{64}$/;
 const BUILD_ID_PATTERN = /^skiff-service-build-v1:sha256:[0-9a-f]{64}$/;
 const PACKAGE_TEST_BUILD_ID_PATTERN = /^skiff-package-test-build-v1:sha256:[0-9a-f]{64}$/;
@@ -1476,7 +1476,7 @@ export const runtimeFrameHeaderSchemas = {
 const runtimeRegisterTargetFixture = 'service.example~com~~hello.HelloApi.hello' as const;
 const spawnTargetFixture = `function:${runtimeRegisterTargetFixture}` as const;
 const serviceProtocolIdentityFixture =
-  'skiff-service-protocol-v2:sha256:1111111111111111111111111111111111111111111111111111111111111111' as const;
+  'skiff-service-protocol-v3:sha256:1111111111111111111111111111111111111111111111111111111111111111' as const;
 
 const runtimeRegisterFixture = {
   type: 'runtime.register',
@@ -1486,7 +1486,7 @@ const runtimeRegisterFixture = {
   buildId:
     'skiff-service-build-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333',
   serviceProtocolIdentity:
-    'skiff-service-protocol-v2:sha256:1111111111111111111111111111111111111111111111111111111111111111',
+    'skiff-service-protocol-v3:sha256:1111111111111111111111111111111111111111111111111111111111111111',
   targets: [runtimeRegisterTargetFixture] as string[],
   runtimeVersion: 'fixture-runtime-1',
   codeRevisionId: 'code-fixture-1',
@@ -2249,7 +2249,7 @@ function validateRuntimeRegister(envelope: Record<string, unknown>): string | nu
       'runtime.register',
       'serviceProtocolIdentity',
       SERVICE_PROTOCOL_IDENTITY_PATTERN,
-      'skiff-service-protocol-v2:sha256:<64 lowercase hex>'
+      'skiff-service-protocol-v3:sha256:<64 lowercase hex>'
     ) ??
     requireNonEmptyStringArray(envelope, 'runtime.register', 'targets') ??
     optionalString(envelope, 'runtime.register', 'runtimeVersion') ??
@@ -2537,7 +2537,7 @@ function validateSpawnSubmitRequest(envelope: Record<string, unknown>): string |
       'spawn.submit.request',
       'serviceProtocolIdentity',
       SERVICE_PROTOCOL_IDENTITY_PATTERN,
-      'skiff-service-protocol-v2:sha256:<64 lowercase hex>'
+      'skiff-service-protocol-v3:sha256:<64 lowercase hex>'
     ) ??
     requireString(envelope, 'spawn.submit.request', 'target') ??
     forbiddenField(envelope, 'spawn.submit.request', 'actorRef') ??
@@ -2577,7 +2577,7 @@ function validateSpawnClaimRequest(envelope: Record<string, unknown>): string | 
       'spawn.claim.request',
       'serviceProtocolIdentity',
       SERVICE_PROTOCOL_IDENTITY_PATTERN,
-      'skiff-service-protocol-v2:sha256:<64 lowercase hex>'
+      'skiff-service-protocol-v3:sha256:<64 lowercase hex>'
     ) ??
     requireNonEmptyStringArray(envelope, 'spawn.claim.request', 'supportedTargets') ??
     requireNonEmptyStringArray(
@@ -2633,7 +2633,7 @@ function validateSpawnClaimResponse(envelope: Record<string, unknown>): string |
       'spawn.claim.response',
       'item.serviceProtocolIdentity',
       SERVICE_PROTOCOL_IDENTITY_PATTERN,
-      'skiff-service-protocol-v2:sha256:<64 lowercase hex>'
+      'skiff-service-protocol-v3:sha256:<64 lowercase hex>'
     ) ??
     requireStringPattern(
       envelope,
@@ -3123,7 +3123,7 @@ function validateRequestProtocolIdentity(envelope: Record<string, unknown>): str
     'request.start',
     'serviceProtocolIdentity',
     SERVICE_PROTOCOL_IDENTITY_PATTERN,
-    'skiff-service-protocol-v2:sha256:<64 lowercase hex>'
+    'skiff-service-protocol-v3:sha256:<64 lowercase hex>'
   );
 }
 

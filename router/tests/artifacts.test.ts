@@ -27,11 +27,11 @@ import { writeMockIdentityCli } from "./helpers/mockIdentityCli.js";
 const tempDirs: string[] = [];
 const originalIdentityCliEnv = process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
 const SERVICE_ID = "example.com/websocket_fixture";
-const CONTRACT_IDENTITY = fixtureIdentity("skiff-service-protocol-v2", SERVICE_ID);
-const CHAT_CONTRACT_IDENTITY = fixtureIdentity("skiff-service-protocol-v2", "chat");
-const LEGACY_CONTRACT_IDENTITY = fixtureIdentity("skiff-service-protocol-v2", "legacy");
+const CONTRACT_IDENTITY = fixtureIdentity("skiff-service-protocol-v3", SERVICE_ID);
+const CHAT_CONTRACT_IDENTITY = fixtureIdentity("skiff-service-protocol-v3", "chat");
+const LEGACY_CONTRACT_IDENTITY = fixtureIdentity("skiff-service-protocol-v3", "legacy");
 const MISMATCH_CONTRACT_IDENTITY = fixtureIdentity(
-  "skiff-service-protocol-v2",
+  "skiff-service-protocol-v3",
   "mismatch",
 );
 const CONTRACT_FILE_IR_IDENTITY = fixtureIdentity(
@@ -3022,7 +3022,7 @@ describe("router artifact root", () => {
     });
 
     await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /contractIdentity prefix must be skiff-service-protocol-v2/,
+      /contractIdentity prefix must be skiff-service-protocol-v3/,
     );
   });
 
@@ -4403,7 +4403,7 @@ async function writeServiceAssemblyValue(
 function contractIdentityForService(serviceId: string): string {
   return serviceId === SERVICE_ID
     ? CONTRACT_IDENTITY
-    : fixtureIdentity("skiff-service-protocol-v2", serviceId);
+    : fixtureIdentity("skiff-service-protocol-v3", serviceId);
 }
 
 function configShape(_hash: string) {

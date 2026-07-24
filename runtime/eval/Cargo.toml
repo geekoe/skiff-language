@@ -28,6 +28,7 @@ skiff-runtime-native = { path = "../native" }
 skiff-runtime-native-contract = { path = "../native-contract" }
 thiserror = "2.0"
 tokio = { version = "1.44", features = ["rt", "sync", "time"] }
+uuid = { version = "1.16", features = ["v4"] }
 
 [dev-dependencies]
 skiff-runtime-boundary = { path = "../boundary", features = ["test-support"] }

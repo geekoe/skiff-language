@@ -30,6 +30,9 @@ export function isolatedTestInstanceConfigText({
     'ports:',
     `  base: ${basePort}`,
     `  mongo: ${mongoPort}`,
+    'http:',
+    '  maxRequestBytes: 67108864',
+    '  maxResponseBytes: 8388608',
     'components:',
     '  telemetry: disabled',
     '  mongo: managed',
@@ -185,10 +188,13 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
 
 async function waitForIsolatedRuntime({
   controlUrl,
+  mongoPort,
   bootstrap,
   supervisor,
   signal,
 }) {
+  await initializeSingleNodeReplicaSet({ mongoPort, supervisor, signal });
+  await initializeRouterActivationState({ mongoPort, bootstrap, signal });
   const exit = childExit(supervisor);
   const startedAt = Date.now();
   let lastError;
@@ -212,6 +218,82 @@ async function waitForIsolatedRuntime({
   }
   throw new Error(
     `isolated runtime did not become ready at ${controlUrl} within ${START_TIMEOUT_MS}ms${lastError ? `: ${errorMessage(lastError)}` : ''}`,
+  );
+}
+
+async function initializeRouterActivationState({ mongoPort, bootstrap, signal }) {
+  const environment = bootstrap?.environment;
+  const assembly = bootstrap?.bootstrap?.assembly;
+  const generation = bootstrap?.bootstrap?.generation;
+  if (
+    typeof environment !== 'string'
+    || typeof assembly?.assemblyIdentity !== 'string'
+    || !Number.isSafeInteger(generation)
+  ) {
+    throw new Error('isolated bootstrap cannot initialize Router activation state');
+  }
+  const state = {
+    schemaVersion: 'skiff-environment-activation-state-v1',
+    environment,
+    committed: { generation, assembly },
+    pending: null,
+  };
+  const document = {
+    _id: environment,
+    revision: 0,
+    state,
+  };
+  const script = [
+    'db.router_assembly_activation_states.updateOne(',
+    JSON.stringify({ _id: environment }),
+    ', {$setOnInsert:',
+    JSON.stringify(document),
+    '}, {upsert:true});',
+  ].join('');
+  await captureCheckedCommand(
+    'mongosh',
+    [
+      `mongodb://127.0.0.1:${mongoPort}/test?directConnection=true&replicaSet=rs0`,
+      '--quiet',
+      '--eval',
+      script,
+    ],
+    { signal },
+  );
+}
+
+async function initializeSingleNodeReplicaSet({ mongoPort, supervisor, signal }) {
+  const uri = `mongodb://127.0.0.1:${mongoPort}/admin?directConnection=true`;
+  const initiate = [
+    'try {',
+    '  const status = rs.status();',
+    '  if (status.myState !== 1) quit(2);',
+    '} catch (error) {',
+    `  rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:${mongoPort}'}]});`,
+    '  quit(2);',
+    '}',
+  ].join(' ');
+  const startedAt = Date.now();
+  let lastError;
+  while (Date.now() - startedAt < START_TIMEOUT_MS) {
+    signal.throwIfAborted();
+    if (supervisor.exitCode !== null || supervisor.signalCode !== null) {
+      throw new Error('isolated runtime supervisor exited while initializing MongoDB');
+    }
+    try {
+      await captureCheckedCommand(
+        'mongosh',
+        [uri, '--quiet', '--eval', initiate],
+        { signal },
+      );
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(100);
+  }
+  throw new Error(
+    `isolated MongoDB did not elect its single-node primary: ${errorMessage(lastError)}`,
   );
 }
 

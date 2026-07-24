@@ -615,7 +615,7 @@ describe('router websocket gateway', () => {
   it('routes /ws service and version query selectors without a version header', async () => {
     const manifest = loadWebSocketManifestForService(
       'skiff.run/sample',
-      'skiff-service-protocol-v2:sha256:0000000000000000000000000000000000000000000000000000000000000004'
+      'skiff-service-protocol-v3:sha256:0000000000000000000000000000000000000000000000000000000000000004'
     );
     const buildDev =
       'skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -1330,7 +1330,7 @@ describe('router websocket gateway', () => {
     const websocket_fixtureManifest = loadWebSocketManifest();
     const chatManifest = loadWebSocketManifestForService(
       'skiff.run/chat',
-      'skiff-service-protocol-v2:sha256:0000000000000000000000000000000000000000000000000000000000000004'
+      'skiff-service-protocol-v3:sha256:0000000000000000000000000000000000000000000000000000000000000004'
     );
     const manifest = mergeLoadedManifests([websocket_fixtureManifest, chatManifest]);
     const harness = await RouterHarness.websocket({ manifest });
@@ -1376,7 +1376,7 @@ describe('router websocket gateway', () => {
     const websocket_fixtureManifest = loadWebSocketManifest();
     const chatManifest = loadWebSocketManifestForService(
       'skiff.run/chat',
-      'skiff-service-protocol-v2:sha256:0000000000000000000000000000000000000000000000000000000000000004'
+      'skiff-service-protocol-v3:sha256:0000000000000000000000000000000000000000000000000000000000000004'
     );
     const manifest = mergeLoadedManifests([websocket_fixtureManifest, chatManifest]);
     const harness = await RouterHarness.websocket({ manifest });
@@ -1415,7 +1415,7 @@ describe('router websocket gateway', () => {
     const websocket_fixtureManifest = loadWebSocketManifest();
     const chatManifest = loadWebSocketManifestForService(
       'skiff.run/chat',
-      'skiff-service-protocol-v2:sha256:0000000000000000000000000000000000000000000000000000000000000004'
+      'skiff-service-protocol-v3:sha256:0000000000000000000000000000000000000000000000000000000000000004'
     );
     const manifest = mergeLoadedManifests([websocket_fixtureManifest, chatManifest]);
     const harness = await RouterHarness.create({ manifest });
@@ -1457,7 +1457,7 @@ describe('router websocket gateway', () => {
   it('uses websocket service and version headers before query parameters', async () => {
     const manifest = loadWebSocketManifestForService(
       'skiff.run/sample',
-      'skiff-service-protocol-v2:sha256:0000000000000000000000000000000000000000000000000000000000000004'
+      'skiff-service-protocol-v3:sha256:0000000000000000000000000000000000000000000000000000000000000004'
     );
     const buildDev =
       'skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -1507,7 +1507,7 @@ describe('router websocket gateway', () => {
   it('does not treat websocket version query as a selector for a single-build service', async () => {
     const manifest = loadWebSocketManifestForService(
       'skiff.run/sample',
-      'skiff-service-protocol-v2:sha256:0000000000000000000000000000000000000000000000000000000000000004'
+      'skiff-service-protocol-v3:sha256:0000000000000000000000000000000000000000000000000000000000000004'
     );
     const harness = await RouterHarness.websocket({ manifest });
     const runtime = await harness.registerRuntime({

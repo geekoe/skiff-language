@@ -2187,6 +2187,8 @@ dependencies = [
  "skiff-compiler-projection-input",
  "skiff-compiler-source",
  "skiff-deployment",
+ "skiff-runtime-linked-program",
+ "skiff-runtime-linker",
  "skiff-syntax",
  "thiserror",
 ]
@@ -2414,6 +2416,7 @@ dependencies = [
  "skiff-runtime-native-contract",
  "thiserror",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -2421,6 +2424,7 @@ name = "skiff-runtime-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bytes",
  "futures-util",
  "hex",

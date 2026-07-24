@@ -333,10 +333,6 @@ impl<'execution> NativeActorCapability for ActorCapabilityContext<'execution> {
         self.service_id()
     }
 
-    fn actor_implementation_identity(&self) -> &str {
-        self.request_build_id()
-    }
-
     fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
         self.activation_identity()
     }

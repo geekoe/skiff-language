@@ -3,10 +3,21 @@ use std::collections::HashSet;
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
+use skiff_runtime_capability_context::{
+    ActorInvocationCancellation, ActorInvocationError, ActorInvocationOutcome,
+};
 use skiff_runtime_request::{OutboundResponse, ResponseError};
 #[cfg(test)]
 use skiff_runtime_transport::protocol::RouterControlEnvelope;
 use skiff_runtime_transport::{
+    actor_method::{decode_actor_method_frame, ActorMethodErrorFramePayload, ActorMethodFrame},
+    actor_owner::{
+        decode_actor_owner_control_frame, decode_actor_owner_failure_frame,
+        decode_actor_owner_invoke_frame, encode_actor_owner_control_ack_frame,
+        ActorOwnerControlAckFrameHeader, ActorOwnerControlOperation,
+        ACTOR_OWNER_CONTROL_ACK_FRAME_TYPE, ACTOR_OWNER_CONTROL_FRAME_TYPE,
+        ACTOR_OWNER_FAILURE_FRAME_TYPE, ACTOR_OWNER_INVOKE_FRAME_TYPE,
+    },
     assembly_activation::{
         decode_assembly_activation_frame, AssemblyActivationFrameDirection,
         ASSEMBLY_ACTIVATION_FRAME_TYPE,
@@ -104,6 +115,7 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     .await;
 
     host.discard_actor_instances_for_session(&router_session_id);
+    host.actor_owner_invocations.cancel_session();
     let disconnect_result = host.websocket_generations.disconnect(&router_session_id);
     drop(sender);
     let _ = writer_task.await;
@@ -449,6 +461,50 @@ async fn dispatch_router_binary_frame_inner(
             host.cancel_request(request_cancel_from_frame_header(header))
                 .await;
         }
+        ACTOR_OWNER_INVOKE_FRAME_TYPE => {
+            if bootstrap.is_none() {
+                return Err(RuntimeError::Decode(
+                    "actor.owner.invoke requires router.bootstrap first".to_string(),
+                ));
+            }
+            let (header, arguments_payload) = decode_actor_owner_invoke_frame(bytes)
+                .map_err(super::transport_error_into_runtime_error)?;
+            if header.target_runtime_id != host.base_runtime_id {
+                return Err(RuntimeError::Decode(
+                    "actor.owner.invoke targets a different Runtime".to_string(),
+                ));
+            }
+            host.spawn_actor_owner_invoke(
+                router_session_id.to_string(),
+                header,
+                arguments_payload,
+                sender.clone(),
+            );
+        }
+        ACTOR_OWNER_CONTROL_FRAME_TYPE => {
+            dispatch_actor_owner_control(host, router_session_id, bytes, sender)?;
+        }
+        ACTOR_OWNER_FAILURE_FRAME_TYPE => {
+            let failure = decode_actor_owner_failure_frame(bytes)
+                .map_err(super::transport_error_into_runtime_error)?;
+            if !host.actor_method_outbound.complete_failure(
+                &failure.invocation_id,
+                failure.epoch,
+                &failure.actor_implementation_identity,
+                crate::capability_context::actor_method_outbound::ActorInvocationTransportError {
+                    code: failure.reason.code,
+                    message: failure.reason.message,
+                },
+            ) {
+                warn!(
+                    event = "runtime.unmatched_actor_owner_failure",
+                    invocation_id = %failure.invocation_id
+                );
+            }
+        }
+        "actor.method.return" | "actor.method.error" | "actor.method.cancel" => {
+            dispatch_actor_method_terminal(host, bytes)?;
+        }
         "response.end" => {
             let (header, payload) = decode_typed_binary_frame::<ResponseEndFrameHeader>(bytes)
                 .map_err(super::transport_error_into_runtime_error)?;
@@ -727,6 +783,137 @@ async fn dispatch_router_binary_frame_inner(
             );
         }
     }
+    Ok(())
+}
+
+fn dispatch_actor_method_terminal(host: &super::RuntimeHost, bytes: &[u8]) -> Result<()> {
+    let (invocation_id, outcome) = match decode_actor_method_frame(bytes)
+        .map_err(super::transport_error_into_runtime_error)?
+    {
+        ActorMethodFrame::Return(header, payload) => (
+            header.invocation_id,
+            ActorInvocationOutcome::Returned(payload),
+        ),
+        ActorMethodFrame::Error(header) => {
+            let outcome = match header.error {
+                ActorMethodErrorFramePayload::ActorUpgradingError { retry_after_ms, .. } => {
+                    ActorInvocationOutcome::ActorError(ActorInvocationError::ActorUpgrading {
+                        retry_after_ms,
+                    })
+                }
+                ActorMethodErrorFramePayload::ActorVersionRejectedError {
+                    requested_implementation_identity,
+                    accepted_implementation_identity,
+                    ..
+                } => {
+                    ActorInvocationOutcome::ActorError(ActorInvocationError::ActorVersionRejected {
+                        requested: requested_implementation_identity,
+                        accepted: accepted_implementation_identity,
+                    })
+                }
+                ActorMethodErrorFramePayload::ActorIncarnationReplacedError {
+                    actor_ref,
+                    current_epoch,
+                } => ActorInvocationOutcome::ActorError(
+                    ActorInvocationError::ActorIncarnationReplaced {
+                        requested_epoch: actor_ref.epoch,
+                        current_epoch,
+                    },
+                ),
+            };
+            (header.invocation_id, outcome)
+        }
+        ActorMethodFrame::Cancel(header) => {
+            let expected = host
+                .actor_method_outbound
+                .cancellation_correlation(&header.invocation_id);
+            if expected.is_none() {
+                host.actor_owner_invocations.cancel(
+                    &header.invocation_id,
+                    &header.cancellation_correlation,
+                    header.reason.into(),
+                );
+                return Ok(());
+            }
+            if expected.as_deref() != Some(header.cancellation_correlation.as_str()) {
+                return Ok(());
+            }
+            let reason = match header.reason {
+                skiff_runtime_transport::actor_method::ActorMethodCancelReason::Cancelled => {
+                    ActorInvocationCancellation::Cancelled
+                }
+                skiff_runtime_transport::actor_method::ActorMethodCancelReason::DeadlineExceeded => {
+                    ActorInvocationCancellation::DeadlineExceeded
+                }
+            };
+            (
+                header.invocation_id,
+                ActorInvocationOutcome::Cancelled(reason),
+            )
+        }
+        ActorMethodFrame::Invoke(_, _) => {
+            return Err(RuntimeError::Decode(
+                "public actor.method.invoke is not a terminal frame".to_string(),
+            ))
+        }
+    };
+    if !host.actor_method_outbound.complete(&invocation_id, outcome) {
+        warn!(
+            event = "runtime.unmatched_actor_method_terminal",
+            invocation_id = %invocation_id
+        );
+    }
+    Ok(())
+}
+
+fn dispatch_actor_owner_control(
+    host: &super::RuntimeHost,
+    router_session_id: &str,
+    bytes: &[u8],
+    sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+) -> Result<()> {
+    let control = decode_actor_owner_control_frame(bytes)
+        .map_err(super::transport_error_into_runtime_error)?;
+    if control.target_runtime_id != host.base_runtime_id {
+        return Err(RuntimeError::Decode(
+            "actor.owner.control targets a different Runtime".to_string(),
+        ));
+    }
+    let host = host.clone();
+    let router_session_id = router_session_id.to_string();
+    let sender = sender.clone();
+    tokio::spawn(async move {
+        let accepted = match control.operation {
+            ActorOwnerControlOperation::MarkUpgrading => {
+                super::actor_owner_execution::control_instance_fence(&control)
+                    .is_ok_and(|fence| host.begin_actor_upgrade_exact(&router_session_id, &fence))
+            }
+            ActorOwnerControlOperation::Discard => {
+                super::actor_owner_execution::control_instance_fence(&control).is_ok_and(|fence| {
+                    host.discard_upgrading_actor_exact(&router_session_id, &fence)
+                })
+            }
+            ActorOwnerControlOperation::IdleEvict => {
+                super::actor_owner_execution::control_instance_fence(&control)
+                    .is_ok_and(|fence| host.discard_actor_exact(&router_session_id, &fence))
+            }
+            ActorOwnerControlOperation::Activate => {
+                host.activate_actor_owner_control(&router_session_id, &control, &sender)
+                    .await
+            }
+        };
+        let ack = ActorOwnerControlAckFrameHeader {
+            schema_version: skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION.into(),
+            envelope_type: ACTOR_OWNER_CONTROL_ACK_FRAME_TYPE.into(),
+            runtime_id: host.base_runtime_id.clone(),
+            request_id: control.request_id,
+            operation: control.operation,
+            accepted,
+        };
+        if let Ok(frame) = encode_actor_owner_control_ack_frame(&ack) {
+            let _ = sender.send(super::RouterWriterMessage::Binary(frame));
+        }
+    });
     Ok(())
 }
 

@@ -22,7 +22,7 @@ describe('gateway entry identity', () => {
         id: 'skiff.run/hello',
         revisionId: '1111111111111111111111111111111111111111111111111111111111111111',
         protocolIdentity:
-          'skiff-service-protocol-v2:sha256:0000000000000000000000000000000000000000000000000000000000000002'
+          'skiff-service-protocol-v3:sha256:0000000000000000000000000000000000000000000000000000000000000002'
       },
       operations: [
         {

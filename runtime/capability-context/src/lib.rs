@@ -23,8 +23,9 @@ pub use actor::{
     ActorCapabilityApi, ActorCapabilityContext, ActorClient, OwnedActorCapabilityContext,
 };
 pub use actor_invocation::{
-    ActorInvocationCancellation, ActorInvocationDeadline, ActorInvocationError,
-    ActorInvocationIdentity, ActorInvocationOutcome,
+    ActorInvocationCancellation, ActorInvocationDeadline, ActorInvocationDeclarationOwner,
+    ActorInvocationError, ActorInvocationIdentity, ActorInvocationOutcome,
+    ActorInvocationOwnerFile, ActorInvocationOwnerUnit, ActorInvocationRequest,
 };
 pub use cancellation::{
     flag_backed_cancel_waiters_active, CancellationPollingFallbackAllowlistEntry,

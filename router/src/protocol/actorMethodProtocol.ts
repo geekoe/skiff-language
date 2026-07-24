@@ -158,10 +158,17 @@ function actorRef(value: unknown): asserts value is ActorLogicalRefFrameHeader {
     nonempty(value[key], `actorRef.${key}`);
   }
   if (!/^sha256:[0-9a-f]{64}$/.test(value.actorIdHash)) fail('actorRef.actorIdHash is invalid');
-  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.canonicalActorIdKeyBytesBase64)) {
+  if (!isCanonicalBase64(value.canonicalActorIdKeyBytesBase64)) {
     fail('actorRef.canonicalActorIdKeyBytesBase64 is invalid');
   }
   positiveInteger(value.epoch, 'actorRef.epoch');
+}
+
+function isCanonicalBase64(value: string): boolean {
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    return false;
+  }
+  return Buffer.from(value, 'base64').toString('base64') === value;
 }
 
 function owner(value: unknown): asserts value is ActorDeclarationOwnerFrameHeader {

@@ -350,6 +350,29 @@ impl ActorInstanceSessionTracker {
         true
     }
 
+    /// Evicts one exact live incarnation without requiring an upgrade marker.
+    pub fn discard_exact(&self, router_session_id: &str, fence: &ActorInstanceFence) -> bool {
+        let Some(handle) = self.exact_session_handle(router_session_id, fence) else {
+            return false;
+        };
+        if !self.store.discard_exact(&handle) {
+            return false;
+        }
+        let identity = Arc::as_ptr(&handle.instance) as usize;
+        let mut state = self
+            .state
+            .lock()
+            .expect("actor instance session tracker lock poisoned");
+        if let Some(handles) = state.by_session.get_mut(router_session_id) {
+            handles.retain(|candidate| !Arc::ptr_eq(&candidate.instance, &handle.instance));
+            if handles.is_empty() {
+                state.by_session.remove(router_session_id);
+            }
+        }
+        state.handle_owners.remove(&identity);
+        true
+    }
+
     /// Takes a session before discarding, so repeated/stale cleanup is inert.
     pub fn discard_session(&self, router_session_id: &str) -> usize {
         let handles = {

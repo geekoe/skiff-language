@@ -49,6 +49,18 @@ import type {
   ActorRuntimeConnectionFence,
   ActorRuntimeDisconnectController
 } from './actorRuntimeDisconnectController.js';
+import {
+  decodeActorMethodFrame,
+  type ActorMethodFrameHeader,
+} from '../protocol/actorMethodProtocol.js';
+import {
+  ACTOR_OWNER_CONTROL_ACK,
+  ACTOR_OWNER_FAILURE,
+  decodeActorOwnerControlAckFrame,
+  decodeActorOwnerFailureFrame,
+  type ActorOwnerControlAckFrameHeader,
+  type ActorOwnerFailureFrameHeader,
+} from '../protocol/actorOwnerProtocol.js';
 
 const CONNECTION_SEND_TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
@@ -131,6 +143,24 @@ interface RuntimeEndpointBaseOptions {
     'handleRuntimeDisconnect'
   >;
   observeConnectionSend?(observation: RuntimeConnectionSendObservation): void;
+  actorMethods?: RuntimeActorMethodRouter;
+}
+
+export interface RuntimeActorMethodRouter {
+  handleFrame(
+    source: WebSocket,
+    header: ActorMethodFrameHeader,
+    payloadBytes: Uint8Array
+  ): void | Promise<void>;
+  handleOwnerControlAck?(
+    source: WebSocket,
+    header: ActorOwnerControlAckFrameHeader
+  ): void | Promise<void>;
+  handleRuntimeDisconnect?(source: WebSocket): void | Promise<void>;
+  handleOwnerFailure?(
+    source: WebSocket,
+    header: ActorOwnerFailureFrameHeader
+  ): void | Promise<void>;
 }
 
 export type RuntimeEndpointOptions = RuntimeEndpointBaseOptions & (
@@ -154,6 +184,7 @@ export class RuntimeEndpoint
 {
   private readonly connectionSendHandlers = new Set<ConnectionSendHandler>();
   private coordinator: AssemblyActivationCoordinator | undefined;
+  private actorMethodsInstance: RuntimeActorMethodRouter | undefined;
   private control: Omit<RouterControlEnvelope, 'type'> | undefined;
   private dispatcherInstance: RuntimeDispatcher | undefined;
   private generationLifecycle: WebSocketGenerationLifecycleRouter | undefined;
@@ -168,6 +199,10 @@ export class RuntimeEndpoint
 
   setDispatcher(dispatcher: RuntimeDispatcher): void {
     this.dispatcherInstance = dispatcher;
+  }
+
+  setActorMethods(actorMethods: RuntimeActorMethodRouter): void {
+    this.actorMethodsInstance = actorMethods;
   }
 
   setCoordinator(coordinator: AssemblyActivationCoordinator): void {
@@ -243,9 +278,17 @@ export class RuntimeEndpoint
       });
 
       ws.on('close', () => {
+        const actorDisconnect = (this.actorMethodsInstance ?? this.options.actorMethods)
+          ?.handleRuntimeDisconnect?.(ws);
+        void actorDisconnect?.catch((error: unknown) => {
+          console.error({
+            event: 'actor.method_disconnect_cleanup_error',
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
         const actorRuntimeConnection =
           this.options.registry.runtimeConnectionFenceForConnection(ws);
-        this.dispatcher().handleRuntimeDisconnect(ws);
+        this.dispatcherInstance?.handleRuntimeDisconnect(ws);
         this.generationLifecycle?.handleRuntimeDisconnect(ws);
         const participantId =
           this.options.registry.runtimeCapabilityIdentityForConnection(ws);
@@ -278,7 +321,7 @@ export class RuntimeEndpoint
   }
 
   async close(): Promise<void> {
-    this.dispatcher().close();
+    this.dispatcherInstance?.close();
     for (const client of this.webSocketServer?.clients ?? []) {
       client.close();
     }
@@ -425,6 +468,51 @@ export class RuntimeEndpoint
       lifecycle.handleRuntimeControl(
         ws,
         decodeWebSocketGenerationLifecycleFrame(data, 'runtimeToRouter')
+      );
+      return;
+    }
+    if (
+      frame.header.type === ACTOR_OWNER_CONTROL_ACK
+    ) {
+      const actorMethods = this.actorMethodsInstance ?? this.options.actorMethods;
+      if (actorMethods?.handleOwnerControlAck === undefined) {
+        throw new Error('Actor owner control routing is unavailable');
+      }
+      const runtimeId = this.options.registry.assertRuntimeCapabilityConnection(ws);
+      const acknowledgement = decodeActorOwnerControlAckFrame(data);
+      if (acknowledgement.runtimeId !== runtimeId) {
+        throw new Error('Actor owner control acknowledgement Runtime mismatch');
+      }
+      await actorMethods.handleOwnerControlAck(ws, acknowledgement);
+      return;
+    }
+    if (frame.header.type === ACTOR_OWNER_FAILURE) {
+      const actorMethods = this.actorMethodsInstance ?? this.options.actorMethods;
+      if (actorMethods?.handleOwnerFailure === undefined) {
+        throw new Error('Actor owner failure routing is unavailable');
+      }
+      const runtimeId = this.options.registry.assertRuntimeCapabilityConnection(ws);
+      const failure = decodeActorOwnerFailureFrame(data);
+      if (failure.ownerRuntimeId !== runtimeId) {
+        throw new Error('Actor owner failure Runtime mismatch');
+      }
+      await actorMethods.handleOwnerFailure(ws, failure);
+      return;
+    }
+    if (
+      typeof frame.header.type === 'string' &&
+      frame.header.type.startsWith('actor.method.')
+    ) {
+      const actorMethods = this.actorMethodsInstance ?? this.options.actorMethods;
+      if (actorMethods === undefined) {
+        throw new Error('Actor method routing is unavailable');
+      }
+      this.options.registry.assertRuntimeCapabilityConnection(ws);
+      const actorFrame = decodeActorMethodFrame(data);
+      await actorMethods.handleFrame(
+        ws,
+        actorFrame.header,
+        actorFrame.payloadBytes
       );
       return;
     }

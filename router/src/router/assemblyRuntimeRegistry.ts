@@ -177,6 +177,18 @@ export class AssemblyRuntimeRegistry {
       : undefined;
   }
 
+  actorRuntimeCandidates(serviceId: string): RuntimeDispatchRuntimeIdentity[] {
+    return this.dispatchCandidates()
+      .filter((replica) => replica.deploymentBindingsByService.has(serviceId))
+      .map((replica) => ({
+        runtimeId: replica.runtimeId,
+        ws: replica.ws
+      }))
+      .sort((left, right) =>
+        Buffer.compare(Buffer.from(left.runtimeId), Buffer.from(right.runtimeId))
+      );
+  }
+
   replicaIdForConnection(ws: WebSocket): string | undefined {
     return this.replicaIdByConnection.get(ws);
   }

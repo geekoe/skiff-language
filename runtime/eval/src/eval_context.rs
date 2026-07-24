@@ -1075,9 +1075,13 @@ impl<'a> EvalContext<'a> {
                 "RuntimeProgram call target {} was not linked before execution",
                 program_call_target_kind(&call.target)
             ))),
-            LinkedCallTarget::ActorDispatch { .. } => Err(RuntimeError::Unsupported(
-                "Actor method dispatch requires the Actor executor".to_string(),
-            )),
+            LinkedCallTarget::ActorDispatch { plan } => {
+                let frame = self.suspend_actor_segment()?;
+                let result =
+                    crate::actor_dispatch::dispatch_actor_method(self, plan, values).await;
+                self.resume_actor_segment(frame).await?;
+                result
+            }
             LinkedCallTarget::ExternalServiceSymbol { symbol } => {
                 Err(RuntimeError::InvalidArtifact(format!(
                     "RuntimeProgram external service call {} must use service dependency symbols",

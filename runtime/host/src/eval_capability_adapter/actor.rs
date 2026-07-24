@@ -14,6 +14,7 @@ pub(super) struct RuntimeOwnedActorParts {
     pub(super) trace_id: Option<String>,
     pub(super) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     pub(super) outbound_requests: Arc<OutboundRequestRegistry>,
+    pub(super) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
     pub(super) spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     pub(super) cancellation: CancellationToken,
 }
@@ -137,6 +138,14 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
             request,
             args_payload,
         ))
+    }
+
+    fn invoke_actor<'a>(
+        &'a self,
+        request: capability_contract::ActorInvocationRequest,
+    ) -> capability_contract::CapabilityFuture<'a, capability_contract::ActorInvocationOutcome>
+    {
+        Box::pin(invoke_actor_method(self.owned.clone(), request))
     }
 }
 
@@ -266,6 +275,184 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
             request,
             args_payload,
         ))
+    }
+
+    fn invoke_actor<'a>(
+        &'a self,
+        request: capability_contract::ActorInvocationRequest,
+    ) -> capability_contract::CapabilityFuture<'a, capability_contract::ActorInvocationOutcome>
+    {
+        Box::pin(invoke_actor_method(self.0.clone(), request))
+    }
+}
+
+async fn invoke_actor_method(
+    parts: RuntimeOwnedActorParts,
+    request: capability_contract::ActorInvocationRequest,
+) -> capability_contract::CapabilityResult<capability_contract::ActorInvocationOutcome> {
+    use base64::Engine as _;
+    use skiff_runtime_transport::actor_method::{
+        encode_actor_method_frame, ActorDeclarationOwnerFrameHeader, ActorLogicalRefFrameHeader,
+        ActorMethodCancelFrameHeader, ActorMethodCancelReason, ActorMethodDeadlineFrameHeader,
+        ActorMethodFrame, ActorMethodInvokeFrameHeader, ActorOwnerFileFrameHeader,
+        ActorOwnerUnitFrameHeader, ACTOR_ARGUMENTS_ENCODING_V1,
+    };
+    use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
+    use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
+
+    let invocation_id = request.identity.invocation_id.clone();
+    let cancellation_correlation = request.identity.cancellation_correlation.clone();
+    let deadline_timeout_ms = request.deadline.timeout_ms;
+    let sender = parts.router_sender.clone().ok_or_else(|| {
+        capability_contract::CapabilityError::provider_unavailable(
+            "actor.method.invoke",
+            "router writer is not available",
+        )
+    })?;
+    let epoch = request.actor_ref.epoch().ok_or_else(|| {
+        capability_contract::CapabilityError::protocol(
+            "actor.method.invoke",
+            "Actor method invocation requires a pinned epoch",
+        )
+    })?;
+    if epoch != request.identity.expected_epoch {
+        return Err(capability_contract::CapabilityError::protocol(
+            "actor.method.invoke",
+            "Actor invocation expected epoch does not match its Actor reference",
+        ));
+    }
+    let mut lease = parts
+        .actor_method_outbound
+        .register(
+            invocation_id.clone(),
+            cancellation_correlation.clone(),
+            epoch,
+            request.identity.requested_implementation_identity.clone(),
+        )
+        .map_err(|message| {
+            capability_contract::CapabilityError::protocol("actor.method.invoke", message)
+        })?;
+    let owner = ActorDeclarationOwnerFrameHeader {
+        unit: match request.declaration_owner.unit {
+            capability_contract::ActorInvocationOwnerUnit::Service => {
+                ActorOwnerUnitFrameHeader::Service
+            }
+            capability_contract::ActorInvocationOwnerUnit::Package(index) => {
+                ActorOwnerUnitFrameHeader::Package(index)
+            }
+        },
+        file: match request.declaration_owner.file {
+            capability_contract::ActorInvocationOwnerFile::LoadedFileIndex(index) => {
+                ActorOwnerFileFrameHeader::LoadedFileIndex(index)
+            }
+            capability_contract::ActorInvocationOwnerFile::FileIrIdentity(identity) => {
+                ActorOwnerFileFrameHeader::FileIrIdentity(identity)
+            }
+        },
+        actor_symbol: request.declaration_owner.actor_symbol,
+    };
+    let timeout_ms = i64::try_from(request.deadline.timeout_ms).map_err(|_| {
+        capability_contract::CapabilityError::protocol(
+            "actor.method.invoke",
+            "Actor invocation timeout exceeds the supported range",
+        )
+    })?;
+    let expires_at = (OffsetDateTime::now_utc() + Duration::milliseconds(timeout_ms))
+        .format(&Rfc3339)
+        .map_err(|error| {
+            capability_contract::CapabilityError::protocol(
+                "actor.method.invoke",
+                format!("cannot format Actor invocation deadline: {error}"),
+            )
+        })?;
+    let invoke = ActorMethodFrame::Invoke(
+        ActorMethodInvokeFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "actor.method.invoke".to_string(),
+            invocation_id: invocation_id.clone(),
+            actor_ref: ActorLogicalRefFrameHeader {
+                service_id: request.actor_ref.service_id().to_string(),
+                actor_type_identity: request.actor_ref.actor_type_identity().to_string(),
+                actor_id_type_identity: request.actor_ref.actor_id_type_identity().to_string(),
+                actor_id_encoding_version: request
+                    .actor_ref
+                    .actor_id_encoding_version()
+                    .to_string(),
+                canonical_actor_id_key_bytes_base64: base64::engine::general_purpose::STANDARD
+                    .encode(request.actor_ref.canonical_actor_id_key_bytes()),
+                actor_id_hash: request.actor_ref.actor_id_hash().to_string(),
+                epoch,
+            },
+            declaration_owner: owner,
+            actor_abi_identity: request.identity.actor_abi_identity,
+            actor_implementation_identity: request.identity.requested_implementation_identity,
+            method_identity: request.identity.method_identity,
+            arguments_encoding_version: ACTOR_ARGUMENTS_ENCODING_V1.to_string(),
+            deadline: ActorMethodDeadlineFrameHeader {
+                timeout_ms: request.deadline.timeout_ms,
+                expires_at,
+            },
+            cancellation_correlation: cancellation_correlation.clone(),
+        },
+        request.arguments_payload,
+    );
+    let wire = encode_actor_method_frame(&invoke).map_err(|error| {
+        capability_contract::CapabilityError::protocol(
+            "actor.method.invoke",
+            format!("cannot encode Actor invocation: {error}"),
+        )
+    })?;
+    sender
+        .send(concrete::RouterWriterMessage::Binary(wire))
+        .map_err(|_| {
+            capability_contract::CapabilityError::provider_unavailable(
+                "actor.method.invoke",
+                "router writer channel closed",
+            )
+        })?;
+
+    tokio::select! {
+        outcome = lease.receive() => match outcome {
+            Ok(Ok(outcome)) => Ok(outcome),
+            Ok(Err(error)) => Err(capability_contract::CapabilityError::protocol(
+                "actor.method.invoke",
+                format!("Actor owner transport failure {}: {}", error.code, error.message),
+            )),
+            Err(_) => Err(capability_contract::CapabilityError::provider_unavailable(
+                "actor.method.invoke",
+                "Actor invocation response channel closed",
+            )),
+        },
+        _ = parts.cancellation.wait_cancelled() => {
+            let cancel = ActorMethodFrame::Cancel(ActorMethodCancelFrameHeader {
+                schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+                envelope_type: "actor.method.cancel".to_string(),
+                invocation_id,
+                cancellation_correlation,
+                reason: ActorMethodCancelReason::Cancelled,
+            });
+            if let Ok(wire) = encode_actor_method_frame(&cancel) {
+                let _ = sender.send(concrete::RouterWriterMessage::Binary(wire));
+            }
+            Ok(capability_contract::ActorInvocationOutcome::Cancelled(
+                capability_contract::ActorInvocationCancellation::Cancelled,
+            ))
+        }
+        _ = tokio::time::sleep(tokio::time::Duration::from_millis(deadline_timeout_ms)) => {
+            let cancel = ActorMethodFrame::Cancel(ActorMethodCancelFrameHeader {
+                schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+                envelope_type: "actor.method.cancel".to_string(),
+                invocation_id,
+                cancellation_correlation,
+                reason: ActorMethodCancelReason::DeadlineExceeded,
+            });
+            if let Ok(wire) = encode_actor_method_frame(&cancel) {
+                let _ = sender.send(concrete::RouterWriterMessage::Binary(wire));
+            }
+            Ok(capability_contract::ActorInvocationOutcome::Cancelled(
+                capability_contract::ActorInvocationCancellation::DeadlineExceeded,
+            ))
+        }
     }
 }
 

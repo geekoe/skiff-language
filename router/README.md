@@ -146,7 +146,7 @@ Dev reload pointer shape at `dev/services/<storage-projected-service-id>.json`:
   "serviceId": "websocket_fixture",
   "profile": "dev",
   "contractHash": "<contract-hash>",
-  "protocolIdentity": "skiff-service-protocol-v2:sha256:<contract-hash>",
+  "protocolIdentity": "skiff-service-protocol-v3:sha256:<contract-hash>",
   "serviceAssembly": {
     "assemblyIdentity": "skiff-service-assembly-v1:sha256:<assembly-hash>",
     "assemblyPath": "assemblies/services/websocket_fixture/<assembly-hash>.json"
@@ -202,7 +202,7 @@ The Skiff docs define the conceptual envelope shape, not a final wire encoding. 
 
 - internal router-to-runtime transport is JSON messages over WebSocket;
 - runtime registration uses a `runtime.register` message with `runtimeId`, `serviceId`, `revisionId`, required `buildId`, `serviceProtocolIdentity`, and supported `targets`;
-- `runtime.register.serviceProtocolIdentity` accepts only canonical `skiff-service-protocol-v2:sha256:<64 lowercase hex>`; transport versioning is expressed solely by the frame `schemaVersion` (`skiff-runtime-frame-v1`);
+- `runtime.register.serviceProtocolIdentity` accepts only canonical `skiff-service-protocol-v3:sha256:<64 lowercase hex>`; transport versioning is expressed solely by the frame `schemaVersion` (`skiff-runtime-frame-v1`);
 - `runtime.register` may also include `runtimeVersion`, `codeRevisionId`, `artifactIdentity`, `gatewayEntryIdentities`, and `capabilities` for publish introspection;
 - dev and published-version request dispatch require `buildId`; the router chooses a registered runtime by exact `serviceId + buildId + target`. `serviceProtocolIdentity` and `gatewayEntryIdentity` remain additional binding metadata where the current implementation registers or requests them;
 - activation is tracked by `serviceId + serviceProtocolIdentity + target + gatewayEntryIdentity` to an active revision, so multiple live runtime instances of the same revision can share traffic;

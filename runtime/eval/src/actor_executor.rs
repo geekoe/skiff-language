@@ -334,16 +334,45 @@ impl<'a> ActorMethodExecutor<'a> {
         }
     }
 
+    pub fn activate(
+        &self,
+        interpreter: &Interpreter,
+        context: &ProgramExecutionContext<'_>,
+        fence: crate::actor_instance::ActorInstanceFence,
+        bootstrap_encoding_version: &str,
+        bootstrap_payload: &[u8],
+    ) -> Result<ActorInstanceHandle, ActorMethodExecutorError> {
+        let legacy_program;
+        let program = if let Some(target) = context.runtime_assembly_target_if_present() {
+            target.execution_projection().type_view()
+        } else {
+            legacy_program = interpreter.program_projection()?;
+            legacy_program.type_view()
+        };
+        Ok(self
+            .store
+            .activate(crate::actor_instance::ActorActivationRequest {
+                fence,
+                bootstrap_encoding_version,
+                bootstrap_payload,
+                program,
+            })?)
+    }
+
     pub async fn execute(
         &self,
         interpreter: &Interpreter,
         request: ActorMethodExecutionRequest<'_>,
     ) -> Result<Vec<u8>, ActorMethodExecutorError> {
-        let program = interpreter.program_projection()?;
-        let declaration = resolve_actor_declaration(
-            program.type_view(),
-            &request.instance.fence().declaration_owner,
-        )?;
+        let legacy_program;
+        let program = if let Some(target) = request.context.runtime_assembly_target_if_present() {
+            target.execution_projection().type_view()
+        } else {
+            legacy_program = interpreter.program_projection()?;
+            legacy_program.type_view()
+        };
+        let declaration =
+            resolve_actor_declaration(program, &request.instance.fence().declaration_owner)?;
         validate_declaration_fence(declaration, request.instance.fence())?;
         let method = exact_method(
             declaration.public_methods.as_slice(),
@@ -359,11 +388,11 @@ impl<'a> ActorMethodExecutor<'a> {
         let args = decode_arguments(
             request.arguments_payload,
             method,
-            program.type_view(),
+            program,
             &executable_addr,
             &mut heap,
         )?;
-        let field_context = PlanContext::from_type_view(program.type_view(), &executable_addr);
+        let field_context = PlanContext::from_type_view(program, &executable_addr);
         let field_plans = declaration
             .fields
             .iter()
@@ -379,7 +408,10 @@ impl<'a> ActorMethodExecutor<'a> {
             lease,
             field_plans,
         );
-        let context = request.context.with_actor_execution_frame(frame.clone());
+        let context = request
+            .context
+            .clone()
+            .with_actor_execution_frame(frame.clone());
         let value = interpreter
             .call_program_executable(
                 context,
@@ -395,7 +427,7 @@ impl<'a> ActorMethodExecutor<'a> {
         let payload = encode_return(
             &value,
             &method.return_type,
-            program.type_view(),
+            program,
             &executable_addr,
             &mut heap,
         )?;

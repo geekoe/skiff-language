@@ -302,6 +302,7 @@ impl RuntimeHost {
                 ),
                 http_options: self.http_runtime_options.clone(),
                 outbound_requests: Arc::clone(&self.outbound_requests),
+                actor_method_outbound: Arc::clone(&self.actor_method_outbound),
                 spawn_workers: Arc::clone(&self.spawn_workers),
                 telemetry_context: Some(telemetry),
                 router_sender: Some(sender.clone()),

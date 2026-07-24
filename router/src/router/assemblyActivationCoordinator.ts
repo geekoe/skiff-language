@@ -475,7 +475,16 @@ async function snapshotFromRequestActivation(
     environment: request.environment,
     generation: request.expectedGeneration + 1,
     assembly: request.assembly,
-    ingress: new RuntimeAssemblyIngressIndex(assembly.globalIngress)
+    ...(assembly.resolvedDeployments === undefined
+      ? {}
+      : { resolvedDeployments: assembly.resolvedDeployments }),
+    ...(assembly.resolvedContracts === undefined
+      ? {}
+      : { resolvedContracts: assembly.resolvedContracts }),
+    ingress: new RuntimeAssemblyIngressIndex(assembly.globalIngress),
+    ...(assembly.actorMethods === undefined
+      ? {}
+      : { actorMethods: assembly.actorMethods })
   };
 }
 

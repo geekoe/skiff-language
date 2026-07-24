@@ -1,0 +1,3 @@
+test "Actor source compiles through the package test overlay" {
+  assert true
+}

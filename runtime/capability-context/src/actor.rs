@@ -4,8 +4,8 @@ use skiff_runtime_model::runtime_value::ActorRef;
 
 use crate::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
-    ActorRemoveControlRequest, ActorReplaceControlRequest, CapabilityFuture, CapabilityResult,
-    SpawnSubmitControlRequest,
+    ActorInvocationOutcome, ActorInvocationRequest, ActorRemoveControlRequest,
+    ActorReplaceControlRequest, CapabilityFuture, CapabilityResult, SpawnSubmitControlRequest,
 };
 
 pub trait ActorCapabilityApi: Send + Sync {
@@ -51,6 +51,11 @@ pub trait ActorCapabilityApi: Send + Sync {
         request: SpawnSubmitControlRequest,
         args_payload: Vec<u8>,
     ) -> CapabilityFuture<'a, ()>;
+
+    fn invoke_actor<'a>(
+        &'a self,
+        request: ActorInvocationRequest,
+    ) -> CapabilityFuture<'a, ActorInvocationOutcome>;
 }
 
 #[derive(Clone)]
@@ -156,6 +161,13 @@ impl<'a> ActorCapabilityContext<'a> {
     ) -> CapabilityResult<()> {
         self.inner.submit_spawn(request, args_payload).await
     }
+
+    pub async fn invoke_actor(
+        &self,
+        request: ActorInvocationRequest,
+    ) -> CapabilityResult<ActorInvocationOutcome> {
+        self.inner.invoke_actor(request).await
+    }
 }
 
 pub type OwnedActorCapabilityContext = ActorCapabilityContext<'static>;
@@ -204,5 +216,12 @@ impl<'a> ActorClient<'a> {
         args_payload: Vec<u8>,
     ) -> CapabilityResult<()> {
         self.context.submit_spawn(request, args_payload).await
+    }
+
+    pub async fn invoke_actor(
+        &self,
+        request: ActorInvocationRequest,
+    ) -> CapabilityResult<ActorInvocationOutcome> {
+        self.context.invoke_actor(request).await
     }
 }

@@ -102,6 +102,10 @@ path = "tests/test_artifact_identity.rs"
 name = "generated_service_deployment"
 path = "tests/generated_service_deployment.rs"
 
+[[test]]
+name = "actor_dispatch_linking"
+path = "tests/actor_dispatch_linking.rs"
+
 [dependencies]
 skiff-artifact-identity = { path = "../artifact-identity" }
 skiff-artifact-model = { path = "../artifact-model" }
@@ -130,3 +134,5 @@ hex = "0.4"
 sha2 = "0.10"
 skiff-compiler-compiled = { path = "compiled", features = ["test-support"] }
 skiff-compiler-source = { path = "source", features = ["test-support"] }
+skiff-runtime-linked-program = { path = "../runtime/linked-program" }
+skiff-runtime-linker = { path = "../runtime/linker", features = ["test-support"] }

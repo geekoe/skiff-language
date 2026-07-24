@@ -16,6 +16,7 @@ pub struct RuntimeActorNativeMetadata {
     actor_type_identity: String,
     actor_id_type_identity: String,
     actor_abi_identity: String,
+    actor_implementation_identity: String,
 }
 
 impl RuntimeActorNativeMetadata {
@@ -23,11 +24,13 @@ impl RuntimeActorNativeMetadata {
         actor_type_identity: String,
         actor_id_type_identity: String,
         actor_abi_identity: String,
+        actor_implementation_identity: String,
     ) -> Self {
         Self {
             actor_type_identity,
             actor_id_type_identity,
             actor_abi_identity,
+            actor_implementation_identity,
         }
     }
 
@@ -41,6 +44,10 @@ impl RuntimeActorNativeMetadata {
 
     pub fn actor_abi_identity(&self) -> &str {
         &self.actor_abi_identity
+    }
+
+    pub fn actor_implementation_identity(&self) -> &str {
+        &self.actor_implementation_identity
     }
 }
 

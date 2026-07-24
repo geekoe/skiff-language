@@ -333,7 +333,7 @@ describe('router test dispatch control endpoint', () => {
     const manifest = loadRawHttpManifest();
     const operation = manifest.operations[0]!;
     const explicitProtocolIdentity =
-      'skiff-service-protocol-v2:sha256:6666666666666666666666666666666666666666666666666666666666666666';
+      'skiff-service-protocol-v3:sha256:6666666666666666666666666666666666666666666666666666666666666666';
     const activationByServiceOperation = new ActivationLookup();
     activationByServiceOperation.set({
       serviceId: manifest.service.id,

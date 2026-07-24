@@ -88,6 +88,7 @@ pub(crate) fn actor_from_request<'a>(
     activation_identity: Option<&'a ActivationIdentityControl>,
     router_sender: Option<&'a mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     outbound_requests: &'a Arc<OutboundRequestRegistry>,
+    actor_method_outbound: &'a Arc<ActorMethodOutboundRegistry>,
     spawn_workers: &'a Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     cancellation: CancellationToken,
 ) -> eval_capabilities::ActorCapabilityContext<'a> {
@@ -120,6 +121,7 @@ pub(crate) fn actor_from_request<'a>(
         trace_id: context.trace_id().map(str::to_string),
         router_sender: router_sender.cloned(),
         outbound_requests: outbound_requests.clone(),
+        actor_method_outbound: actor_method_outbound.clone(),
         spawn_workers: spawn_workers.clone(),
         cancellation,
     };
@@ -130,6 +132,7 @@ pub(crate) fn actor_from_request<'a>(
 #[derive(Default)]
 pub struct TestActorCapabilityFactory {
     spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
+    actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -154,6 +157,7 @@ impl TestActorCapabilityFactory {
             None,
             router_sender,
             outbound_requests,
+            &self.actor_method_outbound,
             &self.spawn_workers,
             cancellation,
         )

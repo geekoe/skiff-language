@@ -76,7 +76,7 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     await writeJson(mismatched, assemblyPath, assembly());
     await writeJson(mismatched, contractPath, {
       ...contract(),
-      serviceProtocolIdentity: `skiff-service-protocol-v2:sha256:${'c'.repeat(64)}`
+      serviceProtocolIdentity: `skiff-service-protocol-v3:sha256:${'c'.repeat(64)}`
     });
     await expect(loader(mismatched).load({ assemblyIdentity })).rejects.toThrow(
       /identity does not match/
@@ -93,6 +93,64 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     await symlink(outsideAssembly, target);
 
     await expect(loader(root).load({ assemblyIdentity })).rejects.toThrow(/escapes artifactsPath/);
+  });
+
+  it('loads the exact Actor method catalog from package code slots and File IR', async () => {
+    const root = await fixtureRoot();
+    const packageBuildId = `skiff-package-build-v4:sha256:${'a'.repeat(64)}`;
+    const fileIdentity = `skiff-file-ir-v5:sha256:${'b'.repeat(64)}`;
+    const value = {
+      ...assembly(),
+      packageLinkPlan: {
+        codeSlots: [{
+          package: {
+            packageId: 'skiff.run/actors',
+            packageVersion: '1.0.0',
+            packageBuildId,
+            packageLocalAbiIdentity:
+              `skiff-package-local-abi-v4:sha256:${'c'.repeat(64)}`,
+          },
+        }],
+        packageLinks: [],
+      },
+    };
+    const identity = assemblyIdentityFor(value);
+    const withIdentity = { ...value, assemblyIdentity: identity };
+    await writeJson(
+      root,
+      `records/runtime-assemblies/${identityHash(identity)}.json`,
+      withIdentity
+    );
+    await writeJson(root, contractPath, contract());
+    const packageRoot =
+      `records/package-artifacts/skiff~drun~sactors/1.0.0/${identityHash(packageBuildId)}`;
+    await writeJson(root, `${packageRoot}/package.json`, {
+      files: [{ fileIrIdentity: fileIdentity }],
+    });
+    await writeJson(root, `${packageRoot}/file-ir/${identityHash(fileIdentity)}.json`, {
+      actorDeclarations: [{
+        actorAbiIdentity: `skiff-actor-abi-v1:sha256:${'d'.repeat(64)}`,
+        actorImplementationIdentity:
+          `skiff-actor-implementation-v1:sha256:${'e'.repeat(64)}`,
+        abi: { actorName: 'Counter' },
+        methodImplementations: {
+          [`skiff-actor-method-v1:sha256:${'f'.repeat(64)}`]: 0,
+        },
+      }],
+    });
+
+    const loaded = await loader(root).load({ assemblyIdentity: identity });
+    expect(loaded.actorMethods).toContainEqual({
+      declarationOwner: {
+        unit: { kind: 'package', value: 0 },
+        file: { kind: 'loadedFileIndex', value: 0 },
+        actorSymbol: 'Counter',
+      },
+      actorAbiIdentity: `skiff-actor-abi-v1:sha256:${'d'.repeat(64)}`,
+      actorImplementationIdentity:
+        `skiff-actor-implementation-v1:sha256:${'e'.repeat(64)}`,
+      methodIdentity: `skiff-actor-method-v1:sha256:${'f'.repeat(64)}`,
+    });
   });
 });
 
@@ -137,28 +195,27 @@ function assembly(): Record<string, unknown> {
 
 function contract(): Record<string, unknown> {
   return {
-    schemaVersion: 'skiff-service-contract-v2',
+    schemaVersion: 'skiff-service-contract-v3',
     serviceId: 'skiff.run/echo',
     contractVersion: '1.0.0',
     serviceProtocolIdentity: protocolIdentity,
     operations: {},
-    boundarySchema: {},
+    packageTypeRequirements: [],
     diagnosticText: null
   };
 }
 
 function serviceProtocolIdentity(): string {
-  return `skiff-service-protocol-v2:sha256:${sha256Hex(stableStringify({
-    schema: 'skiff-service-protocol-identity-v2',
+  return `skiff-service-protocol-v3:sha256:${sha256Hex(stableStringify({
+    schema: 'skiff-service-protocol-identity-v3',
     serviceId: 'skiff.run/echo',
-    contractVersion: '1.0.0',
     operations: {},
-    boundarySchema: {}
+    packageTypeRequirements: []
   }))}`;
 }
 
 function runtimeAssemblyIdentity(): string {
-  return `skiff-runtime-assembly-v1:sha256:${sha256Hex(stableStringify({
+  return `skiff-runtime-assembly-v1:sha256:${sha256Hex(stableStringify(canonicalAssemblyValue({
     schema: 'skiff-runtime-assembly-identity-v1',
     roots: [],
     resolvedDeployments: [],
@@ -172,7 +229,40 @@ function runtimeAssemblyIdentity(): string {
     serviceBindingTemplates: [],
     activationTemplates: [],
     globalIngress: []
-  }))}`;
+  })))}`;
+}
+
+function assemblyIdentityFor(value: Record<string, unknown>): string {
+  return `skiff-runtime-assembly-v1:sha256:${sha256Hex(stableStringify(canonicalAssemblyValue({
+    schema: 'skiff-runtime-assembly-identity-v1',
+    roots: value.roots,
+    resolvedDeployments: value.resolvedDeployments,
+    resolvedContracts: value.resolvedContracts,
+    resolvedPackages: value.resolvedPackages,
+    packageLinkPlan: value.packageLinkPlan,
+    serviceBindingTemplates: value.serviceBindingTemplates,
+    activationTemplates: value.activationTemplates,
+    globalIngress: value.globalIngress,
+  })))}`;
+}
+
+function canonicalAssemblyValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalAssemblyValue).sort((left, right) => {
+      const leftJson = stableStringify(left);
+      const rightJson = stableStringify(right);
+      return leftJson < rightJson ? -1 : leftJson > rightJson ? 1 : 0;
+    });
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) =>
+          !['packageVersion', 'contractVersion', 'exactVersion'].includes(key))
+        .map(([key, item]) => [key, canonicalAssemblyValue(item)])
+    );
+  }
+  return value;
 }
 
 function identityHash(value: string): string {

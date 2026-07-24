@@ -4,6 +4,7 @@
 //! `skiff_runtime_capability_context`; import them from that crate directly.
 
 mod actor;
+pub(crate) mod actor_method_outbound;
 mod effect_context;
 mod http;
 mod native_projection;

@@ -370,7 +370,7 @@ const BINDING: RuntimeAssemblyIngressBinding = {
   contract: {
     serviceId: 'example/unary',
     contractVersion: '1.0.0',
-    serviceProtocolIdentity: `skiff-service-protocol-v2:sha256:${'d'.repeat(64)}`
+    serviceProtocolIdentity: `skiff-service-protocol-v3:sha256:${'d'.repeat(64)}`
   },
   operationMode: 'unary',
   contractOperationId: OPERATION

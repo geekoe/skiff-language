@@ -76,6 +76,7 @@ pub struct ActorExecutorRequest {
     pub method_identity: ActorMethodIdentity,
     pub arguments_payload: Vec<u8>,
     pub activation_bootstrap: Option<AdmittedActorBootstrap>,
+    pub deadline: skiff_runtime_transport::actor_method::ActorMethodDeadlineFrameHeader,
     pub cancellation_correlation: String,
 }
 
@@ -168,6 +169,7 @@ pub fn prepare_admitted_actor_execution(
         method_identity: input.invoke.method_identity,
         arguments_payload: input.arguments_payload,
         activation_bootstrap: input.activation_bootstrap,
+        deadline: input.invoke.deadline,
         cancellation_correlation: input.invoke.cancellation_correlation,
     })
 }

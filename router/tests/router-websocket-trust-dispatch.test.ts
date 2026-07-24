@@ -25,7 +25,7 @@ import {
 const ASSEMBLY_A = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
 const ASSEMBLY_B = `skiff-runtime-assembly-v1:sha256:${'b'.repeat(64)}`;
 const OPERATION = `skiff-contract-operation-v1:sha256:${'c'.repeat(64)}`;
-const PROTOCOL = `skiff-service-protocol-v2:sha256:${'d'.repeat(64)}`;
+const PROTOCOL = `skiff-service-protocol-v3:sha256:${'d'.repeat(64)}`;
 const HOST = 'chat.localhost';
 const PATH = '/v1/chat';
 const RUNTIME_ID = 'runtime-websocket-a';
@@ -55,9 +55,9 @@ describe('canonical RuntimeAssembly WebSocket registry and dispatcher trust', ()
     register(registry, runtime, ASSEMBLY_A, 7);
     expect(canonicalAssemblyWebSocketIngressIdentity(binding)).toEqual({
       websocketEntryId:
-        'skiff-websocket-entry-v1:sha256:2d87a9614026df910b7efd15c69aa054cf3130a2806bc6bc8d6a23ef3fb1be2c',
+        'skiff-websocket-entry-v1:sha256:c85b1bb033336e0eba3654f911c88bff23839ebb7d15598cd6c380b732380414',
       gatewayEntryIdentity:
-        'skiff-gateway-v1:sha256:2d87a9614026df910b7efd15c69aa054cf3130a2806bc6bc8d6a23ef3fb1be2c'
+        'skiff-gateway-v1:sha256:c85b1bb033336e0eba3654f911c88bff23839ebb7d15598cd6c380b732380414'
     });
 
     const connect = websocketRequest(snapshots.get(), 'connect-ok', 'connect');

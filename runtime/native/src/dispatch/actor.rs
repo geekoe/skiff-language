@@ -46,6 +46,8 @@ impl ActorNativeDispatch {
         let actor_type_identity = actor_metadata.actor_type_identity().to_string();
         let actor_id_type_identity = actor_metadata.actor_id_type_identity().to_string();
         let actor_abi_identity = actor_metadata.actor_abi_identity().to_string();
+        let actor_implementation_identity =
+            actor_metadata.actor_implementation_identity().to_string();
 
         let actor_id =
             native_boundary.to_wire_arg(0, &args[0], &format!("{diagnostic_target} id"), heap)?;
@@ -86,9 +88,7 @@ impl ActorNativeDispatch {
                             activation_identity,
                             actor_key,
                             actor_abi_identity,
-                            actor_implementation_identity: actor_context
-                                .actor_implementation_identity()
-                                .to_string(),
+                            actor_implementation_identity: actor_implementation_identity.clone(),
                             bootstrap_encoding_version: ACTOR_VALUE_ENCODING_VERSION.to_string(),
                         },
                         bootstrap_payload,
@@ -113,9 +113,7 @@ impl ActorNativeDispatch {
                             activation_identity,
                             actor_key,
                             actor_abi_identity,
-                            actor_implementation_identity: actor_context
-                                .actor_implementation_identity()
-                                .to_string(),
+                            actor_implementation_identity,
                             bootstrap_encoding_version: ACTOR_VALUE_ENCODING_VERSION.to_string(),
                         },
                         bootstrap_payload,

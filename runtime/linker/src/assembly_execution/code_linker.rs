@@ -220,7 +220,18 @@ impl<'a> AssemblyCodeLinker<'a> {
                 self.addresses
                     .publication_type_addr(code_slot, module_path, *type_index)?,
             ),
-            LinkedTypeRef::ServiceSymbol { symbol } | LinkedTypeRef::DbObjectSymbol { symbol } => {
+            LinkedTypeRef::ServiceSymbol { symbol } => {
+                // An Actor declaration is its nominal handle type, but deliberately
+                // owns no TypeDescriptor/TypeAddr. Keep that exact symbol for Actor
+                // registry and dispatch validation instead of forcing it through
+                // the ordinary service type table.
+                if self.actor_declaration_for_symbol(code_slot, symbol).is_ok() {
+                    None
+                } else {
+                    Some(self.addresses.local_symbol_type_addr(code_slot, symbol)?)
+                }
+            }
+            LinkedTypeRef::DbObjectSymbol { symbol } => {
                 Some(self.addresses.local_symbol_type_addr(code_slot, symbol)?)
             }
             LinkedTypeRef::PackageSymbol { symbol } => {

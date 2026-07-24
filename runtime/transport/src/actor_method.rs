@@ -10,6 +10,7 @@ use crate::{
 
 pub const ACTOR_ARGUMENTS_ENCODING_V1: &str = "skiff-actor-arguments-v1";
 pub const ACTOR_RETURN_ENCODING_V1: &str = "skiff-actor-return-v1";
+const JAVASCRIPT_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -200,10 +201,22 @@ pub enum ActorMethodFrame {
 
 pub fn encode_actor_method_frame(frame: &ActorMethodFrame) -> Result<Vec<u8>, BinaryFrameError> {
     match frame {
-        ActorMethodFrame::Invoke(header, payload) => encode_binary_frame(header, payload),
-        ActorMethodFrame::Return(header, payload) => encode_binary_frame(header, payload),
-        ActorMethodFrame::Error(header) => encode_binary_frame(header, &[]),
-        ActorMethodFrame::Cancel(header) => encode_binary_frame(header, &[]),
+        ActorMethodFrame::Invoke(header, payload) => {
+            validate_invoke(header).map_err(TransportError::decode)?;
+            encode_binary_frame(header, payload)
+        }
+        ActorMethodFrame::Return(header, payload) => {
+            validate_return(header).map_err(TransportError::decode)?;
+            encode_binary_frame(header, payload)
+        }
+        ActorMethodFrame::Error(header) => {
+            validate_error_header(header).map_err(TransportError::decode)?;
+            encode_binary_frame(header, &[])
+        }
+        ActorMethodFrame::Cancel(header) => {
+            validate_cancel(header).map_err(TransportError::decode)?;
+            encode_binary_frame(header, &[])
+        }
     }
 }
 
@@ -222,40 +235,86 @@ pub fn decode_actor_method_frame(bytes: &[u8]) -> Result<ActorMethodFrame, Binar
         }
         "actor.method.return" => {
             let header: ActorMethodReturnFrameHeader = typed(frame.header)?;
-            validate_common(&header.schema_version, &header.envelope_type, &kind)
-                .map_err(TransportError::decode)?;
-            validate_token(&header.invocation_id, "invocationId")
-                .map_err(TransportError::decode)?;
-            if header.return_encoding_version != ACTOR_RETURN_ENCODING_V1 {
-                return Err(TransportError::decode("unsupported returnEncodingVersion"));
-            }
+            validate_return(&header).map_err(TransportError::decode)?;
             Ok(ActorMethodFrame::Return(header, frame.payload_bytes))
         }
         "actor.method.error" => {
             reject_payload(&frame.payload_bytes, &kind)?;
             let header: ActorMethodErrorFrameHeader = typed(frame.header)?;
-            validate_common(&header.schema_version, &header.envelope_type, &kind)
-                .map_err(TransportError::decode)?;
-            validate_token(&header.invocation_id, "invocationId")
-                .map_err(TransportError::decode)?;
-            validate_error(&header.error).map_err(TransportError::decode)?;
+            validate_error_header(&header).map_err(TransportError::decode)?;
             Ok(ActorMethodFrame::Error(header))
         }
         "actor.method.cancel" => {
             reject_payload(&frame.payload_bytes, &kind)?;
             let header: ActorMethodCancelFrameHeader = typed(frame.header)?;
-            validate_common(&header.schema_version, &header.envelope_type, &kind)
-                .map_err(TransportError::decode)?;
-            validate_token(&header.invocation_id, "invocationId")
-                .map_err(TransportError::decode)?;
-            validate_token(&header.cancellation_correlation, "cancellationCorrelation")
-                .map_err(TransportError::decode)?;
+            validate_cancel(&header).map_err(TransportError::decode)?;
             Ok(ActorMethodFrame::Cancel(header))
         }
         _ => Err(TransportError::decode(format!(
             "invalid actor method frame: unsupported type {kind}"
         ))),
     }
+}
+
+fn validate_invoke(header: &ActorMethodInvokeFrameHeader) -> Result<(), String> {
+    validate_common(
+        &header.schema_version,
+        &header.envelope_type,
+        "actor.method.invoke",
+    )?;
+    validate_token(&header.invocation_id, "invocationId")?;
+    validate_actor_ref(&header.actor_ref)?;
+    validate_owner(&header.declaration_owner)?;
+    validate_identity(
+        header.actor_abi_identity.as_str(),
+        "skiff-actor-abi-v1:sha256",
+    )?;
+    validate_identity(
+        header.actor_implementation_identity.as_str(),
+        "skiff-actor-implementation-v1:sha256",
+    )?;
+    validate_identity(
+        header.method_identity.as_str(),
+        "skiff-actor-method-v1:sha256",
+    )?;
+    if header.arguments_encoding_version != ACTOR_ARGUMENTS_ENCODING_V1 {
+        return Err("unsupported argumentsEncodingVersion".into());
+    }
+    validate_deadline(&header.deadline)?;
+    validate_token(&header.cancellation_correlation, "cancellationCorrelation")
+}
+
+fn validate_return(header: &ActorMethodReturnFrameHeader) -> Result<(), String> {
+    validate_common(
+        &header.schema_version,
+        &header.envelope_type,
+        "actor.method.return",
+    )?;
+    validate_token(&header.invocation_id, "invocationId")?;
+    if header.return_encoding_version != ACTOR_RETURN_ENCODING_V1 {
+        return Err("unsupported returnEncodingVersion".into());
+    }
+    Ok(())
+}
+
+fn validate_error_header(header: &ActorMethodErrorFrameHeader) -> Result<(), String> {
+    validate_common(
+        &header.schema_version,
+        &header.envelope_type,
+        "actor.method.error",
+    )?;
+    validate_token(&header.invocation_id, "invocationId")?;
+    validate_error(&header.error)
+}
+
+fn validate_cancel(header: &ActorMethodCancelFrameHeader) -> Result<(), String> {
+    validate_common(
+        &header.schema_version,
+        &header.envelope_type,
+        "actor.method.cancel",
+    )?;
+    validate_token(&header.invocation_id, "invocationId")?;
+    validate_token(&header.cancellation_correlation, "cancellationCorrelation")
 }
 
 fn typed<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, BinaryFrameError> {
@@ -321,13 +380,16 @@ fn validate_actor_ref(actor_ref: &ActorLogicalRefFrameHeader) -> Result<(), Stri
             return Err(format!("{name} must be non-empty"));
         }
     }
-    if actor_ref.epoch == 0 {
-        return Err("actorRef.epoch must be positive".into());
-    }
+    validate_safe_positive(actor_ref.epoch, "actorRef.epoch")?;
     validate_sha256(&actor_ref.actor_id_hash, "actorRef.actorIdHash")?;
-    base64::engine::general_purpose::STANDARD
+    let decoded = base64::engine::general_purpose::STANDARD
         .decode(&actor_ref.canonical_actor_id_key_bytes_base64)
         .map_err(|_| "actorRef.canonicalActorIdKeyBytesBase64 must be canonical base64")?;
+    if base64::engine::general_purpose::STANDARD.encode(decoded)
+        != actor_ref.canonical_actor_id_key_bytes_base64
+    {
+        return Err("actorRef.canonicalActorIdKeyBytesBase64 must be canonical base64".into());
+    }
     Ok(())
 }
 
@@ -354,19 +416,32 @@ fn validate_owner(owner: &ActorDeclarationOwnerFrameHeader) -> Result<(), String
             return Err("declarationOwner file identity must be non-empty".into());
         }
     }
+    if let ActorOwnerUnitFrameHeader::Package(value) = &owner.unit {
+        validate_safe_integer(*value, "declarationOwner.unit.value")?;
+    }
+    if let ActorOwnerFileFrameHeader::LoadedFileIndex(value) = &owner.file {
+        validate_safe_integer(*value, "declarationOwner.file.value")?;
+    }
     Ok(())
 }
 
 fn validate_deadline(deadline: &ActorMethodDeadlineFrameHeader) -> Result<(), String> {
-    if deadline.timeout_ms == 0 || deadline.expires_at.trim().is_empty() {
+    if deadline.expires_at.trim().is_empty() {
         return Err("deadline timeoutMs must be positive and expiresAt must be non-empty".into());
     }
+    validate_safe_positive(deadline.timeout_ms, "deadline.timeoutMs")?;
     Ok(())
 }
 
 fn validate_error(error: &ActorMethodErrorFramePayload) -> Result<(), String> {
     let actor_ref = match error {
-        ActorMethodErrorFramePayload::ActorUpgradingError { actor_ref, .. } => actor_ref,
+        ActorMethodErrorFramePayload::ActorUpgradingError {
+            actor_ref,
+            retry_after_ms,
+        } => {
+            validate_safe_integer(*retry_after_ms, "error.retryAfterMs")?;
+            actor_ref
+        }
         ActorMethodErrorFramePayload::ActorVersionRejectedError {
             actor_ref,
             requested_implementation_identity,
@@ -386,13 +461,29 @@ fn validate_error(error: &ActorMethodErrorFramePayload) -> Result<(), String> {
             actor_ref,
             current_epoch,
         } => {
-            if *current_epoch == 0 || *current_epoch == actor_ref.epoch {
+            validate_safe_positive(*current_epoch, "error.currentEpoch")?;
+            if *current_epoch == actor_ref.epoch {
                 return Err("currentEpoch must be positive and differ from requested epoch".into());
             }
             actor_ref
         }
     };
     validate_actor_ref(actor_ref)
+}
+
+fn validate_safe_integer(value: u64, name: &str) -> Result<(), String> {
+    if value > JAVASCRIPT_MAX_SAFE_INTEGER {
+        return Err(format!("{name} must be a JavaScript safe integer"));
+    }
+    Ok(())
+}
+
+fn validate_safe_positive(value: u64, name: &str) -> Result<(), String> {
+    validate_safe_integer(value, name)?;
+    if value == 0 {
+        return Err(format!("{name} must be positive"));
+    }
+    Ok(())
 }
 
 fn reject_payload(payload: &[u8], kind: &str) -> Result<(), BinaryFrameError> {
@@ -459,6 +550,24 @@ mod tests {
         let expected = ActorMethodFrame::Invoke(invoke(), vec![1, 2, 3]);
         let wire = encode_actor_method_frame(&expected).unwrap();
         assert_eq!(decode_actor_method_frame(&wire).unwrap(), expected);
+    }
+
+    #[test]
+    fn encoding_invalid_in_memory_headers_fails_closed() {
+        let mut unsafe_epoch = invoke();
+        unsafe_epoch.actor_ref.epoch = JAVASCRIPT_MAX_SAFE_INTEGER + 1;
+        assert!(
+            encode_actor_method_frame(&ActorMethodFrame::Invoke(unsafe_epoch, vec![])).is_err()
+        );
+
+        let mut noncanonical_base64 = invoke();
+        noncanonical_base64
+            .actor_ref
+            .canonical_actor_id_key_bytes_base64 = "AB==".into();
+        assert!(
+            encode_actor_method_frame(&ActorMethodFrame::Invoke(noncanonical_base64, vec![]))
+                .is_err()
+        );
     }
 
     #[test]

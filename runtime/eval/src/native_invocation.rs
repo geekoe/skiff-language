@@ -86,11 +86,28 @@ fn resolve_runtime_native_invocation_in_type_view(
     let resource_owner = (runtime_shared_native_route(binding_key)
         == Some(RuntimeNativeRoute::Resource))
     .then(|| current_addr.unit.clone());
+    // Actor handles are nominal Actor declarations, not ordinary runtime type
+    // descriptors. The Actor dispatcher validates T0 above and returns
+    // RuntimeValue::ActorRef directly, so the generic native boundary must not
+    // try to manufacture a TypeAddr/descriptor for T0. Keep the real argument
+    // plans (T1/T2) and use a detached scalar only for the unused return lane.
+    let actor_plan_call = actor_metadata.as_ref().map(|_| {
+        let mut plan_call = call.clone();
+        plan_call.type_args.insert(
+            "T0".to_string(),
+            LinkedTypeRef::Native {
+                name: "string".to_string(),
+                args: Vec::new(),
+            },
+        );
+        plan_call
+    });
+    let plan_call = actor_plan_call.as_ref().unwrap_or(call);
     let plan = match resolve_runtime_native_call_plan(
         program,
         current_addr,
         env,
-        call,
+        plan_call,
         binding_key,
         &target_name,
     ) {
@@ -192,6 +209,10 @@ fn resolve_actor_native_metadata(
         type_identity(&expected_actor_type)?,
         type_identity(&declaration.actor_id_type)?,
         declaration.actor_abi_identity.as_str().to_string(),
+        declaration
+            .actor_implementation_identity
+            .as_str()
+            .to_string(),
     )))
 }
 

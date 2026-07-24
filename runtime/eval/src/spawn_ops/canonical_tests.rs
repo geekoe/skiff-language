@@ -153,6 +153,17 @@ impl ActorCapabilityApi for RecordingActor {
             Ok(())
         })
     }
+
+    fn invoke_actor<'a>(
+        &'a self,
+        _request: skiff_runtime_capability_context::ActorInvocationRequest,
+    ) -> CapabilityFuture<'a, skiff_runtime_capability_context::ActorInvocationOutcome> {
+        Box::pin(async {
+            Err(CapabilityError::unsupported(
+                "Actor invocation is not under test",
+            ))
+        })
+    }
 }
 
 struct TestResolver {

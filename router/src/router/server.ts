@@ -17,6 +17,10 @@ import { RuntimeEndpoint } from './runtimeEndpoint.js';
 import { RuntimeRegistry } from './runtimeRegistry.js';
 import { RouterActiveAssemblySnapshotStore } from './runtimeAssemblySnapshot.js';
 import { WebSocketGenerationLifecycleRouter } from './webSocketGenerationLifecycleRouter.js';
+import { ActorRuntimeDisconnectController } from './actorRuntimeDisconnectController.js';
+import { ProductionActorMethodRouter } from './productionActorMethodRouter.js';
+import { RuntimeAssemblyActorMethodCatalog } from './runtimeAssemblyActorMethodCatalog.js';
+import { ActorOwnerLeaseIdleController } from './actorOwnerLeaseIdleController.js';
 
 const args = parseArgs({
   options: {
@@ -77,11 +81,56 @@ await activation.store.ensureIndexes();
 const assemblyLoader = new FilesystemRuntimeAssemblySnapshotLoader(config.artifactsPath);
 const registry = new AssemblyRuntimeRegistry(snapshots);
 const runtimeRegistry = new RuntimeRegistry();
+const actorDisconnect = new ActorRuntimeDisconnectController(
+  runtimeRegistry.actorManager()
+);
 const runtimeEndpoint = new RuntimeEndpoint({
   registry: runtimeRegistry,
   assemblyRegistry: registry,
-  bootstrap: runtimeBootstrapForRouterConfig(config)
+  bootstrap: runtimeBootstrapForRouterConfig(config),
+  actorRuntimeDisconnect: actorDisconnect,
 });
+const actorCatalog = new RuntimeAssemblyActorMethodCatalog(snapshots);
+const actorMethods = new ProductionActorMethodRouter({
+    registry: runtimeRegistry,
+    runtimeDirectory: {
+      actorRuntimeCandidates: (serviceId) =>
+        registry.actorRuntimeCandidates(serviceId),
+      runtimeConnection: (runtimeId) => {
+        const ws = registry.connectionForReplica(runtimeId);
+        return ws === undefined ? undefined : { runtimeId, ws };
+      },
+    },
+    disconnectController: actorDisconnect,
+    catalog: actorCatalog,
+    send: (ws, bytes) => ws.send(bytes),
+    ownerLeaseTtlMs: 120_000,
+});
+runtimeEndpoint.setActorMethods(actorMethods);
+let actorIdle: ActorOwnerLeaseIdleController;
+actorIdle = new ActorOwnerLeaseIdleController(
+  runtimeRegistry.actorManager(),
+  {
+    sendIdleEviction: async ({ fence }) => {
+      await actorMethods.evictIdleOwner(fence);
+      await actorIdle.acknowledgeEviction({
+        type: 'actor.owner.idle.evict.ack',
+        fence,
+      });
+    },
+  },
+  { nowMilliseconds: Date.now },
+  60_000
+);
+const actorIdleSweep = setInterval(() => {
+  void actorIdle.sweep().catch((error: unknown) => {
+    console.error({
+      event: 'actor.owner_idle_sweep_error',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+}, 5_000);
+actorIdleSweep.unref();
 const coordinator = new AssemblyActivationCoordinator({
   environment: config.environment,
   stateStore: activation.store,
@@ -156,6 +205,7 @@ console.log(
 );
 
 async function shutdown(): Promise<void> {
+  clearInterval(actorIdleSweep);
   const failures: unknown[] = [];
   for (const close of [
     () => webSocketGateway.close(),

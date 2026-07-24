@@ -17,6 +17,7 @@ use crate::{
 };
 
 use super::{
+    actor_owner_invocations::ActorOwnerInvocationRegistry,
     blob_store::BlobStore,
     file_runtime::FileRuntime,
     request_supervisor::RequestSupervisor,
@@ -25,6 +26,7 @@ use super::{
     websocket_generation::WebSocketGenerationRegistry,
     OutboundRequestRegistry,
 };
+use crate::capability_context::actor_method_outbound::ActorMethodOutboundRegistry;
 
 #[derive(Clone)]
 pub struct RuntimeConfig {
@@ -70,6 +72,8 @@ pub struct RuntimeHost {
     pub(super) telemetry: TelemetryProducer,
     pub(super) telemetry_exporter: Arc<Mutex<Option<TelemetryExporterHandle>>>,
     pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
+    pub(crate) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
+    pub(crate) actor_owner_invocations: Arc<ActorOwnerInvocationRegistry>,
     pub(crate) actor_instances: Arc<ActorInstanceSessionTracker>,
 }
 
@@ -126,6 +130,8 @@ impl RuntimeHost {
             telemetry,
             telemetry_exporter: Arc::new(Mutex::new(None)),
             outbound_requests: Arc::new(OutboundRequestRegistry::default()),
+            actor_method_outbound: Arc::new(ActorMethodOutboundRegistry::default()),
+            actor_owner_invocations: Arc::new(ActorOwnerInvocationRegistry::default()),
             actor_instances: Arc::new(ActorInstanceSessionTracker::new(actor_instance_store)),
         })
     }
@@ -158,6 +164,14 @@ impl RuntimeHost {
     ) -> bool {
         self.actor_instances
             .discard_upgrading_exact(router_session_id, fence)
+    }
+
+    pub(crate) fn discard_actor_exact(
+        &self,
+        router_session_id: &str,
+        fence: &ActorInstanceFence,
+    ) -> bool {
+        self.actor_instances.discard_exact(router_session_id, fence)
     }
 
     pub fn shutdown_actor_instances(&self) -> usize {

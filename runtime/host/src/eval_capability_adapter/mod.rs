@@ -39,6 +39,7 @@ use skiff_runtime_request::{
 };
 
 mod actor;
+mod actor_method_adapter;
 mod assembly_request_adapter;
 mod config;
 mod downcast;
@@ -52,7 +53,9 @@ mod outbound;
 mod request_contexts;
 mod websocket;
 
+use crate::capability_context::actor_method_outbound::ActorMethodOutboundRegistry;
 use actor::{actor, RuntimeOwnedActorParts};
+pub(crate) use actor_method_adapter::{ActorMethodEvalExecution, ActorMethodEvalExecutionInput};
 use config::RuntimeConfigCapabilityContext;
 pub(crate) use downcast::concrete_stream_runtime;
 use downcast::{

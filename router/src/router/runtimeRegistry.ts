@@ -26,6 +26,7 @@ import {
   ProviderUnavailableError,
   ServiceProtocolBoundaryError
 } from './errors.js';
+import type { ActorManager } from '../actor/index.js';
 
 export interface RuntimeRegistryDependencies extends ActorSpawnRuntimeControlOptions {
   actorSpawnControl?: ActorSpawnRuntimeControl;
@@ -210,6 +211,41 @@ export class RuntimeRegistry {
   setInFlightCounter(counter: RuntimeInFlightCounter | undefined): void {
     this.inFlightCounter = counter;
     this.refreshAllRuntimeStates();
+  }
+
+  actorManager(): ActorManager {
+    return this.actorSpawnControl.actorDispatchManager();
+  }
+
+  runtimeConnection(runtimeId: string): RuntimeDispatchRuntimeIdentity | undefined {
+    const registered = this.runtimes.get(runtimeId);
+    if (registered !== undefined && registered.ws.readyState === WebSocket.OPEN) {
+      return { runtimeId, ws: registered.ws };
+    }
+    const capability = Array.from(this.runtimeCapabilitiesByConnection.values())
+      .find((candidate) =>
+        candidate.runtimeId === runtimeId &&
+        candidate.ws.readyState === WebSocket.OPEN
+      );
+    return capability === undefined ? undefined : { runtimeId, ws: capability.ws };
+  }
+
+  actorRuntimeCandidates(serviceId: string): RuntimeDispatchRuntimeIdentity[] {
+    const candidates = new Map<string, RuntimeDispatchRuntimeIdentity>();
+    for (const runtime of this.runtimes.values()) {
+      if (
+        runtime.serviceId === serviceId &&
+        runtime.ws.readyState === WebSocket.OPEN
+      ) {
+        candidates.set(runtime.runtimeId, {
+          runtimeId: runtime.runtimeId,
+          ws: runtime.ws,
+        });
+      }
+    }
+    return Array.from(candidates.values()).sort((left, right) =>
+      Buffer.compare(Buffer.from(left.runtimeId), Buffer.from(right.runtimeId))
+    );
   }
 
   setRuntimeConnectionProvider(provider: RuntimeConnectionProvider | undefined): void {

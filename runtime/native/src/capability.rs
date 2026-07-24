@@ -32,7 +32,6 @@ pub trait NativeConfigCapability {
 
 pub trait NativeActorCapability {
     fn service_id(&self) -> &str;
-    fn actor_implementation_identity(&self) -> &str;
     fn activation_identity(&self) -> Option<&ActivationIdentityControl>;
 
     fn get_or_create_actor<'a>(

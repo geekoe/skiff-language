@@ -287,7 +287,7 @@ describe('runtime protocol fixtures and schemas', () => {
     ).toEqual({
       ok: false,
       error:
-        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v2:sha256:<64 lowercase hex>'
+        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v3:sha256:<64 lowercase hex>'
     });
 
     expect(
@@ -299,7 +299,7 @@ describe('runtime protocol fixtures and schemas', () => {
     ).toEqual({
       ok: false,
       error:
-        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v2:sha256:<64 lowercase hex>'
+        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v3:sha256:<64 lowercase hex>'
     });
 
     expect(
@@ -358,12 +358,12 @@ describe('runtime protocol fixtures and schemas', () => {
     ).toEqual({
       ok: false,
       error:
-        'invalid request.start envelope: serviceProtocolIdentity must be skiff-service-protocol-v2:sha256:<64 lowercase hex>'
+        'invalid request.start envelope: serviceProtocolIdentity must be skiff-service-protocol-v3:sha256:<64 lowercase hex>'
     });
 
     for (const serviceProtocolIdentity of [
-      'skiff-service-protocol-v2:sha256:1111',
-      'skiff-service-protocol-v2:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+      'skiff-service-protocol-v3:sha256:1111',
+      'skiff-service-protocol-v3:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
     ]) {
       expect(
         validateRouterToRuntimeFrameHeader({
@@ -389,8 +389,8 @@ describe('runtime protocol fixtures and schemas', () => {
     const legacyV1 =
       'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111';
     const invalidV2 = [
-      'skiff-service-protocol-v2:sha256:1111',
-      'skiff-service-protocol-v2:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+      'skiff-service-protocol-v3:sha256:1111',
+      'skiff-service-protocol-v3:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
     ];
 
     for (const serviceProtocolIdentity of [legacyV1, ...invalidV2]) {

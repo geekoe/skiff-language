@@ -17,8 +17,10 @@ fn canonicalize_json(value: &mut serde_json::Value) {
             for value in values.iter_mut() {
                 canonicalize_json(value);
             }
-            values
-                .sort_by_key(|value| serde_json::to_string(value).expect("JSON value serializes"));
+            values.sort_by_key(|value| {
+                skiff_canonical_json::canonical_json_bytes(value)
+                    .expect("JSON value serializes canonically")
+            });
         }
         serde_json::Value::Object(fields) => {
             for value in fields.values_mut() {

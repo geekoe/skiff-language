@@ -31,10 +31,30 @@ export interface ActorOwnerTransport {
     header: ActorMethodInvokeFrameHeader;
     payloadBytes: Uint8Array;
   }): void | Promise<void>;
-  markOwnerUpgrading?(input: { fence: ActorUpgradeFence }): void | Promise<void>;
-  discardOldInstance?(input: { fence: ActorUpgradeFence }): void | Promise<void>;
+  activateInitial?(input: {
+    header: ActorMethodInvokeFrameHeader;
+  }):
+    | {
+        ownerRuntimeId: string;
+        ownerLeaseId: string;
+        ownerLeaseExpiresAt: Date;
+      }
+    | Promise<{
+        ownerRuntimeId: string;
+        ownerLeaseId: string;
+        ownerLeaseExpiresAt: Date;
+      }>;
+  markOwnerUpgrading?(input: {
+    fence: ActorUpgradeFence;
+    header: ActorMethodInvokeFrameHeader;
+  }): void | Promise<void>;
+  discardOldInstance?(input: {
+    fence: ActorUpgradeFence;
+    header: ActorMethodInvokeFrameHeader;
+  }): void | Promise<void>;
   activateTarget?(input: {
     transition: ActorUpgradeTransition;
+    header: ActorMethodInvokeFrameHeader;
   }):
     | {
         ownerRuntimeId: string;
@@ -120,6 +140,36 @@ export class ActorMethodDispatcher {
     });
     if (!admitted.ok) {
       if (
+        admitted.rejection.reason === 'OwnerUnavailable' &&
+        this.transport.activateInitial !== undefined
+      ) {
+        const owner = await this.transport.activateInitial({ header });
+        const acquired = await this.actorManager.registryStore().acquireOwnerLease({
+          actorKey,
+          expectedEpoch: header.actorRef.epoch,
+          actorImplementationIdentity: header.actorImplementationIdentity,
+          ownerRuntimeId: owner.ownerRuntimeId,
+          ownerLeaseId: owner.ownerLeaseId,
+          ownerLeaseExpiresAt: owner.ownerLeaseExpiresAt,
+          now: this.now(),
+        });
+        if (acquired.ok) {
+          const markedLive = await this.actorManager.registryStore().markOwnerLive({
+            actorKey,
+            expectedEpoch: header.actorRef.epoch,
+            actorImplementationIdentity: header.actorImplementationIdentity,
+            ownerRuntimeId: owner.ownerRuntimeId,
+            ownerLeaseId: owner.ownerLeaseId,
+            now: this.now(),
+          });
+          if (!markedLive) {
+            throw new Error('new Actor owner lease could not be marked live');
+          }
+          return this.dispatch(header, payloadBytes);
+        }
+        throw new Error(`new Actor owner lease was rejected: ${acquired.reason}`);
+      }
+      if (
         admitted.rejection.reason === 'Upgrading' &&
         header.actorImplementationIdentity ===
           (await this.actorManager.registryStore().find(actorKey))
@@ -127,7 +177,8 @@ export class ActorMethodDispatcher {
       ) {
         const completed = await this.advanceUpgrade(
           actorKey,
-          new Date(header.deadline.expiresAt)
+          new Date(header.deadline.expiresAt),
+          header
         );
         if (completed) {
           const current = await this.actorManager.registryStore().find(actorKey);
@@ -187,19 +238,23 @@ export class ActorMethodDispatcher {
 
   private async advanceUpgrade(
     actorKey: ReturnType<typeof makeActorKey>,
-    deadlineAt: Date
+    deadlineAt: Date,
+    header: ActorMethodInvokeFrameHeader
   ): Promise<boolean> {
     const key = actorLogicalKey(actorKey);
     const existing = this.upgrades.get(key);
     if (existing !== undefined) return waitUntilDeadline(existing, deadlineAt);
-    const upgrade = this.runUpgrade(actorKey).finally(() => {
+    const upgrade = this.runUpgrade(actorKey, header).finally(() => {
       if (this.upgrades.get(key) === upgrade) this.upgrades.delete(key);
     });
     this.upgrades.set(key, upgrade);
     return waitUntilDeadline(upgrade, deadlineAt);
   }
 
-  private async runUpgrade(actorKey: ReturnType<typeof makeActorKey>): Promise<boolean> {
+  private async runUpgrade(
+    actorKey: ReturnType<typeof makeActorKey>,
+    header: ActorMethodInvokeFrameHeader
+  ): Promise<boolean> {
     const store = this.actorManager.registryStore();
     const fence = await store.actorUpgradeFence(actorKey);
     if (
@@ -211,14 +266,15 @@ export class ActorMethodDispatcher {
       return false;
     }
     try {
-      await this.transport.markOwnerUpgrading({ fence });
+      await this.transport.markOwnerUpgrading({ fence, header });
       const drained = await store.waitForActorUpgradeDrain({ fence });
       if (drained !== 'Drained') return false;
-      await this.transport.discardOldInstance({ fence });
+      await this.transport.discardOldInstance({ fence, header });
       const completed = await store.completeActorUpgrade({ fence, now: this.now() });
       if (!completed.ok) return false;
       const target = await this.transport.activateTarget({
         transition: completed.transition,
+        header,
       });
       const acquired = await store.acquireOwnerLease({
         actorKey: completed.transition.actorKey,

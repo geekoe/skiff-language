@@ -8,7 +8,7 @@ const CONTRACT_OPERATION_IDENTITY_PATTERN =
 const DEPLOYMENT_ARTIFACT_IDENTITY_PATTERN =
   /^skiff-deployment-artifact-v1:sha256:[0-9a-f]{64}$/;
 const SERVICE_PROTOCOL_IDENTITY_PATTERN =
-  /^skiff-service-protocol-v2:sha256:[0-9a-f]{64}$/;
+  /^skiff-service-protocol-v3:sha256:[0-9a-f]{64}$/;
 
 export type RuntimeAssemblyIngressProtocol = 'http' | 'webSocket';
 
@@ -46,6 +46,20 @@ export interface LoadedRuntimeAssembly {
   resolvedDeployments?: readonly RuntimeAssemblyDeploymentRef[];
   resolvedContracts?: readonly RuntimeAssemblyContractRef[];
   globalIngress: readonly RuntimeAssemblyIngressBinding[];
+  actorMethods?: readonly RuntimeAssemblyActorMethod[];
+}
+
+export interface RuntimeAssemblyActorMethod {
+  declarationOwner: {
+    unit: { kind: 'service' } | { kind: 'package'; value: number };
+    file:
+      | { kind: 'loadedFileIndex'; value: number }
+      | { kind: 'fileIrIdentity'; value: string };
+    actorSymbol: string;
+  };
+  actorAbiIdentity: string;
+  actorImplementationIdentity: string;
+  methodIdentity: string;
 }
 
 export interface RuntimeAssemblySnapshotLoader {
@@ -80,6 +94,7 @@ export interface RouterActiveAssemblySnapshot {
   resolvedDeployments?: readonly RuntimeAssemblyDeploymentRef[];
   resolvedContracts?: readonly RuntimeAssemblyContractRef[];
   ingress: RuntimeAssemblyIngressIndex;
+  actorMethods?: readonly RuntimeAssemblyActorMethod[];
 }
 
 export class RouterActiveAssemblySnapshotStore {
@@ -147,7 +162,10 @@ export async function snapshotFromCommittedActivation(
     ...(assembly.resolvedContracts === undefined
       ? {}
       : { resolvedContracts: assembly.resolvedContracts }),
-    ingress: new RuntimeAssemblyIngressIndex(assembly.globalIngress)
+    ingress: new RuntimeAssemblyIngressIndex(assembly.globalIngress),
+    ...(assembly.actorMethods === undefined
+      ? {}
+      : { actorMethods: assembly.actorMethods })
   };
 }
 
@@ -328,11 +346,11 @@ function decodeContractOperationModes(
       'contractVersion',
       'serviceProtocolIdentity',
       'operations',
-      'boundarySchema',
+      'packageTypeRequirements',
       'diagnosticText'
     ], label);
-    if (contract.schemaVersion !== 'skiff-service-contract-v2') {
-      throw new Error(`${label}.schemaVersion must be skiff-service-contract-v2`);
+    if (contract.schemaVersion !== 'skiff-service-contract-v3') {
+      throw new Error(`${label}.schemaVersion must be skiff-service-contract-v3`);
     }
     const ref: RuntimeAssemblyContractRef = {
       serviceId: requiredString(contract, 'serviceId'),
