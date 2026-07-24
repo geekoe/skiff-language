@@ -19,8 +19,8 @@ use crate::{
 /// The one expected-type plan for an ordinary value crossing a service boundary.
 ///
 /// The plan is compiled only from a pinned `ContractTypeRef`, its owning boundary schema and the
-/// canonical WebSocket shape owner. Runtime/executable descriptors are deliberately absent. The
-/// detached matcher and both canonical codecs consume the same compiled `RuntimeTypePlan`.
+/// canonical HTTP/WebSocket shape owners. Runtime/executable descriptors are deliberately absent.
+/// The detached matcher and both canonical codecs consume the same compiled `RuntimeTypePlan`.
 pub struct ServiceValuePlan<'contract> {
     contract_type: &'contract ContractTypeRef,
     runtime_type: RuntimeTypePlan,

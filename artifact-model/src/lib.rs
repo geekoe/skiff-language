@@ -21,6 +21,7 @@ pub mod effects;
 pub mod executable;
 pub mod executable_target;
 pub mod file_ir;
+pub mod http_boundary;
 pub mod metadata;
 pub mod native_signature;
 pub mod package_artifact;

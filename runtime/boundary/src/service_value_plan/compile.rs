@@ -82,6 +82,17 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
         name: &str,
         arguments: &[ContractTypeRef],
     ) -> Result<RuntimeTypePlan, ServiceLinkableMaterializationError> {
+        if let Some(http_type) =
+            skiff_artifact_model::http_boundary::canonical_http_boundary_type(name)
+        {
+            if !arguments.is_empty() {
+                return invalid_contract_plan(format!(
+                    "builtin {name} expects 0 argument(s), got {}",
+                    arguments.len()
+                ));
+            }
+            return self.compile(&http_type);
+        }
         if let Some(builtin) = canonical_websocket_shape_spec().contract_builtin_named(name) {
             if arguments.len() != builtin.context_arity() {
                 return invalid_contract_plan(format!(

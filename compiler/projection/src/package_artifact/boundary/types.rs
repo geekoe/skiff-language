@@ -276,6 +276,12 @@ fn classify_native(name: &str, argument_count: usize) -> Result<(), BoundaryUnav
             | "Duration" | "Bytes" | "bytes" | "Json" | "JsonObject",
             0,
         )
+        | (
+            skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE
+            | skiff_artifact_model::http_boundary::HTTP_RESPONSE_TYPE
+            | skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE,
+            0,
+        )
         | ("Array", 1)
         | ("Map", 2)
         | ("std.websocket.WebSocketIngressEvent" | "std.websocket.WebSocketConnectResult", 1) => {
@@ -285,6 +291,9 @@ fn classify_native(name: &str, argument_count: usize) -> Result<(), BoundaryUnav
         (
             "Array"
             | "Map"
+            | skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE
+            | skiff_artifact_model::http_boundary::HTTP_RESPONSE_TYPE
+            | skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE
             | "std.websocket.WebSocketIngressEvent"
             | "std.websocket.WebSocketConnectResult",
             _,

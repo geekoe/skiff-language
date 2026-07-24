@@ -180,6 +180,116 @@ fn websocket_boundary() -> PayloadBoundary {
     PayloadBoundary::external_untrusted(PayloadBoundaryKind::WebsocketRequest)
 }
 
+#[test]
+fn canonical_http_value_plans_preserve_exact_detached_fields() {
+    let schema = BTreeMap::new();
+    let request_type =
+        ContractTypeRef::builtin(skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE);
+    let response_type =
+        ContractTypeRef::builtin(skiff_artifact_model::http_boundary::HTTP_RESPONSE_TYPE);
+    let stream_type = ContractTypeRef::builtin(
+        skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE,
+    );
+    let request = ServiceValuePlan::compile(&request_type, &schema).unwrap();
+    let response = ServiceValuePlan::compile(&response_type, &schema).unwrap();
+    let stream = ServiceValuePlan::compile(&stream_type, &schema).unwrap();
+
+    let mut caller_heap = RequestHeap::default();
+    let request_wire = json!({
+        "method": "POST",
+        "url": "https://example.test/items?id=7",
+        "path": "/items",
+        "query": [{"name": "id", "value": "7"}],
+        "headers": [{"name": "content-type", "value": "application/octet-stream"}],
+        "body": {"__skiffBytesBase64": "AQID"}
+    });
+    let request_value = request
+        .decode_json_value(&request_wire, &mut caller_heap)
+        .unwrap();
+    assert_eq!(
+        request
+            .encode_json_value(&request_value, &mut caller_heap)
+            .unwrap(),
+        request_wire
+    );
+    let request_contract = detached_plan(BoundaryValueOwner::Caller);
+    let request_materializer =
+        ServiceLinkableContractPlan::new(&request_type, &schema, &request_contract).unwrap();
+    let mut provider_heap = RequestHeap::default();
+    let provider_request = request_materializer
+        .materialize(
+            &request_value,
+            &caller_heap,
+            &mut provider_heap,
+            detached_scope(BoundaryValueOwner::Caller),
+            &FailClosedServiceLinkableCapabilityHooks,
+        )
+        .unwrap();
+    caller_heap
+        .set_object_field(
+            request_value.as_heap_handle().unwrap(),
+            "method".to_string(),
+            RuntimeValue::String("DELETE".to_string()),
+        )
+        .unwrap();
+    assert_eq!(
+        request
+            .encode_json_value(&provider_request, &mut provider_heap)
+            .unwrap(),
+        request_wire,
+        "provider request must be detached from caller heap mutation"
+    );
+
+    let response_wire = json!({
+        "status": 201,
+        "headers": [{"name": "x-result", "value": "created"}],
+        "body": {"__skiffBytesBase64": "BAUG"}
+    });
+    let response_value = response
+        .decode_json_value(&response_wire, &mut caller_heap)
+        .unwrap();
+    assert_eq!(
+        response
+            .encode_json_value(&response_value, &mut caller_heap)
+            .unwrap(),
+        response_wire
+    );
+
+    for event in [
+        json!({
+            "tag": "start",
+            "status": 200,
+            "headers": [{"name": "content-type", "value": "application/octet-stream"}]
+        }),
+        json!({"tag": "chunk", "value": {"__skiffBytesBase64": "BwgJ"}}),
+        json!({"tag": "end"}),
+    ] {
+        let value = stream.decode_json_value(&event, &mut caller_heap).unwrap();
+        assert_eq!(
+            stream.encode_json_value(&value, &mut caller_heap).unwrap(),
+            event
+        );
+    }
+
+    for malformed in [
+        json!({"method": "GET", "url": "/", "path": "/", "query": [], "headers": []}),
+        json!({"status": 200, "headers": [], "body": {"capability": "socket"}}),
+        json!({"tag": "end", "capability": "file"}),
+    ] {
+        assert!(
+            request
+                .decode_json_value(&malformed, &mut caller_heap)
+                .is_err()
+                && response
+                    .decode_json_value(&malformed, &mut caller_heap)
+                    .is_err()
+                && stream
+                    .decode_json_value(&malformed, &mut caller_heap)
+                    .is_err()
+        );
+    }
+}
+
 fn assert_json_binary_round_trip(
     plan: &ServiceValuePlan<'_>,
     expected: &Value,

@@ -330,6 +330,77 @@ fn websocket_ingress_generic_types_reject_wrong_arity() {
     ));
 }
 
+#[test]
+fn canonical_http_ingress_types_are_boundary_available_and_exact() {
+    let signature = PackageCallableSignature {
+        parameters: vec![PackageCallableParameter {
+            name: "request".to_string(),
+            ty: PackageTypeRef::Local {
+                local_type: TypeRefIr::native(
+                    skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE,
+                ),
+            },
+        }],
+        return_type: PackageTypeRef::Local {
+            local_type: TypeRefIr::native(skiff_artifact_model::http_boundary::HTTP_RESPONSE_TYPE),
+        },
+        throw_types: Vec::new(),
+        may_suspend: false,
+    };
+    let projection = project_boundary_callable(
+        "api",
+        &signature,
+        &safe_facts(),
+        &empty_runtime_requirements(),
+        &[],
+    )
+    .unwrap();
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = projection
+    else {
+        panic!("canonical HTTP handler must be boundary available")
+    };
+    assert!(matches!(
+        &operation_contract.parameters[0].ty,
+        ContractTypeRef::Builtin { name, arguments }
+            if name == skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE
+                && arguments.is_empty()
+    ));
+    assert!(matches!(
+        &operation_contract.return_value.ty,
+        ContractTypeRef::Builtin { name, arguments }
+            if name == skiff_artifact_model::http_boundary::HTTP_RESPONSE_TYPE
+                && arguments.is_empty()
+    ));
+}
+
+#[test]
+fn http_stream_event_is_available_but_arbitrary_native_handles_remain_rejected() {
+    let projection = project_boundary_callable(
+        "api",
+        &signature(TypeRefIr::native(
+            skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE,
+        )),
+        &safe_facts(),
+        &empty_runtime_requirements(),
+        &[],
+    )
+    .unwrap();
+    assert!(matches!(
+        projection,
+        BoundaryCallableProjection::Available { .. }
+    ));
+
+    for native in ["Socket", "FileHandle", "std.db.Connection"] {
+        assert_reasons(
+            signature(TypeRefIr::native(native)),
+            safe_facts(),
+            &[BoundaryUnavailableReason::NativeAdapterUnavailable],
+        );
+    }
+}
+
 fn assert_reasons(
     signature: PackageCallableSignature,
     facts: CallableSemanticFacts,
