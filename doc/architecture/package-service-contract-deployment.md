@@ -121,11 +121,11 @@ PackageSchemaIndex
   }
 ```
 
-`stableSchemaKey`是owner Package内的canonical nominal key。显式公开命名类型使用其canonical public API
-path；closure-only类型使用typed frontend在声明identity上分配的package-local canonical key。该key不得来自
-源码文件路径、遍历顺序、display string或某个ServiceContract的发现路径。匿名discriminator branch不是
-独立named type，没有自己的key；它只作为owner named union descriptor的一部分。closure-only类型若后来以
-public path公开，属于canonical key变化并产生新的类型identity；工具不得猜测rename或自动兼容。
+第一版所有进入package/service boundary closure的命名类型都必须在owner Package的`api.yml`中显式公开，
+`stableSchemaKey`就是其canonical public API path。未公开的内部命名类型不能作为operation参数、返回值、
+字段闭包或其它boundary payload；compiler必须fail closed，不能用源码文件路径、模块路径、遍历顺序、
+display string或某个ServiceContract的发现路径生成隐藏稳定键。匿名discriminator branch不是独立named
+type，没有自己的key；它只作为owner named union descriptor的一部分。
 
 第一版Package boundary schema graph必须无递归环；用户递归record本来就不是SchemaClosed。projection在计算
 identity前对所有named-type引用建图并拒绝self-cycle或SCC。随后按拓扑序计算
@@ -135,8 +135,8 @@ label、PackageBuildId、service id、nameability、publicPath和deployment信�
 
 `PackageSchemaIndexIdentity`只标识某个PackageArtifact的完整schema目录，其canonical preimage是packageId加
 按stableSchemaKey排序的`(stableSchemaKey, PackageSchemaTypeId, publicPath?, nameability)`列表。它可因无关
-类型、公开路径或nameability变化而改变，但不进入ServiceProtocolIdentity。公开可命名类型和closure-only
-类型使用同一逐类型identity域；index中的`nameability`只决定源码能否直接命名。
+类型、公开路径或nameability变化而改变，但不进入ServiceProtocolIdentity。第一版index中的boundary
+named types都必须是`PublicNameable`；`ClosureOnly`保留为未来模型枚举值，当前projection不得生成。
 
 同一类型内容在不同Package build中不重复生成新的类型身份；Artifact store可以按
 `PackageSchemaTypeId`去重和解析单个type record，并按`PackageSchemaIndexIdentity`去重index。

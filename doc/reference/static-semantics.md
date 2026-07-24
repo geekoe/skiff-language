@@ -258,10 +258,10 @@ service id、service version label和provider implementation build不能重新�
 ServiceContract operation与其精确Package schema requirements materialize为同一Package类型视图，不生成
 service-owned nominal type。
 
-未进入 public API graph 的 declarations 可在内部通过 `root.*` 使用；它们不能作为外部源码可写
-public name，但可以在 explicit public root 的边界形状需要时进入 ABI / schema closure。Public root
-引用到的 named type 会自动进入 schema closure；这些 closure-only named type 不会自动成为外部源码
-可写 public name。
+未进入 public API graph 的 declarations 可在内部通过 `root.*` 使用，但第一版不能进入ABI/schema
+boundary closure。Public operation或public type字段引用到的named type必须也在owner Package的
+`api.yml`中显式公开；否则projection fail closed。compiler不得从内部模块路径、文件路径、遍历序号或
+发现路径为它生成隐藏的boundary identity。
 
 remote callable 必须按 source identity 解析，不能按短名或字符串后缀匹配。同一 public path 下 derived operation name 重复是 compile / publish error。
 
@@ -298,7 +298,7 @@ helper 若使用 `emit`，其 effect metadata 必须标记 `emits T`，并且只
 type 字段图、跨服务 payload、跨请求 / 入库 / 落盘 payload，以及平台 schema 标记的边界 payload。
 
 schema closure由逐类型`PackageSchemaTypeRecord`闭合。每个命名root以`PackageSchemaTypeId`引用owner
-Package中的canonical descriptor；descriptor引用的closure-only类型仍属于同一或其精确依赖Package。
+Package中的canonical descriptor；descriptor引用的每个named child也必须是其owner Package的显式public type。
 ServiceContract只记录实际可达的package/type ids，不记录整包schema index identity，也不复制字段定义。
 缺type record、owner/key/identity不匹配或依赖闭包不完整都不是“结构相同即可”的兼容情形，必须fail closed。
 

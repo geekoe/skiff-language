@@ -176,8 +176,9 @@ boundary schema closure 所需类型。
 Public root 引用到的 named types 会自动进入 ABI / schema closure，但不会自动成为外部源码可写的
 public name。外部源码可写名字只来自 public API graph 中显式声明的 public path。
 
-类型owner始终是Package。Package为public nameable与closure-only named types生成逐类型
-content-addressed record、`PackageSchemaTypeId`和当前artifact的schema index。Service projection只选择
+类型owner始终是Package。第一版只有在owner Package的`api.yml`中显式公开的named types才能进入boundary
+closure，并生成逐类型content-addressed record、`PackageSchemaTypeId`和当前artifact的schema index。
+Service projection只选择
 remote operations并引用这些Package类型，不复制descriptor，也不把它们重写成service-owned类型。依赖
 service暴露的类型在源码中仍按其owner Package的API规则解析。schema index identity只用于枚举某个
 PackageArtifact，不进入service protocol；protocol只包含operations实际可达的type ids。
