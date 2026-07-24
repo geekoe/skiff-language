@@ -69,13 +69,14 @@ registry entry 保存 bootstrap 值，只用于实例激活。registry 不是持
 - 同一 identity 同时至多一个 live 实例，materialize 在单一 owner runtime 上。
 - 实例在首个调用到达时从 bootstrap 激活。
 - 不同 actor 实例可以由不同 executor 或线程并行执行；同一实例固定在一个单线程 actor executor 上，不允许多个 OS 线程同时访问它的字段。
-- 同一实例的多个成员方法是并发协程。一个方法在同步代码段中独占 executor；到达 stream next、异步 service call、异步 send、timer、显式 yield 等 suspension point 时，其他方法可以执行。恢复后的方法必须假设 actor 字段已经变化。
+- 同一实例的多个成员方法是并发协程。一个方法在同步代码段中独占 executor；stream next、异步 service call、timer 等潜在 suspension point 只有在运行时实际等待时才释放执行权，此时其他方法可以执行。恢复后的方法必须假设 actor 字段已经变化。
+- `connection.send` 只把消息同步写入本地发送队列，不等待网络或对端确认，因此不是 suspension point，也不提供送达或 exactly-once 保证。
 - 调用是同步的：调用方挂起等待返回。调用方所在 runtime 不需要拥有实例；路由是位置透明的。
 - 实例状态的演化不写回 registry；逐出后重新激活回到 bootstrap。
 
-没有 suspension point 的同步片段天然不会与同实例的其他方法交替执行，因此适合短同步裁决。runtime 不提供同实例字段的多线程共享内存语义，也不要求业务使用 mutex 或 atomic。没有 suspension point 的长循环会阻塞该实例的所有其他方法；runtime 应提供显式 yield、连续执行预算和 watchdog。
+没有 suspension point 的同步片段天然不会与同实例的其他方法交替执行，因此适合短同步裁决。runtime 不提供同实例字段的多线程共享内存语义，也不要求业务使用 mutex 或 atomic。没有 suspension point 的长同步方法会阻塞该实例的所有其他方法，直到返回、失败或被连续执行预算/watchdog终止；runtime 不在任意指令之间自动抢占，也不提供显式 `yield`。
 
-长生命周期成员方法是合法的，只要它通过异步 IO、stream next 或显式 yield 周期性让出 executor。例如正在消费 LLM stream 的方法可以与 `stop` 并发：
+长生命周期成员方法是合法的，只要它通过异步 IO、stream next 等真实等待周期性释放执行权。例如正在消费 LLM stream 的方法可以与 `stop` 并发：
 
 ```skiff
 actor ActiveTurn id string {
@@ -100,7 +101,7 @@ impl ActiveTurn {
 }
 ```
 
-`stream.next()` 是 suspension point，因而 `stop` 可以在 `run` 等待 provider 时推进 generation。generation 不是平台隐式插入的事务机制；它是业务在跨 suspension point 保持假设时使用的普通 actor 字段。没有跨 suspension point 的方法通常不需要 generation。
+`stream.next()` 是潜在 suspension point：下一项已经缓冲时立即返回且不释放执行权，尚未到达时才挂起。因此 `stop` 可以在 `run` 实际等待 provider 时推进 generation。编译器仍将包含该操作的方法标记为 `maySuspend`，因为是否等待是运行时事实。generation 不是平台隐式插入的事务机制；它是业务在跨 suspension point 保持假设时使用的普通 actor 字段。没有跨 suspension point 的方法通常不需要 generation。
 
 编译器可以诊断“方法在 suspension 前读取 actor 字段、恢复后继续依赖旧值”的明显模式，但不尝试证明并发程序正确。外部副作用跨 suspension point 时仍需由业务提供幂等、去重或补偿。
 
@@ -120,7 +121,7 @@ actor 的协程并发只隔离单个实例。actor 不是跨实体业务锁；�
 
 1. 第一个携带不同 implementation identity 的调用原子地把 live incarnation 标记为 `upgrading`，并指定目标 implementation。
 2. `upgrading` 关闭新调用 admission，避免持续流量使旧实例永远无法退出。目标 implementation 的触发调用可以短暂等待；未在 deadline 内完成切换则收到可重试的 `ActorUpgradingError`。
-3. 已执行的旧方法运行到最近的 suspension point、显式 yield 或正常返回。runtime 在协程恢复前检查 incarnation 状态与 epoch；已被替换的方法以 `ActorIncarnationReplacedError` 结束。
+3. 已执行的旧方法运行到最近一次真实挂起或正常返回；没有挂起点的长同步方法由连续执行预算和 watchdog 限制。runtime 在协程恢复前检查 incarnation 状态与 epoch；已被替换的方法以 `ActorIncarnationReplacedError` 结束。
 4. active method 清零后销毁旧实例、推进 epoch，并在目标 version 的 runtime 上从 bootstrap 创建新实例。旧内存状态不保存、不复制。
 5. 新 incarnation 激活后，只接受匹配其 implementation identity 的调用。后续旧 implementation 请求以 `ActorVersionRejectedError` 拒绝，不透明转发给新代码。
 
