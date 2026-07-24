@@ -158,28 +158,7 @@ pub(super) fn validate_native_callable_semantics_registry(
                 .ok_or_else(|| {
                     format!("native callable semantics entry {binding_key} has no runtime route")
                 })?;
-        let route_matches = match (required_context, route) {
-            (NativeRequiredContext::Actor, RuntimeNativeRoute::Actor)
-            | (NativeRequiredContext::File, RuntimeNativeRoute::File)
-            | (NativeRequiredContext::HttpClient, RuntimeNativeRoute::Http)
-            | (NativeRequiredContext::HttpResponseStream, RuntimeNativeRoute::Http)
-            | (NativeRequiredContext::Websocket, RuntimeNativeRoute::Websocket)
-            | (NativeRequiredContext::Telemetry, RuntimeNativeRoute::Telemetry)
-            | (NativeRequiredContext::Resource, RuntimeNativeRoute::Resource)
-            | (NativeRequiredContext::None, RuntimeNativeRoute::Bytes)
-            | (NativeRequiredContext::None, RuntimeNativeRoute::Json)
-            | (NativeRequiredContext::None, RuntimeNativeRoute::NativeRegistry)
-            | (NativeRequiredContext::Time, RuntimeNativeRoute::Time) => true,
-            // Date.now is synchronously backed by the registry, but still requires
-            // the invocation layer to provide the audited Time context.
-            (NativeRequiredContext::Time, RuntimeNativeRoute::NativeRegistry)
-                if binding_key == "core.date.now" =>
-            {
-                true
-            }
-            _ => false,
-        };
-        if !route_matches {
+        if !native_route_matches_required_context(binding_key, required_context, route) {
             return Err(format!(
                 "native callable semantics entry {binding_key} has runtime parity mismatch: context {required_context:?}, route {route:?}"
             ));
@@ -196,6 +175,46 @@ pub(super) fn validate_native_callable_semantics_registry(
     }
 
     Ok(())
+}
+
+pub(super) fn native_route_matches_required_context(
+    binding_key: &str,
+    required_context: NativeRequiredContext,
+    route: RuntimeNativeRoute,
+) -> bool {
+    if matches!(
+        binding_key,
+        "std.http.request.headers" | "std.http.request.cookie"
+    ) {
+        return required_context == NativeRequiredContext::None
+            && route == RuntimeNativeRoute::Http;
+    }
+
+    if NativeRequiredContext::for_binding_key(binding_key) != Some(required_context) {
+        return false;
+    }
+
+    match (required_context, route) {
+        (NativeRequiredContext::Actor, RuntimeNativeRoute::Actor)
+        | (NativeRequiredContext::File, RuntimeNativeRoute::File)
+        | (NativeRequiredContext::HttpClient, RuntimeNativeRoute::Http)
+        | (NativeRequiredContext::HttpResponseStream, RuntimeNativeRoute::Http)
+        | (NativeRequiredContext::Websocket, RuntimeNativeRoute::Websocket)
+        | (NativeRequiredContext::Telemetry, RuntimeNativeRoute::Telemetry)
+        | (NativeRequiredContext::Resource, RuntimeNativeRoute::Resource)
+        | (NativeRequiredContext::None, RuntimeNativeRoute::Bytes)
+        | (NativeRequiredContext::None, RuntimeNativeRoute::Json)
+        | (NativeRequiredContext::None, RuntimeNativeRoute::NativeRegistry)
+        | (NativeRequiredContext::Time, RuntimeNativeRoute::Time) => true,
+        // Date.now is synchronously backed by the registry, but still requires
+        // the invocation layer to provide the audited Time context.
+        (NativeRequiredContext::Time, RuntimeNativeRoute::NativeRegistry)
+            if binding_key == "core.date.now" =>
+        {
+            true
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn validate_receiver_callable_semantics_registry(
