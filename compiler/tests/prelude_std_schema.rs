@@ -135,6 +135,48 @@ fn builtin_types_reach_the_package_boundary_projection() {
 }
 
 #[test]
+fn imported_http_types_reach_unary_and_stream_boundary_projection() {
+    let temp = TestDir::new("skiff-compiler", "imported-http-boundary-types");
+    temp.write(
+        "package.yml",
+        "id: example.com/http-boundary\nversion: 1.0.0\n",
+    );
+    temp.write("api.yml", "handle: main.handle\nstream: main.stream\n");
+    temp.write(
+        "main.skiff",
+        r#"import std
+
+function handle(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return std.http.noContent()
+}
+
+function stream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit(std.http.streamChunk(request.body))
+  emit(std.http.streamEnd())
+  return null
+}
+"#,
+    );
+
+    let project =
+        compile_package_project(temp.path()).expect("imported HTTP boundary source should compile");
+    for public_name in ["handle", "stream"] {
+        let PackageLocalAbiSymbol::Callable { callable_id, .. } =
+            &project.package.artifact.package_local_abi.public_symbols[public_name]
+        else {
+            panic!("{public_name} must be a canonical package callable")
+        };
+        let projection = &project.package.artifact.boundary_projections[callable_id];
+        if let BoundaryCallableProjection::Unavailable { reasons } = projection {
+            assert!(
+                !reasons.contains(&BoundaryUnavailableReason::UnsupportedBoundaryType),
+                "{public_name} must admit its imported HTTP types before independent semantic eligibility closes: {reasons:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn callback_type_is_explicitly_boundary_unavailable() {
     let temp = TestDir::new("skiff-compiler", "callback-boundary-package");
     temp.write("package.yml", "id: example.com/callbacks\nversion: 1.0.0\n");
