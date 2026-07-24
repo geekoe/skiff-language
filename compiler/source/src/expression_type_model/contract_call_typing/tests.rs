@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use compiler_input_model::{PackageCompilePolicy, PublicationApiSpec};
 use skiff_artifact_identity::{
@@ -8,12 +11,13 @@ use skiff_artifact_model::{
     BoundaryCancellationContract, BoundaryStreamContract, ContractTypeRef, PackageTypeRef,
     ServiceSymbolRef, TypeRefIr,
 };
-use skiff_compiler_input::ResolvedContractDependency;
+use skiff_compiler_input::{CompilerPlatformSources, ResolvedContractDependency};
 
 use crate::{
     build_package_from_parsed_sources_with_dependency_analysis,
     contract_dependency_test_fixture::{contract_fixture, requirement},
     parsed_sources::parse_publication_sources,
+    prelude_registry::initialize_prelude_registry,
     source_graph::CompilerSourceFile,
     CompileParsedPackageSourcesInput, ExpressionKey, ExpressionOwnerKey, PackageSourceModel,
     ResolvedCallTarget, ResolvedTypeRef, SourceDependencyAnalysisInput, TypeResolutionContext,
@@ -285,7 +289,90 @@ fn may_suspend_unary_contract_call_uses_the_ordinary_source_call_form() {
 }
 
 #[test]
-fn unsupported_generic_and_stream_call_forms_fail_source_typing() {
+fn server_stream_contract_call_exposes_builtin_items_to_for() {
+    let mut streaming = callable_contract("example.streaming");
+    let operation = streaming.operations.values_mut().next().unwrap();
+    operation.contract.stream = BoundaryStreamContract::ServerStream {
+        item_type: ContractTypeRef::builtin("string"),
+        item_value_plan: operation.contract.return_value.value_plan.clone(),
+    };
+    assign_service_contract_identities(&mut streaming).unwrap();
+    let dependencies = SourceDependencyAnalysisInput::new(
+        Vec::new(),
+        [
+            ResolvedContractDependency::validated(requirement("streaming", &streaming), streaming)
+                .unwrap(),
+        ],
+    )
+    .unwrap();
+
+    build_model(
+        r#"
+            function consume(value: string) -> void {}
+
+            function entry(input: streaming.User) -> void {
+                for event in streaming/submit(input) {
+                    consume(event)
+                }
+            }
+        "#,
+        &dependencies,
+    )
+    .expect("server-stream contract call should have canonical Stream<string> source type");
+}
+
+#[test]
+fn server_stream_contract_call_preserves_nominal_item_identity() {
+    let mut streaming = callable_contract("example.streaming");
+    let operation = streaming.operations.values_mut().next().unwrap();
+    operation.contract.stream = BoundaryStreamContract::ServerStream {
+        item_type: operation.contract.return_value.ty.clone(),
+        item_value_plan: operation.contract.return_value.value_plan.clone(),
+    };
+    assign_service_contract_identities(&mut streaming).unwrap();
+    let dependencies = SourceDependencyAnalysisInput::new(
+        Vec::new(),
+        [
+            ResolvedContractDependency::validated(requirement("streaming", &streaming), streaming)
+                .unwrap(),
+        ],
+    )
+    .unwrap();
+
+    build_model(
+        r#"
+            function entry(input: streaming.User) -> void {
+                for event in streaming/submit(input) {
+                    streaming/submit(event)
+                }
+            }
+        "#,
+        &dependencies,
+    )
+    .expect("server-stream item should retain its ContractTypeId");
+
+    let error = build_model(
+        r#"
+            function consume(value: string) -> void {}
+
+            function entry(input: streaming.User) -> void {
+                for event in streaming/submit(input) {
+                    consume(event)
+                }
+            }
+        "#,
+        &dependencies,
+    )
+    .expect_err("contract nominal stream item must not flow into an incompatible consumer")
+    .to_string();
+    assert!(
+        error.contains("argument 1 type mismatch"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn contract_stream_call_rejects_source_type_arguments_and_unsupported_semantics() {
     let dependencies = dependencies(&[("payments", "example.payments")]);
     let generic_error = build_model(
         r#"
@@ -311,25 +398,54 @@ fn unsupported_generic_and_stream_call_forms_fail_source_typing() {
     assign_service_contract_identities(&mut streaming).unwrap();
     let streaming_dependencies = SourceDependencyAnalysisInput::new(
         Vec::new(),
+        [ResolvedContractDependency::validated(
+            requirement("streaming", &streaming),
+            streaming.clone(),
+        )
+        .unwrap()],
+    )
+    .unwrap();
+    let generic_stream_error = build_model(
+        r#"
+            function entry(input: streaming.User) -> void {
+                for event in streaming/submit<streaming.User>(input) {}
+            }
+        "#,
+        &streaming_dependencies,
+    )
+    .expect_err("server stream contract operations do not expose source generics")
+    .to_string();
+    assert!(
+        generic_stream_error.contains("does not accept source type arguments"),
+        "unexpected error: {generic_stream_error}"
+    );
+
+    let operation = streaming.operations.values_mut().next().unwrap();
+    operation.contract.stream = BoundaryStreamContract::Unsupported {
+        reason: skiff_artifact_model::BoundaryFeatureUnavailableReason::LanguageUnsupported,
+    };
+    assign_service_contract_identities(&mut streaming).unwrap();
+    let unsupported_dependencies = SourceDependencyAnalysisInput::new(
+        Vec::new(),
         [
             ResolvedContractDependency::validated(requirement("streaming", &streaming), streaming)
                 .unwrap(),
         ],
     )
     .unwrap();
-    let stream_error = build_model(
+    let unsupported_error = build_model(
         r#"
             function entry(input: streaming.User) -> void {
                 streaming/submit(input)
             }
         "#,
-        &streaming_dependencies,
+        &unsupported_dependencies,
     )
-    .expect_err("server stream descriptor cannot use the unary expression form")
+    .expect_err("unsupported stream semantics must remain fail closed")
     .to_string();
     assert!(
-        stream_error.contains("stream contract unsupported by unary source calls"),
-        "unexpected error: {stream_error}"
+        unsupported_error.contains("uses unsupported stream semantics"),
+        "unexpected error: {unsupported_error}"
     );
 }
 
@@ -560,6 +676,13 @@ fn build_model(
     source: &str,
     dependency_analysis: &SourceDependencyAnalysisInput,
 ) -> Result<PackageSourceModel, crate::SourceCompileError> {
+    let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("workspace root should resolve");
+    let platform_sources = CompilerPlatformSources::new(&platform_root)
+        .expect("workspace platform sources should load");
+    initialize_prelude_registry(&platform_sources).expect("prelude registry should initialize");
     let source = CompilerSourceFile::parse(
         "api.skiff".into(),
         "api".to_string(),
