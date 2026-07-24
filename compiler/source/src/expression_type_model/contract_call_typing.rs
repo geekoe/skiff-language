@@ -191,9 +191,13 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
         call: &ResolvedContractCall<'_>,
         diagnostics: &mut Vec<String>,
     ) -> Option<(ResolvedTypeRef, PackageTypeRef)> {
-        let projected = match package_type_ref_from_validated_contract_ref(
-            &call.operation.contract.return_value.ty,
-        ) {
+        let return_type = match &call.operation.contract.stream {
+            BoundaryStreamContract::ServerStream { item_type, .. } => item_type,
+            BoundaryStreamContract::Unary | BoundaryStreamContract::Unsupported { .. } => {
+                &call.operation.contract.return_value.ty
+            }
+        };
+        let projected = match package_type_ref_from_validated_contract_ref(return_type) {
             Ok(projected) => projected,
             Err(error) => {
                 diagnostics.push(format!(
@@ -202,12 +206,25 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
                 return None;
             }
         };
-        match resolved_contract_type(
-            &call.operation.contract.return_value.ty,
-            &call.alias,
-            call.contract,
-        ) {
-            Ok(resolved) => Some((resolved, projected)),
+        match resolved_contract_type(return_type, &call.alias, call.contract) {
+            Ok(resolved) => Some(match call.operation.contract.stream {
+                BoundaryStreamContract::ServerStream { .. } => (
+                    ResolvedTypeRef {
+                        source_text: format!("Stream<{}>", resolved.source_text),
+                        ir: skiff_artifact_model::TypeRefIr::Native {
+                            name: "Stream".to_string(),
+                            args: vec![resolved.ir],
+                        },
+                    },
+                    PackageTypeRef::Container {
+                        name: "Stream".to_string(),
+                        arguments: vec![projected],
+                    },
+                ),
+                BoundaryStreamContract::Unary | BoundaryStreamContract::Unsupported { .. } => {
+                    (resolved, projected)
+                }
+            }),
             Err(error) => {
                 diagnostics.push(error);
                 None
@@ -246,9 +263,9 @@ fn operation_shape_diagnostics(
             "contract call `{path}` uses an error contract unsupported by source calls"
         ));
     }
-    if !matches!(operation.stream, BoundaryStreamContract::Unary) {
+    if matches!(operation.stream, BoundaryStreamContract::Unsupported { .. }) {
         diagnostics.push(format!(
-            "contract call `{path}` uses a stream contract unsupported by unary source calls"
+            "contract call `{path}` uses unsupported stream semantics"
         ));
     }
     if !matches!(operation.callbacks, BoundaryCallbackContract::None) {
