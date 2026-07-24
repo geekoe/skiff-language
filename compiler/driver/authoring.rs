@@ -124,7 +124,8 @@ fn build_package_after_platform_context_guard(
     read_optional_platform_std(store, &mut available)?;
     let input = PackageCompileInput::new(platform_sources, &package, &aliases, &package_id)
         .with_canonical_dependencies(&dependencies, &contracts)
-        .with_available_canonical_packages(&available);
+        .with_available_canonical_packages(&available)
+        .with_canonical_artifact_store(store);
     let service_root = root.join("service.yml").is_file();
     let (published, service_data, service_api_receipt) = if service_root {
         let service = read_service_package_root(root)?;

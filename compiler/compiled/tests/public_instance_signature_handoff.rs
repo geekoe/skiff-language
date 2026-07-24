@@ -108,6 +108,7 @@ fn public_instance_exact_signature_reaches_package_local_abi() {
         package_version: "1.0.0",
         projection: projection.view(),
         package_requirements: Vec::new(),
+        resolved_package_schemas: &[],
         contract_requirements: vec![requirement],
         service_requirements: Vec::new(),
         service_call_refs: Vec::new(),

@@ -5,8 +5,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
-    AbiAliasId, AbiInterfaceId, AbiTypeId, ActorMetadataIr, CallableSemanticFacts, DbMetadataIr,
-    FileIrUnit, TypeRefIr,
+    AbiAliasId, AbiInterfaceId, AbiTypeId, ActorMetadataIr, CallableSemanticFacts,
+    ContractTypeNameability, DbMetadataIr, FileIrUnit, PackageArtifact, PackageBuildId,
+    PackageLocalAbiIdentity, PackageRequirement, PackageSchemaIndex, PackageSchemaIndexRef,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, TypeRefIr,
 };
 use skiff_compiler_core::source_role::PublicationSourceRole;
 
@@ -18,6 +20,214 @@ pub use package_callable_signatures::{
     canonical_package_public_path, DuplicateProjectionPackageCallableSignature,
     ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
 };
+
+/// Store-verified schema facts for one exact package dependency binding.
+///
+/// The compiler driver owns filesystem access and constructs this value only
+/// after resolving a canonical PackageArtifact schema. Projection receives
+/// immutable DTOs and cannot reopen or infer schema records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPackageSchema {
+    alias: String,
+    package_id: String,
+    exact_version: String,
+    package_build_id: PackageBuildId,
+    expected_local_abi: PackageLocalAbiIdentity,
+    index: PackageSchemaIndex,
+    records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ResolvedPackageSchemaError {
+    #[error("resolved package schema binding {alias} has empty alias")]
+    EmptyAlias { alias: String },
+    #[error(
+        "resolved package schema binding {alias} owner mismatch: binding {package_id}, index {index_package_id}"
+    )]
+    IndexOwnerMismatch {
+        alias: String,
+        package_id: String,
+        index_package_id: String,
+    },
+    #[error(
+        "resolved package schema binding {alias} entry {stable_schema_key} is not an api.yml public named type"
+    )]
+    NonPublicNamedType {
+        alias: String,
+        stable_schema_key: String,
+    },
+    #[error(
+        "resolved package schema binding {alias} entry {stable_schema_key} has no exact type record"
+    )]
+    MissingTypeRecord {
+        alias: String,
+        stable_schema_key: String,
+    },
+    #[error(
+        "resolved package schema binding {alias} entry {stable_schema_key} does not match its type record"
+    )]
+    TypeRecordMismatch {
+        alias: String,
+        stable_schema_key: String,
+    },
+    #[error("resolved package schema binding {alias} contains a record absent from its index")]
+    ExtraTypeRecord { alias: String },
+    #[error("resolved package schema binding {alias} does not match exact requirement: {message}")]
+    RequirementMismatch { alias: String, message: String },
+    #[error(
+        "resolved package schema binding {alias} does not match canonical artifact: {message}"
+    )]
+    ArtifactMismatch { alias: String, message: String },
+}
+
+impl ResolvedPackageSchema {
+    pub fn new(
+        alias: String,
+        package_id: String,
+        exact_version: String,
+        package_build_id: PackageBuildId,
+        expected_local_abi: PackageLocalAbiIdentity,
+        index: PackageSchemaIndex,
+        records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    ) -> Result<Self, ResolvedPackageSchemaError> {
+        if alias.is_empty() {
+            return Err(ResolvedPackageSchemaError::EmptyAlias { alias });
+        }
+        if index.package_id != package_id {
+            return Err(ResolvedPackageSchemaError::IndexOwnerMismatch {
+                alias,
+                package_id,
+                index_package_id: index.package_id,
+            });
+        }
+        for (stable_schema_key, entry) in &index.types {
+            if entry.public_path.as_deref() != Some(stable_schema_key.as_str())
+                || entry.nameability != ContractTypeNameability::PublicNameable
+            {
+                return Err(ResolvedPackageSchemaError::NonPublicNamedType {
+                    alias,
+                    stable_schema_key: stable_schema_key.clone(),
+                });
+            }
+            let record = records.get(&entry.package_schema_type_id).ok_or_else(|| {
+                ResolvedPackageSchemaError::MissingTypeRecord {
+                    alias: alias.clone(),
+                    stable_schema_key: stable_schema_key.clone(),
+                }
+            })?;
+            if record.package_id != package_id
+                || record.stable_schema_key != *stable_schema_key
+                || record.package_schema_type_id != entry.package_schema_type_id
+            {
+                return Err(ResolvedPackageSchemaError::TypeRecordMismatch {
+                    alias,
+                    stable_schema_key: stable_schema_key.clone(),
+                });
+            }
+        }
+        if records.len() != index.types.len() {
+            return Err(ResolvedPackageSchemaError::ExtraTypeRecord { alias });
+        }
+        Ok(Self {
+            alias,
+            package_id,
+            exact_version,
+            package_build_id,
+            expected_local_abi,
+            index,
+            records,
+        })
+    }
+
+    pub fn alias(&self) -> &str {
+        &self.alias
+    }
+
+    pub fn package_id(&self) -> &str {
+        &self.package_id
+    }
+
+    pub fn exact_version(&self) -> &str {
+        &self.exact_version
+    }
+
+    pub fn package_build_id(&self) -> &PackageBuildId {
+        &self.package_build_id
+    }
+
+    pub fn expected_local_abi(&self) -> &PackageLocalAbiIdentity {
+        &self.expected_local_abi
+    }
+
+    pub fn index(&self) -> &PackageSchemaIndex {
+        &self.index
+    }
+
+    pub fn records(&self) -> &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord> {
+        &self.records
+    }
+
+    pub fn public_type(
+        &self,
+        stable_schema_key: &str,
+    ) -> Option<(&PackageSchemaTypeId, &PackageSchemaTypeRecord)> {
+        let entry = self.index.types.get(stable_schema_key)?;
+        let record = self.records.get(&entry.package_schema_type_id)?;
+        Some((&entry.package_schema_type_id, record))
+    }
+
+    pub fn validate_exact_binding(
+        &self,
+        requirement: &PackageRequirement,
+        artifact: &PackageArtifact,
+    ) -> Result<(), ResolvedPackageSchemaError> {
+        if self.alias != requirement.alias
+            || self.package_id != requirement.package_id
+            || self.exact_version != requirement.exact_version
+            || self.expected_local_abi != requirement.expected_local_abi
+        {
+            return Err(ResolvedPackageSchemaError::RequirementMismatch {
+                alias: self.alias.clone(),
+                message: format!(
+                    "schema {}@{} ABI {} versus requirement {}={}@{} ABI {}",
+                    self.package_id,
+                    self.exact_version,
+                    self.expected_local_abi,
+                    requirement.alias,
+                    requirement.package_id,
+                    requirement.exact_version,
+                    requirement.expected_local_abi
+                ),
+            });
+        }
+        if artifact.package_id != self.package_id
+            || artifact.package_version != self.exact_version
+            || artifact.package_build_id != self.package_build_id
+            || artifact.package_local_abi.local_abi_identity != self.expected_local_abi
+            || artifact.package_schema_index
+                != (PackageSchemaIndexRef {
+                    package_id: self.index.package_id.clone(),
+                    package_schema_index_identity: self.index.package_schema_index_identity.clone(),
+                })
+        {
+            return Err(ResolvedPackageSchemaError::ArtifactMismatch {
+                alias: self.alias.clone(),
+                message: format!(
+                    "schema {}@{} build {} ABI {} does not match PackageArtifact {}@{} build {} ABI {}",
+                    self.package_id,
+                    self.exact_version,
+                    self.package_build_id,
+                    self.expected_local_abi,
+                    artifact.package_id,
+                    artifact.package_version,
+                    artifact.package_build_id,
+                    artifact.package_local_abi.local_abi_identity
+                ),
+            });
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ProjectionInput {
@@ -846,4 +1056,129 @@ impl ConfigRequirementDependencyStepProjection {
 pub struct ProjectionFileArtifactSource {
     pub unit: FileIrUnit,
     pub source: ProjectionSourceMetadata,
+}
+
+#[cfg(test)]
+mod resolved_package_schema_tests {
+    use super::*;
+    use serde_json::json;
+    use skiff_artifact_model::{
+        ContractTypeDescriptor, PackageSchemaCanonicalDescriptor, PackageSchemaIndexEntry,
+    };
+
+    fn schema(
+        public_path: Option<&str>,
+        nameability: ContractTypeNameability,
+    ) -> Result<ResolvedPackageSchema, ResolvedPackageSchemaError> {
+        let type_id = PackageSchemaTypeId::new("type:user");
+        ResolvedPackageSchema::new(
+            "models".to_string(),
+            "example.com/models".to_string(),
+            "1.2.3".to_string(),
+            PackageBuildId::new("build"),
+            PackageLocalAbiIdentity::new("abi"),
+            PackageSchemaIndex {
+                package_id: "example.com/models".to_string(),
+                package_schema_index_identity: "index".into(),
+                types: BTreeMap::from([(
+                    "api.User".to_string(),
+                    PackageSchemaIndexEntry {
+                        package_schema_type_id: type_id.clone(),
+                        public_path: public_path.map(str::to_string),
+                        nameability,
+                    },
+                )]),
+            },
+            BTreeMap::from([(
+                type_id.clone(),
+                PackageSchemaTypeRecord {
+                    package_id: "example.com/models".to_string(),
+                    stable_schema_key: "api.User".to_string(),
+                    package_schema_type_id: type_id,
+                    canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                        type_params: Vec::new(),
+                        descriptor: ContractTypeDescriptor::Record {
+                            fields: BTreeMap::new(),
+                        },
+                    },
+                },
+            )]),
+        )
+    }
+
+    #[test]
+    fn exposes_only_exact_public_schema_records() {
+        let schema = schema(Some("api.User"), ContractTypeNameability::PublicNameable).unwrap();
+        let (type_id, record) = schema.public_type("api.User").unwrap();
+        assert_eq!(type_id, &record.package_schema_type_id);
+        assert_eq!(schema.alias(), "models");
+        assert_eq!(schema.package_id(), "example.com/models");
+        assert_eq!(schema.exact_version(), "1.2.3");
+    }
+
+    #[test]
+    fn rejects_boundary_schema_without_api_public_path() {
+        let error = schema(None, ContractTypeNameability::ClosureOnly).unwrap_err();
+        assert!(matches!(
+            error,
+            ResolvedPackageSchemaError::NonPublicNamedType { .. }
+        ));
+    }
+
+    #[test]
+    fn exact_binding_rejects_wrong_abi_and_build() {
+        let schema = schema(Some("api.User"), ContractTypeNameability::PublicNameable).unwrap();
+        let artifact = serde_json::from_value::<PackageArtifact>(json!({
+            "schemaVersion": "skiff-package-artifact-v2",
+            "packageId": "example.com/models",
+            "packageVersion": "1.2.3",
+            "packageBuildId": "wrong-build",
+            "files": [],
+            "staticResources": [],
+            "packageLocalAbi": { "localAbiIdentity": "abi", "publicSymbols": {} },
+            "packageSchemaIndex": {
+                "packageId": "example.com/models",
+                "packageSchemaIndexIdentity": "index"
+            },
+            "packageSchemaTypeRecords": {
+                "type:user": {
+                    "packageId": "example.com/models",
+                    "packageSchemaTypeId": "type:user"
+                }
+            },
+            "implementationLinks": {},
+            "callableLinks": {},
+            "packageRequirements": [],
+            "contractRequirements": [],
+            "serviceRequirements": [],
+            "runtimeRequirements": {
+                "config": [],
+                "resources": [],
+                "runtimeCapabilities": []
+            },
+            "callableSemanticFacts": {},
+            "boundaryProjections": {},
+            "serviceCallRefs": []
+        }))
+        .unwrap();
+        let requirement = PackageRequirement {
+            alias: "models".to_string(),
+            package_id: "example.com/models".to_string(),
+            exact_version: "1.2.3".to_string(),
+            expected_local_abi: PackageLocalAbiIdentity::new("abi"),
+        };
+        assert!(matches!(
+            schema.validate_exact_binding(&requirement, &artifact),
+            Err(ResolvedPackageSchemaError::ArtifactMismatch { .. })
+        ));
+
+        let wrong_abi = PackageRequirement {
+            expected_local_abi: PackageLocalAbiIdentity::new("wrong-abi"),
+            ..requirement
+        };
+        assert!(matches!(
+            schema.validate_exact_binding(&wrong_abi, &artifact),
+            Err(ResolvedPackageSchemaError::RequirementMismatch { .. })
+        ));
+    }
 }

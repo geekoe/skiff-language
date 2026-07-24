@@ -30,3 +30,4 @@ pub use skiff_compiler_contract::{
     ServiceApiVisibility, ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
 };
 pub use skiff_compiler_emission::package_artifact::PublishedPackageArtifact;
+pub use skiff_compiler_projection_input::{ResolvedPackageSchema, ResolvedPackageSchemaError};

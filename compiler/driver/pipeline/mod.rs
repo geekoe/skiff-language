@@ -16,6 +16,8 @@ use skiff_compiler_projection::package_artifact::{
     project_compiled_package_artifact, PackageArtifactProjectionInput,
 };
 use skiff_compiler_projection_input::PublicationResourceProjectionInput;
+use skiff_compiler_projection_input::ResolvedPackageSchema;
+use skiff_deployment::storage::CanonicalArtifactStore;
 
 use crate::{
     input::{PackageCompileInput, PackageDependency, PublicationResourceInput},
@@ -64,11 +66,18 @@ pub fn compile_package(
         projection.view().file_ir_units(),
         input.available_packages,
     )?;
+    let resolved_package_schemas = exact_resolved_package_schemas(
+        &package_requirements,
+        input.available_packages,
+        input.resolved_package_schemas(),
+        input.canonical_artifact_store(),
+    )?;
     let projected = project_compiled_package_artifact(PackageArtifactProjectionInput {
         package_id: &package_id,
         package_version: &package_version,
         projection: projection.view(),
         package_requirements,
+        resolved_package_schemas: &resolved_package_schemas,
         contract_requirements,
         service_requirements,
         service_call_refs,
@@ -79,6 +88,98 @@ pub fn compile_package(
         &projected,
         &file_ir_units,
     )?)
+}
+
+fn exact_resolved_package_schemas(
+    requirements: &[PackageRequirement],
+    available_artifacts: &[PackageArtifact],
+    available_schemas: &[ResolvedPackageSchema],
+    store: Option<&CanonicalArtifactStore>,
+) -> Result<Vec<ResolvedPackageSchema>, PackageCompileError> {
+    requirements
+        .iter()
+        .map(|requirement| {
+            let matches = available_schemas
+                .iter()
+                .filter(|schema| {
+                    schema.alias() == requirement.alias
+                        && schema.package_id() == requirement.package_id
+                        && schema.exact_version() == requirement.exact_version
+                })
+                .collect::<Vec<_>>();
+            if matches.len() > 1 {
+                return Err(package_schema_input_error(format!(
+                    "exact package requirement {}={}@{} has duplicate resolved schemas",
+                    requirement.alias, requirement.package_id, requirement.exact_version
+                )));
+            }
+            let artifact = available_artifacts
+                .iter()
+                .find(|artifact| {
+                    artifact.package_id == requirement.package_id
+                        && artifact.package_version == requirement.exact_version
+                        && artifact.package_local_abi.local_abi_identity
+                            == requirement.expected_local_abi
+                })
+                .ok_or_else(|| {
+                    package_schema_input_error(format!(
+                        "resolved schema {}={}@{} has no exact canonical PackageArtifact binding",
+                        requirement.alias, requirement.package_id, requirement.exact_version
+                    ))
+                })?;
+            validate_package_artifact_identities(artifact).map_err(|error| {
+                package_schema_input_error(format!(
+                    "resolved schema {}={}@{} PackageArtifact identity validation failed: {error}",
+                    requirement.alias, requirement.package_id, requirement.exact_version
+                ))
+            })?;
+            let resolved_from_store;
+            let schema = if let Some(schema) = matches.first() {
+                *schema
+            } else {
+                let store = store.ok_or_else(|| {
+                    package_schema_input_error(format!(
+                        "exact package requirement {}={}@{} has no resolved schema or canonical store resolver",
+                        requirement.alias, requirement.package_id, requirement.exact_version
+                    ))
+                })?;
+                let resolved = store
+                    .resolve_package_artifact_schema(artifact)
+                    .map_err(|error| {
+                        package_schema_input_error(format!(
+                            "exact package requirement {}={}@{} schema resolution failed: {error}",
+                            requirement.alias,
+                            requirement.package_id,
+                            requirement.exact_version
+                        ))
+                    })?;
+                let records = resolved
+                    .records
+                    .iter()
+                    .map(|(type_id, record)| (type_id.clone(), record.as_ref().clone()))
+                    .collect();
+                resolved_from_store = ResolvedPackageSchema::new(
+                    requirement.alias.clone(),
+                    artifact.package_id.clone(),
+                    artifact.package_version.clone(),
+                    artifact.package_build_id.clone(),
+                    artifact.package_local_abi.local_abi_identity.clone(),
+                    resolved.index.as_ref().clone(),
+                    records,
+                )
+                .map_err(|error| package_schema_input_error(error.to_string()))?;
+                &resolved_from_store
+            };
+            schema
+                .validate_exact_binding(requirement, artifact)
+                .map_err(|error| package_schema_input_error(error.to_string()))?;
+            Ok(schema.clone())
+        })
+        .collect()
+}
+
+fn package_schema_input_error(message: String) -> PackageCompileError {
+    PackageCompileError::PackageSchemaInput { message }
 }
 
 #[derive(Debug)]

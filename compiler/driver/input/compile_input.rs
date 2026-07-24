@@ -3,6 +3,8 @@ use std::{collections::BTreeMap, ops::Deref};
 use skiff_artifact_model::PackageArtifact;
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_input_model::{PackageCompileInputMetadata, PackageContractCompileDependency};
+use skiff_compiler_projection_input::ResolvedPackageSchema;
+use skiff_deployment::storage::CanonicalArtifactStore;
 
 use crate::input::{PackageDependency, PackageSourceInput};
 
@@ -19,6 +21,8 @@ type CanonicalPackageCompileInput<'a> =
 pub struct PackageCompileInput<'a> {
     platform_sources: &'a CompilerPlatformSources,
     canonical: CanonicalPackageCompileInput<'a>,
+    resolved_package_schemas: &'a [ResolvedPackageSchema],
+    canonical_artifact_store: Option<&'a CanonicalArtifactStore>,
 }
 
 impl<'a> PackageCompileInput<'a> {
@@ -31,6 +35,8 @@ impl<'a> PackageCompileInput<'a> {
         Self {
             platform_sources,
             canonical: CanonicalPackageCompileInput::new(package, package_aliases, package_id),
+            resolved_package_schemas: &[],
+            canonical_artifact_store: None,
         }
     }
 
@@ -57,6 +63,36 @@ impl<'a> PackageCompileInput<'a> {
             .canonical
             .with_available_canonical_packages(available_packages);
         self
+    }
+
+    /// Supplies store-verified schema records for exact dependency bindings.
+    ///
+    /// The driver selects only bindings that are actually required after File
+    /// IR closes compiler-owned dependencies such as `std`.
+    pub fn with_resolved_package_schemas(
+        mut self,
+        resolved_package_schemas: &'a [ResolvedPackageSchema],
+    ) -> Self {
+        self.resolved_package_schemas = resolved_package_schemas;
+        self
+    }
+
+    pub fn resolved_package_schemas(&self) -> &'a [ResolvedPackageSchema] {
+        self.resolved_package_schemas
+    }
+
+    /// Gives the compiler driver read-only access to canonical dependency
+    /// records. Projection crates never receive this filesystem owner.
+    pub fn with_canonical_artifact_store(
+        mut self,
+        canonical_artifact_store: &'a CanonicalArtifactStore,
+    ) -> Self {
+        self.canonical_artifact_store = Some(canonical_artifact_store);
+        self
+    }
+
+    pub(crate) fn canonical_artifact_store(&self) -> Option<&'a CanonicalArtifactStore> {
+        self.canonical_artifact_store
     }
 }
 

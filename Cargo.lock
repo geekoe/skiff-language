@@ -2305,8 +2305,10 @@ name = "skiff-compiler-projection-input"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "skiff-artifact-model",
  "skiff-compiler-core",
+ "thiserror",
 ]
 
 [[package]]
