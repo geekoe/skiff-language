@@ -22,7 +22,6 @@ use skiff_artifact_model::{
 use super::*;
 
 mod artifact_reference;
-mod canonical_compile_contract;
 mod file_ir;
 mod framing;
 mod golden;
@@ -36,7 +35,7 @@ mod runtime_program;
 mod semantic;
 
 #[test]
-fn service_protocol_identity_hash_accepts_only_canonical_v2_identity() {
+fn service_protocol_identity_hash_accepts_only_canonical_v3_identity() {
     let hash = "a".repeat(64);
     let identity = format!("{SERVICE_PROTOCOL_IDENTITY_PREFIX}:{hash}");
     assert_eq!(

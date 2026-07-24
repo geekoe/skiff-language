@@ -121,6 +121,8 @@ pub(super) fn build_projection_from_validated(
         schema: PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
         package_id: artifact.package_id.clone(),
         local_abi_identity,
+        package_schema_index: artifact.package_schema_index.clone(),
+        package_schema_type_records: artifact.package_schema_type_records.clone(),
         files,
         static_resources,
         implementation_links: PackageImplementationLinksIdentityProjection::from_links(

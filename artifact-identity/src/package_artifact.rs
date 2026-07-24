@@ -5,7 +5,8 @@ use serde_json::Value;
 use skiff_artifact_model::{
     BoundaryCallableProjection, CallableSemanticFacts, PackageArtifact, PackageArtifactRef,
     PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
-    PackageRuntimeRequirements, ServiceCallRef,
+    PackageRuntimeRequirements, PackageSchemaIndexRef, PackageSchemaTypeId,
+    PackageSchemaTypeRecordRef, ServiceCallRef,
 };
 
 use crate::{
@@ -37,6 +38,8 @@ pub struct PackageArtifactBuildIdentityProjection {
     schema: &'static str,
     package_id: String,
     local_abi_identity: PackageLocalAbiIdentity,
+    package_schema_index: PackageSchemaIndexRef,
+    package_schema_type_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecordRef>,
     files: Vec<FileIrOwnerIdentityProjection>,
     static_resources: Vec<ResourceIdentityProjection>,
     implementation_links: PackageImplementationLinksIdentityProjection,

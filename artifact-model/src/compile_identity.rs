@@ -49,10 +49,10 @@ macro_rules! string_identity {
 }
 
 // These identities are intentionally distinct Rust types even though their
-// artifact representation is a framed string. In particular, ContractTypeId
-// is not an AbiTypeId alias: contract nominal equality and package-local ABI
-// nominal equality have different owners and inputs.
-string_identity!(ContractTypeId);
+// artifact representation is a framed string. Package schema nominal equality
+// is owned by the declaring package and is distinct from package-local ABI.
+string_identity!(PackageSchemaTypeId);
+string_identity!(PackageSchemaIndexIdentity);
 string_identity!(ContractOperationId);
 string_identity!(ServiceProtocolIdentity);
 string_identity!(PackageBuildId);

@@ -6,8 +6,8 @@ use std::{
 
 use crate::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryErrorContract,
-    BoundaryStreamContract, ContractOperationId, ContractTypeDescriptor, ContractTypeId,
-    ContractTypeRef, ServiceContract,
+    BoundaryStreamContract, ContractOperationId, ContractTypeDescriptor, ContractTypeRef,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSchemaTypeRef, ServiceContract,
 };
 
 pub const WEBSOCKET_INGRESS_OPERATION_NAME: &str = "websocket";
@@ -403,14 +403,14 @@ fn nullable(inner: WebSocketShapeType) -> WebSocketShapeType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebSocketIngressContext {
     Null,
-    Contract(ContractTypeId),
+    PackageSchema(PackageSchemaTypeRef),
 }
 
 impl WebSocketIngressContext {
-    pub fn contract_type_id(&self) -> Option<&ContractTypeId> {
+    pub fn package_schema_type(&self) -> Option<&PackageSchemaTypeRef> {
         match self {
             Self::Null => None,
-            Self::Contract(contract_type_id) => Some(contract_type_id),
+            Self::PackageSchema(reference) => Some(reference),
         }
     }
 }
@@ -440,10 +440,12 @@ impl std::error::Error for WebSocketIngressContractError {}
 pub fn websocket_ingress_context(
     contract: &ServiceContract,
     operation_id: &ContractOperationId,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 ) -> Result<WebSocketIngressContext, WebSocketIngressContractError> {
     websocket_ingress_context_with_shape_spec(
         contract,
         operation_id,
+        package_schema_records,
         canonical_websocket_shape_spec(),
     )
 }
@@ -451,6 +453,7 @@ pub fn websocket_ingress_context(
 fn websocket_ingress_context_with_shape_spec(
     contract: &ServiceContract,
     operation_id: &ContractOperationId,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     shape_spec: &CanonicalWebSocketShapeSpec,
 ) -> Result<WebSocketIngressContext, WebSocketIngressContractError> {
     let event_builtin = shape_spec.contract_builtin(WebSocketContractBuiltin::Event);
@@ -486,20 +489,22 @@ fn websocket_ingress_context_with_shape_spec(
         ContractTypeRef::Builtin { name, arguments } if name == "null" && arguments.is_empty() => {
             WebSocketIngressContext::Null
         }
-        ContractTypeRef::Contract { contract_type_id }
-            if contract.boundary_schema.contains_key(contract_type_id) =>
-        {
-            validate_persistable_context(contract, contract_type_id)?;
-            WebSocketIngressContext::Contract(contract_type_id.clone())
-        }
-        ContractTypeRef::Contract { .. } => {
-            return Err(WebSocketIngressContractError::new(
-                "WebSocket ingress Context must be owned by the same ServiceContract",
-            ))
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => {
+            let reference = PackageSchemaTypeRef {
+                package_id: package_id.clone(),
+                stable_schema_key: stable_schema_key.clone(),
+                package_schema_type_id: package_schema_type_id.clone(),
+            };
+            validate_persistable_context(contract, package_schema_records, &reference)?;
+            WebSocketIngressContext::PackageSchema(reference)
         }
         _ => {
             return Err(WebSocketIngressContractError::new(
-                "WebSocket ingress Context must be null or a contract-owned nominal type",
+                "WebSocket ingress Context must be null or a package-owned nominal type",
             ))
         }
     };
@@ -548,13 +553,15 @@ fn websocket_ingress_context_with_shape_spec(
 
 fn validate_persistable_context(
     contract: &ServiceContract,
-    context_type_id: &ContractTypeId,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    context_type: &PackageSchemaTypeRef,
 ) -> Result<(), WebSocketIngressContractError> {
     let mut visiting = BTreeSet::new();
     let mut complete = BTreeSet::new();
     visit_persistable_context_type(
         contract,
-        context_type_id,
+        package_schema_records,
+        context_type,
         "WebSocket ingress Context",
         &mut visiting,
         &mut complete,
@@ -563,34 +570,54 @@ fn validate_persistable_context(
 
 fn visit_persistable_context_type(
     contract: &ServiceContract,
-    contract_type_id: &ContractTypeId,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    package_schema_type: &PackageSchemaTypeRef,
     path: &str,
-    visiting: &mut BTreeSet<ContractTypeId>,
-    complete: &mut BTreeSet<ContractTypeId>,
+    visiting: &mut BTreeSet<PackageSchemaTypeId>,
+    complete: &mut BTreeSet<PackageSchemaTypeId>,
 ) -> Result<(), WebSocketIngressContractError> {
-    if complete.contains(contract_type_id) {
+    let type_id = &package_schema_type.package_schema_type_id;
+    if complete.contains(type_id) {
         return Ok(());
     }
-    let schema_type = contract
-        .boundary_schema
-        .get(contract_type_id)
-        .ok_or_else(|| {
-            WebSocketIngressContractError::new(format!(
-                "{path} references missing or foreign ContractTypeId {contract_type_id}"
-            ))
-        })?;
-    if !visiting.insert(contract_type_id.clone()) {
+    let required = contract
+        .package_type_requirements
+        .iter()
+        .any(|requirement| {
+            requirement.package_id == package_schema_type.package_id
+                && requirement.required_type_ids.binary_search(type_id).is_ok()
+        });
+    if !required {
         return Err(WebSocketIngressContractError::new(format!(
-            "{path} contains a contract schema cycle at {}",
-            schema_type.stable_key
+            "{path} references package schema type {type_id} outside ServiceContract requirements"
+        )));
+    }
+    let schema_type = package_schema_records.get(type_id).ok_or_else(|| {
+        WebSocketIngressContractError::new(format!(
+            "{path} references missing PackageSchemaTypeId {type_id}"
+        ))
+    })?;
+    if schema_type.package_id != package_schema_type.package_id
+        || schema_type.stable_schema_key != package_schema_type.stable_schema_key
+        || &schema_type.package_schema_type_id != type_id
+    {
+        return Err(WebSocketIngressContractError::new(format!(
+            "{path} package schema owner, key, or identity does not match its record"
+        )));
+    }
+    if !visiting.insert(type_id.clone()) {
+        return Err(WebSocketIngressContractError::new(format!(
+            "{path} contains a package schema cycle at {}",
+            schema_type.stable_schema_key
         )));
     }
 
-    let schema_path = format!("{path}.{}", schema_type.stable_key);
-    let result = match &schema_type.shape.descriptor {
+    let schema_path = format!("{path}.{}", schema_type.stable_schema_key);
+    let result = match &schema_type.canonical_descriptor.descriptor {
         ContractTypeDescriptor::Record { fields } => fields.iter().try_for_each(|(name, ty)| {
             validate_persistable_context_ref(
                 contract,
+                package_schema_records,
                 ty,
                 &format!("{schema_path}.{name}"),
                 visiting,
@@ -601,6 +628,7 @@ fn visit_persistable_context_type(
             variants.iter().enumerate().try_for_each(|(index, ty)| {
                 validate_persistable_context_ref(
                     contract,
+                    package_schema_records,
                     ty,
                     &format!("{schema_path}.variants[{index}]"),
                     visiting,
@@ -612,6 +640,7 @@ fn visit_persistable_context_type(
             branches.iter().try_for_each(|branch| {
                 validate_persistable_context_ref(
                     contract,
+                    package_schema_records,
                     &branch.branch_type,
                     &format!("{schema_path}.branches[{}]", branch.tag),
                     visiting,
@@ -621,6 +650,7 @@ fn visit_persistable_context_type(
         }
         ContractTypeDescriptor::Representation { target } => validate_persistable_context_ref(
             contract,
+            package_schema_records,
             target,
             &format!("{schema_path}.target"),
             visiting,
@@ -637,19 +667,20 @@ fn visit_persistable_context_type(
         }
     };
 
-    visiting.remove(contract_type_id);
+    visiting.remove(type_id);
     if result.is_ok() {
-        complete.insert(contract_type_id.clone());
+        complete.insert(type_id.clone());
     }
     result
 }
 
 fn validate_persistable_context_ref(
     contract: &ServiceContract,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     ty: &ContractTypeRef,
     path: &str,
-    visiting: &mut BTreeSet<ContractTypeId>,
-    complete: &mut BTreeSet<ContractTypeId>,
+    visiting: &mut BTreeSet<PackageSchemaTypeId>,
+    complete: &mut BTreeSet<PackageSchemaTypeId>,
 ) -> Result<(), WebSocketIngressContractError> {
     match ty {
         ContractTypeRef::Builtin { name, arguments } => {
@@ -661,6 +692,7 @@ fn validate_persistable_context_ref(
             arguments.iter().enumerate().try_for_each(|(index, ty)| {
                 validate_persistable_context_ref(
                     contract,
+                    package_schema_records,
                     ty,
                     &format!("{path}.arguments[{index}]"),
                     visiting,
@@ -668,20 +700,29 @@ fn validate_persistable_context_ref(
                 )
             })
         }
-        ContractTypeRef::Contract { contract_type_id } => {
-            visit_persistable_context_type(contract, contract_type_id, path, visiting, complete)
-        }
-        ContractTypeRef::PackagePublic { local_type_id } => {
-            Err(WebSocketIngressContractError::new(format!(
-                "{path} contains unresolved package public type {local_type_id}"
-            )))
-        }
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => visit_persistable_context_type(
+            contract,
+            package_schema_records,
+            &PackageSchemaTypeRef {
+                package_id: package_id.clone(),
+                stable_schema_key: stable_schema_key.clone(),
+                package_schema_type_id: package_schema_type_id.clone(),
+            },
+            path,
+            visiting,
+            complete,
+        ),
         ContractTypeRef::TypeParam { name } => Err(WebSocketIngressContractError::new(format!(
             "{path} contains unresolved type parameter {name}"
         ))),
         ContractTypeRef::Record { fields } => fields.iter().try_for_each(|(name, ty)| {
             validate_persistable_context_ref(
                 contract,
+                package_schema_records,
                 ty,
                 &format!("{path}.{name}"),
                 visiting,
@@ -692,6 +733,7 @@ fn validate_persistable_context_ref(
             variants.iter().enumerate().try_for_each(|(index, ty)| {
                 validate_persistable_context_ref(
                     contract,
+                    package_schema_records,
                     ty,
                     &format!("{path}.variants[{index}]"),
                     visiting,
@@ -701,6 +743,7 @@ fn validate_persistable_context_ref(
         }
         ContractTypeRef::Nullable { inner } => validate_persistable_context_ref(
             contract,
+            package_schema_records,
             inner,
             &format!("{path}.inner"),
             visiting,
@@ -726,9 +769,11 @@ fn generic_context_argument<'a>(
 fn generic_context_ref(context: &WebSocketIngressContext) -> ContractTypeRef {
     match context {
         WebSocketIngressContext::Null => ContractTypeRef::builtin("null"),
-        WebSocketIngressContext::Contract(contract_type_id) => {
-            ContractTypeRef::contract(contract_type_id.clone())
-        }
+        WebSocketIngressContext::PackageSchema(reference) => ContractTypeRef::package_schema(
+            reference.package_id.clone(),
+            reference.stable_schema_key.clone(),
+            reference.package_schema_type_id.clone(),
+        ),
     }
 }
 

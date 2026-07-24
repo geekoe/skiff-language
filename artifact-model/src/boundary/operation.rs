@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{ContractOperationId, ContractTypeId, ContractTypeRef};
+use crate::{ContractOperationId, ContractTypeRef, PackageSchemaTypeRef};
 
 use super::BoundaryValuePlan;
 
@@ -80,7 +80,7 @@ pub enum BoundaryCancellationContract {
 pub enum BoundaryCallbackContract {
     None,
     RequestScoped {
-        interface_type_ids: Vec<ContractTypeId>,
+        interface_types: Vec<PackageSchemaTypeRef>,
         lifetime: BoundaryCallbackLifetime,
         expiration_error: BoundaryCallbackExpirationError,
     },

@@ -1,35 +1,43 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use skiff_artifact_model::{
-    BoundaryOperationDescriptor, ContractDiagnosticText, ContractOperationId, ContractSchemaType,
-    ContractTypeId, ServiceContract, ServiceContractDefinition, ServiceContractRef,
+    BoundaryCallbackContract, BoundaryErrorContract, BoundaryOperationDescriptor,
+    BoundaryStreamContract, ContractOperationId, ContractTypeDescriptor, ContractTypeNameability,
+    ContractTypeRef, ContractTypeShape, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
+    PackageSchemaIndexEntry, PackageSchemaIndexIdentity, PackageSchemaTypeId,
+    PackageSchemaTypeRecord, PackageTypeRequirement, ServiceContract, ServiceContractRef,
     ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 use crate::{
     framing::{canonical_ir_bytes, framed_identity, sha256_hex},
     ArtifactIdentityError, Result, CONTRACT_OPERATION_IDENTITY_PREFIX,
-    CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER, CONTRACT_TYPE_IDENTITY_PREFIX,
-    CONTRACT_TYPE_IDENTITY_SCHEMA_MARKER, SERVICE_PROTOCOL_IDENTITY_PREFIX,
+    CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER, PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX,
+    PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER, PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX,
+    PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER, SERVICE_PROTOCOL_IDENTITY_PREFIX,
     SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER,
 };
 
-mod alias_expansion;
 mod normalization;
-mod schema_graph;
-mod schema_validation;
-mod validation;
 
-pub use alias_expansion::normalize_contract_definition_surface;
 pub use normalization::{normalize_contract_operation_contract, normalize_contract_type_shape};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ContractTypeIdentityInput<'a> {
+struct PackageSchemaTypeIdentityInput<'a> {
     schema: &'static str,
-    service_id: &'a str,
-    stable_type_key: &'a str,
+    package_id: &'a str,
+    stable_schema_key: &'a str,
+    canonical_descriptor: &'a PackageSchemaCanonicalDescriptor,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PackageSchemaIndexIdentityInput<'a> {
+    schema: &'static str,
+    package_id: &'a str,
+    types: &'a BTreeMap<String, PackageSchemaIndexEntry>,
 }
 
 #[derive(Serialize)]
@@ -40,36 +48,109 @@ struct ContractOperationIdentityInput<'a> {
     stable_operation_key: &'a str,
 }
 
-/// The complete canonical protocol preimage. Diagnostic text and provider-side
-/// implementation requirements are absent by construction.
+/// The protocol preimage contains only operations and their exact reachable
+/// package type requirements. Package indexes and descriptors are deliberately
+/// absent, so unrelated package schema entries cannot perturb this identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceProtocolIdentityProjection {
     schema: &'static str,
     service_id: String,
     operations: BTreeMap<ContractOperationId, BoundaryOperationDescriptor>,
-    boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+    package_type_requirements: Vec<PackageTypeRequirement>,
 }
 
-pub fn contract_type_id(
-    service_id: &str,
-    _package_version_label: &str,
-    stable_type_key: &str,
-) -> Result<ContractTypeId> {
-    validation::validate_coordinate_part("serviceId", service_id)?;
-    validation::validate_stable_key("contract type", stable_type_key)?;
+pub fn package_schema_type_id(
+    package_id: &str,
+    stable_schema_key: &str,
+    canonical_descriptor: &PackageSchemaCanonicalDescriptor,
+) -> Result<PackageSchemaTypeId> {
+    validate_non_empty("packageId", package_id)?;
+    validate_non_empty("stableSchemaKey", stable_schema_key)?;
+    let normalized = normalize_schema_descriptor(canonical_descriptor.clone())?;
+    if &normalized != canonical_descriptor {
+        return invalid_contract("package schema canonicalDescriptor is not canonical");
+    }
     let bytes = canonical_ir_bytes(
-        &ContractTypeIdentityInput {
-            schema: CONTRACT_TYPE_IDENTITY_SCHEMA_MARKER,
-            service_id,
-            stable_type_key,
+        &PackageSchemaTypeIdentityInput {
+            schema: PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER,
+            package_id,
+            stable_schema_key,
+            canonical_descriptor,
         },
-        ArtifactIdentityError::SerializeContractTypeIdentity,
+        ArtifactIdentityError::SerializePackageSchemaTypeIdentity,
     )?;
-    Ok(ContractTypeId::new(framed_identity(
-        CONTRACT_TYPE_IDENTITY_PREFIX,
+    Ok(PackageSchemaTypeId::new(framed_identity(
+        PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX,
         &sha256_hex(&bytes),
     )))
+}
+
+pub fn package_schema_index_identity(
+    package_id: &str,
+    types: &BTreeMap<String, PackageSchemaIndexEntry>,
+) -> Result<PackageSchemaIndexIdentity> {
+    validate_non_empty("packageId", package_id)?;
+    for stable_key in types.keys() {
+        validate_non_empty("stableSchemaKey", stable_key)?;
+    }
+    let bytes = canonical_ir_bytes(
+        &PackageSchemaIndexIdentityInput {
+            schema: PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER,
+            package_id,
+            types,
+        },
+        ArtifactIdentityError::SerializePackageSchemaIndexIdentity,
+    )?;
+    Ok(PackageSchemaIndexIdentity::new(framed_identity(
+        PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX,
+        &sha256_hex(&bytes),
+    )))
+}
+
+pub fn validate_package_schema_index(index: &PackageSchemaIndex) -> Result<()> {
+    let expected = package_schema_index_identity(&index.package_id, &index.types)?;
+    if index.package_schema_index_identity != expected {
+        return invalid_contract(format!(
+            "package schema index declared identity {}, expected {expected}",
+            index.package_schema_index_identity
+        ));
+    }
+    Ok(())
+}
+
+/// Validates identity, closure and the v1 acyclic graph rule for a resolved
+/// collection of independently addressed package schema records.
+pub fn validate_package_schema_records(
+    records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+) -> Result<()> {
+    let mut visiting = BTreeSet::new();
+    let mut complete = BTreeSet::new();
+    for type_id in records.keys() {
+        visit_schema_record(type_id, records, &mut visiting, &mut complete)?;
+    }
+
+    for (type_id, record) in records {
+        if type_id != &record.package_schema_type_id {
+            return invalid_contract(format!(
+                "package schema record map key {type_id} does not match nested identity {}",
+                record.package_schema_type_id
+            ));
+        }
+        let expected = package_schema_type_id(
+            &record.package_id,
+            &record.stable_schema_key,
+            &record.canonical_descriptor,
+        )?;
+        if type_id != &expected {
+            return invalid_contract(format!(
+                "package schema type {} has identity {type_id}, expected {expected}",
+                record.stable_schema_key
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 pub fn contract_operation_id(
@@ -77,8 +158,8 @@ pub fn contract_operation_id(
     _package_version_label: &str,
     stable_operation_key: &str,
 ) -> Result<ContractOperationId> {
-    validation::validate_coordinate_part("serviceId", service_id)?;
-    validation::validate_stable_key("contract operation", stable_operation_key)?;
+    validate_non_empty("serviceId", service_id)?;
+    validate_non_empty("stableOperationKey", stable_operation_key)?;
     let bytes = canonical_ir_bytes(
         &ContractOperationIdentityInput {
             schema: CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER,
@@ -96,12 +177,12 @@ pub fn contract_operation_id(
 pub fn service_protocol_identity_projection(
     contract: &ServiceContract,
 ) -> Result<ServiceProtocolIdentityProjection> {
-    validation::validate_service_contract_surface(contract)?;
+    validate_service_contract_surface(contract)?;
     Ok(ServiceProtocolIdentityProjection {
         schema: SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER,
         service_id: contract.service_id.clone(),
         operations: contract.operations.clone(),
-        boundary_schema: contract.boundary_schema.clone(),
+        package_type_requirements: contract.package_type_requirements.clone(),
     })
 }
 
@@ -118,7 +199,7 @@ pub fn service_protocol_identity(contract: &ServiceContract) -> Result<ServicePr
 }
 
 pub fn service_protocol_identity_hash(identity: &str) -> Result<&str> {
-    let hash = identity
+    identity
         .strip_prefix(SERVICE_PROTOCOL_IDENTITY_PREFIX)
         .and_then(|suffix| suffix.strip_prefix(':'))
         .filter(|hash| {
@@ -129,12 +210,9 @@ pub fn service_protocol_identity_hash(identity: &str) -> Result<&str> {
         })
         .ok_or_else(|| ArtifactIdentityError::InvalidServiceProtocolIdentity {
             identity: identity.to_string(),
-        })?;
-    Ok(hash)
+        })
 }
 
-/// Assigns the protocol identity after validating the independently assigned
-/// contract type and operation identities.
 pub fn assign_service_contract_identities(
     contract: &mut ServiceContract,
 ) -> Result<ServiceProtocolIdentity> {
@@ -142,112 +220,6 @@ pub fn assign_service_contract_identities(
     contract.service_protocol_identity = identity.clone();
     validate_service_contract_identities(contract)?;
     Ok(identity)
-}
-
-/// Materializes a canonical, code-free contract definition. Stable-key maps
-/// are converted to independently derived type/operation identities before the
-/// protocol identity is assigned.
-pub fn service_contract_from_definition(
-    mut definition: ServiceContractDefinition,
-) -> Result<ServiceContract> {
-    definition
-        .validate()
-        .map_err(|message| ArtifactIdentityError::InvalidServiceContract { message })?;
-
-    normalize_contract_definition_surface(
-        &definition.service_id,
-        &definition.contract_version,
-        &mut definition.operations,
-        &mut definition.boundary_schema,
-    )?;
-
-    let operations = definition
-        .operations
-        .into_iter()
-        .map(|(stable_key, contract)| {
-            let operation_id = contract_operation_id(
-                &definition.service_id,
-                &definition.contract_version,
-                &stable_key,
-            )?;
-            Ok((
-                operation_id.clone(),
-                BoundaryOperationDescriptor {
-                    operation_id,
-                    stable_key,
-                    contract,
-                },
-            ))
-        })
-        .collect::<Result<BTreeMap<_, _>>>()?;
-    let boundary_schema = definition
-        .boundary_schema
-        .into_iter()
-        .map(|(stable_key, shape)| {
-            let contract_type_id = contract_type_id(
-                &definition.service_id,
-                &definition.contract_version,
-                &stable_key,
-            )?;
-            Ok((
-                contract_type_id.clone(),
-                ContractSchemaType {
-                    contract_type_id,
-                    stable_key,
-                    shape,
-                },
-            ))
-        })
-        .collect::<Result<BTreeMap<_, _>>>()?;
-    let diagnostic_text = ContractDiagnosticText {
-        service: definition.diagnostic_text.service,
-        operations: definition
-            .diagnostic_text
-            .operations
-            .into_iter()
-            .map(|(stable_key, text)| {
-                Ok((
-                    contract_operation_id(
-                        &definition.service_id,
-                        &definition.contract_version,
-                        &stable_key,
-                    )?,
-                    text,
-                ))
-            })
-            .collect::<Result<_>>()?,
-        types: definition
-            .diagnostic_text
-            .types
-            .into_iter()
-            .filter(|(stable_key, _)| {
-                boundary_schema
-                    .values()
-                    .any(|schema| &schema.stable_key == stable_key)
-            })
-            .map(|(stable_key, text)| {
-                Ok((
-                    contract_type_id(
-                        &definition.service_id,
-                        &definition.contract_version,
-                        &stable_key,
-                    )?,
-                    text,
-                ))
-            })
-            .collect::<Result<_>>()?,
-    };
-    let mut contract = ServiceContract {
-        schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
-        service_id: definition.service_id,
-        contract_version: definition.contract_version,
-        service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
-        operations,
-        boundary_schema,
-        diagnostic_text,
-    };
-    assign_service_contract_identities(&mut contract)?;
-    Ok(contract)
 }
 
 pub fn service_contract_ref(contract: &ServiceContract) -> Result<ServiceContractRef> {
@@ -270,77 +242,409 @@ pub fn validate_service_contract_identities(contract: &ServiceContract) -> Resul
     Ok(())
 }
 
+fn validate_service_contract_surface(contract: &ServiceContract) -> Result<()> {
+    if contract.schema_version != SERVICE_CONTRACT_SCHEMA_VERSION {
+        return invalid_contract(format!(
+            "schemaVersion must be {SERVICE_CONTRACT_SCHEMA_VERSION}, got {}",
+            contract.schema_version
+        ));
+    }
+    validate_non_empty("serviceId", &contract.service_id)?;
+    validate_non_empty("contractVersion", &contract.contract_version)?;
+    if contract.operations.is_empty() {
+        return invalid_contract("operations must contain at least one operation");
+    }
+    for (operation_id, descriptor) in &contract.operations {
+        if operation_id != &descriptor.operation_id {
+            return invalid_contract("operation map key does not match nested operationId");
+        }
+        let expected = contract_operation_id(
+            &contract.service_id,
+            &contract.contract_version,
+            &descriptor.stable_key,
+        )?;
+        if operation_id != &expected {
+            return invalid_contract(format!(
+                "operation {} has identity {operation_id}, expected {expected}",
+                descriptor.stable_key
+            ));
+        }
+    }
+    let mut previous_package: Option<&str> = None;
+    let mut required = BTreeSet::new();
+    for requirement in &contract.package_type_requirements {
+        validate_non_empty("packageId", &requirement.package_id)?;
+        if previous_package.is_some_and(|previous| previous >= requirement.package_id.as_str()) {
+            return invalid_contract("packageTypeRequirements must be sorted by unique packageId");
+        }
+        previous_package = Some(&requirement.package_id);
+        if requirement.required_type_ids.is_empty()
+            || !requirement
+                .required_type_ids
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+        {
+            return invalid_contract(
+                "requiredTypeIds must be non-empty, sorted, and contain no duplicates",
+            );
+        }
+        for type_id in &requirement.required_type_ids {
+            required.insert((requirement.package_id.as_str(), type_id));
+        }
+    }
+    let mut referenced = Vec::new();
+    for operation in contract.operations.values() {
+        collect_operation_refs(operation, &mut referenced);
+    }
+    for reference in referenced {
+        if !required.contains(&(reference.0, reference.1)) {
+            return invalid_contract(format!(
+                "operation references package schema type {} from {} outside packageTypeRequirements",
+                reference.1, reference.0
+            ));
+        }
+    }
+    for type_id in contract.diagnostic_text.types.keys() {
+        if !contract
+            .package_type_requirements
+            .iter()
+            .any(|requirement| requirement.required_type_ids.contains(type_id))
+        {
+            return invalid_contract(format!(
+                "diagnostic text references unknown package schema type {type_id}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_schema_descriptor(
+    descriptor: PackageSchemaCanonicalDescriptor,
+) -> Result<PackageSchemaCanonicalDescriptor> {
+    let shape = normalize_contract_type_shape(
+        ContractTypeShape {
+            nameability: ContractTypeNameability::ClosureOnly,
+            type_params: descriptor.type_params,
+            descriptor: descriptor.descriptor,
+        },
+        "packageSchemaType",
+    )?;
+    Ok(PackageSchemaCanonicalDescriptor {
+        type_params: shape.type_params,
+        descriptor: shape.descriptor,
+    })
+}
+
+fn visit_schema_record(
+    type_id: &PackageSchemaTypeId,
+    records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    visiting: &mut BTreeSet<PackageSchemaTypeId>,
+    complete: &mut BTreeSet<PackageSchemaTypeId>,
+) -> Result<()> {
+    if complete.contains(type_id) {
+        return Ok(());
+    }
+    if !visiting.insert(type_id.clone()) {
+        return invalid_contract(format!(
+            "package schema v1 forbids recursive type cycle at {type_id}"
+        ));
+    }
+    let record =
+        records
+            .get(type_id)
+            .ok_or_else(|| ArtifactIdentityError::InvalidServiceContract {
+                message: format!("missing package schema record {type_id}"),
+            })?;
+    let mut children = Vec::new();
+    collect_descriptor_refs(&record.canonical_descriptor.descriptor, &mut children);
+    for (package_id, stable_key, child_id) in children {
+        let child =
+            records
+                .get(child_id)
+                .ok_or_else(|| ArtifactIdentityError::InvalidServiceContract {
+                    message: format!(
+                        "package schema closure is missing {package_id}:{stable_key}:{child_id}"
+                    ),
+                })?;
+        if child.package_id != package_id || child.stable_schema_key != stable_key {
+            return invalid_contract(format!(
+                "package schema child reference {child_id} owner or stable key mismatch"
+            ));
+        }
+        visit_schema_record(child_id, records, visiting, complete)?;
+    }
+    visiting.remove(type_id);
+    complete.insert(type_id.clone());
+    Ok(())
+}
+
+fn collect_operation_refs<'a>(
+    operation: &'a BoundaryOperationDescriptor,
+    out: &mut Vec<(&'a str, &'a PackageSchemaTypeId)>,
+) {
+    for parameter in &operation.contract.parameters {
+        collect_type_refs(&parameter.ty, out);
+    }
+    collect_type_refs(&operation.contract.return_value.ty, out);
+    if let BoundaryErrorContract::Typed { payload_type, .. } = &operation.contract.errors {
+        collect_type_refs(payload_type, out);
+    }
+    if let BoundaryStreamContract::ServerStream { item_type, .. } = &operation.contract.stream {
+        collect_type_refs(item_type, out);
+    }
+    if let BoundaryCallbackContract::RequestScoped {
+        interface_types, ..
+    } = &operation.contract.callbacks
+    {
+        out.extend(interface_types.iter().map(|reference| {
+            (
+                reference.package_id.as_str(),
+                &reference.package_schema_type_id,
+            )
+        }));
+    }
+}
+
+fn collect_descriptor_refs<'a>(
+    descriptor: &'a ContractTypeDescriptor,
+    out: &mut Vec<(&'a str, &'a str, &'a PackageSchemaTypeId)>,
+) {
+    match descriptor {
+        ContractTypeDescriptor::Record { fields } => {
+            fields
+                .values()
+                .for_each(|ty| collect_type_refs_with_keys(ty, out));
+        }
+        ContractTypeDescriptor::StructuralUnion { variants } => {
+            variants
+                .iter()
+                .for_each(|ty| collect_type_refs_with_keys(ty, out));
+        }
+        ContractTypeDescriptor::DiscriminatedUnion { branches, .. } => branches
+            .iter()
+            .for_each(|branch| collect_type_refs_with_keys(&branch.branch_type, out)),
+        ContractTypeDescriptor::Representation { target }
+        | ContractTypeDescriptor::Alias { target } => collect_type_refs_with_keys(target, out),
+        ContractTypeDescriptor::CallbackInterface { operations } => {
+            for operation in operations.values() {
+                operation
+                    .parameters
+                    .iter()
+                    .for_each(|ty| collect_type_refs_with_keys(ty, out));
+                collect_type_refs_with_keys(&operation.return_type, out);
+            }
+        }
+        ContractTypeDescriptor::Enumeration { .. } => {}
+    }
+}
+
+fn collect_type_refs<'a>(
+    ty: &'a ContractTypeRef,
+    out: &mut Vec<(&'a str, &'a PackageSchemaTypeId)>,
+) {
+    let mut keyed = Vec::new();
+    collect_type_refs_with_keys(ty, &mut keyed);
+    out.extend(
+        keyed
+            .into_iter()
+            .map(|(package_id, _, type_id)| (package_id, type_id)),
+    );
+}
+
+fn collect_type_refs_with_keys<'a>(
+    ty: &'a ContractTypeRef,
+    out: &mut Vec<(&'a str, &'a str, &'a PackageSchemaTypeId)>,
+) {
+    match ty {
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => out.push((package_id, stable_schema_key, package_schema_type_id)),
+        ContractTypeRef::Builtin { arguments, .. }
+        | ContractTypeRef::StructuralUnion {
+            variants: arguments,
+        } => arguments
+            .iter()
+            .for_each(|child| collect_type_refs_with_keys(child, out)),
+        ContractTypeRef::Record { fields } => fields
+            .values()
+            .for_each(|child| collect_type_refs_with_keys(child, out)),
+        ContractTypeRef::Nullable { inner } => collect_type_refs_with_keys(inner, out),
+        ContractTypeRef::TypeParam { .. } | ContractTypeRef::Literal { .. } => {}
+    }
+}
+
+fn validate_non_empty(label: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return invalid_contract(format!("{label} must be a non-empty string"));
+    }
+    Ok(())
+}
+
+fn invalid_contract<T>(message: impl Into<String>) -> Result<T> {
+    Err(ArtifactIdentityError::InvalidServiceContract {
+        message: message.into(),
+    })
+}
+
 #[cfg(test)]
-mod definition_tests {
+mod tests {
     use skiff_artifact_model::{
         BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-        BoundaryErrorContract, BoundaryOperationContract, BoundaryReturn, BoundaryStreamContract,
-        BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-        BoundaryValuePlan, ContractTypeRef, ServiceContractDefinitionDiagnosticText,
-        SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION,
+        BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
+        BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+        BoundaryValueOwner, BoundaryValuePlan, ContractDiagnosticText, ContractTypeDescriptor,
+        PackageSchemaIndexEntry, PackageTypeRequirement,
     };
 
     use super::*;
 
     #[test]
-    fn code_free_definition_materializes_without_provider_or_deployment_facts() {
-        let definition = ServiceContractDefinition {
-            schema_version: SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION.to_string(),
-            service_id: "example.com/checkpoint".to_string(),
-            contract_version: "1.0.0".to_string(),
-            operations: BTreeMap::from([("health".to_string(), operation_contract())]),
-            boundary_schema: BTreeMap::new(),
-            diagnostic_text: ServiceContractDefinitionDiagnosticText {
-                service: "Checkpoint".to_string(),
-                operations: BTreeMap::from([("health".to_string(), "Health".to_string())]),
-                types: BTreeMap::new(),
+    fn package_type_identity_uses_owner_key_and_descriptor_not_release_coordinates() {
+        let string_descriptor = descriptor("string");
+        let first = package_schema_type_id("example.pkg", "User", &string_descriptor).unwrap();
+        let across_version_and_build =
+            package_schema_type_id("example.pkg", "User", &string_descriptor).unwrap();
+        assert_eq!(first, across_version_and_build);
+        assert_ne!(
+            first,
+            package_schema_type_id("other.pkg", "User", &string_descriptor).unwrap()
+        );
+        assert_ne!(
+            first,
+            package_schema_type_id("example.pkg", "Account", &string_descriptor).unwrap()
+        );
+        assert_ne!(
+            first,
+            package_schema_type_id("example.pkg", "User", &descriptor("integer")).unwrap()
+        );
+    }
+
+    #[test]
+    fn unrelated_index_entry_does_not_change_existing_service_protocol() {
+        let user_id = package_schema_type_id("example.pkg", "User", &descriptor("string")).unwrap();
+        let mut contract = service_contract(user_id.clone());
+        let first = assign_service_contract_identities(&mut contract).unwrap();
+
+        let base_index = BTreeMap::from([("User".to_string(), index_entry(user_id.clone()))]);
+        let mut expanded_index = base_index.clone();
+        expanded_index.insert(
+            "Unused".to_string(),
+            index_entry(
+                package_schema_type_id("example.pkg", "Unused", &descriptor("bool")).unwrap(),
+            ),
+        );
+        assert_ne!(
+            package_schema_index_identity("example.pkg", &base_index).unwrap(),
+            package_schema_index_identity("example.pkg", &expanded_index).unwrap()
+        );
+        assert_eq!(first, service_protocol_identity(&contract).unwrap());
+    }
+
+    #[test]
+    fn protocol_requires_sorted_exact_package_type_requirements() {
+        let user_id = package_schema_type_id("example.pkg", "User", &descriptor("string")).unwrap();
+        let mut contract = service_contract(user_id.clone());
+        contract.package_type_requirements[0]
+            .required_type_ids
+            .push(user_id);
+        assert!(service_protocol_identity(&contract).is_err());
+    }
+
+    #[test]
+    fn recursive_package_schema_records_fail_closed() {
+        let type_id = PackageSchemaTypeId::new("forged-self-id");
+        let record = PackageSchemaTypeRecord {
+            package_id: "example.pkg".to_string(),
+            stable_schema_key: "Node".to_string(),
+            package_schema_type_id: type_id.clone(),
+            canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                type_params: Vec::new(),
+                descriptor: ContractTypeDescriptor::Record {
+                    fields: BTreeMap::from([(
+                        "next".to_string(),
+                        ContractTypeRef::package_schema("example.pkg", "Node", type_id.clone()),
+                    )]),
+                },
             },
         };
-        let contract = service_contract_from_definition(definition.clone()).unwrap();
-        validate_service_contract_identities(&contract).unwrap();
-        assert_eq!(contract.operations.len(), 1);
-        let wire = serde_json::to_string(&contract).unwrap();
-        for forbidden in [
-            "providerPackageId",
-            "providerBuildId",
-            "deploymentRevision",
-            "route",
-        ] {
-            assert!(!wire.contains(forbidden));
-            let mut value = serde_json::to_value(&definition).unwrap();
-            value
-                .as_object_mut()
-                .unwrap()
-                .insert(forbidden.to_string(), serde_json::json!("forbidden"));
-            assert!(serde_json::from_value::<ServiceContractDefinition>(value).is_err());
+        let records = BTreeMap::from([(type_id, record)]);
+        let error = validate_package_schema_records(&records).unwrap_err();
+        assert!(error.to_string().contains("recursive type cycle"));
+    }
+
+    fn descriptor(target: &str) -> PackageSchemaCanonicalDescriptor {
+        PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::Representation {
+                target: ContractTypeRef::builtin(target),
+            },
         }
     }
 
-    fn operation_contract() -> BoundaryOperationContract {
-        BoundaryOperationContract {
-            parameters: Vec::new(),
-            return_value: BoundaryReturn {
-                ty: ContractTypeRef::builtin("bool"),
-                value_plan: BoundaryValuePlan::Linkable {
-                    carrier: BoundaryValueCarrier::DetachedValueGraph,
-                    encoding: BoundaryValueEncoding::CanonicalValue,
-                    owner: BoundaryValueOwner::Provider,
-                    lifetime: BoundaryValueLifetime::Call,
+    fn index_entry(type_id: PackageSchemaTypeId) -> PackageSchemaIndexEntry {
+        PackageSchemaIndexEntry {
+            package_schema_type_id: type_id,
+            public_path: Some("api.User".to_string()),
+            nameability: ContractTypeNameability::PublicNameable,
+        }
+    }
+
+    fn service_contract(type_id: PackageSchemaTypeId) -> ServiceContract {
+        let operation_id = contract_operation_id("example.service", "1.0.0", "get").unwrap();
+        let operation = BoundaryOperationDescriptor {
+            operation_id: operation_id.clone(),
+            stable_key: "get".to_string(),
+            contract: BoundaryOperationContract {
+                parameters: vec![BoundaryParameter {
+                    name: "user".to_string(),
+                    ty: ContractTypeRef::package_schema("example.pkg", "User", type_id.clone()),
+                    value_plan: value_plan(),
+                }],
+                return_value: BoundaryReturn {
+                    ty: ContractTypeRef::builtin("void"),
+                    value_plan: value_plan(),
+                },
+                errors: BoundaryErrorContract::None,
+                stream: BoundaryStreamContract::Unary,
+                cancellation: BoundaryCancellationContract::NotCancellable,
+                callbacks: BoundaryCallbackContract::None,
+                may_suspend: false,
+                effect_guarantee: BoundaryEffectGuarantee {
+                    detached_parameters: true,
+                    detached_return: true,
+                    detached_error: true,
+                    no_caller_reachable_mutation: true,
+                    no_caller_value_escape: true,
+                    no_same_heap_identity: true,
                 },
             },
-            errors: BoundaryErrorContract::None,
-            stream: BoundaryStreamContract::Unary,
-            cancellation: BoundaryCancellationContract::NotCancellable,
-            callbacks: BoundaryCallbackContract::None,
-            may_suspend: false,
-            effect_guarantee: BoundaryEffectGuarantee {
-                detached_parameters: true,
-                detached_return: true,
-                detached_error: true,
-                no_caller_reachable_mutation: true,
-                no_caller_value_escape: true,
-                no_same_heap_identity: true,
+        };
+        ServiceContract {
+            schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
+            service_id: "example.service".to_string(),
+            contract_version: "1.0.0".to_string(),
+            service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
+            operations: BTreeMap::from([(operation_id, operation)]),
+            package_type_requirements: vec![PackageTypeRequirement {
+                package_id: "example.pkg".to_string(),
+                required_type_ids: vec![type_id],
+            }],
+            diagnostic_text: ContractDiagnosticText {
+                service: String::new(),
+                operations: BTreeMap::new(),
+                types: BTreeMap::new(),
             },
+        }
+    }
+
+    fn value_plan() -> BoundaryValuePlan {
+        BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::DetachedValueGraph,
+            encoding: BoundaryValueEncoding::CanonicalValue,
+            owner: BoundaryValueOwner::Provider,
+            lifetime: BoundaryValueLifetime::Call,
         }
     }
 }

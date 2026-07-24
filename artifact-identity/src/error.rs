@@ -2,14 +2,16 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ArtifactIdentityError {
-    #[error("failed to serialize contract type identity payload: {0}")]
-    SerializeContractTypeIdentity(serde_json::Error),
+    #[error("failed to serialize package schema type identity payload: {0}")]
+    SerializePackageSchemaTypeIdentity(serde_json::Error),
+    #[error("failed to serialize package schema index identity payload: {0}")]
+    SerializePackageSchemaIndexIdentity(serde_json::Error),
     #[error("failed to serialize contract operation identity payload: {0}")]
     SerializeContractOperationIdentity(serde_json::Error),
     #[error("failed to serialize service protocol identity payload: {0}")]
     SerializeServiceProtocolIdentity(serde_json::Error),
     #[error(
-        "service protocol identity {identity} must use skiff-service-protocol-v2:sha256:<64 lowercase hex>"
+        "service protocol identity {identity} must use skiff-service-protocol-v3:sha256:<64 lowercase hex>"
     )]
     InvalidServiceProtocolIdentity { identity: String },
     #[error("service contract is invalid: {message}")]

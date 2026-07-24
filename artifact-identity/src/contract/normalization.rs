@@ -1,13 +1,10 @@
 use skiff_artifact_model::{
     websocket_ingress::canonical_websocket_shape_spec, BoundaryErrorContract,
     BoundaryOperationContract, BoundaryStreamContract, ContractDiscriminatedUnionBranch,
-    ContractLiteral, ContractTypeDescriptor, ContractTypeRef, ContractTypeShape,
+    ContractTypeDescriptor, ContractTypeRef, ContractTypeShape,
 };
 
 use crate::{ArtifactIdentityError, Result};
-
-#[cfg(test)]
-mod tests;
 
 /// Producer-side canonicalization for code-free contract definitions.
 ///
@@ -56,8 +53,7 @@ pub(super) fn normalize_contract_type_ref(
 ) -> Result<ContractTypeRef> {
     match ty {
         ContractTypeRef::Builtin { name, arguments } => normalize_builtin(name, arguments, path),
-        ContractTypeRef::Contract { .. }
-        | ContractTypeRef::PackagePublic { .. }
+        ContractTypeRef::PackageSchema { .. }
         | ContractTypeRef::TypeParam { .. }
         | ContractTypeRef::Literal { .. } => Ok(ty),
         ContractTypeRef::Record { fields } => Ok(ContractTypeRef::Record {
@@ -307,15 +303,6 @@ fn sort_and_deduplicate(values: &mut Vec<ContractTypeRef>, path: &str) -> Result
     keyed.dedup_by(|left, right| left.0 == right.0);
     values.extend(keyed.into_iter().map(|(_, value)| value));
     Ok(())
-}
-
-pub(super) fn string_literal_value(ty: &ContractTypeRef) -> Option<&str> {
-    match ty {
-        ContractTypeRef::Literal {
-            value: ContractLiteral::String { value },
-        } => Some(value),
-        _ => None,
-    }
 }
 
 fn invalid_contract<T>(message: impl Into<String>) -> Result<T> {

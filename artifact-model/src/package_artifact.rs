@@ -4,12 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     boundary::{BoundaryCallableProjection, CallableSemanticFacts},
-    compile_identity::{PackageBuildId, PackageCallableId, PackageLocalAbiIdentity},
+    compile_identity::{
+        PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageSchemaTypeId,
+    },
     compile_requirements::{
         ContractRequirement, PackageRequirement, PackageRuntimeRequirements, ServiceCallRef,
         ServiceRequirement,
     },
-    contract_types::PackageTypeRef,
+    contract_types::{PackageSchemaIndexRef, PackageSchemaTypeRecordRef, PackageTypeRef},
     executable_target::OperationTargetRef,
     package_unit::{InterfaceMethodSignature, PackageImplementationLinks},
     refs::FileIrRef,
@@ -93,6 +95,8 @@ pub struct PackageArtifact {
     pub files: Vec<FileIrRef>,
     pub static_resources: Vec<PublicationResourceRef>,
     pub package_local_abi: PackageLocalAbi,
+    pub package_schema_index: PackageSchemaIndexRef,
+    pub package_schema_type_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecordRef>,
     pub implementation_links: PackageImplementationLinks,
     pub callable_links: BTreeMap<PackageCallableId, PackageCallableLinkFact>,
     pub package_requirements: Vec<PackageRequirement>,
@@ -111,15 +115,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn package_contract_type_reference_is_not_a_legacy_abi_type() {
-        let ty = PackageTypeRef::Contract {
-            contract_type_id: "skiff-contract-type-v1:sha256:abc".into(),
+    fn package_schema_type_reference_is_not_a_legacy_abi_type() {
+        let ty = PackageTypeRef::PackageSchema {
+            package_id: "example.pkg".to_string(),
+            stable_schema_key: "User".to_string(),
+            package_schema_type_id: "skiff-package-schema-type-v1:sha256:abc".into(),
         };
         assert_eq!(
             serde_json::to_value(ty).unwrap(),
             json!({
-                "kind": "contract",
-                "contractTypeId": "skiff-contract-type-v1:sha256:abc"
+                "kind": "packageSchema",
+                "packageId": "example.pkg",
+                "stableSchemaKey": "User",
+                "packageSchemaTypeId": "skiff-package-schema-type-v1:sha256:abc"
             })
         );
     }
@@ -134,6 +142,11 @@ mod tests {
             "files": [],
             "staticResources": [],
             "packageLocalAbi": { "localAbiIdentity": "abi", "publicSymbols": {} },
+            "packageSchemaIndex": {
+                "packageId": "example.pkg",
+                "packageSchemaIndexIdentity": "index"
+            },
+            "packageSchemaTypeRecords": {},
             "implementationLinks": {},
             "callableLinks": {},
             "packageRequirements": [],

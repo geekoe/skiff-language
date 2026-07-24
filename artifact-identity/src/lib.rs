@@ -35,14 +35,15 @@ pub use artifact_reference::{
 pub use constants::{
     ASSEMBLY_IDENTITY_PREFIX, ASSEMBLY_IDENTITY_SCHEMA_MARKER, BUNDLE_IDENTITY_PREFIX,
     CONTRACT_OPERATION_IDENTITY_PREFIX, CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER,
-    CONTRACT_TYPE_IDENTITY_PREFIX, CONTRACT_TYPE_IDENTITY_SCHEMA_MARKER,
     DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX, DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER,
     FILE_IR_IDENTITY_PREFIX, OPERATION_ABI_IDENTITY_PREFIX, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
     PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER, PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
     PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER, PACKAGE_ASSEMBLY_IDENTITY_PREFIX,
     PACKAGE_BUILD_IDENTITY_PREFIX, PACKAGE_BUILD_IDENTITY_SCHEMA_MARKER,
     PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX, PACKAGE_LOCAL_ABI_IDENTITY_PREFIX,
-    PACKAGE_LOCAL_ABI_IDENTITY_SCHEMA_MARKER, PACKAGE_TEST_BUILD_IDENTITY_PREFIX,
+    PACKAGE_LOCAL_ABI_IDENTITY_SCHEMA_MARKER, PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX,
+    PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER, PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX,
+    PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER, PACKAGE_TEST_BUILD_IDENTITY_PREFIX,
     PACKAGE_TEST_ENTRYPOINT_ID_PREFIX, PACKAGE_TEST_ENTRYPOINT_LOCAL_ID_PREFIX,
     PUBLICATION_ABI_IDENTITY_PREFIX, RUNTIME_PROGRAM_BUILD_SCHEMA_MARKER,
     SERVICE_ASSEMBLY_IDENTITY_PREFIX, SERVICE_BUILD_IDENTITY_PREFIX,
@@ -50,11 +51,12 @@ pub use constants::{
     SERVICE_UNIT_IDENTITY_PREFIX,
 };
 pub use contract::{
-    assign_service_contract_identities, contract_operation_id, contract_type_id,
-    normalize_contract_definition_surface, normalize_contract_operation_contract,
-    normalize_contract_type_shape, service_contract_from_definition, service_contract_ref,
+    assign_service_contract_identities, contract_operation_id,
+    normalize_contract_operation_contract, normalize_contract_type_shape,
+    package_schema_index_identity, package_schema_type_id, service_contract_ref,
     service_protocol_identity, service_protocol_identity_hash,
-    service_protocol_identity_projection, validate_service_contract_identities,
+    service_protocol_identity_projection, validate_package_schema_index,
+    validate_package_schema_records, validate_service_contract_identities,
     ServiceProtocolIdentityProjection,
 };
 pub use deployment::{

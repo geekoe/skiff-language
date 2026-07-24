@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{compile_identity::ContractTypeId, types::TypeRefIr};
+use crate::{compile_identity::PackageSchemaTypeId, types::TypeRefIr};
 
 /// A literal value whose exact payload participates in a ServiceContract type.
 ///
@@ -22,8 +22,7 @@ pub enum ContractLiteral {
 
 /// A type reference inside a ServiceContract boundary schema.
 ///
-/// Contract references are nominal and carry ContractTypeId directly. Inline
-/// containers remain structural and recursively participate in closure checks.
+/// Named boundary references retain their declaring Package owner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -36,16 +35,10 @@ pub enum ContractTypeRef {
         name: String,
         arguments: Vec<ContractTypeRef>,
     },
-    Contract {
-        contract_type_id: ContractTypeId,
-    },
-    /// Exact nominal reference owned by a PackageArtifact public API.
-    ///
-    /// This form is valid only in a package boundary projection. Service API
-    /// projection must replace it with the service-owned ContractTypeId before
-    /// compiling a ServiceContract.
-    PackagePublic {
-        local_type_id: String,
+    PackageSchema {
+        package_id: String,
+        stable_schema_key: String,
+        package_schema_type_id: PackageSchemaTypeId,
     },
     TypeParam {
         name: String,
@@ -64,6 +57,14 @@ pub enum ContractTypeRef {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageSchemaTypeRef {
+    pub package_id: String,
+    pub stable_schema_key: String,
+    pub package_schema_type_id: PackageSchemaTypeId,
+}
+
 impl ContractTypeRef {
     pub fn builtin(name: impl Into<String>) -> Self {
         Self::Builtin {
@@ -72,8 +73,16 @@ impl ContractTypeRef {
         }
     }
 
-    pub fn contract(contract_type_id: ContractTypeId) -> Self {
-        Self::Contract { contract_type_id }
+    pub fn package_schema(
+        package_id: impl Into<String>,
+        stable_schema_key: impl Into<String>,
+        package_schema_type_id: PackageSchemaTypeId,
+    ) -> Self {
+        Self::PackageSchema {
+            package_id: package_id.into(),
+            stable_schema_key: stable_schema_key.into(),
+            package_schema_type_id,
+        }
     }
 
     pub fn structural_union(variants: Vec<Self>) -> Self {
@@ -103,8 +112,10 @@ pub enum PackageTypeRef {
     Local {
         local_type: TypeRefIr,
     },
-    Contract {
-        contract_type_id: ContractTypeId,
+    PackageSchema {
+        package_id: String,
+        stable_schema_key: String,
+        package_schema_type_id: PackageSchemaTypeId,
     },
     Container {
         name: String,
@@ -183,8 +194,7 @@ pub struct BoundaryCallbackOperation {
     pub may_suspend: bool,
 }
 
-/// Reusable semantic body for a schema entry. The definition compiler adds the
-/// stable key and derived ContractTypeId around this body.
+/// Reusable canonical semantic body for a package schema entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContractTypeShape {
@@ -195,10 +205,55 @@ pub struct ContractTypeShape {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContractSchemaType {
-    pub contract_type_id: ContractTypeId,
-    pub stable_key: String,
-    pub shape: ContractTypeShape,
+pub struct PackageSchemaCanonicalDescriptor {
+    pub type_params: Vec<String>,
+    pub descriptor: ContractTypeDescriptor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageSchemaTypeRecord {
+    pub package_id: String,
+    pub stable_schema_key: String,
+    pub package_schema_type_id: PackageSchemaTypeId,
+    pub canonical_descriptor: PackageSchemaCanonicalDescriptor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageSchemaIndexEntry {
+    pub package_schema_type_id: PackageSchemaTypeId,
+    pub public_path: Option<String>,
+    pub nameability: ContractTypeNameability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageSchemaIndex {
+    pub package_id: String,
+    pub package_schema_index_identity: crate::PackageSchemaIndexIdentity,
+    pub types: BTreeMap<String, PackageSchemaIndexEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageSchemaIndexRef {
+    pub package_id: String,
+    pub package_schema_index_identity: crate::PackageSchemaIndexIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageSchemaTypeRecordRef {
+    pub package_id: String,
+    pub package_schema_type_id: PackageSchemaTypeId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageTypeRequirement {
+    pub package_id: String,
+    pub required_type_ids: Vec<PackageSchemaTypeId>,
 }
 
 #[cfg(test)]
@@ -208,18 +263,81 @@ mod tests {
     use super::*;
 
     #[test]
+    fn package_schema_records_indexes_and_requirements_have_strict_wire() {
+        let type_id = PackageSchemaTypeId::new("type:user");
+        let record = PackageSchemaTypeRecord {
+            package_id: "example.pkg".to_string(),
+            stable_schema_key: "User".to_string(),
+            package_schema_type_id: type_id.clone(),
+            canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                type_params: Vec::new(),
+                descriptor: ContractTypeDescriptor::Record {
+                    fields: BTreeMap::new(),
+                },
+            },
+        };
+        let record_wire = serde_json::to_value(&record).unwrap();
+        assert_eq!(record_wire["packageId"], "example.pkg");
+        assert!(record_wire.get("nameability").is_none());
+        assert!(record_wire.get("publicPath").is_none());
+
+        let index = PackageSchemaIndex {
+            package_id: "example.pkg".to_string(),
+            package_schema_index_identity: "index".into(),
+            types: BTreeMap::from([(
+                "User".to_string(),
+                PackageSchemaIndexEntry {
+                    package_schema_type_id: type_id.clone(),
+                    public_path: Some("api.User".to_string()),
+                    nameability: ContractTypeNameability::PublicNameable,
+                },
+            )]),
+        };
+        serde_json::from_value::<PackageSchemaIndex>(serde_json::to_value(index).unwrap())
+            .expect("strict index round trip");
+
+        let requirement = PackageTypeRequirement {
+            package_id: "example.pkg".to_string(),
+            required_type_ids: vec![type_id],
+        };
+        let wire = serde_json::to_value(requirement).unwrap();
+        for field in ["packageId", "requiredTypeIds"] {
+            let mut missing = wire.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<PackageTypeRequirement>(missing).is_err());
+        }
+        let mut extra = wire;
+        extra
+            .as_object_mut()
+            .unwrap()
+            .insert("packageSchemaIndexIdentity".to_string(), json!("forbidden"));
+        assert!(serde_json::from_value::<PackageTypeRequirement>(extra).is_err());
+    }
+
+    #[test]
     fn contract_type_ref_is_strict_and_nominal_id_is_explicit() {
-        let reference = ContractTypeRef::contract(ContractTypeId::new("contract-type"));
+        let reference = ContractTypeRef::package_schema(
+            "example.pkg",
+            "User",
+            PackageSchemaTypeId::new("package-type"),
+        );
         assert_eq!(
             serde_json::to_value(reference).unwrap(),
-            json!({ "kind": "contract", "contractTypeId": "contract-type" })
+            json!({
+                "kind": "packageSchema",
+                "packageId": "example.pkg",
+                "stableSchemaKey": "User",
+                "packageSchemaTypeId": "package-type"
+            })
         );
         for invalid in [
-            json!({ "kind": "contract" }),
-            json!({ "kind": "contract", "abiTypeId": "legacy" }),
+            json!({ "kind": "packageSchema" }),
+            json!({ "kind": "packageSchema", "packageSchemaTypeId": "package-type" }),
             json!({
-                "kind": "contract",
-                "contractTypeId": "contract-type",
+                "kind": "packageSchema",
+                "packageId": "example.pkg",
+                "stableSchemaKey": "User",
+                "packageSchemaTypeId": "package-type",
                 "displayName": "not semantic"
             }),
         ] {

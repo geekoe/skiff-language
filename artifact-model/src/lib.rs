@@ -75,9 +75,9 @@ pub use builtin_receiver_ops::{
     SUPPORTED_RECEIVER_BUILTIN_OPS,
 };
 pub use compile_identity::{
-    AssemblyIdentity, ContractOperationId, ContractTypeId, DeploymentArtifactIdentity,
-    DeploymentRevision, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
-    ServiceProtocolIdentity,
+    AssemblyIdentity, ContractOperationId, DeploymentArtifactIdentity, DeploymentRevision,
+    PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageSchemaIndexIdentity,
+    PackageSchemaTypeId, ServiceProtocolIdentity,
 };
 pub use compile_requirements::{
     ContractRequirement, PackageConfigRequirement, PackageRequirement, PackageResourceRequirement,
@@ -91,8 +91,10 @@ pub use config::{
 };
 pub use contract_types::{
     BoundaryCallbackOperation, ContractDiscriminatedUnionBranch, ContractLiteral,
-    ContractSchemaType, ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef,
-    ContractTypeShape, PackageTypeRef,
+    ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef, ContractTypeShape,
+    PackageSchemaCanonicalDescriptor, PackageSchemaIndex, PackageSchemaIndexEntry,
+    PackageSchemaIndexRef, PackageSchemaTypeRecord, PackageSchemaTypeRecordRef,
+    PackageSchemaTypeRef, PackageTypeRef, PackageTypeRequirement,
 };
 pub use deployment::{
     ActivationPolicy, ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentIngressBinding,

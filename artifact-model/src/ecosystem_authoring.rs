@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BoundaryOperationContract, ContractTypeShape, ServiceDeploymentInput, ServiceDeploymentRef,
-    SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    BoundaryOperationContract, PackageSchemaTypeId, PackageTypeRequirement, ServiceDeploymentInput,
+    ServiceDeploymentRef, SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 
 /// Shared source-level dependency alias vectors.  Package and contract
@@ -114,11 +115,11 @@ pub struct ServiceConfigProfileAuthoring {
 pub struct ServiceContractDefinitionDiagnosticText {
     pub service: String,
     pub operations: BTreeMap<String, String>,
-    pub types: BTreeMap<String, String>,
+    pub types: BTreeMap<PackageSchemaTypeId, String>,
 }
 
-/// Code-free `contract.yml` input. Stable keys are replaced with canonical
-/// operation/type identities while materializing the ServiceContract record.
+/// Code-free `contract.yml` input. Operations may reference only package-owned
+/// schema identities listed by the exact package requirements.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceContractDefinition {
@@ -126,7 +127,7 @@ pub struct ServiceContractDefinition {
     pub service_id: String,
     pub contract_version: String,
     pub operations: BTreeMap<String, BoundaryOperationContract>,
-    pub boundary_schema: BTreeMap<String, ContractTypeShape>,
+    pub package_type_requirements: Vec<PackageTypeRequirement>,
     pub diagnostic_text: ServiceContractDefinitionDiagnosticText,
 }
 
@@ -189,9 +190,7 @@ impl ServiceContractDefinition {
         if self.operations.is_empty() {
             return Err("contract.yml operations must not be empty".to_string());
         }
-        if self.operations.keys().any(|key| key.trim().is_empty())
-            || self.boundary_schema.keys().any(|key| key.trim().is_empty())
-        {
+        if self.operations.keys().any(|key| key.trim().is_empty()) {
             return Err("contract.yml stable keys must not be empty".to_string());
         }
         if let Some(key) = self
@@ -204,12 +203,12 @@ impl ServiceContractDefinition {
                 "contract.yml diagnosticText references unknown operation {key}"
             ));
         }
-        if let Some(key) = self
-            .diagnostic_text
-            .types
-            .keys()
-            .find(|key| !self.boundary_schema.contains_key(*key))
-        {
+        if let Some(key) = self.diagnostic_text.types.keys().find(|key| {
+            !self
+                .package_type_requirements
+                .iter()
+                .any(|requirement| requirement.required_type_ids.contains(key))
+        }) {
             return Err(format!(
                 "contract.yml diagnosticText references unknown type {key}"
             ));
@@ -345,7 +344,7 @@ mod tests {
             service_id: "example.com/echo".to_string(),
             contract_version: "1.0.0".to_string(),
             operations: BTreeMap::from([("health".to_string(), operation_contract())]),
-            boundary_schema: BTreeMap::new(),
+            package_type_requirements: Vec::new(),
             diagnostic_text: ServiceContractDefinitionDiagnosticText {
                 service: "Echo".to_string(),
                 operations: BTreeMap::new(),

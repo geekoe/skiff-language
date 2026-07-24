@@ -1,585 +1,160 @@
-use super::*;
+use std::collections::BTreeMap;
+
 use crate::{
-    BoundaryCallbackOperation, BoundaryEffectGuarantee, BoundaryOperationContract,
-    BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn, BoundaryValueCarrier,
+    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
+    BoundaryErrorContract, BoundaryOperationContract, BoundaryOperationDescriptor,
+    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractDiagnosticText, ContractSchemaType, ContractTypeNameability, ContractTypeShape,
-    ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
+    ContractDiagnosticText, ContractOperationId, ContractTypeDescriptor, ContractTypeRef,
+    PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    PackageSchemaTypeRef, PackageTypeRequirement, ServiceContract, ServiceProtocolIdentity,
+    SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
-#[test]
-fn canonical_spec_exposes_only_event_and_result_as_contract_builtins() {
-    let spec = canonical_websocket_shape_spec();
-    assert!(std::ptr::eq(spec, canonical_websocket_shape_spec()));
-    assert_eq!(
-        spec.contract_builtins()
-            .iter()
-            .map(|builtin| (builtin.builtin(), builtin.name(), builtin.context_arity()))
-            .collect::<Vec<_>>(),
-        vec![
-            (
-                WebSocketContractBuiltin::Event,
-                WEBSOCKET_INGRESS_EVENT_TYPE,
-                1,
-            ),
-            (
-                WebSocketContractBuiltin::Result,
-                WEBSOCKET_CONNECT_RESULT_TYPE,
-                1,
-            ),
-        ]
-    );
-    assert_eq!(
-        spec.contract_builtin(WebSocketContractBuiltin::Event)
-            .shape(),
-        WebSocketShapeId::Event
-    );
-    assert_eq!(
-        spec.contract_builtin(WebSocketContractBuiltin::Result)
-            .shape(),
-        WebSocketShapeId::Result
-    );
-    for nested in [
-        WebSocketShapeId::ConnectRequest,
-        WebSocketShapeId::ReceiveEvent,
-        WebSocketShapeId::Connection,
-        WebSocketShapeId::Message,
-        WebSocketShapeId::ConnectionPolicy,
-        WebSocketShapeId::HttpHeader,
-        WebSocketShapeId::HttpQueryParam,
-    ] {
-        assert!(spec
-            .contract_builtin_named(nested.canonical_name())
-            .is_none());
-    }
-    assert_eq!(spec.shapes().len(), 9);
-}
+use super::{websocket_ingress_context, WebSocketIngressContext, WEBSOCKET_INGRESS_OPERATION_NAME};
+
+const PACKAGE_ID: &str = "example.context";
 
 #[test]
-fn websocket_admission_consumes_context_arity_from_builtin_spec() {
-    let operation_id = ContractOperationId::new("operation:websocket");
-    let one_argument_contract = websocket_contract(
-        operation_id.clone(),
-        ContractTypeRef::builtin("null"),
-        BTreeMap::new(),
-    );
-    let mut arity_drift = build_canonical_websocket_shape_spec();
-    for builtin in &mut arity_drift.contract_builtins {
-        builtin.context_arity = 2;
-    }
-
-    assert_error_contains(
-        websocket_ingress_context_with_shape_spec(
-            &one_argument_contract,
-            &operation_id,
-            &arity_drift,
-        ),
-        "event must be",
-    );
-
-    let mut two_argument_contract = one_argument_contract;
-    let operation = &mut two_argument_contract
-        .operations
-        .get_mut(&operation_id)
-        .expect("WebSocket operation is present")
-        .contract;
-    let ContractTypeRef::Builtin { arguments, .. } = &mut operation.parameters[0].ty else {
-        panic!("event must be a builtin")
-    };
-    arguments.push(ContractTypeRef::builtin("null"));
-    let ContractTypeRef::Nullable { inner } = &mut operation.return_value.ty else {
-        panic!("result must be nullable")
-    };
-    let ContractTypeRef::Builtin { arguments, .. } = inner.as_mut() else {
-        panic!("result must wrap a builtin")
-    };
-    arguments.push(ContractTypeRef::builtin("null"));
-
-    assert_eq!(
-        websocket_ingress_context_with_shape_spec(
-            &two_argument_contract,
-            &operation_id,
-            &arity_drift,
-        )
-        .unwrap(),
-        WebSocketIngressContext::Null
-    );
-}
-
-#[test]
-fn canonical_event_spec_covers_connect_and_receive_nested_shapes_exactly() {
-    use WebSocketShapeId as Id;
-    use WebSocketShapeType as Ty;
-
-    let spec = canonical_websocket_shape_spec();
-    assert_tagged_union(
-        spec,
-        Id::Event,
-        "tag",
-        &[
-            (
-                "connect",
-                "std.websocket.WebSocketIngressConnectEvent",
-                &["tag", "connectRequest"],
-            ),
-            (
-                "receive",
-                "std.websocket.WebSocketIngressReceiveEvent",
-                &["tag", "receiveEvent"],
-            ),
-        ],
-    );
-    assert_eq!(
-        record_fields(spec, Id::ConnectRequest),
-        &[
-            field("connectionId", Ty::String),
-            field("url", Ty::String),
-            field("query", array(Ty::Shape(Id::HttpQueryParam))),
-            field("headers", array(Ty::Shape(Id::HttpHeader))),
-            field("cookies", array(Ty::Shape(Id::HttpHeader))),
-            field("version", nullable(Ty::String)),
-        ]
-    );
-    assert_eq!(
-        record_fields(spec, Id::ReceiveEvent),
-        &[
-            field("connection", Ty::Shape(Id::Connection)),
-            field("message", Ty::Shape(Id::Message)),
-        ]
-    );
-    assert_eq!(
-        record_fields(spec, Id::Connection),
-        &[
-            field("id", Ty::String),
-            field("businessIdentity", nullable(Ty::String)),
-            field("context", Ty::Context),
-        ]
-    );
-    assert_tagged_union(
-        spec,
-        Id::Message,
-        "tag",
-        &[
-            (
-                "text",
-                "std.websocket.TextConnectionMessage",
-                &["tag", "text"],
-            ),
-            (
-                "binary",
-                "std.websocket.BinaryConnectionMessage",
-                &["tag", "base64"],
-            ),
-        ],
-    );
-    let event_variants = tagged_variants(spec, Id::Event);
-    assert_eq!(
-        event_variants[0].fields()[1].ty(),
-        &Ty::Shape(Id::ConnectRequest)
-    );
-    assert_eq!(
-        event_variants[1].fields()[1].ty(),
-        &Ty::Shape(Id::ReceiveEvent)
-    );
-    let message_variants = tagged_variants(spec, Id::Message);
-    assert_eq!(message_variants[0].fields()[1].ty(), &Ty::String);
-    assert_eq!(message_variants[1].fields()[1].ty(), &Ty::String);
-    assert_eq!(
-        record_fields(spec, Id::HttpHeader),
-        &[field("name", Ty::String), field("value", Ty::String)]
-    );
-    assert_eq!(
-        record_fields(spec, Id::HttpQueryParam),
-        &[field("name", Ty::String), field("value", Ty::String)]
-    );
-}
-
-#[test]
-fn canonical_result_spec_covers_accept_reject_and_policy_exactly() {
-    use WebSocketShapeId as Id;
-    use WebSocketShapeType as Ty;
-
-    let spec = canonical_websocket_shape_spec();
-    assert_tagged_union(
-        spec,
-        Id::Result,
-        "tag",
-        &[
-            (
-                "accept",
-                "std.websocket.WebSocketConnectAccept",
-                &["tag", "context", "businessIdentity", "connectionPolicy"],
-            ),
-            (
-                "reject",
-                "std.websocket.WebSocketConnectReject",
-                &["tag", "code", "reason"],
-            ),
-        ],
-    );
-    assert_eq!(
-        record_fields(spec, Id::ConnectionPolicy),
-        &[
-            field("maxConnections", Ty::Integer),
-            field(
-                "overflow",
-                Ty::StringLiteralUnion(vec!["close-oldest", "reject-new"]),
-            ),
-            field("closeCode", nullable(Ty::Integer)),
-            field("closeReason", nullable(Ty::String)),
-        ]
-    );
-
-    let WebSocketShape::TaggedUnion { variants, .. } = spec.shape(Id::Result) else {
-        panic!("Result must be a tagged union")
-    };
-    assert_eq!(variants[0].fields()[1].ty(), &Ty::Context);
-    assert_eq!(variants[0].fields()[2].ty(), &nullable(Ty::String));
-    assert_eq!(
-        variants[0].fields()[3].ty(),
-        &nullable(Ty::Shape(Id::ConnectionPolicy))
-    );
-    assert_eq!(variants[1].fields()[1].ty(), &Ty::Integer);
-    assert_eq!(variants[1].fields()[2].ty(), &Ty::String);
-}
-
-#[test]
-fn websocket_context_accepts_null_and_exact_persistable_nominal_graphs() {
-    let operation_id = ContractOperationId::new("operation:websocket");
-    let null_contract = websocket_contract(
-        operation_id.clone(),
-        ContractTypeRef::builtin("null"),
-        BTreeMap::new(),
-    );
-    assert_eq!(
-        websocket_ingress_context(&null_contract, &operation_id).unwrap(),
-        WebSocketIngressContext::Null
-    );
-
-    let context_id = ContractTypeId::new("type:context");
-    let role_id = ContractTypeId::new("type:role");
-    let nominal_contract = websocket_contract(
-        operation_id.clone(),
-        ContractTypeRef::contract(context_id.clone()),
-        BTreeMap::from([
-            (
-                context_id.clone(),
-                schema_type(
-                    context_id.clone(),
-                    "Context",
-                    ContractTypeDescriptor::Record {
-                        fields: BTreeMap::from([
-                            (
-                                "role".to_string(),
-                                ContractTypeRef::contract(role_id.clone()),
-                            ),
-                            (
-                                "expiresAfter".to_string(),
-                                ContractTypeRef::builtin("Duration"),
-                            ),
-                        ]),
-                    },
-                ),
-            ),
-            (
-                role_id.clone(),
-                schema_type(
-                    role_id,
-                    "Role",
-                    ContractTypeDescriptor::Enumeration {
-                        variants: vec!["member".to_string(), "admin".to_string()],
-                    },
-                ),
-            ),
-        ]),
-    );
-    assert_eq!(
-        websocket_ingress_context(&nominal_contract, &operation_id).unwrap(),
-        WebSocketIngressContext::Contract(context_id)
-    );
-}
-
-#[test]
-fn websocket_context_requires_identical_null_or_same_contract_nominal_refs() {
-    let operation_id = ContractOperationId::new("operation:websocket");
-    let missing_id = ContractTypeId::new("type:foreign");
-    let foreign = websocket_contract(
-        operation_id.clone(),
-        ContractTypeRef::contract(missing_id),
-        BTreeMap::new(),
-    );
-    assert_error_contains(
-        websocket_ingress_context(&foreign, &operation_id),
-        "owned by the same ServiceContract",
-    );
-
-    let scalar = websocket_contract(
-        operation_id.clone(),
-        ContractTypeRef::builtin("string"),
-        BTreeMap::new(),
-    );
-    assert_error_contains(
-        websocket_ingress_context(&scalar, &operation_id),
-        "null or a contract-owned nominal type",
-    );
-
-    let context_id = ContractTypeId::new("type:context");
-    let mut mismatch = websocket_contract(
-        operation_id.clone(),
-        ContractTypeRef::contract(context_id.clone()),
-        BTreeMap::from([(
+fn websocket_context_resolves_package_owned_schema_record() {
+    let context_id = PackageSchemaTypeId::new("type:context");
+    let context_ref = ContractTypeRef::package_schema(PACKAGE_ID, "Context", context_id.clone());
+    let (contract, operation_id) = websocket_contract(context_ref);
+    let records = BTreeMap::from([(
+        context_id.clone(),
+        record(
+            "Context",
             context_id.clone(),
-            schema_type(
-                context_id,
-                "Context",
-                ContractTypeDescriptor::Record {
-                    fields: BTreeMap::new(),
-                },
-            ),
-        )]),
-    );
-    mismatch
-        .operations
-        .get_mut(&operation_id)
-        .unwrap()
-        .contract
-        .return_value
-        .ty = nullable_generic(
-        WEBSOCKET_CONNECT_RESULT_TYPE,
-        ContractTypeRef::builtin("null"),
-    );
-    assert_error_contains(
-        websocket_ingress_context(&mismatch, &operation_id),
-        "event and result Context must be identical",
-    );
-}
-
-#[test]
-fn websocket_context_rejects_callback_missing_cycle_and_alias_graphs() {
-    let operation_id = ContractOperationId::new("operation:websocket");
-    let context_id = ContractTypeId::new("type:context");
-    let callback_id = ContractTypeId::new("type:callback");
-    let callback_graph = websocket_contract(
-        operation_id.clone(),
-        ContractTypeRef::contract(context_id.clone()),
-        BTreeMap::from([
-            (
-                context_id.clone(),
-                schema_type(
-                    context_id.clone(),
-                    "Context",
-                    ContractTypeDescriptor::Record {
-                        fields: BTreeMap::from([(
-                            "listener".to_string(),
-                            ContractTypeRef::contract(callback_id.clone()),
-                        )]),
-                    },
-                ),
-            ),
-            (
-                callback_id.clone(),
-                schema_type(
-                    callback_id,
-                    "Listener",
-                    ContractTypeDescriptor::CallbackInterface {
-                        operations: BTreeMap::from([(
-                            "notify".to_string(),
-                            BoundaryCallbackOperation {
-                                parameters: vec![ContractTypeRef::builtin("string")],
-                                return_type: ContractTypeRef::builtin("void"),
-                                may_suspend: false,
-                            },
-                        )]),
-                    },
-                ),
-            ),
-        ]),
-    );
-    assert_error_contains(
-        websocket_ingress_context(&callback_graph, &operation_id),
-        "CallbackInterface",
-    );
-
-    let missing_id = ContractTypeId::new("type:missing");
-    let missing_graph = websocket_contract(
-        operation_id.clone(),
-        ContractTypeRef::contract(context_id.clone()),
-        BTreeMap::from([(
-            context_id.clone(),
-            schema_type(
-                context_id.clone(),
-                "Context",
-                ContractTypeDescriptor::Record {
-                    fields: BTreeMap::from([(
-                        "missing".to_string(),
-                        ContractTypeRef::contract(missing_id),
-                    )]),
-                },
-            ),
-        )]),
-    );
-    assert_error_contains(
-        websocket_ingress_context(&missing_graph, &operation_id),
-        "missing or foreign ContractTypeId",
-    );
-
-    let child_id = ContractTypeId::new("type:child");
-    let cycle = websocket_contract(
-        operation_id.clone(),
-        ContractTypeRef::contract(context_id.clone()),
-        BTreeMap::from([
-            (
-                context_id.clone(),
-                schema_type(
-                    context_id.clone(),
-                    "Context",
-                    ContractTypeDescriptor::Record {
-                        fields: BTreeMap::from([(
-                            "child".to_string(),
-                            ContractTypeRef::contract(child_id.clone()),
-                        )]),
-                    },
-                ),
-            ),
-            (
-                child_id.clone(),
-                schema_type(
-                    child_id,
-                    "Child",
-                    ContractTypeDescriptor::Record {
-                        fields: BTreeMap::from([(
-                            "parent".to_string(),
-                            ContractTypeRef::contract(context_id.clone()),
-                        )]),
-                    },
-                ),
-            ),
-        ]),
-    );
-    assert_error_contains(
-        websocket_ingress_context(&cycle, &operation_id),
-        "contract schema cycle",
-    );
-
-    let alias = websocket_contract(
-        operation_id.clone(),
-        ContractTypeRef::contract(context_id.clone()),
-        BTreeMap::from([(
-            context_id.clone(),
-            schema_type(
-                context_id,
-                "Context",
-                ContractTypeDescriptor::Alias {
-                    target: ContractTypeRef::builtin("string"),
-                },
-            ),
-        )]),
-    );
-    assert_error_contains(
-        websocket_ingress_context(&alias, &operation_id),
-        "not an exact persistable nominal type",
-    );
-}
-
-fn record_fields(
-    spec: &CanonicalWebSocketShapeSpec,
-    shape: WebSocketShapeId,
-) -> &[WebSocketShapeField] {
-    let WebSocketShape::Record { fields } = spec.shape(shape) else {
-        panic!("{} must be a record", shape.canonical_name())
-    };
-    fields
-}
-
-fn assert_tagged_union(
-    spec: &CanonicalWebSocketShapeSpec,
-    shape: WebSocketShapeId,
-    expected_discriminator: &str,
-    expected: &[(&str, &str, &[&str])],
-) {
-    let WebSocketShape::TaggedUnion {
-        discriminator_field,
-        variants,
-    } = spec.shape(shape)
-    else {
-        panic!("{} must be a tagged union", shape.canonical_name())
-    };
-    assert_eq!(*discriminator_field, expected_discriminator);
-    assert_eq!(variants.len(), expected.len());
-    for (variant, (tag, canonical_name, fields)) in variants.iter().zip(expected) {
-        assert_eq!(variant.tag(discriminator_field), Some(*tag));
-        assert_eq!(variant.canonical_name(), *canonical_name);
-        assert_eq!(
-            variant
-                .fields()
-                .iter()
-                .map(WebSocketShapeField::name)
-                .collect::<Vec<_>>(),
-            *fields
-        );
-    }
-}
-
-fn tagged_variants(
-    spec: &CanonicalWebSocketShapeSpec,
-    shape: WebSocketShapeId,
-) -> &[WebSocketTaggedVariant] {
-    let WebSocketShape::TaggedUnion { variants, .. } = spec.shape(shape) else {
-        panic!("{} must be a tagged union", shape.canonical_name())
-    };
-    variants
-}
-
-fn websocket_contract(
-    operation_id: ContractOperationId,
-    context: ContractTypeRef,
-    boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
-) -> ServiceContract {
-    ServiceContract {
-        schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
-        service_id: "example.websocket".to_string(),
-        contract_version: "1.0.0".to_string(),
-        service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
-        operations: BTreeMap::from([(
-            operation_id.clone(),
-            BoundaryOperationDescriptor {
-                operation_id,
-                stable_key: WEBSOCKET_INGRESS_OPERATION_NAME.to_string(),
-                contract: websocket_operation(context),
+            ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([(
+                    "session".to_string(),
+                    ContractTypeRef::builtin("string"),
+                )]),
             },
-        )]),
-        boundary_schema,
-        diagnostic_text: ContractDiagnosticText {
-            service: String::new(),
-            operations: BTreeMap::new(),
-            types: BTreeMap::new(),
-        },
-    }
+        ),
+    )]);
+
+    assert_eq!(
+        websocket_ingress_context(&contract, &operation_id, &records).unwrap(),
+        WebSocketIngressContext::PackageSchema(PackageSchemaTypeRef {
+            package_id: PACKAGE_ID.to_string(),
+            stable_schema_key: "Context".to_string(),
+            package_schema_type_id: context_id,
+        })
+    );
 }
 
-fn websocket_operation(context: ContractTypeRef) -> BoundaryOperationContract {
-    BoundaryOperationContract {
-        parameters: vec![BoundaryParameter {
-            name: "event".to_string(),
-            ty: generic(WEBSOCKET_INGRESS_EVENT_TYPE, context.clone()),
-            value_plan: linkable_plan(BoundaryValueOwner::Caller),
-        }],
-        return_value: BoundaryReturn {
-            ty: nullable_generic(WEBSOCKET_CONNECT_RESULT_TYPE, context),
-            value_plan: linkable_plan(BoundaryValueOwner::Provider),
+#[test]
+fn websocket_context_fails_closed_without_required_record() {
+    let context_id = PackageSchemaTypeId::new("type:context");
+    let (contract, operation_id) = websocket_contract(ContractTypeRef::package_schema(
+        PACKAGE_ID, "Context", context_id,
+    ));
+    let error = websocket_ingress_context(&contract, &operation_id, &BTreeMap::new())
+        .expect_err("missing content-addressed record must fail");
+    assert!(error.to_string().contains("missing PackageSchemaTypeId"));
+}
+
+#[test]
+fn websocket_context_fails_closed_on_package_schema_cycle() {
+    let context_id = PackageSchemaTypeId::new("type:context");
+    let context_ref = ContractTypeRef::package_schema(PACKAGE_ID, "Context", context_id.clone());
+    let (contract, operation_id) = websocket_contract(context_ref.clone());
+    let records = BTreeMap::from([(
+        context_id.clone(),
+        record(
+            "Context",
+            context_id,
+            ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([("self".to_string(), context_ref)]),
+            },
+        ),
+    )]);
+    let error = websocket_ingress_context(&contract, &operation_id, &records)
+        .expect_err("v1 recursive schema must fail closed");
+    assert!(error.to_string().contains("cycle"));
+}
+
+fn websocket_contract(context: ContractTypeRef) -> (ServiceContract, ContractOperationId) {
+    let operation_id = ContractOperationId::new("operation:websocket");
+    let operation = BoundaryOperationDescriptor {
+        operation_id: operation_id.clone(),
+        stable_key: WEBSOCKET_INGRESS_OPERATION_NAME.to_string(),
+        contract: BoundaryOperationContract {
+            parameters: vec![BoundaryParameter {
+                name: "event".to_string(),
+                ty: generic("std.websocket.WebSocketIngressEvent", context.clone()),
+                value_plan: value_plan(),
+            }],
+            return_value: BoundaryReturn {
+                ty: ContractTypeRef::Nullable {
+                    inner: Box::new(generic("std.websocket.WebSocketConnectResult", context)),
+                },
+                value_plan: value_plan(),
+            },
+            errors: BoundaryErrorContract::None,
+            stream: BoundaryStreamContract::Unary,
+            cancellation: BoundaryCancellationContract::NotCancellable,
+            callbacks: BoundaryCallbackContract::None,
+            may_suspend: false,
+            effect_guarantee: BoundaryEffectGuarantee {
+                detached_parameters: true,
+                detached_return: true,
+                detached_error: true,
+                no_caller_reachable_mutation: true,
+                no_caller_value_escape: true,
+                no_same_heap_identity: true,
+            },
         },
-        errors: BoundaryErrorContract::None,
-        stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::NotCancellable,
-        callbacks: BoundaryCallbackContract::None,
-        may_suspend: false,
-        effect_guarantee: BoundaryEffectGuarantee {
-            detached_parameters: true,
-            detached_return: true,
-            detached_error: true,
-            no_caller_reachable_mutation: true,
-            no_caller_value_escape: true,
-            no_same_heap_identity: true,
+    };
+    let required_type_ids = operation_type_ids(&operation);
+    (
+        ServiceContract {
+            schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
+            service_id: "example.websocket".to_string(),
+            contract_version: "1.0.0".to_string(),
+            service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
+            operations: BTreeMap::from([(operation_id.clone(), operation)]),
+            package_type_requirements: vec![PackageTypeRequirement {
+                package_id: PACKAGE_ID.to_string(),
+                required_type_ids,
+            }],
+            diagnostic_text: ContractDiagnosticText {
+                service: String::new(),
+                operations: BTreeMap::new(),
+                types: BTreeMap::new(),
+            },
+        },
+        operation_id,
+    )
+}
+
+fn operation_type_ids(operation: &BoundaryOperationDescriptor) -> Vec<PackageSchemaTypeId> {
+    let ContractTypeRef::Builtin { arguments, .. } = &operation.contract.parameters[0].ty else {
+        unreachable!()
+    };
+    let ContractTypeRef::PackageSchema {
+        package_schema_type_id,
+        ..
+    } = &arguments[0]
+    else {
+        unreachable!()
+    };
+    vec![package_schema_type_id.clone()]
+}
+
+fn record(
+    stable_schema_key: &str,
+    package_schema_type_id: PackageSchemaTypeId,
+    descriptor: ContractTypeDescriptor,
+) -> PackageSchemaTypeRecord {
+    PackageSchemaTypeRecord {
+        package_id: PACKAGE_ID.to_string(),
+        stable_schema_key: stable_schema_key.to_string(),
+        package_schema_type_id,
+        canonical_descriptor: PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor,
         },
     }
 }
@@ -591,44 +166,11 @@ fn generic(name: &str, context: ContractTypeRef) -> ContractTypeRef {
     }
 }
 
-fn nullable_generic(name: &str, context: ContractTypeRef) -> ContractTypeRef {
-    ContractTypeRef::Nullable {
-        inner: Box::new(generic(name, context)),
-    }
-}
-
-fn schema_type(
-    contract_type_id: ContractTypeId,
-    stable_key: &str,
-    descriptor: ContractTypeDescriptor,
-) -> ContractSchemaType {
-    ContractSchemaType {
-        contract_type_id,
-        stable_key: stable_key.to_string(),
-        shape: ContractTypeShape {
-            nameability: ContractTypeNameability::PublicNameable,
-            type_params: Vec::new(),
-            descriptor,
-        },
-    }
-}
-
-fn linkable_plan(owner: BoundaryValueOwner) -> BoundaryValuePlan {
+fn value_plan() -> BoundaryValuePlan {
     BoundaryValuePlan::Linkable {
         carrier: BoundaryValueCarrier::DetachedValueGraph,
         encoding: BoundaryValueEncoding::CanonicalValue,
-        owner,
+        owner: BoundaryValueOwner::Provider,
         lifetime: BoundaryValueLifetime::Call,
     }
-}
-
-fn assert_error_contains(
-    result: Result<WebSocketIngressContext, WebSocketIngressContractError>,
-    expected: &str,
-) {
-    let error = result.expect_err("WebSocket Context must fail closed");
-    assert!(
-        error.to_string().contains(expected),
-        "expected `{expected}` in `{error}`"
-    );
 }

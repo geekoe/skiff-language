@@ -24,6 +24,22 @@ pub(super) fn validate_package_artifact_surface(artifact: &PackageArtifact) -> R
             return invalid_artifact(format!("{label} must be a non-empty string"));
         }
     }
+    if artifact.package_schema_index.package_id != artifact.package_id {
+        return invalid_artifact("package schema index ref owner does not match PackageArtifact");
+    }
+    for (type_id, record_ref) in &artifact.package_schema_type_records {
+        if type_id != &record_ref.package_schema_type_id {
+            return invalid_artifact(format!(
+                "package schema record ref map key {type_id} does not match nested identity {}",
+                record_ref.package_schema_type_id
+            ));
+        }
+        if record_ref.package_id != artifact.package_id {
+            return invalid_artifact(format!(
+                "package schema record ref {type_id} owner does not match PackageArtifact"
+            ));
+        }
+    }
     validate_unique_file_refs(&artifact.files)?;
     validate_unique_resources(&artifact.static_resources)?;
     validate_requirements(artifact)?;
