@@ -184,6 +184,9 @@ pub(super) fn package_type_ref_from_validated_contract_ref(
         ContractTypeRef::Contract { contract_type_id } => Ok(PackageTypeRef::Contract {
             contract_type_id: contract_type_id.clone(),
         }),
+        ContractTypeRef::PackagePublic { local_type_id } => Err(format!(
+            "unresolved package public type `{local_type_id}` is not valid in a ServiceContract"
+        )),
         ContractTypeRef::TypeParam { name } => Ok(PackageTypeRef::Local {
             local_type: TypeRefIr::TypeParam { name: name.clone() },
         }),

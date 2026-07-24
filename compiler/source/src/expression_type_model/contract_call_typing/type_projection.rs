@@ -293,6 +293,9 @@ pub(super) fn resolved_contract_type(
                 },
             })
         }
+        ContractTypeRef::PackagePublic { local_type_id } => Err(format!(
+            "unresolved package public type `{local_type_id}` is not valid in a ServiceContract"
+        )),
         ContractTypeRef::TypeParam { name } => Ok(ResolvedTypeRef {
             source_text: name.clone(),
             ir: TypeRefIr::TypeParam { name: name.clone() },

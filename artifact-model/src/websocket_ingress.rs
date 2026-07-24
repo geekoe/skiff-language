@@ -671,6 +671,11 @@ fn validate_persistable_context_ref(
         ContractTypeRef::Contract { contract_type_id } => {
             visit_persistable_context_type(contract, contract_type_id, path, visiting, complete)
         }
+        ContractTypeRef::PackagePublic { local_type_id } => {
+            Err(WebSocketIngressContractError::new(format!(
+                "{path} contains unresolved package public type {local_type_id}"
+            )))
+        }
         ContractTypeRef::TypeParam { name } => Err(WebSocketIngressContractError::new(format!(
             "{path} contains unresolved type parameter {name}"
         ))),

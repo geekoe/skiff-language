@@ -91,7 +91,14 @@ pub fn project_service_api(
             BoundaryCallableProjection::Available {
                 operation_contract, ..
             } => {
-                operations.insert(public_path.clone(), operation_contract.clone());
+                operations.insert(
+                    public_path.clone(),
+                    service_owned_operation_contract(
+                        &service_id,
+                        &package.package_version,
+                        operation_contract,
+                    )?,
+                );
                 operation_text.insert(public_path.clone(), public_path.clone());
                 available.insert(public_path.clone(), callable_id.clone());
             }
@@ -127,6 +134,77 @@ pub fn project_service_api(
         visibility,
         available,
         unavailable,
+    })
+}
+
+fn service_owned_operation_contract(
+    service_id: &str,
+    version_label: &str,
+    operation: &skiff_artifact_model::BoundaryOperationContract,
+) -> Result<skiff_artifact_model::BoundaryOperationContract> {
+    let mut operation = operation.clone();
+    for parameter in &mut operation.parameters {
+        parameter.ty = service_owned_type_ref(service_id, version_label, parameter.ty.clone())?;
+    }
+    operation.return_value.ty =
+        service_owned_type_ref(service_id, version_label, operation.return_value.ty)?;
+    if let BoundaryErrorContract::Typed { payload_type, .. } = &mut operation.errors {
+        *payload_type = service_owned_type_ref(service_id, version_label, payload_type.clone())?;
+    }
+    if let BoundaryStreamContract::ServerStream { item_type, .. } = &mut operation.stream {
+        *item_type = service_owned_type_ref(service_id, version_label, item_type.clone())?;
+    }
+    Ok(operation)
+}
+
+fn service_owned_type_ref(
+    service_id: &str,
+    version_label: &str,
+    ty: ContractTypeRef,
+) -> Result<ContractTypeRef> {
+    Ok(match ty {
+        ContractTypeRef::PackagePublic { local_type_id } => {
+            let public_path = local_type_id.strip_prefix("type:").ok_or_else(|| {
+                ContractDefinitionError::MissingReachablePackageType {
+                    symbol: local_type_id.clone(),
+                }
+            })?;
+            ContractTypeRef::contract(definition_contract_type_id(
+                service_id,
+                version_label,
+                public_path,
+            )?)
+        }
+        ContractTypeRef::Builtin { name, arguments } => ContractTypeRef::Builtin {
+            name,
+            arguments: arguments
+                .into_iter()
+                .map(|argument| service_owned_type_ref(service_id, version_label, argument))
+                .collect::<Result<_>>()?,
+        },
+        ContractTypeRef::Record { fields } => ContractTypeRef::Record {
+            fields: fields
+                .into_iter()
+                .map(|(name, field)| {
+                    Ok((
+                        name,
+                        service_owned_type_ref(service_id, version_label, field)?,
+                    ))
+                })
+                .collect::<Result<_>>()?,
+        },
+        ContractTypeRef::StructuralUnion { variants } => ContractTypeRef::StructuralUnion {
+            variants: variants
+                .into_iter()
+                .map(|variant| service_owned_type_ref(service_id, version_label, variant))
+                .collect::<Result<_>>()?,
+        },
+        ContractTypeRef::Nullable { inner } => ContractTypeRef::Nullable {
+            inner: Box::new(service_owned_type_ref(service_id, version_label, *inner)?),
+        },
+        ContractTypeRef::Contract { .. }
+        | ContractTypeRef::TypeParam { .. }
+        | ContractTypeRef::Literal { .. } => ty,
     })
 }
 
@@ -590,6 +668,7 @@ fn collect_type_ids(ty: &ContractTypeRef, out: &mut BTreeSet<ContractTypeId>) {
         ContractTypeRef::Contract { contract_type_id } => {
             out.insert(contract_type_id.clone());
         }
+        ContractTypeRef::PackagePublic { .. } => {}
         ContractTypeRef::TypeParam { .. } => {}
         ContractTypeRef::Builtin { arguments, .. } => {
             for argument in arguments {
@@ -1176,9 +1255,9 @@ mod tests {
         BoundaryOperationContract {
             parameters: vec![skiff_artifact_model::BoundaryParameter {
                 name: "request".to_string(),
-                ty: ContractTypeRef::contract(
-                    definition_contract_type_id("example.registry", "ignored", "Request").unwrap(),
-                ),
+                ty: ContractTypeRef::PackagePublic {
+                    local_type_id: "type:Request".to_string(),
+                },
                 value_plan: value_plan(BoundaryValueOwner::Caller),
             }],
             return_value: BoundaryReturn {

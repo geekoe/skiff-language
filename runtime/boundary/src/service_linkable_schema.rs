@@ -46,6 +46,13 @@ fn validate_schema_closure_inner(
             validate_descriptor_closure(&descriptor.shape.descriptor, schema, active)?;
             active.remove(contract_type_id);
         }
+        ContractTypeRef::PackagePublic { local_type_id } => {
+            return Err(ServiceLinkableMaterializationError::InvalidContractPlan {
+                message: format!(
+                    "unresolved package public type {local_type_id} reached runtime boundary"
+                ),
+            });
+        }
         ContractTypeRef::TypeParam { .. } => {}
         ContractTypeRef::Record { fields } => {
             for field in fields.values() {

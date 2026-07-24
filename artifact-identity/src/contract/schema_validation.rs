@@ -289,6 +289,11 @@ fn validate_type_ref(
                 path: path.to_string(),
             });
         }
+        ContractTypeRef::PackagePublic { local_type_id } => {
+            return invalid_contract(format!(
+                "{path}: unresolved package public type `{local_type_id}` is not valid in a ServiceContract"
+            ));
+        }
         ContractTypeRef::TypeParam { name } => {
             if !type_params.contains(name) {
                 return invalid_contract(format!("{path}: unknown type parameter `{name}`"));

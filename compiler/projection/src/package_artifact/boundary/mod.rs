@@ -7,6 +7,7 @@ use skiff_artifact_model::{
     BoundaryCallableProjection, CallableEffectSummary, CallableSemanticFacts,
     PackageCallableSignature, PackageRuntimeRequirements,
 };
+use std::collections::BTreeMap;
 
 use crate::error::ProjectionError;
 
@@ -16,10 +17,16 @@ pub fn project_boundary_callable(
     facts: &CallableSemanticFacts,
     runtime_requirements: &PackageRuntimeRequirements,
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
+    public_type_ids: &BTreeMap<(String, String), String>,
 ) -> Result<BoundaryCallableProjection, ProjectionError> {
     let mut reasons = eligibility::semantic_unavailable_reasons(facts);
-    let operation_contract =
-        types::project_operation_contract(owner_module, signature, file_ir_units, &mut reasons);
+    let operation_contract = types::project_operation_contract(
+        owner_module,
+        signature,
+        file_ir_units,
+        public_type_ids,
+        &mut reasons,
+    );
     eligibility::normalize_reasons(&mut reasons);
     if !reasons.is_empty() {
         return Ok(BoundaryCallableProjection::Unavailable { reasons });

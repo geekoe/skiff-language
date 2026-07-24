@@ -281,6 +281,11 @@ impl AliasExpander {
                 }
                 ContractTypeRef::contract(contract_type_id)
             }
+            ContractTypeRef::PackagePublic { local_type_id } => {
+                return invalid_contract(format!(
+                    "{path}: unresolved package public type `{local_type_id}` is not valid in a ServiceContract"
+                ));
+            }
             ContractTypeRef::TypeParam { name } => ContractTypeRef::TypeParam { name },
             ContractTypeRef::Record { fields } => ContractTypeRef::Record {
                 fields: fields

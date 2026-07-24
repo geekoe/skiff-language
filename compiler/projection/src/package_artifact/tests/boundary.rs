@@ -23,8 +23,15 @@ fn safe_detached_callable_is_available_with_contract_agnostic_body_and_requireme
         contract_type_id: error_type.clone(),
     }];
     let runtime = runtime_requirements("async");
-    let projection =
-        project_boundary_callable("api", &signature, &safe_facts(), &runtime, &[]).unwrap();
+    let projection = project_boundary_callable(
+        "api",
+        &signature,
+        &safe_facts(),
+        &runtime,
+        &[],
+        &BTreeMap::new(),
+    )
+    .unwrap();
 
     let BoundaryCallableProjection::Available {
         operation_contract,
@@ -178,6 +185,7 @@ fn null_literal_keeps_its_exact_canonical_boundary_semantics() {
             runtime_capabilities: Vec::new(),
         },
         &[],
+        &BTreeMap::new(),
     )
     .unwrap();
     let BoundaryCallableProjection::Available {
@@ -189,6 +197,64 @@ fn null_literal_keeps_its_exact_canonical_boundary_semantics() {
     assert_eq!(
         operation_contract.parameters[0].ty,
         ContractTypeRef::builtin("null")
+    );
+}
+
+#[test]
+fn exported_package_nominal_projects_as_exact_public_type_reference() {
+    let public_types = BTreeMap::from([(
+        ("model".to_string(), "Envelope".to_string()),
+        "type:Envelope".to_string(),
+    )]);
+    let projection = project_boundary_callable(
+        "api",
+        &signature(TypeRefIr::Nullable {
+            inner: Box::new(TypeRefIr::Native {
+                name: "Array".to_string(),
+                args: vec![TypeRefIr::ServiceSymbol {
+                    symbol: skiff_artifact_model::ServiceSymbolRef {
+                        module_path: "model".to_string(),
+                        symbol: "Envelope".to_string(),
+                    },
+                }],
+            }),
+        }),
+        &safe_facts(),
+        &empty_runtime_requirements(),
+        &[],
+        &public_types,
+    )
+    .unwrap();
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = projection
+    else {
+        panic!("api.yml-exported package nominal must be boundary available");
+    };
+    assert_eq!(
+        operation_contract.parameters[0].ty,
+        ContractTypeRef::Nullable {
+            inner: Box::new(ContractTypeRef::Builtin {
+                name: "Array".to_string(),
+                arguments: vec![ContractTypeRef::PackagePublic {
+                    local_type_id: "type:Envelope".to_string()
+                }],
+            }),
+        }
+    );
+}
+
+#[test]
+fn private_package_nominal_remains_boundary_unavailable() {
+    assert_reasons(
+        signature(TypeRefIr::ServiceSymbol {
+            symbol: skiff_artifact_model::ServiceSymbolRef {
+                module_path: "model".to_string(),
+                symbol: "PrivateEnvelope".to_string(),
+            },
+        }),
+        safe_facts(),
+        &[BoundaryUnavailableReason::UnsupportedBoundaryType],
     );
 }
 
@@ -220,6 +286,7 @@ fn websocket_ingress_generic_types_project_to_the_exact_contract_abi() {
         &safe_facts(),
         &empty_runtime_requirements(),
         &[],
+        &BTreeMap::new(),
     )
     .unwrap();
     let BoundaryCallableProjection::Available {
@@ -253,6 +320,7 @@ fn websocket_ingress_generic_types_reject_wrong_arity() {
         &safe_facts(),
         &empty_runtime_requirements(),
         &[],
+        &BTreeMap::new(),
     )
     .unwrap();
     assert!(matches!(
@@ -277,6 +345,7 @@ fn assert_reasons(
             runtime_capabilities: Vec::new(),
         },
         &[],
+        &BTreeMap::new(),
     )
     .unwrap();
     let BoundaryCallableProjection::Unavailable { reasons } = projection else {

@@ -46,6 +46,9 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
             ContractTypeRef::Contract { contract_type_id } => {
                 self.compile_contract_type(contract_type_id)
             }
+            ContractTypeRef::PackagePublic { local_type_id } => {
+                invalid_contract_plan(format!("unresolved package public type {local_type_id}"))
+            }
             ContractTypeRef::TypeParam { name } => {
                 invalid_contract_plan(format!("unresolved contract type parameter {name}"))
             }

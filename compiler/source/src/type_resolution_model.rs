@@ -3744,6 +3744,11 @@ fn contract_type_source_text(
                 })?;
             format!("{alias}.{}", schema_type.stable_key)
         }
+        ContractTypeRef::PackagePublic { local_type_id } => {
+            return Err(format!(
+                "unresolved package public type `{local_type_id}` is not valid in a ServiceContract"
+            ));
+        }
         ContractTypeRef::TypeParam { name } => name.clone(),
         ContractTypeRef::Nullable { inner } => {
             format!("{}?", contract_type_source_text(contract, alias, inner)?)
@@ -3842,6 +3847,9 @@ fn contract_type_ref_ir(
                 },
             })
         }
+        ContractTypeRef::PackagePublic { local_type_id } => Err(format!(
+            "unresolved package public type `{local_type_id}` is not valid in a ServiceContract"
+        )),
         ContractTypeRef::TypeParam { name } => Ok(TypeRefIr::TypeParam { name: name.clone() }),
         ContractTypeRef::Record { fields } => Ok(TypeRefIr::Record {
             fields: fields

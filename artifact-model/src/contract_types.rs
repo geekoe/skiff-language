@@ -39,6 +39,14 @@ pub enum ContractTypeRef {
     Contract {
         contract_type_id: ContractTypeId,
     },
+    /// Exact nominal reference owned by a PackageArtifact public API.
+    ///
+    /// This form is valid only in a package boundary projection. Service API
+    /// projection must replace it with the service-owned ContractTypeId before
+    /// compiling a ServiceContract.
+    PackagePublic {
+        local_type_id: String,
+    },
     TypeParam {
         name: String,
     },
