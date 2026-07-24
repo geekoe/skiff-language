@@ -22,6 +22,15 @@ pub enum ContractDefinitionError {
         first: String,
         second: String,
     },
+    #[error("service API schema type {public_path} has no implementation type source")]
+    MissingPublicTypeSource { public_path: String },
+    #[error("service API schema references missing or private package type {symbol}")]
+    MissingReachablePackageType { symbol: String },
+    #[error("service API schema type {public_path} uses unsupported boundary type {kind}")]
+    UnsupportedPackageSchemaType {
+        public_path: String,
+        kind: &'static str,
+    },
     #[error(transparent)]
     Identity(#[from] skiff_artifact_identity::ArtifactIdentityError),
 }
