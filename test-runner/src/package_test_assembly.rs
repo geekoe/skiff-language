@@ -1,4 +1,8 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::atomic::{AtomicU64, Ordering},
+    time::SystemTime,
+};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -27,6 +31,8 @@ use crate::{
     test_discovery::PackageTestCase,
     test_overlay::PublishedPackageTestOverlay,
 };
+
+static PACKAGE_TEST_ASSEMBLY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct CanonicalPackageTestEntrypoint {
@@ -84,14 +90,11 @@ pub fn assemble_package_test_fixture_for_run_with_config(
     test_config_literals: &[PackageTestConfigLiteral],
     run_scope: &str,
 ) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
-    let (contract, package_schema_records) = compile_package_test_contract(&overlay)?;
-    let contract_ref = service_contract_ref(&contract)
-        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    let assembly_nonce = package_test_assembly_nonce()?;
     let overlay_ref = package_artifact_ref(&overlay.overlay.artifact)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     let production_ref = package_artifact_ref(&project.package.artifact)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    let (operation_bindings, ingress) = package_test_operation_inputs(&contract, &overlay)?;
 
     let mut deployment_packages = vec![overlay.overlay.artifact.clone()];
     deployment_packages.extend(project.dependency_packages.iter().cloned());
@@ -105,63 +108,77 @@ pub fn assemble_package_test_fixture_for_run_with_config(
         owner,
         test_config_literals,
     )?;
-    let state_bindings = package_test_state_bindings(&deployment_packages, run_scope)?;
-    let deployment = project_service_deployment(
-        package_test_deployment_input(
-            &overlay,
-            contract_ref.clone(),
-            overlay_ref.clone(),
-            operation_bindings,
-            package_bindings,
-            service_selectors,
-            ingress.clone(),
-            owner,
-            config_literals,
-            state_bindings,
-        ),
-        &contract,
-        &deployment_packages,
-        &package_schema_records,
-    )
-    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    let deployment_ref = service_deployment_ref(&deployment);
+    let mut contracts = Vec::with_capacity(overlay.bindings.len());
+    let mut deployments = Vec::with_capacity(overlay.bindings.len());
+    let mut entrypoints = Vec::with_capacity(overlay.bindings.len());
+    for (index, binding) in overlay.bindings.iter().enumerate() {
+        let (contract, package_schema_records) =
+            compile_package_test_contract(&overlay, index, binding)?;
+        let contract_ref = service_contract_ref(&contract)
+            .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+        let (operation_bindings, ingress) =
+            package_test_operation_inputs(&contract, index, binding)?;
+        let case_scope = package_test_case_scope(run_scope, &assembly_nonce, index, &binding.case);
+        let state_bindings = package_test_state_bindings(&deployment_packages, &case_scope)?;
+        let deployment = project_service_deployment(
+            package_test_deployment_input(
+                &overlay,
+                contract_ref.clone(),
+                overlay_ref.clone(),
+                operation_bindings,
+                package_bindings.clone(),
+                service_selectors.clone(),
+                ingress.clone(),
+                owner,
+                config_literals.clone(),
+                state_bindings,
+            ),
+            &contract,
+            &deployment_packages,
+            &package_schema_records,
+        )
+        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+        let deployment_ref = service_deployment_ref(&deployment);
+        let [ingress] = ingress.as_slice() else {
+            return Err(CanonicalFixtureError::InvalidInput(
+                "package-test case must produce exactly one ingress".to_string(),
+            ));
+        };
+        entrypoints.push(CanonicalPackageTestEntrypoint {
+            operation: ingress.contract_operation_id.clone(),
+            selector: ingress.selector.clone(),
+            case: binding.case.clone(),
+            deployment: deployment_ref,
+            contract: contract_ref,
+        });
+        contracts.push(contract);
+        deployments.push(deployment);
+    }
 
     let mut all_packages = base.packages.clone();
     all_packages.push(project.package.artifact.clone());
     all_packages.extend(deployment_packages.iter().cloned());
     all_packages = unique_packages(all_packages)?;
     let mut all_contracts = base.contracts.clone();
-    all_contracts.push(contract.clone());
+    all_contracts.extend(contracts.iter().cloned());
     let mut all_deployments = base.deployments.clone();
-    all_deployments.push(deployment.clone());
+    all_deployments.extend(deployments.iter().cloned());
     let mut roots = base
         .assembly
         .as_ref()
         .map(|assembly| assembly.roots.clone())
         .unwrap_or_default();
-    roots.push(deployment_ref.clone());
+    roots.extend(deployments.iter().map(service_deployment_ref));
     let assembly =
         resolve_runtime_assembly(&roots, &all_deployments, &all_contracts, &all_packages)
             .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    let entrypoints = overlay
-        .bindings
-        .into_iter()
-        .zip(ingress)
-        .map(|(binding, ingress)| CanonicalPackageTestEntrypoint {
-            operation: ingress.contract_operation_id,
-            selector: ingress.selector,
-            case: binding.case,
-            deployment: deployment_ref.clone(),
-            contract: contract_ref.clone(),
-        })
-        .collect();
     Ok(CanonicalPackageTestFixture {
         production: overlay.production,
         overlay: overlay_ref,
         records: CanonicalTestRecords {
             packages: vec![project.package.clone(), overlay.overlay],
-            contracts: vec![contract],
-            deployments: vec![deployment],
+            contracts,
+            deployments,
             assembly,
             base_assembly: base.assembly,
         },
@@ -171,6 +188,8 @@ pub fn assemble_package_test_fixture_for_run_with_config(
 
 fn compile_package_test_contract(
     overlay: &PublishedPackageTestOverlay,
+    index: usize,
+    binding: &crate::test_overlay::PackageTestOverlayBinding,
 ) -> Result<
     (
         ServiceContract,
@@ -181,32 +200,29 @@ fn compile_package_test_contract(
     ),
     CanonicalFixtureError,
 > {
-    let mut operations = BTreeMap::new();
-    for (index, binding) in overlay.bindings.iter().enumerate() {
-        let projection = overlay
-            .overlay
-            .artifact
-            .boundary_projections
-            .get(&binding.callable_id)
-            .ok_or_else(|| {
-                CanonicalFixtureError::InvalidInput(format!(
-                    "test callable {} has no boundary projection",
-                    binding.callable_id
-                ))
-            })?;
-        let operation_contract = match projection {
-            BoundaryCallableProjection::Available {
-                operation_contract, ..
-            } => operation_contract,
-            BoundaryCallableProjection::Unavailable { reasons } => {
-                return Err(CanonicalFixtureError::InvalidInput(format!(
-                    "test callable {} cannot cross the canonical test boundary: {reasons:?}",
-                    binding.callable_id
-                )));
-            }
-        };
-        operations.insert(format!("case{index}"), operation_contract.clone());
-    }
+    let projection = overlay
+        .overlay
+        .artifact
+        .boundary_projections
+        .get(&binding.callable_id)
+        .ok_or_else(|| {
+            CanonicalFixtureError::InvalidInput(format!(
+                "test callable {} has no boundary projection",
+                binding.callable_id
+            ))
+        })?;
+    let operation_contract = match projection {
+        BoundaryCallableProjection::Available {
+            operation_contract, ..
+        } => operation_contract,
+        BoundaryCallableProjection::Unavailable { reasons } => {
+            return Err(CanonicalFixtureError::InvalidInput(format!(
+                "test callable {} cannot cross the canonical test boundary: {reasons:?}",
+                binding.callable_id
+            )));
+        }
+    };
+    let operations = BTreeMap::from([("run".to_string(), operation_contract.clone())]);
     let (package_type_requirements, package_schema_records) = schema_closure(
         &operations,
         &overlay.overlay.resolved_package_schema_type_records,
@@ -214,8 +230,8 @@ fn compile_package_test_contract(
     .map_err(CanonicalFixtureError::InvalidInput)?;
     let contract = compile_contract(ServiceContractDefinition {
         service_id: format!(
-            "test.skiff/package/{}",
-            safe_coordinate(&overlay.production.package_id)
+            "test.skiff/package/{}/case-{index}",
+            safe_coordinate(&overlay.production.package_id),
         ),
         contract_version: overlay.production.package_version.clone(),
         operations,
@@ -232,7 +248,8 @@ fn compile_package_test_contract(
 
 fn package_test_operation_inputs(
     contract: &ServiceContract,
-    overlay: &PublishedPackageTestOverlay,
+    index: usize,
+    binding: &crate::test_overlay::PackageTestOverlayBinding,
 ) -> Result<
     (
         Vec<ServiceDeploymentOperationInput>,
@@ -240,7 +257,7 @@ fn package_test_operation_inputs(
     ),
     CanonicalFixtureError,
 > {
-    let mut operations = contract
+    let operations = contract
         .operations
         .values()
         .map(|descriptor| {
@@ -250,20 +267,17 @@ fn package_test_operation_inputs(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let mut operation_bindings = Vec::new();
-    let mut ingress = Vec::new();
-    for (index, binding) in overlay.bindings.iter().enumerate() {
-        let stable_key = format!("case{index}");
-        let operation = operations.remove(stable_key.as_str()).ok_or_else(|| {
-            CanonicalFixtureError::InvalidInput(format!(
-                "compiled test contract omitted stable key {stable_key}"
-            ))
-        })?;
-        operation_bindings.push(ServiceDeploymentOperationInput {
+    let operation = operations.get("run").cloned().ok_or_else(|| {
+        CanonicalFixtureError::InvalidInput(
+            "compiled test contract omitted stable key run".to_string(),
+        )
+    })?;
+    Ok((
+        vec![ServiceDeploymentOperationInput {
             contract_operation_id: operation.clone(),
             package_public_path: binding.public_path.clone(),
-        });
-        ingress.push(DeploymentIngressBinding {
+        }],
+        vec![DeploymentIngressBinding {
             selector: IngressSelector {
                 protocol: IngressProtocol::Http,
                 host: format!("case-{index}.package-test.skiff.localhost"),
@@ -271,9 +285,8 @@ fn package_test_operation_inputs(
                 path: format!("/__skiff/package-test/{index}"),
             },
             contract_operation_id: operation,
-        });
-    }
-    Ok((operation_bindings, ingress))
+        }],
+    ))
 }
 
 pub(crate) fn canonical_package_bindings(
@@ -483,6 +496,31 @@ fn package_test_state_bindings(
         .collect())
 }
 
+fn package_test_assembly_nonce() -> Result<String, CanonicalFixtureError> {
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|error| {
+            CanonicalFixtureError::InvalidInput(format!(
+                "package-test clock is before the Unix epoch: {error}"
+            ))
+        })?
+        .as_nanos();
+    let sequence = PACKAGE_TEST_ASSEMBLY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    Ok(format!("{}-{timestamp}-{sequence}", std::process::id()))
+}
+
+fn package_test_case_scope(
+    run_scope: &str,
+    assembly_nonce: &str,
+    index: usize,
+    case: &PackageTestCase,
+) -> String {
+    format!(
+        "{run_scope}\0execution:{assembly_nonce}\0case:{index}\0{}::{}",
+        case.module_path, case.name
+    )
+}
+
 fn package_test_state_namespace(
     run_scope: &str,
     requirement_key: &str,
@@ -653,4 +691,24 @@ fn safe_coordinate(value: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::package_test_assembly_nonce;
+
+    #[test]
+    fn package_test_assembly_nonces_are_unique_under_parallel_allocation() {
+        let handles = (0..32)
+            .map(|_| std::thread::spawn(package_test_assembly_nonce))
+            .collect::<Vec<_>>();
+        let nonces = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("nonce worker").expect("nonce"))
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(nonces.len(), 32);
+    }
 }

@@ -31,7 +31,8 @@ use skiff_test_runner::{
     },
     package_test_assembly::{
         assemble_package_test_fixture_for_run_with_config,
-        assemble_package_test_fixture_with_config, PackageTestConfigLiteral,
+        assemble_package_test_fixture_with_config, CanonicalPackageTestFixture,
+        PackageTestConfigLiteral,
     },
     run_skiff_tests_with_options,
     test_overlay::compile_package_test_overlay,
@@ -289,20 +290,31 @@ fn package_dependencies_use_exact_transitive_store_closure_and_ignore_dependency
     let runtime = root.child("runtime-artifacts");
     create_store(&artifacts);
     let leaf = root.child("leaf");
-    write_package(&leaf, "id: example.com/leaf\nversion: 1.0.0\n", None, None);
+    write_package(
+        &leaf,
+        "id: example.com/leaf\nversion: 1.0.0\nstate:\n  leaf-db:\n    kind: database\n",
+        None,
+        Some("type LeafRecord { id: string }\ndb object LeafRecord { primary key(id) }\n"),
+    );
     publish_package(&leaf, &artifacts);
     let helper = root.child("helper");
     write_package(
         &helper,
         r#"id: example.com/helper
 version: 1.0.0
+state:
+  helper-db:
+    kind: database
 packages:
   - id: example.com/leaf
     version: 1.0.0
     alias: leaf
 "#,
         None,
-        None,
+        Some(
+            "type HelperRecord { id: string }\n\
+             db object HelperRecord { primary key(id) }\n",
+        ),
     );
     publish_package(&helper, &artifacts);
 
@@ -311,13 +323,19 @@ packages:
         &consumer,
         r#"id: example.com/consumer
 version: 1.0.0
+state:
+  consumer-db:
+    kind: database
 packages:
   - id: example.com/helper
     version: 1.0.0
     alias: helper
 "#,
         None,
-        None,
+        Some(
+            "type ConsumerRecord { id: string }\n\
+             db object ConsumerRecord { primary key(id) }\n",
+        ),
     );
     let decoy = consumer.join(".skiff-packages/example.com/helper/1.0.0");
     fs::create_dir_all(&decoy).unwrap();
@@ -347,6 +365,27 @@ packages:
             .unwrap();
     let fixture =
         assemble_package_test_fixture(&project, overlay, CanonicalBaseAssembly::default()).unwrap();
+    let [deployment] = fixture.records.deployments.as_slice() else {
+        panic!("one case must produce one deployment")
+    };
+    assert_eq!(
+        deployment
+            .state_bindings
+            .iter()
+            .map(|binding| binding.requirement_key.as_str())
+            .collect::<Vec<_>>(),
+        ["consumer-db", "helper-db", "leaf-db"]
+    );
+    assert_eq!(
+        deployment
+            .state_bindings
+            .iter()
+            .map(|binding| binding.namespace.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        1,
+        "all cross-package database calls in one case must share the caller case namespace"
+    );
     fixture.records.publish(&artifacts, &runtime).unwrap();
     assert_eq!(read_tree(&artifacts), source_before_publish);
     let runtime_store = CanonicalArtifactStore::open(&runtime).unwrap();
@@ -784,7 +823,13 @@ state:
     );
     fs::write(
         package.join("main.test.skiff"),
-        "test \"state binding\" { assert true }\n",
+        "test \"state binding first\" { assert true }\n\
+         test \"state binding second\" { assert true }\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("other.test.skiff"),
+        "test \"state binding other file\" { assert true }\n",
     )
     .unwrap();
     let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
@@ -811,23 +856,73 @@ state:
     let run_a = assemble("run-a");
     let run_a_repeat = assemble("run-a");
     let run_b = assemble("run-b");
-    let bindings_a = &run_a.records.deployments[0].state_bindings;
-    let bindings_b = &run_b.records.deployments[0].state_bindings;
-
-    assert_eq!(bindings_a.len(), 2);
-    assert_eq!(bindings_a[0].requirement_key, "app-db");
-    assert_eq!(bindings_a[0].kind, StateBindingKind::Database);
-    assert_eq!(bindings_a[1].requirement_key, "jobs");
-    assert_eq!(bindings_a[1].kind, StateBindingKind::Queue);
+    assert_eq!(run_a.records.deployments.len(), 3);
+    assert_eq!(run_a.entrypoints.len(), 3);
+    let namespaces = |fixture: &CanonicalPackageTestFixture| {
+        fixture
+            .records
+            .deployments
+            .iter()
+            .map(|deployment| {
+                assert_eq!(deployment.state_bindings.len(), 2);
+                assert_eq!(deployment.state_bindings[0].requirement_key, "app-db");
+                assert_eq!(
+                    deployment.state_bindings[0].kind,
+                    StateBindingKind::Database
+                );
+                assert_eq!(deployment.state_bindings[1].requirement_key, "jobs");
+                assert_eq!(deployment.state_bindings[1].kind, StateBindingKind::Queue);
+                deployment
+                    .state_bindings
+                    .iter()
+                    .map(|binding| binding.namespace.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let namespaces_a = namespaces(&run_a);
+    let namespaces_a_repeat = namespaces(&run_a_repeat);
+    let namespaces_b = namespaces(&run_b);
     assert_eq!(
-        bindings_a, &run_a_repeat.records.deployments[0].state_bindings,
-        "one explicit run scope must project reproducibly"
+        namespaces_a
+            .iter()
+            .flatten()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        6,
+        "same-file and cross-file cases must all receive distinct state namespaces"
     );
-    assert_ne!(bindings_a[0].namespace, bindings_b[0].namespace);
-    assert_ne!(bindings_a[1].namespace, bindings_b[1].namespace);
-    assert!(bindings_a
+    assert!(namespaces_a
         .iter()
-        .all(|binding| binding.namespace.starts_with("skiff_pt_")));
+        .flatten()
+        .all(|namespace| namespace.starts_with("skiff_pt_")));
+    assert!(
+        namespaces_a
+            .iter()
+            .flatten()
+            .all(|namespace| !namespaces_a_repeat
+                .iter()
+                .flatten()
+                .any(|next| next == namespace)),
+        "reusing a diagnostic run scope must not reuse a database namespace"
+    );
+    assert!(namespaces_a
+        .iter()
+        .flatten()
+        .all(|namespace| !namespaces_b.iter().flatten().any(|next| next == namespace)));
+    assert_eq!(
+        run_a
+            .entrypoints
+            .iter()
+            .map(|entrypoint| &entrypoint.contract)
+            .collect::<Vec<_>>(),
+        run_a_repeat
+            .entrypoints
+            .iter()
+            .map(|entrypoint| &entrypoint.contract)
+            .collect::<Vec<_>>(),
+        "case contract identity remains deterministic for diagnostics"
+    );
 }
 
 #[test]
