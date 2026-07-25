@@ -24,21 +24,11 @@ pub struct EntryTypeSpec {
     pub local_type_names: BTreeMap<u32, String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct PackageAbiType {
-    pub name: String,
-    pub descriptor: PackageAbiTypeDescriptor,
-    pub discriminator: Option<String>,
-    pub local_type_names: BTreeMap<u32, String>,
-}
-
-#[derive(Debug, Clone)]
-pub enum PackageAbiTypeDescriptor {
-    Alias { target: TypeRefIr },
-    Union { variants: Vec<TypeRefIr> },
-    Record { fields: BTreeMap<String, TypeRefIr> },
-    External,
-}
+/// Package/public declaration handoff uses the canonical File IR declaration
+/// model directly. Keeping aliases here avoids a second descriptor DTO while
+/// callers migrate to the canonical owner.
+pub type PackageAbiType = crate::file_ir::TypeDeclIr;
+pub type PackageAbiTypeDescriptor = crate::file_ir::TypeDescriptorIr;
 
 impl EntryTypeSpec {
     pub fn response_type_ir(&self) -> TypeRefIr {

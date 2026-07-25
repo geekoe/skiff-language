@@ -277,6 +277,9 @@ impl TypeClosurePolicy for BoundaryProjectionTypePolicy<'_> {
             TypeRefIr::Record { .. } | TypeRefIr::Union { .. } | TypeRefIr::Nullable { .. } => {
                 Ok(TypeClosureControl::Continue)
             }
+            TypeRefIr::AppliedNominal { .. } => {
+                Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+            }
             TypeRefIr::Literal { value } => {
                 project_literal(value)?;
                 Ok(TypeClosureControl::Continue)
@@ -382,6 +385,7 @@ fn project_local_type(
             )?),
         }),
         TypeRefIr::Literal { value } => project_literal(value),
+        TypeRefIr::AppliedNominal { .. } => Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
         TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. } => {
             Err(BoundaryUnavailableReason::CallbackAdapterUnavailable)
         }
@@ -545,10 +549,10 @@ fn linkable_plan(owner: BoundaryValueOwner) -> BoundaryValuePlan {
 mod tests {
     use super::*;
     use skiff_artifact_model::{
-        ContractTypeDescriptor, ContractTypeNameability, PackageBuildId, PackageLocalAbiIdentity,
-        PackageSchemaCanonicalDescriptor, PackageSchemaIndex, PackageSchemaIndexEntry,
-        PackageSchemaTypeId, PackageSchemaTypeRecord, TypeDeclIr, TypeDeclarationIr,
-        TypeDescriptorIr,
+        ContractTypeDescriptor, ContractTypeNameability, NamedUnionBranchIr, NominalTypeRefBaseIr,
+        PackageBuildId, PackageLocalAbiIdentity, PackageSchemaCanonicalDescriptor,
+        PackageSchemaIndex, PackageSchemaIndexEntry, PackageSchemaTypeId, PackageSchemaTypeRecord,
+        TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr,
     };
 
     #[test]
@@ -604,13 +608,13 @@ mod tests {
         unit.type_table.push(TypeDeclIr {
             name: "Result".to_string(),
             descriptor: TypeDescriptorIr::Union {
-                variants: vec![
-                    TypeRefIr::Literal {
+                branches: vec![
+                    NamedUnionBranchIr::Literal {
                         value: LiteralIr::String {
                             value: "complete".to_string(),
                         },
                     },
-                    TypeRefIr::Literal {
+                    NamedUnionBranchIr::Literal {
                         value: LiteralIr::String {
                             value: "incomplete".to_string(),
                         },
@@ -618,7 +622,6 @@ mod tests {
                 ],
             },
             type_params: Vec::new(),
-            discriminator: None,
             implements: Vec::new(),
             source_span: None,
         });
@@ -711,6 +714,26 @@ mod tests {
             } if package_id == "skiff.run/std"
                 && stable_schema_key == "std.http.HttpRequest"
         ));
+    }
+
+    #[test]
+    fn applied_nominal_is_unavailable_at_service_boundary_without_losing_local_shape() {
+        let applied = TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+            arguments: vec![TypeRefIr::builtin("string")],
+        };
+
+        assert_eq!(
+            project_local_type("api", &applied, &[], &BTreeMap::new(), &[]),
+            Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+        );
+        assert_eq!(
+            applied,
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                arguments: vec![TypeRefIr::builtin("string")],
+            }
+        );
     }
 
     #[test]

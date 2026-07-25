@@ -1,16 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::file_ir::{FileIrUnit, TypeRefIr};
-use skiff_compiler_source::{
-    api::PublicTypeKind, parsed_sources::ParsedCompilerSource, type_indices, LocalDbObjectIndex,
-    PackageSourceModel,
-};
-use skiff_syntax::ast::{AliasDecl, SourceFile, TypeDecl, TypeRef};
+use skiff_compiler_source::{api::PublicTypeKind, PackageSourceModel};
 
 use super::{
-    type_lowering::{lower_type_ref, TypeLoweringContext},
     type_ref_ir_source_text_with_local_types, EntryFunctionSignature, EntryParamSpec,
-    EntryTypeSpec, PackageAbiType, PackageAbiTypeDescriptor,
+    EntryTypeSpec, PackageAbiType,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -145,44 +140,55 @@ pub fn package_public_schema_type_names_for_module(
         .values()
         .filter(|public_type| public_type.source_module == module_path)
         .filter_map(|public_type| match public_type.kind {
-            PublicTypeKind::Type | PublicTypeKind::Alias => Some(public_type.source_symbol.clone()),
-            PublicTypeKind::Interface => None,
+            PublicTypeKind::Type | PublicTypeKind::Alias | PublicTypeKind::Interface => {
+                Some(public_type.source_symbol.clone())
+            }
         })
         .collect()
 }
 
 pub fn package_public_schema_abi_types_for_module(
     source_model: &PackageSourceModel,
+    file_ir_units: &[FileIrUnit],
     module_path: &str,
 ) -> Result<Vec<PackageAbiType>, String> {
-    let source = package_source_for_module(source_model, module_path).ok_or_else(|| {
-        format!(
-            "api module {} not found in compiled package source model",
-            module_path
-        )
-    })?;
+    let mut matching_units = file_ir_units
+        .iter()
+        .filter(|unit| unit.module_path == module_path);
+    let unit = matching_units
+        .next()
+        .ok_or_else(|| format!("api module {module_path} has no canonical File IR unit"))?;
+    if matching_units.next().is_some() {
+        return Err(format!(
+            "api module {module_path} has more than one canonical File IR unit"
+        ));
+    }
     package_public_schema_type_names_for_module(source_model, module_path)
         .into_iter()
         .map(|name| {
-            package_abi_type(source_model, source.ast(), module_path, &name)?.ok_or_else(|| {
+            let declaration = unit.declarations.types.get(&name).ok_or_else(|| {
                 format!(
-                    "public type {} not found in package api module {} source model",
-                    name, module_path
+                    "public type {name} has no canonical declaration in File IR module {module_path}"
                 )
-            })
+            })?;
+            let ty = unit
+                .type_table
+                .get(declaration.type_index as usize)
+                .ok_or_else(|| {
+                    format!(
+                        "public type {name} points outside the canonical File IR type table at {}",
+                        declaration.type_index
+                    )
+                })?;
+            if ty.name != name {
+                return Err(format!(
+                    "public type {name} resolves to mismatched canonical File IR declaration {}",
+                    ty.name
+                ));
+            }
+            Ok(ty.clone())
         })
         .collect()
-}
-
-fn package_source_for_module<'a>(
-    source_model: &'a PackageSourceModel,
-    module_path: &str,
-) -> Option<&'a ParsedCompilerSource> {
-    source_model
-        .sources()
-        .parsed_sources()
-        .iter()
-        .find(|source| source.module_path() == module_path)
 }
 
 fn package_public_path(package_id: &str, export_path: &str) -> String {
@@ -193,111 +199,6 @@ fn package_public_path(package_id: &str, export_path: &str) -> String {
     } else {
         format!("{package_id}.{export_path}")
     }
-}
-
-fn package_abi_type(
-    source_model: &PackageSourceModel,
-    ast: &SourceFile,
-    module_path: &str,
-    name: &str,
-) -> Result<Option<PackageAbiType>, String> {
-    if let Some(ty) = ast.types.iter().find(|ty| ty.name == name) {
-        return package_abi_type_from_decl(source_model, ast, module_path, ty).map(Some);
-    }
-    if let Some(alias) = ast.aliases.iter().find(|alias| alias.name == name) {
-        return package_abi_type_from_alias(source_model, ast, module_path, alias).map(Some);
-    }
-    if ast
-        .interfaces
-        .iter()
-        .any(|interface| interface.name == name)
-    {
-        return Ok(Some(PackageAbiType {
-            name: name.to_string(),
-            descriptor: PackageAbiTypeDescriptor::External,
-            discriminator: None,
-            local_type_names: local_type_names_from_type_indices(&type_indices(ast)),
-        }));
-    }
-    Ok(None)
-}
-
-fn package_abi_type_from_decl(
-    source_model: &PackageSourceModel,
-    ast: &SourceFile,
-    module_path: &str,
-    ty: &TypeDecl,
-) -> Result<PackageAbiType, String> {
-    let type_indices = type_indices(ast);
-    let local_db_objects = LocalDbObjectIndex::from_declarations(module_path, ast)
-        .map_err(|error| error.to_string())?;
-    let type_params = ty.type_params.iter().cloned().collect::<BTreeSet<_>>();
-    let context = TypeLoweringContext::value_with_type_params(&type_params);
-    let lower = |ty: &TypeRef| {
-        lower_type_ref(
-            ty,
-            &type_indices,
-            &local_db_objects,
-            source_model.indexes().publication_db_metadata_index(),
-            source_model.dependencies().package_aliases(),
-            source_model.indexes().publication_type_symbols(),
-            source_model
-                .resolutions()
-                .alias_targets_for_module(module_path),
-            context,
-        )
-        .map_err(|error| error.to_string())
-    };
-    let descriptor = if let Some(alias) = &ty.alias {
-        match lower(alias)? {
-            TypeRefIr::Union { items } => PackageAbiTypeDescriptor::Union { variants: items },
-            target => PackageAbiTypeDescriptor::Alias { target },
-        }
-    } else {
-        PackageAbiTypeDescriptor::Record {
-            fields: ty
-                .fields
-                .iter()
-                .map(|field| Ok((field.name.clone(), lower(&field.ty)?)))
-                .collect::<Result<BTreeMap<_, _>, String>>()?,
-        }
-    };
-    Ok(PackageAbiType {
-        name: ty.name.clone(),
-        descriptor,
-        discriminator: ty.discriminator.clone(),
-        local_type_names: local_type_names_from_type_indices(&type_indices),
-    })
-}
-
-fn package_abi_type_from_alias(
-    source_model: &PackageSourceModel,
-    ast: &SourceFile,
-    module_path: &str,
-    alias: &AliasDecl,
-) -> Result<PackageAbiType, String> {
-    let type_indices = type_indices(ast);
-    let local_db_objects = LocalDbObjectIndex::from_declarations(module_path, ast)
-        .map_err(|error| error.to_string())?;
-    let target = lower_type_ref(
-        &alias.target_type,
-        &type_indices,
-        &local_db_objects,
-        source_model.indexes().publication_db_metadata_index(),
-        source_model.dependencies().package_aliases(),
-        source_model.indexes().publication_type_symbols(),
-        source_model
-            .resolutions()
-            .alias_targets_for_module(module_path),
-        TypeLoweringContext::value(),
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(PackageAbiType {
-        name: alias.name.clone(),
-        descriptor: PackageAbiTypeDescriptor::Alias { target },
-        discriminator: None,
-        local_type_names: local_type_names_from_type_indices(&type_indices),
-    })
 }
 
 fn package_publication_callable_for_symbol(
@@ -334,13 +235,4 @@ fn package_handler_symbol_matches_public_callable(
         return false;
     };
     symbol_path == format!("{}.{symbol}", package_public_path(package_id, export_path))
-}
-
-fn local_type_names_from_type_indices(
-    type_indices: &BTreeMap<String, u32>,
-) -> BTreeMap<u32, String> {
-    type_indices
-        .iter()
-        .map(|(name, index)| (*index, name.clone()))
-        .collect()
 }

@@ -4,6 +4,10 @@ use skiff_artifact_identity::{
     validate_package_artifact_identities, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
     PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
 };
+use skiff_artifact_model::{
+    BoundaryCallableProjection, BoundaryUnavailableReason, NominalTypeRefBaseIr,
+    PackageLocalAbiSymbol, PackageTypeRef, TypeRefIr,
+};
 
 #[test]
 fn package_compile_assigns_self_validating_canonical_identities() {
@@ -113,6 +117,49 @@ fn package_test_sources_do_not_change_production_artifact_identity() {
         .file_ir_units
         .iter()
         .all(|file| !file.source_path.ends_with(".test.skiff")));
+}
+
+#[test]
+fn fully_instantiated_generic_nominal_stays_in_local_abi_and_fails_public_boundary() {
+    let temp = package_project(
+        "applied-nominal-local-abi",
+        "run: main.run\n",
+        r#"
+type Box<T> { value: T }
+function run(value: Box<string>) -> Box<string> { return value }
+"#,
+    );
+
+    let project = compile_package_project(temp.path()).expect("generic local ABI should compile");
+    let artifact = &project.package.artifact;
+    let PackageLocalAbiSymbol::Callable {
+        callable_id,
+        signature,
+    } = &artifact.package_local_abi.public_symbols["run"]
+    else {
+        panic!("run must remain a package callable");
+    };
+    let assert_box_string = |ty: &PackageTypeRef| {
+        let PackageTypeRef::Local {
+            local_type: TypeRefIr::AppliedNominal { base, arguments },
+        } = ty
+        else {
+            panic!("package-local signature must retain AppliedNominal");
+        };
+        assert!(matches!(
+            base,
+            NominalTypeRefBaseIr::ServiceSymbol { symbol }
+                if symbol.module_path == "main" && symbol.symbol == "Box"
+        ));
+        assert_eq!(arguments, &[TypeRefIr::builtin("string")]);
+    };
+    assert_box_string(&signature.parameters[0].ty);
+    assert_box_string(&signature.return_type);
+    assert!(matches!(
+        &artifact.boundary_projections[callable_id],
+        BoundaryCallableProjection::Unavailable { reasons }
+            if reasons.contains(&BoundaryUnavailableReason::UnsupportedBoundaryType)
+    ));
 }
 
 fn package_project(name: &str, api: &str, source: &str) -> TestDir {

@@ -5,9 +5,11 @@ use skiff_artifact_identity::{
     validate_package_schema_records,
 };
 use skiff_artifact_model::{
-    ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef, ContractTypeShape, LiteralIr,
-    PackageSchemaCanonicalDescriptor, PackageSchemaIndex, PackageSchemaIndexEntry,
-    PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSymbolRef, TypeDescriptorIr, TypeRefIr,
+    BoundaryCallbackOperation, ContractDiscriminatedUnionBranch, ContractTypeDescriptor,
+    ContractTypeNameability, ContractTypeRef, ContractTypeShape, InterfaceMethodSignature,
+    LiteralIr, NamedUnionBranchIr, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
+    PackageSchemaIndexEntry, PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSymbolRef,
+    TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_projection_input::ResolvedPackageSchema;
 
@@ -55,15 +57,51 @@ pub(super) fn project_package_schema(
                 .unwrap_or(qualified_path);
             Some((
                 path.to_string(),
-                (descriptor.clone(), symbol.type_params.clone()),
+                (
+                    descriptor.clone(),
+                    symbol.type_params.clone(),
+                    symbol.interface_methods.clone(),
+                ),
             ))
         })
         .collect::<BTreeMap<_, _>>();
+    if let Some((path, (_, type_params, _))) = candidate_definitions
+        .iter()
+        .find(|(_, (_, type_params, _))| !type_params.is_empty())
+    {
+        return Err(message(format!(
+            "package public schema does not admit generic declaration {path}<{}>",
+            type_params.join(", ")
+        )));
+    }
+    if let Some((path, _)) =
+        candidate_definitions
+            .iter()
+            .find(|(_, (descriptor, _, interface_methods))| {
+                descriptor_contains_applied_nominal(descriptor)
+                    || interface_methods.iter().any(|method| {
+                        method
+                            .params
+                            .iter()
+                            .any(|param| type_ref_contains_applied_nominal(&param.ty))
+                            || type_ref_contains_applied_nominal(&method.return_type)
+                            || method
+                                .implicit_self
+                                .as_ref()
+                                .is_some_and(type_ref_contains_applied_nominal)
+                    })
+            })
+    {
+        return Err(message(format!(
+            "package public schema does not admit applied nominal reference in {path}"
+        )));
+    }
     let definitions = candidate_definitions
         .iter()
-        .filter(|(path, (descriptor, _))| {
+        .filter(|(path, (descriptor, _, interface_methods))| {
             is_package_schema_descriptor(
                 descriptor,
+                interface_methods,
                 &candidate_definitions,
                 &source_to_public,
                 &mut BTreeSet::from([(*path).clone()]),
@@ -141,6 +179,63 @@ pub(super) fn project_package_schema(
     })
 }
 
+fn descriptor_contains_applied_nominal(descriptor: &TypeDescriptorIr) -> bool {
+    match descriptor {
+        TypeDescriptorIr::Record { fields } => {
+            fields.values().any(type_ref_contains_applied_nominal)
+        }
+        TypeDescriptorIr::Representation { representation } => {
+            type_ref_contains_applied_nominal(representation)
+        }
+        TypeDescriptorIr::Union { branches } => branches.iter().any(|branch| match branch {
+            NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                type_ref_contains_applied_nominal(nominal_type)
+            }
+            NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                type_ref_contains_applied_nominal(payload_type)
+            }
+            NamedUnionBranchIr::Literal { .. } => false,
+        }),
+        TypeDescriptorIr::Alias { target } => type_ref_contains_applied_nominal(target),
+        TypeDescriptorIr::Interface => false,
+    }
+}
+
+fn type_ref_contains_applied_nominal(ty: &TypeRefIr) -> bool {
+    match ty {
+        TypeRefIr::AppliedNominal { .. } => true,
+        TypeRefIr::Builtin { args, .. } => args.iter().any(type_ref_contains_applied_nominal),
+        TypeRefIr::Record { fields } => fields.values().any(type_ref_contains_applied_nominal),
+        TypeRefIr::Union { items } => items.iter().any(type_ref_contains_applied_nominal),
+        TypeRefIr::Nullable { inner } => type_ref_contains_applied_nominal(inner),
+        TypeRefIr::AnyInterface { interface } => {
+            serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+                .is_ok_and(|identity| type_ref_contains_applied_nominal(&identity))
+                || interface
+                    .canonical_type_args
+                    .iter()
+                    .any(type_ref_contains_applied_nominal)
+        }
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => {
+            params
+                .iter()
+                .any(|param| type_ref_contains_applied_nominal(&param.ty))
+                || type_ref_contains_applied_nominal(return_type)
+        }
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => false,
+    }
+}
+
 fn insert_exact_record(
     records: &mut BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     type_id: &PackageSchemaTypeId,
@@ -158,7 +253,8 @@ fn insert_exact_record(
 
 fn is_package_schema_descriptor(
     descriptor: &TypeDescriptorIr,
-    definitions: &BTreeMap<String, (TypeDescriptorIr, Vec<String>)>,
+    interface_methods: &[InterfaceMethodSignature],
+    definitions: &BTreeMap<String, (TypeDescriptorIr, Vec<String>, Vec<InterfaceMethodSignature>)>,
     source_to_public: &BTreeMap<(String, String), String>,
     visiting: &mut BTreeSet<String>,
 ) -> bool {
@@ -169,15 +265,38 @@ fn is_package_schema_descriptor(
         TypeDescriptorIr::Alias { target } => {
             is_package_schema_ref(target, definitions, source_to_public, visiting)
         }
-        TypeDescriptorIr::Union { variants } => variants
-            .iter()
-            .all(|ty| is_package_schema_ref(ty, definitions, source_to_public, visiting)),
+        TypeDescriptorIr::Representation { representation } => {
+            is_package_schema_ref(representation, definitions, source_to_public, visiting)
+        }
+        TypeDescriptorIr::Union { branches } => branches.iter().all(|branch| match branch {
+            NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                is_package_schema_ref(nominal_type, definitions, source_to_public, visiting)
+            }
+            NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                is_package_schema_ref(payload_type, definitions, source_to_public, visiting)
+            }
+            NamedUnionBranchIr::Literal { value } => {
+                matches!(value, LiteralIr::String { .. } | LiteralIr::Null)
+            }
+        }),
+        TypeDescriptorIr::Interface => interface_methods.iter().all(|method| {
+            method.type_params.is_empty()
+                && method.params.iter().all(|param| {
+                    is_package_schema_ref(&param.ty, definitions, source_to_public, visiting)
+                })
+                && is_package_schema_ref(
+                    &method.return_type,
+                    definitions,
+                    source_to_public,
+                    visiting,
+                )
+        }),
     }
 }
 
 fn is_package_schema_ref(
     ty: &TypeRefIr,
-    definitions: &BTreeMap<String, (TypeDescriptorIr, Vec<String>)>,
+    definitions: &BTreeMap<String, (TypeDescriptorIr, Vec<String>, Vec<InterfaceMethodSignature>)>,
     source_to_public: &BTreeMap<(String, String), String>,
     visiting: &mut BTreeSet<String>,
 ) -> bool {
@@ -197,6 +316,7 @@ fn is_package_schema_ref(
         TypeRefIr::Nullable { inner } => {
             is_package_schema_ref(inner, definitions, source_to_public, visiting)
         }
+        TypeRefIr::AppliedNominal { .. } => false,
         TypeRefIr::ServiceSymbol { symbol } => {
             let Some(path) =
                 source_to_public.get(&(symbol.module_path.clone(), symbol.symbol.clone()))
@@ -210,9 +330,18 @@ fn is_package_schema_ref(
             if !visiting.insert(path.clone()) {
                 return true;
             }
-            let eligible = definitions.get(path).is_some_and(|(descriptor, _)| {
-                is_package_schema_descriptor(descriptor, definitions, source_to_public, visiting)
-            });
+            let eligible =
+                definitions
+                    .get(path)
+                    .is_some_and(|(descriptor, _, interface_methods)| {
+                        is_package_schema_descriptor(
+                            descriptor,
+                            interface_methods,
+                            definitions,
+                            source_to_public,
+                            visiting,
+                        )
+                    });
             visiting.remove(path);
             eligible
         }
@@ -260,7 +389,8 @@ fn is_boundary_builtin(name: &str, arity: usize) -> bool {
 
 struct SchemaBuilder<'a> {
     package_id: &'a str,
-    definitions: &'a BTreeMap<String, (TypeDescriptorIr, Vec<String>)>,
+    definitions:
+        &'a BTreeMap<String, (TypeDescriptorIr, Vec<String>, Vec<InterfaceMethodSignature>)>,
     source_to_public: &'a BTreeMap<(String, String), String>,
     dependencies: &'a [ResolvedPackageSchema],
     visiting: BTreeSet<String>,
@@ -277,16 +407,17 @@ impl SchemaBuilder<'_> {
                 "package schema v1 forbids recursive public type cycle at {path}"
             )));
         }
-        let (descriptor, type_params) = self.definitions.get(path).cloned().ok_or_else(|| {
-            message(format!(
-                "boundary named type {path} is not explicitly public in api.yml"
-            ))
-        })?;
+        let (descriptor, type_params, interface_methods) =
+            self.definitions.get(path).cloned().ok_or_else(|| {
+                message(format!(
+                    "boundary named type {path} is not explicitly public in api.yml"
+                ))
+            })?;
         let descriptor = normalize_contract_type_shape(
             ContractTypeShape {
                 nameability: ContractTypeNameability::PublicNameable,
                 type_params: type_params.clone(),
-                descriptor: self.project_descriptor(&descriptor)?,
+                descriptor: self.project_descriptor(&descriptor, &interface_methods)?,
             },
             path,
         )
@@ -312,6 +443,7 @@ impl SchemaBuilder<'_> {
     fn project_descriptor(
         &mut self,
         descriptor: &TypeDescriptorIr,
+        interface_methods: &[InterfaceMethodSignature],
     ) -> Result<ContractTypeDescriptor, ProjectionError> {
         Ok(match descriptor {
             TypeDescriptorIr::Record { fields } => ContractTypeDescriptor::Record {
@@ -323,12 +455,122 @@ impl SchemaBuilder<'_> {
             TypeDescriptorIr::Alias { target } => ContractTypeDescriptor::Alias {
                 target: self.project_ref(target)?,
             },
-            TypeDescriptorIr::Union { variants } => ContractTypeDescriptor::StructuralUnion {
-                variants: variants
+            TypeDescriptorIr::Representation { representation } => {
+                ContractTypeDescriptor::Representation {
+                    target: self.project_ref(representation)?,
+                }
+            }
+            TypeDescriptorIr::Union { branches } => self.project_named_union(branches)?,
+            TypeDescriptorIr::Interface => ContractTypeDescriptor::CallbackInterface {
+                operations: interface_methods
                     .iter()
-                    .map(|ty| self.project_ref(ty))
-                    .collect::<Result<_, _>>()?,
+                    .map(|method| {
+                        Ok((
+                            method.name.clone(),
+                            BoundaryCallbackOperation {
+                                parameters: method
+                                    .params
+                                    .iter()
+                                    .map(|param| self.project_ref(&param.ty))
+                                    .collect::<Result<_, _>>()?,
+                                return_type: self.project_ref(&method.return_type)?,
+                                may_suspend: method.may_suspend,
+                            },
+                        ))
+                    })
+                    .collect::<Result<_, ProjectionError>>()?,
             },
+        })
+    }
+
+    fn project_named_union(
+        &mut self,
+        branches: &[NamedUnionBranchIr],
+    ) -> Result<ContractTypeDescriptor, ProjectionError> {
+        if branches.iter().all(|branch| {
+            matches!(
+                branch,
+                NamedUnionBranchIr::Literal {
+                    value: LiteralIr::String { .. }
+                }
+            )
+        }) {
+            return Ok(ContractTypeDescriptor::Enumeration {
+                variants: branches
+                    .iter()
+                    .map(|branch| {
+                        let NamedUnionBranchIr::Literal {
+                            value: LiteralIr::String { value },
+                        } = branch
+                        else {
+                            unreachable!("enumeration branch kind checked above")
+                        };
+                        value.clone()
+                    })
+                    .collect(),
+            });
+        }
+
+        let discriminator_field = branches
+            .first()
+            .and_then(|branch| match branch {
+                NamedUnionBranchIr::SyntheticDiscriminator {
+                    discriminator_field,
+                    ..
+                } => Some(discriminator_field.as_str()),
+                _ => None,
+            })
+            .filter(|field| {
+                branches.iter().all(|branch| {
+                    matches!(
+                        branch,
+                        NamedUnionBranchIr::SyntheticDiscriminator {
+                            discriminator_field,
+                            ..
+                        } if discriminator_field == field
+                    )
+                })
+            });
+        if let Some(discriminator_field) = discriminator_field {
+            return Ok(ContractTypeDescriptor::DiscriminatedUnion {
+                discriminator_field: discriminator_field.to_string(),
+                branches: branches
+                    .iter()
+                    .map(|branch| {
+                        let NamedUnionBranchIr::SyntheticDiscriminator {
+                            payload_type,
+                            discriminator_value,
+                            ..
+                        } = branch
+                        else {
+                            unreachable!("discriminator branch kind checked above")
+                        };
+                        Ok(ContractDiscriminatedUnionBranch::new(
+                            discriminator_value,
+                            self.project_ref(payload_type)?,
+                        ))
+                    })
+                    .collect::<Result<_, ProjectionError>>()?,
+            });
+        }
+
+        Ok(ContractTypeDescriptor::StructuralUnion {
+            variants: branches
+                .iter()
+                .map(|branch| match branch {
+                    NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                        self.project_ref(nominal_type)
+                    }
+                    NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                        self.project_ref(payload_type)
+                    }
+                    NamedUnionBranchIr::Literal { value } => {
+                        self.project_ref(&TypeRefIr::Literal {
+                            value: value.clone(),
+                        })
+                    }
+                })
+                .collect::<Result<_, _>>()?,
         })
     }
 
@@ -356,6 +598,11 @@ impl SchemaBuilder<'_> {
             TypeRefIr::Nullable { inner } => ContractTypeRef::Nullable {
                 inner: Box::new(self.project_ref(inner)?),
             },
+            TypeRefIr::AppliedNominal { .. } => {
+                return Err(message(
+                    "package public schema does not admit applied nominal references".to_string(),
+                ));
+            }
             TypeRefIr::Literal {
                 value: LiteralIr::String { value },
             } => ContractTypeRef::string_literal(value),
@@ -440,8 +687,8 @@ fn message(message: impl Into<String>) -> ProjectionError {
 #[cfg(test)]
 mod tests {
     use skiff_artifact_model::{
-        FileIrRef, PackageBuildId, PackageExportIndex, PackageLocalAbiIdentity, PackageRefIr,
-        ServiceSymbolRef, TypeExport,
+        FileIrRef, NominalTypeRefBaseIr, PackageBuildId, PackageExportIndex,
+        PackageLocalAbiIdentity, PackageRefIr, ServiceSymbolRef, TypeExport,
     };
 
     use super::*;
@@ -496,6 +743,95 @@ mod tests {
         assert_eq!(record.package_id, "example.pkg");
         assert_eq!(record.stable_schema_key, "User");
         assert_eq!(entry.public_path.as_deref(), Some("User"));
+    }
+
+    #[test]
+    fn non_generic_interface_keeps_callback_schema_operations() {
+        let mut interface = exports(TypeDescriptorIr::Interface);
+        let export = interface.exports.types.get_mut("example.pkg/User").unwrap();
+        export.is_interface = true;
+        export.interface_methods = vec![InterfaceMethodSignature {
+            name: "read".to_string(),
+            type_params: Vec::new(),
+            params: vec![skiff_artifact_model::FunctionTypeParamIr {
+                name: "key".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            }],
+            return_type: TypeRefIr::builtin("string"),
+            may_suspend: true,
+            is_native: false,
+            is_provider: false,
+            is_static: false,
+            implicit_self: None,
+        }];
+
+        let projected = project_package_schema("example.pkg", &interface, &[]).unwrap();
+        let entry = &projected.index.types["User"];
+        let record = &projected.records[&entry.package_schema_type_id];
+        let ContractTypeDescriptor::CallbackInterface { operations } =
+            &record.canonical_descriptor.descriptor
+        else {
+            panic!("interface must retain callback-interface schema kind");
+        };
+        assert_eq!(
+            operations["read"],
+            BoundaryCallbackOperation {
+                parameters: vec![ContractTypeRef::builtin("string")],
+                return_type: ContractTypeRef::builtin("string"),
+                may_suspend: true,
+            }
+        );
+    }
+
+    #[test]
+    fn generic_public_declaration_fails_before_schema_records_are_built() {
+        let mut generic = exports(TypeDescriptorIr::Record {
+            fields: BTreeMap::from([(
+                "value".to_string(),
+                TypeRefIr::TypeParam {
+                    name: "T".to_string(),
+                },
+            )]),
+        });
+        generic
+            .exports
+            .types
+            .get_mut("example.pkg/User")
+            .unwrap()
+            .type_params = vec!["T".to_string()];
+
+        let error = project_package_schema("example.pkg", &generic, &[]).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("does not admit generic declaration User<T>"));
+    }
+
+    #[test]
+    fn applied_nominal_in_public_schema_fails_instead_of_emitting_a_partial_index() {
+        let error = project_package_schema(
+            "example.pkg",
+            &exports(TypeDescriptorIr::Record {
+                fields: BTreeMap::from([(
+                    "boxed".to_string(),
+                    TypeRefIr::AppliedNominal {
+                        base: NominalTypeRefBaseIr::ServiceSymbol {
+                            symbol: ServiceSymbolRef {
+                                module_path: "models".to_string(),
+                                symbol: "Box".to_string(),
+                            },
+                        },
+                        arguments: vec![TypeRefIr::builtin("string")],
+                    },
+                )]),
+            }),
+            &[],
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("does not admit applied nominal reference in User"));
     }
 
     #[test]

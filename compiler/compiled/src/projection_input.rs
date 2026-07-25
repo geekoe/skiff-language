@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
     CallableSemanticFacts, CallableTargetFact, ExecutableKind, FileIrUnit, FunctionTypeParamIr,
-    InterfaceInstantiationRef, LiteralIr, ServiceSymbolRef, TypeRefIr,
+    InterfaceInstantiationRef, LiteralIr, NominalTypeRefBaseIr, ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler_projection_input::{
     ConfigRequirementAccessProjection, ConfigRequirementDependencyStepProjection,
@@ -742,6 +742,30 @@ fn projection_visible_type_ref(
                 .map(|arg| projection_visible_type_ref(arg, publication_type_names))
                 .collect(),
         },
+        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+            base: match base {
+                NominalTypeRefBaseIr::PublicationType {
+                    module_path,
+                    type_index,
+                } => publication_type_names
+                    .get(&(module_path.clone(), *type_index))
+                    .map(|symbol| NominalTypeRefBaseIr::ServiceSymbol {
+                        symbol: ServiceSymbolRef {
+                            module_path: module_path.clone(),
+                            symbol: symbol.clone(),
+                        },
+                    })
+                    .unwrap_or_else(|| base.clone()),
+                NominalTypeRefBaseIr::LocalType { .. }
+                | NominalTypeRefBaseIr::ServiceSymbol { .. }
+                | NominalTypeRefBaseIr::PackageSymbol { .. }
+                | NominalTypeRefBaseIr::PackageSchema { .. } => base.clone(),
+            },
+            arguments: arguments
+                .iter()
+                .map(|argument| projection_visible_type_ref(argument, publication_type_names))
+                .collect(),
+        },
         TypeRefIr::Record { fields } => TypeRefIr::Record {
             fields: fields
                 .iter()
@@ -832,6 +856,17 @@ fn type_ref_ir_source_text_with_named_types(
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        TypeRefIr::AppliedNominal { base, arguments } => format!(
+            "{}<{}>",
+            nominal_base_source_text(base, local_type_name, named_type),
+            arguments
+                .iter()
+                .map(|argument| {
+                    type_ref_ir_source_text_with_named_types(argument, local_type_name, named_type)
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         TypeRefIr::LocalType { type_index } => named_type(
             &local_type_name(*type_index)
                 .unwrap_or_else(|| format!("__invalid_local_type_{type_index}")),
@@ -911,6 +946,38 @@ fn type_ref_ir_source_text_with_named_types(
                 .join(", "),
             type_ref_ir_source_text_with_named_types(return_type, local_type_name, named_type)
         ),
+    }
+}
+
+fn nominal_base_source_text(
+    base: &NominalTypeRefBaseIr,
+    local_type_name: &impl Fn(u32) -> Option<String>,
+    named_type: &impl Fn(&str) -> String,
+) -> String {
+    match base {
+        NominalTypeRefBaseIr::LocalType { type_index } => named_type(
+            &local_type_name(*type_index)
+                .unwrap_or_else(|| format!("__invalid_local_type_{type_index}")),
+        ),
+        NominalTypeRefBaseIr::PublicationType { module_path, .. } => {
+            named_type(&format!("root.{module_path}"))
+        }
+        NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+            let name = if symbol.module_path.is_empty() {
+                symbol.symbol.clone()
+            } else if symbol.module_path.starts_with("std.") {
+                symbol.symbol_path()
+            } else {
+                format!("root.{}", symbol.symbol_path())
+            };
+            named_type(&name)
+        }
+        NominalTypeRefBaseIr::PackageSymbol { symbol } => named_type(&symbol.symbol_path),
+        NominalTypeRefBaseIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => named_type(&format!("{package_id}::{stable_schema_key}")),
     }
 }
 
@@ -1073,4 +1140,94 @@ fn abi_candidate_keys(
         ));
     }
     candidates
+}
+
+#[cfg(test)]
+mod applied_nominal_tests {
+    use super::*;
+    use skiff_artifact_model::{PackageRefIr, PackageSymbolRef};
+
+    #[test]
+    fn compiled_projection_keeps_applied_wrapper_owner_and_ordered_arguments() {
+        let names = BTreeMap::from([(("models".to_string(), 2), "Pair".to_string())]);
+        let applied = TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::PublicationType {
+                module_path: "models".to_string(),
+                type_index: 2,
+            },
+            arguments: vec![
+                TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: "example.left".to_string(),
+                        },
+                        symbol_path: "Value".to_string(),
+                        abi_expectation: Some("abi:left".to_string()),
+                    },
+                },
+                TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: "example.right".to_string(),
+                        },
+                        symbol_path: "Value".to_string(),
+                        abi_expectation: Some("abi:right".to_string()),
+                    },
+                },
+            ],
+        };
+
+        let projected = projection_visible_type_ref(&applied, &names);
+
+        let TypeRefIr::AppliedNominal { base, arguments } = projected else {
+            panic!("compiled projection must preserve the applied wrapper");
+        };
+        assert_eq!(
+            base,
+            NominalTypeRefBaseIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: "models".to_string(),
+                    symbol: "Pair".to_string(),
+                },
+            }
+        );
+        assert_eq!(arguments.len(), 2);
+        assert_ne!(arguments[0], arguments[1]);
+        let reversed = TypeRefIr::AppliedNominal {
+            base: base.clone(),
+            arguments: arguments.iter().cloned().rev().collect(),
+        };
+        let projected = TypeRefIr::AppliedNominal { base, arguments };
+        assert_ne!(
+            projected, reversed,
+            "argument order is part of the package-local type identity"
+        );
+        assert_ne!(
+            type_ref_abi_key(&projected),
+            type_ref_abi_key(&reversed),
+            "argument order must remain visible in the canonical type ABI key"
+        );
+    }
+
+    #[test]
+    fn applied_nominal_source_text_is_diagnostic_only_but_structurally_complete() {
+        let ty = TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::PackageId {
+                        package_id: "example.boxes".to_string(),
+                    },
+                    symbol_path: "Box".to_string(),
+                    abi_expectation: Some("abi:boxes".to_string()),
+                },
+            },
+            arguments: vec![TypeRefIr::builtin("string")],
+        };
+
+        assert_eq!(
+            type_ref_ir_source_text_with_local_types(&ty, &|_| None),
+            "Box<string>"
+        );
+        assert!(matches!(ty, TypeRefIr::AppliedNominal { .. }));
+    }
 }

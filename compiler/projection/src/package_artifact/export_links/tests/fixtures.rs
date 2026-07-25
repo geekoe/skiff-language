@@ -132,7 +132,6 @@ pub(super) fn actor_file_ir() -> FileIrUnit {
             fields: BTreeMap::new(),
         },
         type_params: Vec::new(),
-        discriminator: None,
         implements: Vec::new(),
         source_span: None,
     });
@@ -180,17 +179,13 @@ pub(super) fn public_instance_file_ir() -> FileIrUnit {
                 fields: BTreeMap::new(),
             },
             type_params: Vec::new(),
-            discriminator: None,
             implements: Vec::new(),
             source_span: None,
         },
         TypeDeclIr {
             name: "WorkerApi".to_string(),
-            descriptor: TypeDescriptorIr::Record {
-                fields: BTreeMap::new(),
-            },
+            descriptor: TypeDescriptorIr::Interface,
             type_params: Vec::new(),
-            discriminator: None,
             implements: Vec::new(),
             source_span: None,
         },

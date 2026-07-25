@@ -72,6 +72,13 @@ pub enum ResolvedPackageSchemaError {
         stable_schema_key: String,
     },
     #[error(
+        "resolved package schema binding {alias} contains generic type record {package_schema_type_id}; current PackageSchema generation does not admit type parameters"
+    )]
+    GenericTypeRecord {
+        alias: String,
+        package_schema_type_id: PackageSchemaTypeId,
+    },
+    #[error(
         "resolved package schema binding {alias} closure is missing {package_id}:{stable_schema_key}:{package_schema_type_id}"
     )]
     MissingClosureRecord {
@@ -119,6 +126,15 @@ impl ResolvedPackageSchema {
                 alias,
                 package_id,
                 index_package_id: index.package_id,
+            });
+        }
+        if let Some((package_schema_type_id, _)) = records
+            .iter()
+            .find(|(_, record)| !record.canonical_descriptor.type_params.is_empty())
+        {
+            return Err(ResolvedPackageSchemaError::GenericTypeRecord {
+                alias,
+                package_schema_type_id: package_schema_type_id.clone(),
             });
         }
         for (stable_schema_key, entry) in &index.types {
@@ -598,22 +614,6 @@ pub struct EntryTypeSpec {
     pub local_type_names: BTreeMap<u32, String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct PackageAbiType {
-    pub name: String,
-    pub descriptor: PackageAbiTypeDescriptor,
-    pub discriminator: Option<String>,
-    pub local_type_names: BTreeMap<u32, String>,
-}
-
-#[derive(Debug, Clone)]
-pub enum PackageAbiTypeDescriptor {
-    Alias { target: TypeRefIr },
-    Union { variants: Vec<TypeRefIr> },
-    Record { fields: BTreeMap<String, TypeRefIr> },
-    External,
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct ProjectionSyntheticEntrypointIndex {
     modules: BTreeMap<String, ProjectionSyntheticEntrypointModule>,
@@ -686,39 +686,24 @@ pub enum ProjectionSyntheticEntrypointExecutableKind {
 
 #[derive(Clone, Debug, Default)]
 pub struct PackageEntrypointProjectionFacts {
+    // Canonical package declarations are carried only by
+    // `ProjectionInput::file_ir_units`; keeping a second record/alias/union
+    // descriptor table here would lose representation, named-branch and
+    // interface context.
     functions_by_symbol_path: BTreeMap<String, PackageEntrypointFunctionProjection>,
-    schema_type_names_by_module: BTreeMap<String, Vec<String>>,
-    schema_abi_types_by_module: BTreeMap<String, Vec<PackageAbiType>>,
 }
 
 impl PackageEntrypointProjectionFacts {
     pub fn new(
         functions_by_symbol_path: BTreeMap<String, PackageEntrypointFunctionProjection>,
-        schema_type_names_by_module: BTreeMap<String, Vec<String>>,
-        schema_abi_types_by_module: BTreeMap<String, Vec<PackageAbiType>>,
     ) -> Self {
         Self {
             functions_by_symbol_path,
-            schema_type_names_by_module,
-            schema_abi_types_by_module,
         }
     }
 
     pub fn function(&self, symbol_path: &str) -> Option<&PackageEntrypointFunctionProjection> {
         self.functions_by_symbol_path.get(symbol_path)
-    }
-
-    pub fn schema_type_names_for_module(&self, module_path: &str) -> &[String] {
-        self.schema_type_names_by_module
-            .get(module_path)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    pub fn schema_abi_types_for_module(&self, module_path: &str) -> Option<&[PackageAbiType]> {
-        self.schema_abi_types_by_module
-            .get(module_path)
-            .map(Vec::as_slice)
     }
 }
 
@@ -1136,7 +1121,8 @@ mod resolved_package_schema_tests {
     use super::*;
     use serde_json::json;
     use skiff_artifact_model::{
-        ContractTypeDescriptor, PackageSchemaCanonicalDescriptor, PackageSchemaIndexEntry,
+        ContractTypeDescriptor, ContractTypeRef, PackageSchemaCanonicalDescriptor,
+        PackageSchemaIndexEntry,
     };
 
     fn schema(
@@ -1222,6 +1208,58 @@ mod resolved_package_schema_tests {
             error,
             ResolvedPackageSchemaError::NonPublicNamedType { .. }
         ));
+    }
+
+    #[test]
+    fn rejects_forged_generic_package_schema_before_exposing_index_or_records() {
+        let type_id = PackageSchemaTypeId::new("type:generic");
+        let error = ResolvedPackageSchema::new(
+            "models".to_string(),
+            "example.com/models".to_string(),
+            "1.2.3".to_string(),
+            PackageBuildId::new("build"),
+            PackageLocalAbiIdentity::new("abi"),
+            PackageSchemaIndex {
+                package_id: "example.com/models".to_string(),
+                package_schema_index_identity: "index".into(),
+                types: BTreeMap::from([(
+                    "api.Box".to_string(),
+                    PackageSchemaIndexEntry {
+                        package_schema_type_id: type_id.clone(),
+                        public_path: Some("api.Box".to_string()),
+                        nameability: ContractTypeNameability::PublicNameable,
+                    },
+                )]),
+            },
+            BTreeMap::from([(
+                type_id.clone(),
+                PackageSchemaTypeRecord {
+                    package_id: "example.com/models".to_string(),
+                    stable_schema_key: "api.Box".to_string(),
+                    package_schema_type_id: type_id.clone(),
+                    canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                        type_params: vec!["T".to_string()],
+                        descriptor: ContractTypeDescriptor::Record {
+                            fields: BTreeMap::from([(
+                                "value".to_string(),
+                                ContractTypeRef::TypeParam {
+                                    name: "T".to_string(),
+                                },
+                            )]),
+                        },
+                    },
+                },
+            )]),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            ResolvedPackageSchemaError::GenericTypeRecord {
+                alias: "models".to_string(),
+                package_schema_type_id: type_id,
+            }
+        );
     }
 
     #[test]

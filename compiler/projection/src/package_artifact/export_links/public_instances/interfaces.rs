@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    FileIrUnit, PackageRefIr, PackageSymbolRef, ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
+    FileIrUnit, NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, ServiceSymbolRef,
+    TypeDescriptorIr, TypeRefIr,
 };
 
 use crate::package_artifact::{
@@ -223,6 +224,37 @@ fn nominal_service_symbol(
             )?;
             Some(symbol.clone())
         }
+        TypeRefIr::AppliedNominal { base, .. } => match base {
+            NominalTypeRefBaseIr::LocalType { type_index } => {
+                let unit = file_units_by_module.get(module_path).copied()?;
+                let decl = unit.type_table.get(*type_index as usize)?;
+                Some(ServiceSymbolRef {
+                    module_path: module_path.to_string(),
+                    symbol: decl.name.clone(),
+                })
+            }
+            NominalTypeRefBaseIr::PublicationType {
+                module_path,
+                type_index,
+            } => {
+                let unit = file_units_by_module.get(module_path.as_str()).copied()?;
+                let decl = unit.type_table.get(*type_index as usize)?;
+                Some(ServiceSymbolRef {
+                    module_path: module_path.clone(),
+                    symbol: decl.name.clone(),
+                })
+            }
+            NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+                type_decl_by_module_local_name(
+                    file_units_by_module,
+                    &symbol.module_path,
+                    &symbol.symbol,
+                )?;
+                Some(symbol.clone())
+            }
+            NominalTypeRefBaseIr::PackageSymbol { .. }
+            | NominalTypeRefBaseIr::PackageSchema { .. } => None,
+        },
         TypeRefIr::Builtin { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::PackageSchema { .. }
