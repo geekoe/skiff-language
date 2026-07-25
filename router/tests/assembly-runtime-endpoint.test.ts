@@ -434,7 +434,7 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     const ws = await openSocket(fixture.url);
     const runtimeId = runtimeFrameHeaderFixtures['runtime.register'].runtimeId;
     sendCapabilities(ws, runtimeId);
-    const registered = nextRuntimeFrame(ws, 'runtime.registered');
+    const registered = nextRuntimeRegisteredAfterInitialBootstrap(ws);
     ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['runtime.register']));
     await expect(registered).resolves.toMatchObject({
       header: { type: 'runtime.registered', runtimeId }
@@ -870,6 +870,46 @@ async function nextRuntimeFrame(ws: WebSocket, type: string): Promise<RuntimeBin
   const frame = decodeRuntimeFrame(data);
   expect(frame.header.type).toBe(type);
   return frame;
+}
+
+async function nextRuntimeRegisteredAfterInitialBootstrap(
+  ws: WebSocket
+): Promise<RuntimeBinaryFrame> {
+  return await new Promise<RuntimeBinaryFrame>((resolve, reject) => {
+    let skippedInitialBootstrap = false;
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('timed out waiting for binary frame'));
+    }, 1000);
+    const onMessage = (data: WebSocket.RawData, isBinary: boolean) => {
+      if (!isBinary) {
+        cleanup();
+        reject(new Error('expected binary runtime frame'));
+        return;
+      }
+      try {
+        const frame = decodeRuntimeFrame(rawDataBuffer(data));
+        if (
+          !skippedInitialBootstrap &&
+          frame.header.type === 'router.bootstrap'
+        ) {
+          skippedInitialBootstrap = true;
+          return;
+        }
+        expect(frame.header.type).toBe('runtime.registered');
+        cleanup();
+        resolve(frame);
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      ws.off('message', onMessage);
+    };
+    ws.on('message', onMessage);
+  });
 }
 
 async function nextBinaryMessage(ws: WebSocket): Promise<Buffer> {
