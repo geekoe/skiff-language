@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr, PackageRefIr,
-    PackageTypeRef, TypeRefIr,
+    PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir;
 
@@ -1255,6 +1255,22 @@ impl<'a> OwnerChecker<'a> {
     fn check_return_value(&mut self, value: &Expr) {
         let value_key = self.peek_key();
         let actual = self.check_expr(value);
+        if self.stream_chunk.is_some() {
+            match actual.as_ref() {
+                Some(actual) if type_ir_is_void_or_null(&actual.ir) => return,
+                Some(actual) if stream_chunk_type(actual).is_none() => {
+                    self.diagnostics.push(format!(
+                        "{}: stream producer completion type mismatch at {}: expected null, found {}",
+                        self.module_path,
+                        self.expression_span_label(&value_key),
+                        actual.source_text
+                    ));
+                    return;
+                }
+                None => return,
+                Some(_) => {}
+            }
+        }
         let (Some(annotation), Some(actual)) = (self.return_type.clone(), actual) else {
             return;
         };
@@ -2351,6 +2367,27 @@ impl<'a> OwnerChecker<'a> {
                 }
             }
         }
+        if type_args.is_empty() {
+            if let Some(dependency_analysis) = self.dependency_analysis {
+                if let Some(signature) = dependency_analysis
+                    .package_callable_by_source_path(&path)
+                    .and_then(|callable| callable.signature())
+                    .filter(|signature| !package_type_contains_local_slot(&signature.return_type))
+                {
+                    let resolved_return = resolved_package_type_ref(&signature.return_type);
+                    let exact_projection = contract_call_typing::project_resolved_package_type(
+                        &resolved_return,
+                        self.type_resolution,
+                        dependency_analysis,
+                        &self.type_context,
+                    )
+                    .unwrap_or_else(|_| signature.return_type.clone());
+                    self.contract_projection
+                        .record_expression_type(key.clone(), exact_projection);
+                    return Some(resolved_return);
+                }
+            }
+        }
         if let Some(return_type) = self.config_intrinsic_call_type(&path, type_args) {
             return Some(return_type);
         }
@@ -2554,6 +2591,45 @@ impl<'a> OwnerChecker<'a> {
             );
             if expected.complete {
                 self.validate_resolved_call_params(&path, expected.params, args, arg_types);
+            }
+            if let Some(exact_signature) = signature.exact_signature {
+                let substitutions = signature
+                    .type_params
+                    .iter()
+                    .zip(type_args)
+                    .map(|(param, argument)| {
+                        self.project_source_binding_type(argument)
+                            .and_then(|projected| {
+                                projected.ok_or_else(|| {
+                                    format!(
+                                        "call `{path}` type argument `{param}` has no exact package projection"
+                                    )
+                                })
+                            })
+                            .map(|projected| (param.clone(), projected))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, _>>();
+                let projected_return = match substitutions {
+                    Ok(substitutions) => {
+                        substitute_package_type(&exact_signature.return_type, &substitutions)
+                    }
+                    Err(error) => Err(error),
+                };
+                match projected_return {
+                    Ok(projected_return) => {
+                        let resolved_return = resolved_package_type_ref(&projected_return);
+                        self.contract_projection
+                            .record_expression_type(key.clone(), projected_return);
+                        return Some(resolved_return);
+                    }
+                    Err(error) => {
+                        self.diagnostics.push(format!(
+                            "{}: call `{path}` exact return type substitution failed: {error}",
+                            self.module_path
+                        ));
+                        return None;
+                    }
+                }
             }
             let package_return_type = qualify_package_signature_type_text(
                 &signature.return_type,
@@ -4367,6 +4443,63 @@ fn type_ref_debug_text(ty: &TypeRefIr) -> String {
         TypeRefIr::Record { .. } => "{}".to_string(),
         TypeRefIr::TypeParam { name } => name.clone(),
         TypeRefIr::Function { .. } => "fn".to_string(),
+    }
+}
+
+fn resolved_package_type_ref(ty: &PackageTypeRef) -> ResolvedTypeRef {
+    let ir = package_type_ref_ir(ty);
+    ResolvedTypeRef {
+        source_text: type_ref_debug_text(&ir),
+        ir,
+    }
+}
+
+fn package_type_ref_ir(ty: &PackageTypeRef) -> TypeRefIr {
+    match ty {
+        PackageTypeRef::Local { local_type } => local_type.clone(),
+        PackageTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.clone(),
+                },
+                symbol_path: stable_schema_key.clone(),
+                abi_expectation: None,
+            },
+        },
+        PackageTypeRef::Container { name, arguments } => TypeRefIr::Builtin {
+            name: name.clone(),
+            args: arguments.iter().map(package_type_ref_ir).collect(),
+        },
+        PackageTypeRef::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(package_type_ref_ir(inner)),
+        },
+    }
+}
+
+fn package_type_contains_local_slot(ty: &PackageTypeRef) -> bool {
+    match ty {
+        PackageTypeRef::Local { local_type } => type_ir_contains_local_slot(local_type),
+        PackageTypeRef::PackageSchema { .. } => false,
+        PackageTypeRef::Container { arguments, .. } => {
+            arguments.iter().any(package_type_contains_local_slot)
+        }
+        PackageTypeRef::Nullable { inner } => package_type_contains_local_slot(inner),
+    }
+}
+
+fn type_ir_contains_local_slot(ty: &TypeRefIr) -> bool {
+    match ty {
+        TypeRefIr::LocalType { .. } | TypeRefIr::ServiceSymbol { .. } => true,
+        TypeRefIr::Builtin { args, .. } | TypeRefIr::Union { items: args } => {
+            args.iter().any(type_ir_contains_local_slot)
+        }
+        TypeRefIr::Nullable { inner } => type_ir_contains_local_slot(inner),
+        TypeRefIr::Record { fields } => fields.values().any(type_ir_contains_local_slot),
+        _ => false,
     }
 }
 

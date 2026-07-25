@@ -113,7 +113,11 @@ fn package_callable_analysis(
         .public_symbols
         .iter()
         .filter_map(|(public_path, symbol)| {
-            let PackageLocalAbiSymbol::Callable { callable_id, .. } = symbol else {
+            let PackageLocalAbiSymbol::Callable {
+                callable_id,
+                signature,
+            } = symbol
+            else {
                 return None;
             };
             let result = artifact
@@ -129,7 +133,8 @@ fn package_callable_analysis(
                 .map(|semantic_facts| {
                     (
                         dependency_member_path(dependency, public_path),
-                        PackageDependencyCallableAnalysis::new(callable_id.clone(), semantic_facts),
+                        PackageDependencyCallableAnalysis::new(callable_id.clone(), semantic_facts)
+                            .with_signature(signature.clone()),
                     )
                 });
             Some(result)

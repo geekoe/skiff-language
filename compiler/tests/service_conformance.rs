@@ -36,6 +36,108 @@ const CONTRACT_VERSION: &str = "1.0.0";
 const SCHEMA_PACKAGE_ID: &str = "example.com/echo-schema";
 
 #[test]
+fn package_stream_call_keeps_exact_item_type_through_binding_and_iteration() {
+    let consumer = TestDir::new("skiff-compiler", "package-stream-expression-consumer");
+    consumer.write(
+        "package.yml",
+        r#"id: example.com/package-stream-expression-consumer
+version: 1.0.0
+packages:
+  - id: example.com/package-stream-expression-provider
+    version: 1.0.0
+    alias: feed
+"#,
+    );
+    consumer.write("api.yml", "run: main.run\n");
+    consumer.write(
+        "main.skiff",
+        r#"import feed
+
+function run() -> Stream<string> {
+  for event in feed/events() {
+    emit(event)
+  }
+  const inferred = feed/events()
+  for event in inferred {
+    emit(event)
+  }
+  const events: Stream<string> = feed/events()
+  for event in events {
+    emit(event)
+  }
+  return null
+}
+"#,
+    );
+    write_stream_dependency(&consumer);
+
+    compile_package_project(consumer.path()).expect(
+        "package stream result must retain exact Event identity through expression, binding and iteration",
+    );
+}
+
+#[test]
+fn package_non_stream_call_remains_non_iterable() {
+    let consumer = TestDir::new("skiff-compiler", "package-non-stream-iteration-consumer");
+    consumer.write(
+        "package.yml",
+        r#"id: example.com/package-non-stream-iteration-consumer
+version: 1.0.0
+packages:
+  - id: example.com/package-stream-expression-provider
+    version: 1.0.0
+    alias: feed
+"#,
+    );
+    consumer.write("api.yml", "run: main.run\n");
+    consumer.write(
+        "main.skiff",
+        r#"import feed
+
+function run() -> null {
+  for event in feed/one() {
+    return null
+  }
+  return null
+}
+"#,
+    );
+    write_stream_dependency(&consumer);
+
+    let error = compile_package_project(consumer.path())
+        .expect_err("a scalar package call must not become iterable")
+        .to_string();
+    assert!(
+        error.contains("for iterable must be Array, Stream, or Map"),
+        "unexpected scalar iteration error: {error}"
+    );
+}
+
+#[test]
+fn stream_producer_rejects_a_non_null_completion_value() {
+    let package = TestDir::new("skiff-compiler", "stream-producer-completion-value");
+    write_package(
+        &package,
+        "example.com/stream-producer-completion-value",
+        "run: main.run\n",
+        r#"function run() -> Stream<string> {
+  emit("event")
+  return "not-a-completion"
+}
+"#,
+    );
+
+    let error = compile_package_project(package.path())
+        .expect_err("stream producer completion must remain distinct from its Stream result")
+        .to_string();
+    assert!(
+        error.contains("stream producer completion type mismatch")
+            && error.contains("expected null, found"),
+        "unexpected stream completion error: {error}"
+    );
+}
+
+#[test]
 fn generated_service_stream_contract_compiles_through_consumer_file_ir() {
     let (contract, schema) = compile_generated_stream_contract(
         "generated-service-stream-provider",
@@ -854,6 +956,30 @@ fn write_package(temp: &TestDir, package_id: &str, api: &str, source: &str) {
     );
     temp.write("api.yml", api);
     temp.write("main.skiff", source);
+}
+
+fn write_stream_dependency(consumer: &TestDir) {
+    let root = ".skiff-packages/example~com~~package-stream-expression-provider/1.0.0";
+    consumer.write(
+        &format!("{root}/package.yml"),
+        "id: example.com/package-stream-expression-provider\nversion: 1.0.0\n",
+    );
+    consumer.write(
+        &format!("{root}/api.yml"),
+        "events: feed.events\none: feed.one\n",
+    );
+    consumer.write(
+        &format!("{root}/feed.skiff"),
+        r#"function events() -> Stream<string> {
+  emit("event")
+  return null
+}
+
+function one() -> string {
+  return "one"
+}
+"#,
+    );
 }
 
 fn compile_generated_stream_contract(

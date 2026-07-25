@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     BoundaryOperationDescriptor, CallableSemanticFacts, ContractOperationId, ContractRequirement,
-    PackageCallableId, PackageLocalAbiIdentity, PackageSchemaTypeRecord, ServiceContract,
+    PackageCallableId, PackageCallableSignature, PackageLocalAbiIdentity, PackageSchemaTypeRecord,
+    ServiceContract,
 };
 use skiff_compiler_input::{
     ContractDependencyError, ContractDependencyIndex, ResolvedContractDependency,
@@ -43,6 +44,7 @@ pub struct PackageDependencyAnalysisFacts {
 pub struct PackageDependencyCallableAnalysis {
     callable_id: PackageCallableId,
     semantic_facts: CallableSemanticFacts,
+    signature: Option<PackageCallableSignature>,
 }
 
 pub(crate) enum ResolvedDependencyAnalysisTarget<'a> {
@@ -242,6 +244,15 @@ impl SourceDependencyAnalysisInput {
         matches.next().is_none().then_some(callable)
     }
 
+    pub(crate) fn package_callable_by_source_path(
+        &self,
+        path: &str,
+    ) -> Option<&PackageDependencyCallableAnalysis> {
+        let (alias, public_path) =
+            dependency_source_address_parts(path).or_else(|| path.split_once('.'))?;
+        self.packages.get(alias)?.callables.get(public_path)
+    }
+
     pub(crate) fn package_aliases(&self) -> impl Iterator<Item = &str> {
         self.packages.keys().map(String::as_str)
     }
@@ -290,7 +301,13 @@ impl PackageDependencyCallableAnalysis {
         Self {
             callable_id,
             semantic_facts,
+            signature: None,
         }
+    }
+
+    pub fn with_signature(mut self, signature: PackageCallableSignature) -> Self {
+        self.signature = Some(signature);
+        self
     }
 
     pub fn callable_id(&self) -> &PackageCallableId {
@@ -299,6 +316,10 @@ impl PackageDependencyCallableAnalysis {
 
     pub fn semantic_facts(&self) -> &CallableSemanticFacts {
         &self.semantic_facts
+    }
+
+    pub(crate) fn signature(&self) -> Option<&PackageCallableSignature> {
+        self.signature.as_ref()
     }
 }
 

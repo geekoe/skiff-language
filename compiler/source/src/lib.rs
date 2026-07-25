@@ -268,11 +268,15 @@ fn type_resolution_package_fact<'facts>(
             .values()
             .filter_map(|binding| {
                 let source_ast = parsed_source_ast(parsed_sources, &binding.source_module)?;
+                let exact_signature = compiled
+                    .callable_signatures()
+                    .signature(&binding.public_path);
                 Some(TypeResolutionPackageCallableFact {
                     public_path: binding.public_path.as_str(),
                     source_module: binding.source_module.as_str(),
                     source_symbol: binding.source_symbol.as_str(),
                     source_ast,
+                    exact_signature,
                 })
             })
             .collect(),

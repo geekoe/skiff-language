@@ -244,6 +244,7 @@ pub struct PackageCallableResolution {
     pub local_type_names: BTreeSet<String>,
     pub params: Vec<String>,
     pub return_type: String,
+    pub exact_signature: Option<skiff_artifact_model::PackageCallableSignature>,
 }
 
 #[derive(Clone, Debug)]
@@ -302,6 +303,7 @@ pub struct TypeResolutionPackageCallableFact<'a> {
     pub source_module: &'a str,
     pub source_symbol: &'a str,
     pub source_ast: &'a SourceFile,
+    pub exact_signature: Option<&'a skiff_artifact_model::PackageCallableSignature>,
 }
 
 impl TypeResolutionModel {
@@ -3149,13 +3151,14 @@ fn index_package_callables(
     package_callables: &mut BTreeMap<PackageSymbolKey, PackageCallableResolution>,
 ) {
     for binding in &package.callables {
-        let Some(resolution) = package_callable_resolution(
+        let Some(mut resolution) = package_callable_resolution(
             binding.source_ast,
             binding.source_module,
             binding.source_symbol,
         ) else {
             continue;
         };
+        resolution.exact_signature = binding.exact_signature.cloned();
         for path in [
             binding.public_path.to_string(),
             source_path(binding.source_module, binding.source_symbol),
@@ -3522,6 +3525,7 @@ fn operation_callable_resolution(
             .map(|ty| ty.name.clone())
             .collect(),
         return_type: operation.return_type.name.clone(),
+        exact_signature: None,
     }
 }
 
@@ -3548,6 +3552,7 @@ fn function_callable_resolution(
             .map(|ty| ty.name.clone())
             .collect(),
         return_type: function.return_type.name.clone(),
+        exact_signature: None,
     }
 }
 
