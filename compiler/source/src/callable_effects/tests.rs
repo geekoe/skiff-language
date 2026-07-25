@@ -482,6 +482,205 @@ fn relay_shaped_cross_module_root_calls_keep_exact_targets() {
 }
 
 #[test]
+fn publication_wide_call_graph_closes_effects_and_provenance_across_files() {
+    let model = analyze_sources(&[
+        (
+            "entry",
+            r#"
+                function returnThroughFiles(input: root.effects.Payload) -> root.effects.Payload {
+                  return root.bridge.returnPayload(input)
+                }
+
+                function mutateThroughFiles(items: Array<string>) -> void {
+                  root.bridge.mutate(items)
+                }
+
+                function persistThroughFiles(input: root.effects.Payload) -> void {
+                  root.bridge.persist(input)
+                }
+
+                function throwThroughFiles() -> void {
+                  root.bridge.fail()
+                }
+
+                function recursiveThroughFiles(
+                  input: root.effects.Payload,
+                  stop: bool
+                ) -> root.effects.Payload {
+                  if stop { return input }
+                  return root.bridge.recursive(input, true)
+                }
+            "#,
+        ),
+        (
+            "bridge",
+            r#"
+                function returnPayload(input: root.effects.Payload) -> root.effects.Payload {
+                  return root.effects.returnPayload(input)
+                }
+
+                function mutate(items: Array<string>) -> void {
+                  root.effects.mutate(items)
+                }
+
+                function persist(input: root.effects.Payload) -> void {
+                  root.effects.persist(input)
+                }
+
+                function fail() -> void {
+                  root.effects.fail()
+                }
+
+                function recursive(
+                  input: root.effects.Payload,
+                  stop: bool
+                ) -> root.effects.Payload {
+                  if stop { return input }
+                  return root.entry.recursiveThroughFiles(input, true)
+                }
+            "#,
+        ),
+        (
+            "effects",
+            r#"
+                type Payload { id: string, value: string }
+                type Stored { id: string, payload: Payload }
+
+                db object Stored {
+                  primary key(id)
+                }
+
+                function returnPayload(input: Payload) -> Payload {
+                  return input
+                }
+
+                function mutate(items: Array<string>) -> void {
+                  items.push("changed")
+                }
+
+                function persist(input: Payload) -> void {
+                  db insert Stored { id = input.id payload = input }
+                }
+
+                function fail() -> void {
+                  throw std.json.DecodeError {
+                    target: "fixture",
+                    message: "failed",
+                  }
+                }
+            "#,
+        ),
+    ]);
+
+    for (module, symbol) in [
+        ("effects", "returnPayload"),
+        ("bridge", "returnPayload"),
+        ("entry", "returnThroughFiles"),
+        ("bridge", "recursive"),
+        ("entry", "recursiveThroughFiles"),
+    ] {
+        assert!(
+            effects_in(&model, module, symbol).returns_caller_alias,
+            "{module}.{symbol}"
+        );
+        assert!(matches!(
+            provenance_in(&model, module, symbol),
+            CallableProvenanceSummary::Analyzed { return_origins, .. }
+                if return_origins.contains(&ValueProvenance::CallerParameter { index: 0 })
+        ));
+    }
+
+    for (module, symbol) in [
+        ("effects", "mutate"),
+        ("bridge", "mutate"),
+        ("entry", "mutateThroughFiles"),
+    ] {
+        let effects = effects_in(&model, module, symbol);
+        assert!(effects.writes_caller_reachable, "{module}.{symbol}");
+        assert!(effects.requires_same_heap_identity, "{module}.{symbol}");
+    }
+
+    for (module, symbol) in [
+        ("effects", "persist"),
+        ("bridge", "persist"),
+        ("entry", "persistThroughFiles"),
+    ] {
+        let effects = effects_in(&model, module, symbol);
+        assert!(effects.escapes_caller_value, "{module}.{symbol}");
+        assert!(effects.may_suspend, "{module}.{symbol}");
+        assert!(matches!(
+            provenance_in(&model, module, symbol),
+            CallableProvenanceSummary::Analyzed { escape_lanes, .. }
+                if escape_lanes == &vec![ValueEscapeLane::Database]
+        ));
+    }
+
+    for (module, symbol) in [
+        ("effects", "fail"),
+        ("bridge", "fail"),
+        ("entry", "throwThroughFiles"),
+    ] {
+        assert!(matches!(
+            provenance_in(&model, module, symbol),
+            CallableProvenanceSummary::Analyzed { throw_origins, .. }
+                if throw_origins == &vec![ValueProvenance::Fresh]
+        ));
+    }
+
+    let cross_file_targets = model
+        .resolved_call_targets()
+        .iter()
+        .filter(|(caller, target)| {
+            target
+                .source_callable_key()
+                .is_some_and(|callee| callee.module_path() != caller.module_path())
+        })
+        .count();
+    assert_eq!(cross_file_targets, 10);
+}
+
+#[test]
+fn missing_and_ambiguous_cross_file_targets_remain_fail_closed() {
+    let missing_source = CompilerSourceFile::parse(
+        PathBuf::from("entry.skiff"),
+        "entry".to_string(),
+        true,
+        false,
+        "function run() -> void { root.missing.run() }".to_string(),
+        "entry.skiff",
+    )
+    .expect("missing-target fixture parses");
+    let missing = parse_publication_sources(Path::new("/tmp/effect-provenance"), &[missing_source])
+        .expect_err("a missing publication module must fail before effect analysis");
+    assert!(
+        missing
+            .to_string()
+            .contains("module `missing.skiff` which does not exist"),
+        "{missing}"
+    );
+
+    let ambiguous = analyze_sources_result(&[
+        (
+            "entry",
+            r#"
+                function run() -> void {
+                  root.helpers.run()
+                }
+            "#,
+        ),
+        ("helpers", "function run() -> void {}"),
+        ("helpers", "function run() -> void {}"),
+    ])
+    .expect_err("an ambiguous publication target must not produce callable facts");
+    assert!(
+        ambiguous
+            .to_string()
+            .contains("has more than one exact signature fact"),
+        "{ambiguous}"
+    );
+}
+
+#[test]
 fn concrete_interface_implementation_call_uses_exact_impl_method_target() {
     let model = analyze(
         r#"
@@ -3623,6 +3822,12 @@ fn analyze_named_result(
 }
 
 fn analyze_sources(sources: &[(&str, &str)]) -> PackageSourceModel {
+    analyze_sources_result(sources).expect("multi-source model builds")
+}
+
+fn analyze_sources_result(
+    sources: &[(&str, &str)],
+) -> Result<PackageSourceModel, crate::SourceCompileError> {
     let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
@@ -3664,7 +3869,6 @@ fn analyze_sources(sources: &[(&str, &str)]) -> PackageSourceModel {
         },
         &SourceDependencyAnalysisInput::default(),
     )
-    .expect("multi-source model builds")
 }
 
 fn effects(model: &PackageSourceModel, symbol: &str) -> CallableMayEffects {
