@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCallbackLifetime, BoundaryCancellationContract,
-    BoundaryOperationDescriptor, BoundaryStreamContract,
+    BoundaryOperationDescriptor, BoundaryStreamContract, PackageBuildId,
 };
 use skiff_runtime_linked_program::{CallIr, LinkedPackageDirectCall};
 use skiff_runtime_model::runtime_value::{RuntimeValue, RuntimeValueCarrier};
@@ -8,6 +8,7 @@ use skiff_runtime_model::runtime_value::{RuntimeValue, RuntimeValueCarrier};
 use super::{
     boundary_materialization::CanonicalServiceBoundaryPlan,
     callback_native::CallbackNativeCapabilityHooks,
+    service_error_channel::{CanonicalServiceErrorChannel, ServiceErrorExportContext},
 };
 use crate::{
     env::Env,
@@ -44,6 +45,7 @@ pub(crate) async fn execute_service_call(
     call: &CallIr,
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,
+    caller_package_build_id: Option<&PackageBuildId>,
 ) -> Result<RuntimeValue> {
     validate_ordinary_operation(target.descriptor(), call)?;
     let boundary = CanonicalServiceBoundaryPlan::new(
@@ -63,7 +65,8 @@ pub(crate) async fn execute_service_call(
     let provider_context = context
         .context
         .clone()
-        .with_runtime_assembly_target(provider_eval_target);
+        .with_runtime_assembly_target(provider_eval_target)
+        .with_provider_service_stack_scope();
     let provider_env = Env::new();
     let provider_type_args = Default::default();
     let provider_result = context
@@ -78,14 +81,36 @@ pub(crate) async fn execute_service_call(
             provider_args,
         )
         .await;
-    let provider_hooks = CallbackNativeCapabilityHooks::new(&provider_context);
-
-    boundary.materialize_provider_result(
-        provider_result,
-        &mut provider_heap,
-        context.heap,
-        &provider_hooks,
-    )
+    match provider_result {
+        Ok(value) => {
+            let provider_hooks = CallbackNativeCapabilityHooks::new(&provider_context);
+            boundary.materialize_success(&value, &provider_heap, context.heap, &provider_hooks)
+        }
+        Err(error) => {
+            let provider_target = provider_context.runtime_assembly_target()?;
+            record_ordinary_provider_failure(
+                provider_target.request_activation().generation(),
+                target.provider_activation().activation_id().as_str(),
+                &error,
+            );
+            let fixed = CanonicalServiceErrorChannel::export_provider_failure(
+                &error,
+                ServiceErrorExportContext {
+                    execution_image: provider_target.execution_image().as_ref(),
+                    type_view: provider_target.execution_projection().type_view(),
+                    provider_heap: &provider_heap,
+                    provider_package_build_id: target
+                        .provider_activation()
+                        .implementation_package_build_id(),
+                    caller_package_build_id,
+                    provider_service_id: target.contract().service_id.as_str(),
+                    operation_id: target.descriptor().operation_id.as_str(),
+                },
+                || provider_context.next_exception_correlation(),
+            )?;
+            Err(RuntimeError::FixedServiceFailure(fixed))
+        }
+    }
 }
 
 fn validate_ordinary_operation(
@@ -128,6 +153,60 @@ fn validate_ordinary_operation(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OrdinaryProviderFailureRecord {
+    pub activation_id: String,
+    pub fixed_before_export: bool,
+    pub source: skiff_artifact_model::InstructionSourceSite,
+    pub stack: Vec<skiff_runtime_model::service_error::ExceptionStackFrame>,
+}
+
+#[cfg(test)]
+static ORDINARY_PROVIDER_FAILURE_SPY: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<u64, Vec<OrdinaryProviderFailureRecord>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+
+fn record_ordinary_provider_failure(
+    request_generation: u64,
+    activation_id: &str,
+    error: &RuntimeError,
+) {
+    #[cfg(test)]
+    if let Ok(mut probes) = ORDINARY_PROVIDER_FAILURE_SPY.lock() {
+        if let Some(records) = probes.get_mut(&request_generation) {
+            if let Some(exception) = crate::exceptions::user_exception_for_catch(error) {
+                records.push(OrdinaryProviderFailureRecord {
+                    activation_id: activation_id.to_string(),
+                    fixed_before_export: exception.request().fixed_service_error().is_some(),
+                    source: exception.request().source().clone(),
+                    stack: exception.request().stack().to_vec(),
+                });
+            }
+        }
+    }
+    #[cfg(not(test))]
+    let _ = (request_generation, activation_id, error);
+}
+
+#[cfg(test)]
+pub(crate) fn start_ordinary_provider_failure_probe_for_test(request_generation: u64) {
+    if let Ok(mut probes) = ORDINARY_PROVIDER_FAILURE_SPY.lock() {
+        probes.insert(request_generation, Vec::new());
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn take_ordinary_provider_failure_records_for_test(
+    request_generation: u64,
+) -> Vec<OrdinaryProviderFailureRecord> {
+    ORDINARY_PROVIDER_FAILURE_SPY
+        .lock()
+        .ok()
+        .and_then(|mut probes| probes.remove(&request_generation))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

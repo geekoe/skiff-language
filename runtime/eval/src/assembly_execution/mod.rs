@@ -22,6 +22,7 @@ use crate::{
     eval_context::EvalContext,
     RuntimeAssemblyEvalSeamError, RuntimeAssemblyServiceCallTarget,
 };
+use service_error_channel::{CanonicalServiceErrorChannel, ServiceErrorImportContext};
 
 pub(crate) use async_stream_cancel::is_canonical_boundary_stream_sink;
 #[allow(unused_imports)]
@@ -76,7 +77,20 @@ async fn dispatch_in_process_boundary(
     origin: InProcessBoundaryDispatchOrigin,
 ) -> Result<RuntimeValue> {
     record_in_process_boundary_dispatch(origin, &target);
-    match &target.descriptor().contract.stream {
+    let remote_service_id = target.contract().service_id.clone();
+    let remote_operation_id = target.descriptor().operation_id.clone();
+    let caller_package_build_id = match origin {
+        InProcessBoundaryDispatchOrigin::Ingress => None,
+        InProcessBoundaryDispatchOrigin::InternalServiceCall => Some(
+            context
+                .context
+                .runtime_assembly_target()?
+                .activation_context()
+                .implementation_package_build_id()
+                .clone(),
+        ),
+    };
+    let result = match &target.descriptor().contract.stream {
         BoundaryStreamContract::Unsupported { reason } => Err(RuntimeError::Unsupported(format!(
             "canonical service operation {} has unsupported stream semantics: {reason:?}",
             target.descriptor().operation_id
@@ -100,9 +114,49 @@ async fn dispatch_in_process_boundary(
                 async_stream_cancel::execute_service_call(context, call, target, args).await
             }
             BoundaryCancellationContract::NotCancellable => {
-                ordinary::execute_service_call(context, call, target, args).await
+                ordinary::execute_service_call(
+                    context,
+                    call,
+                    target,
+                    args,
+                    caller_package_build_id.as_ref(),
+                )
+                .await
             }
         },
+    };
+
+    let Err(RuntimeError::FixedServiceFailure(error)) = result else {
+        return result;
+    };
+    match origin {
+        InProcessBoundaryDispatchOrigin::Ingress => Err(RuntimeError::FixedServiceFailure(error)),
+        InProcessBoundaryDispatchOrigin::InternalServiceCall => {
+            let caller_stack_at_site = context.context.exception_stack_for_site(call.site.clone());
+            let caller_target = context.context.runtime_assembly_target()?;
+            let exception = CanonicalServiceErrorChannel::import_caller_failure(
+                error,
+                ServiceErrorImportContext {
+                    execution_image: caller_target.execution_image().as_ref(),
+                    type_view: caller_target.execution_projection().type_view(),
+                    caller_heap: context.heap,
+                    caller_package_build_id: caller_target
+                        .activation_context()
+                        .implementation_package_build_id(),
+                    caller_executable_addr: context.addr,
+                    call_site: &call.site,
+                    caller_stack_at_site: &caller_stack_at_site,
+                    remote_service_id: remote_service_id.as_str(),
+                    remote_operation_id: remote_operation_id.as_str(),
+                },
+            )?;
+            record_in_process_boundary_failure_import(
+                caller_target.request_activation().generation(),
+                caller_target.activation_context().activation_id().as_str(),
+                &exception,
+            );
+            Err(RuntimeError::UserException(exception))
+        }
     }
 }
 
@@ -156,6 +210,60 @@ pub fn take_in_process_boundary_dispatch_records_for_test(
     request_generation: u64,
 ) -> Vec<InProcessBoundaryDispatchRecord> {
     IN_PROCESS_BOUNDARY_DISPATCH_SPY
+        .lock()
+        .ok()
+        .and_then(|mut probes| probes.remove(&request_generation))
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InProcessBoundaryFailureImportRecord {
+    pub caller_activation_id: String,
+    pub encoded_error: Vec<u8>,
+    pub source: skiff_artifact_model::InstructionSourceSite,
+    pub stack: Vec<skiff_runtime_model::service_error::ExceptionStackFrame>,
+}
+
+#[cfg(test)]
+static IN_PROCESS_BOUNDARY_FAILURE_IMPORT_SPY: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<u64, Vec<InProcessBoundaryFailureImportRecord>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+
+fn record_in_process_boundary_failure_import(
+    request_generation: u64,
+    caller_activation_id: &str,
+    exception: &crate::error::UserException,
+) {
+    #[cfg(test)]
+    if let Ok(mut probes) = IN_PROCESS_BOUNDARY_FAILURE_IMPORT_SPY.lock() {
+        if let Some(records) = probes.get_mut(&request_generation) {
+            if let Some(error) = exception.request().fixed_service_error() {
+                records.push(InProcessBoundaryFailureImportRecord {
+                    caller_activation_id: caller_activation_id.to_string(),
+                    encoded_error: error.encoded_bytes().to_vec(),
+                    source: exception.request().source().clone(),
+                    stack: exception.request().stack().to_vec(),
+                });
+            }
+        }
+    }
+    #[cfg(not(test))]
+    let _ = (request_generation, caller_activation_id, exception);
+}
+
+#[cfg(test)]
+pub(crate) fn start_in_process_boundary_failure_import_probe_for_test(request_generation: u64) {
+    if let Ok(mut probes) = IN_PROCESS_BOUNDARY_FAILURE_IMPORT_SPY.lock() {
+        probes.insert(request_generation, Vec::new());
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn take_in_process_boundary_failure_import_records_for_test(
+    request_generation: u64,
+) -> Vec<InProcessBoundaryFailureImportRecord> {
+    IN_PROCESS_BOUNDARY_FAILURE_IMPORT_SPY
         .lock()
         .ok()
         .and_then(|mut probes| probes.remove(&request_generation))

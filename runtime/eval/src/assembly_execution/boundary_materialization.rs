@@ -79,6 +79,11 @@ impl<'a> CanonicalServiceBoundaryPlan<'a> {
             .collect()
     }
 
+    /// Detaches a successful result or forwards an already-fixed failure.
+    ///
+    /// A provider lane must export its actual error while the provider heap is
+    /// alive. Reaching this shared boundary with any other error is an
+    /// execution invariant violation, never a legacy error pass-through.
     pub(crate) fn materialize_provider_result(
         &self,
         result: Result<RuntimeValue>,
@@ -90,9 +95,13 @@ impl<'a> CanonicalServiceBoundaryPlan<'a> {
             Ok(value) => {
                 self.materialize_success(&value, provider_heap, caller_heap, provider_hooks)
             }
-            Err(error) => {
-                self.materialize_provider_error(error, provider_heap, caller_heap, provider_hooks)
+            Err(RuntimeError::FixedServiceFailure(error)) => {
+                Err(RuntimeError::FixedServiceFailure(error))
             }
+            Err(_) => Err(RuntimeError::InvalidArtifact(format!(
+                "canonical service operation {} returned an unfixed provider failure",
+                self.operation.operation_id
+            ))),
         }
     }
 
@@ -106,24 +115,6 @@ impl<'a> CanonicalServiceBoundaryPlan<'a> {
     ) -> Result<RuntimeValue> {
         self.return_plan
             .materialize(value, provider_heap, caller_heap, provider_hooks)
-    }
-
-    /// Classifies a provider failure and detaches only a contract-declared typed payload.
-    ///
-    /// Runtime failures retain their original class, undeclared typed throws become protocol
-    /// failures, and declared payload mismatches are reported by the same directional planner.
-    pub(crate) fn materialize_provider_error(
-        &self,
-        error: RuntimeError,
-        _provider_heap: &mut RequestHeap,
-        _caller_heap: &mut RequestHeap,
-        _provider_hooks: &dyn ServiceLinkableCapabilityHooks,
-    ) -> Result<RuntimeValue> {
-        // F299 owns request-local exception semantics only. A local cause may
-        // reference the provider heap, so it must never be detached by the old
-        // generic JSON path. The service-error channel owner will classify and
-        // export it through the canonical envelope in a downstream task.
-        Err(error)
     }
 }
 

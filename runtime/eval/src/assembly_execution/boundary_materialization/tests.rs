@@ -12,6 +12,7 @@ use skiff_runtime_boundary::service_linkable::FailClosedServiceLinkableCapabilit
 use skiff_runtime_model::{
     request_heap::RequestHeap,
     runtime_value::{HeapHandle, HeapNode, RuntimeValue},
+    service_error::{InternalErrorPayload, OpaqueServiceError, ServiceErrorEnvelope},
 };
 
 use super::*;
@@ -139,6 +140,53 @@ fn package_named_parameter_and_return_keep_full_owner_identity() {
     assert!(matches!(
         CanonicalServiceBoundaryPlan::new(&descriptor, &invalid, 1),
         Err(RuntimeError::InvalidArtifact(_))
+    ));
+}
+
+#[test]
+fn provider_result_accepts_only_an_already_fixed_failure_carrier() {
+    let descriptor = operation(Vec::new(), ContractTypeRef::builtin("void"));
+    let schema = BTreeMap::new();
+    let planner = CanonicalServiceBoundaryPlan::new(&descriptor, &schema, 0)
+        .expect("ordinary no-argument plan");
+    let mut provider_heap = RequestHeap::default();
+    let mut caller_heap = RequestHeap::default();
+
+    let generic = planner
+        .materialize_provider_result(
+            Err(RuntimeError::ProviderUnavailable {
+                target: "provider".to_string(),
+                reason: "generic failure".to_string(),
+            }),
+            &mut provider_heap,
+            &mut caller_heap,
+            &FailClosedServiceLinkableCapabilityHooks,
+        )
+        .expect_err("generic provider error cannot bypass fixed classification");
+    assert!(matches!(generic, RuntimeError::InvalidArtifact(_)));
+
+    let envelope = ServiceErrorEnvelope::InternalError {
+        payload: InternalErrorPayload {
+            message: "Internal service error".to_string(),
+            trace_id: "trace-fixed".to_string(),
+            error_id: "error-fixed".to_string(),
+        },
+    };
+    let fixed = OpaqueServiceError::decode(
+        skiff_canonical_json::canonical_json_bytes(&envelope).expect("fixed carrier bytes"),
+    )
+    .expect("fixed carrier");
+    let forwarded = planner
+        .materialize_provider_result(
+            Err(RuntimeError::FixedServiceFailure(fixed.clone())),
+            &mut provider_heap,
+            &mut caller_heap,
+            &FailClosedServiceLinkableCapabilityHooks,
+        )
+        .expect_err("fixed failure remains on the error path");
+    assert!(matches!(
+        forwarded,
+        RuntimeError::FixedServiceFailure(actual) if actual == fixed
     ));
 }
 
