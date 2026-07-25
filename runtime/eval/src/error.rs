@@ -2127,13 +2127,13 @@ mod tests {
                 "message": "std.file not found",
             }),
         );
-        assert_catch_projection(
-            RuntimeError::resource_error("prompts/system.md", "missing"),
-            "std.resource.ResourceError",
-            serde_json::json!({
-                "path": "prompts/system.md",
-                "message": "missing",
-            }),
+        assert_eq!(
+            WirePayload::catch_projection(&RuntimeError::resource_error(
+                "prompts/system.md",
+                "missing",
+            )),
+            None,
+            "ResourceError is package-owned and must not project a platform catch identity",
         );
         assert_catch_projection(
             RuntimeError::HttpError {

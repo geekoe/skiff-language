@@ -40,6 +40,12 @@ fn runtime_factory() -> crate::eval::capabilities::EvalRuntimeFactory {
     eval_capabilities::runtime_factory()
 }
 
+fn test_instruction_site() -> skiff_artifact_model::InstructionSourceSite {
+    skiff_artifact_model::InstructionSourceSite::Synthetic {
+        reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+    }
+}
+
 fn receiver_builtin_target(root: &str, method: &str) -> serde_json::Value {
     json!({
         "kind": "receiverBuiltin",
@@ -677,6 +683,7 @@ fn interface_method_route_executable() -> LinkedExecutable {
     expressions.push(json!({
         "kind": "call",
         "call": {
+            "site": test_instruction_site(),
             "target": reader_interface_method_target(),
             "args": [
                 { "expression": 2 }
@@ -723,6 +730,7 @@ fn interface_stream_for_in_route_executable() -> LinkedExecutable {
     expressions.push(json!({
         "kind": "call",
         "call": {
+            "site": test_instruction_site(),
             "target": reader_interface_method_target(),
             "args": [
                 { "expression": 2 }
@@ -916,6 +924,7 @@ fn heterogeneous_interface_array_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": reader_interface_method_target(),
                         "args": [
                             { "expression": 9 }
@@ -1095,6 +1104,7 @@ fn interface_method_arg_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": reader_interface_method_target(),
                         "args": [
                             { "expression": 0 }
@@ -1249,6 +1259,7 @@ fn single_binding_map_for_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": receiver_builtin_target("Map", "delete"),
                         "args": [
                             { "expression": 4 },
@@ -1369,6 +1380,7 @@ fn entry_binding_map_for_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": receiver_builtin_target("Map", "set"),
                         "args": [
                             { "expression": 6 },
@@ -1421,6 +1433,7 @@ fn local_const_receiver_extra_arg_route() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": local_const_receiver_target(1),
                         "args": [
                             { "expression": 0 },
@@ -1527,6 +1540,7 @@ fn self_type_receiver_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 1)).unwrap()
