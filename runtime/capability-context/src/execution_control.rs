@@ -5,7 +5,10 @@ use std::{
 };
 
 use serde_json::json;
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+};
 
 use crate::{CancellationToken, FileSourceStreamContext, StreamRuntime};
 
@@ -98,7 +101,7 @@ impl WirePayload for ExecutionControlError {
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
         match self {
             ExecutionControlError::Cancelled => Some(cancel_catch_projection()),
             ExecutionControlError::BudgetExceeded(failure) => {
@@ -106,7 +109,7 @@ impl WirePayload for ExecutionControlError {
                     Some(cancel_catch_projection())
                 } else {
                     Some((
-                        TypeIdentity::builtin("TimeoutError"),
+                        PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
                         json!({
                             "reason": failure.reason.as_str(),
                             "instructionCount": failure.instruction_count,
@@ -133,9 +136,9 @@ fn cancel_payload() -> RuntimeErrorPayload {
     }
 }
 
-fn cancel_catch_projection() -> (TypeIdentity, serde_json::Value) {
+fn cancel_catch_projection() -> (CatchIdentity, serde_json::Value) {
     (
-        TypeIdentity::builtin("CancelError"),
+        PlatformBuiltinErrorIdentity::Cancel.catch_identity(),
         json!({
             "message": REQUEST_CANCELLED_MESSAGE,
         }),

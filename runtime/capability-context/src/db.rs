@@ -5,10 +5,11 @@ use serde_json::{json, Value};
 use skiff_artifact_model::DbMetadataIr;
 use skiff_runtime_boundary::recoverable::RecoverableBehaviorHooks;
 use skiff_runtime_model::{
-    error::{RuntimeErrorPayload, TypeIdentity, WirePayload},
+    error::{RuntimeErrorPayload, WirePayload},
     recoverable::{RuntimeRecoverableBoundaryContext, RuntimeRecoverableExpectedTypePlan},
     request_heap::RequestHeap,
     runtime_value::RuntimeValue,
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
 };
 
 macro_rules! db_wire_newtype {
@@ -335,10 +336,10 @@ impl WirePayload for DbCapabilityError {
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
         match self {
             Self::ProviderUnavailable { target, reason } => Some((
-                TypeIdentity::builtin("std.service.ProviderUnavailableError"),
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
                 json!({
                     "target": target,
                     "reason": reason,

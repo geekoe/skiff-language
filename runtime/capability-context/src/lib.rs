@@ -105,12 +105,24 @@ mod tests {
     use std::fmt;
 
     use serde_json::json;
-    use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+    use skiff_runtime_model::{
+        error::{RuntimeErrorPayload, WirePayload},
+        service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+    };
 
     use super::*;
 
     #[derive(Debug)]
     struct TestWirePayload;
+
+    fn test_fixture_catch_projection() -> Option<(CatchIdentity, serde_json::Value)> {
+        Some((
+            PlatformBuiltinErrorIdentity::Http.catch_identity(),
+            json!({
+                "caught": true,
+            }),
+        ))
+    }
 
     impl fmt::Display for TestWirePayload {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -132,13 +144,8 @@ mod tests {
             }
         }
 
-        fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
-            Some((
-                TypeIdentity::builtin("test.ProducerCatchError"),
-                json!({
-                    "caught": true,
-                }),
-            ))
+        fn catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
+            test_fixture_catch_projection()
         }
 
         fn as_any(&self) -> &dyn std::any::Any {
@@ -156,7 +163,7 @@ mod tests {
         assert_eq!(
             file.catch_projection(),
             Some((
-                TypeIdentity::builtin("std.file.FileError"),
+                PlatformBuiltinErrorIdentity::File.catch_identity(),
                 json!({
                     "message": "std.file not found: test",
                 }),
@@ -178,7 +185,7 @@ mod tests {
         assert_eq!(
             provider.catch_projection(),
             Some((
-                TypeIdentity::builtin("std.service.ProviderUnavailableError"),
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
                 json!({
                     "target": "svc.account",
                     "reason": "no active runtime",
@@ -223,7 +230,7 @@ mod tests {
         assert_eq!(
             provider.catch_projection(),
             Some((
-                TypeIdentity::builtin("std.service.ProviderUnavailableError"),
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
                 json!({
                     "target": "svc.account",
                     "reason": "no active runtime",
@@ -236,7 +243,7 @@ mod tests {
         assert_eq!(
             protocol.catch_projection(),
             Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 json!({
                     "target": "std.websocket.sendTextToConnection",
                     "message": "closed",
@@ -246,14 +253,62 @@ mod tests {
 
         let opaque = CapabilityError::opaque(TestWirePayload);
         assert_eq!(opaque.payload().code, "test.ProducerError");
+        assert_eq!(opaque.catch_projection(), test_fixture_catch_projection());
+
         assert_eq!(
-            opaque.catch_projection(),
+            CapabilityError::decode("invalid capability payload").catch_projection(),
+            None
+        );
+        assert_eq!(
+            CapabilityError::unsupported("unsupported capability").catch_projection(),
+            None
+        );
+    }
+
+    #[test]
+    fn db_capability_error_catch_projection_matches_public_contract() {
+        let provider =
+            DbCapabilityError::provider_unavailable("std.db.findOne", "database unavailable");
+        assert_eq!(
+            provider.catch_projection(),
             Some((
-                TypeIdentity::builtin("test.ProducerCatchError"),
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
                 json!({
-                    "caught": true,
+                    "target": "std.db.findOne",
+                    "reason": "database unavailable",
                 }),
             ))
+        );
+
+        assert_eq!(
+            DbCapabilityError::opaque(TestWirePayload).catch_projection(),
+            test_fixture_catch_projection()
+        );
+        assert_eq!(
+            DbCapabilityError::decode("invalid database payload").catch_projection(),
+            None
+        );
+    }
+
+    #[test]
+    fn file_capability_wrappers_forward_inner_catch_projection() {
+        assert_eq!(
+            FileCapabilityError::opaque(TestWirePayload).catch_projection(),
+            test_fixture_catch_projection()
+        );
+
+        let stream = StreamRuntimeError::producer(TestWirePayload);
+        let stream_projection = stream.catch_projection();
+        assert_eq!(
+            FileCapabilityError::from(stream).catch_projection(),
+            stream_projection
+        );
+
+        let execution = ExecutionControlError::Cancelled;
+        let execution_projection = execution.catch_projection();
+        assert_eq!(
+            FileCapabilityError::from(execution).catch_projection(),
+            execution_projection
         );
     }
 
@@ -289,7 +344,7 @@ mod tests {
         assert_eq!(
             cancelled.catch_projection(),
             Some((
-                TypeIdentity::builtin("CancelError"),
+                PlatformBuiltinErrorIdentity::Cancel.catch_identity(),
                 json!({
                     "message": "request was cancelled",
                 }),
@@ -305,7 +360,7 @@ mod tests {
         assert_eq!(cancelled_budget.payload().code, "CancelError");
         assert_eq!(
             cancelled_budget.catch_projection().unwrap().0,
-            TypeIdentity::builtin("CancelError")
+            PlatformBuiltinErrorIdentity::Cancel.catch_identity()
         );
 
         let timeout = ExecutionControlError::BudgetExceeded(ExecutionBudgetFailure {
@@ -329,7 +384,7 @@ mod tests {
         assert_eq!(
             timeout.catch_projection(),
             Some((
-                TypeIdentity::builtin("TimeoutError"),
+                PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
                 json!({
                     "reason": "deadlineExceeded",
                     "instructionCount": 42,
@@ -337,6 +392,18 @@ mod tests {
                     "elapsedMs": 12.5,
                 }),
             ))
+        );
+
+        let instruction_limit = ExecutionControlError::BudgetExceeded(ExecutionBudgetFailure {
+            reason: ExecutionBudgetReason::InstructionLimitExceeded,
+            instruction_count: 101,
+            limit: Some(100),
+            elapsed_ms: 3.5,
+        });
+        assert_eq!(instruction_limit.payload().code, "TimeoutError");
+        assert_eq!(
+            instruction_limit.catch_projection().unwrap().0,
+            PlatformBuiltinErrorIdentity::Timeout.catch_identity()
         );
     }
 
@@ -351,7 +418,7 @@ mod tests {
         assert_eq!(
             cancelled.catch_projection(),
             Some((
-                TypeIdentity::builtin("CancelError"),
+                PlatformBuiltinErrorIdentity::Cancel.catch_identity(),
                 json!({
                     "message": "request was cancelled",
                 }),
@@ -360,15 +427,7 @@ mod tests {
 
         let producer = StreamRuntimeError::producer(TestWirePayload);
         assert_eq!(producer.payload().code, "test.ProducerError");
-        assert_eq!(
-            producer.catch_projection(),
-            Some((
-                TypeIdentity::builtin("test.ProducerCatchError"),
-                json!({
-                    "caught": true,
-                }),
-            ))
-        );
+        assert_eq!(producer.catch_projection(), test_fixture_catch_projection());
     }
 
     #[test]
@@ -390,7 +449,7 @@ mod tests {
         assert_eq!(
             error.catch_projection(),
             Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 json!({
                     "target": "svc.account",
                     "message": "binary HTTP request metadata is missing",

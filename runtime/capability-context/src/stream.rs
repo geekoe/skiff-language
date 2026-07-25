@@ -9,9 +9,10 @@ use std::{
 
 use serde_json::Value;
 use skiff_runtime_model::{
-    error::{RuntimeErrorPayload, TypeIdentity, WirePayload},
+    error::{RuntimeErrorPayload, WirePayload},
     request_heap::RequestHeap,
     runtime_value::RuntimeValue,
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
     type_plan::RuntimeTypePlan,
 };
 
@@ -75,10 +76,10 @@ impl WirePayload for StreamRuntimeError {
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
         match self {
             Self::Cancelled => Some((
-                TypeIdentity::builtin("CancelError"),
+                PlatformBuiltinErrorIdentity::Cancel.catch_identity(),
                 serde_json::json!({
                     "message": REQUEST_CANCELLED_MESSAGE,
                 }),
