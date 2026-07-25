@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_identity::validate_package_artifact_identities;
 use skiff_artifact_model::{
-    InterfaceInstantiationRef, PackageArtifact, PackageCallableSignature, PackageLocalAbiSymbol,
-    PackageRefIr, PackageTypeRef, TypeRefIr,
+    InterfaceInstantiationRef, NominalTypeRefBaseIr, PackageArtifact, PackageCallableSignature,
+    PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_input::{PackageDependencyAccess, ResolvedContractDependency};
@@ -294,6 +294,10 @@ fn bind_package_type_identity(ty: &PackageTypeRef, artifact: &PackageArtifact) -
 fn bind_type_identity(ty: &TypeRefIr, artifact: &PackageArtifact) -> TypeRefIr {
     let bind = |ty: &TypeRefIr| bind_type_identity(ty, artifact);
     match ty {
+        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+            base: bind_nominal_base_identity(base, artifact),
+            arguments: arguments.iter().map(bind).collect(),
+        },
         TypeRefIr::PackageSymbol { symbol } => {
             let mut symbol = symbol.clone();
             if matches!(
@@ -361,6 +365,24 @@ fn bind_type_identity(ty: &TypeRefIr, artifact: &PackageArtifact) -> TypeRefIr {
     }
 }
 
+fn bind_nominal_base_identity(
+    base: &NominalTypeRefBaseIr,
+    artifact: &PackageArtifact,
+) -> NominalTypeRefBaseIr {
+    let NominalTypeRefBaseIr::PackageSymbol { symbol } = base else {
+        return base.clone();
+    };
+    let TypeRefIr::PackageSymbol { symbol } = bind_type_identity(
+        &TypeRefIr::PackageSymbol {
+            symbol: symbol.clone(),
+        },
+        artifact,
+    ) else {
+        unreachable!("package-symbol binding must preserve the nominal base kind")
+    };
+    NominalTypeRefBaseIr::PackageSymbol { symbol }
+}
+
 fn selected_package_symbols<'a>(
     dependency: &PackageDependency,
     artifact: &'a PackageArtifact,
@@ -396,4 +418,115 @@ fn dependency_analysis_error(error: impl std::fmt::Display) -> PackageCompileErr
 
 fn validation_error(message: String) -> PackageCompileError {
     PackageCompileError::ContractValidation { message }
+}
+
+#[cfg(test)]
+mod tests {
+    use skiff_artifact_model::{
+        PackageBuildId, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+        PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
+        PackageSymbolRef,
+    };
+
+    use super::*;
+
+    #[test]
+    fn applied_base_and_nested_arguments_bind_only_the_exact_package_abi() {
+        let dependency = package_artifact("example.dep", "abi:dep");
+        let package_symbol =
+            |package_id: &str, symbol_path: &str, abi_expectation| PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.to_string(),
+                },
+                symbol_path: symbol_path.to_string(),
+                abi_expectation,
+            };
+        let input = TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::PackageSymbol {
+                symbol: package_symbol("example.dep", "Box", Some("abi:stale-base".to_string())),
+            },
+            arguments: vec![
+                TypeRefIr::PackageSymbol {
+                    symbol: package_symbol("example.dep", "Value", None),
+                },
+                TypeRefIr::AppliedNominal {
+                    base: NominalTypeRefBaseIr::PackageSymbol {
+                        symbol: package_symbol("example.dep", "Nested", None),
+                    },
+                    arguments: vec![TypeRefIr::PackageSymbol {
+                        symbol: package_symbol(
+                            "example.other",
+                            "Value",
+                            Some("abi:other".to_string()),
+                        ),
+                    }],
+                },
+            ],
+        };
+
+        assert_eq!(
+            bind_type_identity(&input, &dependency),
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol {
+                    symbol: package_symbol("example.dep", "Box", Some("abi:dep".to_string())),
+                },
+                arguments: vec![
+                    TypeRefIr::PackageSymbol {
+                        symbol: package_symbol("example.dep", "Value", Some("abi:dep".to_string()),),
+                    },
+                    TypeRefIr::AppliedNominal {
+                        base: NominalTypeRefBaseIr::PackageSymbol {
+                            symbol: package_symbol(
+                                "example.dep",
+                                "Nested",
+                                Some("abi:dep".to_string()),
+                            ),
+                        },
+                        arguments: vec![TypeRefIr::PackageSymbol {
+                            symbol: package_symbol(
+                                "example.other",
+                                "Value",
+                                Some("abi:other".to_string()),
+                            ),
+                        }],
+                    },
+                ],
+            }
+        );
+    }
+
+    fn package_artifact(package_id: &str, local_abi: &str) -> PackageArtifact {
+        PackageArtifact {
+            schema_version: "test".to_string(),
+            package_id: package_id.to_string(),
+            package_version: "1.0.0".to_string(),
+            package_build_id: PackageBuildId::new("build"),
+            files: Vec::new(),
+            static_resources: Vec::new(),
+            package_local_abi: PackageLocalAbi {
+                local_abi_identity: PackageLocalAbiIdentity::new(local_abi),
+                public_symbols: BTreeMap::new(),
+                implementation_symbols: BTreeMap::new(),
+            },
+            package_schema_index: PackageSchemaIndexRef {
+                package_id: package_id.to_string(),
+                package_schema_index_identity: PackageSchemaIndexIdentity::new("schema"),
+            },
+            package_schema_type_records: BTreeMap::new(),
+            implementation_links: PackageImplementationLinks::default(),
+            callable_links: BTreeMap::new(),
+            package_requirements: Vec::new(),
+            contract_requirements: Vec::new(),
+            service_requirements: Vec::new(),
+            runtime_requirements: PackageRuntimeRequirements {
+                config: Vec::new(),
+                state: Vec::new(),
+                resources: Vec::new(),
+                runtime_capabilities: Vec::new(),
+            },
+            callable_semantic_facts: BTreeMap::new(),
+            boundary_projections: BTreeMap::new(),
+            service_call_refs: Vec::new(),
+        }
+    }
 }

@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     CallableProvenanceSummary, CallableSemanticFacts, ContractTypeRef, FileIrUnit,
-    FunctionTypeParamIr, InterfaceInstantiationRef, PackageCallableSignature, PackageRefIr,
-    PackageSymbolRef, PackageTypeRef, TypeDescriptorIr, TypeRefIr, ValueProjectionStep,
-    ValueProvenance,
+    FunctionTypeParamIr, InterfaceInstantiationRef, NamedUnionBranchIr, NominalTypeRefBaseIr,
+    PackageCallableSignature, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeDescriptorIr,
+    TypeRefIr, ValueProjectionStep, ValueProvenance,
 };
 
 use crate::package_artifact::boundary::ordering::escape_lane_rank;
@@ -76,6 +76,15 @@ pub(super) fn normalize_implementation_type(
         TypeRefIr::Builtin { name, args } => Ok(TypeRefIr::Builtin {
             name: name.clone(),
             args: args.iter().map(normalize).collect::<Result<_, _>>()?,
+        }),
+        TypeRefIr::AppliedNominal { base, arguments } => Ok(TypeRefIr::AppliedNominal {
+            base: normalize_implementation_nominal_base(
+                package_id,
+                owner_module,
+                base,
+                file_ir_units,
+            )?,
+            arguments: arguments.iter().map(normalize).collect::<Result<_, _>>()?,
         }),
         TypeRefIr::PackageSymbol { symbol } => {
             let mut symbol = symbol.clone();
@@ -162,14 +171,110 @@ pub(super) fn normalize_implementation_descriptor(
         TypeDescriptorIr::Alias { target } => Ok(TypeDescriptorIr::Alias {
             target: normalize_implementation_type(package_id, owner_module, target, file_ir_units)?,
         }),
-        TypeDescriptorIr::Union { variants } => Ok(TypeDescriptorIr::Union {
-            variants: variants
+        TypeDescriptorIr::Representation { representation } => {
+            Ok(TypeDescriptorIr::Representation {
+                representation: normalize_implementation_type(
+                    package_id,
+                    owner_module,
+                    representation,
+                    file_ir_units,
+                )?,
+            })
+        }
+        TypeDescriptorIr::Union { branches } => Ok(TypeDescriptorIr::Union {
+            branches: branches
                 .iter()
-                .map(|variant| {
-                    normalize_implementation_type(package_id, owner_module, variant, file_ir_units)
+                .map(|branch| match branch {
+                    NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                        Ok(NamedUnionBranchIr::ConcreteNominal {
+                            nominal_type: normalize_implementation_type(
+                                package_id,
+                                owner_module,
+                                nominal_type,
+                                file_ir_units,
+                            )?,
+                        })
+                    }
+                    NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type,
+                        discriminator_field,
+                        discriminator_value,
+                    } => Ok(NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type: normalize_implementation_type(
+                            package_id,
+                            owner_module,
+                            payload_type,
+                            file_ir_units,
+                        )?,
+                        discriminator_field: discriminator_field.clone(),
+                        discriminator_value: discriminator_value.clone(),
+                    }),
+                    NamedUnionBranchIr::Literal { value } => Ok(NamedUnionBranchIr::Literal {
+                        value: value.clone(),
+                    }),
                 })
-                .collect::<Result<_, _>>()?,
+                .collect::<Result<Vec<_>, String>>()?,
         }),
+        TypeDescriptorIr::Interface => Ok(TypeDescriptorIr::Interface),
+    }
+}
+
+fn normalize_implementation_nominal_base(
+    package_id: &str,
+    owner_module: &str,
+    base: &NominalTypeRefBaseIr,
+    file_ir_units: &[FileIrUnit],
+) -> Result<NominalTypeRefBaseIr, String> {
+    match base {
+        NominalTypeRefBaseIr::LocalType { type_index } => {
+            let TypeRefIr::PackageSymbol { symbol } =
+                implementation_type_symbol(package_id, file_ir_units, owner_module, *type_index)?
+            else {
+                unreachable!("implementation local nominal must normalize to a package symbol")
+            };
+            Ok(NominalTypeRefBaseIr::PackageSymbol { symbol })
+        }
+        NominalTypeRefBaseIr::PublicationType {
+            module_path,
+            type_index,
+        } => {
+            let TypeRefIr::PackageSymbol { symbol } =
+                implementation_type_symbol(package_id, file_ir_units, module_path, *type_index)?
+            else {
+                unreachable!(
+                    "implementation publication nominal must normalize to a package symbol"
+                )
+            };
+            Ok(NominalTypeRefBaseIr::PackageSymbol { symbol })
+        }
+        NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+            let source_path = format!("{}.{}", symbol.module_path, symbol.symbol);
+            if implementation_type_location(file_ir_units, &symbol.module_path, &symbol.symbol)
+                .is_some()
+            {
+                let TypeRefIr::PackageSymbol { symbol } =
+                    package_symbol_type(package_id, source_path)
+                else {
+                    unreachable!(
+                        "implementation service nominal must normalize to a package symbol"
+                    )
+                };
+                Ok(NominalTypeRefBaseIr::PackageSymbol { symbol })
+            } else {
+                Ok(base.clone())
+            }
+        }
+        NominalTypeRefBaseIr::PackageSymbol { symbol } => {
+            let mut symbol = symbol.clone();
+            if matches!(
+                &symbol.package,
+                PackageRefIr::PackageId { package_id: owner } if owner == package_id
+            ) {
+                symbol.abi_expectation = None;
+            }
+            Ok(NominalTypeRefBaseIr::PackageSymbol { symbol })
+        }
+        NominalTypeRefBaseIr::PackageSchema { .. } => Ok(base.clone()),
     }
 }
 
@@ -323,6 +428,15 @@ fn normalize_local_type(
             args: args
                 .iter()
                 .map(|arg| normalize_local_type(owner_module, arg, file_ir_units, public_type_ids))
+                .collect(),
+        },
+        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+            base: base.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| {
+                    normalize_local_type(owner_module, argument, file_ir_units, public_type_ids)
+                })
                 .collect(),
         },
         TypeRefIr::Record { fields } => TypeRefIr::Record {
@@ -547,6 +661,121 @@ mod tests {
             normalize_package_type("api", &private, &units, &refs),
             private
         );
+    }
+
+    #[test]
+    fn public_signature_normalization_preserves_applied_wrapper_and_normalizes_arguments() {
+        let (units, refs) = fixture();
+        let applied = PackageTypeRef::Local {
+            local_type: TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::LocalType { type_index: 1 },
+                arguments: vec![TypeRefIr::LocalType { type_index: 0 }],
+            },
+        };
+
+        assert_eq!(
+            normalize_package_type("api", &applied, &units, &refs),
+            PackageTypeRef::Local {
+                local_type: TypeRefIr::AppliedNominal {
+                    base: NominalTypeRefBaseIr::LocalType { type_index: 1 },
+                    arguments: vec![TypeRefIr::PackageSchema {
+                        package_id: "example.pkg".into(),
+                        stable_schema_key: "errors.PublicError".into(),
+                        package_schema_type_id: PackageSchemaTypeId::new("schema:public-error"),
+                    }],
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn implementation_normalization_preserves_applied_owner_and_ordered_arguments() {
+        let mut unit = FileIrUnit::empty("api", "source-hash");
+        unit.declarations.types.insert(
+            "Box".to_string(),
+            TypeDeclarationIr {
+                type_index: 0,
+                symbol: "api.Box".to_string(),
+                source_span: None,
+            },
+        );
+        let units = vec![unit];
+        let applied = |argument| TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+            arguments: vec![argument],
+        };
+
+        let string_box = normalize_implementation_type(
+            "example.pkg",
+            "api",
+            &applied(TypeRefIr::builtin("string")),
+            &units,
+        )
+        .unwrap();
+        let number_box = normalize_implementation_type(
+            "example.pkg",
+            "api",
+            &applied(TypeRefIr::builtin("number")),
+            &units,
+        )
+        .unwrap();
+
+        assert_ne!(string_box, number_box);
+        assert_ne!(
+            skiff_artifact_identity::type_ref_abi_key(&string_box),
+            skiff_artifact_identity::type_ref_abi_key(&number_box)
+        );
+        assert_eq!(
+            string_box,
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: "example.pkg".to_string(),
+                        },
+                        symbol_path: "api.Box".to_string(),
+                        abi_expectation: None,
+                    },
+                },
+                arguments: vec![TypeRefIr::builtin("string")],
+            }
+        );
+    }
+
+    #[test]
+    fn same_symbol_path_from_distinct_package_owners_does_not_merge() {
+        let applied = |package_id: &str| TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::PackageId {
+                        package_id: package_id.to_string(),
+                    },
+                    symbol_path: "models.Box".to_string(),
+                    abi_expectation: Some("abi:shared".to_string()),
+                },
+            },
+            arguments: vec![TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: format!("{package_id}/nested"),
+                        },
+                        symbol_path: "models.Value".to_string(),
+                        abi_expectation: Some("abi:nested-shared".to_string()),
+                    },
+                },
+                arguments: vec![TypeRefIr::builtin("string")],
+            }],
+        };
+
+        let first =
+            normalize_implementation_type("consumer", "api", &applied("example.one"), &[]).unwrap();
+        let second =
+            normalize_implementation_type("consumer", "api", &applied("example.two"), &[]).unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(first, applied("example.one"));
+        assert_eq!(second, applied("example.two"));
     }
 
     #[test]

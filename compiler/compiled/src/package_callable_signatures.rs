@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{FileIrUnit, ServiceSymbolRef, TypeRefIr};
+use skiff_artifact_model::{FileIrUnit, NominalTypeRefBaseIr, ServiceSymbolRef, TypeRefIr};
 use skiff_compiler_projection_input::{
     canonical_package_public_path, DuplicateProjectionPackageCallableSignature,
     ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
@@ -186,6 +186,36 @@ fn package_nominal_service_symbol(
             unit.declarations.types.get(&symbol.symbol)?;
             Some(symbol.clone())
         }
+        TypeRefIr::AppliedNominal { base, .. } => match base {
+            NominalTypeRefBaseIr::LocalType { type_index } => {
+                let unit = file_units_by_module.get(module_path).copied()?;
+                let decl = unit.type_table.get(*type_index as usize)?;
+                Some(ServiceSymbolRef {
+                    module_path: module_path.to_string(),
+                    symbol: decl.name.clone(),
+                })
+            }
+            NominalTypeRefBaseIr::PublicationType {
+                module_path,
+                type_index,
+            } => {
+                let unit = file_units_by_module.get(module_path.as_str()).copied()?;
+                let decl = unit.type_table.get(*type_index as usize)?;
+                Some(ServiceSymbolRef {
+                    module_path: module_path.clone(),
+                    symbol: decl.name.clone(),
+                })
+            }
+            NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+                let unit = file_units_by_module
+                    .get(symbol.module_path.as_str())
+                    .copied()?;
+                unit.declarations.types.get(&symbol.symbol)?;
+                Some(symbol.clone())
+            }
+            NominalTypeRefBaseIr::PackageSymbol { .. }
+            | NominalTypeRefBaseIr::PackageSchema { .. } => None,
+        },
         _ => None,
     }
 }
