@@ -7,6 +7,7 @@ import { encodeAssemblyActivationFrame } from '../src/protocol/assemblyActivatio
 import {
   decodeBinaryFrame,
   encodeRuntimeFrame,
+  RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
   RUNTIME_FRAME_SCHEMA_VERSION
 } from '../src/protocol/envelope.js';
 import { runtimeFrameHeaderFixtures } from '../src/protocol/runtimeProtocol.js';
@@ -162,6 +163,49 @@ describe('RuntimeAssembly HTTP serverStream ingress', () => {
       type: 'request.cancel',
       requestId
     });
+    expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
+      pendingUnary: 0,
+      pendingStream: 0
+    });
+  });
+
+  it('maps a fixed stream failure before response.start without exposing its payload', async () => {
+    const fixture = await createFixture();
+    const response = sendHttp(fixture.url, Buffer.alloc(0));
+    const requestFrame = decodeBinaryFrame(await nextBinaryMessage(fixture.runtime));
+    const payloadBytes = Buffer.from(JSON.stringify({
+      kind: 'internalError',
+      payload: {
+        message:
+          'provider-private-secret /callee/private/source.skiff calleePrivateFunction stack',
+        traceId: 'trace-stream-fixed',
+        errorId: 'error-stream-fixed'
+      }
+    }), 'utf8');
+
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+      type: 'response.error',
+      requestId: String(requestFrame.header.requestId),
+      errorKind: 'fixedService'
+    }, payloadBytes));
+
+    const completed = await response;
+    expect(completed.status).toBe(500);
+    expect(JSON.parse(completed.body.toString())).toEqual({
+      error: {
+        code: 'FixedServiceError',
+        message: 'Service request failed',
+        details: {
+          traceId: 'trace-stream-fixed',
+          errorId: 'error-stream-fixed'
+        }
+      }
+    });
+    expect(completed.body.toString()).not.toContain('provider-private-secret');
+    expect(completed.body.toString()).not.toContain('/callee/private/source.skiff');
+    expect(completed.body.toString()).not.toContain('calleePrivateFunction');
+    expect(completed.body.toString()).not.toContain('stack');
     expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
       pendingUnary: 0,
       pendingStream: 0

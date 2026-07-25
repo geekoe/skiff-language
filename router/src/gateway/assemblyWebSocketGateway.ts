@@ -12,7 +12,10 @@ import type {
 import { RUNTIME_FRAME_SCHEMA_VERSION } from '../protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
 import { validateRuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeProtocol.js';
-import { GatewayError } from '../router/errors.js';
+import {
+  externalGatewayErrorMessage,
+  GatewayError
+} from '../router/errors.js';
 import {
   canonicalAssemblyWebSocketIngressIdentity
 } from '../router/assemblyRuntimeRegistry.js';
@@ -624,17 +627,28 @@ function writeUpgradeFailure(socket: Socket, error: unknown): void {
   }
   const status = error instanceof GatewayError ? error.statusCode : 500;
   const reason = STATUS_CODES[status] ?? 'WebSocket Upgrade Failed';
-  const body = error instanceof Error ? error.message : reason;
+  const body = externalGatewayErrorMessage(error, reason);
   socket.end(
     `HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
   );
 }
 
 function websocketCloseReason(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return Buffer.byteLength(message) <= 123
-    ? message
-    : Buffer.from(message).subarray(0, 123).toString('utf8');
+  const message = externalGatewayErrorMessage(error, 'WebSocket request failed');
+  if (Buffer.byteLength(message) <= 123) {
+    return message;
+  }
+  const codePoints: string[] = [];
+  let byteLength = 0;
+  for (const codePoint of message) {
+    const codePointBytes = Buffer.byteLength(codePoint);
+    if (byteLength + codePointBytes > 123) {
+      break;
+    }
+    codePoints.push(codePoint);
+    byteLength += codePointBytes;
+  }
+  return codePoints.join('');
 }
 
 function decodeConnectResponse(

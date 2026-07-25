@@ -13,7 +13,10 @@ import {
   type RouterToRuntimeFrameHeader
 } from '../protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
-import { validateRuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeProtocol.js';
+import {
+  type ValidatedResponseErrorFrame,
+  validateRuntimeAssemblyRequestStartFrameHeader
+} from '../protocol/runtimeProtocol.js';
 import type {
   WebSocketGenerationLifecycleTuple
 } from '../protocol/webSocketGenerationLifecycle.js';
@@ -31,6 +34,7 @@ import type {
 } from './runtimeRegistry.js';
 import { isRuntimeAssemblyRequestDispatchHeader } from './runtimeRegistry.js';
 import {
+  FixedServiceResponseError,
   GatewayError,
   ProviderUnavailableError,
   RuntimeResponseError,
@@ -646,9 +650,9 @@ export class RuntimeDispatcher {
 
   rejectRequest(
     ws: WebSocket,
-    envelope: Pick<ResponseErrorFrameHeader, 'requestId' | 'error'>
+    response: ValidatedResponseErrorFrame
   ): void {
-    const pending = this.pending.get(envelope.requestId);
+    const pending = this.pending.get(response.header.requestId);
     if (!pending) {
       return;
     }
@@ -657,28 +661,30 @@ export class RuntimeDispatcher {
       return;
     }
     if (pending.kind === 'unaryFrame') {
-      this.finishPending(envelope.requestId, pending, {
+      this.finishPending(response.header.requestId, pending, {
         source: 'runtime_response_error',
         kind: 'failed',
-        error: envelope.error
+        error:
+          'serviceError' in response
+            ? new FixedServiceResponseError(response.serviceError)
+            : response.header.error
       });
       pending.resolve({
-        header: {
-          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-          type: 'response.error',
-          requestId: envelope.requestId,
-          error: envelope.error
-        },
-        payloadBytes: new Uint8Array()
+        header: response.header,
+        payloadBytes: response.payloadBytes
       });
       return;
     }
-    this.finishPending(envelope.requestId, pending, {
+    const error =
+      'serviceError' in response
+        ? new FixedServiceResponseError(response.serviceError)
+        : new RuntimeResponseError(response.header.error);
+    this.finishPending(response.header.requestId, pending, {
       source: 'runtime_response_error',
       kind: 'failed',
-      error: envelope.error
+      error
     });
-    pending.reject(new RuntimeResponseError(envelope.error));
+    pending.reject(error);
   }
 
   handleResponseStart(

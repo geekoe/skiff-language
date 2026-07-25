@@ -1,4 +1,5 @@
 import type { RuntimeErrorPayload } from '../protocol/envelope.js';
+import type { ServiceErrorEnvelopeView } from '../protocol/runtimeProtocol.js';
 
 export interface HttpErrorBody {
   message: string;
@@ -27,6 +28,15 @@ export class GatewayError extends Error {
     return {
       message: this.message,
       detail: this.statusCode >= 500 ? null : (this.details ?? null)
+    };
+  }
+
+  toHttpPayload(): RuntimeErrorPayload {
+    const body = this.toHttpBody();
+    return {
+      code: this.code,
+      message: body.message,
+      ...(body.detail === null ? {} : { details: body.detail })
     };
   }
 }
@@ -60,6 +70,41 @@ export class RuntimeTimeoutError extends GatewayError {
 export class DecodeError extends GatewayError {
   constructor(message: string, details?: unknown) {
     super(400, 'RequestDecodeError', message, details);
+  }
+}
+
+export const FIXED_SERVICE_ERROR_MESSAGE = 'Service request failed';
+
+export type FixedServiceErrorKind = ServiceErrorEnvelopeView['kind'];
+
+export class FixedServiceResponseError extends GatewayError {
+  readonly serviceErrorKind: FixedServiceErrorKind;
+  readonly traceId: string;
+  readonly errorId: string;
+
+  constructor(serviceError: ServiceErrorEnvelopeView) {
+    const correlation =
+      serviceError.kind === 'internalError'
+        ? serviceError.payload
+        : serviceError;
+    super(500, 'FixedServiceError', FIXED_SERVICE_ERROR_MESSAGE);
+    this.serviceErrorKind = serviceError.kind;
+    this.traceId = correlation.traceId;
+    this.errorId = correlation.errorId;
+  }
+
+  override toHttpBody(): HttpErrorBody {
+    return {
+      message: FIXED_SERVICE_ERROR_MESSAGE,
+      detail: {
+        traceId: this.traceId,
+        errorId: this.errorId
+      }
+    };
+  }
+
+  toExternalMessage(): string {
+    return `${FIXED_SERVICE_ERROR_MESSAGE}; traceId=${this.traceId}; errorId=${this.errorId}`;
   }
 }
 
@@ -137,6 +182,13 @@ function runtimeErrorHttpDetail(status: number, error: RuntimeErrorPayload): unk
     return error.details ?? null;
   }
   return null;
+}
+
+export function externalGatewayErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof FixedServiceResponseError) {
+    return error.toExternalMessage();
+  }
+  return error instanceof Error ? error.message : fallback;
 }
 
 export function toGatewayError(error: unknown): GatewayError {

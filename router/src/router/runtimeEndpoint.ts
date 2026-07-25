@@ -18,6 +18,7 @@ import {
   decodeBinaryFrame,
   encodeBinaryFrame,
   encodeRuntimeFrame,
+  RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
   RUNTIME_FRAME_SCHEMA_VERSION,
   type ConnectionSendEnvelope,
   type RequestCancelEnvelope,
@@ -27,7 +28,10 @@ import {
   type RouterToRuntimeFrameHeader
 } from '../protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
-import { validateRuntimeToRouterFrameHeader } from '../protocol/runtimeProtocol.js';
+import {
+  validateResponseErrorFrame,
+  validateRuntimeToRouterFrameHeader
+} from '../protocol/runtimeProtocol.js';
 import {
   WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
   decodeWebSocketGenerationLifecycleFrame,
@@ -516,6 +520,17 @@ export class RuntimeEndpoint
       );
       return;
     }
+    if (frame.header.type === 'response.error') {
+      const responseError = validateResponseErrorFrame(frame.header, frame.payloadBytes);
+      if (!responseError.ok) {
+        throw new Error(responseError.error);
+      }
+      if (this.options.assemblyRegistry !== undefined) {
+        this.options.registry.assertRuntimeCapabilityConnection(ws);
+      }
+      this.dispatcher().rejectRequest(ws, responseError.envelope);
+      return;
+    }
     const validation = validateRuntimeToRouterFrameHeader(frame.header);
     if (!validation.ok) {
       throw new Error(validation.error);
@@ -602,9 +617,10 @@ export class RuntimeEndpoint
           throw new Error('runtime-originated request.start requires caller.kind service');
         }
         this.sendFrame(ws, {
-          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+          schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
           type: 'response.error',
           requestId: header.requestId,
+          errorKind: 'control',
           error: {
             code: 'InProcessServiceCallRequired',
             message:
@@ -639,15 +655,6 @@ export class RuntimeEndpoint
         this.dispatcher().resolveRequest(ws, {
           header,
           payloadBytes: frame.payloadBytes
-        });
-        return;
-      case 'response.error':
-        if (frame.payloadBytes.byteLength !== 0) {
-          throw new Error('response.error binary frame payload must be empty');
-        }
-        this.dispatcher().rejectRequest(ws, {
-          requestId: header.requestId,
-          error: header.error
         });
         return;
       case 'response.chunk':
