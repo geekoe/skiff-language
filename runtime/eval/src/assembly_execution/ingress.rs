@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
 use skiff_runtime_boundary::{
     binary::{decode_payload_plan, encode_payload_plan},
     http::HttpBoundaryResponseParts,
@@ -57,6 +58,9 @@ pub async fn dispatch_ingress_via_in_process_boundary(
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
         actor_metadata: None,
+        site: InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::RuntimeBoundaryDispatch,
+        },
     };
     let value = {
         let mut eval_context = EvalContext::new(

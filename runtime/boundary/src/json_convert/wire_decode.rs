@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value};
 
 use crate::{
     date_value,
     error::{Result, RuntimeError},
     request_heap::RequestHeap,
-    runtime_value::{RuntimeMap, RuntimeObjectFields, RuntimeValue, RuntimeValueKey},
+    runtime_value::{RuntimeMap, RuntimeValue, RuntimeValueCarrier, RuntimeValueKey},
     stream::is_stream_value,
     type_descriptor::{
         unresolved_type_descriptor, RuntimeRecordFieldPlan as RecordField, RuntimeTypeNode,
@@ -27,48 +29,61 @@ pub(super) fn from_wire_inner_with_stream_scope(
     heap: &mut RequestHeap,
     stream_scope: StreamHandleScope,
 ) -> Result<RuntimeValue> {
-    match expected_type.node() {
+    from_wire_carrier_with_stream_scope(json, expected_type, heap, stream_scope)
+        .map(RuntimeValueCarrier::into_value)
+}
+
+fn from_wire_carrier_with_stream_scope(
+    json: &Value,
+    expected_type: &RuntimeTypePlan,
+    heap: &mut RequestHeap,
+    stream_scope: StreamHandleScope,
+) -> Result<RuntimeValueCarrier> {
+    let carrier = match expected_type.node() {
         RuntimeTypeNode::Alias(target) => {
-            from_wire_inner_with_stream_scope(json, target, heap, stream_scope)
+            from_wire_carrier_with_stream_scope(json, target, heap, stream_scope)
         }
         RuntimeTypeNode::Nullable(inner) => {
             if json.is_null() {
-                Ok(RuntimeValue::Null)
+                Ok(RuntimeValue::Null.into())
             } else {
-                from_wire_inner_with_stream_scope(json, inner, heap, stream_scope)
+                from_wire_carrier_with_stream_scope(json, inner, heap, stream_scope)
             }
         }
         RuntimeTypeNode::Union(types) => from_union_wire(json, types, heap, stream_scope),
         RuntimeTypeNode::LiteralString(literal) => match json.as_str() {
-            Some(value) if value == literal => Ok(RuntimeValue::String(value.to_string())),
+            Some(value) if value == literal => Ok(RuntimeValue::String(value.to_string()).into()),
             _ => Err(RuntimeError::Decode(format!(
                 "expected literal string {literal:?}"
             ))),
         },
         RuntimeTypeNode::Representation { payload, .. } => {
-            from_wire_inner_with_stream_scope(json, payload, heap, StreamHandleScope::nested())
+            from_wire_carrier_with_stream_scope(json, payload, heap, StreamHandleScope::nested())
         }
-        RuntimeTypeNode::Json => from_json_value(json, heap),
-        RuntimeTypeNode::JsonObject => from_json_object(json, heap),
-        RuntimeTypeNode::Bytes => decode_bytes_runtime_value(json, heap),
+        RuntimeTypeNode::Json => from_json_value(json, heap).map(Into::into),
+        RuntimeTypeNode::JsonObject => from_json_object(json, heap).map(Into::into),
+        RuntimeTypeNode::Bytes => decode_bytes_runtime_value(json, heap).map(Into::into),
         RuntimeTypeNode::Date => json
             .as_str()
             .ok_or_else(|| RuntimeError::Decode("expected RFC3339 Date string".to_string()))
             .and_then(|value| date_value::parse_rfc3339_millis(value, "from_wire<Date>"))
-            .map(RuntimeValue::Date),
+            .map(RuntimeValue::Date)
+            .map(Into::into),
         RuntimeTypeNode::String => json
             .as_str()
             .map(|value| RuntimeValue::String(value.to_string()))
-            .ok_or_else(|| RuntimeError::Decode("expected string".to_string())),
+            .ok_or_else(|| RuntimeError::Decode("expected string".to_string()))
+            .map(Into::into),
         RuntimeTypeNode::Bool => json
             .as_bool()
             .map(RuntimeValue::Bool)
-            .ok_or_else(|| RuntimeError::Decode("expected bool".to_string())),
-        RuntimeTypeNode::Integer => integer_from_wire(json),
-        RuntimeTypeNode::Number => number_from_wire(json),
+            .ok_or_else(|| RuntimeError::Decode("expected bool".to_string()))
+            .map(Into::into),
+        RuntimeTypeNode::Integer => integer_from_wire(json).map(Into::into),
+        RuntimeTypeNode::Number => number_from_wire(json).map(Into::into),
         RuntimeTypeNode::Null => {
             if json.is_null() {
-                Ok(RuntimeValue::Null)
+                Ok(RuntimeValue::Null.into())
             } else {
                 Err(RuntimeError::Decode("expected null".to_string()))
             }
@@ -78,7 +93,7 @@ pub(super) fn from_wire_inner_with_stream_scope(
                 return Err(RuntimeError::Decode(STREAM_HANDLE_SCOPE_ERROR.to_string()));
             }
             if is_stream_value(json) {
-                from_json_value(json, heap)
+                from_json_value(json, heap).map(Into::into)
             } else {
                 Err(RuntimeError::Decode("expected Stream handle".to_string()))
             }
@@ -89,7 +104,7 @@ pub(super) fn from_wire_inner_with_stream_scope(
                 .ok_or_else(|| RuntimeError::Decode("expected array".to_string()))?
                 .iter()
                 .map(|item| {
-                    from_wire_inner_with_stream_scope(
+                    from_wire_carrier_with_stream_scope(
                         item,
                         item_type,
                         heap,
@@ -97,7 +112,7 @@ pub(super) fn from_wire_inner_with_stream_scope(
                     )
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(RuntimeValue::Heap(heap.alloc_array(items)?))
+            Ok(RuntimeValue::Heap(heap.alloc_array_carriers(items)?).into())
         }
         RuntimeTypeNode::Map {
             key: key_type,
@@ -106,12 +121,12 @@ pub(super) fn from_wire_inner_with_stream_scope(
             let object = json
                 .as_object()
                 .ok_or_else(|| RuntimeError::Decode("expected map object".to_string()))?;
-            let mut map = RuntimeMap::new();
+            let mut map = BTreeMap::new();
             for (key, value) in object {
                 reject_reserved_legacy_json_metadata_key(key)?;
                 map.insert(
                     runtime_key_from_wire_key_plan(key, key_type)?,
-                    from_wire_inner_with_stream_scope(
+                    from_wire_carrier_with_stream_scope(
                         value,
                         value_type,
                         heap,
@@ -119,13 +134,14 @@ pub(super) fn from_wire_inner_with_stream_scope(
                     )?,
                 );
             }
-            Ok(RuntimeValue::Heap(heap.alloc_map(map)?))
+            Ok(RuntimeValue::Heap(heap.alloc_map_carriers(map)?).into())
         }
         RuntimeTypeNode::Record { fields, .. } => {
             from_record_wire(json, expected_type, fields, heap, stream_scope)
         }
         RuntimeTypeNode::Unknown => Err(unresolved_type_descriptor(expected_type)),
-    }
+    }?;
+    Ok(with_plan_identity(carrier, expected_type))
 }
 
 fn from_union_wire(
@@ -133,28 +149,29 @@ fn from_union_wire(
     types: &[RuntimeTypePlan],
     heap: &mut RequestHeap,
     stream_scope: StreamHandleScope,
-) -> Result<RuntimeValue> {
-    if json.is_null() && types.iter().any(is_null_plan) {
-        return Ok(RuntimeValue::Null);
-    }
+) -> Result<RuntimeValueCarrier> {
     let mut errors = Vec::new();
+    let mut matching = Vec::new();
     for ty in types {
-        if is_null_plan(ty) {
-            continue;
-        }
-        let checkpoint = heap.checkpoint();
-        match from_wire_inner_with_stream_scope(json, ty, heap, stream_scope) {
-            Ok(value) => return Ok(value),
-            Err(error) => {
-                heap.rollback_to_checkpoint(checkpoint);
-                errors.push(error.to_string());
-            }
+        let mut candidate_heap = heap.clone();
+        match from_wire_carrier_with_stream_scope(json, ty, &mut candidate_heap, stream_scope) {
+            Ok(value) => matching.push((value, candidate_heap)),
+            Err(error) => errors.push(error.to_string()),
         }
     }
-    Err(RuntimeError::Decode(format!(
-        "union value did not match any branch: {}",
-        errors.join("; ")
-    )))
+    match matching.as_mut_slice() {
+        [(value, candidate_heap)] => {
+            *heap = candidate_heap.clone();
+            Ok(value.clone())
+        }
+        [] => Err(RuntimeError::Decode(format!(
+            "union value did not match any branch: {}",
+            errors.join("; ")
+        ))),
+        _ => Err(RuntimeError::Decode(
+            "union value ambiguously matched multiple exact branches".to_string(),
+        )),
+    }
 }
 
 fn from_json_value(json: &Value, heap: &mut RequestHeap) -> Result<RuntimeValue> {
@@ -202,29 +219,35 @@ fn from_record_wire(
     fields: &[RecordField],
     heap: &mut RequestHeap,
     stream_scope: StreamHandleScope,
-) -> Result<RuntimeValue> {
+) -> Result<RuntimeValueCarrier> {
     let object = json
         .as_object()
         .ok_or_else(|| RuntimeError::Decode("expected record object".to_string()))?;
     reject_reserved_legacy_json_object_keys(object)?;
     let shape = RuntimeRecordShape::for_plan(fields, expected_type.boundary_record_kind());
     let projection = shape.project_json_object(object)?;
-    let mut runtime_fields = RuntimeObjectFields::new();
+    let mut runtime_fields = BTreeMap::new();
     for projected in projection.into_fields() {
         let value = match projected.value {
-            RecordProjectionValue::Present(field_json) => from_wire_inner_with_stream_scope(
+            RecordProjectionValue::Present(field_json) => from_wire_carrier_with_stream_scope(
                 field_json,
                 &projected.field.ty,
                 heap,
                 stream_scope.record_field(expected_type, &projected.field.name),
             )?,
-            RecordProjectionValue::MissingOptionalNull => RuntimeValue::Null,
+            RecordProjectionValue::MissingOptionalNull => RuntimeValue::Null.into(),
         };
         runtime_fields.insert(projected.field.name.clone(), value);
     }
-    Ok(RuntimeValue::Heap(
-        heap.alloc_object(shape.runtime_object(runtime_fields))?,
-    ))
+    let _ = shape;
+    Ok(RuntimeValue::Heap(heap.alloc_object_carriers(runtime_fields)?).into())
+}
+
+fn with_plan_identity(carrier: RuntimeValueCarrier, plan: &RuntimeTypePlan) -> RuntimeValueCarrier {
+    match plan.catch_identity() {
+        Some(identity) => RuntimeValueCarrier::identified(carrier.into_value(), identity.clone()),
+        None => carrier,
+    }
 }
 
 fn reject_reserved_legacy_json_object_keys(object: &Map<String, Value>) -> Result<()> {
@@ -232,14 +255,6 @@ fn reject_reserved_legacy_json_object_keys(object: &Map<String, Value>) -> Resul
         reject_reserved_legacy_json_metadata_key(key)?;
     }
     Ok(())
-}
-
-fn is_null_plan(expected_type: &RuntimeTypePlan) -> bool {
-    match expected_type.node() {
-        RuntimeTypeNode::Alias(target) => is_null_plan(target),
-        RuntimeTypeNode::Null => true,
-        _ => false,
-    }
 }
 
 pub(super) fn decode_bytes_runtime_value(

@@ -20,10 +20,10 @@ use skiff_runtime_capability_context::{
     FileSourceStreamContext, HttpCapabilityFuture, HttpClientCapabilityApi,
     HttpClientCapabilityContext, OwnedActorCapabilityContext, OwnedConfigCapabilityContext,
     OwnedExecutionControl, OwnedExecutionControlApi, OwnedWebsocketCapabilityContext,
-    SpawnSubmitControlRequest, StreamCancelSignal, StreamLifetimeGuard, StreamPoll,
-    StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError, StreamRuntimeResult,
-    StreamSink, StreamSinkApi, TelemetryCapabilityApi, TelemetryCapabilityContext,
-    WebsocketCapabilityApi, WebsocketCapabilityContext,
+    SpawnSubmitControlRequest, StreamCancelSignal, StreamInternalItem, StreamLifetimeGuard,
+    StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
+    StreamRuntimeResult, StreamSink, StreamSinkApi, TelemetryCapabilityApi,
+    TelemetryCapabilityContext, WebsocketCapabilityApi, WebsocketCapabilityContext,
 };
 use skiff_runtime_model::{
     addr::ExecutableAddr,
@@ -153,6 +153,7 @@ impl TestStreamRuntime {
         let event = channel.receiver.lock().await.recv().await;
         match event {
             Some(TestStreamEvent::Item(item)) => Ok(StreamPoll::Item(item)),
+            Some(TestStreamEvent::InternalItem(item)) => Ok(StreamPoll::InternalItem(item)),
             Some(TestStreamEvent::End) | None => {
                 self.channels
                     .lock()
@@ -208,6 +209,7 @@ struct TestStreamChannel {
 #[derive(Debug)]
 enum TestStreamEvent {
     Item(Value),
+    InternalItem(StreamInternalItem),
     End,
     Fail(StreamRuntimeError),
 }
@@ -233,6 +235,21 @@ impl TestStreamSink {
 }
 
 impl StreamSinkApi for TestStreamSink {
+    fn send_internal_with_cancellation<'a>(
+        &'a self,
+        item: StreamInternalItem,
+        _signals: &'a [StreamCancelSignal],
+        cancel_tokens: Vec<CancellationToken>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = StreamRuntimeResult<()>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            if cancel_tokens.iter().any(CancellationToken::is_cancelled) {
+                return Err(StreamRuntimeError::cancelled());
+            }
+            self.send_event(TestStreamEvent::InternalItem(item)).await
+        })
+    }
+
     fn send<'a>(
         &'a self,
         item: Value,

@@ -80,6 +80,9 @@ fn reject_callback_capability_graph_inner(
             ),
             InterfaceCarrier::Local { .. } | InterfaceCarrier::Remote { .. } => Ok(()),
         },
+        HeapNode::Exception(_) => Err(RuntimeError::Decode(
+            "request-local exception cannot enter a persistent boundary".to_string(),
+        )),
     }
 }
 

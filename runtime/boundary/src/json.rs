@@ -435,6 +435,9 @@ fn encode_untyped_wire_json_inner(
                 "{} cannot be encoded as wire value",
                 value.diagnostic_label()
             ))),
+            HeapNode::Exception(_) => Err(RuntimeError::Decode(
+                "request-local exception cannot be encoded as a wire value".to_string(),
+            )),
         },
     }
 }

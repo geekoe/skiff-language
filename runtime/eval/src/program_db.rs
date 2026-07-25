@@ -12,7 +12,7 @@ use skiff_runtime_model::{
         RuntimeRecoverableTrustBoundary,
     },
     request_heap::RequestHeap,
-    runtime_value::RuntimeValue,
+    runtime_value::{RuntimeValue, RuntimeValueCarrier},
     type_plan::RuntimeTypePlan,
 };
 
@@ -167,7 +167,7 @@ impl Interpreter {
                     heap.rollback_to_checkpoint(checkpoint);
                     return Err(error.into());
                 }
-                Ok(value)
+                Ok(value.into_value())
             }
             Err(error) => {
                 store.abort_transaction().await;
@@ -187,7 +187,7 @@ impl Interpreter {
         file: &LinkedFileUnit,
         executable: &LinkedExecutable,
         transaction: &DbTransactionIr,
-    ) -> Result<RuntimeValue> {
+    ) -> Result<RuntimeValueCarrier> {
         let db_context = program_context.db_context();
         self.eval_program_explicit_db_transaction_with_context(
             program_context,
@@ -213,7 +213,7 @@ impl Interpreter {
         file: &LinkedFileUnit,
         executable: &LinkedExecutable,
         transaction: &DbTransactionIr,
-    ) -> Result<RuntimeValue> {
+    ) -> Result<RuntimeValueCarrier> {
         let store = require_db_store(db_context, "db.transaction")?;
         store.begin_transaction().await?;
         let checkpoint = heap.checkpoint();
@@ -231,7 +231,7 @@ impl Interpreter {
         match flow {
             Ok(Flow::Continue) => {
                 let result = match transaction.mode {
-                    DbTransactionModeIr::Effect => Ok(RuntimeValue::Null),
+                    DbTransactionModeIr::Effect => Ok(RuntimeValue::Null.into()),
                     DbTransactionModeIr::Value => match transaction.result {
                         Some(result) => {
                             self.eval_program_expr_ref(

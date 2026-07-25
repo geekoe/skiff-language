@@ -1,8 +1,16 @@
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use serde_json::{json, Map, Value};
+use skiff_runtime_model::request_heap::{
+    deep_clone_runtime_value_carrier_between_heaps, RequestHeap,
+};
 
-pub use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+pub use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{
+        CatchIdentity, PlatformBuiltinErrorIdentity, RequestException, RequestExceptionCause,
+    },
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiagnosticSource {
@@ -26,12 +34,6 @@ impl BudgetReason {
         }
     }
 }
-
-const EXCEPTION_MARKER_KEY: &str = "__skiffException";
-const EXCEPTION_ACTUAL_PAYLOAD_TYPE_KEY: &str = "__skiffActualPayloadType";
-const EXCEPTION_DECLARED_PAYLOAD_TYPE_KEY: &str = "__skiffPayloadDeclaredType";
-const EXCEPTION_ACTUAL_PAYLOAD_TYPE_DEBUG_KEY: &str = "__skiffActualPayloadTypeDebug";
-const EXCEPTION_DECLARED_PAYLOAD_TYPE_DEBUG_KEY: &str = "__skiffPayloadDeclaredTypeDebug";
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
@@ -654,8 +656,8 @@ fn runtime_error_from_native_ref(
             current: *current,
             requested_delta: *requested_delta,
         },
-        skiff_runtime_native::error::RuntimeError::Opaque(_) => {
-            RuntimeError::Decode(error.to_string())
+        skiff_runtime_native::error::RuntimeError::Opaque(error) => {
+            runtime_error_from_wire_payload_ref(error.as_ref())
         }
         skiff_runtime_native::error::RuntimeError::Json(_) => {
             RuntimeError::Decode(error.to_string())
@@ -763,6 +765,9 @@ fn runtime_error_from_wire_payload_ref(error: &dyn WirePayload) -> RuntimeError 
         .downcast_ref::<skiff_runtime_capability_context::RequestPayloadContextError>()
     {
         return runtime_error_from_request_payload_ref(error);
+    }
+    if let Some(error) = error.as_any().downcast_ref::<RequestHeapOwnedStreamError>() {
+        return RuntimeError::Opaque(Box::new(error.clone()));
     }
     RuntimeError::Decode(error.to_string())
 }
@@ -1114,123 +1119,151 @@ impl From<skiff_runtime_capability_context::OutboundRequestRegistryError> for Ru
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UserException {
-    actual_payload_type: TypeIdentity,
-    envelope: Value,
+    request: RequestException,
 }
 
 impl UserException {
-    pub fn from_payload(
-        payload: Value,
-        payload_declared_type: Option<TypeIdentity>,
-    ) -> Result<Self> {
-        let actual_payload_type = payload_declared_type.clone().ok_or_else(|| {
-            RuntimeError::Decode(
-                "throw payload requires an explicit static payload type".to_string(),
-            )
-        })?;
-        Self::from_typed_payload(payload, actual_payload_type, payload_declared_type)
+    pub fn new(request: RequestException) -> Self {
+        Self { request }
     }
 
-    pub fn from_typed_payload(
-        payload: Value,
-        actual_payload_type: TypeIdentity,
-        payload_declared_type: Option<TypeIdentity>,
-    ) -> Result<Self> {
-        let mut envelope = Map::new();
-        envelope.insert(EXCEPTION_MARKER_KEY.to_string(), Value::Bool(true));
-        envelope.insert(
-            EXCEPTION_ACTUAL_PAYLOAD_TYPE_KEY.to_string(),
-            serde_json::to_value(&actual_payload_type)?,
-        );
-        envelope.insert(
-            EXCEPTION_ACTUAL_PAYLOAD_TYPE_DEBUG_KEY.to_string(),
-            Value::String(actual_payload_type.to_string()),
-        );
-        if let Some(payload_declared_type) = payload_declared_type {
-            envelope.insert(
-                EXCEPTION_DECLARED_PAYLOAD_TYPE_KEY.to_string(),
-                serde_json::to_value(&payload_declared_type)?,
-            );
-            envelope.insert(
-                EXCEPTION_DECLARED_PAYLOAD_TYPE_DEBUG_KEY.to_string(),
-                Value::String(payload_declared_type.to_string()),
-            );
-        }
-        envelope.insert("error".to_string(), payload);
-        envelope.insert("source".to_string(), Value::Null);
-        envelope.insert("stack".to_string(), Value::Array(Vec::new()));
-
-        Ok(Self {
-            actual_payload_type,
-            envelope: Value::Object(envelope),
-        })
+    pub fn request(&self) -> &RequestException {
+        &self.request
     }
 
-    pub fn from_envelope(envelope: Value) -> Result<Self> {
-        let object = envelope.as_object().ok_or_else(|| {
-            RuntimeError::Decode("rethrow operand must be an exception object".to_string())
-        })?;
-        if object.get(EXCEPTION_MARKER_KEY).and_then(Value::as_bool) != Some(true) {
-            return Err(RuntimeError::Decode(
-                "rethrow operand must be a request-local exception envelope".to_string(),
-            ));
-        }
-        let actual_payload_type_value =
-            object
-                .get(EXCEPTION_ACTUAL_PAYLOAD_TYPE_KEY)
-                .ok_or_else(|| {
-                    RuntimeError::Decode(
-                        "rethrow exception missing actual payload type".to_string(),
-                    )
-                })?;
-        let actual_payload_type = serde_json::from_value::<TypeIdentity>(
-            actual_payload_type_value.clone(),
-        )
-        .map_err(|error| {
-            RuntimeError::Decode(format!(
-                "rethrow exception has invalid actual payload type: {error}"
-            ))
-        })?;
-        if !object.contains_key("error") {
-            return Err(RuntimeError::Decode(
-                "rethrow exception missing error payload".to_string(),
-            ));
-        }
-
-        Ok(Self {
-            actual_payload_type,
-            envelope,
-        })
+    pub fn into_request(self) -> RequestException {
+        self.request
     }
 
-    pub fn from_runtime_parts(actual_payload_type: TypeIdentity, envelope: Value) -> Self {
-        Self {
-            actual_payload_type,
-            envelope,
-        }
-    }
-
-    pub fn actual_payload_type(&self) -> &TypeIdentity {
-        &self.actual_payload_type
-    }
-
-    pub fn error_payload(&self) -> Option<&Map<String, Value>> {
-        self.envelope
-            .as_object()
-            .and_then(|object| object.get("error"))
-            .and_then(Value::as_object)
-    }
-
-    pub fn envelope(&self) -> Value {
-        self.envelope.clone()
+    pub fn actual_payload_type(&self) -> Option<&CatchIdentity> {
+        self.request.local_catch_identity()
     }
 }
 
 impl fmt::Display for UserException {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}", self.actual_payload_type)
+        match self.actual_payload_type() {
+            Some(identity) => write!(formatter, "{identity:?}"),
+            None => formatter.write_str("opaque service error"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RequestHeapOwnedStreamError {
+    inner: Arc<RequestHeapOwnedStreamErrorInner>,
+}
+
+#[derive(Debug)]
+struct RequestHeapOwnedStreamErrorInner {
+    error: RuntimeError,
+    heap: RequestHeap,
+}
+
+impl RequestHeapOwnedStreamError {
+    pub(crate) fn new(error: RuntimeError, heap: RequestHeap) -> Self {
+        Self {
+            inner: Arc::new(RequestHeapOwnedStreamErrorInner { error, heap }),
+        }
+    }
+
+    fn materialize_in(&self, destination: &mut RequestHeap) -> Result<RuntimeError> {
+        let cloned_error = runtime_error_from_eval_ref(&self.inner.error);
+        let RuntimeError::UserException(exception) =
+            unwrap_diagnostic_source_context(&self.inner.error)
+        else {
+            return Ok(cloned_error);
+        };
+        let request = exception.request().clone();
+        let local_value = request.local_value().cloned();
+        let request = match local_value {
+            Some(value) => {
+                let value = deep_clone_runtime_value_carrier_between_heaps(
+                    &self.inner.heap,
+                    destination,
+                    &value,
+                )?;
+                request.map_local_value(|_| value)
+            }
+            None => request,
+        };
+        Ok(replace_user_exception_preserving_diagnostics(
+            cloned_error,
+            UserException::new(request),
+        ))
+    }
+}
+
+impl fmt::Display for RequestHeapOwnedStreamError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.inner.error, formatter)
+    }
+}
+
+impl std::error::Error for RequestHeapOwnedStreamError {}
+
+impl WirePayload for RequestHeapOwnedStreamError {
+    fn payload(&self) -> RuntimeErrorPayload {
+        WirePayload::payload(&self.inner.error)
+    }
+
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
+        WirePayload::catch_projection(&self.inner.error)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+pub(crate) fn materialize_stream_runtime_error(
+    error: skiff_runtime_capability_context::StreamRuntimeError,
+    destination: &mut RequestHeap,
+) -> Result<RuntimeError> {
+    if let skiff_runtime_capability_context::StreamRuntimeError::Producer(error) = &error {
+        if let Some(error) = error.as_any().downcast_ref::<RequestHeapOwnedStreamError>() {
+            return error.materialize_in(destination);
+        }
+    }
+    materialize_request_heap_owned_runtime_error(error.into(), destination)
+}
+
+pub(crate) fn materialize_request_heap_owned_runtime_error(
+    error: RuntimeError,
+    destination: &mut RequestHeap,
+) -> Result<RuntimeError> {
+    match error {
+        RuntimeError::Opaque(error) => {
+            if let Some(error) = error.as_any().downcast_ref::<RequestHeapOwnedStreamError>() {
+                error.materialize_in(destination)
+            } else {
+                Ok(RuntimeError::Opaque(error))
+            }
+        }
+        RuntimeError::WithSource {
+            source_id,
+            frame,
+            error,
+        } => Ok(RuntimeError::WithSource {
+            source_id,
+            frame,
+            error: Box::new(materialize_request_heap_owned_runtime_error(
+                *error,
+                destination,
+            )?),
+        }),
+        RuntimeError::WithDiagnosticFrame { frame, error } => {
+            Ok(RuntimeError::WithDiagnosticFrame {
+                frame,
+                error: Box::new(materialize_request_heap_owned_runtime_error(
+                    *error,
+                    destination,
+                )?),
+            })
+        }
+        error => Ok(error),
     }
 }
 
@@ -1541,57 +1574,50 @@ impl WirePayload for RuntimeError {
         RuntimeError::payload(self)
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
         match self {
             RuntimeError::WithSource { error, .. }
             | RuntimeError::WithDiagnosticFrame { error, .. } => error.catch_projection(),
-            RuntimeError::DecodeTarget { target, message } => {
-                decode_target_error_code(target).map(|code| {
-                    (
-                        TypeIdentity::builtin(code),
+            RuntimeError::DecodeTarget { target, message } => decode_target_error_code(target)
+                .and_then(|code| {
+                    let identity = PlatformBuiltinErrorIdentity::from_symbol(code)?;
+                    Some((
+                        identity.catch_identity(),
                         serde_json::json!({
                             "target": target,
                             "message": message,
                         }),
-                    )
-                })
-            }
+                    ))
+                }),
             RuntimeError::BytesDecode { target, message } => Some((
-                TypeIdentity::builtin("std.bytes.DecodeError"),
+                PlatformBuiltinErrorIdentity::BytesDecode.catch_identity(),
                 serde_json::json!({
                     "target": target,
                     "message": message,
                 }),
             )),
             RuntimeError::DbDecode { target, message } => Some((
-                TypeIdentity::builtin("std.db.DecodeError"),
+                PlatformBuiltinErrorIdentity::DbDecode.catch_identity(),
                 serde_json::json!({
                     "target": target,
                     "message": message,
                 }),
             )),
             RuntimeError::FileError { message } => Some((
-                TypeIdentity::builtin("std.file.FileError"),
+                PlatformBuiltinErrorIdentity::File.catch_identity(),
                 serde_json::json!({
-                    "message": message,
-                }),
-            )),
-            RuntimeError::ResourceError { path, message } => Some((
-                TypeIdentity::builtin("std.resource.ResourceError"),
-                serde_json::json!({
-                    "path": path,
                     "message": message,
                 }),
             )),
             RuntimeError::HttpError { message, detail } => Some((
-                TypeIdentity::builtin("std.http.HttpError"),
+                PlatformBuiltinErrorIdentity::Http.catch_identity(),
                 serde_json::json!({
                     "message": message,
                     "detail": detail,
                 }),
             )),
             RuntimeError::Cancelled => Some((
-                TypeIdentity::builtin("CancelError"),
+                PlatformBuiltinErrorIdentity::Cancel.catch_identity(),
                 serde_json::json!({
                     "message": "request was cancelled",
                 }),
@@ -1602,7 +1628,7 @@ impl WirePayload for RuntimeError {
                 limit,
                 elapsed_ms,
             } => Some((
-                TypeIdentity::builtin("TimeoutError"),
+                PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
                 serde_json::json!({
                     "reason": reason.as_str(),
                     "instructionCount": instruction_count,
@@ -1611,14 +1637,14 @@ impl WirePayload for RuntimeError {
                 }),
             )),
             RuntimeError::ProviderUnavailable { target, reason } => Some((
-                TypeIdentity::builtin("std.service.ProviderUnavailableError"),
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
                 serde_json::json!({
                     "target": target,
                     "reason": reason,
                 }),
             )),
             RuntimeError::Protocol { target, message } => Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 serde_json::json!({
                     "target": target,
                     "message": message,
@@ -1631,6 +1657,7 @@ impl WirePayload for RuntimeError {
             | RuntimeError::Unsupported(_)
             | RuntimeError::Recoverable(_)
             | RuntimeError::LeaseLost(_)
+            | RuntimeError::ResourceError { .. }
             | RuntimeError::ResourceLimitExceeded { .. }
             | RuntimeError::UserException(_)
             | RuntimeError::RootRuntimePayload(_)
@@ -1706,20 +1733,14 @@ pub fn decode_target_error_code(target: &str) -> Option<&'static str> {
 }
 
 fn user_exception_payload(exception: &UserException) -> RuntimeErrorPayload {
-    let actual_payload_type = exception.actual_payload_type().to_string();
-    let message = exception
-        .error_payload()
-        .and_then(|payload| payload.get("message"))
-        .and_then(Value::as_str)
-        .filter(|message| !message.is_empty())
-        .map(|message| format!("unhandled user exception {actual_payload_type}: {message}"))
-        .unwrap_or_else(|| format!("unhandled user exception {actual_payload_type}"));
+    let correlation = exception.request().correlation();
     RuntimeErrorPayload {
         code: "UnhandledServiceError".to_string(),
-        message,
+        message: "unhandled request-local user exception".to_string(),
         status: None,
         details: Some(serde_json::json!({
-            "actualPayloadType": actual_payload_type,
+            "traceId": correlation.trace_id,
+            "errorId": correlation.error_id,
         })),
     }
 }
@@ -1823,31 +1844,68 @@ fn add_frame_to_details(details: &mut Map<String, Value>, frame: Value) {
 
 #[cfg(test)]
 mod tests {
+    use skiff_artifact_model::{InstructionSourceSite, SourcePosition, SourceSpanRef};
     use skiff_runtime_boundary::error::{RecoverableBoundaryError, RecoverableBoundaryErrorCode};
-    use skiff_runtime_model::recoverable::{
-        RuntimeRecoverableBoundaryContext, RuntimeRecoverableBoundaryKind,
-        RuntimeRecoverableExpectedTypePlan, RuntimeRecoverableStorageLane,
-        RuntimeRecoverableTrustBoundary,
+    use skiff_runtime_model::{
+        addr::{FileAddr, TypeAddr, UnitAddr},
+        recoverable::{
+            RuntimeRecoverableBoundaryContext, RuntimeRecoverableBoundaryKind,
+            RuntimeRecoverableExpectedTypePlan, RuntimeRecoverableStorageLane,
+            RuntimeRecoverableTrustBoundary,
+        },
+        runtime_value::{RuntimeValue, RuntimeValueCarrier},
+        service_error::{
+            ErrorCorrelation, ExceptionStackFrame, LocalExecutionTypeIdentity, NominalTypeIdentity,
+        },
     };
 
     use super::*;
 
+    fn local_identity(type_index: usize) -> CatchIdentity {
+        CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+            LocalExecutionTypeIdentity {
+                addr: TypeAddr {
+                    unit: UnitAddr::Service,
+                    file: FileAddr::loaded_file(0),
+                    type_index,
+                },
+                type_arguments: Vec::new(),
+            },
+        ))
+    }
+
+    fn source_site() -> InstructionSourceSite {
+        InstructionSourceSite::Source {
+            span: SourceSpanRef {
+                source_id: 41,
+                start: SourcePosition::new(2, 3),
+                end: SourcePosition::new(2, 8),
+            },
+        }
+    }
+
+    fn local_user_exception(identity: CatchIdentity, payload: &str) -> UserException {
+        UserException::new(
+            RequestException::local(
+                RuntimeValueCarrier::identified(RuntimeValue::from(payload), identity),
+                source_site(),
+                vec![ExceptionStackFrame::Local {
+                    site: source_site(),
+                }],
+                ErrorCorrelation {
+                    trace_id: "trace-test".to_string(),
+                    error_id: "trace-test:local-error:1".to_string(),
+                },
+            )
+            .expect("local test exception"),
+        )
+    }
+
     #[test]
     fn replace_user_exception_preserves_nested_diagnostic_and_source_wrappers() {
-        let original_identity = TypeIdentity::builtin("ProviderProblem");
-        let original = UserException::from_typed_payload(
-            serde_json::json!({ "message": "provider" }),
-            original_identity.clone(),
-            Some(original_identity),
-        )
-        .expect("original typed exception should build");
-        let replacement_identity = TypeIdentity::builtin("CallerProblem");
-        let replacement = UserException::from_typed_payload(
-            serde_json::json!({ "message": "caller" }),
-            replacement_identity.clone(),
-            Some(replacement_identity.clone()),
-        )
-        .expect("replacement typed exception should build");
+        let original = local_user_exception(local_identity(1), "provider");
+        let replacement_identity = local_identity(2);
+        let replacement = local_user_exception(replacement_identity.clone(), "caller");
         let diagnostic_frame = serde_json::json!({ "operation": "service.call" });
         let source_frame = serde_json::json!({ "sourceId": 41, "module": "provider" });
         let error = RuntimeError::WithDiagnosticFrame {
@@ -1878,22 +1936,16 @@ mod tests {
         let RuntimeError::UserException(exception) = *error else {
             panic!("user exception should remain the wrapped leaf")
         };
-        assert_eq!(exception.actual_payload_type(), &replacement_identity);
+        assert_eq!(exception.actual_payload_type(), Some(&replacement_identity));
         assert_eq!(
-            exception.envelope()["error"],
-            serde_json::json!({ "message": "caller" })
+            exception.request().local_value().map(|value| value.value()),
+            Some(&RuntimeValue::from("caller"))
         );
     }
 
     #[test]
     fn replace_user_exception_leaves_other_error_classes_unchanged() {
-        let replacement_identity = TypeIdentity::builtin("CallerProblem");
-        let replacement = UserException::from_typed_payload(
-            serde_json::json!({ "message": "caller" }),
-            replacement_identity.clone(),
-            Some(replacement_identity),
-        )
-        .expect("replacement typed exception should build");
+        let replacement = local_user_exception(local_identity(2), "caller");
 
         let error = replace_user_exception_preserving_diagnostics(
             RuntimeError::Protocol {
@@ -1908,6 +1960,69 @@ mod tests {
             RuntimeError::Protocol { ref target, ref message }
                 if target == "operation:provider" && message == "provider protocol failure"
         ));
+    }
+
+    #[test]
+    fn request_heap_owned_stream_error_materializes_the_exact_local_exception() {
+        let identity = local_identity(7);
+        let item_identity = local_identity(8);
+        let mut source_heap = RequestHeap::default();
+        source_heap.alloc_bytes(vec![0]).expect("dummy source node");
+        let payload_handle = source_heap
+            .alloc_array_carriers(vec![RuntimeValueCarrier::identified(
+                RuntimeValue::from("nested"),
+                item_identity.clone(),
+            )])
+            .expect("stream exception payload");
+        let source = source_site();
+        let correlation = ErrorCorrelation {
+            trace_id: "trace-stream".to_string(),
+            error_id: "trace-stream:local-error:1".to_string(),
+        };
+        let request = RequestException::local(
+            RuntimeValueCarrier::identified(RuntimeValue::Heap(payload_handle), identity.clone()),
+            source.clone(),
+            vec![ExceptionStackFrame::Local {
+                site: source.clone(),
+            }],
+            correlation.clone(),
+        )
+        .expect("stream exception");
+        let stream_error = skiff_runtime_capability_context::StreamRuntimeError::producer(
+            RequestHeapOwnedStreamError::new(
+                RuntimeError::UserException(UserException::new(request)),
+                source_heap,
+            ),
+        );
+        let mut destination = RequestHeap::default();
+
+        let materialized = materialize_stream_runtime_error(stream_error, &mut destination)
+            .expect("stream exception materialization");
+        let RuntimeError::UserException(exception) =
+            unwrap_diagnostic_source_context(&materialized)
+        else {
+            panic!("stream error must remain a user exception");
+        };
+        assert_eq!(exception.actual_payload_type(), Some(&identity));
+        assert_eq!(exception.request().source(), &source);
+        assert_eq!(exception.request().correlation(), &correlation);
+        let RuntimeValue::Heap(cloned_handle) = exception
+            .request()
+            .local_value()
+            .expect("local cause")
+            .value()
+        else {
+            panic!("stream cause must remain an array");
+        };
+        assert_ne!(*cloned_handle, payload_handle);
+        assert_eq!(
+            destination
+                .array_item_carrier(*cloned_handle, 0)
+                .expect("cloned array")
+                .expect("cloned nested value")
+                .catch_identity(),
+            Some(&item_identity)
+        );
     }
 
     fn recoverable_boundary_error() -> RecoverableBoundaryError {
@@ -1959,9 +2074,12 @@ mod tests {
         expected_identity: &'static str,
         expected_payload: Value,
     ) {
+        let identity = PlatformBuiltinErrorIdentity::from_symbol(expected_identity)
+            .expect("test must use the finite platform-error registry")
+            .catch_identity();
         assert_eq!(
             WirePayload::catch_projection(&error),
-            Some((TypeIdentity::builtin(expected_identity), expected_payload))
+            Some((identity, expected_payload))
         );
     }
 
@@ -2185,7 +2303,7 @@ mod tests {
                 assert_eq!(
                     error.catch_projection(),
                     Some((
-                        TypeIdentity::builtin("std.file.FileError"),
+                        PlatformBuiltinErrorIdentity::File.catch_identity(),
                         serde_json::json!({ "message": "std.file denied" }),
                     ))
                 );

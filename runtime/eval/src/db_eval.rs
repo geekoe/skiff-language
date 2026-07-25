@@ -756,6 +756,7 @@ impl<'a> DbIrEvaluator<'a> {
                 expr_ref,
             )
             .await
+            .map(skiff_runtime_model::runtime_value::RuntimeValueCarrier::into_value)
     }
 }
 

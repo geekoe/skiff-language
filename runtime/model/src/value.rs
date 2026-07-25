@@ -2,7 +2,7 @@ use std::{cmp::Ordering, collections::BTreeMap, fmt};
 
 use crate::{
     addr::{ExecutableAddr, TypeAddr},
-    service_error::CatchIdentity,
+    service_error::{CatchIdentity, RequestException},
 };
 
 pub type RuntimeString = String;
@@ -118,6 +118,13 @@ impl RuntimeValueCarrier {
         }
     }
 
+    pub fn from_parts(value: RuntimeValue, catch_identity: Option<CatchIdentity>) -> Self {
+        Self {
+            value,
+            catch_identity,
+        }
+    }
+
     pub fn value(&self) -> &RuntimeValue {
         &self.value
     }
@@ -126,8 +133,40 @@ impl RuntimeValueCarrier {
         self.value
     }
 
+    pub fn into_parts(self) -> (RuntimeValue, Option<CatchIdentity>) {
+        (self.value, self.catch_identity)
+    }
+
+    pub fn map_value(self, map: impl FnOnce(RuntimeValue) -> RuntimeValue) -> Self {
+        let (value, catch_identity) = self.into_parts();
+        Self {
+            value: map(value),
+            catch_identity,
+        }
+    }
+
     pub fn catch_identity(&self) -> Option<&CatchIdentity> {
         self.catch_identity.as_ref()
+    }
+}
+
+impl From<RuntimeValue> for RuntimeValueCarrier {
+    fn from(value: RuntimeValue) -> Self {
+        Self::unidentified(value)
+    }
+}
+
+impl std::ops::Deref for RuntimeValueCarrier {
+    type Target = RuntimeValue;
+
+    fn deref(&self) -> &Self::Target {
+        self.value()
+    }
+}
+
+impl AsRef<RuntimeValue> for RuntimeValueCarrier {
+    fn as_ref(&self) -> &RuntimeValue {
+        self.value()
     }
 }
 
@@ -431,6 +470,10 @@ pub enum InterfaceMethodType {
         arguments: Vec<InterfaceMethodType>,
     },
     Nominal(TypeAddr),
+    AppliedNominal {
+        base: TypeAddr,
+        arguments: Vec<InterfaceMethodType>,
+    },
     Record(BTreeMap<RuntimeString, InterfaceMethodType>),
     Union(Vec<InterfaceMethodType>),
     Nullable(Box<InterfaceMethodType>),
@@ -593,6 +636,7 @@ pub enum HeapNode {
     Object(RuntimeObject),
     Map(RuntimeMap),
     Interface(InterfaceValue),
+    Exception(RequestException),
 }
 
 #[derive(Clone, Debug, PartialEq)]

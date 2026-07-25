@@ -55,7 +55,6 @@ pub mod type_projection;
 pub mod websocket_adapter;
 
 use env::{Env, Flow};
-use mutable_path::{apply_collection_mutation, CollectionMutation};
 use runtime_ops::*;
 
 pub use assembly_execution::{
@@ -94,14 +93,11 @@ pub use request_boundary::{
     EvalRequestWebSocketConnectReject, EvalRequestWebSocketContextCodec,
 };
 
-use serde_json::Value;
 use skiff_runtime_linked_program::{
     ExecutableAddr, LinkOverlay, LinkedFileUnit, PackageUnit, RuntimeTypeContext,
 };
 use skiff_runtime_model::{
-    request_heap::RequestHeap,
-    runtime_value::{RuntimeObjectFields, RuntimeValue},
-    type_plan::RuntimeTypePlan,
+    request_heap::RequestHeap, runtime_value::RuntimeValue, type_plan::RuntimeTypePlan,
 };
 
 use crate::{

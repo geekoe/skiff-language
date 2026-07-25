@@ -1,6 +1,13 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 use async_recursion::async_recursion;
+use skiff_artifact_model::InstructionSourceSite;
 use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_linked_program::{
     ConstAddr, ExecutableAddr, ExecutableKind, ExprRefIr, LinkedExecutable, LinkedExprIr,
@@ -8,7 +15,8 @@ use skiff_runtime_linked_program::{
 };
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
-    runtime_value::RuntimeValue,
+    runtime_value::{RuntimeValue, RuntimeValueCarrier},
+    service_error::{ErrorCorrelation, ExceptionStackFrame},
 };
 
 #[allow(unused_imports)]
@@ -32,7 +40,9 @@ use super::{
         validate_program_call_arg_count,
     },
     program_types::call_type_substitutions,
+    runtime_ops::runtime_carrier_for_plan,
     source_context::program_source_context_frame,
+    type_projection::EvalTypeProjection,
     *,
 };
 use crate::assembly_execution::{RuntimeAssemblyExecutionProjection, RuntimeExecutionProjection};
@@ -74,6 +84,9 @@ pub struct ProgramExecutionContext<'a> {
     request_heap_limits: RequestHeapLimits,
     runtime_assembly_target: Option<RuntimeAssemblyEvalTarget>,
     actor_execution_frame: Option<crate::actor_executor::ActorExecutionFrame>,
+    exception_trace_id: Option<String>,
+    exception_error_sequence: Arc<AtomicU64>,
+    local_call_stack: Vec<ExceptionStackFrame>,
     _stream_runtime_owner: Option<StreamRuntimeOwner>,
 }
 
@@ -97,6 +110,9 @@ impl<'a> Clone for ProgramExecutionContext<'a> {
             request_heap_limits: self.request_heap_limits.clone(),
             runtime_assembly_target: self.runtime_assembly_target.clone(),
             actor_execution_frame: self.actor_execution_frame.clone(),
+            exception_trace_id: self.exception_trace_id.clone(),
+            exception_error_sequence: self.exception_error_sequence.clone(),
+            local_call_stack: self.local_call_stack.clone(),
             _stream_runtime_owner: None,
         }
     }
@@ -104,6 +120,11 @@ impl<'a> Clone for ProgramExecutionContext<'a> {
 
 impl<'a> ProgramExecutionContext<'a> {
     pub fn new(input: ProgramExecutionInput<'a>) -> Self {
+        let exception_trace_id = input
+            .actor
+            .trace_id()
+            .filter(|trace_id| !trace_id.trim().is_empty())
+            .map(str::to_string);
         Self {
             execution: input.execution,
             config: input.config,
@@ -122,6 +143,9 @@ impl<'a> ProgramExecutionContext<'a> {
             request_heap_limits: input.request_heap_limits,
             runtime_assembly_target: None,
             actor_execution_frame: None,
+            exception_trace_id,
+            exception_error_sequence: Arc::new(AtomicU64::new(0)),
+            local_call_stack: Vec::new(),
             _stream_runtime_owner: None,
         }
     }
@@ -147,6 +171,42 @@ impl<'a> ProgramExecutionContext<'a> {
     ) -> Self {
         self.actor_execution_frame = Some(frame);
         self
+    }
+
+    pub(crate) fn with_local_call_site(mut self, site: InstructionSourceSite) -> Self {
+        self.local_call_stack
+            .push(ExceptionStackFrame::Local { site });
+        self
+    }
+
+    pub(crate) fn exception_stack_for_site(
+        &self,
+        site: InstructionSourceSite,
+    ) -> Vec<ExceptionStackFrame> {
+        let mut stack = self.local_call_stack.clone();
+        stack.push(ExceptionStackFrame::Local { site });
+        stack
+    }
+
+    pub(crate) fn next_exception_correlation(&self) -> Result<ErrorCorrelation> {
+        let trace_id = self.exception_trace_id.clone().ok_or_else(|| {
+            RuntimeError::InvalidArtifact(
+                "request-local exception requires a non-empty request trace id".to_string(),
+            )
+        })?;
+        let sequence = self
+            .exception_error_sequence
+            .fetch_add(1, Ordering::Relaxed)
+            .checked_add(1)
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(
+                    "request-local exception error-id sequence overflowed".to_string(),
+                )
+            })?;
+        Ok(ErrorCorrelation {
+            error_id: format!("{trace_id}:local-error:{sequence}"),
+            trace_id,
+        })
     }
 
     pub(crate) fn actor_execution_frame(
@@ -270,6 +330,9 @@ pub struct OwnedProgramExecutionContext {
     outbound: OutboundServiceContext,
     request_heap_limits: RequestHeapLimits,
     runtime_assembly_target: Option<RuntimeAssemblyEvalTarget>,
+    exception_trace_id: Option<String>,
+    exception_error_sequence: Arc<AtomicU64>,
+    local_call_stack: Vec<ExceptionStackFrame>,
 }
 
 impl OwnedProgramExecutionContext {
@@ -294,6 +357,9 @@ impl OwnedProgramExecutionContext {
             outbound: context.outbound.clone(),
             request_heap_limits: context.request_heap_limits.clone(),
             runtime_assembly_target: context.runtime_assembly_target.clone(),
+            exception_trace_id: context.exception_trace_id.clone(),
+            exception_error_sequence: context.exception_error_sequence.clone(),
+            local_call_stack: context.local_call_stack.clone(),
         }
     }
 
@@ -308,7 +374,7 @@ impl OwnedProgramExecutionContext {
         let websocket = self.websocket.borrow();
         let actor = self.actor.borrow();
         let spawn = self.spawn.borrow();
-        let context = ProgramExecutionContext::new(ProgramExecutionInput {
+        let mut context = ProgramExecutionContext::new(ProgramExecutionInput {
             execution,
             config,
             db: self.db.clone(),
@@ -325,6 +391,9 @@ impl OwnedProgramExecutionContext {
             outbound: self.outbound.clone(),
             request_heap_limits: self.request_heap_limits.clone(),
         });
+        context.exception_trace_id = self.exception_trace_id.clone();
+        context.exception_error_sequence = self.exception_error_sequence.clone();
+        context.local_call_stack = self.local_call_stack.clone();
         match &self.runtime_assembly_target {
             Some(target) => context.with_runtime_assembly_target(target.clone()),
             None => context,
@@ -426,7 +495,7 @@ impl<'a> ExecutableInvocation<'a> {
         Ok(env)
     }
 
-    pub fn declare_self(&self, env: &mut Env, self_value: RuntimeValue) -> Result<()> {
+    pub fn declare_self(&self, env: &mut Env, self_value: RuntimeValueCarrier) -> Result<()> {
         if self.explicit_self_param {
             env.declare_program_parameter(self.executable, "self", self_value)?;
         } else {
@@ -435,7 +504,7 @@ impl<'a> ExecutableInvocation<'a> {
         Ok(())
     }
 
-    pub fn declare_args(&self, env: &mut Env, args: &[RuntimeValue]) -> Result<()> {
+    pub fn declare_args(&self, env: &mut Env, args: &[RuntimeValueCarrier]) -> Result<()> {
         for (index, parameter) in self
             .executable
             .params
@@ -446,7 +515,9 @@ impl<'a> ExecutableInvocation<'a> {
             env.declare_program_parameter(
                 self.executable,
                 &parameter.name,
-                args.get(index).cloned().unwrap_or(RuntimeValue::Null),
+                args.get(index)
+                    .cloned()
+                    .unwrap_or_else(|| RuntimeValue::Null.into()),
             )?;
         }
         Ok(())
@@ -537,7 +608,7 @@ impl<'a> AssemblyExecutableInvocation<'a> {
         Ok(env)
     }
 
-    fn declare_self(&self, env: &mut Env, self_value: RuntimeValue) -> Result<()> {
+    fn declare_self(&self, env: &mut Env, self_value: RuntimeValueCarrier) -> Result<()> {
         if self.explicit_self_param {
             env.declare_program_parameter(self.executable, "self", self_value)?;
         } else {
@@ -546,7 +617,7 @@ impl<'a> AssemblyExecutableInvocation<'a> {
         Ok(())
     }
 
-    fn declare_args(&self, env: &mut Env, args: &[RuntimeValue]) -> Result<()> {
+    fn declare_args(&self, env: &mut Env, args: &[RuntimeValueCarrier]) -> Result<()> {
         for (index, parameter) in self
             .executable
             .params
@@ -557,11 +628,38 @@ impl<'a> AssemblyExecutableInvocation<'a> {
             env.declare_program_parameter(
                 self.executable,
                 &parameter.name,
-                args.get(index).cloned().unwrap_or(RuntimeValue::Null),
+                args.get(index)
+                    .cloned()
+                    .unwrap_or_else(|| RuntimeValue::Null.into()),
             )?;
         }
         Ok(())
     }
+}
+
+fn materialize_local_callable_return(
+    projection: RuntimeExecutionProjection<'_>,
+    addr: &ExecutableAddr,
+    executable: &LinkedExecutable,
+    env: &Env,
+    value: RuntimeValueCarrier,
+    heap: &mut RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    let Some(return_type) = executable.return_type.as_ref() else {
+        return Ok(value);
+    };
+    let plan = EvalTypeProjection::from_execution_projection(projection)
+        .plan_from_linked_nested_ref_with_substitutions(
+            return_type,
+            addr,
+            &env.type_substitutions,
+        )?;
+    runtime_carrier_for_plan(
+        value,
+        &plan,
+        &format!("local callable {} return", executable.symbol),
+        heap,
+    )
 }
 
 impl Interpreter {
@@ -608,10 +706,9 @@ impl Interpreter {
         ))
     }
 
-    #[async_recursion]
     pub async fn call_program_executable(
         &self,
-        context: ProgramExecutionContext<'async_recursion>,
+        context: ProgramExecutionContext<'_>,
         heap: &mut RequestHeap,
         caller_env: &Env,
         caller_addr: &ExecutableAddr,
@@ -619,6 +716,30 @@ impl Interpreter {
         type_args: &std::collections::BTreeMap<String, LinkedTypeRef>,
         args: Vec<RuntimeValue>,
     ) -> Result<RuntimeValue> {
+        self.call_program_executable_carriers(
+            context,
+            heap,
+            caller_env,
+            caller_addr,
+            addr,
+            type_args,
+            args.into_iter().map(Into::into).collect(),
+        )
+        .await
+        .map(RuntimeValueCarrier::into_value)
+    }
+
+    #[async_recursion]
+    pub(crate) async fn call_program_executable_carriers(
+        &self,
+        context: ProgramExecutionContext<'async_recursion>,
+        heap: &mut RequestHeap,
+        caller_env: &Env,
+        caller_addr: &ExecutableAddr,
+        addr: &ExecutableAddr,
+        type_args: &std::collections::BTreeMap<String, LinkedTypeRef>,
+        args: Vec<RuntimeValueCarrier>,
+    ) -> Result<RuntimeValueCarrier> {
         context.execution().add_instruction_units(1)?;
         context.execution().poll_execution_budget()?;
 
@@ -660,7 +781,7 @@ impl Interpreter {
             (
                 caller_env
                     .self_value()
-                    .unwrap_or_else(|| RuntimeValue::Null),
+                    .unwrap_or_else(|| RuntimeValue::Null.into()),
                 args.as_slice(),
             )
         };
@@ -671,11 +792,19 @@ impl Interpreter {
             .exec(self, context.clone(), heap, &mut env)
             .await?;
         context.execution().poll_execution_budget()?;
-        if context.actor_execution_frame().is_some() {
+        let value = if context.actor_execution_frame().is_some() {
             FlowCompletionPolicy::actor_callable_value(flow, &invocation.executable.symbol)
         } else {
             FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol)
-        }
+        }?;
+        materialize_local_callable_return(
+            RuntimeExecutionProjection::Legacy(invocation.program_projection()),
+            invocation.addr,
+            invocation.executable,
+            &env,
+            value,
+            heap,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -688,8 +817,8 @@ impl Interpreter {
         caller_addr: &ExecutableAddr,
         addr: &ExecutableAddr,
         type_args: &BTreeMap<String, LinkedTypeRef>,
-        args: Vec<RuntimeValue>,
-    ) -> Result<RuntimeValue> {
+        args: Vec<RuntimeValueCarrier>,
+    ) -> Result<RuntimeValueCarrier> {
         let invocation = AssemblyExecutableInvocation::resolve(projection, addr)?;
         let has_separate_self_arg =
             invocation.accepts_separate_self_argument_without_self_param(args.len());
@@ -709,7 +838,7 @@ impl Interpreter {
             (
                 caller_env
                     .self_value()
-                    .unwrap_or_else(|| RuntimeValue::Null),
+                    .unwrap_or_else(|| RuntimeValue::Null.into()),
                 args.as_slice(),
             )
         };
@@ -726,17 +855,24 @@ impl Interpreter {
             )
             .await?;
         context.execution().poll_execution_budget()?;
-        if context.actor_execution_frame().is_some() {
+        let value = if context.actor_execution_frame().is_some() {
             FlowCompletionPolicy::actor_callable_value(flow, &invocation.executable.symbol)
         } else {
             FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol)
-        }
+        }?;
+        materialize_local_callable_return(
+            RuntimeExecutionProjection::Assembly(projection.clone()),
+            &invocation.addr,
+            invocation.executable,
+            &env,
+            value,
+            heap,
+        )
     }
 
-    #[async_recursion]
     pub async fn call_program_executable_with_self(
         &self,
-        context: ProgramExecutionContext<'async_recursion>,
+        context: ProgramExecutionContext<'_>,
         heap: &mut RequestHeap,
         caller_env: &Env,
         caller_addr: &ExecutableAddr,
@@ -745,6 +881,31 @@ impl Interpreter {
         self_value: RuntimeValue,
         args: Vec<RuntimeValue>,
     ) -> Result<RuntimeValue> {
+        self.call_program_executable_with_self_carriers(
+            context,
+            heap,
+            caller_env,
+            caller_addr,
+            addr,
+            type_args,
+            self_value.into(),
+            args.into_iter().map(Into::into).collect(),
+        )
+        .await
+        .map(RuntimeValueCarrier::into_value)
+    }
+
+    pub(crate) async fn call_program_executable_with_self_carriers(
+        &self,
+        context: ProgramExecutionContext<'_>,
+        heap: &mut RequestHeap,
+        caller_env: &Env,
+        caller_addr: &ExecutableAddr,
+        addr: &ExecutableAddr,
+        type_args: &std::collections::BTreeMap<String, LinkedTypeRef>,
+        self_value: RuntimeValueCarrier,
+        args: Vec<RuntimeValueCarrier>,
+    ) -> Result<RuntimeValueCarrier> {
         self.call_program_executable_with_self_inner(
             context,
             heap,
@@ -759,10 +920,9 @@ impl Interpreter {
         .await
     }
 
-    #[async_recursion]
     pub async fn call_program_executable_with_self_direct(
         &self,
-        context: ProgramExecutionContext<'async_recursion>,
+        context: ProgramExecutionContext<'_>,
         heap: &mut RequestHeap,
         caller_env: &Env,
         caller_addr: &ExecutableAddr,
@@ -771,6 +931,31 @@ impl Interpreter {
         self_value: RuntimeValue,
         args: Vec<RuntimeValue>,
     ) -> Result<RuntimeValue> {
+        self.call_program_executable_with_self_direct_carriers(
+            context,
+            heap,
+            caller_env,
+            caller_addr,
+            addr,
+            type_args,
+            self_value.into(),
+            args.into_iter().map(Into::into).collect(),
+        )
+        .await
+        .map(RuntimeValueCarrier::into_value)
+    }
+
+    pub(crate) async fn call_program_executable_with_self_direct_carriers(
+        &self,
+        context: ProgramExecutionContext<'_>,
+        heap: &mut RequestHeap,
+        caller_env: &Env,
+        caller_addr: &ExecutableAddr,
+        addr: &ExecutableAddr,
+        type_args: &std::collections::BTreeMap<String, LinkedTypeRef>,
+        self_value: RuntimeValueCarrier,
+        args: Vec<RuntimeValueCarrier>,
+    ) -> Result<RuntimeValueCarrier> {
         self.call_program_executable_with_self_inner(
             context,
             heap,
@@ -794,10 +979,10 @@ impl Interpreter {
         caller_addr: &ExecutableAddr,
         addr: &ExecutableAddr,
         type_args: &std::collections::BTreeMap<String, LinkedTypeRef>,
-        self_value: RuntimeValue,
-        args: Vec<RuntimeValue>,
+        self_value: RuntimeValueCarrier,
+        args: Vec<RuntimeValueCarrier>,
         allow_stream_defer: bool,
-    ) -> Result<RuntimeValue> {
+    ) -> Result<RuntimeValueCarrier> {
         context.execution().add_instruction_units(1)?;
         context.execution().poll_execution_budget()?;
 
@@ -824,7 +1009,7 @@ impl Interpreter {
                     .await?
                 {
                     context.execution().poll_execution_budget()?;
-                    return Ok(value);
+                    return Ok(value.into());
                 }
             }
             let mut env = invocation.env_for_call(caller_env, caller_addr, type_args)?;
@@ -841,7 +1026,15 @@ impl Interpreter {
                 )
                 .await?;
             context.execution().poll_execution_budget()?;
-            return FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol);
+            let value = FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol)?;
+            return materialize_local_callable_return(
+                RuntimeExecutionProjection::Assembly(projection.clone()),
+                &invocation.addr,
+                invocation.executable,
+                &env,
+                value,
+                heap,
+            );
         }
 
         let invocation = ExecutableInvocation::resolve(self, addr)?;
@@ -864,7 +1057,7 @@ impl Interpreter {
                 .await?
             {
                 context.execution().poll_execution_budget()?;
-                return Ok(value);
+                return Ok(value.into());
             }
         }
 
@@ -876,7 +1069,15 @@ impl Interpreter {
             .exec(self, context.clone(), heap, &mut env)
             .await?;
         context.execution().poll_execution_budget()?;
-        FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol)
+        let value = FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol)?;
+        materialize_local_callable_return(
+            RuntimeExecutionProjection::Legacy(invocation.program_projection()),
+            invocation.addr,
+            invocation.executable,
+            &env,
+            value,
+            heap,
+        )
     }
 
     pub async fn exec_program_executable<'ctx>(
@@ -902,7 +1103,7 @@ impl Interpreter {
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
         const_index: u32,
-    ) -> Result<RuntimeValue> {
+    ) -> Result<RuntimeValueCarrier> {
         let context = context.into_program_execution_context();
         let const_index = program_u32_to_usize(const_index, "const ref")?;
         self.eval_program_const_in_file(context, heap, caller_env, addr, file, const_index)
@@ -915,7 +1116,7 @@ impl Interpreter {
         heap: &mut RequestHeap,
         caller_env: &Env,
         const_addr: &ConstAddr,
-    ) -> Result<RuntimeValue> {
+    ) -> Result<RuntimeValueCarrier> {
         let context = context.into_program_execution_context();
         let projection = RuntimeExecutionProjection::for_context(self, &context)?;
         let resolved = projection.resolve_const(const_addr)?;
@@ -943,7 +1144,7 @@ impl Interpreter {
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
         const_index: usize,
-    ) -> Result<RuntimeValue> {
+    ) -> Result<RuntimeValueCarrier> {
         let context = context.into_program_execution_context();
         let constant = file.constants.get(const_index).ok_or_else(|| {
             RuntimeError::InvalidArtifact(format!("RuntimeProgram const {const_index} is missing"))
@@ -968,10 +1169,12 @@ impl Interpreter {
         env.current_stream_item_type = caller_env.current_stream_item_type.clone();
         env.response_stream_sink = caller_env.response_stream_sink.clone();
         env.type_substitutions = caller_env.type_substitutions.clone();
+        let projection = RuntimeExecutionProjection::for_context(self, &context)?;
         let flow = self
             .exec_program_executable(context, heap, &mut env, addr, file, &executable)
             .await?;
-        FlowCompletionPolicy::const_value(flow, &constant.name)
+        let value = FlowCompletionPolicy::const_value(flow, &constant.name)?;
+        materialize_local_callable_return(projection, addr, &executable, &env, value, heap)
     }
 
     pub async fn exec_program_block<'ctx>(
@@ -1019,6 +1222,33 @@ impl Interpreter {
         body: &str,
         item_value: RuntimeValue,
     ) -> Result<Flow> {
+        self.exec_program_for_in_body_carrier(
+            context,
+            heap,
+            env,
+            addr,
+            file,
+            executable,
+            item_slot,
+            body,
+            item_value.into(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn exec_program_for_in_body_carrier<'ctx>(
+        &self,
+        context: impl IntoProgramExecutionContext<'ctx>,
+        heap: &mut RequestHeap,
+        env: &mut Env,
+        addr: &ExecutableAddr,
+        file: &LinkedFileUnit,
+        executable: &LinkedExecutable,
+        item_slot: usize,
+        body: &str,
+        item_value: RuntimeValueCarrier,
+    ) -> Result<Flow> {
         let context = context.into_program_execution_context();
         EvalContext::new(self, context, heap, env, addr, file, executable)?
             .exec_program_for_in_body(item_slot, body, item_value)
@@ -1034,7 +1264,7 @@ impl Interpreter {
         file: &LinkedFileUnit,
         executable: &LinkedExecutable,
         expr_ref: ExprRefIr,
-    ) -> Result<RuntimeValue> {
+    ) -> Result<RuntimeValueCarrier> {
         let context = context.into_program_execution_context();
         EvalContext::new(self, context, heap, env, addr, file, executable)?
             .eval_program_expr_ref(expr_ref)
@@ -1050,7 +1280,7 @@ impl Interpreter {
         file: &LinkedFileUnit,
         executable: &LinkedExecutable,
         expr: &LinkedExprIr,
-    ) -> Result<RuntimeValue> {
+    ) -> Result<RuntimeValueCarrier> {
         let context = context.into_program_execution_context();
         EvalContext::new(self, context, heap, env, addr, file, executable)?
             .eval_program_expr(expr)
@@ -1064,10 +1294,8 @@ impl Interpreter {
         heap: &RequestHeap,
     ) -> Result<Flow> {
         let exception = env.get_slot(exception_slot)?;
-        let exception = runtime_to_wire(&exception, heap)?;
-        Err(RuntimeError::UserException(UserException::from_envelope(
-            exception,
-        )?))
+        let exception = exceptions::request_exception_for_rethrow(&exception, heap)?;
+        Err(RuntimeError::UserException(UserException::new(exception)))
     }
 
     pub fn attach_program_source_context(

@@ -3,7 +3,7 @@
 use skiff_runtime_boundary::{date_value, value as boundary_bytes};
 use skiff_runtime_model::{
     request_heap::RequestHeap,
-    runtime_value::{HeapNode, RuntimeValue, RuntimeValueKey},
+    runtime_value::{HeapNode, RuntimeValue, RuntimeValueCarrier, RuntimeValueKey},
 };
 
 use crate::error::{Result, RuntimeError};
@@ -18,7 +18,8 @@ use super::{
     },
     program_mutation::{program_mutable_receiver_handle, runtime_u64},
     runtime_ops::{
-        runtime_array_items, runtime_debug_value_for_error, runtime_deep_clone, runtime_map_get,
+        runtime_array_item_carriers, runtime_array_items, runtime_debug_value_for_error,
+        runtime_deep_clone, runtime_deep_clone_carrier, runtime_map_get, runtime_map_get_carrier,
         runtime_map_has, runtime_number_value, runtime_numeric,
     },
     runtime_value_view::RuntimeValueView,
@@ -81,6 +82,217 @@ impl<'a> ReceiverMethodDispatch<'a> {
                 runtime_debug_value_for_error(&receiver, self.heap)
             ))
         })
+    }
+
+    pub fn dispatch_op_carriers(
+        &mut self,
+        op: &BuiltinReceiverOp,
+        receiver: RuntimeValueCarrier,
+        args: Vec<RuntimeValueCarrier>,
+    ) -> Result<RuntimeValueCarrier> {
+        skiff_artifact_model::validate_supported_receiver_builtin_op(op).map_err(|error| {
+            RuntimeError::InvalidArtifact(format!(
+                "unsupported receiver builtin op {}: {}",
+                op.canonical_key, error
+            ))
+        })?;
+        match op.receiver {
+            BuiltinReceiverRoot::Array => {
+                self.dispatch_array_carriers(op.method, receiver, args.as_slice())
+            }
+            BuiltinReceiverRoot::Map => {
+                self.dispatch_map_carriers(op.method, receiver, args.as_slice())
+            }
+            BuiltinReceiverRoot::JsonObject => {
+                self.dispatch_json_object_carriers(op.method, receiver, args.as_slice())
+            }
+            _ => self
+                .dispatch_op(
+                    op,
+                    receiver.into_value(),
+                    args.into_iter()
+                        .map(RuntimeValueCarrier::into_value)
+                        .collect(),
+                )
+                .map(Into::into),
+        }
+    }
+
+    fn dispatch_array_carriers(
+        &mut self,
+        method: BuiltinReceiverMethod,
+        receiver: RuntimeValueCarrier,
+        args: &[RuntimeValueCarrier],
+    ) -> Result<RuntimeValueCarrier> {
+        let Some(items) = runtime_array_item_carriers(&receiver, self.heap)? else {
+            return Err(RuntimeError::Decode("receiver is not an Array".to_string()));
+        };
+        let handle =
+            program_mutable_receiver_handle(receiver.value(), self.heap, "Array receiver")?;
+        match method {
+            BuiltinReceiverMethod::Length => Ok(RuntimeValue::Number(items.len() as f64).into()),
+            BuiltinReceiverMethod::Push => {
+                self.heap.push_array_item_carrier(
+                    handle,
+                    args.first()
+                        .cloned()
+                        .unwrap_or_else(|| RuntimeValue::Null.into()),
+                )?;
+                Ok(RuntimeValue::Null.into())
+            }
+            BuiltinReceiverMethod::Set => {
+                let index = args
+                    .first()
+                    .and_then(|value| runtime_u64(value.value()))
+                    .ok_or_else(|| {
+                        RuntimeError::Decode(
+                            "Array.set index must be a non-negative number".to_string(),
+                        )
+                    })?;
+                self.heap.set_array_item_carrier(
+                    handle,
+                    index as usize,
+                    args.get(1)
+                        .cloned()
+                        .unwrap_or_else(|| RuntimeValue::Null.into()),
+                )?;
+                Ok(RuntimeValue::Null.into())
+            }
+            BuiltinReceiverMethod::Pop => {
+                self.heap.pop_array_item_carrier(handle).map_err(Into::into)
+            }
+            BuiltinReceiverMethod::Clone => runtime_deep_clone_carrier(&receiver, self.heap),
+            _ => Err(RuntimeError::InvalidArtifact(
+                "unsupported Array receiver method reached carrier dispatch".to_string(),
+            )),
+        }
+    }
+
+    fn dispatch_map_carriers(
+        &mut self,
+        method: BuiltinReceiverMethod,
+        receiver: RuntimeValueCarrier,
+        args: &[RuntimeValueCarrier],
+    ) -> Result<RuntimeValueCarrier> {
+        if !is_heap_map(receiver.value(), self.heap)? {
+            return Err(RuntimeError::Decode("receiver is not a Map".to_string()));
+        }
+        let handle = program_mutable_receiver_handle(receiver.value(), self.heap, "Map receiver")?;
+        match method {
+            BuiltinReceiverMethod::Length => Ok(RuntimeValue::Number(
+                RuntimeValueView::new(receiver.value(), self.heap).map_like_len()? as f64,
+            )
+            .into()),
+            BuiltinReceiverMethod::Get => runtime_map_get_carrier(
+                &receiver,
+                args.first()
+                    .unwrap_or(&RuntimeValueCarrier::unidentified(RuntimeValue::Null)),
+                self.heap,
+            ),
+            BuiltinReceiverMethod::Has => {
+                let [key] = args else {
+                    return Err(RuntimeError::Decode(
+                        "Map.has requires exactly one key".to_string(),
+                    ));
+                };
+                Ok(
+                    RuntimeValue::Bool(runtime_map_has(receiver.value(), key.value(), self.heap)?)
+                        .into(),
+                )
+            }
+            BuiltinReceiverMethod::Set => {
+                let [key, value] = args else {
+                    return Err(RuntimeError::Decode(
+                        "Map.set requires exactly one key and one value".to_string(),
+                    ));
+                };
+                let key = map_key_from_runtime_value(key.value(), self.heap)?;
+                self.heap
+                    .set_map_entry_carrier(handle, key, value.clone())?;
+                Ok(RuntimeValue::Null.into())
+            }
+            BuiltinReceiverMethod::Delete => {
+                let key = map_key_from_runtime_value(
+                    args.first()
+                        .map(RuntimeValueCarrier::value)
+                        .unwrap_or(&RuntimeValue::Null),
+                    self.heap,
+                )?;
+                Ok(RuntimeValue::Bool(self.heap.delete_map_entry(handle, &key)?).into())
+            }
+            BuiltinReceiverMethod::Keys => {
+                let HeapNode::Map(map) = self.heap.get(handle)? else {
+                    unreachable!("Map receiver was checked above");
+                };
+                let keys = map
+                    .keys()
+                    .map(runtime_value_from_map_key)
+                    .map(Into::into)
+                    .collect();
+                Ok(RuntimeValue::Heap(self.heap.alloc_array_carriers(keys)?).into())
+            }
+            BuiltinReceiverMethod::Clone => runtime_deep_clone_carrier(&receiver, self.heap),
+            _ => Err(RuntimeError::InvalidArtifact(
+                "unsupported Map receiver method reached carrier dispatch".to_string(),
+            )),
+        }
+    }
+
+    fn dispatch_json_object_carriers(
+        &mut self,
+        method: BuiltinReceiverMethod,
+        receiver: RuntimeValueCarrier,
+        args: &[RuntimeValueCarrier],
+    ) -> Result<RuntimeValueCarrier> {
+        if !RuntimeValueView::new(receiver.value(), self.heap).is_map_like()? {
+            return Err(RuntimeError::Decode(
+                "receiver is not a JsonObject".to_string(),
+            ));
+        }
+        match method {
+            BuiltinReceiverMethod::Get => runtime_map_get_carrier(
+                &receiver,
+                args.first()
+                    .unwrap_or(&RuntimeValueCarrier::unidentified(RuntimeValue::Null)),
+                self.heap,
+            ),
+            BuiltinReceiverMethod::Set => self.dispatch_map_like_set_carrier(&receiver, args),
+            BuiltinReceiverMethod::Clone => runtime_deep_clone_carrier(&receiver, self.heap),
+            _ => JsonObjectReceiverMethods::dispatch(
+                method,
+                receiver.value(),
+                &args
+                    .iter()
+                    .cloned()
+                    .map(RuntimeValueCarrier::into_value)
+                    .collect::<Vec<_>>(),
+                self.heap,
+            )?
+            .map(Into::into)
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(
+                    "unsupported JsonObject receiver method reached carrier dispatch".to_string(),
+                )
+            }),
+        }
+    }
+
+    fn dispatch_map_like_set_carrier(
+        &mut self,
+        receiver: &RuntimeValueCarrier,
+        args: &[RuntimeValueCarrier],
+    ) -> Result<RuntimeValueCarrier> {
+        let [key, value] = args else {
+            return Err(RuntimeError::Decode(
+                "JsonObject.set requires exactly one key and one value".to_string(),
+            ));
+        };
+        let handle =
+            program_mutable_receiver_handle(receiver.value(), self.heap, "JsonObject.set")?;
+        let key = map_key_from_runtime_value(key.value(), self.heap)?;
+        self.heap
+            .set_map_entry_carrier(handle, key, value.clone())?;
+        Ok(RuntimeValue::Null.into())
     }
 }
 

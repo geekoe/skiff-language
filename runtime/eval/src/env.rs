@@ -5,12 +5,12 @@ use super::capabilities::{
 use super::type_descriptor::TypeSubstitutions;
 use crate::error::{Result, RuntimeError};
 use skiff_runtime_linked_program::{LinkedExecutable, SlotLayoutIr};
-use skiff_runtime_model::{runtime_value::RuntimeValue, type_plan::RuntimeTypePlan};
+use skiff_runtime_model::{runtime_value::RuntimeValueCarrier, type_plan::RuntimeTypePlan};
 
 #[derive(Clone, Debug)]
 pub enum Flow {
     Continue,
-    Return(RuntimeValue),
+    Return(RuntimeValueCarrier),
     Break,
     LoopContinue,
     Parked,
@@ -30,7 +30,7 @@ pub struct Env {
 
 #[derive(Clone, Debug)]
 pub struct SlotStore {
-    values: Vec<Option<RuntimeValue>>,
+    values: Vec<Option<RuntimeValueCarrier>>,
     debug_bindings: Vec<SlotDebugBinding>,
     self_slot: Option<usize>,
 }
@@ -115,25 +115,25 @@ impl Env {
         &mut self,
         name: &str,
         slot: Option<usize>,
-        value: RuntimeValue,
+        value: impl Into<RuntimeValueCarrier>,
     ) -> Result<()> {
-        self.storage.declare(name, slot, value)
+        self.storage.declare(name, slot, value.into())
     }
 
     pub fn assign_binding(
         &mut self,
         name: &str,
         slot: Option<usize>,
-        value: RuntimeValue,
+        value: impl Into<RuntimeValueCarrier>,
     ) -> Result<()> {
-        self.storage.assign(name, slot, value)
+        self.storage.assign(name, slot, value.into())
     }
 
-    pub fn get_binding(&self, name: &str, slot: Option<usize>) -> Result<RuntimeValue> {
+    pub fn get_binding(&self, name: &str, slot: Option<usize>) -> Result<RuntimeValueCarrier> {
         self.storage.get(name, slot)
     }
 
-    pub fn get_slot(&self, slot: usize) -> Result<RuntimeValue> {
+    pub fn get_slot(&self, slot: usize) -> Result<RuntimeValueCarrier> {
         self.storage.get_slot(slot)
     }
 
@@ -142,7 +142,7 @@ impl Env {
         &mut self,
         name: &str,
         slot: Option<usize>,
-    ) -> Result<&mut RuntimeValue> {
+    ) -> Result<&mut RuntimeValueCarrier> {
         self.storage.get_mut(name, slot)
     }
 
@@ -150,7 +150,7 @@ impl Env {
         self.storage.clear(slots);
     }
 
-    pub fn self_value(&self) -> Option<RuntimeValue> {
+    pub fn self_value(&self) -> Option<RuntimeValueCarrier> {
         self.storage
             .self_slot
             .and_then(|slot| self.storage.values.get(slot))
@@ -161,7 +161,7 @@ impl Env {
     pub fn declare_program_self(
         &mut self,
         _executable: &LinkedExecutable,
-        value: RuntimeValue,
+        value: impl Into<RuntimeValueCarrier>,
     ) -> Result<()> {
         let slot = self.storage.self_slot;
         if slot.is_none() {
@@ -174,7 +174,7 @@ impl Env {
         &mut self,
         executable: &LinkedExecutable,
         name: &str,
-        value: RuntimeValue,
+        value: impl Into<RuntimeValueCarrier>,
     ) -> Result<()> {
         let slot = program_parameter_slot(executable, name);
         self.declare_binding(name, slot, value)
@@ -203,13 +203,23 @@ impl SlotStore {
         }
     }
 
-    fn declare(&mut self, name: &str, slot: Option<usize>, value: RuntimeValue) -> Result<()> {
+    fn declare(
+        &mut self,
+        name: &str,
+        slot: Option<usize>,
+        value: RuntimeValueCarrier,
+    ) -> Result<()> {
         let slot = self.required_slot(name, slot, "binding")?;
         self.values[slot] = Some(value);
         Ok(())
     }
 
-    fn assign(&mut self, name: &str, slot: Option<usize>, value: RuntimeValue) -> Result<()> {
+    fn assign(
+        &mut self,
+        name: &str,
+        slot: Option<usize>,
+        value: RuntimeValueCarrier,
+    ) -> Result<()> {
         let slot = self.required_slot(name, slot, "assignment target")?;
         if self.values[slot].is_none() {
             return Err(RuntimeError::Decode(format!("unknown variable {name}")));
@@ -218,14 +228,14 @@ impl SlotStore {
         Ok(())
     }
 
-    fn get(&self, name: &str, slot: Option<usize>) -> Result<RuntimeValue> {
+    fn get(&self, name: &str, slot: Option<usize>) -> Result<RuntimeValueCarrier> {
         let slot = self.required_slot(name, slot, "identifier")?;
         self.values[slot]
             .clone()
             .ok_or_else(|| RuntimeError::Decode(format!("unknown variable {name}")))
     }
 
-    fn get_slot(&self, slot: usize) -> Result<RuntimeValue> {
+    fn get_slot(&self, slot: usize) -> Result<RuntimeValueCarrier> {
         if slot >= self.values.len() {
             return Err(RuntimeError::InvalidArtifact(format!(
                 "slot {slot} for identifier is out of bounds{}",
@@ -238,7 +248,7 @@ impl SlotStore {
     }
 
     #[allow(dead_code)]
-    fn get_mut(&mut self, name: &str, slot: Option<usize>) -> Result<&mut RuntimeValue> {
+    fn get_mut(&mut self, name: &str, slot: Option<usize>) -> Result<&mut RuntimeValueCarrier> {
         let slot = self.required_slot(name, slot, "mutable target")?;
         self.values[slot]
             .as_mut()

@@ -14,8 +14,11 @@ use skiff_runtime_linked_program::{
     LinkedFileUnit, LinkedStmtIr, LinkedTypeRef, ReceiverCallAbi,
 };
 use skiff_runtime_model::{
-    request_heap::{deep_clone_runtime_value_between_heaps, RequestHeap},
-    runtime_value::RuntimeValue,
+    request_heap::{
+        deep_clone_runtime_value_between_heaps, deep_clone_runtime_value_carrier_between_heaps,
+        RequestHeap,
+    },
+    runtime_value::{RuntimeValue, RuntimeValueCarrier},
     type_plan::RuntimeTypePlan,
 };
 
@@ -25,13 +28,15 @@ use super::{
     env::{check_cancelled, Env, Flow},
     program_execution::{OwnedProgramExecutionContext, ProgramExecutionContext},
     program_ir::{program_call_target_kind, program_expression_ref},
-    runtime_ops::{runtime_from_wire, runtime_from_wire_required_plan},
+    runtime_ops::{
+        runtime_carrier_for_plan, runtime_carrier_from_wire_required_plan, runtime_from_wire,
+    },
     Interpreter,
 };
 use crate::{
     assembly_execution::RuntimeExecutionProjection,
     capabilities::StreamConsumerCleanup,
-    error::{Result, RuntimeError},
+    error::{materialize_stream_runtime_error, RequestHeapOwnedStreamError, Result, RuntimeError},
     test_effect_registry::TestEffectTarget,
     type_projection::EvalTypeProjection,
 };
@@ -68,22 +73,50 @@ impl Interpreter {
                 Some(frame) => frame.await_if_pending(heap, &execution, next).await?,
                 None => next.await,
             };
-            let item = item?;
+            let item = match item {
+                Ok(item) => item,
+                Err(error) => return Err(materialize_stream_runtime_error(error, heap)?),
+            };
             let item_value = match item {
                 StreamPoll::InternalItem(item) => {
                     let (value, source_heap) = item.into_parts();
-                    deep_clone_runtime_value_between_heaps(&source_heap, heap, &value)?
+                    let local_carrier = match &value {
+                        RuntimeValue::Heap(handle) => source_heap.local_carrier_cell(*handle)?,
+                        _ => None,
+                    };
+                    if let Some(carrier) = local_carrier {
+                        let carrier = deep_clone_runtime_value_carrier_between_heaps(
+                            &source_heap,
+                            heap,
+                            &carrier,
+                        )?;
+                        match item_type.as_ref() {
+                            Some(item_type) => {
+                                runtime_carrier_for_plan(carrier, item_type, "stream item", heap)?
+                            }
+                            None => carrier,
+                        }
+                    } else {
+                        let value =
+                            deep_clone_runtime_value_between_heaps(&source_heap, heap, &value)?;
+                        match item_type.as_ref() {
+                            Some(item_type) => {
+                                runtime_carrier_for_plan(value, item_type, "stream item", heap)?
+                            }
+                            None => value.into(),
+                        }
+                    }
                 }
                 StreamPoll::Item(item) => {
                     if let Some(item_type) = item_type.as_ref() {
-                        runtime_from_wire_required_plan(
+                        runtime_carrier_from_wire_required_plan(
                             &item,
                             Some(item_type),
                             "stream item",
                             heap,
                         )?
                     } else {
-                        runtime_from_wire(&item, heap)?
+                        runtime_from_wire(&item, heap)?.into()
                     }
                 }
                 StreamPoll::End => {
@@ -92,7 +125,7 @@ impl Interpreter {
                 }
             };
             let flow = self
-                .exec_program_for_in_body(
+                .exec_program_for_in_body_carrier(
                     context.clone(),
                     heap,
                     env,
@@ -220,8 +253,8 @@ impl Interpreter {
         producer_addr: &ExecutableAddr,
         producer_executable: &LinkedExecutable,
         producer_type_args: &BTreeMap<String, LinkedTypeRef>,
-        producer_self: RuntimeValue,
-        producer_args: Vec<RuntimeValue>,
+        producer_self: RuntimeValueCarrier,
+        producer_args: Vec<RuntimeValueCarrier>,
     ) -> Result<Option<RuntimeValue>> {
         if !executable_body_contains_emit(producer_executable) {
             return Ok(None);
@@ -240,11 +273,14 @@ impl Interpreter {
         };
 
         let mut producer_heap = context.request_heap();
-        let producer_self =
-            deep_clone_runtime_value_between_heaps(heap, &mut producer_heap, &producer_self)?;
+        let producer_self = deep_clone_runtime_value_carrier_between_heaps(
+            heap,
+            &mut producer_heap,
+            &producer_self,
+        )?;
         let mut cloned_args = Vec::with_capacity(producer_args.len());
         for arg in &producer_args {
-            cloned_args.push(deep_clone_runtime_value_between_heaps(
+            cloned_args.push(deep_clone_runtime_value_carrier_between_heaps(
                 heap,
                 &mut producer_heap,
                 arg,
@@ -266,6 +302,9 @@ impl Interpreter {
             producer_heap,
             producer_env,
             producer_addr: producer_addr.clone(),
+            // The already-evaluated explicit-self path receives a context that
+            // already contains the exact required call site.
+            producer_site: None,
             producer_self: Some(producer_self),
             producer_type_args: producer_type_args.clone(),
             producer_args: cloned_args,
@@ -515,7 +554,7 @@ impl Interpreter {
                         return Err(error);
                     }
                 };
-                args.push(stream_value);
+                args.push(stream_value.into());
                 arg_producers.push(nested);
             } else {
                 let arg = self
@@ -529,14 +568,15 @@ impl Interpreter {
                         *arg,
                     )
                     .await?;
-                let arg = deep_clone_runtime_value_between_heaps(heap, &mut producer_heap, &arg)?;
+                let arg =
+                    deep_clone_runtime_value_carrier_between_heaps(heap, &mut producer_heap, &arg)?;
                 args.push(arg);
             }
         }
         let producer_self = receiver
             .as_ref()
             .map(|receiver| {
-                deep_clone_runtime_value_between_heaps(heap, &mut producer_heap, receiver)
+                deep_clone_runtime_value_carrier_between_heaps(heap, &mut producer_heap, receiver)
             })
             .transpose()?;
         let mut producer_env = env.clone();
@@ -554,6 +594,7 @@ impl Interpreter {
             producer_heap,
             producer_env,
             producer_addr: producer.addr,
+            producer_site: Some(producer.call.site),
             producer_self,
             producer_type_args: producer.call.type_args,
             producer_args: args,
@@ -709,7 +750,7 @@ fn stream_item_plan_from_return_type(
 pub struct StreamProducerCall {
     pub addr: ExecutableAddr,
     pub receiver_const: Option<ConstAddr>,
-    pub producer_self: Option<RuntimeValue>,
+    pub producer_self: Option<RuntimeValueCarrier>,
     pub call: CallIr,
     pub item_type: RuntimeTypePlan,
 }
@@ -749,9 +790,10 @@ pub struct StreamProducerExecution {
     producer_heap: RequestHeap,
     producer_env: Env,
     producer_addr: ExecutableAddr,
-    producer_self: Option<RuntimeValue>,
+    producer_site: Option<skiff_artifact_model::InstructionSourceSite>,
+    producer_self: Option<RuntimeValueCarrier>,
     producer_type_args: std::collections::BTreeMap<String, LinkedTypeRef>,
-    producer_args: Vec<RuntimeValue>,
+    producer_args: Vec<RuntimeValueCarrier>,
     sink: StreamSink,
 }
 
@@ -866,6 +908,7 @@ async fn run_stream_producer_task(
         mut producer_heap,
         producer_env,
         producer_addr,
+        producer_site,
         producer_self,
         producer_type_args,
         producer_args,
@@ -892,9 +935,13 @@ async fn run_stream_producer_task(
     }
 
     let context = owned_context.borrow();
+    let context = match producer_site {
+        Some(site) => context.with_local_call_site(site),
+        None => context,
+    };
     let result = if let Some(producer_self) = producer_self {
         interpreter
-            .call_program_executable_with_self_direct(
+            .call_program_executable_with_self_direct_carriers(
                 context,
                 &mut producer_heap,
                 &producer_env,
@@ -907,7 +954,7 @@ async fn run_stream_producer_task(
             .await
     } else {
         interpreter
-            .call_program_executable(
+            .call_program_executable_carriers(
                 context,
                 &mut producer_heap,
                 &producer_env,
@@ -921,7 +968,12 @@ async fn run_stream_producer_task(
     match result {
         Ok(_) => sink.end().await,
         Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
-        Err(error) => sink.fail(StreamRuntimeError::producer(error)).await,
+        Err(error) => {
+            sink.fail(StreamRuntimeError::producer(
+                RequestHeapOwnedStreamError::new(error, producer_heap),
+            ))
+            .await
+        }
     }
     for (stream_runtime, stream_value) in arg_streams {
         stream_runtime.cancel(&stream_value);
@@ -946,6 +998,9 @@ pub fn linked_stream_item_type(return_type: Option<&LinkedTypeRef>) -> Option<&L
 fn linked_type_ref_contains_type_param(type_ref: &LinkedTypeRef) -> bool {
     match type_ref {
         LinkedTypeRef::TypeParam { .. } => true,
+        LinkedTypeRef::AppliedNominal { arguments, .. } => {
+            arguments.iter().any(linked_type_ref_contains_type_param)
+        }
         LinkedTypeRef::Native { args, .. } | LinkedTypeRef::Union { items: args } => {
             args.iter().any(linked_type_ref_contains_type_param)
         }

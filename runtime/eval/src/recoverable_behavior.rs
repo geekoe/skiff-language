@@ -16,7 +16,7 @@ use skiff_runtime_boundary::{
 };
 use skiff_runtime_linked_program::{
     ExecutableAddr, FileAddr, LinkedBoxSourceIr, LinkedExprIr, LinkedFileUnit,
-    LinkedInterfaceMethodSlotPlanIr, LinkedInterfaceMethodTablePlanIr,
+    LinkedInterfaceMethodSlotPlanIr, LinkedInterfaceMethodTablePlanIr, LinkedNominalTypeRefBase,
     LinkedRemoteOperationSlotPlanIr, LinkedRemoteOperationTablePlanIr, LinkedTypeRef,
     ReceiverCallAbi, TypeAddr, UnitAddr,
 };
@@ -605,6 +605,30 @@ fn interface_method_type_from_linked(ty: &LinkedTypeRef) -> InterfaceMethodType 
             arguments: args.iter().map(interface_method_type_from_linked).collect(),
         },
         LinkedTypeRef::Address { addr } => InterfaceMethodType::Nominal(addr.clone()),
+        LinkedTypeRef::AppliedNominal {
+            base: LinkedNominalTypeRefBase::Address { addr },
+            arguments,
+        } => InterfaceMethodType::AppliedNominal {
+            base: addr.clone(),
+            arguments: arguments
+                .iter()
+                .map(interface_method_type_from_linked)
+                .collect(),
+        },
+        LinkedTypeRef::AppliedNominal { base, .. } => InterfaceMethodType::Unresolved(match base {
+            LinkedNominalTypeRefBase::LocalType { .. } => InterfaceMethodUnresolvedType::LocalType,
+            LinkedNominalTypeRefBase::PublicationType { .. } => {
+                InterfaceMethodUnresolvedType::PublicationType
+            }
+            LinkedNominalTypeRefBase::ServiceSymbol { .. } => {
+                InterfaceMethodUnresolvedType::ServiceSymbol
+            }
+            LinkedNominalTypeRefBase::PackageSymbol { .. }
+            | LinkedNominalTypeRefBase::PackageSchema { .. } => {
+                InterfaceMethodUnresolvedType::PackageSymbol
+            }
+            LinkedNominalTypeRefBase::Address { .. } => unreachable!("matched above"),
+        }),
         LinkedTypeRef::Record { fields } => InterfaceMethodType::Record(
             fields
                 .iter()

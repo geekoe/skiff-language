@@ -6,7 +6,7 @@ use skiff_runtime_linked_program::{
 };
 use skiff_runtime_model::{
     request_heap::RequestHeap,
-    runtime_value::{runtime_values_equal, RuntimeValue},
+    runtime_value::{runtime_values_equal, RuntimeValue, RuntimeValueCarrier},
 };
 
 pub fn validate_program_call_arg_count(executable: &LinkedExecutable, actual: usize) -> Result<()> {
@@ -111,12 +111,16 @@ pub fn program_pattern_matches(
     }
 }
 
-pub fn bind_program_pattern(env: &mut Env, pattern: &PatternIr, value: RuntimeValue) -> Result<()> {
+pub fn bind_program_pattern(
+    env: &mut Env,
+    pattern: &PatternIr,
+    value: impl Into<RuntimeValueCarrier>,
+) -> Result<()> {
     if let PatternIr::Binding { slot } = pattern {
         env.declare_binding(
             "slot",
             Some(program_u32_to_usize(*slot, "match.bindingSlot")?),
-            value,
+            value.into(),
         )?;
     }
     Ok(())

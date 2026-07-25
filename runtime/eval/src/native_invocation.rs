@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::ContractTypeRef;
+use skiff_artifact_model::{ContractTypeRef, NativeSignatureTypeExpr};
 use skiff_runtime_boundary::{
     package_schema_records::PackageSchemaRecords, service_value_plan::ServiceValuePlan,
 };
@@ -21,9 +21,11 @@ use skiff_runtime_native_contract::{
 
 use super::{
     env::Env,
+    exceptions::annotate_runtime_type_plan,
     program_types::{
         normalize_program_type_ref, program_package_type_addr, program_publication_type_addr,
     },
+    type_descriptor::TypeSubstitutions,
     Interpreter,
 };
 use crate::{
@@ -178,6 +180,29 @@ fn resolve_runtime_native_invocation_in_type_view(
             }
         }
     }
+    if let (Some(native_plan), Some(signature)) = (
+        plan.as_mut(),
+        NativeSignatureRegistry::builtins().signature(binding_key),
+    ) {
+        for (arg_plan, expression) in native_plan.arg_plans.iter_mut().zip(signature.params) {
+            annotate_native_signature_plan(
+                arg_plan,
+                *expression,
+                program,
+                current_addr,
+                env,
+                plan_call,
+            )?;
+        }
+        annotate_native_signature_plan(
+            &mut native_plan.return_plan,
+            signature.return_type,
+            program,
+            current_addr,
+            env,
+            plan_call,
+        )?;
+    }
     Ok(RuntimeNativeInvocation::new(
         target_name,
         binding_key,
@@ -196,7 +221,7 @@ pub fn resolve_config_builtin_type_arg_plan(
 ) -> Result<Option<RuntimeTypePlan>> {
     match target {
         "config.require" | "config.optional" => {
-            let plan = linked_type_plan::program_call_first_type_arg_plan(
+            let mut plan = linked_type_plan::program_call_first_type_arg_plan(
                 program,
                 current_addr,
                 call,
@@ -205,10 +230,85 @@ pub fn resolve_config_builtin_type_arg_plan(
             .ok_or_else(|| {
                 RuntimeError::InvalidArtifact(format!("{target} call is missing typeArgs[0]"))
             })?;
+            let type_ref = call.type_args.get("T0").ok_or_else(|| {
+                RuntimeError::InvalidArtifact(format!("{target} call is missing typeArgs[0]"))
+            })?;
+            let mut substitutions = TypeSubstitutions::new();
+            for (name, value) in type_substitutions {
+                substitutions.insert(name.clone(), value.clone());
+            }
+            let type_ref =
+                normalize_program_type_ref(program, current_addr, type_ref, &substitutions);
+            annotate_runtime_type_plan(&mut plan, &type_ref, program)?;
             Ok(Some(plan))
         }
         "config.has" => Ok(None),
         _ => Ok(None),
+    }
+}
+
+fn annotate_native_signature_plan(
+    plan: &mut RuntimeTypePlan,
+    expression: NativeSignatureTypeExpr,
+    program: ProgramTypeView<'_>,
+    current_addr: &ExecutableAddr,
+    env: &Env,
+    call: &CallIr,
+) -> Result<()> {
+    match expression {
+        NativeSignatureTypeExpr::TypeParam(index) => {
+            let key = format!("T{index}");
+            let type_ref = call.type_args.get(&key).ok_or_else(|| {
+                RuntimeError::InvalidArtifact(format!(
+                    "native call is missing exact type argument {key}"
+                ))
+            })?;
+            let type_ref = normalize_program_type_ref(
+                program,
+                current_addr,
+                type_ref,
+                &env.type_substitutions,
+            );
+            annotate_runtime_type_plan(plan, &type_ref, program)
+        }
+        NativeSignatureTypeExpr::Builtin(name) => annotate_runtime_type_plan(
+            plan,
+            &LinkedTypeRef::Native {
+                name: name.to_string(),
+                args: Vec::new(),
+            },
+            program,
+        ),
+        NativeSignatureTypeExpr::Array(item) | NativeSignatureTypeExpr::Stream(item) => {
+            let child = match plan.node {
+                skiff_runtime_model::type_plan::RuntimeTypeNode::Array(ref mut item_plan)
+                | skiff_runtime_model::type_plan::RuntimeTypeNode::Stream(ref mut item_plan) => {
+                    item_plan.as_mut()
+                }
+                _ => return Ok(()),
+            };
+            annotate_native_signature_plan(child, *item, program, current_addr, env, call)
+        }
+        NativeSignatureTypeExpr::Map(key, value) => {
+            let skiff_runtime_model::type_plan::RuntimeTypeNode::Map {
+                key: key_plan,
+                value: value_plan,
+            } = &mut plan.node
+            else {
+                return Ok(());
+            };
+            annotate_native_signature_plan(key_plan, *key, program, current_addr, env, call)?;
+            annotate_native_signature_plan(value_plan, *value, program, current_addr, env, call)
+        }
+        NativeSignatureTypeExpr::Nullable(inner) => {
+            let skiff_runtime_model::type_plan::RuntimeTypeNode::Nullable(inner_plan) =
+                &mut plan.node
+            else {
+                return Ok(());
+            };
+            annotate_native_signature_plan(inner_plan, *inner, program, current_addr, env, call)
+        }
+        NativeSignatureTypeExpr::Package { .. } => Ok(()),
     }
 }
 
@@ -514,6 +614,12 @@ fn normalize_native_signature_type_arg<'p>(
         LinkedTypeRef::PackageSymbol { symbol } => program_package_type_addr(program, symbol)
             .map(|addr| LinkedTypeRef::Address { addr })
             .unwrap_or_else(|| type_ref.clone()),
+        LinkedTypeRef::AppliedNominal { .. } => normalize_program_type_ref(
+            program,
+            current_addr,
+            type_ref,
+            &super::type_descriptor::TypeSubstitutions::new(),
+        ),
         LinkedTypeRef::Native { name, args } => LinkedTypeRef::Native {
             name: name.clone(),
             args: args

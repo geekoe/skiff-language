@@ -601,6 +601,14 @@ impl RecoverableValueEncoder<'_> {
                     self.expected,
                 )),
             },
+            HeapNode::Exception(_) => Err(RecoverableBoundaryError::new(
+                RecoverableBoundaryErrorCode::StateInvalid,
+                "request-local exception cannot enter a recoverable boundary",
+                self.context,
+                self.expected,
+            )
+            .with_detail(serde_json::json!({ "nodePath": path }))
+            .into()),
         }
     }
 

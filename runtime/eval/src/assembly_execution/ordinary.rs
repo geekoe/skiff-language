@@ -3,7 +3,7 @@ use skiff_artifact_model::{
     BoundaryOperationDescriptor, BoundaryStreamContract,
 };
 use skiff_runtime_linked_program::{CallIr, LinkedPackageDirectCall};
-use skiff_runtime_model::runtime_value::RuntimeValue;
+use skiff_runtime_model::runtime_value::{RuntimeValue, RuntimeValueCarrier};
 
 use super::{
     boundary_materialization::CanonicalServiceBoundaryPlan,
@@ -20,12 +20,15 @@ pub(crate) async fn execute_package_direct(
     context: &mut EvalContext<'_>,
     call: &CallIr,
     target: &LinkedPackageDirectCall,
-    args: Vec<RuntimeValue>,
-) -> Result<RuntimeValue> {
+    args: Vec<RuntimeValueCarrier>,
+) -> Result<RuntimeValueCarrier> {
     context
         .interpreter
-        .call_program_executable(
-            context.context.clone(),
+        .call_program_executable_carriers(
+            context
+                .context
+                .clone()
+                .with_local_call_site(call.site.clone()),
             context.heap,
             context.env,
             context.addr,

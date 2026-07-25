@@ -12,7 +12,9 @@ use skiff_artifact_model::{BoundaryCancellationContract, BoundaryStreamContract}
 use skiff_runtime_linked_program::{
     ActivationRelativeServiceCall, CallIr, LinkedPackageDirectCall,
 };
-use skiff_runtime_model::runtime_value::{CallbackCapabilityCarrier, RuntimeValue};
+use skiff_runtime_model::runtime_value::{
+    CallbackCapabilityCarrier, RuntimeValue, RuntimeValueCarrier,
+};
 
 use crate::{
     error::{Result, RuntimeError},
@@ -20,6 +22,7 @@ use crate::{
     RuntimeAssemblyEvalSeamError, RuntimeAssemblyServiceCallTarget,
 };
 
+pub(crate) use async_stream_cancel::is_canonical_boundary_stream_sink;
 #[allow(unused_imports)]
 pub(crate) use callback_native::CallbackNativeCapabilityHooks;
 pub use ingress::{dispatch_ingress_via_in_process_boundary, InProcessBoundaryIngressResponse};
@@ -31,8 +34,8 @@ pub(crate) async fn dispatch_package_direct(
     context: &mut EvalContext<'_>,
     call: &CallIr,
     target: &LinkedPackageDirectCall,
-    args: Vec<RuntimeValue>,
-) -> Result<RuntimeValue> {
+    args: Vec<RuntimeValueCarrier>,
+) -> Result<RuntimeValueCarrier> {
     context
         .context
         .runtime_assembly_target()?

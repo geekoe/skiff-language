@@ -1,15 +1,15 @@
 use skiff_runtime_linked_program::{ExecutableAddr, LinkedExecutable, LinkedTypeRef};
 use skiff_runtime_linked_type_plan::{PlanContext, RuntimeTypePlanLinkedExt};
-use skiff_runtime_model::type_plan::RuntimeTypePlan;
+use skiff_runtime_model::{service_error::CatchIdentity, type_plan::RuntimeTypePlan};
 
 use crate::{
     assembly_execution::RuntimeExecutionProjection,
-    error::{Result, RuntimeError, TypeIdentity},
+    error::{Result, RuntimeError},
 };
 
 use super::type_descriptor::TypeSubstitutions;
 use super::{
-    exceptions::{catch_type_leaves, throw_payload_actual_type},
+    exceptions::{annotate_runtime_type_plan, catch_type_leaves},
     invocation::{EvalProgramProjection, ResolvedEvalExecutable},
     program_execution::ProgramExecutionContext,
     program_types::{call_type_substitutions, normalize_program_type_ref, program_type_ref_kind},
@@ -63,10 +63,18 @@ impl<'a> EvalTypeProjection<'a> {
             } else {
                 type_ref
             };
-        Ok(RuntimeTypePlan::from_linked_nested_ref(
+        let normalized = normalize_program_type_ref(
+            self.program.type_view(),
+            current_addr,
             type_ref,
+            &TypeSubstitutions::new(),
+        );
+        let mut plan = RuntimeTypePlan::from_linked_nested_ref(
+            &normalized,
             &PlanContext::from_type_view(self.program.type_view(), current_addr),
-        )?)
+        )?;
+        annotate_runtime_type_plan(&mut plan, &normalized, self.program.type_view())?;
+        Ok(plan)
     }
 
     pub fn plan_from_linked_nested_ref_with_substitutions(
@@ -75,14 +83,22 @@ impl<'a> EvalTypeProjection<'a> {
         current_addr: &ExecutableAddr,
         substitutions: &TypeSubstitutions,
     ) -> Result<RuntimeTypePlan> {
-        Ok(RuntimeTypePlan::from_linked_nested_ref(
+        let normalized = normalize_program_type_ref(
+            self.program.type_view(),
+            current_addr,
             type_ref,
+            substitutions,
+        );
+        let mut plan = RuntimeTypePlan::from_linked_nested_ref(
+            &normalized,
             &PlanContext::with_substitutions_from_type_view(
                 self.program.type_view(),
                 current_addr,
                 substitutions.as_linked_map(),
             ),
-        )?)
+        )?;
+        annotate_runtime_type_plan(&mut plan, &normalized, self.program.type_view())?;
+        Ok(plan)
     }
 
     pub fn validate_construct_type_ref(
@@ -112,12 +128,19 @@ impl<'a> EvalTypeProjection<'a> {
         }
     }
 
-    pub fn throw_payload_actual_type(&self, payload_type: &LinkedTypeRef) -> Result<TypeIdentity> {
-        throw_payload_actual_type(payload_type, self.program.type_view())
-    }
-
-    pub fn catch_type_leaves(&self, catch_type: &LinkedTypeRef) -> Result<Vec<TypeIdentity>> {
-        catch_type_leaves(catch_type, self.program.type_view())
+    pub fn catch_type_leaves(
+        &self,
+        catch_type: &LinkedTypeRef,
+        current_addr: &ExecutableAddr,
+        substitutions: &TypeSubstitutions,
+    ) -> Result<Vec<CatchIdentity>> {
+        let catch_type = normalize_program_type_ref(
+            self.program.type_view(),
+            current_addr,
+            catch_type,
+            substitutions,
+        );
+        catch_type_leaves(&catch_type, self.program.type_view())
     }
 
     pub fn resolve_executable(&self, addr: &ExecutableAddr) -> Result<ResolvedEvalExecutable<'a>> {

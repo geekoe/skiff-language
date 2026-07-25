@@ -157,6 +157,7 @@ fn json_value_matches(
                         carrier: interface.carrier().kind_label(),
                     },
                 ),
+                HeapNode::Exception(_) => Ok(false),
             }
         }),
     }

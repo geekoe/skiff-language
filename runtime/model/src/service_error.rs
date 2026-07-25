@@ -82,6 +82,49 @@ pub enum PlatformBuiltinErrorIdentity {
     Http,
 }
 
+impl PlatformBuiltinErrorIdentity {
+    pub fn from_symbol(symbol: &str) -> Option<Self> {
+        Some(match symbol {
+            "CancelError" => Self::Cancel,
+            "TimeoutError" => Self::Timeout,
+            "config.DecodeError" => Self::ConfigDecode,
+            "std.bytes.DecodeError" => Self::BytesDecode,
+            "std.number.DecodeError" => Self::NumberDecode,
+            "std.json.DecodeError" => Self::JsonDecode,
+            "std.db.ConflictError" => Self::DbConflict,
+            "std.db.DecodeError" => Self::DbDecode,
+            "std.file.FileError" => Self::File,
+            "std.time.DecodeError" => Self::TimeDecode,
+            "std.service.ProviderUnavailableError" => Self::ServiceProviderUnavailable,
+            "std.service.ProtocolError" => Self::ServiceProtocol,
+            "std.http.HttpError" => Self::Http,
+            _ => return None,
+        })
+    }
+
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            Self::Cancel => "CancelError",
+            Self::Timeout => "TimeoutError",
+            Self::ConfigDecode => "config.DecodeError",
+            Self::BytesDecode => "std.bytes.DecodeError",
+            Self::NumberDecode => "std.number.DecodeError",
+            Self::JsonDecode => "std.json.DecodeError",
+            Self::DbConflict => "std.db.ConflictError",
+            Self::DbDecode => "std.db.DecodeError",
+            Self::File => "std.file.FileError",
+            Self::TimeDecode => "std.time.DecodeError",
+            Self::ServiceProviderUnavailable => "std.service.ProviderUnavailableError",
+            Self::ServiceProtocol => "std.service.ProtocolError",
+            Self::Http => "std.http.HttpError",
+        }
+    }
+
+    pub fn catch_identity(self) -> CatchIdentity {
+        CatchIdentity::Nominal(NominalTypeIdentity::PlatformBuiltin(self))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NominalTypeIdentity {
     LocalExecution(LocalExecutionTypeIdentity),
@@ -369,6 +412,9 @@ impl RequestException {
         if value.catch_identity().is_none() {
             return Err("local exception value requires an actual catch identity".to_string());
         }
+        if stack.is_empty() {
+            return Err("local exception requires a non-empty request-local stack".to_string());
+        }
         validate_correlation(&correlation.trace_id, &correlation.error_id)?;
         Ok(Self {
             cause: RequestExceptionCause::Local { value },
@@ -416,6 +462,26 @@ impl RequestException {
             RequestExceptionCause::Local { value } => value.catch_identity(),
             RequestExceptionCause::OpaqueService { .. } => None,
         }
+    }
+
+    pub fn local_value(&self) -> Option<&RuntimeValueCarrier> {
+        match &self.cause {
+            RequestExceptionCause::Local { value } => Some(value),
+            RequestExceptionCause::OpaqueService { .. } => None,
+        }
+    }
+
+    pub fn map_local_value(
+        self,
+        map: impl FnOnce(RuntimeValueCarrier) -> RuntimeValueCarrier,
+    ) -> Self {
+        let cause = match self.cause {
+            RequestExceptionCause::Local { value } => {
+                RequestExceptionCause::Local { value: map(value) }
+            }
+            opaque @ RequestExceptionCause::OpaqueService { .. } => opaque,
+        };
+        Self { cause, ..self }
     }
 }
 
@@ -631,5 +697,38 @@ mod tests {
 
         assert_eq!(exception.local_catch_identity(), Some(&identity));
         assert_eq!(exception.stack().len(), 1);
+    }
+
+    #[test]
+    fn local_exception_rejects_missing_identity_stack_and_correlation() {
+        let identity = local_identity(5);
+        let correlation = ErrorCorrelation {
+            trace_id: "trace".to_string(),
+            error_id: "error".to_string(),
+        };
+        assert!(RequestException::local(
+            RuntimeValue::from("payload").into(),
+            site(),
+            vec![ExceptionStackFrame::Local { site: site() }],
+            correlation.clone(),
+        )
+        .is_err());
+        assert!(RequestException::local(
+            RuntimeValueCarrier::identified(RuntimeValue::from("payload"), identity.clone(),),
+            site(),
+            Vec::new(),
+            correlation,
+        )
+        .is_err());
+        assert!(RequestException::local(
+            RuntimeValueCarrier::identified(RuntimeValue::from("payload"), identity,),
+            site(),
+            vec![ExceptionStackFrame::Local { site: site() }],
+            ErrorCorrelation {
+                trace_id: " ".to_string(),
+                error_id: "error".to_string(),
+            },
+        )
+        .is_err());
     }
 }

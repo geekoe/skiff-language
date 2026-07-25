@@ -230,6 +230,9 @@ fn materialize_handle(
                 &value,
                 "ordinary JSON materialization",
             )),
+            HeapNode::Exception(_) => Err(RuntimeError::Decode(
+                "request-local exception cannot be materialized as JSON".to_string(),
+            )),
         }
     })
 }

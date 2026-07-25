@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 
-use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{LiteralIr, TypeRefIr};
 use skiff_runtime_model::{
     recoverable::{RuntimeRecoverableExpectedTypePlan, RuntimeRecoverableStorageLane},
@@ -523,7 +522,8 @@ fn schema_projectable_db_type_ref(type_ref: &TypeRefIr) -> bool {
         TypeRefIr::Union { items } => items.iter().all(schema_projectable_db_type_ref),
         TypeRefIr::Nullable { inner } => schema_projectable_db_type_ref(inner),
         TypeRefIr::Literal { .. } => true,
-        TypeRefIr::AnyInterface { .. }
+        TypeRefIr::AppliedNominal { .. }
+        | TypeRefIr::AnyInterface { .. }
         | TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
@@ -561,15 +561,7 @@ fn runtime_type_node_from_artifact_type_ref(type_ref: &TypeRefIr) -> RuntimeType
         TypeRefIr::Union { items } => RuntimeTypeNode::Union(
             items
                 .iter()
-                .enumerate()
-                .map(|(index, item)| {
-                    let mut plan = runtime_type_plan_from_artifact_type_ref(item);
-                    if plan.identity.union_branch.is_none() {
-                        plan.identity.union_branch =
-                            Some(format!("{}#branch:{index}", type_ref_abi_key(type_ref)));
-                    }
-                    plan
-                })
+                .map(runtime_type_plan_from_artifact_type_ref)
                 .collect(),
         ),
         TypeRefIr::Nullable { inner } => {
@@ -579,6 +571,7 @@ fn runtime_type_node_from_artifact_type_ref(type_ref: &TypeRefIr) -> RuntimeType
             value: LiteralIr::String { value },
         } => RuntimeTypeNode::LiteralString(value.clone()),
         TypeRefIr::Literal { .. }
+        | TypeRefIr::AppliedNominal { .. }
         | TypeRefIr::AnyInterface { .. }
         | TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
@@ -630,6 +623,7 @@ fn artifact_type_ref_label(type_ref: &TypeRefIr) -> &'static str {
         TypeRefIr::ServiceSymbol { .. } => "serviceSymbol",
         TypeRefIr::PackageSymbol { .. } => "packageSymbol",
         TypeRefIr::PackageSchema { .. } => "packageSchema",
+        TypeRefIr::AppliedNominal { .. } => "appliedNominal",
         TypeRefIr::DbObjectSymbol { .. } => "dbObjectSymbol",
         TypeRefIr::Record { .. } => "record",
         TypeRefIr::Union { .. } => "union",
@@ -652,17 +646,6 @@ fn artifact_type_ref_identity(type_ref: &TypeRefIr) -> RuntimeTypeIdentityPlan {
     match type_ref {
         TypeRefIr::AnyInterface { interface } => RuntimeTypeIdentityPlan {
             interface: Some(interface.interface_abi_id.clone()),
-            ..RuntimeTypeIdentityPlan::default()
-        },
-        TypeRefIr::Union { .. } => RuntimeTypeIdentityPlan {
-            union: Some(type_ref_abi_key(type_ref)),
-            ..RuntimeTypeIdentityPlan::default()
-        },
-        TypeRefIr::LocalType { .. }
-        | TypeRefIr::ServiceSymbol { .. }
-        | TypeRefIr::PackageSymbol { .. }
-        | TypeRefIr::DbObjectSymbol { .. } => RuntimeTypeIdentityPlan {
-            nominal: Some(type_ref_abi_key(type_ref)),
             ..RuntimeTypeIdentityPlan::default()
         },
         _ => RuntimeTypeIdentityPlan::default(),
@@ -1033,20 +1016,20 @@ mod tests {
     }
 
     #[test]
-    fn db_artifact_type_ref_union_identity_metadata_does_not_change_shape() {
+    fn db_artifact_anonymous_union_has_no_reconstructed_catch_identity() {
         let ty = TypeRefIr::Union {
             items: vec![native("string"), native("number")],
         };
 
         let plan = db_result_decode_plan_from_artifact_type_ref(&ty);
 
-        assert!(plan.expected().union_identity().is_some());
+        assert!(plan.expected().catch_identity().is_none());
         let RuntimeTypeNode::Union(items) = plan.expected().node() else {
             panic!("expected union plan");
         };
         assert_eq!(items.len(), 2);
         assert!(matches!(items[0].node(), RuntimeTypeNode::String));
-        assert!(items[0].union_branch_identity().is_some());
+        assert!(items[0].catch_identity().is_none());
     }
 
     fn native(name: &str) -> TypeRefIr {
