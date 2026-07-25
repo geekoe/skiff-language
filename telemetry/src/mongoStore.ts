@@ -25,6 +25,7 @@ export interface LogQuery {
   serviceId?: string;
   since?: string;
   traceId?: string;
+  errorId?: string;
   requestId?: string;
   target?: string;
   level?: TelemetryLevel;
@@ -35,10 +36,16 @@ export interface TraceQuery {
   serviceId?: string;
   since?: string;
   traceId?: string;
+  errorId?: string;
   requestId?: string;
   target?: string;
   level?: TelemetryLevel;
   limit?: number;
+}
+
+export interface RestrictedDiagnosticQuery {
+  traceId?: string;
+  errorId?: string;
 }
 
 export interface InsertBatchResult {
@@ -64,8 +71,9 @@ export interface TelemetryStore {
   close(): Promise<void>;
   insertBatch(batch: TelemetryBatchEnvelope): Promise<InsertBatchResult>;
   queryLogs(query: LogQuery): Promise<LogEventDocument[]>;
-  queryTrace(traceId: string): Promise<LogEventDocument[]>;
+  queryTrace(traceId: string, errorId?: string): Promise<LogEventDocument[]>;
   queryTraces(query: TraceQuery): Promise<LogEventDocument[]>;
+  queryRestrictedDiagnostics(query: RestrictedDiagnosticQuery): Promise<LogEventDocument[]>;
   health(): Promise<TelemetryStoreHealth>;
 }
 
@@ -135,16 +143,16 @@ export class MongoTelemetryStore implements TelemetryStore {
   async queryLogs(query: LogQuery): Promise<LogEventDocument[]> {
     const collection = this.requireCollection();
     return collection
-      .find(buildLogFilter(query))
+      .find(buildOperationalLogFilter(query))
       .sort({ ts: -1, receivedAt: -1, producerId: 1, seq: -1, eventIndex: -1 })
       .limit(readLimit(query.limit))
       .toArray();
   }
 
-  async queryTrace(traceId: string): Promise<LogEventDocument[]> {
+  async queryTrace(traceId: string, errorId?: string): Promise<LogEventDocument[]> {
     const collection = this.requireCollection();
     return collection
-      .find({ traceId })
+      .find(buildOperationalTraceIdFilter(traceId, errorId))
       .sort({ ts: 1, receivedAt: 1, producerId: 1, seq: 1, eventIndex: 1 })
       .limit(MAX_QUERY_LIMIT)
       .toArray();
@@ -153,9 +161,20 @@ export class MongoTelemetryStore implements TelemetryStore {
   async queryTraces(query: TraceQuery): Promise<LogEventDocument[]> {
     const collection = this.requireCollection();
     return collection
-      .find(buildTraceFilter(query))
+      .find(buildOperationalTraceFilter(query))
       .sort({ ts: 1, receivedAt: 1, producerId: 1, seq: 1, eventIndex: 1 })
       .limit(readLimit(query.limit))
+      .toArray();
+  }
+
+  async queryRestrictedDiagnostics(
+    query: RestrictedDiagnosticQuery
+  ): Promise<LogEventDocument[]> {
+    const collection = this.requireCollection();
+    return collection
+      .find(buildRestrictedDiagnosticFilter(query))
+      .sort({ ts: 1, receivedAt: 1, producerId: 1, seq: 1, eventIndex: 1 })
+      .limit(MAX_QUERY_LIMIT)
       .toArray();
   }
 
@@ -214,23 +233,35 @@ export class InMemoryTelemetryStore implements TelemetryStore {
 
   async queryLogs(query: LogQuery): Promise<LogEventDocument[]> {
     return this.events
-      .filter((event) => matchesFilter(event, buildLogFilter(query)))
+      .filter((event) => matchesFilter(event, buildOperationalLogFilter(query)))
       .sort(sortDesc)
       .slice(0, readLimit(query.limit));
   }
 
-  async queryTrace(traceId: string): Promise<LogEventDocument[]> {
+  async queryTrace(traceId: string, errorId?: string): Promise<LogEventDocument[]> {
     return this.events
-      .filter((event) => event.traceId === traceId)
+      .filter((event) =>
+        matchesFilter(event, buildOperationalTraceIdFilter(traceId, errorId))
+      )
       .sort(sortAsc)
       .slice(0, MAX_QUERY_LIMIT);
   }
 
   async queryTraces(query: TraceQuery): Promise<LogEventDocument[]> {
     return this.events
-      .filter((event) => matchesFilter(event, buildTraceFilter(query)))
+      .filter((event) => matchesFilter(event, buildOperationalTraceFilter(query)))
       .sort(sortAsc)
       .slice(0, readLimit(query.limit));
+  }
+
+  async queryRestrictedDiagnostics(
+    query: RestrictedDiagnosticQuery
+  ): Promise<LogEventDocument[]> {
+    const filter = buildRestrictedDiagnosticFilter(query);
+    return this.events
+      .filter((event) => matchesFilter(event, filter))
+      .sort(sortAsc)
+      .slice(0, MAX_QUERY_LIMIT);
   }
 
   async health(): Promise<TelemetryStoreHealth> {
@@ -263,8 +294,11 @@ export function telemetryStoreFromEnv(env: NodeJS.ProcessEnv = process.env): Tel
   });
 }
 
-function buildLogFilter(query: LogQuery): Filter<LogEventDocument> {
-  const filter: Filter<LogEventDocument> = { topic: 'log' };
+export function buildOperationalLogFilter(query: LogQuery): Filter<LogEventDocument> {
+  const filter: Filter<LogEventDocument> = {
+    topic: 'log',
+    visibility: 'operational'
+  };
   applyCommonFilter(filter, query);
   if (query.level !== undefined) {
     filter.level = query.level;
@@ -272,13 +306,38 @@ function buildLogFilter(query: LogQuery): Filter<LogEventDocument> {
   return filter;
 }
 
-function buildTraceFilter(query: TraceQuery): Filter<LogEventDocument> {
-  const filter: Filter<LogEventDocument> = { traceId: { $exists: true } };
+export function buildOperationalTraceIdFilter(
+  traceId: string,
+  errorId?: string
+): Filter<LogEventDocument> {
+  return {
+    visibility: 'operational',
+    traceId,
+    ...(errorId !== undefined ? { errorId } : {})
+  };
+}
+
+export function buildOperationalTraceFilter(query: TraceQuery): Filter<LogEventDocument> {
+  const filter: Filter<LogEventDocument> = {
+    visibility: 'operational',
+    traceId: { $exists: true }
+  };
   applyCommonFilter(filter, query);
   if (query.level !== undefined) {
     filter.level = query.level;
   }
   return filter;
+}
+
+export function buildRestrictedDiagnosticFilter(
+  query: RestrictedDiagnosticQuery
+): Filter<LogEventDocument> {
+  assertRestrictedDiagnosticQuery(query);
+  return {
+    visibility: 'restricted',
+    ...(query.traceId !== undefined ? { traceId: query.traceId } : {}),
+    ...(query.errorId !== undefined ? { errorId: query.errorId } : {})
+  };
 }
 
 function applyCommonFilter(
@@ -287,6 +346,7 @@ function applyCommonFilter(
     serviceId?: string;
     since?: string;
     traceId?: string;
+    errorId?: string;
     requestId?: string;
     target?: string;
   }
@@ -297,6 +357,9 @@ function applyCommonFilter(
   if (query.traceId !== undefined) {
     filter.traceId = query.traceId;
   }
+  if (query.errorId !== undefined) {
+    filter.errorId = query.errorId;
+  }
   if (query.requestId !== undefined) {
     filter.requestId = query.requestId;
   }
@@ -305,6 +368,20 @@ function applyCommonFilter(
   }
   if (query.since !== undefined) {
     filter.ts = { $gte: query.since };
+  }
+}
+
+function assertRestrictedDiagnosticQuery(query: RestrictedDiagnosticQuery): void {
+  assertOptionalCorrelationId(query.traceId, 'traceId');
+  assertOptionalCorrelationId(query.errorId, 'errorId');
+  if (query.traceId === undefined && query.errorId === undefined) {
+    throw new Error('restricted diagnostic query requires a non-empty traceId or errorId');
+  }
+}
+
+function assertOptionalCorrelationId(value: unknown, name: 'traceId' | 'errorId'): void {
+  if (value !== undefined && (typeof value !== 'string' || value.trim().length === 0)) {
+    throw new Error(`restricted diagnostic query ${name} must be a non-empty string`);
   }
 }
 
@@ -391,8 +468,20 @@ export function mongoTelemetryIndexSpecs(ttlDays = DEFAULT_TTL_DAYS): readonly M
   return [
     { keys: { producerId: 1, seq: 1 }, options: { name: 'batch_dedupe' } },
     { keys: { ts: -1 }, options: { name: 'ts_desc' } },
+    {
+      keys: { visibility: 1, topic: 1, ts: -1 },
+      options: { name: 'visibility_topic_ts_desc' }
+    },
     { keys: { serviceId: 1, ts: -1 }, options: { name: 'service_ts_desc' } },
     { keys: { traceId: 1, ts: 1 }, options: { name: 'trace_ts_asc' } },
+    {
+      keys: { visibility: 1, traceId: 1, ts: 1 },
+      options: { name: 'visibility_trace_ts_asc' }
+    },
+    {
+      keys: { visibility: 1, errorId: 1, ts: 1 },
+      options: { name: 'visibility_error_ts_asc' }
+    },
     { keys: { requestId: 1, ts: 1 }, options: { name: 'request_ts_asc' } },
     { keys: { target: 1, ts: -1 }, options: { name: 'target_ts_desc' } },
     { keys: { level: 1, ts: -1 }, options: { name: 'level_ts_desc' } },

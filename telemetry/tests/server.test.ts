@@ -44,7 +44,7 @@ describe('telemetry server', () => {
       readNumber(payload, 'acceptedBatches') === 1
     );
     expect(readNumber(health, 'acceptedBatches')).toBe(1);
-    expect(readNumber(health, 'writeCount')).toBe(3);
+    expect(readNumber(health, 'writeCount')).toBe(4);
     expect(readNumber(health, 'rejectedCount')).toBe(0);
     expect(readString(health, 'storeType')).toBe('memory');
 
@@ -84,6 +84,7 @@ describe('telemetry server', () => {
           topic: 'trace',
           ts: new Date().toISOString(),
           source: 'router',
+          visibility: 'operational',
           traceId: 'trace-router-http-1',
           spanId: 'span-router-http-1',
           requestId: 'request-router-http-1',
@@ -114,7 +115,153 @@ describe('telemetry server', () => {
 
     ws.close();
   });
+
+  it('keeps every public query route operational and filters only by top-level errorId', async () => {
+    const server = new TelemetryServer({
+      port: 0,
+      store: new InMemoryTelemetryStore()
+    });
+    activeServer = server;
+    const listen = await server.listen();
+    const ws = await openWebSocket(listen.telemetryUrl);
+
+    ws.send(JSON.stringify(fixture.valid.register));
+    await readWebSocketJson(ws);
+    ws.send(JSON.stringify(queryIsolationBatch(fixture.valid.register.producerId)));
+
+    await waitForJson(`${listen.httpUrl}/health`, (payload) =>
+      readNumber(payload, 'acceptedBatches') === 1
+    );
+
+    const logs = readEvents(
+      await fetchJson(`${listen.httpUrl}/logs?traceId=trace-query-isolation`)
+    );
+    expect(logs.map((event) => event.name)).toEqual(['operational.log']);
+    expect(logs.every((event) => event.visibility === 'operational')).toBe(true);
+
+    const traces = readEvents(
+      await fetchJson(`${listen.httpUrl}/traces?traceId=trace-query-isolation`)
+    );
+    expect(traces.map((event) => event.name)).toEqual([
+      'operational.log',
+      'operational.trace'
+    ]);
+    expect(traces.every((event) => event.visibility === 'operational')).toBe(true);
+
+    const trace = readEvents(
+      await fetchJson(`${listen.httpUrl}/traces/trace-query-isolation`)
+    );
+    expect(trace.map((event) => event.name)).toEqual([
+      'operational.log',
+      'operational.trace'
+    ]);
+    expect(trace.every((event) => event.visibility === 'operational')).toBe(true);
+    const traceByError = readEvents(
+      await fetchJson(
+        `${listen.httpUrl}/traces/trace-query-isolation?errorId=error-query-isolation`
+      )
+    );
+    expect(traceByError).toEqual(trace);
+    expect(
+      readEvents(
+        await fetchJson(`${listen.httpUrl}/traces/trace-query-isolation?errorId=error-other`)
+      )
+    ).toEqual([]);
+
+    const errorLogs = readEvents(
+      await fetchJson(`${listen.httpUrl}/logs?errorId=error-query-isolation`)
+    );
+    expect(errorLogs.map((event) => event.name)).toEqual(['operational.log']);
+    const errorTraces = readEvents(
+      await fetchJson(`${listen.httpUrl}/traces?errorId=error-query-isolation`)
+    );
+    expect(errorTraces.map((event) => event.name)).toEqual([
+      'operational.log',
+      'operational.trace'
+    ]);
+    expect(
+      readEvents(await fetchJson(`${listen.httpUrl}/traces?errorId=nested-error-only`))
+    ).toEqual([]);
+
+    const emptyErrorId = await fetch(`${listen.httpUrl}/logs?errorId=`);
+    expect(emptyErrorId.status).toBe(400);
+    await expect(emptyErrorId.json()).resolves.toEqual({
+      error: 'errorId must be a non-empty string'
+    });
+    expect((await fetch(`${listen.httpUrl}/traces?errorId=`)).status).toBe(400);
+    expect(
+      (await fetch(`${listen.httpUrl}/traces/trace-query-isolation?errorId=`)).status
+    ).toBe(400);
+
+    const restrictedRoute = await fetch(
+      `${listen.httpUrl}/restricted-diagnostics?traceId=trace-query-isolation`
+    );
+    expect(restrictedRoute.status).toBe(404);
+
+    ws.close();
+  });
 });
+
+function queryIsolationBatch(producerId: string): TelemetryBatchEnvelope {
+  return {
+    type: 'telemetry.batch',
+    producerId,
+    seq: 1,
+    events: [
+      {
+        topic: 'log',
+        ts: '2026-05-06T12:00:00.000Z',
+        source: 'runtime',
+        visibility: 'operational',
+        traceId: 'trace-query-isolation',
+        errorId: 'error-query-isolation',
+        level: 'error',
+        name: 'operational.log',
+        message: 'safe operational failure'
+      },
+      {
+        topic: 'trace',
+        ts: '2026-05-06T12:00:00.010Z',
+        source: 'runtime',
+        visibility: 'operational',
+        traceId: 'trace-query-isolation',
+        errorId: 'error-query-isolation',
+        name: 'operational.trace'
+      },
+      {
+        topic: 'log',
+        ts: '2026-05-06T12:00:00.020Z',
+        source: 'runtime',
+        visibility: 'restricted',
+        traceId: 'trace-query-isolation',
+        errorId: 'error-query-isolation',
+        level: 'error',
+        name: 'restricted.log',
+        message: 'restricted diagnostic'
+      },
+      {
+        topic: 'trace',
+        ts: '2026-05-06T12:00:00.030Z',
+        source: 'runtime',
+        visibility: 'restricted',
+        traceId: 'trace-query-isolation',
+        errorId: 'error-query-isolation',
+        name: 'restricted.trace'
+      },
+      {
+        topic: 'trace',
+        ts: '2026-05-06T12:00:00.040Z',
+        source: 'runtime',
+        visibility: 'operational',
+        traceId: 'trace-nested-error-only',
+        name: 'nested.error.only',
+        error: {
+          errorId: 'nested-error-only'
+        }
+      }
+    ]
+  };
+}
 
 async function openWebSocket(url: string): Promise<WebSocket> {
   const ws = new WebSocket(url);

@@ -51,6 +51,7 @@ function event(
   return {
     topic: fields.message === undefined ? 'trace' : 'log',
     source: 'runtime',
+    visibility: 'operational',
     traceId: 'trace-1',
     level: fields.message === undefined ? undefined : 'info',
     receivedAt: new Date('2026-05-06T12:00:01.000Z'),
