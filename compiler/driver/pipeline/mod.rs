@@ -20,7 +20,10 @@ use skiff_compiler_projection_input::ResolvedPackageSchema;
 use skiff_deployment::storage::CanonicalArtifactStore;
 
 use crate::{
-    input::{PackageCompileInput, PackageDependency, PublicationResourceInput},
+    input::{
+        PackageCompileInput, PackageContractCompileDependency, PackageDependency,
+        PublicationResourceInput,
+    },
     shared::package_compile_error::{
         package_projection_error, projection_input_error, PackageCompileError,
     },
@@ -120,6 +123,7 @@ fn pre_source_contract_package_schemas(
         let binding = pre_source_schema_binding(
             owner,
             input.package_dependencies,
+            input.contract_dependencies,
             input.dependency_packages,
             input.available_packages,
         )?;
@@ -183,6 +187,7 @@ fn pre_source_contract_package_schemas(
 fn pre_source_schema_binding<'a>(
     owner: &str,
     package_dependencies: &[PackageDependency],
+    contract_dependencies: &[PackageContractCompileDependency],
     dependency_packages: &'a [PackageArtifact],
     available_packages: &'a [PackageArtifact],
 ) -> Result<Option<(String, &'a PackageArtifact)>, PackageCompileError> {
@@ -211,7 +216,34 @@ fn pre_source_schema_binding<'a>(
         )));
     }
     let Some(dependency) = declarations.first() else {
-        return Ok(None);
+        let contract_declarations = contract_dependencies
+            .iter()
+            .filter(|dependency| dependency.requirement.service_id == owner)
+            .collect::<Vec<_>>();
+        if contract_declarations.len() > 1 {
+            return Err(package_schema_input_error(format!(
+                "package schema owner {owner} has duplicate direct service dependency declarations"
+            )));
+        }
+        let Some(dependency) = contract_declarations.first() else {
+            return Ok(None);
+        };
+        let artifacts = available_packages
+            .iter()
+            .filter(|artifact| {
+                artifact.package_id == dependency.requirement.service_id
+                    && artifact.package_version == dependency.requirement.contract_version
+            })
+            .collect::<Vec<_>>();
+        if artifacts.len() > 1 {
+            return Err(package_schema_input_error(format!(
+                "service package schema owner {owner}@{} has duplicate exact canonical artifacts",
+                dependency.requirement.contract_version
+            )));
+        }
+        return Ok(artifacts
+            .first()
+            .map(|artifact| (dependency.requirement.alias.clone(), *artifact)));
     };
     let artifacts = dependency_packages
         .iter()

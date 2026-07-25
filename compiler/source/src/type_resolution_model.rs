@@ -2954,6 +2954,29 @@ fn artifact_type_text(
         } => Err(format!(
             "publication type {module_path}#{type_index} is not self-describing in PackageLocalAbi"
         )),
+        TypeRefIr::AnyInterface { interface } => {
+            let identity = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).map_err(
+                |error| {
+                    format!(
+                        "any-interface identity is not a canonical artifact type reference: {error}"
+                    )
+                },
+            )?;
+            let name = artifact_type_text(&identity, symbolic_types)?;
+            if interface.canonical_type_args.is_empty() {
+                Ok(format!("any {name}"))
+            } else {
+                Ok(format!(
+                    "any {name}<{}>",
+                    interface
+                        .canonical_type_args
+                        .iter()
+                        .map(|arg| artifact_type_text(arg, symbolic_types))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .join(", ")
+                ))
+            }
+        }
         other => Err(format!("unsupported artifact type reference {other:?}")),
     }
 }

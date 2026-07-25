@@ -122,6 +122,7 @@ fn build_package_after_platform_context_guard(
     let package = read_package_source_input(root, &manifest)?;
     let package_id = manifest.id.to_string();
     let mut available = dependencies.clone();
+    read_contract_provider_packages(store, &contracts, &mut available)?;
     read_optional_platform_std(store, &mut available)?;
     let input = PackageCompileInput::new(platform_sources, &package, &aliases, &package_id)
         .with_canonical_dependencies(&dependencies, &contracts)
@@ -373,6 +374,31 @@ fn read_contract_dependencies(
             })
         })
         .collect()
+}
+
+fn read_contract_provider_packages(
+    store: &CanonicalArtifactStore,
+    contracts: &[PackageContractCompileDependency],
+    available: &mut Vec<PackageArtifact>,
+) -> AuthoringResult<()> {
+    for dependency in contracts {
+        let requirement = &dependency.requirement;
+        let pointer = store
+            .read_package_artifact_pointer(&requirement.service_id, &requirement.contract_version)?
+            .ok_or_else(|| {
+                invalid_input(format!(
+                    "service dependency {}@{} has no published provider PackageArtifact pointer",
+                    requirement.service_id, requirement.contract_version
+                ))
+            })?;
+        available.push(
+            store
+                .read_package_artifact(&pointer.artifact)?
+                .as_ref()
+                .clone(),
+        );
+    }
+    Ok(())
 }
 
 fn read_optional_platform_std(

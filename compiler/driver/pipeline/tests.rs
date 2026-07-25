@@ -287,6 +287,7 @@ fn pre_source_schema_binding_is_exact_direct_or_compiler_owned_std_only() {
     let binding = pre_source_schema_binding(
         "example.types",
         std::slice::from_ref(&dependency),
+        &[],
         std::slice::from_ref(&direct),
         &available,
     )
@@ -298,6 +299,7 @@ fn pre_source_schema_binding_is_exact_direct_or_compiler_owned_std_only() {
     assert!(pre_source_schema_binding(
         "example.transitive",
         std::slice::from_ref(&dependency),
+        &[],
         std::slice::from_ref(&direct),
         &[transitive],
     )
@@ -307,6 +309,7 @@ fn pre_source_schema_binding_is_exact_direct_or_compiler_owned_std_only() {
     let binding = pre_source_schema_binding(
         SKIFF_STD_PUBLICATION_ID,
         std::slice::from_ref(&dependency),
+        &[],
         std::slice::from_ref(&direct),
         std::slice::from_ref(&std),
     )
@@ -314,6 +317,43 @@ fn pre_source_schema_binding_is_exact_direct_or_compiler_owned_std_only() {
     .expect("compiler-owned std");
     assert_eq!(binding.0, "std");
     assert_eq!(binding.1.package_version, "7.4.2");
+}
+
+#[test]
+fn pre_source_schema_binding_accepts_service_provider_package_owner() {
+    let provider = canonical_artifact("example.service", "2.0.0");
+    let contract: ServiceContract = serde_json::from_value(serde_json::json!({
+        "schemaVersion": "skiff-service-contract-v2",
+        "serviceId": "example.service",
+        "contractVersion": "2.0.0",
+        "serviceProtocolIdentity": "skiff-service-protocol-v3:sha256:test",
+        "operations": {},
+        "packageTypeRequirements": [],
+        "diagnosticText": { "service": "", "operations": {}, "types": {} }
+    }))
+    .unwrap();
+    let dependency = PackageContractCompileDependency {
+        requirement: ContractRequirement {
+            alias: "service".to_string(),
+            service_id: "example.service".to_string(),
+            contract_version: "2.0.0".to_string(),
+            expected_protocol_identity: contract.service_protocol_identity.clone(),
+        },
+        contract,
+    };
+
+    let binding = pre_source_schema_binding(
+        "example.service",
+        &[],
+        std::slice::from_ref(&dependency),
+        &[],
+        std::slice::from_ref(&provider),
+    )
+    .unwrap()
+    .expect("service provider package owner");
+
+    assert_eq!(binding.0, "service");
+    assert_eq!(binding.1.package_build_id, provider.package_build_id);
 }
 
 #[test]
@@ -328,6 +368,7 @@ fn pre_source_schema_binding_rejects_duplicate_owner_version_and_artifact() {
     let duplicate_owner = pre_source_schema_binding(
         "example.types",
         &[first.clone(), second],
+        &[],
         std::slice::from_ref(&artifact),
         std::slice::from_ref(&artifact),
     )
@@ -338,6 +379,7 @@ fn pre_source_schema_binding_rejects_duplicate_owner_version_and_artifact() {
     let duplicate_artifact = pre_source_schema_binding(
         "example.types",
         std::slice::from_ref(&first),
+        &[],
         &[artifact.clone(), artifact],
         &[],
     )
@@ -347,7 +389,7 @@ fn pre_source_schema_binding_rejects_duplicate_owner_version_and_artifact() {
 
     let std = canonical_artifact(SKIFF_STD_PUBLICATION_ID, "1.0.0");
     let duplicate_std =
-        pre_source_schema_binding(SKIFF_STD_PUBLICATION_ID, &[], &[], &[std.clone(), std])
+        pre_source_schema_binding(SKIFF_STD_PUBLICATION_ID, &[], &[], &[], &[std.clone(), std])
             .unwrap_err()
             .to_string();
     assert!(duplicate_std.contains("duplicate exact canonical artifacts"));
