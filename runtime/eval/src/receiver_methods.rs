@@ -560,7 +560,7 @@ impl BytesReceiverMethods {
     fn dispatch(
         op_method: BuiltinReceiverMethod,
         receiver: &RuntimeValue,
-        _args: &[RuntimeValue],
+        args: &[RuntimeValue],
         heap: &mut RequestHeap,
     ) -> Result<Option<RuntimeValue>> {
         if !matches!(
@@ -571,6 +571,11 @@ impl BytesReceiverMethods {
                 | BuiltinReceiverMethod::ToUtf8String
         ) {
             return Ok(None);
+        }
+        if matches!(op_method, BuiltinReceiverMethod::ToHex) && !args.is_empty() {
+            return Err(RuntimeError::Decode(
+                "bytes.toHex does not accept arguments".to_string(),
+            ));
         }
         let Some(bytes) = RuntimeValueView::new(receiver, heap).bytes_payload()? else {
             return Ok(None);
@@ -1177,6 +1182,33 @@ mod tests {
                 vec![RuntimeValue::Number(0.0)],
             )
             .expect_err("number.ceil must reject arguments");
+        assert!(matches!(wrong_arity, RuntimeError::Decode(_)));
+    }
+
+    #[test]
+    fn bytes_to_hex_dispatches_exact_receiver_and_rejects_malformed_calls() {
+        let mut heap = RequestHeap::default();
+        let op = receiver_op("bytes", "toHex");
+        let receiver = RuntimeValue::Heap(
+            heap.alloc_bytes(vec![0x00, 0x0f, 0xa5, 0xff])
+                .expect("bytes fixture should allocate"),
+        );
+
+        assert_eq!(
+            ReceiverMethodDispatch::new(&mut heap)
+                .dispatch_op(&op, receiver.clone(), vec![])
+                .expect("canonical bytes.toHex should dispatch"),
+            RuntimeValue::String("000fa5ff".to_string())
+        );
+
+        let wrong_receiver = ReceiverMethodDispatch::new(&mut heap)
+            .dispatch_op(&op, RuntimeValue::String("00".to_string()), vec![])
+            .expect_err("bytes.toHex must reject a non-bytes receiver");
+        assert!(matches!(wrong_receiver, RuntimeError::Decode(_)));
+
+        let wrong_arity = ReceiverMethodDispatch::new(&mut heap)
+            .dispatch_op(&op, receiver, vec![RuntimeValue::Number(0.0)])
+            .expect_err("bytes.toHex must reject arguments");
         assert!(matches!(wrong_arity, RuntimeError::Decode(_)));
     }
 }

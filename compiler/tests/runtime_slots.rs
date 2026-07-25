@@ -1337,6 +1337,68 @@ fn stream_item_bytes_to_string_contains_receiver_chain_lowers_to_receiver_builti
 }
 
 #[test]
+fn bytes_to_hex_lowers_to_exact_receiver_builtin_and_rejects_near_misses() {
+    let artifact = compile_package_file_ir(
+        r#"
+            function encode(value: bytes) -> string {
+                return value.toHex()
+            }
+        "#,
+        "internal/bytes_to_hex_receiver.skiff",
+        "internal.bytes_to_hex_receiver",
+    )
+    .expect("bytes.toHex receiver fixture should compile");
+    let artifact_value = artifact.value();
+    let encode = executable_entry(&artifact_value, "encode");
+    let call = receiver_builtin_call(encode, "bytes", "toHex")
+        .expect("bytes.toHex should lower to receiverBuiltin");
+    assert_eq!(
+        call["target"]["op"]["canonicalKey"],
+        "receiver:bytes.toHex@1"
+    );
+    assert_eq!(call["target"]["op"]["signatureVersion"], 1);
+
+    for (name, source, expected) in [
+        (
+            "wrong_receiver",
+            r#"
+                function run(value: string) -> string {
+                    return value.toHex()
+                }
+            "#,
+            "toHex",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run(value: bytes) -> string {
+                    return value.toHex(1)
+                }
+            "#,
+            "expected 0 arguments",
+        ),
+        (
+            "wrong_return",
+            r#"
+                function run(value: bytes) -> bytes {
+                    return value.toHex()
+                }
+            "#,
+            "return type mismatch",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/bytes_to_hex_{name}.skiff"),
+            format!("internal.bytes_to_hex_{name}"),
+        )
+        .expect_err("invalid bytes.toHex call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
 fn std_http_body_bytes_receiver_chain_lowers_to_receiver_builtin() {
     let artifact = compile_package_file_ir(
         r#"

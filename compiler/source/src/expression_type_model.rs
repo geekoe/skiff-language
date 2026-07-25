@@ -2874,6 +2874,9 @@ impl<'a> OwnerChecker<'a> {
         if receiver_root.as_deref() == Some("Map") && matches!(method_name, "has" | "set") {
             self.validate_map_has_or_set_args(&receiver_ty, method_name, args, arg_types);
         }
+        if receiver_root.as_deref() == Some("bytes") && method_name == "toHex" {
+            self.validate_resolved_call_params("bytes.toHex", Vec::new(), args, arg_types);
+        }
         if let Some(projected) =
             self.expression_projection_at_offset(key, offset)
                 .and_then(|receiver| {

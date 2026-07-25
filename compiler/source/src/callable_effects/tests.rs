@@ -2581,6 +2581,34 @@ fn exact_string_contains_target_is_read_only_detached_and_non_suspending() {
 }
 
 #[test]
+fn exact_bytes_to_hex_target_is_read_only_detached_and_non_suspending() {
+    let model = analyze_named(
+        r#"
+            function encode(value: bytes) -> string {
+              return value.toHex()
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "raw_parser",
+        "skiff.run/codex-relay",
+    );
+
+    assert_eq!(effects_in(&model, "raw_parser", "encode"), no_effects());
+    assert!(matches!(
+        provenance_in(&model, "raw_parser", "encode"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins == &vec![ValueProvenance::Fresh]
+    ));
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::ReceiverBuiltin { op }
+                if op.canonical_key == "receiver:bytes.toHex@1"
+        )
+    }));
+}
+
+#[test]
 fn exact_json_object_has_target_is_read_only_detached_and_non_suspending() {
     let model = analyze_named(
         r#"

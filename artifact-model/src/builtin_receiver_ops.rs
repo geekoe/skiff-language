@@ -391,6 +391,7 @@ pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantic
     detached_scalar_receiver(BuiltinReceiverRoot::Array, BuiltinReceiverMethod::Length),
     mutating_array_push(),
     detached_scalar_receiver(BuiltinReceiverRoot::Bytes, BuiltinReceiverMethod::Length),
+    detached_scalar_receiver(BuiltinReceiverRoot::Bytes, BuiltinReceiverMethod::ToHex),
     detached_scalar_receiver(BuiltinReceiverRoot::Number, BuiltinReceiverMethod::Floor),
     detached_scalar_receiver(BuiltinReceiverRoot::Number, BuiltinReceiverMethod::Ceil),
     detached_scalar_receiver(BuiltinReceiverRoot::Number, BuiltinReceiverMethod::Round),
@@ -1079,6 +1080,7 @@ mod tests {
             "receiver:Map.has@1",
             "receiver:Map.set@1",
             "receiver:bytes.length@1",
+            "receiver:bytes.toHex@1",
             "receiver:number.ceil@1",
             "receiver:number.floor@1",
             "receiver:number.round@1",
@@ -1156,6 +1158,52 @@ mod tests {
                 None,
                 "{} must remain fail closed",
                 missing.canonical_key
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_to_hex_callable_semantics_are_exact() {
+        let exact =
+            builtin_receiver_op_by_name("bytes", "toHex").expect("bytes.toHex op should exist");
+        let semantics = builtin_receiver_callable_semantics(exact)
+            .expect("bytes.toHex callable semantics should exist");
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+        for lookalike in [
+            BuiltinReceiverOp {
+                signature_version: 2,
+                canonical_key: "receiver:bytes.toHex@2",
+                ..exact
+            },
+            BuiltinReceiverOp {
+                receiver: BuiltinReceiverRoot::StringText,
+                canonical_key: "receiver:bytes.toHex@1",
+                ..exact
+            },
+            BuiltinReceiverOp {
+                method: BuiltinReceiverMethod::ToBase64,
+                canonical_key: "receiver:bytes.toHex@1",
+                ..exact
+            },
+        ] {
+            assert_eq!(
+                builtin_receiver_callable_semantics(lookalike),
+                None,
+                "{} must remain fail closed",
+                lookalike.canonical_key
             );
         }
     }
