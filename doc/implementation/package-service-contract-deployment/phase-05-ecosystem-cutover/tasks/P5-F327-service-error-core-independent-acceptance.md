@@ -1,6 +1,7 @@
 # P5-F327 Service error core independent acceptance
 
-状态：Ready（独立只读验收）。
+状态：Completed。结果见
+`P5-F327-service-error-core-independent-acceptance-result.md`。
 
 ## 验收输入
 
@@ -105,4 +106,3 @@ selector必须非零。记录任何未运行证据及原因。
 - 返回`PASS`或`FAIL`、blocking issues、non-blocking follow-up、独立证据、结构判断和残余风险；
 - PASS只冻结R0 API并解除R1/R2/R3，不代表A5；
 - result提交，不push、不承接实现。
-
