@@ -1,6 +1,7 @@
 # P5-F340 Service error request/host/session consumer
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F340-service-error-host-consumer-result.md`。
 
 ## 直接父节点
 
