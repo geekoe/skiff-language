@@ -311,6 +311,101 @@ fn json_decode_semantics_rejects_malformed_signatures_routes_and_lookalikes() {
 }
 
 #[test]
+fn json_merge_semantics_match_only_the_exact_non_generic_json_signature() {
+    let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|entry| entry.binding_key == "std.json.merge")
+        .cloned()
+        .expect("std.json.merge callable semantics should be registered");
+    let canonical = *STD_NATIVE_SIGNATURES
+        .iter()
+        .find(|signature| signature.binding_key == "std.json.merge")
+        .expect("std.json.merge native signature should exist");
+
+    validate_native_callable_semantics_registry(
+        std::slice::from_ref(&semantics),
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect("std.json.merge semantics should match its exact native registry route");
+    assert_eq!(
+        semantics.return_provenance,
+        skiff_artifact_model::ValueProvenance::Fresh
+    );
+    assert_eq!(
+        semantics.effects,
+        skiff_artifact_model::CallableMayEffects {
+            writes_caller_reachable: false,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        }
+    );
+
+    let cases = [
+        {
+            let mut signature = canonical;
+            signature.target = "platform.json.merge";
+            ("identity", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.type_param_count = 1;
+            ("generic arity", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.params = &[NativeSignatureTypeExpr::Builtin("Json")];
+            ("value arity", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.params = &[
+                NativeSignatureTypeExpr::Builtin("JsonObject"),
+                NativeSignatureTypeExpr::Builtin("Json"),
+            ];
+            ("parameter", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.return_type = NativeSignatureTypeExpr::Builtin("JsonObject");
+            ("return", signature)
+        },
+    ];
+
+    for (case, signature) in cases {
+        let error = validate_native_callable_semantics_registry(
+            std::slice::from_ref(&semantics),
+            &[signature],
+            NATIVE_BINDINGS,
+        )
+        .expect_err("malformed std.json.merge signature should fail closed");
+        assert!(
+            error.contains("std.json.merge")
+                && error.contains("does not match the exact shared native signature"),
+            "{case}: unexpected error: {error}"
+        );
+    }
+
+    let mut lookalike = semantics;
+    lookalike.binding_key = "platform.json.merge";
+    let error = validate_native_callable_semantics_registry(
+        &[lookalike],
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect_err("non-canonical std.json.merge lookalike should fail closed");
+    assert!(
+        error.contains("platform.json.merge")
+            && error.contains("not in the exact audited registry"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn date_parse_semantics_matches_exact_native_signature_and_runtime_handler() {
     let binding_key = "core.date.parse";
     let semantics = STD_NATIVE_CALLABLE_SEMANTICS
@@ -2019,6 +2114,42 @@ fn std_json_merge_handles_non_object_arguments() {
         .expect("std.json.merge should dispatch")
         .expect("std.json.merge should be registered");
     assert_eq!(non_object_base, json!({ "a": 1 }));
+}
+
+#[test]
+fn std_json_merge_detaches_nested_values_from_both_inputs() {
+    let registry = NativeRegistry;
+    let mut base = json!({
+        "baseOnly": { "items": [1] },
+        "overridden": { "source": "base" }
+    });
+    let mut overlay = json!({
+        "overridden": { "source": "overlay", "items": [2] },
+        "overlayOnly": { "items": [3] }
+    });
+    let mut merged = registry
+        .dispatch("std.json.merge", &[base.clone(), overlay.clone()])
+        .expect("std.json.merge should dispatch")
+        .expect("std.json.merge should be registered");
+
+    base["baseOnly"]["items"][0] = json!(10);
+    overlay["overridden"]["items"][0] = json!(20);
+    overlay["overlayOnly"]["items"][0] = json!(30);
+    assert_eq!(
+        merged,
+        json!({
+            "baseOnly": { "items": [1] },
+            "overridden": { "source": "overlay", "items": [2] },
+            "overlayOnly": { "items": [3] }
+        })
+    );
+
+    merged["baseOnly"]["items"][0] = json!(100);
+    merged["overridden"]["items"][0] = json!(200);
+    merged["overlayOnly"]["items"][0] = json!(300);
+    assert_eq!(base["baseOnly"]["items"], json!([10]));
+    assert_eq!(overlay["overridden"]["items"], json!([20]));
+    assert_eq!(overlay["overlayOnly"]["items"], json!([30]));
 }
 
 #[test]

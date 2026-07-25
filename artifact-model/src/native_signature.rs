@@ -101,6 +101,7 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_scalar_native("core.number.assertSafeInteger"),
     detached_scalar_native("std.json.decode"),
     detached_scalar_native("std.json.encode"),
+    detached_scalar_native("std.json.merge"),
     detached_scalar_native("std.string.join"),
     detached_scalar_native("std.string.split"),
     detached_scalar_native("std.string.isAsciiDigits"),
@@ -940,6 +941,7 @@ mod tests {
             "std.http.stream.start",
             "std.json.encode",
             "std.json.decode",
+            "std.json.merge",
             "std.string.join",
             "std.string.split",
             "std.string.encodePath",
@@ -1005,8 +1007,37 @@ mod tests {
             "std.http.stream.chunked",
             "std.http.stream.ending",
             "custom.native",
+            "std.json.merged",
         ] {
             assert_eq!(native_callable_semantics(missing), None, "{missing}");
+        }
+    }
+
+    #[test]
+    fn json_merge_semantics_are_exact_fresh_and_detached() {
+        let semantics = native_callable_semantics("std.json.merge")
+            .expect("audited std.json.merge semantics should be registered");
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+        for lookalike in [
+            "json.merge",
+            "std.json.merged",
+            "std.json.merge.custom",
+            "platform.json.merge",
+        ] {
+            assert_eq!(native_callable_semantics(lookalike), None, "{lookalike}");
         }
     }
 

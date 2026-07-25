@@ -1649,6 +1649,46 @@ fn json_decode_materialization_uses_exact_detached_semantics() {
 }
 
 #[test]
+fn json_merge_materialization_uses_exact_detached_semantics() {
+    let model = analyze_named(
+        r#"
+            function applyProviderOptions(base: Json, overlay: Json) -> Json {
+              return std.json.merge(base, overlay)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "internal.aihub_service",
+        "agine.ai/aihub",
+    );
+
+    assert_eq!(
+        effects_in(&model, "internal.aihub_service", "applyProviderOptions"),
+        no_effects()
+    );
+    assert!(matches!(
+        provenance_in(
+            &model,
+            "internal.aihub_service",
+            "applyProviderOptions"
+        ),
+        CallableProvenanceSummary::Analyzed {
+            return_origins,
+            throw_origins,
+            escape_lanes,
+        } if return_origins == &vec![ValueProvenance::Fresh]
+            && throw_origins.is_empty()
+            && escape_lanes.is_empty()
+    ));
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::NativeFunction { binding_key }
+                if binding_key == "std.json.merge"
+        )
+    }));
+}
+
+#[test]
 fn optional_date_parse_wrapper_uses_exact_native_semantics() {
     let model = analyze_named(
         r#"
