@@ -192,6 +192,16 @@ test "sequence and stream" effects {
 规则：
 
 - compiler 必须解析精确 effect target，并静态检查 expect/respond/typed error/stream event；
+- compiler 可以把 `effects` block 降低为 test-only hidden setup callable，但 setup 不是独立
+  request，也不创建另一份 heap、activation 或 execution nonce；
+- runner 对一个 case 只创建一次执行上下文，并在其中依次执行 setup 和 test body；setup
+  产生的 response、error 和 stream event 必须立即按 linked target type plan
+  materialize 到该 case 的 effect registry，不能把 heap value 作为跨执行共享对象保存；
+- setup 成功后才执行 test body；setup 失败时 body 不执行；
+- case finalization 是 runtime-owned teardown phase。无论 body 成功、assert 失败、throw、
+  timeout 或 cancel，都必须检查未消费 double、销毁 registry 并释放 case 资源；
+- 当前没有用户可写的 teardown 语法。未来若增加 teardown，它是同一 case execution 中位于
+  body 之后、runtime finalization 之前的独立 phase，不改变现有 `effects` surface；
 - effect declaration 只属于当前 case，case 完成后 registry 销毁；
 - expected request subset 在真实 typed value materialization 后匹配；
 - sequence 不能为空，未消费或超量调用必须产生明确测试失败；
