@@ -216,6 +216,36 @@ async fn typed_execution_service_stream_preserves_two_items_and_generic_substitu
 }
 
 #[tokio::test]
+async fn typed_execution_package_direct_stream_installs_exact_producer_context_full_chain() {
+    let fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::boolean_stream()).await;
+    let runtime = TypedExecutionRuntime::new(
+        &fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let interpreter = runtime.interpreter();
+    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let mut heap = context.request_heap();
+
+    let result = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.consumer_executable_addr(1),
+            Vec::new(),
+        )
+        .await
+        .expect("exact package-direct Stream<T> producer should consume true then false");
+
+    assert_eq!(result, RuntimeValue::Null);
+    wait_for_stream_runtime_empty(&interpreter.stream_runtime).await;
+}
+
+#[tokio::test]
 async fn typed_execution_service_stream_propagates_provider_error_full_chain() {
     let fixture =
         TypedExecutionFixture::admit_contract(TypedExecutionContract::boolean_stream_error()).await;

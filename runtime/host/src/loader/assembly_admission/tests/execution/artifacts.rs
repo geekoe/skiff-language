@@ -810,14 +810,22 @@ fn install_consumer_support(
             package_ref: package_ref.clone(),
             package_callable_id: package_callable_id.clone(),
         });
-    file.executables.push(checkpoint_call_executable(
-        format!("{symbol}_package_direct"),
-        CallTargetIr::PackageCallable {
-            package_ref,
-            package_callable_id,
-        },
-        Vec::new(),
-    ));
+    let package_target = CallTargetIr::PackageCallable {
+        package_ref,
+        package_callable_id,
+    };
+    if matches!(behavior, ConsumerBehavior::ConsumeBooleanSequence) {
+        file.executables.push(package_stream_consumer_executable(
+            format!("{symbol}_package_direct"),
+            package_target,
+        ));
+    } else {
+        file.executables.push(checkpoint_call_executable(
+            format!("{symbol}_package_direct"),
+            package_target,
+            Vec::new(),
+        ));
+    }
     install_callback_interface_fixture(
         file,
         module_path,
@@ -1338,6 +1346,34 @@ fn checkpoint_call_executable(
         },
         source_span: None,
     }
+}
+
+fn package_stream_consumer_executable(symbol: String, target: CallTargetIr) -> ExecutableIr {
+    let mut executable = ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol,
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("void"),
+        self_type: None,
+        slots: SlotLayout::default(),
+        may_suspend: false,
+        body: ExecutableBody {
+            blocks: Vec::new(),
+            statements: Vec::new(),
+            expressions: vec![ExprIr::Call {
+                call: CallIr {
+                    target,
+                    args: Vec::new(),
+                    type_args: BTreeMap::from([("T".to_string(), TypeRefIr::builtin("bool"))]),
+                    metadata: BTreeMap::new(),
+                },
+            }],
+        },
+        source_span: None,
+    };
+    configure_boolean_stream_consumer_entry(&mut executable, 0);
+    executable
 }
 
 fn callback_checkpoint_executable(

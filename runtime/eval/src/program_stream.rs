@@ -587,6 +587,9 @@ impl Interpreter {
         let type_projection = EvalTypeProjection::from_execution_projection(program.clone());
         let (addr, receiver_const, producer_self, call) = match &call.target {
             LinkedCallTarget::Executable { addr } => (addr.clone(), None, None, call.clone()),
+            LinkedCallTarget::PackageDirect { call: target } => {
+                (target.executable_addr().clone(), None, None, call.clone())
+            }
             LinkedCallTarget::LocalExecutable { .. }
             | LinkedCallTarget::ExternalServiceSymbol { .. }
             | LinkedCallTarget::PackageSymbol { .. } => {
