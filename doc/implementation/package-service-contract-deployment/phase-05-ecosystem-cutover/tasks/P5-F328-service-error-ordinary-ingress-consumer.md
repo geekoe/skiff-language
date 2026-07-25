@@ -1,6 +1,7 @@
 # P5-F328 Service error ordinary and ingress consumer
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F328-service-error-ordinary-ingress-consumer-result.md`。
 
 ## 直接父节点
 
@@ -89,4 +90,3 @@ stable/live。
 - 风险：高；新的一次性Agent，5分钟内先替换ordinary passthrough并接central origin分流；
 - 提交并返回provider/export、dispatcher/import、ingress、三跳/heap矩阵；
 - 不push、不承接R4或验收。
-
