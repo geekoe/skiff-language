@@ -1,6 +1,7 @@
 # P5-F342 Restricted telemetry storage and query consumer
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F342-restricted-telemetry-storage-query-result.md`。
 
 ## 直接父节点
 

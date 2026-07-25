@@ -1,6 +1,7 @@
 # P5-F341 Service error Router consumer and external mapper
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F341-service-error-router-consumer-result.md`。
 
 ## 直接父节点
 
