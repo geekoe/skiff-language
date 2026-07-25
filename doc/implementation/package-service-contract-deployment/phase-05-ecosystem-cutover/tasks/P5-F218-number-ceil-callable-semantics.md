@@ -22,10 +22,12 @@ receiver semantics, but ceil is absent.
 
 Add exact semantics for canonical `number.ceil()` only:
 
-- validate exact receiver identity, zero arity, and integer return type;
+- validate exact receiver identity, zero arity, and the canonical `number`
+  return type;
 - return a detached scalar with no receiver alias;
 - no write, escape, unknown-target, same-heap, external effect, or suspension;
-- preserve Runtime numeric range/safe-integer behavior and typed failures;
+- preserve Runtime numeric behavior and typed failures; the returned number has
+  an integral value, but this task does not change its static type to integer;
 - malformed signatures and non-canonical lookalikes remain fail-closed;
 - do not generalize to other number operations.
 
