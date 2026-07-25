@@ -27,7 +27,7 @@ use crate::{
 const EXPECTED_PRELUDE_IDENTITY: &str =
     "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699";
 const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
-    "skiff-package-build-v4:sha256:fb02ab8f45ecd20b6e5a4b870d6c1280a51e0690481c6916f93423e8ea666536";
+    "skiff-package-build-v4:sha256:62177ac4e6d764166e2387c52847f97565ad38836d0631845af9a73e9f2512d1";
 
 #[test]
 #[ignore = "merge-only F18A/F18B compiler repair probe"]

@@ -198,13 +198,7 @@ impl Evaluator<'_, '_> {
         }
         if base.contains_direct_caller_reference() {
             self.state.effects.writes_caller_reachable = true;
-            self.state.effects.requires_same_heap_identity = true;
             self.state.write_parameters.extend(
-                base.direct_caller_references
-                    .iter()
-                    .map(|reference| reference.parameter),
-            );
-            self.state.same_heap_identity_parameters.extend(
                 base.direct_caller_references
                     .iter()
                     .map(|reference| reference.parameter),

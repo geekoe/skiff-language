@@ -78,6 +78,47 @@ fn synchronized_unsafe_effect_mutations_cannot_forge_available() {
         assert_eligibility_reason(&fixture, expected.clone());
     }
 
+    let mut identity_after_database_materialization = ProjectionFixture::new();
+    let mut effects = no_effects();
+    effects.escapes_caller_value = true;
+    effects.requires_same_heap_identity = true;
+    identity_after_database_materialization.synchronize_effects(effects);
+    identity_after_database_materialization.synchronize_provenance(
+        CallableProvenanceSummary::Analyzed {
+            return_origins: vec![ValueProvenance::Fresh],
+            direct_return_origins: vec![ValueProvenance::Fresh],
+            throw_origins: Vec::new(),
+            escape_lanes: vec![ValueEscapeLane::Database],
+        },
+    );
+    for descriptor in identity_after_database_materialization
+        .contract
+        .operations
+        .values_mut()
+    {
+        descriptor.contract.effect_guarantee.no_same_heap_identity = false;
+    }
+    assign_service_contract_identities(&mut identity_after_database_materialization.contract)
+        .unwrap();
+    identity_after_database_materialization.input.contract =
+        contract_ref(&identity_after_database_materialization.contract);
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = identity_after_database_materialization
+        .implementation
+        .boundary_projections
+        .get_mut(&identity_after_database_materialization.callable_id)
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    operation_contract.effect_guarantee.no_same_heap_identity = false;
+    identity_after_database_materialization.refresh_implementation_ref();
+    assert_eligibility_reason(
+        &identity_after_database_materialization,
+        BoundaryUnavailableReason::RequiresSameHeapIdentity,
+    );
+
     let mut fixture = ProjectionFixture::new();
     let provenance = CallableProvenanceSummary::Analyzed {
         return_origins: vec![ValueProvenance::Fresh],
