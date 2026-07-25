@@ -55,6 +55,7 @@ TypeRefIr::AppliedNominal {
 固定规则：
 
 - `arguments`在 wire 上 required、non-null、non-empty，按 declaration `type_params`顺序；
+- `arguments`不得使用 serde default、alias或`skip_serializing_if`；empty不能被省略成另一种wire；
 - 零参数 nominal只能使用既有 plain variant，同一实例不存在两种合法表示；
 - base只能是上述 closed enum，不能是 builtin/container/structural/interface/alias/actor/DB object、
   `TypeParam`或另一个 applied wrapper；
@@ -125,8 +126,10 @@ test-runner、router、std、生态仓库或权威文档。
   - arguments中的`TypeParam`只允许引用当前合法scope；
 - 外部 owner在 shared层无法取得descriptor时保留exact locator，交由 dependency/link consumer验证；
   不得当作零参数或按路径后缀放行；
-- applied `PackageSchema` DTO可以被结构化表达，但当前 PackageArtifact/Local ABI/public schema admission
-  必须 fail closed；不能进入 PackageSchema closure或public typed error。
+- applied `PackageSchema` DTO可以被结构化表达；本任务只在授权的 artifact-model /
+  artifact-identity admission直接遇到它时fail closed。compiler projection中的PackageSchema closure、
+  public export与`PublicTypedError` fail-close明确延后给F293 `S2 package/public consumer`，本任务不得
+  修改`artifact-identity/src/contract.rs`或compiler owner。
 
 ### 3. Strict generation 与 identity
 
@@ -148,7 +151,8 @@ test-runner、router、std、生态仓库或权威文档。
 - PackageSchema Type/Index identity；
 - ServiceContract/Definition；
 - ServiceProtocol v4；
-- ContractOperation、Operation ABI、Publication ABI。
+- ContractOperation、Operation ABI、Publication ABI；
+- package/service human version label继续是非identity，任何label-only变化不得改变上述identity。
 
 必须以mutation test证明：
 
@@ -157,7 +161,8 @@ test-runner、router、std、生态仓库或权威文档。
 - tamper base owner或argument后旧identity验证失败；
 - 旧schema/prefix/marker拒绝；
 - non-generic artifact也只由新writer产生新generation；
--保持项的算法/常量未被顺手bump。
+- 保持项的算法/常量未被顺手bump；
+- package/service human version label-only mutation不改变identity。
 
 ### 4. 非目标
 
@@ -201,4 +206,3 @@ git diff --check
   `TASK_NOT_EXECUTABLE`、精确缺口与最小前置。
 - 完成后提交并返回commit、wire/identity矩阵、反向搜索、自验收和所有下游遮挡；
   不自行承接compiler/runtime。
-
