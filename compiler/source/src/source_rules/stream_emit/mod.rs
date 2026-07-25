@@ -231,6 +231,15 @@ impl StreamEmitTypeChecker<'_> {
 
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
+            Stmt::CompilerTestEffectRegister { .. } => {
+                self.next_key();
+                self.next_key();
+                for expression in crate::shared::ast_utils::compiler_test_effect_expressions(stmt)
+                    .expect("matched compiler test effect")
+                {
+                    self.check_expr(expression);
+                }
+            }
             Stmt::Assert { condition, .. } => {
                 self.check_expr(condition);
             }

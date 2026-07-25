@@ -25,7 +25,10 @@ use skiff_compiler_source::{
     SourceCompileError,
 };
 use skiff_deployment::storage::{CanonicalArtifactStore, EcosystemStorageError};
-use skiff_syntax::ast::{Block, FunctionDecl, SourceFile, TypeRef};
+use skiff_syntax::ast::{
+    Block, BlockSourceSpans, DependencySourceAddress, ExecutableSourceSpans, Expr, ExprSourceSpans,
+    FunctionDecl, SourceFile, Stmt, StmtSourceSpans, TestEffectOutcomeSourceSpans, TypeRef,
+};
 use thiserror::Error;
 
 use crate::{
@@ -324,44 +327,205 @@ fn package_test_ast_for_cases<'a>(
                 .tests
                 .get(test_index)
                 .expect("discovered package test case belongs to this AST");
-            (
-                ast.source_spans
-                    .tests
-                    .get(test_index)
-                    .cloned()
-                    .map(|mut spans| {
-                        spans.effects.clear();
-                        spans
-                    }),
-                FunctionDecl {
-                    exported: false,
-                    name: function_name.to_string(),
-                    type_params: Vec::new(),
-                    params: Vec::new(),
-                    return_type: TypeRef {
-                        name: "void".to_string(),
-                    },
-                    body: Block {
-                        statements: test.body.statements.clone(),
-                    },
-                    is_native: false,
-                    is_provider: false,
-                    is_static: false,
-                    implicit_self: None,
-                    span: test.span,
+            let source_spans = ast.source_spans.tests.get(test_index).cloned();
+            let setup_name = format!("{function_name}Setup");
+            let mut setup_statements = Vec::new();
+            let mut setup_statement_spans = Vec::new();
+            for (effect_index, effect) in test.effects.iter().enumerate() {
+                let effect_spans = source_spans
+                    .as_ref()
+                    .and_then(|spans| spans.effects.get(effect_index));
+                for (outcome_index, outcome) in effect.outcomes.iter().enumerate() {
+                    let target_probe = Expr::Call {
+                        callee: Box::new(match effect.target.split_once('/') {
+                            Some((dependency_ref, public_path)) => {
+                                Expr::DependencySourceAddress(DependencySourceAddress {
+                                    dependency_ref: dependency_ref.to_string(),
+                                    public_path: public_path.to_string(),
+                                })
+                            }
+                            None => Expr::Identifier(effect.target.clone()),
+                        }),
+                        args: Vec::new(),
+                    };
+                    setup_statements.push(Stmt::CompilerTestEffectRegister {
+                        target: effect.target.clone(),
+                        target_probe,
+                        expect: effect.expect.clone(),
+                        outcome: outcome.clone(),
+                    });
+                    if let Some(effect_spans) = effect_spans {
+                        let mut expressions = Vec::new();
+                        expressions.push(ExprSourceSpans {
+                            span: effect.span,
+                            children: vec![ExprSourceSpans {
+                                span: effect.span,
+                                children: Vec::new(),
+                                blocks: Vec::new(),
+                                record_fields: Vec::new(),
+                            }],
+                            blocks: Vec::new(),
+                            record_fields: Vec::new(),
+                        });
+                        if let Some(expect) = &effect_spans.expect {
+                            expressions.push(expect.clone());
+                        }
+                        match effect_spans.outcomes.get(outcome_index) {
+                            Some(TestEffectOutcomeSourceSpans::Respond(span))
+                            | Some(TestEffectOutcomeSourceSpans::Throw(span)) => {
+                                expressions.push(span.clone())
+                            }
+                            Some(TestEffectOutcomeSourceSpans::Stream(spans)) => {
+                                expressions.extend(spans.iter().cloned())
+                            }
+                            None => {}
+                        }
+                        setup_statement_spans.push(StmtSourceSpans {
+                            span: effect.span,
+                            expressions,
+                            blocks: Vec::new(),
+                        });
+                    }
+                }
+            }
+            let setup = FunctionDecl {
+                exported: false,
+                name: setup_name.clone(),
+                type_params: Vec::new(),
+                params: Vec::new(),
+                return_type: TypeRef {
+                    name: "void".to_string(),
                 },
-            )
+                body: Block {
+                    statements: setup_statements,
+                },
+                is_native: false,
+                is_provider: false,
+                is_static: false,
+                implicit_self: None,
+                span: test.span,
+            };
+            let setup_spans = source_spans.as_ref().map(|_| ExecutableSourceSpans {
+                effects: Vec::new(),
+                body: BlockSourceSpans {
+                    span: test.span,
+                    statements: setup_statement_spans,
+                },
+            });
+            let setup_call = Expr::Call {
+                callee: Box::new(Expr::Identifier(setup_name)),
+                args: Vec::new(),
+            };
+            let mut body_statements = Vec::with_capacity(test.body.statements.len() + 1);
+            body_statements.push(Stmt::Expr(setup_call));
+            body_statements.extend(test.body.statements.clone());
+            let body = FunctionDecl {
+                exported: false,
+                name: function_name.to_string(),
+                type_params: Vec::new(),
+                params: Vec::new(),
+                return_type: TypeRef {
+                    name: "void".to_string(),
+                },
+                body: Block {
+                    statements: body_statements,
+                },
+                is_native: false,
+                is_provider: false,
+                is_static: false,
+                implicit_self: None,
+                span: test.span,
+            };
+            let body_spans = source_spans.map(|spans| {
+                let call_span = ExprSourceSpans {
+                    span: test.span,
+                    children: vec![ExprSourceSpans {
+                        span: test.span,
+                        children: Vec::new(),
+                        blocks: Vec::new(),
+                        record_fields: Vec::new(),
+                    }],
+                    blocks: Vec::new(),
+                    record_fields: Vec::new(),
+                };
+                let mut statements = Vec::with_capacity(spans.body.statements.len() + 1);
+                statements.push(StmtSourceSpans {
+                    span: test.span,
+                    expressions: vec![call_span],
+                    blocks: Vec::new(),
+                });
+                statements.extend(spans.body.statements);
+                ExecutableSourceSpans {
+                    effects: Vec::new(),
+                    body: BlockSourceSpans {
+                        span: spans.body.span,
+                        statements,
+                    },
+                }
+            });
+            ((setup_spans, setup), (body_spans, body))
         })
         .collect::<Vec<_>>();
     let mut overlay = ast.clone();
     overlay.tests.clear();
     overlay.test_default_run = None;
     overlay.source_spans.tests.clear();
-    for (spans, function) in functions {
-        if let Some(spans) = spans {
+    for ((setup_spans, setup), (body_spans, body)) in functions {
+        if let Some(spans) = setup_spans {
             overlay.source_spans.functions.push(spans);
         }
-        overlay.functions.push(function);
+        overlay.functions.push(setup);
+        if let Some(spans) = body_spans {
+            overlay.source_spans.functions.push(spans);
+        }
+        overlay.functions.push(body);
     }
     overlay
+}
+
+#[cfg(test)]
+mod tests {
+    use skiff_syntax::{ast::TestEffectOutcome, parser::parse_source};
+
+    use super::*;
+
+    #[test]
+    fn inline_effects_become_hidden_setup_called_before_original_body() {
+        let ast = parse_source(
+            r#"
+test "uses dependency" effects {
+  dep/run {
+    expect: { id: "one" },
+    respond: { ok: true },
+  }
+} {
+  assert true;
+}
+"#,
+        )
+        .expect("test source parses");
+        let overlay = package_test_ast_for_cases(&ast, [(0, "skiffTestCase0")]);
+        assert!(overlay.tests.is_empty());
+        assert_eq!(overlay.functions.len(), 2);
+        assert_eq!(overlay.functions[0].name, "skiffTestCase0Setup");
+        let [Stmt::CompilerTestEffectRegister {
+            target,
+            outcome: TestEffectOutcome::Respond { .. },
+            ..
+        }] = overlay.functions[0].body.statements.as_slice()
+        else {
+            panic!("setup must contain one compiler-owned registration");
+        };
+        assert_eq!(target, "dep/run");
+        let Stmt::Expr(Expr::Call { callee, args }) = &overlay.functions[1].body.statements[0]
+        else {
+            panic!("test body must call setup first");
+        };
+        assert!(args.is_empty());
+        assert_eq!(
+            callee.as_ref(),
+            &Expr::Identifier("skiffTestCase0Setup".into())
+        );
+        assert_eq!(overlay.source_spans.functions.len(), 2);
+    }
 }

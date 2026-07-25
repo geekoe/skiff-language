@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
     ActorMethodIdentity, BuiltinReceiverOp, ContractOperationId, ContractRequirement,
-    PackageCallableId, PackageLocalAbiIdentity,
+    PackageCallableId, PackageCallableSignature, PackageLocalAbiIdentity,
 };
 
 use crate::{ExpressionKey, SourceSymbolKey};
@@ -13,7 +13,7 @@ mod dependency_diagnostics;
 
 /// Shared typed call-target carrier consumed by source effect analysis and
 /// lowering. It records semantic destination kind before either consumer runs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -46,6 +46,8 @@ pub enum ResolvedCallTarget {
         package_requirement_alias: String,
         package_callable_id: PackageCallableId,
         expected_local_abi: PackageLocalAbiIdentity,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exact_signature: Option<PackageCallableSignature>,
     },
     ContractOperation {
         contract_requirement: ContractRequirement,
@@ -244,6 +246,7 @@ mod tests {
             package_requirement_alias: "util".to_string(),
             package_callable_id: PackageCallableId::new("callable:format"),
             expected_local_abi: PackageLocalAbiIdentity::new("abi:util"),
+            exact_signature: None,
         };
         assert_target_wire(
             package,
@@ -381,6 +384,7 @@ mod tests {
             package_requirement_alias: "util".to_string(),
             package_callable_id: PackageCallableId::new("callable:format"),
             expected_local_abi: PackageLocalAbiIdentity::new("abi:util"),
+            exact_signature: None,
         };
         assert_eq!(dependency.source_callable_key(), None);
 

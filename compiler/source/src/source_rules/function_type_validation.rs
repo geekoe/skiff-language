@@ -77,6 +77,13 @@ fn collect_block_function_type_violations(path: &str, block: &Block, violations:
 
 fn collect_stmt_function_type_violations(path: &str, stmt: &Stmt, violations: &mut Vec<String>) {
     match stmt {
+        Stmt::CompilerTestEffectRegister { .. } => {
+            for expression in crate::shared::ast_utils::compiler_test_effect_expressions(stmt)
+                .expect("matched compiler test effect")
+            {
+                collect_expr_function_type_violations(path, expression, violations);
+            }
+        }
         Stmt::Let { ty, value, .. } => {
             if let Some(ty) = ty {
                 collect_function_type_name_violations(path, &ty.name, violations);

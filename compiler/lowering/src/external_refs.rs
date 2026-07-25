@@ -4,7 +4,7 @@ use crate::file_ir::{
     validate_file_ir_service_calls, AssignTargetIr, BoxSourceIr, CallIr, CallTargetIr,
     ExecutableBody, ExprIr, ExternalRefTable, FileIrServiceCallValidationError, FileIrUnit,
     InterfaceDeclIr, MetadataValue, PackageCallableRef, PatternIr, ServiceCallRefIndex, StmtIr,
-    TypeDescriptorIr, TypeRefIr,
+    TestEffectOutcomeIr, TestEffectRegisterTargetIr, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_artifact_model::{ServiceCallRef, RECEIVER_BUILTIN_CAPABILITY_VERSION};
 
@@ -158,6 +158,37 @@ fn collect_stmt_external_refs(stmt: &StmtIr, refs: &mut ExternalRefTable) {
             }
         }
         StmtIr::Assign { target, .. } => collect_assign_target_external_refs(target, refs),
+        StmtIr::TestEffectRegister {
+            target,
+            expect,
+            outcome,
+        } => {
+            let TestEffectRegisterTargetIr::PackageCallable {
+                package_ref,
+                callable_id,
+            } = target;
+            push_unique(
+                &mut refs.package_callables,
+                PackageCallableRef {
+                    package_ref: package_ref.clone(),
+                    package_callable_id: callable_id.clone(),
+                },
+            );
+            if let Some(expect) = expect {
+                collect_type_ref_external_refs(&expect.request_type, refs);
+            }
+            match outcome {
+                TestEffectOutcomeIr::Respond { value_type, .. } => {
+                    collect_type_ref_external_refs(value_type, refs)
+                }
+                TestEffectOutcomeIr::Throw { payload_type, .. } => {
+                    collect_type_ref_external_refs(payload_type, refs)
+                }
+                TestEffectOutcomeIr::Stream { item_type, .. } => {
+                    collect_type_ref_external_refs(item_type, refs)
+                }
+            }
+        }
         StmtIr::Let { .. }
         | StmtIr::If { .. }
         | StmtIr::ForIn { .. }

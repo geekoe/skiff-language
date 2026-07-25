@@ -166,6 +166,17 @@ pub enum StmtIr {
         operation: String,
         value: ExprRefIr,
     },
+    /// Installs one compiler-checked test effect outcome in the current test
+    /// execution context. This statement is emitted only in compiler-owned
+    /// hidden test setup executables. The package callable id is an exact
+    /// immutable-artifact link key; assembly linking replaces it with the
+    /// executable target used by runtime dispatch.
+    TestEffectRegister {
+        target: TestEffectRegisterTargetIr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect: Option<TestEffectExpectedIr>,
+        outcome: TestEffectOutcomeIr,
+    },
     Expr {
         value: ExprRefIr,
     },
@@ -179,6 +190,49 @@ pub enum StmtIr {
     },
     Rethrow {
         exception_slot: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields,
+    tag = "kind"
+)]
+pub enum TestEffectRegisterTargetIr {
+    PackageCallable {
+        package_ref: PackageRefIr,
+        callable_id: PackageCallableId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TestEffectExpectedIr {
+    pub value: ExprRefIr,
+    pub request_type: TypeRefIr,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields,
+    tag = "kind"
+)]
+pub enum TestEffectOutcomeIr {
+    Respond {
+        value: ExprRefIr,
+        value_type: TypeRefIr,
+    },
+    Throw {
+        value: ExprRefIr,
+        payload_type: TypeRefIr,
+    },
+    Stream {
+        values: Vec<ExprRefIr>,
+        item_type: TypeRefIr,
     },
 }
 

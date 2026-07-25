@@ -18,6 +18,17 @@ impl Evaluator<'_, '_> {
 
     pub(super) fn eval_stmt(&mut self, statement: &Stmt, env: &mut Environment) {
         match statement {
+            Stmt::CompilerTestEffectRegister { .. } => {
+                // The dependency-call probe owns two expression keys but is
+                // link metadata, not an executed call.
+                self.next_index += 2;
+                for expression in
+                    crate::shared::ast_utils::compiler_test_effect_expressions(statement)
+                        .expect("matched compiler test effect")
+                {
+                    self.eval_expr(expression, env);
+                }
+            }
             Stmt::Assert { condition, .. } => {
                 self.eval_expr(condition, env);
             }

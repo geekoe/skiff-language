@@ -142,6 +142,13 @@ impl TestEffectDoubleRegistry {
         remaining
     }
 
+    pub fn clear(&self) {
+        self.entries
+            .lock()
+            .expect("test effect double registry lock poisoned")
+            .clear();
+    }
+
     pub fn next(&self, target: &str) -> Option<TestEffectDouble> {
         let mut registry = self
             .entries
@@ -238,6 +245,12 @@ impl TestEffectDoubleContext {
                     .join(", ")
             ))
         })
+    }
+
+    pub fn finalize(&self) -> Result<()> {
+        let result = self.unused_effects_error().map_or(Ok(()), Err);
+        self.registry.clear();
+        result
     }
 
     pub fn dispatch_test_effect_double(
@@ -360,30 +373,6 @@ impl TestEffectDoubleContext {
                 ))));
             }
         }
-        if let Some(payload) = typed_throw_payload(&double.response) {
-            return Some(Err(RuntimeError::Opaque(Box::new(TestTypedEffectError {
-                target: target.to_string(),
-                payload: payload.clone(),
-            }))));
-        }
-        if let Some(events) = stream_outcome_events(&double.response) {
-            let events = match events
-                .iter()
-                .cloned()
-                .map(materialize_internal_json)
-                .collect::<Result<Vec<_>>>()
-            {
-                Ok(events) => events,
-                Err(error) => return Some(Err(error)),
-            };
-            let response = self.stream_runtime.buffered_stream(events);
-            return Some(runtime_from_wire_internal_handle_required_plan(
-                &response,
-                return_plan,
-                &format!("{target} stream response"),
-                heap,
-            ));
-        }
         let response = if is_stream_source_double_target(target) {
             let events = match &double.response {
                 Value::Array(items) => items.clone(),
@@ -481,50 +470,6 @@ fn json_contains(actual: &Value, expected: &Value) -> bool {
 
 fn is_stream_source_double_target(target: &str) -> bool {
     target == TARGET_STD_HTTP_SSE
-}
-
-fn typed_throw_payload(value: &Value) -> Option<&Value> {
-    let object = value.as_object()?;
-    (object.get("__skiffTestEffectOutcome")?.as_str()? == "throw")
-        .then(|| object.get("payload"))
-        .flatten()
-}
-
-fn stream_outcome_events(value: &Value) -> Option<&[Value]> {
-    let object = value.as_object()?;
-    if object.get("__skiffTestEffectOutcome")?.as_str()? != "stream" {
-        return None;
-    }
-    object.get("events")?.as_array().map(Vec::as_slice)
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("test effect `{target}` threw its declared typed payload")]
-struct TestTypedEffectError {
-    target: String,
-    payload: Value,
-}
-
-impl skiff_runtime_model::error::WirePayload for TestTypedEffectError {
-    fn payload(&self) -> skiff_runtime_model::error::RuntimeErrorPayload {
-        skiff_runtime_model::error::RuntimeErrorPayload {
-            code: "TestTypedEffect".to_string(),
-            message: self.to_string(),
-            status: None,
-            details: Some(self.payload.clone()),
-        }
-    }
-
-    fn catch_projection(&self) -> Option<(skiff_runtime_model::error::TypeIdentity, Value)> {
-        Some((
-            skiff_runtime_model::error::TypeIdentity::builtin("TestTypedEffect"),
-            self.payload.clone(),
-        ))
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
 fn is_std_log_stable_target(target: &str) -> bool {

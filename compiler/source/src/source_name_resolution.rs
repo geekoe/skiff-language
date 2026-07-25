@@ -342,6 +342,13 @@ fn top_level_namespace_facts(ast: &SourceFile) -> NamespaceNameFacts {
 fn collect_local_bindings_in_block(block: &Block, names: &mut BTreeSet<String>) {
     for stmt in &block.statements {
         match stmt {
+            Stmt::CompilerTestEffectRegister { .. } => {
+                for expression in crate::shared::ast_utils::compiler_test_effect_expressions(stmt)
+                    .expect("matched compiler test effect")
+                {
+                    collect_local_bindings_in_expr(expression, names);
+                }
+            }
             Stmt::Let { name, value, .. } => {
                 names.insert(name.clone());
                 collect_local_bindings_in_expr(value, names);
@@ -449,6 +456,13 @@ fn collect_resolved_paths_in_block(
 ) {
     for stmt in &block.statements {
         match stmt {
+            Stmt::CompilerTestEffectRegister { .. } => {
+                for expression in crate::shared::ast_utils::compiler_test_effect_expressions(stmt)
+                    .expect("matched compiler test effect")
+                {
+                    collect_resolved_paths_in_expr(expression, env, resolved_paths);
+                }
+            }
             Stmt::Let { value, .. } => collect_resolved_paths_in_expr(value, env, resolved_paths),
             Stmt::Assign { target, value } => {
                 collect_resolved_paths_in_expr(target, env, resolved_paths);

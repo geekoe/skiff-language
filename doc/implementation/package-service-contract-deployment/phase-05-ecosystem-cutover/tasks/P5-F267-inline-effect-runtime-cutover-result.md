@@ -2,25 +2,35 @@
 
 ## Result
 
-- `skiff-test-runner` resolves every inline effect target against the assembled
-  exact Package graph and calls the compiler-owned
-  `validate_and_plan_test_effects` boundary before creating Runtime input.
-- Runtime input is keyed by the stable case identity, not the display name.
-  Each dispatch creates an independent one-shot registry.
-- Unary outcomes, ordered sequences, request-subset matching, typed-throw
-  payloads and direct stream event lists cross the control path.
-- Runtime reports missing/exhausted, nonmatching and unused effects separately.
-  A one-element declaration is one-shot and is no longer silently reusable.
+- `skiff-test-runner` turns each test case's inline effects into a hidden setup
+  callable. The case body calls that setup first, so setup and body execute in
+  one request, heap, activation and nonce.
+- Effect expressions now traverse ordinary compiler name resolution, typing,
+  call-target resolution, effect/config analysis and lowering. The runner no
+  longer interprets a second expression language.
+- Artifact IR carries the exact immutable package reference and
+  `PackageCallableId`. Runtime dispatch is keyed by
+  `(PackageBuildId, PackageCallableId)`, not source spelling.
+- `respond` retains the compiler-produced runtime value in the request heap.
+  `throw` constructs a `UserException` with the exact linked nominal payload
+  identity. `stream` creates a request-owned buffered stream from typed values.
+- Outcomes are consumed in declaration order. Request-subset mismatches and
+  unused outcomes fail the case; runtime finalization clears the per-request
+  registry on both body success and body error, while preserving the body error
+  when both body and finalization fail.
 - `skiff.test-doubles.json` parsing and config injection were deleted. Presence
   of the old file is rejected with a migration diagnostic. Test config now
   comes only from the ordinary resolved test-service/profile input.
 
 ## Validation
 
-- `cargo check --workspace`
-- `cargo test -p skiff-runtime-request --no-fail-fast`
-- `cargo test -p skiff-runtime-host test_effect_double --no-fail-fast`
-- `cargo test -p skiff-test-runner --lib --no-fail-fast`
+- `cargo check -p skiff-compiler-source -p skiff-compiler-lowering
+  -p skiff-test-runner -p skiff-runtime-eval -p skiff-runtime-request
+  -p skiff-runtime-host`
+- `cargo test -p skiff-runtime-eval test_effect_registry --lib`
+- `cargo test -p skiff-runtime-request --lib`
+- `cargo test -p skiff-test-runner --lib` (`33 passed`, `2 ignored`)
+- Earlier in this task, `cargo check --workspace` passed.
 - `cargo test -p skiff-test-runner --no-fail-fast` reached the existing
   package/service deployment fixture matrix; four fixture identity/provider
   failures remain outside this change, while all test-runner unit and inline

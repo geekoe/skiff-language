@@ -615,7 +615,11 @@ fn linked_body(
                 statements: block.statements.iter().map(linked_stmt_ref).collect(),
             })
             .collect(),
-        statements: body.statements.iter().map(linked_stmt).collect(),
+        statements: body
+            .statements
+            .iter()
+            .map(|statement| linked_stmt(statement, canonical_call))
+            .collect::<anyhow::Result<Vec<_>>>()?,
         expressions: body
             .expressions
             .iter()
@@ -636,8 +640,11 @@ fn linked_stmt_ref(reference: &artifact::StmtRefIr) -> StmtRefIr {
     }
 }
 
-fn linked_stmt(statement: &artifact::StmtIr) -> LinkedStmtIr {
-    match statement {
+fn linked_stmt(
+    statement: &artifact::StmtIr,
+    canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+) -> anyhow::Result<LinkedStmtIr> {
+    Ok(match statement {
         artifact::StmtIr::Let { slot, value } => LinkedStmtIr::Let {
             slot: *slot,
             value: linked_expr_ref(value),
@@ -691,6 +698,48 @@ fn linked_stmt(statement: &artifact::StmtIr) -> LinkedStmtIr {
             operation: operation.clone(),
             value: linked_expr_ref(value),
         },
+        artifact::StmtIr::TestEffectRegister {
+            target,
+            expect,
+            outcome,
+        } => {
+            let artifact::TestEffectRegisterTargetIr::PackageCallable {
+                package_ref,
+                callable_id,
+            } = target;
+            let target = canonical_call(&artifact::CallTargetIr::PackageCallable {
+                package_ref: package_ref.clone(),
+                package_callable_id: callable_id.clone(),
+            })?;
+            LinkedStmtIr::TestEffectRegister {
+                target,
+                expect: expect.as_ref().map(|expected| LinkedTestEffectExpectedIr {
+                    value: linked_expr_ref(&expected.value),
+                    request_type: linked_type_ref(&expected.request_type),
+                }),
+                outcome: match outcome {
+                    artifact::TestEffectOutcomeIr::Respond { value, value_type } => {
+                        LinkedTestEffectOutcomeIr::Respond {
+                            value: linked_expr_ref(value),
+                            value_type: linked_type_ref(value_type),
+                        }
+                    }
+                    artifact::TestEffectOutcomeIr::Throw {
+                        value,
+                        payload_type,
+                    } => LinkedTestEffectOutcomeIr::Throw {
+                        value: linked_expr_ref(value),
+                        payload_type: linked_type_ref(payload_type),
+                    },
+                    artifact::TestEffectOutcomeIr::Stream { values, item_type } => {
+                        LinkedTestEffectOutcomeIr::Stream {
+                            values: values.iter().map(linked_expr_ref).collect(),
+                            item_type: linked_type_ref(item_type),
+                        }
+                    }
+                },
+            }
+        }
         artifact::StmtIr::Expr { value } => LinkedStmtIr::Expr {
             value: linked_expr_ref(value),
         },
@@ -707,7 +756,7 @@ fn linked_stmt(statement: &artifact::StmtIr) -> LinkedStmtIr {
         artifact::StmtIr::Rethrow { exception_slot } => LinkedStmtIr::Rethrow {
             exception_slot: *exception_slot,
         },
-    }
+    })
 }
 
 fn linked_assign_target(target: &artifact::AssignTargetIr) -> AssignTargetIr {

@@ -3574,6 +3574,7 @@ fn exact_dependency_callee_does_not_poison_known_target() {
                 package_requirement_alias,
                 package_callable_id,
                 expected_local_abi,
+                ..
             } if package_requirement_alias == "dep"
                 && package_callable_id == &PackageCallableId::new("pkg-callable:dep-run")
                 && expected_local_abi == &PackageLocalAbiIdentity::new("pkg-local-abi:dep")
@@ -3612,6 +3613,7 @@ fn exact_dependency_field_callee_does_not_poison_known_target() {
                 package_requirement_alias,
                 package_callable_id,
                 expected_local_abi,
+                ..
             } if package_requirement_alias == "dep"
                 && package_callable_id
                     == &PackageCallableId::new("pkg-callable:dep-tools-run")

@@ -33,6 +33,10 @@ impl eval_capabilities::EffectDispatchApi for RuntimeEffectDispatchContext {
 pub(super) struct RuntimeTestEffectDoubleContext(pub(super) concrete::TestEffectDoubleContext);
 
 impl eval_capabilities::TestEffectDoubleContextApi for RuntimeTestEffectDoubleContext {
+    fn finalize(&self) -> Result<()> {
+        self.0.finalize().map_err(root_error_into_eval)
+    }
+
     fn ensure_fully_consumed(&self) -> Result<()> {
         match self.0.unused_effects_error() {
             Some(error) => Err(root_error_into_eval(error)),

@@ -139,6 +139,25 @@ fn collect_config_uses_in_block(
     for (statement_index, statement) in block.statements.iter().enumerate() {
         let statement_spans = block_spans.and_then(|spans| spans.statements.get(statement_index));
         match statement {
+            Stmt::CompilerTestEffectRegister { .. } => {
+                for (index, expression) in
+                    crate::shared::ast_utils::compiler_test_effect_expressions(statement)
+                        .expect("matched compiler test effect")
+                        .into_iter()
+                        .enumerate()
+                {
+                    collect_config_uses_in_expr(
+                        diagnostic_path,
+                        source_path,
+                        expression,
+                        statement_spans.and_then(|spans| spans.expressions.get(index)),
+                        &const_strings,
+                        uses,
+                        presence_uses,
+                        violations,
+                    );
+                }
+            }
             Stmt::Let {
                 mutable,
                 name,

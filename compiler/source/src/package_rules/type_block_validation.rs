@@ -12,6 +12,20 @@ pub(super) fn collect_package_block_std_type_violations(
 ) {
     for stmt in &block.statements {
         match stmt {
+            Stmt::CompilerTestEffectRegister { .. } => {
+                for expression in crate::shared::ast_utils::compiler_test_effect_expressions(stmt)
+                    .expect("matched compiler test effect")
+                {
+                    collect_package_expr_std_type_violations(
+                        path,
+                        expression,
+                        imported_std_roots,
+                        dependency_roots,
+                        package_type_names,
+                        violations,
+                    );
+                }
+            }
             Stmt::Let { ty, value, .. } => {
                 if let Some(ty) = ty {
                     collect_package_std_type_name_violations(

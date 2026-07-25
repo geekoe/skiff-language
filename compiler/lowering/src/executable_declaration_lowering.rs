@@ -811,6 +811,7 @@ fn stmt_contains_bare_return(stmt: &Stmt) -> bool {
         Stmt::For { body, .. } | Stmt::DbTransaction { body } => block_contains_bare_return(body),
         Stmt::Match { arms, .. } => arms.iter().any(|arm| block_contains_bare_return(&arm.body)),
         Stmt::Assert { .. }
+        | Stmt::CompilerTestEffectRegister { .. }
         | Stmt::Let { .. }
         | Stmt::Assign { .. }
         | Stmt::Throw { .. }

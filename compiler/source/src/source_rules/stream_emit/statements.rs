@@ -20,6 +20,13 @@ pub(super) fn validate_emit_usage_in_stmt(
     violations: &mut Vec<String>,
 ) {
     match stmt {
+        Stmt::CompilerTestEffectRegister { .. } => {
+            for expression in crate::shared::ast_utils::compiler_test_effect_expressions(stmt)
+                .expect("matched compiler test effect")
+            {
+                collect_emit_expression_call_violations(path, expression, violations);
+            }
+        }
         Stmt::Let {
             name, ty, value, ..
         } => {

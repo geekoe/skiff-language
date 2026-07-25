@@ -2,8 +2,8 @@ use async_recursion::async_recursion;
 use skiff_runtime_linked_program::{
     AssignTargetIr, CallIr, ExecutableAddr, ExprRefIr, LinkedBoxSourceIr, LinkedCallTarget,
     LinkedExecutable, LinkedExprIr, LinkedFileUnit, LinkedInterfaceInstantiationRef,
-    LinkedRemoteOperationSlotPlanIr, LinkedRemoteOperationTablePlanIr, LinkedStmtIr, LinkedTypeRef,
-    NativeTarget, ReceiverCallAbi, UnaryOpIr,
+    LinkedRemoteOperationSlotPlanIr, LinkedRemoteOperationTablePlanIr, LinkedStmtIr,
+    LinkedTestEffectOutcomeIr, LinkedTypeRef, NativeTarget, ReceiverCallAbi, UnaryOpIr,
 };
 use skiff_runtime_linked_type_plan::{
     linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
@@ -43,6 +43,7 @@ use super::{
     recoverable_behavior::interface_method_table_from_linked,
     runtime_ops::{runtime_from_wire, runtime_object_from_fields, runtime_to_wire_required_plan},
     spawn_ops,
+    test_effect_registry::{RegisteredTestEffect, RegisteredTestEffectOutcome, TestEffectTarget},
     type_projection::EvalTypeProjection,
     *,
 };
@@ -315,6 +316,66 @@ impl<'a> EvalContext<'a> {
                     .await;
                 self.resume_actor_segment(frame).await?;
                 result?;
+                Ok(Flow::Continue)
+            }
+            LinkedStmtIr::TestEffectRegister {
+                target,
+                expect,
+                outcome,
+            } => {
+                if !self.interpreter.test_effects_enabled {
+                    return Err(RuntimeError::Unsupported(
+                        "test effect setup cannot run outside test execution".to_string(),
+                    ));
+                }
+                let LinkedCallTarget::PackageDirect { call: target } = target else {
+                    return Err(RuntimeError::InvalidArtifact(
+                        "test effect target did not link to a package callable".to_string(),
+                    ));
+                };
+                let expect = match expect {
+                    Some(expected) => Some(self.eval_program_expr_ref(expected.value).await?),
+                    None => None,
+                };
+                let outcome = match outcome {
+                    LinkedTestEffectOutcomeIr::Respond { value, .. } => {
+                        RegisteredTestEffectOutcome::Respond(
+                            self.eval_program_expr_ref(*value).await?,
+                        )
+                    }
+                    LinkedTestEffectOutcomeIr::Throw {
+                        value,
+                        payload_type,
+                    } => {
+                        let payload = self.eval_program_expr_ref(*value).await?;
+                        let projection = self.type_projection();
+                        RegisteredTestEffectOutcome::Throw {
+                            payload,
+                            payload_plan: projection
+                                .plan_from_linked_nested_ref(payload_type, self.addr)?,
+                            identity: projection.throw_payload_actual_type(payload_type)?,
+                        }
+                    }
+                    LinkedTestEffectOutcomeIr::Stream { values, item_type } => {
+                        let mut runtime_values = Vec::with_capacity(values.len());
+                        for value in values {
+                            runtime_values.push(self.eval_program_expr_ref(*value).await?);
+                        }
+                        RegisteredTestEffectOutcome::Stream {
+                            values: runtime_values,
+                            item_plan: self
+                                .type_projection()
+                                .plan_from_linked_nested_ref(item_type, self.addr)?,
+                        }
+                    }
+                };
+                self.interpreter.runtime_test_effects.register(
+                    TestEffectTarget::new(
+                        target.dependency_package_build_id().clone(),
+                        target.package_callable_id().clone(),
+                    ),
+                    RegisteredTestEffect { expect, outcome },
+                );
                 Ok(Flow::Continue)
             }
             LinkedStmtIr::Throw {
@@ -1054,6 +1115,20 @@ impl<'a> EvalContext<'a> {
                     .await
             }
             LinkedCallTarget::PackageDirect { call: target } => {
+                if self.interpreter.test_effects_enabled {
+                    let effect_target = TestEffectTarget::new(
+                        target.dependency_package_build_id().clone(),
+                        target.package_callable_id().clone(),
+                    );
+                    if let Some(result) = self.interpreter.runtime_test_effects.dispatch(
+                        &effect_target,
+                        &values,
+                        Some(&self.interpreter.stream_runtime),
+                        self.heap,
+                    ) {
+                        return result;
+                    }
+                }
                 super::assembly_execution::dispatch_package_direct(self, call, target, values).await
             }
             LinkedCallTarget::ActivationRelativeService { instruction } => {

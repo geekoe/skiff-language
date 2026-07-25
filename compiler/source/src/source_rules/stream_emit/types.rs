@@ -108,6 +108,13 @@ fn collect_emit_stmt_violations(
     violations: &mut Vec<String>,
 ) {
     match stmt {
+        crate::shared::ast::Stmt::CompilerTestEffectRegister { .. } => {
+            for expression in crate::shared::ast_utils::compiler_test_effect_expressions(stmt)
+                .expect("matched compiler test effect")
+            {
+                collect_emit_expression_call_violations(path, expression, violations);
+            }
+        }
         crate::shared::ast::Stmt::Let { value, .. }
         | crate::shared::ast::Stmt::Spawn { call: value }
         | crate::shared::ast::Stmt::Expr(value)

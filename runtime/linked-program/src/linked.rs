@@ -724,6 +724,11 @@ pub enum LinkedStmtIr {
         operation: String,
         value: ExprRefIr,
     },
+    TestEffectRegister {
+        target: LinkedCallTarget,
+        expect: Option<LinkedTestEffectExpectedIr>,
+        outcome: LinkedTestEffectOutcomeIr,
+    },
     Expr {
         value: ExprRefIr,
     },
@@ -737,6 +742,34 @@ pub enum LinkedStmtIr {
     },
     Rethrow {
         exception_slot: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedTestEffectExpectedIr {
+    pub value: ExprRefIr,
+    pub request_type: LinkedTypeRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum LinkedTestEffectOutcomeIr {
+    Respond {
+        value: ExprRefIr,
+        value_type: LinkedTypeRef,
+    },
+    Throw {
+        value: ExprRefIr,
+        payload_type: LinkedTypeRef,
+    },
+    Stream {
+        values: Vec<ExprRefIr>,
+        item_type: LinkedTypeRef,
     },
 }
 

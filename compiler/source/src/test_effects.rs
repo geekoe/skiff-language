@@ -1,9 +1,15 @@
-use skiff_artifact_model::{PackageCallableSignature, PackageTypeRef};
+use skiff_artifact_model::{
+    PackageCallableId, PackageCallableSignature, PackageRefIr, PackageTypeRef,
+};
 
 use crate::shared::ast::{Expr, TestEffectDeclaration, TestEffectOutcome};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedTestEffectTarget {
+    /// Exact immutable-package link key. Source spelling is retained only for
+    /// diagnostics; lowering and linking must use this identity.
+    pub callable_id: PackageCallableId,
+    pub package_ref: PackageRefIr,
     pub identity: String,
     pub signature: PackageCallableSignature,
 }
@@ -230,6 +236,10 @@ mod tests {
                 .get(source_target)
                 .cloned()
                 .map(|signature| ResolvedTestEffectTarget {
+                    callable_id: PackageCallableId::new(format!("callable:{source_target}")),
+                    package_ref: PackageRefIr::PackageId {
+                        package_id: "test.package".to_string(),
+                    },
                     identity: format!("callable:{source_target}"),
                     signature,
                 })

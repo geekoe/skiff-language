@@ -31,8 +31,8 @@ mod expression_assignability;
 mod object_materialization;
 
 use contract_call_typing::{
-    contract_source_assignability_with_projections, ContractCallOutcome, ContractCallTyping,
-    ContractProjectionState,
+    contract_source_assignability_with_projections, package_type_target_assignable,
+    ContractCallOutcome, ContractCallTyping, ContractProjectionState,
 };
 use db_projection::DbProjectionTypeResolver;
 use expression_assignability::{record_type_fields, ExpressionAssignability};
@@ -75,6 +75,7 @@ impl ExpressionTypeModelBuildError {
 pub struct ExpressionTypeFact {
     pub ty: Option<ResolvedTypeRef>,
     pub span: SourceSpan,
+    pub test_effect_throw_payload_type: Option<TypeRefIr>,
     stream_emit_target: Option<ResolvedTypeRef>,
 }
 
@@ -705,6 +706,78 @@ impl<'a> OwnerChecker<'a> {
 
     fn check_stmt(&mut self, stmt: &Stmt) -> bool {
         match stmt {
+            Stmt::CompilerTestEffectRegister {
+                target,
+                target_probe: _,
+                expect,
+                outcome,
+            } => {
+                // The synthetic target probe exists solely to obtain the same
+                // exact ResolvedCallTarget fact ordinary dependency calls use.
+                // It is not an invocation and therefore is not type-checked as
+                // a zero-argument call.
+                self.next_key();
+                self.next_key();
+                let Some(dependencies) = self.dependency_analysis else {
+                    self.diagnostics.push(format!(
+                        "{}: compiler test effect `{target}` has no dependency analysis",
+                        self.module_path
+                    ));
+                    return false;
+                };
+                let Some(callable) = dependencies.package_callable_by_source_path(target) else {
+                    self.diagnostics.push(format!(
+                        "{}: unresolved compiler test effect target `{target}`",
+                        self.module_path
+                    ));
+                    return false;
+                };
+                let Some(signature) = callable.signature().cloned() else {
+                    self.diagnostics.push(format!(
+                        "{}: compiler test effect target `{target}` has no exact signature",
+                        self.module_path
+                    ));
+                    return false;
+                };
+                if let Some(expect) = expect {
+                    let [parameter] = signature.parameters.as_slice() else {
+                        self.diagnostics.push(format!(
+                            "{}: test effect `{target}` expect requires exactly one parameter",
+                            self.module_path
+                        ));
+                        return false;
+                    };
+                    self.check_test_effect_request_subset(expect, &parameter.ty);
+                }
+                match outcome {
+                    crate::shared::ast::TestEffectOutcome::Respond { value } => {
+                        self.check_test_effect_value(value, &signature.return_type, "respond");
+                    }
+                    crate::shared::ast::TestEffectOutcome::Throw { value } => {
+                        self.check_test_effect_throw(value, &signature.throw_types, target);
+                    }
+                    crate::shared::ast::TestEffectOutcome::Stream { events } => {
+                        let item = match &signature.return_type {
+                            PackageTypeRef::Container { name, arguments }
+                                if name == "Stream" && arguments.len() == 1 =>
+                            {
+                                &arguments[0]
+                            }
+                            _ => {
+                                self.diagnostics.push(format!(
+                                    "{}: test effect `{target}` stream requires Stream<T> return",
+                                    self.module_path
+                                ));
+                                return false;
+                            }
+                        };
+                        for value in events {
+                            self.check_test_effect_value(value, item, "stream event");
+                        }
+                    }
+                }
+                false
+            }
             Stmt::Assert { condition, .. } => {
                 let narrowings = self.condition_narrowings(condition);
                 self.check_condition(condition, "condition");
@@ -979,6 +1052,125 @@ impl<'a> OwnerChecker<'a> {
             }
             Stmt::Break | Stmt::Continue => true,
         }
+    }
+
+    fn check_test_effect_request_subset(&mut self, value: &Expr, expected: &PackageTypeRef) {
+        let Expr::ObjectLiteral { entries } = value else {
+            self.check_test_effect_value(value, expected, "expect");
+            return;
+        };
+        let resolved = resolved_package_type_ref(expected);
+        let Some(TypeRefIr::Record { fields }) = self
+            .type_resolution
+            .type_shape_ir(&resolved, &self.type_context)
+        else {
+            self.check_test_effect_value(value, expected, "expect");
+            return;
+        };
+        let selected = entries
+            .iter()
+            .filter_map(|entry| {
+                let name = object_literal_key_text(&entry.key)?;
+                fields.get(&name).cloned().map(|ty| (name, ty))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let partial = ResolvedTypeRef {
+            ir: TypeRefIr::Record { fields: selected },
+            source_text: format!("subset<{}>", resolved.source_text),
+        };
+        let key = self.peek_key();
+        let actual = self.check_expr(value);
+        if let Some(actual) = actual {
+            self.check_value_assignable_to_expected(
+                None,
+                value,
+                &key,
+                &actual,
+                &partial,
+                None,
+                "test effect expect subset",
+                self.expression_span(&key),
+            );
+        }
+    }
+
+    fn check_test_effect_value(&mut self, value: &Expr, expected: &PackageTypeRef, context: &str) {
+        let key = self.peek_key();
+        let actual = self.check_expr(value);
+        let Some(actual) = actual else {
+            return;
+        };
+        let resolved_expected = resolved_package_type_ref(expected);
+        self.check_value_assignable_to_expected(
+            None,
+            value,
+            &key,
+            &actual,
+            &resolved_expected,
+            Some(expected),
+            &format!("test effect {context}"),
+            self.expression_span(&key),
+        );
+    }
+
+    fn check_test_effect_throw(&mut self, value: &Expr, declared: &[PackageTypeRef], target: &str) {
+        let key = self.peek_key();
+        let Some(actual) = self.check_expr(value) else {
+            return;
+        };
+        let actual_projected = self
+            .contract_projection
+            .expression_type(&key)
+            .cloned()
+            .or_else(|| {
+                self.dependency_analysis.and_then(|dependencies| {
+                    ContractProjectionState::project_resolved_type(
+                        &actual,
+                        self.type_resolution,
+                        dependencies,
+                        &self.type_context,
+                    )
+                    .ok()
+                })
+            });
+        let matches = match (actual_projected.as_ref(), self.dependency_analysis) {
+            (Some(actual), Some(dependencies)) => declared
+                .iter()
+                .filter(|expected| package_type_target_assignable(actual, expected, dependencies))
+                .collect::<Vec<_>>(),
+            _ => declared
+                .iter()
+                .filter(|expected| {
+                    self.type_resolution.assignable_in_context(
+                        &actual,
+                        &resolved_package_type_ref(expected),
+                        &self.type_context,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        };
+        let [selected] = matches.as_slice() else {
+            self.diagnostics.push(format!(
+                "{}: test effect `{target}` throw must match exactly one declared payload type, matched {}",
+                self.module_path,
+                matches.len()
+            ));
+            return;
+        };
+        if let Some(fact) = self.facts.get_mut(&key) {
+            fact.test_effect_throw_payload_type =
+                Some(resolved_package_type_ref(selected).ir.clone());
+        }
+        self.check_value_assignable_to_expected(
+            None,
+            value,
+            &key,
+            &actual,
+            &resolved_package_type_ref(selected),
+            Some(selected),
+            "test effect throw",
+            self.expression_span(&key),
+        );
     }
 
     fn check_block_scoped(&mut self, block: &Block, narrowing: &TypeNarrowing) -> bool {
@@ -1708,6 +1900,7 @@ impl<'a> OwnerChecker<'a> {
             ExpressionTypeFact {
                 ty: ty.clone(),
                 span,
+                test_effect_throw_payload_type: None,
                 stream_emit_target: None,
             },
         );

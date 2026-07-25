@@ -15,9 +15,9 @@ use skiff_compiler_source::{
 use skiff_syntax::{
     ast::{
         BinaryOp, DbBlockMode, DbOperationKind, Expr, ForBinding, Literal, ObjectLiteralKey,
-        PatchOperation, Stmt, TypeRef, UnaryOp,
+        PatchOperation, Stmt, TestEffectOutcome, TypeRef, UnaryOp,
     },
-    ast_utils::{dependency_source_address_parts, expr_path},
+    ast_utils::{compiler_test_effect_expressions, dependency_source_address_parts, expr_path},
     error::{CompileError, Result},
     type_syntax::generic_parts,
 };
@@ -27,12 +27,14 @@ use crate::file_ir::{
     ExprRefIr, FunctionTypeParamIr, InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr,
     InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr, LiteralIr, MatchArmIr, MetadataValue,
     NativeTarget, PackageRefIr, PackageSymbolRef, PatternIr, ServiceSymbolRef, SlotIr, SlotKind,
-    StmtIr, StmtRefIr, TypeRefIr, UnaryOpIr,
+    StmtIr, StmtRefIr, TestEffectExpectedIr, TestEffectOutcomeIr, TestEffectRegisterTargetIr,
+    TypeRefIr, UnaryOpIr,
 };
 
 use super::{
     callable_return_types::CallableReturnType,
     db_lowering::{is_db_readonly_result_operation, DbMetadataIr, LoweredPackageDbMetadataIndex},
+    executable_type_projection::execution_type_ref,
     service_call_lowering::LoweredServiceCalls,
     type_lowering::{
         is_official_std_module_path, is_official_std_package_ref, is_unknown_type_ref,
@@ -299,6 +301,123 @@ impl<'a> FunctionLowerer<'a> {
 
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<StmtRefIr> {
         let lowered = match stmt {
+            Stmt::CompilerTestEffectRegister {
+                target,
+                target_probe,
+                expect,
+                outcome,
+            } => {
+                let target_key = self.next_expression_key().ok_or_else(|| {
+                    CompileError::Semantic(
+                        "compiler test setup has no expression owner".to_string(),
+                    )
+                })?;
+                let resolved = self
+                    .resolved_call_targets
+                    .target(&target_key)
+                    .ok_or_else(|| {
+                        CompileError::Semantic(format!(
+                            "test effect `{target}` has no resolved package target"
+                        ))
+                    })?;
+                let ResolvedCallTarget::DependencyPackageFunction {
+                    package_requirement_alias,
+                    package_callable_id,
+                    exact_signature,
+                    ..
+                } = resolved
+                else {
+                    return Err(CompileError::Semantic(format!(
+                        "test effect `{target}` must resolve to an exact package callable"
+                    )));
+                };
+                let Expr::Call { callee, .. } = target_probe else {
+                    return Err(CompileError::Semantic(
+                        "compiler test effect target probe is not a call".to_string(),
+                    ));
+                };
+                self.consume_static_callee_expression_keys(callee)?;
+                let signature = exact_signature.clone().ok_or_else(|| {
+                    CompileError::Semantic(format!(
+                        "test effect `{target}` has no exact package signature"
+                    ))
+                })?;
+                let expected = expect
+                    .as_ref()
+                    .map(|value| {
+                        let [parameter] = signature.parameters.as_slice() else {
+                            return Err(CompileError::Semantic(format!(
+                                "test effect `{target}` expect requires one parameter"
+                            )));
+                        };
+                        Ok(TestEffectExpectedIr {
+                            value: self.lower_expr_with_expected(value, None)?,
+                            request_type: execution_type_ref(&parameter.ty),
+                        })
+                    })
+                    .transpose()?;
+                let outcome = match outcome {
+                    TestEffectOutcome::Respond { value } => TestEffectOutcomeIr::Respond {
+                        value: self.lower_expr_with_expected(
+                            value,
+                            Some(&execution_type_ref(&signature.return_type)),
+                        )?,
+                        value_type: execution_type_ref(&signature.return_type),
+                    },
+                    TestEffectOutcome::Throw { value } => {
+                        let key = self.peek_expression_key().ok_or_else(|| {
+                            CompileError::Semantic(
+                                "compiler test setup has no expression owner".to_string(),
+                            )
+                        })?;
+                        let payload_type = self
+                            .expression_types
+                            .and_then(|types| types.fact(&key))
+                            .and_then(|fact| fact.test_effect_throw_payload_type.clone())
+                            .ok_or_else(|| {
+                                CompileError::Semantic(format!(
+                                    "test effect `{target}` throw has no selected declared payload type"
+                                ))
+                            })?;
+                        TestEffectOutcomeIr::Throw {
+                            value: self.lower_expr_with_expected(value, Some(&payload_type))?,
+                            payload_type,
+                        }
+                    }
+                    TestEffectOutcome::Stream { events } => {
+                        let TypeRefIr::Builtin { name, args } =
+                            execution_type_ref(&signature.return_type)
+                        else {
+                            return Err(CompileError::Semantic(format!(
+                                "test effect `{target}` stream target is not Stream<T>"
+                            )));
+                        };
+                        if name != "Stream" || args.len() != 1 {
+                            return Err(CompileError::Semantic(format!(
+                                "test effect `{target}` stream target is not Stream<T>"
+                            )));
+                        }
+                        let item_type = args[0].clone();
+                        TestEffectOutcomeIr::Stream {
+                            values: events
+                                .iter()
+                                .map(|value| self.lower_expr_with_expected(value, Some(&item_type)))
+                                .collect::<Result<Vec<_>>>()?,
+                            item_type,
+                        }
+                    }
+                };
+                StmtIr::TestEffectRegister {
+                    target: TestEffectRegisterTargetIr::PackageCallable {
+                        package_ref: PackageRefIr::Dependency {
+                            dependency_ref: package_requirement_alias.clone(),
+                        },
+                        callable_id: package_callable_id.clone(),
+                    },
+                    expect: expected,
+                    outcome,
+                }
+            }
             Stmt::Let {
                 mutable,
                 name,
@@ -1289,6 +1408,7 @@ impl<'a> FunctionLowerer<'a> {
             package_requirement_alias,
             package_callable_id,
             expected_local_abi: _,
+            ..
         }) = target
         {
             let path = path.as_deref().ok_or_else(|| {
@@ -2204,7 +2324,7 @@ fn insert_exact_native_type_arg(
     Ok(())
 }
 
-fn expr_preorder_node_count(expr: &Expr) -> u32 {
+pub(super) fn expr_preorder_node_count(expr: &Expr) -> u32 {
     match expr {
         Expr::Literal(_)
         | Expr::Identifier(_)
@@ -2265,6 +2385,14 @@ fn block_preorder_node_count(block: &skiff_syntax::ast::Block) -> u32 {
 
 fn stmt_preorder_node_count(stmt: &Stmt) -> u32 {
     match stmt {
+        Stmt::CompilerTestEffectRegister { target_probe, .. } => {
+            expr_preorder_node_count(target_probe)
+                + compiler_test_effect_expressions(stmt)
+                    .expect("matched compiler test effect")
+                    .into_iter()
+                    .map(expr_preorder_node_count)
+                    .sum::<u32>()
+        }
         Stmt::Assert { condition, .. } => expr_preorder_node_count(condition),
         Stmt::Let { value, .. } => expr_preorder_node_count(value),
         Stmt::Assign { target, value } => {
@@ -2361,6 +2489,7 @@ fn stmt_contains_return_stmt(stmt: &Stmt) -> bool {
         Stmt::For { body, .. } | Stmt::DbTransaction { body } => block_contains_return_stmt(body),
         Stmt::Match { arms, .. } => arms.iter().any(|arm| block_contains_return_stmt(&arm.body)),
         Stmt::Assert { .. }
+        | Stmt::CompilerTestEffectRegister { .. }
         | Stmt::Let { .. }
         | Stmt::Assign { .. }
         | Stmt::Throw { .. }

@@ -38,11 +38,11 @@ pub use linked::{
     LinkedInterfaceInstantiationRef, LinkedInterfaceMethodSlotPlanIr,
     LinkedInterfaceMethodSlotSignatureIr, LinkedInterfaceMethodSlotTargetIr,
     LinkedInterfaceMethodTablePlanIr, LinkedRemoteOperationSlotPlanIr,
-    LinkedRemoteOperationTablePlanIr, LinkedStmtIr, LinkedTypeDescriptor, LinkedTypeRef, LiteralIr,
-    MatchArmIr, MetadataValue, NativeTarget, OperationAbiRef, PackageRefIr, PackageSymbolRef,
-    ParamIr, PatternIr, ReceiverCallAbi, ServiceDependencySymbolRef, ServiceSymbolRef,
-    SlotBindingIr, SlotIr, SlotLayoutIr, SourceAstHash, SourceMapDto, StmtRefIr, TypeDeclIr,
-    UnaryOpIr,
+    LinkedRemoteOperationTablePlanIr, LinkedStmtIr, LinkedTestEffectExpectedIr,
+    LinkedTestEffectOutcomeIr, LinkedTypeDescriptor, LinkedTypeRef, LiteralIr, MatchArmIr,
+    MetadataValue, NativeTarget, OperationAbiRef, PackageRefIr, PackageSymbolRef, ParamIr,
+    PatternIr, ReceiverCallAbi, ServiceDependencySymbolRef, ServiceSymbolRef, SlotBindingIr,
+    SlotIr, SlotLayoutIr, SourceAstHash, SourceMapDto, StmtRefIr, TypeDeclIr, UnaryOpIr,
 };
 pub use overlay::{LinkOverlay, ResolvedSymbol, SymbolOverlay};
 pub use package_unit::{

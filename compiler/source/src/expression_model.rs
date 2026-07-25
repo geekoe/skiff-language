@@ -294,6 +294,38 @@ impl OwnerCollector<'_> {
         let mut expressions = spans.expressions.iter();
         let mut blocks = spans.blocks.iter();
         match stmt {
+            Stmt::CompilerTestEffectRegister {
+                target_probe,
+                expect,
+                outcome,
+                ..
+            } => {
+                self.visit_expr(
+                    target_probe,
+                    next_stmt_expr(&mut expressions, "test effect target")?,
+                )?;
+                if let Some(expect) = expect {
+                    self.visit_expr(
+                        expect,
+                        next_stmt_expr(&mut expressions, "test effect expectation")?,
+                    )?;
+                }
+                match outcome {
+                    crate::shared::ast::TestEffectOutcome::Respond { value }
+                    | crate::shared::ast::TestEffectOutcome::Throw { value } => self.visit_expr(
+                        value,
+                        next_stmt_expr(&mut expressions, "test effect outcome")?,
+                    )?,
+                    crate::shared::ast::TestEffectOutcome::Stream { events } => {
+                        for value in events {
+                            self.visit_expr(
+                                value,
+                                next_stmt_expr(&mut expressions, "test effect stream event")?,
+                            )?;
+                        }
+                    }
+                }
+            }
             Stmt::Assert { condition, .. } => self.visit_expr(
                 condition,
                 next_stmt_expr(&mut expressions, "assert condition")?,

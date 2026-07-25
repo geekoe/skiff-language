@@ -73,6 +73,26 @@ pub fn walk_block(visitor: &mut (impl AstVisitor + ?Sized), block: &Block) {
 
 pub fn walk_stmt(visitor: &mut (impl AstVisitor + ?Sized), stmt: &Stmt) {
     match stmt {
+        Stmt::CompilerTestEffectRegister {
+            target_probe,
+            expect,
+            outcome,
+            ..
+        } => {
+            visitor.visit_expr(target_probe);
+            if let Some(expect) = expect {
+                visitor.visit_expr(expect);
+            }
+            match outcome {
+                crate::ast::TestEffectOutcome::Respond { value }
+                | crate::ast::TestEffectOutcome::Throw { value } => visitor.visit_expr(value),
+                crate::ast::TestEffectOutcome::Stream { events } => {
+                    for event in events {
+                        visitor.visit_expr(event);
+                    }
+                }
+            }
+        }
         Stmt::Let { ty, value, .. } => {
             if let Some(ty) = ty {
                 visitor.visit_type_ref(ty);
@@ -117,6 +137,25 @@ pub fn walk_stmt(visitor: &mut (impl AstVisitor + ?Sized), stmt: &Stmt) {
         }
         Stmt::Break | Stmt::Continue => {}
     }
+}
+
+pub fn compiler_test_effect_expressions(stmt: &Stmt) -> Option<Vec<&Expr>> {
+    let Stmt::CompilerTestEffectRegister {
+        expect, outcome, ..
+    } = stmt
+    else {
+        return None;
+    };
+    let mut expressions = Vec::new();
+    if let Some(expect) = expect {
+        expressions.push(expect);
+    }
+    match outcome {
+        crate::ast::TestEffectOutcome::Respond { value }
+        | crate::ast::TestEffectOutcome::Throw { value } => expressions.push(value),
+        crate::ast::TestEffectOutcome::Stream { events } => expressions.extend(events),
+    }
+    Some(expressions)
 }
 
 pub fn walk_match_arm(visitor: &mut (impl AstVisitor + ?Sized), arm: &MatchArm) {
@@ -450,6 +489,26 @@ pub fn walk_test_effect_mut(
 
 pub fn walk_stmt_mut(visitor: &mut (impl AstVisitorMut + ?Sized), stmt: &mut Stmt) {
     match stmt {
+        Stmt::CompilerTestEffectRegister {
+            target_probe,
+            expect,
+            outcome,
+            ..
+        } => {
+            visitor.visit_expr(target_probe);
+            if let Some(expect) = expect {
+                visitor.visit_expr(expect);
+            }
+            match outcome {
+                crate::ast::TestEffectOutcome::Respond { value }
+                | crate::ast::TestEffectOutcome::Throw { value } => visitor.visit_expr(value),
+                crate::ast::TestEffectOutcome::Stream { events } => {
+                    for event in events {
+                        visitor.visit_expr(event);
+                    }
+                }
+            }
+        }
         Stmt::Let { ty, value, .. } => {
             if let Some(ty) = ty {
                 visitor.visit_type_ref(ty);
@@ -814,6 +873,22 @@ pub fn block_contains_expr(block: &Block, predicate: &mut impl FnMut(&Expr) -> b
 
 pub fn stmt_contains_expr(stmt: &Stmt, predicate: &mut impl FnMut(&Expr) -> bool) -> bool {
     match stmt {
+        Stmt::CompilerTestEffectRegister {
+            expect, outcome, ..
+        } => {
+            expect
+                .as_ref()
+                .is_some_and(|value| expr_contains_with(value, predicate))
+                || match outcome {
+                    crate::ast::TestEffectOutcome::Respond { value }
+                    | crate::ast::TestEffectOutcome::Throw { value } => {
+                        expr_contains_with(value, predicate)
+                    }
+                    crate::ast::TestEffectOutcome::Stream { events } => events
+                        .iter()
+                        .any(|value| expr_contains_with(value, predicate)),
+                }
+        }
         Stmt::Let { value, .. } => expr_contains_with(value, predicate),
         Stmt::Assign { target, value } => {
             expr_contains_with(target, predicate) || expr_contains_with(value, predicate)
@@ -1029,6 +1104,24 @@ fn collect_stmt_type_ref_dotted_root_imports(
     imports: &mut BTreeSet<Vec<String>>,
 ) {
     match stmt {
+        Stmt::CompilerTestEffectRegister {
+            expect, outcome, ..
+        } => {
+            if let Some(expect) = expect {
+                collect_expr_type_ref_dotted_root_imports(expect, root, imports);
+            }
+            match outcome {
+                crate::ast::TestEffectOutcome::Respond { value }
+                | crate::ast::TestEffectOutcome::Throw { value } => {
+                    collect_expr_type_ref_dotted_root_imports(value, root, imports)
+                }
+                crate::ast::TestEffectOutcome::Stream { events } => {
+                    for value in events {
+                        collect_expr_type_ref_dotted_root_imports(value, root, imports);
+                    }
+                }
+            }
+        }
         Stmt::Let { ty, value, .. } => {
             if let Some(ty) = ty {
                 collect_type_ref_dotted_root_imports(ty, root, imports);
@@ -1263,6 +1356,24 @@ fn collect_block_dotted_root_imports(
 
 fn collect_stmt_dotted_root_imports(stmt: &Stmt, root: &str, imports: &mut BTreeSet<Vec<String>>) {
     match stmt {
+        Stmt::CompilerTestEffectRegister {
+            expect, outcome, ..
+        } => {
+            if let Some(expect) = expect {
+                collect_expr_dotted_root_imports(expect, root, imports);
+            }
+            match outcome {
+                crate::ast::TestEffectOutcome::Respond { value }
+                | crate::ast::TestEffectOutcome::Throw { value } => {
+                    collect_expr_dotted_root_imports(value, root, imports)
+                }
+                crate::ast::TestEffectOutcome::Stream { events } => {
+                    for value in events {
+                        collect_expr_dotted_root_imports(value, root, imports);
+                    }
+                }
+            }
+        }
         Stmt::Let { value, .. } => collect_expr_dotted_root_imports(value, root, imports),
         Stmt::Assign { target, value } => {
             collect_expr_dotted_root_imports(target, root, imports);

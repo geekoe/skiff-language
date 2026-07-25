@@ -18,7 +18,7 @@ use skiff_syntax::{
 use super::db_lowering::{
     db_lease_read_result_type_text, db_operation_result_type_text_without_metadata,
 };
-use super::function_lowering::is_builtin_call_root;
+use super::function_lowering::{expr_preorder_node_count, is_builtin_call_root};
 use super::type_lowering::{bare_type_name, type_root};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -382,6 +382,29 @@ impl SuspendContext<'_, '_> {
 
     fn stmt_may_suspend(&mut self, stmt: &Stmt) -> bool {
         match stmt {
+            Stmt::CompilerTestEffectRegister {
+                target_probe,
+                expect,
+                outcome,
+                ..
+            } => {
+                for _ in 0..expr_preorder_node_count(target_probe) {
+                    self.next_expression_key();
+                }
+                let expect_suspend = expect
+                    .as_ref()
+                    .is_some_and(|value| self.expr_may_suspend(value));
+                let outcome_suspend = match outcome {
+                    skiff_syntax::ast::TestEffectOutcome::Respond { value }
+                    | skiff_syntax::ast::TestEffectOutcome::Throw { value } => {
+                        self.expr_may_suspend(value)
+                    }
+                    skiff_syntax::ast::TestEffectOutcome::Stream { events } => {
+                        events.iter().any(|value| self.expr_may_suspend(value))
+                    }
+                };
+                expect_suspend || outcome_suspend
+            }
             Stmt::Assert { condition, .. } => self.expr_may_suspend(condition),
             Stmt::Let {
                 name, ty, value, ..

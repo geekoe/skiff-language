@@ -4,7 +4,7 @@ use crate::file_ir::{
     AssignTargetIr, BoxSourceIr, CallTargetIr, DbBodyIr, DbChangeIr, DbLeaseClaimIr, DbLeaseReadIr,
     DbOperationIr, DbPredicateIr, DbQueryIr, DbQueryValueIr, DbSelectorIr, DbTransactionIr, ExprIr,
     FileIrServiceCallValidationError, FileIrUnit, InterfaceDeclIr, PackageRefIr, PatternIr, StmtIr,
-    TypeDescriptorIr, TypeRefIr,
+    TestEffectOutcomeIr, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_artifact_identity::{canonical_interface_method_abi_id, type_ref_abi_key};
 use skiff_artifact_model::InterfaceInstantiationRef;
@@ -210,6 +210,24 @@ fn rewrite_stmt(index: &PublicationLocalRefIndex, module_path: &str, stmt: &mut 
         }
         StmtIr::Throw { payload_type, .. } => {
             rewrite_type_ref(index, module_path, payload_type);
+        }
+        StmtIr::TestEffectRegister {
+            expect, outcome, ..
+        } => {
+            if let Some(expect) = expect {
+                rewrite_type_ref(index, module_path, &mut expect.request_type);
+            }
+            match outcome {
+                TestEffectOutcomeIr::Respond { value_type, .. } => {
+                    rewrite_type_ref(index, module_path, value_type);
+                }
+                TestEffectOutcomeIr::Throw { payload_type, .. } => {
+                    rewrite_type_ref(index, module_path, payload_type);
+                }
+                TestEffectOutcomeIr::Stream { item_type, .. } => {
+                    rewrite_type_ref(index, module_path, item_type);
+                }
+            }
         }
         StmtIr::Assign {
             target: AssignTargetIr::ActorSelfField { field_type, .. },

@@ -374,6 +374,14 @@ pub enum ForBinding {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Stmt {
+    /// Compiler-owned test-overlay statement. The parser never produces this
+    /// variant from source text.
+    CompilerTestEffectRegister {
+        target: String,
+        target_probe: Expr,
+        expect: Option<Expr>,
+        outcome: TestEffectOutcome,
+    },
     Assert {
         condition: Expr,
         message: Option<String>,

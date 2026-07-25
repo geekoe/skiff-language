@@ -104,8 +104,8 @@ pub async fn execute_runtime_assembly_request(
         target,
     );
     let mut heap = context.request_heap();
-    if let Some(websocket_adapter) = websocket_adapter.as_ref() {
-        let result = dispatch_websocket_ingress_via_in_process_boundary(
+    let body_result = if let Some(websocket_adapter) = websocket_adapter.as_ref() {
+        dispatch_websocket_ingress_via_in_process_boundary(
             &interpreter,
             context,
             &mut heap,
@@ -117,45 +117,48 @@ pub async fn execute_runtime_assembly_request(
                 .expect("WebSocket admitted identity checked above"),
         )
         .await
-        .map_err(RequestError::from)?;
-        interpreter
-            .ensure_test_effects_consumed()
-            .map_err(RequestError::from)?;
-        return boundary_response_from_eval_websocket_adapter_result(
-            websocket_phase.expect("WebSocket adapter phase checked above"),
-            result,
-        );
-    }
-    let result = dispatch_ingress_via_in_process_boundary(
-        &interpreter,
-        context,
-        &mut heap,
-        target.boundary().clone(),
-        &request_context,
-    )
-    .await;
-    let result = result.map_err(RequestError::from)?;
-    interpreter
-        .ensure_test_effects_consumed()
-        .map_err(RequestError::from)?;
-    match result {
-        InProcessBoundaryIngressResponse::RuntimePayload(payload) => {
-            Ok(BoundaryResponse::payload(payload))
-        }
-        InProcessBoundaryIngressResponse::BinaryHttp(response) => Ok(BoundaryResponse::http(
-            response.body,
-            HttpResponseMetadata::new(
-                response.status,
-                response
-                    .headers
-                    .into_iter()
-                    .map(|header| HttpNameValue {
-                        name: header.name,
-                        value: header.value,
-                    })
-                    .collect(),
+        .map_err(RequestError::from)
+        .and_then(|result| {
+            boundary_response_from_eval_websocket_adapter_result(
+                websocket_phase.expect("WebSocket adapter phase checked above"),
+                result,
+            )
+        })
+    } else {
+        dispatch_ingress_via_in_process_boundary(
+            &interpreter,
+            context,
+            &mut heap,
+            target.boundary().clone(),
+            &request_context,
+        )
+        .await
+        .map_err(RequestError::from)
+        .map(|result| match result {
+            InProcessBoundaryIngressResponse::RuntimePayload(payload) => {
+                BoundaryResponse::payload(payload)
+            }
+            InProcessBoundaryIngressResponse::BinaryHttp(response) => BoundaryResponse::http(
+                response.body,
+                HttpResponseMetadata::new(
+                    response.status,
+                    response
+                        .headers
+                        .into_iter()
+                        .map(|header| HttpNameValue {
+                            name: header.name,
+                            value: header.value,
+                        })
+                        .collect(),
+                ),
             ),
-        )),
+        })
+    };
+    let finalization_result = interpreter.finalize_test_case().map_err(RequestError::from);
+    match (body_result, finalization_result) {
+        (Err(body_error), _) => Err(body_error),
+        (Ok(_), Err(finalization_error)) => Err(finalization_error),
+        (Ok(response), Ok(())) => Ok(response),
     }
 }
 

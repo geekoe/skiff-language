@@ -220,6 +220,7 @@ impl TargetCollector<'_> {
                             package_requirement_alias: alias,
                             package_callable_id: callable.callable_id().clone(),
                             expected_local_abi: expected_local_abi.clone(),
+                            exact_signature: callable.signature().cloned(),
                         };
                     }
                     ResolvedDependencyAnalysisTarget::Contract {

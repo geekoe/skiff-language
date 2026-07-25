@@ -5316,6 +5316,7 @@ mod tests {
                         },
                     ),
                 ]),
+                implementation_symbols: BTreeMap::new(),
             },
             package_schema_index: skiff_artifact_model::PackageSchemaIndexRef {
                 package_id: "llm-api".to_string(),

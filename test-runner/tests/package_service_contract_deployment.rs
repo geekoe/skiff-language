@@ -310,9 +310,10 @@ packages:
     version: 1.0.0
     alias: leaf
 "#,
-        None,
+        Some("run: main.run\n"),
         Some(
-            "type HelperRecord { id: string }\n\
+            "function run(input: string) -> string { return input }\n\
+             type HelperRecord { id: string }\n\
              db object HelperRecord { primary key(id) }\n",
         ),
     );
@@ -355,7 +356,9 @@ packages:
 
     fs::write(
         consumer.join("main.test.skiff"),
-        "test \"transitive closure\" { assert true }\n",
+        "test \"transitive closure\" effects {\n\
+           helper/run { expect: \"input\", respond: \"mock\" }\n\
+         } { assert helper/run(\"input\") == \"mock\" }\n",
     )
     .unwrap();
     let source_before_publish = read_tree(&artifacts);

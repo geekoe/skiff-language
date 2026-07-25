@@ -97,6 +97,7 @@ impl Evaluator<'_, '_> {
                 package_requirement_alias,
                 package_callable_id,
                 expected_local_abi,
+                ..
             }) => {
                 let Some(callable) = self.dependency_analysis.package_callable(
                     &package_requirement_alias,

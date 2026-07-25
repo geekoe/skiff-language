@@ -47,6 +47,7 @@ pub mod service_dispatch;
 pub mod source_context;
 pub mod spawn_ops;
 pub mod stream_callback;
+mod test_effect_registry;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod type_descriptor;
@@ -253,6 +254,8 @@ pub struct Interpreter {
     _stream_runtime_owner: Option<capabilities::StreamRuntimeOwner>,
     pub http_options: HttpRuntimeOptions,
     test_effect_doubles: TestEffectDoubleContext,
+    test_effects_enabled: bool,
+    runtime_test_effects: test_effect_registry::RuntimeTestEffectRegistry,
     /// Stream-producer calls whose result was bound to a value (e.g. `const s =
     /// producer(...)`) instead of being consumed inline by a `for-in`. The
     /// prepared producer is parked here keyed by the stream id it feeds, and is
@@ -304,6 +307,8 @@ impl Interpreter {
             _stream_runtime_owner: Some(stream_runtime_owner),
             http_options: HttpRuntimeOptions::from_env(),
             test_effect_doubles,
+            test_effects_enabled: false,
+            runtime_test_effects: Default::default(),
             deferred_stream_producers: program_stream::DeferredStreamProducerRegistry::default(),
         }
     }
@@ -326,6 +331,8 @@ impl Interpreter {
             _stream_runtime_owner: Some(stream_runtime_owner),
             http_options: HttpRuntimeOptions::from_env(),
             test_effect_doubles,
+            test_effects_enabled: true,
+            runtime_test_effects: Default::default(),
             deferred_stream_producers: program_stream::DeferredStreamProducerRegistry::default(),
         }
     }
@@ -441,6 +448,8 @@ impl Interpreter {
             _stream_runtime_owner: Some(stream_runtime_owner),
             http_options,
             test_effect_doubles,
+            test_effects_enabled,
+            runtime_test_effects: Default::default(),
             deferred_stream_producers: program_stream::DeferredStreamProducerRegistry::default(),
         }
     }
@@ -466,6 +475,8 @@ impl Interpreter {
             _stream_runtime_owner: Some(stream_runtime_owner),
             http_options,
             test_effect_doubles,
+            test_effects_enabled,
+            runtime_test_effects: Default::default(),
             deferred_stream_producers: program_stream::DeferredStreamProducerRegistry::default(),
         }
     }
@@ -478,6 +489,15 @@ impl Interpreter {
         self.test_effect_doubles.ensure_fully_consumed()
     }
 
+    pub fn finalize_test_case(&self) -> Result<()> {
+        let runtime_result = self.runtime_test_effects.finalize();
+        let legacy_result = self.test_effect_doubles.finalize();
+        match (runtime_result, legacy_result) {
+            (Err(error), _) => Err(error),
+            (Ok(()), result) => result,
+        }
+    }
+
     pub(crate) fn clone_for_stream_producer(&self) -> Self {
         Self {
             program: self.program.clone(),
@@ -486,6 +506,8 @@ impl Interpreter {
             _stream_runtime_owner: None,
             http_options: self.http_options.clone(),
             test_effect_doubles: self.test_effect_doubles.clone(),
+            test_effects_enabled: self.test_effects_enabled,
+            runtime_test_effects: self.runtime_test_effects.clone(),
             deferred_stream_producers: self.deferred_stream_producers.clone(),
         }
     }
