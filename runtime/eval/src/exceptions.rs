@@ -666,6 +666,27 @@ pub fn catch_identity_matches(identity: &CatchIdentity, leaves: &[CatchIdentity]
     leaves.iter().any(|leaf| leaf == identity)
 }
 
+/// Admits only exact identity preservation or exact nominal-to-concrete
+/// named-union promotion in the supplied target context.
+pub(crate) fn exact_target_accepts_catch_identity(
+    actual: &CatchIdentity,
+    target: &CatchIdentity,
+) -> bool {
+    if actual == target {
+        return true;
+    }
+    matches!(
+        (actual, target),
+        (
+            CatchIdentity::Nominal(actual),
+            CatchIdentity::NamedUnionBranch {
+                branch: NamedUnionBranchIdentity::ConcreteNominal { identity },
+                ..
+            },
+        ) if actual == identity
+    )
+}
+
 fn platform_builtin_for_addr(
     addr: &TypeAddr,
     program: ProgramTypeView<'_>,

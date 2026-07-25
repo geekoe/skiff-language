@@ -128,6 +128,34 @@ impl<'a> EvalTypeProjection<'a> {
         }
     }
 
+    pub fn representation_wrap_target_plan(
+        &self,
+        current_addr: &ExecutableAddr,
+        type_ref: &LinkedTypeRef,
+        substitutions: &TypeSubstitutions,
+    ) -> Result<RuntimeTypePlan> {
+        let plan = self.plan_from_linked_nested_ref_with_substitutions(
+            type_ref,
+            current_addr,
+            substitutions,
+        )?;
+        if !matches!(
+            plan.node(),
+            skiff_runtime_model::type_plan::RuntimeTypeNode::Representation { .. }
+        ) {
+            return Err(RuntimeError::InvalidArtifact(
+                "RepresentationWrap target did not resolve to an exact representation declaration"
+                    .to_string(),
+            ));
+        }
+        if !matches!(plan.catch_identity(), Some(CatchIdentity::Nominal(_))) {
+            return Err(RuntimeError::InvalidArtifact(
+                "RepresentationWrap target is missing its exact nominal identity".to_string(),
+            ));
+        }
+        Ok(plan)
+    }
+
     pub fn catch_type_leaves(
         &self,
         catch_type: &LinkedTypeRef,

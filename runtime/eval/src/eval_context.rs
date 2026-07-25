@@ -48,7 +48,8 @@ use super::{
     runtime_ops::{
         runtime_array_from_carriers, runtime_array_item_carriers, runtime_carrier_for_plan,
         runtime_from_wire, runtime_map_from_carriers, runtime_member_access_carrier,
-        runtime_object_from_carriers, runtime_to_wire, runtime_to_wire_required_plan,
+        runtime_object_from_carriers, runtime_representation_wrap_for_plan, runtime_to_wire,
+        runtime_to_wire_required_plan,
     },
     spawn_ops,
     test_effect_registry::{RegisteredTestEffect, RegisteredTestEffectOutcome, TestEffectTarget},
@@ -508,6 +509,15 @@ impl<'a> EvalContext<'a> {
                 .map(Into::into),
             LinkedExprIr::Construct { type_ref, fields } => {
                 self.eval_program_construct(type_ref, fields).await
+            }
+            LinkedExprIr::RepresentationWrap { value, type_ref } => {
+                let value = self.eval_program_expr_ref(*value).await?;
+                let plan = self.type_projection().representation_wrap_target_plan(
+                    self.addr,
+                    type_ref,
+                    &self.env.type_substitutions,
+                )?;
+                runtime_representation_wrap_for_plan(value, &plan, "representation wrap", self.heap)
             }
             LinkedExprIr::InterfaceBox {
                 value,
