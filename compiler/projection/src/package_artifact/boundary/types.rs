@@ -245,6 +245,7 @@ fn validate_local_type_closure(
     let guards = NoTypeClosureGuards;
     let walker = TypeClosureWalker::new(&resolver, &guards);
     let mut policy = BoundaryProjectionTypePolicy {
+        file_ir_units,
         public_type_ids,
         resolved_package_schemas,
     };
@@ -254,6 +255,7 @@ fn validate_local_type_closure(
 }
 
 struct BoundaryProjectionTypePolicy<'a> {
+    file_ir_units: &'a [skiff_artifact_model::FileIrUnit],
     public_type_ids: &'a BTreeMap<(String, String), ContractTypeRef>,
     resolved_package_schemas: &'a [ResolvedPackageSchema],
 }
@@ -291,8 +293,16 @@ impl TypeClosurePolicy for BoundaryProjectionTypePolicy<'_> {
                 project_package_symbol(symbol, self.resolved_package_schemas)?;
                 Ok(TypeClosureControl::Prune)
             }
-            TypeRefIr::LocalType { .. }
-            | TypeRefIr::PublicationType { .. }
+            TypeRefIr::LocalType { type_index } => {
+                project_public_local_type(
+                    visit.module_path,
+                    *type_index,
+                    self.file_ir_units,
+                    self.public_type_ids,
+                )?;
+                Ok(TypeClosureControl::Prune)
+            }
+            TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
             | TypeRefIr::TypeParam { .. } => {
@@ -379,11 +389,51 @@ fn project_local_type(
         TypeRefIr::PackageSymbol { symbol } => {
             project_package_symbol(symbol, resolved_package_schemas)
         }
-        TypeRefIr::LocalType { .. }
-        | TypeRefIr::PublicationType { .. }
+        TypeRefIr::LocalType { type_index } => {
+            project_public_local_type(owner_module, *type_index, file_ir_units, public_type_ids)
+        }
+        TypeRefIr::PublicationType { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::TypeParam { .. } => Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
     }
+}
+
+fn project_public_local_type(
+    module_path: &str,
+    type_index: u32,
+    file_ir_units: &[skiff_artifact_model::FileIrUnit],
+    public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
+) -> Result<ContractTypeRef, BoundaryUnavailableReason> {
+    let units = file_ir_units
+        .iter()
+        .filter(|unit| unit.module_path == module_path)
+        .collect::<Vec<_>>();
+    let [unit] = units.as_slice() else {
+        return Err(BoundaryUnavailableReason::UnsupportedBoundaryType);
+    };
+    let declarations = unit
+        .declarations
+        .types
+        .iter()
+        .filter(|(_, declaration)| declaration.type_index == type_index)
+        .collect::<Vec<_>>();
+    let [(binding_name, _declaration)] = declarations.as_slice() else {
+        return Err(BoundaryUnavailableReason::UnsupportedBoundaryType);
+    };
+    let Some(type_decl) = unit.type_table.get(type_index as usize) else {
+        return Err(BoundaryUnavailableReason::UnsupportedBoundaryType);
+    };
+    if type_decl.name != **binding_name {
+        return Err(BoundaryUnavailableReason::UnsupportedBoundaryType);
+    }
+    let projected = public_type_ids
+        .get(&(module_path.to_string(), (*binding_name).clone()))
+        .cloned()
+        .ok_or(BoundaryUnavailableReason::UnsupportedBoundaryType)?;
+    if !matches!(projected, ContractTypeRef::PackageSchema { .. }) {
+        return Err(BoundaryUnavailableReason::UnsupportedBoundaryType);
+    }
+    Ok(projected)
 }
 
 fn project_container(
@@ -484,8 +534,56 @@ mod tests {
     use skiff_artifact_model::{
         ContractTypeDescriptor, ContractTypeNameability, PackageBuildId, PackageLocalAbiIdentity,
         PackageSchemaCanonicalDescriptor, PackageSchemaIndex, PackageSchemaIndexEntry,
-        PackageSchemaTypeId, PackageSchemaTypeRecord,
+        PackageSchemaTypeId, PackageSchemaTypeRecord, TypeDeclIr, TypeDeclarationIr,
+        TypeDescriptorIr,
     };
+
+    fn public_literal_union_fixture() -> (
+        Vec<skiff_artifact_model::FileIrUnit>,
+        BTreeMap<(String, String), ContractTypeRef>,
+        ContractTypeRef,
+    ) {
+        let mut unit = skiff_artifact_model::FileIrUnit::empty("api", "source-hash");
+        unit.declarations.types.insert(
+            "Result".to_string(),
+            TypeDeclarationIr {
+                type_index: 0,
+                symbol: "Result".to_string(),
+                source_span: None,
+            },
+        );
+        unit.type_table.push(TypeDeclIr {
+            name: "Result".to_string(),
+            descriptor: TypeDescriptorIr::Union {
+                variants: vec![
+                    TypeRefIr::Literal {
+                        value: LiteralIr::String {
+                            value: "complete".to_string(),
+                        },
+                    },
+                    TypeRefIr::Literal {
+                        value: LiteralIr::String {
+                            value: "incomplete".to_string(),
+                        },
+                    },
+                ],
+            },
+            type_params: Vec::new(),
+            discriminator: None,
+            implements: Vec::new(),
+            source_span: None,
+        });
+        let projected = ContractTypeRef::package_schema(
+            "example.llm",
+            "ResponsesMaterializationResult",
+            PackageSchemaTypeId::new("package-schema-type:result"),
+        );
+        (
+            vec![unit],
+            BTreeMap::from([(("api".to_string(), "Result".to_string()), projected.clone())]),
+            projected,
+        )
+    }
 
     fn dependency_schema() -> ResolvedPackageSchema {
         let type_id = PackageSchemaTypeId::new("package-schema-type:http-request");
@@ -612,6 +710,102 @@ mod tests {
                 &[schema.clone(), schema],
             ),
             Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+        );
+    }
+
+    #[test]
+    fn published_local_nominal_projects_without_expanding_literal_union() {
+        let (units, public_types, expected) = public_literal_union_fixture();
+        let local = TypeRefIr::LocalType { type_index: 0 };
+        assert_eq!(
+            project_local_type("api", &local, &units, &public_types, &[]),
+            Ok(expected.clone())
+        );
+        assert_eq!(
+            project_local_type(
+                "api",
+                &TypeRefIr::Builtin {
+                    name: "Array".to_string(),
+                    args: vec![local.clone()],
+                },
+                &units,
+                &public_types,
+                &[],
+            ),
+            Ok(ContractTypeRef::Builtin {
+                name: "Array".to_string(),
+                arguments: vec![expected],
+            })
+        );
+        assert_eq!(
+            validate_local_type_closure("api", &local, &units, &public_types, &[]),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn unpublished_missing_and_ambiguous_local_nominals_fail_closed() {
+        let (units, public_types, _) = public_literal_union_fixture();
+        let local = TypeRefIr::LocalType { type_index: 0 };
+        assert_eq!(
+            project_local_type("api", &local, &units, &BTreeMap::new(), &[]),
+            Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+        );
+        assert_eq!(
+            project_local_type("missing", &local, &units, &public_types, &[]),
+            Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+        );
+        assert_eq!(
+            project_local_type(
+                "api",
+                &local,
+                &[units[0].clone(), units[0].clone()],
+                &public_types,
+                &[],
+            ),
+            Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+        );
+
+        let mut forged = units;
+        forged[0].type_table[0].name = "Other".to_string();
+        assert_eq!(
+            project_local_type("api", &local, &forged, &public_types, &[]),
+            Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+        );
+    }
+
+    #[test]
+    fn local_nominal_normalization_does_not_relax_literal_or_callback_rules() {
+        let (units, public_types, _) = public_literal_union_fixture();
+        assert_eq!(
+            project_local_type(
+                "api",
+                &TypeRefIr::Literal {
+                    value: LiteralIr::String {
+                        value: "complete".to_string(),
+                    },
+                },
+                &units,
+                &public_types,
+                &[],
+            ),
+            Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+        );
+        assert_eq!(
+            project_local_type(
+                "api",
+                &TypeRefIr::Function {
+                    params: vec![skiff_artifact_model::FunctionTypeParamIr {
+                        name: "value".to_string(),
+                        ty: TypeRefIr::LocalType { type_index: 0 },
+                    }],
+                    return_type: Box::new(TypeRefIr::LocalType { type_index: 0 }),
+                },
+                &units,
+                &public_types,
+                &[],
+            ),
+            Err(BoundaryUnavailableReason::CallbackAdapterUnavailable)
         );
     }
 }
