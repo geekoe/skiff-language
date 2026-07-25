@@ -378,6 +378,58 @@ impl<'a> AssemblyCodeLinker<'a> {
         Ok(())
     }
 
+    fn link_representation_target(
+        &self,
+        code_slot: usize,
+        file_index: usize,
+        type_ref: &mut LinkedTypeRef,
+    ) -> anyhow::Result<()> {
+        if linked_type_ref_contains_type_param(type_ref) {
+            anyhow::bail!("representation wrap target contains an unresolved type parameter");
+        }
+        if !matches!(
+            type_ref,
+            LinkedTypeRef::LocalType { .. }
+                | LinkedTypeRef::PublicationType { .. }
+                | LinkedTypeRef::ServiceSymbol { .. }
+                | LinkedTypeRef::PackageSymbol { .. }
+                | LinkedTypeRef::AppliedNominal { .. }
+                | LinkedTypeRef::Address { .. }
+        ) {
+            anyhow::bail!(
+                "representation wrap target must resolve to a plain or applied nominal type"
+            );
+        }
+        self.link_type_ref(code_slot, file_index, type_ref)?;
+        if linked_type_ref_contains_type_param(type_ref) {
+            anyhow::bail!("representation wrap target contains an unresolved type parameter");
+        }
+        let addr = match type_ref {
+            LinkedTypeRef::Address { addr } => addr,
+            LinkedTypeRef::AppliedNominal {
+                base: LinkedNominalTypeRefBase::Address { addr },
+                ..
+            } => addr,
+            _ => {
+                anyhow::bail!(
+                    "representation wrap target must resolve to a plain or applied nominal type"
+                )
+            }
+        };
+        let declaration = self.addresses.type_declaration(addr)?;
+        if !matches!(
+            declaration.descriptor,
+            LinkedTypeDescriptor::Representation { .. }
+        ) {
+            anyhow::bail!(
+                "representation wrap target {} resolves to {} instead of representation",
+                declaration.name,
+                linked_type_descriptor_kind(&declaration.descriptor)
+            );
+        }
+        Ok(())
+    }
+
     fn validate_plain_nominal_addr(
         &self,
         addr: &skiff_runtime_linked_program::TypeAddr,
@@ -472,6 +524,9 @@ impl<'a> AssemblyCodeLinker<'a> {
                     payload_type: type_ref,
                     ..
                 } => self.link_type_ref(code_slot, file_index, type_ref)?,
+                LinkedExprIr::RepresentationWrap { type_ref, .. } => {
+                    self.link_representation_target(code_slot, file_index, type_ref)?;
+                }
                 LinkedExprIr::InterfaceBox {
                     interface, source, ..
                 } => {
@@ -839,5 +894,41 @@ impl<'a> AssemblyCodeLinker<'a> {
             *target = LinkedCallTarget::Executable { addr };
         }
         Ok(())
+    }
+}
+
+fn linked_type_ref_contains_type_param(type_ref: &LinkedTypeRef) -> bool {
+    match type_ref {
+        LinkedTypeRef::TypeParam { .. } => true,
+        LinkedTypeRef::Native { args, .. } => args.iter().any(linked_type_ref_contains_type_param),
+        LinkedTypeRef::AppliedNominal { arguments, .. }
+        | LinkedTypeRef::Union { items: arguments } => {
+            arguments.iter().any(linked_type_ref_contains_type_param)
+        }
+        LinkedTypeRef::Record { fields } => {
+            fields.values().any(linked_type_ref_contains_type_param)
+        }
+        LinkedTypeRef::Nullable { inner } => linked_type_ref_contains_type_param(inner),
+        LinkedTypeRef::AnyInterface { interface } => interface
+            .canonical_type_args
+            .iter()
+            .any(linked_type_ref_contains_type_param),
+        LinkedTypeRef::Function {
+            params,
+            return_type,
+        } => {
+            params
+                .iter()
+                .any(|param| linked_type_ref_contains_type_param(&param.ty))
+                || linked_type_ref_contains_type_param(return_type)
+        }
+        LinkedTypeRef::LocalType { .. }
+        | LinkedTypeRef::PublicationType { .. }
+        | LinkedTypeRef::ServiceSymbol { .. }
+        | LinkedTypeRef::PackageSymbol { .. }
+        | LinkedTypeRef::PackageSchema { .. }
+        | LinkedTypeRef::Literal { .. }
+        | LinkedTypeRef::DbObjectSymbol { .. }
+        | LinkedTypeRef::Address { .. } => false,
     }
 }

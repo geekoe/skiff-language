@@ -882,6 +882,7 @@ pub enum PatternIr {
 #[serde(
     rename_all = "camelCase",
     rename_all_fields = "camelCase",
+    deny_unknown_fields,
     tag = "kind"
 )]
 pub enum LinkedExprIr {
@@ -911,6 +912,10 @@ pub enum LinkedExprIr {
     Construct {
         type_ref: LinkedTypeRef,
         fields: BTreeMap<String, ExprRefIr>,
+    },
+    RepresentationWrap {
+        value: ExprRefIr,
+        type_ref: LinkedTypeRef,
     },
     InterfaceBox {
         value: ExprRefIr,
@@ -1845,5 +1850,81 @@ mod applied_nominal_tests {
             }]
         });
         assert!(serde_json::from_value::<LinkedTypeDescriptor>(legacy_branch_map).is_err());
+    }
+}
+
+#[cfg(test)]
+mod representation_wrap_tests {
+    use super::*;
+
+    fn builtin(name: &str) -> LinkedTypeRef {
+        LinkedTypeRef::Native {
+            name: name.to_string(),
+            args: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn representation_wrap_wire_round_trips_exact_child_and_applied_target() {
+        let expected = LinkedExprIr::RepresentationWrap {
+            value: ExprRefIr { expression: 17 },
+            type_ref: LinkedTypeRef::AppliedNominal {
+                base: LinkedNominalTypeRefBase::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::Dependency {
+                            dependency_ref: "models".to_string(),
+                        },
+                        symbol_path: "api.Representation".to_string(),
+                        abi_expectation: Some("local-abi:models".to_string()),
+                    },
+                },
+                arguments: vec![builtin("string")],
+            },
+        };
+
+        let value = serde_json::to_value(&expected).unwrap();
+        assert_eq!(value["kind"], "representationWrap");
+        assert_eq!(value["value"]["expression"], 17);
+        assert_eq!(value["typeRef"]["kind"], "appliedNominal");
+        assert_eq!(value["typeRef"]["arguments"][0]["name"], "string");
+        assert_eq!(
+            serde_json::from_value::<LinkedExprIr>(value).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn representation_wrap_wire_requires_only_value_and_type_ref() {
+        let valid = serde_json::json!({
+            "kind": "representationWrap",
+            "value": { "expression": 1 },
+            "typeRef": {
+                "kind": "localType",
+                "typeIndex": 2
+            }
+        });
+        for missing in ["value", "typeRef"] {
+            let mut candidate = valid.clone();
+            candidate.as_object_mut().unwrap().remove(missing);
+            assert!(serde_json::from_value::<LinkedExprIr>(candidate).is_err());
+        }
+        for extra in ["display", "shape", "fields", "site"] {
+            let mut candidate = valid.clone();
+            candidate[extra] = serde_json::json!("forbidden");
+            assert!(serde_json::from_value::<LinkedExprIr>(candidate).is_err());
+        }
+    }
+
+    #[test]
+    fn representation_wrap_applied_arguments_are_structurally_distinct() {
+        let wrap = |argument| LinkedExprIr::RepresentationWrap {
+            value: ExprRefIr { expression: 0 },
+            type_ref: LinkedTypeRef::AppliedNominal {
+                base: LinkedNominalTypeRefBase::LocalType { type_index: 4 },
+                arguments: vec![argument],
+            },
+        };
+
+        assert_ne!(wrap(builtin("string")), wrap(builtin("number")));
     }
 }
