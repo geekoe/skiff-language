@@ -833,14 +833,17 @@ impl TypeResolutionModel {
                 source_text: type_ref_debug_text(ty),
             });
         }
-        if ty.source_text.contains('<') {
-            if let Some(field_ty) = self
-                .resolve_constructor_target_text(&ty.source_text, context)
-                .ok()
-                .and_then(|target| target.fields.get(field).cloned())
-            {
-                return Some(field_ty);
-            }
+        // A nominal record's canonical shape deliberately expands aliases for
+        // validation and wire compatibility. Field projection must instead
+        // recover the declared field reference before consulting that shape,
+        // otherwise `Package.Record.field: Package.Alias` is widened to the
+        // alias descriptor (for example, a literal union).
+        if let Some(field_ty) = self
+            .resolve_constructor_target_text(&ty.source_text, context)
+            .ok()
+            .and_then(|target| target.fields.get(field).cloned())
+        {
+            return Some(field_ty);
         }
         if let Some(shape) = self.type_shape_ir(ty, context) {
             if let Some(field_ty) = record_field_type_from_ir(&shape, field) {
@@ -850,9 +853,7 @@ impl TypeResolutionModel {
                 });
             }
         }
-        self.resolve_constructor_target_text(&ty.source_text, context)
-            .ok()
-            .and_then(|target| target.fields.get(field).cloned())
+        None
     }
 
     pub fn type_shape_ir(

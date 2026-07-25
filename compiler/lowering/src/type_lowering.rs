@@ -303,6 +303,31 @@ pub(super) fn lower_type_ref(
     )
 }
 
+/// Lowers a declaration-owned type reference without replacing a named source
+/// alias by its representation. Record descriptors need that nominal edge for
+/// package schema identity; ordinary executable lowering still uses
+/// `lower_type_ref` and its representation expansion.
+pub(super) fn lower_type_ref_preserving_aliases(
+    ty: &TypeRef,
+    type_indices: &BTreeMap<String, u32>,
+    local_db_objects: &LocalDbObjectIndex,
+    publication_db_metadata: &PublicationDbMetadataIndex,
+    package_aliases: &BTreeMap<String, Vec<String>>,
+    external_type_symbols: &PublicationTypeSymbolIndex,
+    context: TypeLoweringContext<'_>,
+) -> Result<TypeRefIr> {
+    lower_type_text(
+        &ty.name,
+        type_indices,
+        local_db_objects,
+        publication_db_metadata,
+        package_aliases,
+        external_type_symbols,
+        &BTreeMap::new(),
+        context,
+    )
+}
+
 fn expand_source_alias_type_text(
     ty: &str,
     source_alias_targets: &BTreeMap<String, String>,

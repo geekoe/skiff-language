@@ -587,6 +587,89 @@ mod tests {
     }
 
     #[test]
+    fn record_field_keeps_same_package_nominal_reference() {
+        let file = FileIrRef::new("file", "types");
+        let exports = ProjectedPackageExportLinks {
+            exports: PackageExportIndex {
+                types: BTreeMap::from([
+                    (
+                        "example.pkg/Role".to_string(),
+                        TypeExport {
+                            file: file.clone(),
+                            type_index: 0,
+                            symbol: "Role".to_string(),
+                            is_interface: false,
+                            descriptor: Some(TypeDescriptorIr::Alias {
+                                target: TypeRefIr::Union {
+                                    items: vec![
+                                        TypeRefIr::Literal {
+                                            value: LiteralIr::String {
+                                                value: "user".to_string(),
+                                            },
+                                        },
+                                        TypeRefIr::Literal {
+                                            value: LiteralIr::String {
+                                                value: "assistant".to_string(),
+                                            },
+                                        },
+                                    ],
+                                },
+                            }),
+                            type_params: Vec::new(),
+                            interface_methods: Vec::new(),
+                        },
+                    ),
+                    (
+                        "example.pkg/Message".to_string(),
+                        TypeExport {
+                            file,
+                            type_index: 1,
+                            symbol: "Message".to_string(),
+                            is_interface: false,
+                            descriptor: Some(TypeDescriptorIr::Record {
+                                fields: BTreeMap::from([(
+                                    "role".to_string(),
+                                    TypeRefIr::ServiceSymbol {
+                                        symbol: ServiceSymbolRef {
+                                            module_path: "types".to_string(),
+                                            symbol: "Role".to_string(),
+                                        },
+                                    },
+                                )]),
+                            }),
+                            type_params: Vec::new(),
+                            interface_methods: Vec::new(),
+                        },
+                    ),
+                ]),
+                ..PackageExportIndex::default()
+            },
+            public_instances: Vec::new(),
+        };
+        let projected = project_package_schema("example.pkg", &exports, &[]).unwrap();
+        let role = projected
+            .records
+            .get(&projected.index.types["Role"].package_schema_type_id)
+            .unwrap();
+        let message = projected
+            .records
+            .get(&projected.index.types["Message"].package_schema_type_id)
+            .unwrap();
+        let ContractTypeDescriptor::Record { fields } = &message.canonical_descriptor.descriptor
+        else {
+            panic!("Message must remain a record");
+        };
+        assert_eq!(
+            fields["role"],
+            ContractTypeRef::package_schema(
+                "example.pkg",
+                "Role",
+                role.package_schema_type_id.clone()
+            )
+        );
+    }
+
+    #[test]
     fn package_id_ref_with_multiple_exact_bindings_fails_closed() {
         let (first, _) = external_schema("types1", "example.types", "User");
         let (second, _) = external_schema("types2", "example.types", "User");

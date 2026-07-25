@@ -1744,6 +1744,53 @@ impl<'a> OwnerChecker<'a> {
         let mut duplicate_fields = Vec::new();
         let mut unknown_fields = Vec::new();
         let mut type_mismatches = Vec::new();
+        let exact_field_types = self
+            .dependency_analysis
+            .and_then(|dependency_analysis| {
+                let direct = type_name.split_once('.').and_then(|(alias, stable_key)| {
+                    dependency_analysis.direct_package_type(alias, stable_key)
+                });
+                let projected = || {
+                    let PackageTypeRef::PackageSchema {
+                        package_id,
+                        stable_schema_key,
+                        package_schema_type_id,
+                    } = ContractProjectionState::project_resolved_type(
+                        &target.ty,
+                        self.type_resolution,
+                        dependency_analysis,
+                        &self.type_context,
+                    )
+                    .ok()?
+                    else {
+                        return None;
+                    };
+                    dependency_analysis.exact_package_type(
+                        &package_id,
+                        &stable_schema_key,
+                        &package_schema_type_id,
+                    )
+                };
+                direct.or_else(projected).and_then(|record| {
+                    let skiff_artifact_model::ContractTypeDescriptor::Record { fields } =
+                        &record.canonical_descriptor.descriptor
+                    else {
+                        return None;
+                    };
+                    Some(
+                        fields
+                            .iter()
+                            .map(|(name, ty)| {
+                                (
+                                    name.clone(),
+                                    contract_call_typing::package_type_ref_from_contract_type(ty),
+                                )
+                            })
+                            .collect::<BTreeMap<_, _>>(),
+                    )
+                })
+            })
+            .unwrap_or_default();
         for (index, (field_name, value_key)) in provided_field_keys.iter().enumerate() {
             let name_span = record_field_name_source_span(source_fact, index);
             let value_span = record_field_value_source_span(source_fact, index);
@@ -1804,7 +1851,7 @@ impl<'a> OwnerChecker<'a> {
                     value_key,
                     actual,
                     expected,
-                    None,
+                    exact_field_types.get(field_name),
                     &context,
                     record_field_value_source_span(source_fact, index),
                 ) {

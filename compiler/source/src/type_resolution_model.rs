@@ -1103,15 +1103,22 @@ impl TypeResolutionModel {
                     PackageRefIr::Dependency { dependency_ref } => dependency_ref.as_str(),
                     PackageRefIr::PackageId { package_id } => package_id.as_str(),
                 };
-                if let Some(resolution) =
-                    self.package_type_resolution(dependency_ref, &symbol.symbol_path)
-                {
-                    return canonical_named_symbol(&source_path(
-                        &resolution.module_path,
-                        &resolution.name,
-                    ));
+                let package_id = self
+                    .package_dependencies
+                    .get(dependency_ref)
+                    .cloned()
+                    .unwrap_or_else(|| dependency_ref.to_string());
+                let symbol_path = self
+                    .package_type_resolution(dependency_ref, &symbol.symbol_path)
+                    .map(|resolution| source_path(&resolution.module_path, &resolution.name))
+                    .unwrap_or_else(|| symbol.symbol_path.clone());
+                TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId { package_id },
+                        symbol_path,
+                        abi_expectation: symbol.abi_expectation.clone(),
+                    },
                 }
-                canonical_named_symbol(&self.canonical_symbol_path(&symbol.symbol_path))
             }
             TypeRefIr::ServiceSymbol { symbol } => {
                 let module_path = symbol
@@ -5137,6 +5144,33 @@ mod tests {
         let tool_descriptor = TypeDescriptorIr::Record {
             fields: BTreeMap::from([("name".to_string(), TypeRefIr::builtin("string"))]),
         };
+        let role_descriptor = TypeDescriptorIr::Alias {
+            target: TypeRefIr::Union {
+                items: vec![
+                    TypeRefIr::Literal {
+                        value: LiteralIr::String {
+                            value: "user".to_string(),
+                        },
+                    },
+                    TypeRefIr::Literal {
+                        value: LiteralIr::String {
+                            value: "assistant".to_string(),
+                        },
+                    },
+                ],
+            },
+        };
+        let message_descriptor = TypeDescriptorIr::Record {
+            fields: BTreeMap::from([(
+                "role".to_string(),
+                TypeRefIr::ServiceSymbol {
+                    symbol: ServiceSymbolRef {
+                        module_path: "llm".to_string(),
+                        symbol: "LlmRole".to_string(),
+                    },
+                },
+            )]),
+        };
         let artifact = PackageArtifact {
             schema_version: "skiff-package-artifact-v2".to_string(),
             package_id: "llm-api".to_string(),
@@ -5167,6 +5201,26 @@ mod tests {
                             interface_methods: Vec::new(),
                         },
                     ),
+                    (
+                        "LlmRole".to_string(),
+                        PackageLocalAbiSymbol::Type {
+                            local_type_id: "type:LlmRole".to_string(),
+                            descriptor: role_descriptor.clone(),
+                            is_interface: false,
+                            type_params: Vec::new(),
+                            interface_methods: Vec::new(),
+                        },
+                    ),
+                    (
+                        "LlmMessage".to_string(),
+                        PackageLocalAbiSymbol::Type {
+                            local_type_id: "type:LlmMessage".to_string(),
+                            descriptor: message_descriptor.clone(),
+                            is_interface: false,
+                            type_params: Vec::new(),
+                            interface_methods: Vec::new(),
+                        },
+                    ),
                 ]),
             },
             package_schema_index: skiff_artifact_model::PackageSchemaIndexRef {
@@ -5191,11 +5245,35 @@ mod tests {
                     (
                         "tools.ToolDeclaration".to_string(),
                         TypeExport {
-                            file,
+                            file: file.clone(),
                             type_index: 7,
                             symbol: "ToolDeclaration".to_string(),
                             is_interface: false,
                             descriptor: Some(tool_descriptor),
+                            type_params: Vec::new(),
+                            interface_methods: Vec::new(),
+                        },
+                    ),
+                    (
+                        "LlmRole".to_string(),
+                        TypeExport {
+                            file: file.clone(),
+                            type_index: 8,
+                            symbol: "LlmRole".to_string(),
+                            is_interface: false,
+                            descriptor: Some(role_descriptor),
+                            type_params: Vec::new(),
+                            interface_methods: Vec::new(),
+                        },
+                    ),
+                    (
+                        "LlmMessage".to_string(),
+                        TypeExport {
+                            file,
+                            type_index: 9,
+                            symbol: "LlmMessage".to_string(),
+                            is_interface: false,
+                            descriptor: Some(message_descriptor),
                             type_params: Vec::new(),
                             interface_methods: Vec::new(),
                         },
@@ -5269,6 +5347,35 @@ mod tests {
             &PublicationTypeSymbolIndex::default(),
         )
         .expect("artifact-only package interface facts should build");
+        let message = model
+            .resolve_type_text("llmApi.LlmMessage", &context())
+            .expect("package record should resolve");
+        let role = model
+            .record_field_type(&message, "role", &context())
+            .expect("package record projection should recover its nominal field");
+        let expected_role = model
+            .resolve_type_text("llmApi.LlmRole", &context())
+            .expect("package alias should resolve");
+        assert_eq!(role.ir, expected_role.ir);
+        assert!(model.assignable(&role, &expected_role));
+        assert!(
+            !model.assignable(
+                &ResolvedTypeRef {
+                    ir: TypeRefIr::PackageSymbol {
+                        symbol: PackageSymbolRef {
+                            package: PackageRefIr::PackageId {
+                                package_id: "other.example/llm-api".to_string(),
+                            },
+                            symbol_path: "LlmRole".to_string(),
+                            abi_expectation: None,
+                        },
+                    },
+                    source_text: "otherRole.LlmRole".to_string(),
+                },
+                &expected_role,
+            ),
+            "same-shaped type from another package owner must remain nominally distinct"
+        );
         let actual = model
             .resolve_type_text("LocalClient", &context())
             .expect("local implementation type should resolve");
