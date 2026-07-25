@@ -685,6 +685,7 @@ pub fn redact_event(
     event.request_id = truncate_option_string(event.request_id, string_max_chars);
     event.client_request_id = truncate_option_string(event.client_request_id, string_max_chars);
     event.trace_id = truncate_option_string(event.trace_id, string_max_chars);
+    event.error_id = truncate_option_string(event.error_id, string_max_chars);
     event.span_id = truncate_option_string(event.span_id, string_max_chars);
     event.parent_span_id = truncate_option_string(event.parent_span_id, string_max_chars);
     event.target = truncate_option_string(event.target, string_max_chars);
@@ -698,10 +699,15 @@ pub fn redact_event(
 
     let original_size = serialized_event_size(&event);
     if original_size > event_max_bytes {
-        event.attrs = Some(Map::from_iter([
+        let truncation = Map::from_iter([
             ("truncated".to_string(), Value::Bool(true)),
             ("originalSizeBytes".to_string(), json!(original_size)),
-        ]));
+        ]);
+        event.attrs = Some(truncation.clone());
+        if event.error.is_some() {
+            event.error = Some(truncation);
+        }
+        event.message = None;
     }
 
     event

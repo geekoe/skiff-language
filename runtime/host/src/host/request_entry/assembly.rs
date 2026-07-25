@@ -158,31 +158,53 @@ impl RuntimeHost {
                     response_into_transport_message(request_id, response)
                 }
                 Err(request_error) => {
-                    let response_error = request_error.response_error();
-                    let error = request_error_into_runtime_error(request_error);
-                    error!(
-                        event = "runtime.assembly_request_error",
-                        request_id = %request_id,
-                        error = %error
-                    );
-                    let event_name = if error.is_request_cancelled() {
-                        "request.cancel"
-                    } else {
-                        "request.error"
-                    };
-                    host.request_supervisor
-                        .complete_error(
-                            &supervised_request,
-                            event_name,
-                            &response_error,
-                            CompletionTrace::RUNTIME,
+                    if let Some(failure) = request_error.fixed_service_response_failure() {
+                        error!(
+                            event = "runtime.assembly_fixed_service_failure",
+                            request_id = %request_id,
+                            trace_id = %failure.error().envelope().trace_id(),
+                            error_id = %failure.error().envelope().error_id(),
+                        );
+                        host.request_supervisor
+                            .complete_fixed_service_failure(
+                                &supervised_request,
+                                "request.error",
+                                failure.error(),
+                                CompletionTrace::RUNTIME,
+                            )
+                            .await;
+                        response_event_into_transport_message(
+                            request_id,
+                            ResponseEvent::FixedServiceFailure(failure),
                         )
-                        .await;
-                    response_event_into_transport_message(
-                        request_id,
-                        ResponseEvent::Error(response_error),
-                    )
-                    .map(Some)
+                        .map(Some)
+                    } else {
+                        let response_error = request_error.response_error();
+                        let error = request_error_into_runtime_error(request_error);
+                        error!(
+                            event = "runtime.assembly_request_error",
+                            request_id = %request_id,
+                            error = %error
+                        );
+                        let event_name = if error.is_request_cancelled() {
+                            "request.cancel"
+                        } else {
+                            "request.error"
+                        };
+                        host.request_supervisor
+                            .complete_error(
+                                &supervised_request,
+                                event_name,
+                                &response_error,
+                                CompletionTrace::RUNTIME,
+                            )
+                            .await;
+                        response_event_into_transport_message(
+                            request_id,
+                            ResponseEvent::Error(response_error),
+                        )
+                        .map(Some)
+                    }
                 }
             };
             match writer_message {
@@ -340,6 +362,8 @@ impl RuntimeHost {
                 .as_str()
                 .to_string(),
         );
+        super::super::request_trace::RequestTraceFields::from_request(request)
+            .apply_to_context(&mut context);
         context
     }
 }

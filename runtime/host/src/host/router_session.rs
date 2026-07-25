@@ -25,15 +25,16 @@ use skiff_runtime_transport::{
     control_mapper::encode_outbound_control_message,
     control_response_mapper::spawn_claim_response_control_payload,
     protocol::{
-        decode_router_bootstrap_frame_header, decode_typed_binary_frame,
-        ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader,
-        ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader,
-        ActorSpawnRuntimeErrorFrameHeader, RequestCancelFrameHeader, ResponseChunkFrameHeader,
-        ResponseEndFrameHeader, ResponseErrorFrameHeader, ResponseStartFrameHeader,
-        RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
-        SpawnClaimResponseFrameHeader, SpawnCompleteResponseFrameHeader,
-        SpawnFailResponseFrameHeader, SpawnRenewResponseFrameHeader,
-        SpawnSubmitResponseFrameHeader, TypedEnvelope,
+        decode_response_error_frame, decode_router_bootstrap_frame_header,
+        decode_typed_binary_frame, ActorFindResponseFrameHeader,
+        ActorGetOrCreateResponseFrameHeader, ActorRemoveResponseFrameHeader,
+        ActorReplaceResponseFrameHeader, ActorSpawnRuntimeErrorFrameHeader,
+        RequestCancelFrameHeader, ResponseChunkFrameHeader, ResponseEndFrameHeader,
+        ResponseStartFrameHeader, RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader,
+        RuntimeRegisteredFrameHeader, SpawnClaimResponseFrameHeader,
+        SpawnCompleteResponseFrameHeader, SpawnFailResponseFrameHeader,
+        SpawnRenewResponseFrameHeader, SpawnSubmitResponseFrameHeader, TypedEnvelope,
+        ValidatedResponseErrorFrame,
     },
     request_mapper::request_cancel_from_frame_header,
     response_mapper::{
@@ -548,19 +549,19 @@ async fn dispatch_router_binary_frame_inner(
             }
         }
         "response.error" => {
-            let (header, payload) = decode_typed_binary_frame::<ResponseErrorFrameHeader>(bytes)
+            let (header, validated) = decode_response_error_frame(bytes)
                 .map_err(super::transport_error_into_runtime_error)?;
-            if !payload.is_empty() {
-                return Err(RuntimeError::Decode(
-                    "response.error binary frame payload must be empty".to_string(),
-                ));
-            }
-            if let Some(sender) = host.outbound_requests.sender(&header.request_id) {
-                let _ = sender.send(response_error_to_outbound(&header));
+            let request_id = header.request_id().to_string();
+            let payload = match validated {
+                ValidatedResponseErrorFrame::FixedService(error) => error.into_encoded_bytes(),
+                ValidatedResponseErrorFrame::Control(_) => Vec::new(),
+            };
+            if let Some(sender) = host.outbound_requests.sender(&request_id) {
+                let _ = sender.send(response_error_to_outbound(&header, payload));
             } else {
                 warn!(
                     event = "runtime.unmatched_outbound_response_error",
-                    request_id = %header.request_id
+                    request_id = %request_id
                 );
             }
         }

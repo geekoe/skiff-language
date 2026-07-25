@@ -1,9 +1,13 @@
 use serde_json::Value;
 use skiff_runtime_capability_context::{
-    ExecutionBudgetFailure, ExecutionBudgetReason, ExecutionControlError, ResponseError,
+    ExecutionBudgetFailure, ExecutionBudgetReason, ExecutionControlError,
+    FixedServiceResponseFailure, ResponseError,
 };
 use skiff_runtime_eval::error::RuntimeError as EvalRuntimeError;
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{CatchIdentity, OpaqueServiceError, PlatformBuiltinErrorIdentity},
+};
 
 pub type RequestResult<T> = std::result::Result<T, RequestError>;
 
@@ -67,6 +71,23 @@ impl RequestError {
             status: payload.status,
             details: payload.details,
         }
+    }
+
+    /// Returns only the strict fixed service carrier held by eval.
+    ///
+    /// Generic response metadata is intentionally not inspected, so a control
+    /// error with matching code/message values can never be upgraded to fixed.
+    pub fn fixed_service_failure(&self) -> Option<&OpaqueServiceError> {
+        match self {
+            Self::Eval(error) => error.fixed_service_failure(),
+            _ => None,
+        }
+    }
+
+    pub fn fixed_service_response_failure(&self) -> Option<FixedServiceResponseFailure> {
+        self.fixed_service_failure()
+            .cloned()
+            .map(FixedServiceResponseFailure::new)
     }
 }
 
@@ -140,17 +161,17 @@ impl WirePayload for RequestError {
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
         match self {
             Self::Protocol { target, message } => Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 serde_json::json!({
                     "target": target,
                     "message": message,
                 }),
             )),
             Self::Cancelled => Some((
-                TypeIdentity::builtin("CancelError"),
+                PlatformBuiltinErrorIdentity::Cancel.catch_identity(),
                 serde_json::json!({
                     "message": "request was cancelled",
                 }),
@@ -161,7 +182,7 @@ impl WirePayload for RequestError {
                 limit,
                 elapsed_ms,
             } => Some((
-                TypeIdentity::builtin("TimeoutError"),
+                PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
                 serde_json::json!({
                     "reason": reason.as_str(),
                     "instructionCount": instruction_count,
@@ -304,7 +325,7 @@ mod tests {
         assert_eq!(
             RequestError::protocol("svc.account", "bad frame").catch_projection(),
             Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 serde_json::json!({
                     "target": "svc.account",
                     "message": "bad frame",
@@ -314,7 +335,7 @@ mod tests {
         assert_eq!(
             RequestError::Cancelled.catch_projection(),
             Some((
-                TypeIdentity::builtin("CancelError"),
+                PlatformBuiltinErrorIdentity::Cancel.catch_identity(),
                 serde_json::json!({
                     "message": "request was cancelled",
                 })
@@ -329,7 +350,7 @@ mod tests {
             }
             .catch_projection(),
             Some((
-                TypeIdentity::builtin("TimeoutError"),
+                PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
                 serde_json::json!({
                     "reason": "instructionLimitExceeded",
                     "instructionCount": 42,
@@ -338,5 +359,71 @@ mod tests {
                 })
             ))
         );
+    }
+
+    #[test]
+    fn fixed_service_failure_is_extracted_only_from_the_typed_eval_carrier() {
+        let encoded = br#"{
+          "kind":"internalError",
+          "payload":{
+            "message":"The service could not complete the request.",
+            "traceId":"trace-request-fixed",
+            "errorId":"error-request-fixed"
+          }
+        }"#
+        .to_vec();
+        let fixed = OpaqueServiceError::decode(encoded.clone()).expect("fixed fixture");
+        let error = RequestError::Eval(EvalRuntimeError::WithDiagnosticFrame {
+            frame: Box::new(serde_json::json!({
+                "message": "provider-private-secret",
+            })),
+            error: Box::new(EvalRuntimeError::FixedServiceFailure(fixed)),
+        });
+
+        let extracted = error
+            .fixed_service_failure()
+            .expect("typed fixed carrier must remain available to request");
+        assert_eq!(extracted.encoded_bytes(), encoded);
+
+        let generic = RequestError::external_error_payload(
+            "InternalError".to_string(),
+            "canonical service failure".to_string(),
+            Some(500),
+            None,
+        );
+        assert!(
+            generic.fixed_service_failure().is_none(),
+            "matching generic control values must not be upgraded"
+        );
+    }
+
+    #[test]
+    fn fixed_service_response_failure_preserves_all_envelope_bytes() {
+        let fixtures = [
+            br#"{"kind":"publicTypedError","packageId":"example.com/errors","stableSchemaKey":"not-found","packageSchemaTypeId":"type:not-found","encodedPayload":[123,125],"traceId":"trace-public","errorId":"error-public"}"#
+                .as_slice(),
+            br#"{
+              "kind":"internalError",
+              "payload":{
+                "message":"The service could not complete the request.",
+                "traceId":"trace-internal",
+                "errorId":"error-internal"
+              }
+            }"#
+            .as_slice(),
+            br#"{"kind":"platformError","builtinErrorIdentity":"std.db.ConflictError","encodedPayload":[123,125],"traceId":"trace-platform","errorId":"error-platform"}"#
+                .as_slice(),
+        ];
+
+        for encoded in fixtures {
+            let encoded = encoded.to_vec();
+            let fixed = OpaqueServiceError::decode(encoded.clone()).expect("fixed fixture");
+            let error = RequestError::Eval(EvalRuntimeError::FixedServiceFailure(fixed));
+
+            let response = error
+                .fixed_service_response_failure()
+                .expect("typed response failure");
+            assert_eq!(response.error().encoded_bytes(), encoded);
+        }
     }
 }

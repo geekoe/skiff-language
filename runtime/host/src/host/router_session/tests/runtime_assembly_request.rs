@@ -149,11 +149,14 @@ async fn runtime_assembly_http_response_ceiling_uses_bootstrap_and_releases_requ
         .await
         .expect("oversize request should dispatch to its response terminal");
 
-    let Terminal::Error(response) = recv_terminal(&mut receiver).await else {
+    let Terminal::Error(response, payload) = recv_terminal(&mut receiver).await else {
         panic!("oversize HTTP response must terminate with response.error")
     };
-    assert_eq!(response.request_id, header.request_id);
-    assert_eq!(response.error.code, "ResourceLimitExceeded");
+    assert_eq!(response.request_id(), header.request_id);
+    assert_eq!(
+        control_error(&response, &payload).code,
+        "ResourceLimitExceeded"
+    );
     assert_eq!(host.request_supervisor.active_count().await, 0);
     assert_no_second_terminal(&mut receiver).await;
 }
@@ -281,10 +284,11 @@ async fn runtime_assembly_request_rejects_wrong_tuple_http_effects_adapter_and_s
         dispatch(&host, &frame, &sender)
             .await
             .unwrap_or_else(|error| panic!("{name} should reach narrow bridge: {error}"));
-        let Terminal::Error(response) = recv_terminal(&mut receiver).await else {
+        let Terminal::Error(response, payload) = recv_terminal(&mut receiver).await else {
             panic!("{name} must fail closed with response.error")
         };
-        assert_eq!(response.request_id, header.request_id, "{name}");
+        assert_eq!(response.request_id(), header.request_id, "{name}");
+        let _ = control_error(&response, &payload);
         assert_no_second_terminal(&mut receiver).await;
     }
 
@@ -339,10 +343,11 @@ async fn runtime_assembly_request_reload_rejects_stale_generation_and_retains_ro
     dispatch(&host, &frame, &sender)
         .await
         .expect("stale tuple should produce a terminal rejection");
-    let Terminal::Error(response) = recv_terminal(&mut receiver).await else {
+    let Terminal::Error(response, payload) = recv_terminal(&mut receiver).await else {
         panic!("stale generation must fail closed")
     };
-    assert_eq!(response.request_id, stale_header.request_id);
+    assert_eq!(response.request_id(), stale_header.request_id);
+    let _ = control_error(&response, &payload);
     assert_no_second_terminal(&mut receiver).await;
 }
 
@@ -370,11 +375,11 @@ async fn runtime_assembly_request_cancel_preserves_same_request_single_terminal_
         .await
         .expect("request.cancel should dispatch on the same session");
 
-    let Terminal::Error(response) = recv_terminal(&mut receiver).await else {
+    let Terminal::Error(response, payload) = recv_terminal(&mut receiver).await else {
         panic!("cancelled request must have one response.error terminal")
     };
-    assert_eq!(response.request_id, header.request_id);
-    assert_eq!(response.error.code, "CancelError");
+    assert_eq!(response.request_id(), header.request_id);
+    assert_eq!(control_error(&response, &payload).code, "CancelError");
     assert_eq!(host.request_supervisor.active_count().await, 0);
     assert_no_second_terminal(&mut receiver).await;
 }
@@ -388,10 +393,11 @@ async fn runtime_assembly_request_session_rejects_legacy_flat_unknown_and_duplic
     dispatch(&host, &accepted, &sender)
         .await
         .expect("strict canonical bytes should reach active-route lookup");
-    let Terminal::Error(response) = recv_terminal(&mut receiver).await else {
+    let Terminal::Error(response, payload) = recv_terminal(&mut receiver).await else {
         panic!("missing active route should be one response.error")
     };
-    assert_eq!(response.request_id, "runtime-assembly-raw");
+    assert_eq!(response.request_id(), "runtime-assembly-raw");
+    let _ = control_error(&response, &payload);
 
     let legacy = json!({
         "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
@@ -571,7 +577,7 @@ async fn dispatch(
 #[derive(Debug)]
 enum Terminal {
     End(ResponseEndFrameHeader, Vec<u8>),
-    Error(ResponseErrorFrameHeader),
+    Error(ResponseErrorFrameHeader, Vec<u8>),
 }
 
 async fn recv_terminal(receiver: &mut mpsc::UnboundedReceiver<RouterWriterMessage>) -> Terminal {
@@ -593,10 +599,22 @@ async fn recv_terminal(receiver: &mut mpsc::UnboundedReceiver<RouterWriterMessag
         "response.error" => {
             let (header, payload): (ResponseErrorFrameHeader, Vec<u8>) =
                 decode_typed_binary_frame(&frame).expect("response.error terminal should decode");
-            assert!(payload.is_empty());
-            Terminal::Error(header)
+            Terminal::Error(header, payload)
         }
         other => panic!("unexpected request terminal {other}"),
+    }
+}
+
+fn control_error<'a>(
+    header: &'a ResponseErrorFrameHeader,
+    payload: &[u8],
+) -> &'a skiff_runtime_transport::protocol::RuntimeErrorFramePayload {
+    assert!(payload.is_empty(), "control response payload must be empty");
+    match header {
+        ResponseErrorFrameHeader::Control { error, .. } => error,
+        ResponseErrorFrameHeader::FixedService { .. } => {
+            panic!("expected generic control response.error")
+        }
     }
 }
 

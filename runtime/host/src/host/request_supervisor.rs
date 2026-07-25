@@ -8,6 +8,9 @@ use std::{
 };
 
 use serde_json::{Map, Value};
+use skiff_runtime_model::service_error::{
+    ErrorCorrelation, OpaqueServiceError, ServiceErrorEnvelope,
+};
 use skiff_runtime_request::{
     cancellation::CancellationToken, execution_budget::ExecutionBudget,
     execution_budget_trace_attrs, response_error_to_telemetry_map, RequestCancel, RequestEnvelope,
@@ -162,6 +165,30 @@ impl RequestSupervisor {
         );
     }
 
+    pub(crate) async fn complete_fixed_service_failure(
+        &self,
+        request: &SupervisedRequest,
+        event_name: &'static str,
+        error: &OpaqueServiceError,
+        trace: CompletionTrace,
+    ) {
+        request.active.execution_budget.finish(Instant::now());
+        self.active.lock().await.remove(&request.request_id);
+
+        let duration_ms = request.duration_ms();
+        let correlation = ErrorCorrelation {
+            trace_id: error.envelope().trace_id().to_string(),
+            error_id: error.envelope().error_id().to_string(),
+        };
+        request.active.telemetry.emit_trace_with_error_correlation(
+            event_name,
+            trace.include_duration.then_some(duration_ms),
+            Some(fixed_service_failure_telemetry_map(error)),
+            request.budget_attrs(duration_ms, trace),
+            &correlation,
+        );
+    }
+
     pub(crate) async fn cancel(&self, cancel: &RequestCancel) -> bool {
         let Some(active) = self.active.lock().await.get(&cancel.request_id).cloned() else {
             return false;
@@ -215,4 +242,22 @@ impl SupervisedRequest {
 
 fn elapsed_ms(started_at: Instant) -> f64 {
     started_at.elapsed().as_secs_f64() * 1000.0
+}
+
+fn fixed_service_failure_telemetry_map(error: &OpaqueServiceError) -> Map<String, Value> {
+    let cause_kind = match error.envelope() {
+        ServiceErrorEnvelope::PublicTypedError { .. } => "publicTypedError",
+        ServiceErrorEnvelope::InternalError { .. } => "internalError",
+        ServiceErrorEnvelope::PlatformError { .. } => "platformError",
+    };
+    Map::from_iter([
+        (
+            "kind".to_string(),
+            Value::String("fixedService".to_string()),
+        ),
+        (
+            "causeKind".to_string(),
+            Value::String(cause_kind.to_string()),
+        ),
+    ])
 }

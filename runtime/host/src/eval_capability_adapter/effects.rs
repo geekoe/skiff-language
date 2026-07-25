@@ -5,9 +5,9 @@ pub(super) struct RuntimeEffectDispatchContext(pub(super) concrete::EffectDispat
 
 impl eval_capabilities::EffectDispatchApi for RuntimeEffectDispatchContext {
     fn telemetry_context(&self) -> eval_capabilities::TelemetryCapabilityContext {
-        eval_capabilities::TelemetryCapabilityContext::new(RuntimeTelemetryCapabilityContext(
-            self.0.telemetry_context(),
-        ))
+        let context = RuntimeTelemetryCapabilityContext(self.0.telemetry_context());
+        eval_capabilities::TelemetryCapabilityContext::new(context.clone())
+            .with_restricted_service_diagnostic_sink(context)
     }
 
     fn http_client_context(
