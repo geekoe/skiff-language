@@ -242,7 +242,8 @@ fn service_db_write_conflict_is_a_sanitized_catchable_db_error() {
     assert_eq!(
         WirePayload::catch_projection(&error),
         Some((
-            skiff_runtime_model::error::TypeIdentity::builtin("std.db.ConflictError"),
+            skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity::DbConflict
+                .catch_identity(),
             json!({
                 "target": "std.db",
                 "message": "database conflict; retry only at an explicit side-effect-safe boundary",
@@ -260,6 +261,14 @@ fn service_db_non_conflict_mongo_error_keeps_platform_error_behavior() {
     assert_eq!(payload.code, "PlatformMongoError");
     assert!(payload.message.contains("Error code 113"));
     assert_eq!(payload.details, None);
+    assert_eq!(WirePayload::catch_projection(&error), None);
+}
+
+#[test]
+fn service_db_db_decode_code_does_not_imply_a_catch_identity() {
+    let error = ServiceDbError::db_decode("std.db", "db value missing key field id");
+
+    assert_eq!(error.payload().code, "std.db.DecodeError");
     assert_eq!(WirePayload::catch_projection(&error), None);
 }
 
