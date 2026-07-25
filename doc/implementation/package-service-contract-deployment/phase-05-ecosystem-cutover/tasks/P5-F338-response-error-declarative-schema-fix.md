@@ -1,6 +1,7 @@
 # P5-F338 Response error declarative schema fix
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F338-response-error-declarative-schema-fix-result.md`。
 
 ## 直接父节点
 
