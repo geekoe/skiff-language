@@ -234,7 +234,7 @@ fn walk_db_operation(visitor: &mut (impl AstVisitor + ?Sized), operation: &DbOpe
     if let Some(selector) = &operation.selector {
         walk_db_selector(visitor, selector);
     }
-    if let Some(query) = &operation.query {
+    if let Some(query) = operation.independent_query() {
         walk_db_query(visitor, query);
     }
     for body in [&operation.body, &operation.insert_body]
@@ -572,8 +572,10 @@ fn walk_db_operation_mut(visitor: &mut (impl AstVisitorMut + ?Sized), operation:
     if let Some(selector) = &mut operation.selector {
         walk_db_selector_mut(visitor, selector);
     }
-    if let Some(query) = &mut operation.query {
-        walk_db_query_mut(visitor, query);
+    if !operation.has_query_selector() {
+        if let Some(query) = &mut operation.query {
+            walk_db_query_mut(visitor, query);
+        }
     }
     for body in [&mut operation.body, &mut operation.insert_body]
         .into_iter()
@@ -1095,7 +1097,7 @@ fn collect_expr_type_ref_dotted_root_imports(
             if let Some(selector) = &operation.selector {
                 collect_db_selector_type_ref_dotted_root_imports(selector, root, imports);
             }
-            if let Some(query) = &operation.query {
+            if let Some(query) = operation.independent_query() {
                 collect_db_query_type_ref_dotted_root_imports(query, root, imports);
             }
             for body in [&operation.body, &operation.insert_body]

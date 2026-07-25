@@ -85,6 +85,94 @@ fn simple_detached_wrapper_is_safe_and_direct_transitive_calls_resolve() {
 }
 
 #[test]
+fn nested_local_calls_preserve_exact_effects_and_provenance() {
+    let model = analyze(
+        r#"
+            type Input { value: string }
+            type Middle { value: string }
+            type Output { value: string }
+
+            interface Provider {
+              function inner(self: Self, input: Input) -> Middle
+              function outer(self: Self, input: Middle) -> Output
+            }
+
+            db object Input {
+              primary key(value)
+            }
+
+            function inner(input: Input) -> Middle {
+              return Middle { value: input.value }
+            }
+
+            function outer(input: Middle) -> Output {
+              return Output { value: input.value }
+            }
+
+            function nested(input: Input) -> Output {
+              const rows = db find many Input {
+                where value == input.value
+              }
+              return outer(inner(input))
+            }
+
+            function nestedRecordField(input: Input) -> Output {
+              const rows = db find many Input {
+                where value == input.value
+              }
+              return Output { value: inner(input).value }
+            }
+
+            function nestedCollectionElement(input: Input) -> JsonObject {
+              const rows = db find many Input {
+                where value == input.value
+              }
+              return { item: inner(input).value }
+            }
+
+            function unknownInner(input: Input, provider: any Provider) -> Output {
+              return outer(provider.inner(input))
+            }
+
+            function unknownOuter(input: Input, provider: any Provider) -> Output {
+              return provider.outer(inner(input))
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    for callable in ["nested", "nestedRecordField", "nestedCollectionElement"] {
+        assert_eq!(effects(&model, callable), suspend_only_effects(), "{callable}");
+        assert!(matches!(
+            provenance(&model, callable),
+            CallableProvenanceSummary::Analyzed { .. }
+        ));
+    }
+    for callable in ["unknownInner", "unknownOuter"] {
+        assert!(effects(&model, callable).invokes_unknown_target, "{callable}");
+        assert!(matches!(
+            provenance(&model, callable),
+            CallableProvenanceSummary::Unknown {
+                reason: CallableProvenanceUnknownReason::UnknownCallTarget
+            }
+        ));
+    }
+    assert!(
+        model
+            .resolved_call_targets()
+            .iter()
+            .filter(|(_, target)| matches!(
+                target,
+                ResolvedCallTarget::LocalFunction { source_callable }
+                    if source_callable == &SourceSymbolKey::new("api", "inner")
+            ))
+            .count()
+            >= 4,
+        "distinct inner call sites must keep distinct expression keys"
+    );
+}
+
+#[test]
 fn module_constant_return_keeps_exact_constant_provenance_through_local_call() {
     let model = analyze_sources(&[
         (
