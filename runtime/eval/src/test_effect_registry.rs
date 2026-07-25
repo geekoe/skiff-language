@@ -559,6 +559,7 @@ mod tests {
             error_id: "trace-effect:local-error:1".to_string(),
         };
         let mut request_heap = RequestHeap::default();
+        let request_checkpoint = request_heap.checkpoint();
 
         let error = materialize_local_test_throw(
             payload,
@@ -577,23 +578,56 @@ mod tests {
         assert_eq!(exception.actual_payload_type(), Some(&outer_identity));
         assert_eq!(exception.request().source(), &source);
         assert_eq!(exception.request().correlation(), &correlation);
-        let RuntimeValue::Heap(cloned_handle) = exception
-            .request()
-            .local_value()
-            .expect("local cause")
-            .value()
-        else {
+        let cloned_payload = exception.request().local_value().expect("local cause");
+        assert_eq!(cloned_payload.catch_identity(), Some(&outer_identity));
+        let RuntimeValue::Heap(cloned_handle) = cloned_payload.value() else {
             panic!("cloned cause must remain an array");
         };
-        assert_ne!(*cloned_handle, payload_handle);
+        assert_eq!(*cloned_handle, payload_handle);
         assert_eq!(
             request_heap
                 .array_item_carrier(*cloned_handle, 0)
                 .expect("cloned array")
-                .expect("cloned item")
-                .catch_identity(),
-            Some(&item_identity)
+                .expect("cloned item"),
+            RuntimeValueCarrier::identified(RuntimeValue::from("denied"), item_identity.clone())
         );
+        request_heap
+            .set_array_item_carrier(
+                *cloned_handle,
+                0,
+                RuntimeValueCarrier::identified(
+                    RuntimeValue::from("request-only"),
+                    item_identity.clone(),
+                ),
+            )
+            .expect("request clone should be mutable");
+        assert_eq!(
+            setup_heap
+                .array_item_carrier(payload_handle, 0)
+                .expect("setup array")
+                .expect("setup item"),
+            RuntimeValueCarrier::identified(RuntimeValue::from("denied"), item_identity.clone())
+        );
+        setup_heap
+            .set_array_item_carrier(
+                payload_handle,
+                0,
+                RuntimeValueCarrier::identified(
+                    RuntimeValue::from("setup-only"),
+                    item_identity.clone(),
+                ),
+            )
+            .expect("setup payload should be mutable");
+        assert_eq!(
+            request_heap
+                .array_item_carrier(*cloned_handle, 0)
+                .expect("cloned array")
+                .expect("cloned item"),
+            RuntimeValueCarrier::identified(RuntimeValue::from("request-only"), item_identity)
+        );
+        request_heap.rollback_to_checkpoint(request_checkpoint);
+        assert!(request_heap.get(*cloned_handle).is_err());
+        assert!(setup_heap.get(payload_handle).is_ok());
     }
 
     #[test]

@@ -1,6 +1,9 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
-use skiff_artifact_model::{ActorMetadataIr, DbMetadataIr};
+use skiff_artifact_model::{ActorMetadataIr, DbMetadataIr, PackageSchemaIndex};
 use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_linked_program::{
     ConstAddr, ExecutableAddr, GatewayConfig, LinkOverlay, LinkedFileUnit, LinkedProgramImage,
@@ -21,11 +24,24 @@ pub(crate) fn link_package_fixture(
     skiff_runtime_linker::link_package_fixture_from_runtime_assembly(
         &assembly,
         packages.into_iter().map(|(package, files)| {
+            assert!(
+                package.package_schema_type_records.is_empty(),
+                "package fixture with public schema records must hydrate its real index and records"
+            );
+            let schema_index = PackageSchemaIndex {
+                package_id: package.package_schema_index.package_id.clone(),
+                package_schema_index_identity: package
+                    .package_schema_index
+                    .package_schema_index_identity
+                    .clone(),
+                types: BTreeMap::new(),
+            };
             skiff_runtime_linked_program::HydratedPackageCode::new(
                 Arc::new(package),
                 files.into_iter().map(Arc::new).collect(),
                 skiff_runtime_linked_program::PublicationResourceTable::default(),
             )
+            .with_schema_index(Arc::new(schema_index))
         }),
     )
     .expect("package fixture should link through the canonical assembly projection")
