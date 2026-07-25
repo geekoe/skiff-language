@@ -3,7 +3,7 @@ mod source;
 
 use std::collections::BTreeSet;
 
-use skiff_artifact_model::{TypeDescriptorIr, TypeRefIr};
+use skiff_artifact_model::{NamedUnionBranchIr, TypeDescriptorIr, TypeRefIr};
 
 use crate::type_ref::type_ref_children;
 
@@ -272,19 +272,64 @@ where
                 }
                 Ok(())
             }
-            TypeDescriptorIr::Union { variants } => {
-                for (index, variant) in variants.iter().enumerate() {
-                    self.walk_type_ref(
-                        &nominal.module_path,
-                        variant,
-                        &trace.child(TypeClosureTraceSegment::DeclarationVariant { index }),
-                        guarded,
-                        active,
-                        policy,
-                    )?;
+            TypeDescriptorIr::Representation { representation } => self.walk_type_ref(
+                &nominal.module_path,
+                representation,
+                &trace.child(TypeClosureTraceSegment::RepresentationTarget),
+                guarded,
+                active,
+                policy,
+            ),
+            TypeDescriptorIr::Union { branches } => {
+                for (index, branch) in branches.iter().enumerate() {
+                    let branch_trace =
+                        trace.child(TypeClosureTraceSegment::NamedUnionBranch { index });
+                    match branch {
+                        NamedUnionBranchIr::ConcreteNominal {
+                            nominal_type,
+                            type_arguments,
+                        } => {
+                            self.walk_type_ref(
+                                &nominal.module_path,
+                                nominal_type,
+                                &branch_trace
+                                    .child(TypeClosureTraceSegment::NamedUnionConcreteType),
+                                guarded,
+                                active,
+                                policy,
+                            )?;
+                            for (name, argument) in type_arguments {
+                                self.walk_type_ref(
+                                    &nominal.module_path,
+                                    argument,
+                                    &branch_trace.child(
+                                        TypeClosureTraceSegment::NamedUnionTypeArgument {
+                                            name: name.clone(),
+                                        },
+                                    ),
+                                    guarded,
+                                    active,
+                                    policy,
+                                )?;
+                            }
+                        }
+                        NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                            self.walk_type_ref(
+                                &nominal.module_path,
+                                payload_type,
+                                &branch_trace
+                                    .child(TypeClosureTraceSegment::NamedUnionSyntheticPayload),
+                                guarded,
+                                active,
+                                policy,
+                            )?;
+                        }
+                        NamedUnionBranchIr::Literal { .. } => {}
+                    }
                 }
                 Ok(())
             }
+            TypeDescriptorIr::Interface => Ok(()),
         }
     }
 

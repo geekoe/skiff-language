@@ -6,13 +6,13 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryOperationDescriptor,
-    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
-    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractDiagnosticText, ContractRequirement, ContractTypeDescriptor, ContractTypeNameability,
-    ContractTypeRef, PackageBuildId, PackageLocalAbiIdentity, PackageSchemaCanonicalDescriptor,
-    PackageSchemaIndex, PackageSchemaIndexEntry, PackageSchemaTypeRecord, PackageTypeRequirement,
-    ServiceContract, ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn,
+    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, ContractDiagnosticText, ContractRequirement,
+    ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef, PackageBuildId,
+    PackageLocalAbiIdentity, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
+    PackageSchemaIndexEntry, PackageSchemaTypeRecord, PackageTypeRequirement, ServiceContract,
+    ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 use skiff_compiler_input::ResolvedContractDependency;
 use skiff_compiler_projection_input::ResolvedPackageSchema;
@@ -196,7 +196,6 @@ fn contract_and_schema_from_records(
                 ty: return_type,
                 value_plan: linkable(BoundaryValueOwner::Provider),
             },
-            errors: BoundaryErrorContract::None,
             stream: BoundaryStreamContract::Unary,
             cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,

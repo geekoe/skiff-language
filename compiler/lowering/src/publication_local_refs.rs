@@ -7,7 +7,7 @@ use crate::file_ir::{
     TypeDescriptorIr, TypeRefIr,
 };
 use skiff_artifact_identity::{canonical_interface_method_abi_id, type_ref_abi_key};
-use skiff_artifact_model::InterfaceInstantiationRef;
+use skiff_artifact_model::{InterfaceInstantiationRef, NamedUnionBranchIr};
 use skiff_compiler_source::TypeResolutionModel;
 
 use super::external_refs::rebuild_external_refs_for_file_ir_unit;
@@ -197,11 +197,29 @@ fn rewrite_type_descriptor(
         TypeDescriptorIr::Alias { target } => {
             rewrite_type_ref(index, module_path, target);
         }
-        TypeDescriptorIr::Union { variants } => {
-            for variant in variants {
-                rewrite_type_ref(index, module_path, variant);
+        TypeDescriptorIr::Representation { representation } => {
+            rewrite_type_ref(index, module_path, representation);
+        }
+        TypeDescriptorIr::Union { branches } => {
+            for branch in branches {
+                match branch {
+                    NamedUnionBranchIr::ConcreteNominal {
+                        nominal_type,
+                        type_arguments,
+                    } => {
+                        rewrite_type_ref(index, module_path, nominal_type);
+                        for argument in type_arguments.values_mut() {
+                            rewrite_type_ref(index, module_path, argument);
+                        }
+                    }
+                    NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                        rewrite_type_ref(index, module_path, payload_type);
+                    }
+                    NamedUnionBranchIr::Literal { .. } => {}
+                }
             }
         }
+        TypeDescriptorIr::Interface => {}
     }
 }
 
@@ -307,9 +325,7 @@ fn rewrite_expr(index: &PublicationLocalRefIndex, module_path: &str, expr: &mut 
             rewrite_type_ref(index, module_path, payload_type);
         }
         ExprIr::Catch { catch_type, .. } => {
-            if let Some(catch_type) = catch_type {
-                rewrite_type_ref(index, module_path, catch_type);
-            }
+            rewrite_type_ref(index, module_path, catch_type);
         }
         ExprIr::DbOperation { operation } => {
             rewrite_db_operation(index, module_path, operation);
@@ -763,6 +779,9 @@ mod tests {
                         target: CallTargetIr::ServiceCall {
                             service_call_ref_index: ServiceCallRefIndex::new(0),
                         },
+                        site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                            reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                        },
                         args: Vec::new(),
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
@@ -790,6 +809,12 @@ mod tests {
             CallTargetIr::ServiceCall {
                 service_call_ref_index
             } if service_call_ref_index.index() == 0
+        ));
+        assert!(matches!(
+            call.site,
+            skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            }
         ));
     }
 }

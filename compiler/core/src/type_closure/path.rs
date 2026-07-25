@@ -13,8 +13,12 @@ pub enum TypeClosureTraceSegment {
     FunctionReturn,
     Nominal { module_path: String, name: String },
     AliasTarget,
+    RepresentationTarget,
     DeclarationField { name: String },
-    DeclarationVariant { index: usize },
+    NamedUnionBranch { index: usize },
+    NamedUnionConcreteType,
+    NamedUnionTypeArgument { name: String },
+    NamedUnionSyntheticPayload,
 }
 
 impl From<TypeRefVisitPathSegment> for TypeClosureTraceSegment {

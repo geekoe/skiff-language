@@ -1,13 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::file_ir::{FileIrUnit, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeRefIr};
+use crate::file_ir::{
+    FileIrUnit, LiteralIr, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeRefIr,
+};
+use skiff_artifact_model::NamedUnionBranchIr;
 use skiff_compiler_source::{
     LocalDbObjectIndex, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
-    SourceInterfaceSignatureFacts,
+    SourceInterfaceSignatureFacts, TypeResolutionContext, TypeResolutionModel,
 };
 use skiff_syntax::{
-    ast::{AliasDecl, InterfaceDecl, TypeDecl},
-    error::Result,
+    ast::{AliasDecl, InterfaceDecl, TypeDecl, TypeRef},
+    error::{CompileError, Result},
+    type_syntax::{generic_parts, split_top_level},
 };
 
 use super::{
@@ -40,6 +44,7 @@ pub(super) fn lower_type_declarations(
     interface_signatures: Option<&SourceInterfaceSignatureFacts>,
     type_indices: &BTreeMap<String, u32>,
     module_path: &str,
+    type_resolution: &TypeResolutionModel,
     local_db_objects: &LocalDbObjectIndex,
     publication_db_metadata: &PublicationDbMetadataIndex,
     package_aliases: &BTreeMap<String, Vec<String>>,
@@ -63,9 +68,10 @@ pub(super) fn lower_type_declarations(
                 package_aliases,
                 external_type_symbols,
                 source_alias_targets,
+                type_resolution,
+                module_path,
             )?,
             type_params: ty.type_params.clone(),
-            discriminator: ty.discriminator.clone(),
             implements: ty
                 .implements
                 .iter()
@@ -123,7 +129,6 @@ pub(super) fn lower_type_declarations(
                 )?,
             },
             type_params: Vec::new(),
-            discriminator: None,
             implements: Vec::new(),
             source_span: Some(source_span.clone()),
         });
@@ -150,11 +155,8 @@ pub(super) fn lower_type_declarations(
         let source_span = source_span_ref(interface.span);
         unit.type_table.push(TypeDeclIr {
             name: interface.name.clone(),
-            descriptor: TypeDescriptorIr::Record {
-                fields: BTreeMap::new(),
-            },
+            descriptor: TypeDescriptorIr::Interface,
             type_params: interface.type_params.clone(),
-            discriminator: None,
             implements: Vec::new(),
             source_span: Some(source_span.clone()),
         });
@@ -191,21 +193,46 @@ fn lower_type_decl_descriptor(
     package_aliases: &BTreeMap<String, Vec<String>>,
     external_type_symbols: &PublicationTypeSymbolIndex,
     source_alias_targets: &BTreeMap<String, String>,
+    type_resolution: &TypeResolutionModel,
+    module_path: &str,
 ) -> Result<TypeDescriptorIr> {
     if let Some(alias) = &ty.alias {
-        let lowered = lower_type_ref(
-            alias,
-            type_indices,
-            local_db_objects,
-            publication_db_metadata,
-            package_aliases,
-            external_type_symbols,
-            source_alias_targets,
-            TypeLoweringContext::value_with_type_params(type_param_scope),
-        )?;
-        return Ok(match lowered {
-            TypeRefIr::Union { items } => TypeDescriptorIr::Union { variants: items },
-            other => TypeDescriptorIr::Alias { target: other },
+        let branches = split_top_level(&alias.name, '|');
+        if branches.len() > 1 {
+            let context =
+                TypeResolutionContext::with_type_params(module_path, type_param_scope.clone());
+            return Ok(TypeDescriptorIr::Union {
+                branches: branches
+                    .into_iter()
+                    .map(|branch| {
+                        lower_named_union_branch(
+                            ty,
+                            branch,
+                            &context,
+                            type_indices,
+                            local_db_objects,
+                            publication_db_metadata,
+                            package_aliases,
+                            external_type_symbols,
+                            source_alias_targets,
+                            type_resolution,
+                            type_param_scope,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            });
+        }
+        return Ok(TypeDescriptorIr::Representation {
+            representation: lower_type_ref(
+                alias,
+                type_indices,
+                local_db_objects,
+                publication_db_metadata,
+                package_aliases,
+                external_type_symbols,
+                source_alias_targets,
+                TypeLoweringContext::value_with_type_params(type_param_scope),
+            )?,
         });
     }
 
@@ -229,4 +256,109 @@ fn lower_type_decl_descriptor(
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
     Ok(TypeDescriptorIr::Record { fields })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_named_union_branch(
+    owner: &TypeDecl,
+    branch: &str,
+    type_context: &TypeResolutionContext<'_>,
+    type_indices: &BTreeMap<String, u32>,
+    local_db_objects: &LocalDbObjectIndex,
+    publication_db_metadata: &PublicationDbMetadataIndex,
+    package_aliases: &BTreeMap<String, Vec<String>>,
+    external_type_symbols: &PublicationTypeSymbolIndex,
+    source_alias_targets: &BTreeMap<String, String>,
+    type_resolution: &TypeResolutionModel,
+    type_param_scope: &BTreeSet<String>,
+) -> Result<NamedUnionBranchIr> {
+    let branch_ref = TypeRef {
+        name: branch.to_string(),
+    };
+    let lowered = lower_type_ref(
+        &branch_ref,
+        type_indices,
+        local_db_objects,
+        publication_db_metadata,
+        package_aliases,
+        external_type_symbols,
+        source_alias_targets,
+        TypeLoweringContext::value_with_type_params(type_param_scope),
+    );
+
+    if branch.trim().starts_with('{') {
+        let payload_type = lowered?;
+        let TypeRefIr::Record { fields } = &payload_type else {
+            return Err(invalid_named_union_branch(owner, branch));
+        };
+        let discriminator_field = owner
+            .discriminator
+            .as_deref()
+            .ok_or_else(|| invalid_named_union_branch(owner, branch))?;
+        let Some(TypeRefIr::Literal {
+            value: LiteralIr::String {
+                value: discriminator_value,
+            },
+        }) = fields.get(discriminator_field)
+        else {
+            return Err(invalid_named_union_branch(owner, branch));
+        };
+        let discriminator_value = discriminator_value.clone();
+        return Ok(NamedUnionBranchIr::SyntheticDiscriminator {
+            payload_type,
+            discriminator_field: discriminator_field.to_string(),
+            discriminator_value,
+        });
+    }
+
+    if branch.trim().starts_with('"') {
+        let TypeRefIr::Literal { value } = lowered? else {
+            return Err(invalid_named_union_branch(owner, branch));
+        };
+        return Ok(NamedUnionBranchIr::Literal { value });
+    }
+
+    let root = generic_parts(branch).map_or(branch.trim(), |parts| parts.root);
+    let nominal_ref = TypeRef {
+        name: root.to_string(),
+    };
+    let nominal_type = lower_type_ref(
+        &nominal_ref,
+        type_indices,
+        local_db_objects,
+        publication_db_metadata,
+        package_aliases,
+        external_type_symbols,
+        source_alias_targets,
+        TypeLoweringContext::value_with_type_params(type_param_scope),
+    )?;
+    if !matches!(
+        nominal_type,
+        TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
+            | TypeRefIr::ServiceSymbol { .. }
+            | TypeRefIr::PackageSymbol { .. }
+            | TypeRefIr::PackageSchema { .. }
+    ) {
+        return Err(invalid_named_union_branch(owner, branch));
+    }
+    let type_arguments = type_resolution
+        .nominal_type_argument_bindings(&branch_ref, type_context)
+        .map_err(|error| {
+            CompileError::Semantic(format!(
+                "named union `{}` branch `{branch}` has invalid nominal arguments: {error}",
+                owner.name
+            ))
+        })?;
+    Ok(NamedUnionBranchIr::ConcreteNominal {
+        nominal_type,
+        type_arguments,
+    })
+}
+
+fn invalid_named_union_branch(owner: &TypeDecl, branch: &str) -> CompileError {
+    CompileError::Semantic(format!(
+        "named union `{}` branch `{branch}` must be a concrete nominal type, anonymous discriminator record, or literal",
+        owner.name
+    ))
 }

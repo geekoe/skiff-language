@@ -604,10 +604,7 @@ fn expression_contains_type_ref(
 ) -> bool {
     match expression {
         ExprIr::Construct { type_ref, .. } => type_ref_contains(type_ref, predicate),
-        ExprIr::Catch {
-            catch_type: Some(catch_type),
-            ..
-        } => type_ref_contains(catch_type, predicate),
+        ExprIr::Catch { catch_type, .. } => type_ref_contains(catch_type, predicate),
         ExprIr::Throw { payload_type, .. } => type_ref_contains(payload_type, predicate),
         ExprIr::DbOperation { operation } => type_ref_contains(&operation.result_type, predicate),
         ExprIr::DbQuery { query } => type_ref_contains(&query.result_type, predicate),
@@ -629,9 +626,26 @@ fn descriptor_contains_type_ref(
             .values()
             .any(|field| type_ref_contains(field, predicate)),
         TypeDescriptorIr::Alias { target } => type_ref_contains(target, predicate),
-        TypeDescriptorIr::Union { variants } => variants
-            .iter()
-            .any(|variant| type_ref_contains(variant, predicate)),
+        TypeDescriptorIr::Representation { representation } => {
+            type_ref_contains(representation, predicate)
+        }
+        TypeDescriptorIr::Union { branches } => branches.iter().any(|branch| match branch {
+            skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal {
+                nominal_type,
+                type_arguments,
+            } => {
+                type_ref_contains(nominal_type, predicate)
+                    || type_arguments
+                        .values()
+                        .any(|argument| type_ref_contains(argument, predicate))
+            }
+            skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+                payload_type,
+                ..
+            } => type_ref_contains(payload_type, predicate),
+            skiff_artifact_model::NamedUnionBranchIr::Literal { .. } => false,
+        }),
+        TypeDescriptorIr::Interface => false,
     }
 }
 

@@ -65,7 +65,6 @@ mod tests {
                 target: TypeRefIr::builtin("string"),
             },
             type_params: Vec::new(),
-            discriminator: None,
             implements: Vec::new(),
             source_span: None,
         });
@@ -83,7 +82,7 @@ mod tests {
         assert_eq!(adapter_identity, canonical_identity);
         assert_eq!(
             adapter_identity,
-            "skiff-file-ir-v5:sha256:edbd0eaf1a026d0171b01fbb847fa74655fe4588a38007c8050eff8cd8ea6edb"
+            "skiff-file-ir-v6:sha256:dde7dbe565618ded4af77fc23b0b01f49a793db614c26c37d15c269e959413f6"
         );
     }
 }

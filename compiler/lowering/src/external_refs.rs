@@ -6,7 +6,9 @@ use crate::file_ir::{
     InterfaceDeclIr, MetadataValue, PackageCallableRef, PatternIr, ServiceCallRefIndex, StmtIr,
     TestEffectOutcomeIr, TestEffectRegisterTargetIr, TypeDescriptorIr, TypeRefIr,
 };
-use skiff_artifact_model::{ServiceCallRef, RECEIVER_BUILTIN_CAPABILITY_VERSION};
+use skiff_artifact_model::{
+    NamedUnionBranchIr, ServiceCallRef, RECEIVER_BUILTIN_CAPABILITY_VERSION,
+};
 
 pub(super) fn required_receiver_builtin_capability_version(unit: &FileIrUnit) -> u32 {
     let has_receiver_builtin = unit
@@ -244,9 +246,7 @@ fn collect_expr_external_refs(expr: &ExprIr, refs: &mut ExternalRefTable) {
             }
         }
         ExprIr::Catch { catch_type, .. } => {
-            if let Some(ty) = catch_type {
-                collect_type_ref_external_refs(ty, refs);
-            }
+            collect_type_ref_external_refs(catch_type, refs);
         }
         ExprIr::DbOperation { operation } => {
             collect_type_ref_external_refs(&operation.target.type_ref, refs);
@@ -375,6 +375,21 @@ mod tests {
 
         assert_eq!(unit.external_refs.service_call_refs, vec![earlier, later]);
         assert_eq!(service_call_indices(&unit), vec![1, 0, 1]);
+        assert!(unit.constants[0]
+            .body
+            .expressions
+            .iter()
+            .all(|expression| matches!(
+                expression,
+                ExprIr::Call {
+                    call: CallIr {
+                        site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                            reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                        },
+                        ..
+                    },
+                }
+            )));
         validate_file_ir_service_calls(&unit).unwrap();
     }
 
@@ -394,6 +409,9 @@ mod tests {
             call: CallIr {
                 target: CallTargetIr::ServiceCall {
                     service_call_ref_index: ServiceCallRefIndex::new(index),
+                },
+                site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                    reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                 },
                 args: Vec::new(),
                 type_args: BTreeMap::new(),
@@ -448,12 +466,30 @@ fn collect_type_ref_external_refs_from_descriptor(
                 collect_type_ref_external_refs(field, refs);
             }
         }
-        TypeDescriptorIr::Union { variants } => {
-            for variant in variants {
-                collect_type_ref_external_refs(variant, refs);
+        TypeDescriptorIr::Representation { representation } => {
+            collect_type_ref_external_refs(representation, refs);
+        }
+        TypeDescriptorIr::Union { branches } => {
+            for branch in branches {
+                match branch {
+                    NamedUnionBranchIr::ConcreteNominal {
+                        nominal_type,
+                        type_arguments,
+                    } => {
+                        collect_type_ref_external_refs(nominal_type, refs);
+                        for argument in type_arguments.values() {
+                            collect_type_ref_external_refs(argument, refs);
+                        }
+                    }
+                    NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                        collect_type_ref_external_refs(payload_type, refs);
+                    }
+                    NamedUnionBranchIr::Literal { .. } => {}
+                }
             }
         }
         TypeDescriptorIr::Alias { target } => collect_type_ref_external_refs(target, refs),
+        TypeDescriptorIr::Interface => {}
     }
 }
 

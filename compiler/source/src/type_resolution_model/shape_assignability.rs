@@ -1469,7 +1469,7 @@ impl TypeResolutionModel {
                     self.resolve_type_text(&target, &source_context).ok()?.ir
                 }
             }
-            SourceTypeKind::Representation { target } => {
+            SourceTypeKind::Representation { target, .. } => {
                 let target = package_root
                     .map(|package_root| {
                         qualify_package_type_text(target, package_root, &resolved.local_type_names)

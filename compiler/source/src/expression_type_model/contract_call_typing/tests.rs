@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    BoundaryErrorContract, BoundaryFeatureUnavailableReason, ContractLiteral,
-    ContractTypeDescriptor, ContractTypeRef, PackageLocalAbiIdentity, PackageRefIr,
-    PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord, PackageTypeRef, TypeRefIr,
+    ContractLiteral, ContractTypeDescriptor, ContractTypeRef, PackageLocalAbiIdentity,
+    PackageRefIr, PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord, PackageTypeRef,
+    TypeRefIr,
 };
 
 use super::operation_shape_diagnostics;
@@ -14,33 +14,19 @@ use super::type_projection::{
 use crate::{PackageDependencyAnalysisFacts, SourceDependencyAnalysisInput};
 
 #[test]
-fn typed_error_contract_is_supported_by_source_calls() {
-    let (mut contract, _) = crate::contract_dependency_test_fixture::contract_and_schema(
+fn source_call_shape_is_independent_of_the_open_error_channel() {
+    let (contract, _) = crate::contract_dependency_test_fixture::contract_and_schema(
         "example.echo",
         "1.0.0",
         "echo",
         "Failure",
         "Response",
     );
-    let operation = contract.operations.values_mut().next().unwrap();
-    operation.contract.errors = BoundaryErrorContract::Typed {
-        payload_type: operation.contract.parameters[0].ty.clone(),
-        value_plan: operation.contract.parameters[0].value_plan.clone(),
-    };
+    let operation = contract.operations.values().next().unwrap();
 
     assert!(
         operation_shape_diagnostics("echo/echo", &operation.contract).is_empty(),
-        "a declared typed error is source-callable and can be handled by catch"
-    );
-
-    operation.contract.errors = BoundaryErrorContract::Unsupported {
-        reason: BoundaryFeatureUnavailableReason::LanguageUnsupported,
-    };
-    assert!(
-        operation_shape_diagnostics("echo/echo", &operation.contract)
-            .iter()
-            .any(|diagnostic| diagnostic.contains("error contract unsupported by source calls")),
-        "an explicitly unsupported error contract must remain rejected"
+        "open errors do not add a contract-call shape restriction"
     );
 }
 

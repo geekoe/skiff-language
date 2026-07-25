@@ -106,7 +106,7 @@ pub use source_file_facts::{
     PackageInterfaceMethodIndex, PublicationDbMetadata, PublicationDbMetadataIndex,
 };
 pub use type_resolution_model::{
-    AnyInterfaceMethodResolution, ConstructorTargetResolution,
+    AnyInterfaceMethodResolution, CatchLeafIdentity, CatchLeaves, ConstructorTargetResolution,
     LocalAnyInterfaceConformanceResolution, PackageCallableResolution,
     RepresentationConstructorResolution, ResolvedTypeRef, TypeResolutionContext,
     TypeResolutionModel, TypeResolutionPackageCallableFact, TypeResolutionPackageDependencyFact,

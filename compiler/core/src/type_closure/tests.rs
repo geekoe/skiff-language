@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef,
+    FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef, NamedUnionBranchIr,
     PackageImplementationLinks, PackageRefIr, PackageSymbolRef, ServiceSymbolRef, TypeDeclIr,
     TypeDeclarationIr, TypeDescriptorIr, TypeExport, TypeRefIr,
 };
@@ -278,12 +278,98 @@ fn resolves_package_dependency_and_records_nominal_trace() {
     ));
 }
 
+#[test]
+fn walks_representation_and_every_named_union_branch_input() {
+    let mut unit = FileIrUnit::empty("app", "hash");
+    unit.type_table.push(type_decl(
+        "Payload",
+        TypeDescriptorIr::Record {
+            fields: BTreeMap::new(),
+        },
+    ));
+    unit.type_table.push(type_decl(
+        "Code",
+        TypeDescriptorIr::Representation {
+            representation: TypeRefIr::builtin("string"),
+        },
+    ));
+    unit.type_table.push(type_decl(
+        "Failure",
+        TypeDescriptorIr::Union {
+            branches: vec![
+                NamedUnionBranchIr::ConcreteNominal {
+                    nominal_type: TypeRefIr::LocalType { type_index: 0 },
+                    type_arguments: BTreeMap::from([(
+                        "T".to_string(),
+                        TypeRefIr::LocalType { type_index: 1 },
+                    )]),
+                },
+                NamedUnionBranchIr::SyntheticDiscriminator {
+                    payload_type: TypeRefIr::Record {
+                        fields: BTreeMap::from([(
+                            "payload".to_string(),
+                            TypeRefIr::LocalType { type_index: 1 },
+                        )]),
+                    },
+                    discriminator_field: "kind".to_string(),
+                    discriminator_value: "synthetic".to_string(),
+                },
+                NamedUnionBranchIr::Literal {
+                    value: skiff_artifact_model::LiteralIr::String {
+                        value: "literal".to_string(),
+                    },
+                },
+            ],
+        },
+    ));
+    let resolver = ArtifactNominalTypeSource::new(std::slice::from_ref(&unit), &[]);
+    let guards = NoTypeClosureGuards;
+    let walker = TypeClosureWalker::new(&resolver, &guards);
+    let root = resolver
+        .resolve("app", &TypeRefIr::LocalType { type_index: 2 })
+        .unwrap();
+    let mut policy = RecordingPolicy::default();
+
+    walker.walk_declaration(&root, &mut policy).unwrap();
+
+    let union = TypeClosureTrace::empty().child(TypeClosureTraceSegment::Nominal {
+        module_path: "app".to_string(),
+        name: "Failure".to_string(),
+    });
+    assert!(policy.visits.contains(
+        &union
+            .clone()
+            .child(TypeClosureTraceSegment::NamedUnionBranch { index: 0 })
+            .child(TypeClosureTraceSegment::NamedUnionConcreteType)
+    ));
+    assert!(policy.visits.contains(
+        &union
+            .clone()
+            .child(TypeClosureTraceSegment::NamedUnionBranch { index: 0 })
+            .child(TypeClosureTraceSegment::NamedUnionTypeArgument {
+                name: "T".to_string(),
+            })
+    ));
+    assert!(policy.visits.contains(
+        &union
+            .child(TypeClosureTraceSegment::NamedUnionBranch { index: 1 })
+            .child(TypeClosureTraceSegment::NamedUnionSyntheticPayload)
+            .child(TypeClosureTraceSegment::RecordField {
+                name: "payload".to_string(),
+            })
+    ));
+    assert!(policy.visits.iter().any(|trace| {
+        trace
+            .segments()
+            .ends_with(&[TypeClosureTraceSegment::RepresentationTarget])
+    }));
+}
+
 fn type_decl(name: &str, descriptor: TypeDescriptorIr) -> TypeDeclIr {
     TypeDeclIr {
         name: name.to_string(),
         descriptor,
         type_params: Vec::new(),
-        discriminator: None,
         implements: Vec::new(),
         source_span: None,
     }
