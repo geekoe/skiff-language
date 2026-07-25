@@ -4290,9 +4290,11 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use crate::{
-        parsed_sources::parse_publication_sources, publication_db_metadata_index,
-        source_graph::CompilerSourceFile, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
+        parsed_sources::parse_publication_sources, prelude_registry::initialize_prelude_registry,
+        publication_db_metadata_index, source_graph::CompilerSourceFile,
+        PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
     };
+    use skiff_compiler_input::CompilerPlatformSources;
 
     use super::*;
 
@@ -4301,6 +4303,13 @@ mod tests {
     fn expression_type_result(
         source_text: &str,
     ) -> Result<ExpressionTypeModel, ExpressionTypeModelBuildError> {
+        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root resolves");
+        let platform_sources =
+            CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load");
+        initialize_prelude_registry(&platform_sources).expect("prelude registry initializes");
         let source = CompilerSourceFile::parse(
             PathBuf::from("internal/any_interface.skiff"),
             ANY_INTERFACE_MODULE.to_string(),
@@ -4465,6 +4474,79 @@ mod tests {
                 && error.message().contains("cannot be constructed directly"),
             "{}",
             error.message()
+        );
+    }
+
+    #[test]
+    fn typed_catch_value_requires_and_respects_tag_narrowing() {
+        expression_type_result(
+            r#"
+              type Payload { value: string }
+
+              function make() -> Payload {
+                return Payload { value: "ok" }
+              }
+
+              function equalBranch() -> Payload? {
+                const attempted = catch<string>(make())
+                if attempted.tag == "ok" { return attempted.value }
+                return null
+              }
+
+              function reverseComparison() -> Payload? {
+                const attempted = catch<string>(make())
+                if "ok" != attempted.tag { return null }
+                return attempted.value
+              }
+
+              function earlyReturn() -> Payload? {
+                const attempted = catch<string>(make())
+                if attempted.tag != "ok" { return null }
+                return attempted.value
+              }
+
+              function nestedCatch() -> Payload? {
+                const outer = catch<string>(equalBranch())
+                if outer.tag != "ok" { return null }
+                return outer.value
+              }
+            "#,
+        )
+        .expect("ok-tag branches must expose the exact catch success type");
+
+        let unnarrowed = expression_type_result(
+            r#"
+              type Payload { value: string }
+              function make() -> Payload { return Payload { value: "ok" } }
+              function invalid() -> Payload {
+                const attempted = catch<string>(make())
+                return attempted.value
+              }
+            "#,
+        )
+        .expect_err("an un-narrowed catch result must not expose value")
+        .message();
+        assert!(
+            unnarrowed.contains("unknown field `value` on CatchResult"),
+            "{unnarrowed}"
+        );
+
+        let error_branch = expression_type_result(
+            r#"
+              type Payload { value: string }
+              function make() -> Payload { return Payload { value: "ok" } }
+              function invalid() -> Payload? {
+                const attempted = catch<string>(make())
+                if attempted.tag == "err" { return attempted.value }
+                return null
+              }
+            "#,
+        )
+        .expect_err("the error branch must not expose the success value")
+        .message();
+        assert!(
+            error_branch.contains("unknown field `value`"),
+            "{error_branch}"
         );
     }
 

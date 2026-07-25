@@ -33,6 +33,8 @@ impl Evaluator<'_, '_> {
                 let mut value = self.eval_expr(left, env);
                 let right = self.eval_expr(right, env);
                 if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+                    && value.reference
+                    && right.reference
                     && (value.contains_caller_reference() || right.contains_caller_reference())
                 {
                     let mut compared = value.clone();
@@ -63,13 +65,17 @@ impl Evaluator<'_, '_> {
                 self.state.record_escape(&value, EscapeLane::Callback);
                 value
             }
-            Expr::Field { object, .. } => {
+            Expr::Field { object, field } => {
                 let mut value = self.eval_expr(object, env);
-                value.reference = reference;
-                if !reference {
-                    value.caller_references.clear();
+                if let Some(field_value) = value.catch_field(field, reference) {
+                    field_value
+                } else {
+                    value.reference = reference;
+                    if !reference {
+                        value.caller_references.clear();
+                    }
+                    value
                 }
-                value
             }
             Expr::Record { fields, .. } => {
                 let mut value = AbstractValue::default();
@@ -113,7 +119,7 @@ impl Evaluator<'_, '_> {
                 // Effects of evaluating the try expression remain exact, but
                 // the catch construct itself neither invokes an unknown target
                 // nor requires caller heap identity.
-                value.with_fresh_container(reference)
+                AbstractValue::catch_result(value, reference)
             }
             Expr::DbOperation(operation) => {
                 let persisted = self.eval_db_operation(operation, env);

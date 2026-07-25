@@ -118,6 +118,127 @@ fn root_qualified_and_catch_wrapped_helpers_keep_exact_local_targets() {
 }
 
 #[test]
+fn typed_catch_tag_narrowing_keeps_success_and_error_provenance_separate() {
+    let model = analyze(
+        r#"
+            type Boxed { value: string }
+
+            function fresh(input: Boxed) -> Boxed {
+              return Boxed { value: input.value }
+            }
+
+            function alias(input: Boxed) -> Boxed {
+              return input
+            }
+
+            function nullableAlias(input: Boxed) -> Boxed? {
+              return input
+            }
+
+            function okEq(input: Boxed) -> Boxed? {
+              const attempted = catch<string>(fresh(input))
+              if attempted.tag == "ok" { return attempted.value }
+              return null
+            }
+
+            function okNeEarly(input: Boxed) -> Boxed? {
+              const attempted = catch<string>(fresh(input))
+              if attempted.tag != "ok" { return null }
+              return attempted.value
+            }
+
+            function nested(input: Boxed) -> Boxed? {
+              const attempted = catch<string>(okEq(input))
+              if attempted.tag != "ok" { return null }
+              return attempted.value
+            }
+
+            function exactAlias(input: Boxed) -> Boxed? {
+              const attempted = catch<string>(alias(input))
+              if attempted.tag != "ok" { return null }
+              return attempted.value
+            }
+
+            function errorBranch(input: Boxed) -> Exception<string>? {
+              const attempted = catch<string>(alias(input))
+              if attempted.tag == "err" { return attempted.exception }
+              return null
+            }
+
+            function nullableCheck(input: Boxed) -> bool {
+              const attempted = catch<string>(nullableAlias(input))
+              if attempted.tag != "ok" { return false }
+              return attempted.value == null
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    for callable in ["okEq", "okNeEarly", "nested"] {
+        assert_eq!(effects(&model, callable), no_effects(), "{callable}");
+        assert!(
+            matches!(
+                provenance(&model, callable),
+                CallableProvenanceSummary::Analyzed { return_origins, .. }
+                    if return_origins.contains(&ValueProvenance::Fresh)
+            ),
+            "{callable}: {:?}",
+            provenance(&model, callable)
+        );
+    }
+
+    assert_eq!(
+        effects(&model, "exactAlias"),
+        CallableMayEffects {
+            returns_caller_alias: true,
+            ..no_effects()
+        }
+    );
+    assert!(matches!(
+        provenance(&model, "exactAlias"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins.contains(&ValueProvenance::CallerParameter { index: 0 })
+    ));
+
+    assert_eq!(effects(&model, "errorBranch"), no_effects());
+    assert!(matches!(
+        provenance(&model, "errorBranch"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins.contains(&ValueProvenance::Fresh)
+                && !return_origins.contains(&ValueProvenance::CallerParameter { index: 0 })
+    ));
+    assert_eq!(effects(&model, "nullableCheck"), no_effects());
+}
+
+#[test]
+fn typed_catch_does_not_sanitize_unknown_success_provenance() {
+    let model = analyze(
+        r#"
+            type Boxed { value: string }
+
+            interface Provider {
+              function run(self: Self, input: Boxed) -> Boxed
+            }
+
+            function unknown(input: Boxed, provider: any Provider) -> Boxed? {
+              const attempted = catch<string>(provider.run(input))
+              if attempted.tag != "ok" { return null }
+              return attempted.value
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert!(effects(&model, "unknown").invokes_unknown_target);
+    assert!(matches!(
+        provenance(&model, "unknown"),
+        CallableProvenanceSummary::Unknown {
+            reason: CallableProvenanceUnknownReason::UnknownCallTarget
+        }
+    ));
+}
+
+#[test]
 fn relay_shaped_cross_module_root_calls_keep_exact_targets() {
     let model = analyze_sources(&[
         (

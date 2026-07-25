@@ -31,6 +31,17 @@ pub(super) struct AbstractValue {
     pub caller_references: BTreeSet<u32>,
     pub unknown: bool,
     pub reference: bool,
+    /// Field-sensitive payloads owned by a typed `catch`.  A catch result is
+    /// an owner-local container, but reading its success value after tag
+    /// narrowing must recover the try expression's exact provenance instead
+    /// of treating the whole tagged container as the field value.
+    pub catch_result: Option<Box<CatchResultValue>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub(super) struct CatchResultValue {
+    pub success: AbstractValue,
+    pub error: AbstractValue,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +64,7 @@ impl AbstractValue {
             caller_references: BTreeSet::new(),
             unknown: false,
             reference,
+            catch_result: None,
         }
     }
 
@@ -62,6 +74,7 @@ impl AbstractValue {
             caller_references: BTreeSet::new(),
             unknown: false,
             reference,
+            catch_result: None,
         }
     }
 
@@ -73,6 +86,7 @@ impl AbstractValue {
                 .unwrap_or_default(),
             unknown: false,
             reference,
+            catch_result: None,
         }
     }
 
@@ -82,6 +96,7 @@ impl AbstractValue {
             caller_references: BTreeSet::new(),
             unknown: true,
             reference,
+            catch_result: None,
         }
     }
 
@@ -91,12 +106,45 @@ impl AbstractValue {
             .extend(other.caller_references.iter().copied());
         self.unknown |= other.unknown;
         self.reference |= other.reference;
+        match (&mut self.catch_result, &other.catch_result) {
+            (Some(current), Some(other)) => {
+                current.success.join(&other.success);
+                current.error.join(&other.error);
+            }
+            (None, None) => {}
+            _ => self.catch_result = None,
+        }
     }
 
     pub fn with_fresh_container(mut self, reference: bool) -> Self {
         self.origins.insert(Origin::Fresh);
         self.reference = reference;
         self
+    }
+
+    pub fn catch_result(success: Self, reference: bool) -> Self {
+        // The catch envelope and its typed exception branch are materialized
+        // in the current heap.  Do not reuse success provenance for the error
+        // branch; the callable's throw effects remain tracked separately.
+        let error = Self::fresh(true);
+        let mut container = success.clone().with_fresh_container(reference);
+        container.catch_result = Some(Box::new(CatchResultValue { success, error }));
+        container
+    }
+
+    pub fn catch_field(&self, field: &str, reference: bool) -> Option<Self> {
+        let result = self.catch_result.as_ref()?;
+        let mut value = match field {
+            "tag" => Self::constant(false),
+            "value" => result.success.clone(),
+            "exception" => result.error.clone(),
+            _ => return None,
+        };
+        value.reference = reference;
+        if !reference {
+            value.caller_references.clear();
+        }
+        Some(value)
     }
 
     pub fn contains_caller_reference(&self) -> bool {
