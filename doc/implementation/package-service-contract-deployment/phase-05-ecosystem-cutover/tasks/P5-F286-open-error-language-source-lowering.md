@@ -41,6 +41,17 @@ declaration、throw/catch/rethrow、instruction site 或已删除 error-set DTO 
 `CallIr` fixture补 required synthetic site；只能使用
 `CompilerGeneratedTestHarness`，不得修改该文件 production spawn projection。
 
+另精确允许 `compiler/source/src/callable_effects/tests.rs` 中以下三个既有 fixture做 test-string
+机械迁移：
+
+- `root_qualified_and_catch_wrapped_helpers_keep_exact_local_targets`
+- `typed_catch_tag_narrowing_keeps_success_and_error_provenance_separate`
+- `typed_catch_does_not_sanitize_unknown_success_provenance`
+
+把其中非法的 `catch<string>` / `Exception<string>`替换为同一 fixture内声明的
+`type Failure = string`名义 representation。不得修改 callable-effects production、断言语义或预期
+effect/provenance。
+
 禁止修改：
 
 - syntax surface/grammar；
