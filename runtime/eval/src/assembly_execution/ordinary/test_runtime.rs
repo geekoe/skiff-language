@@ -69,7 +69,13 @@ pub(crate) fn websocket_context() -> WebsocketCapabilityContext<'static> {
 }
 
 pub(crate) fn actor_context() -> ActorCapabilityContext<'static> {
-    ActorCapabilityContext::new(TestActor)
+    ActorCapabilityContext::new(TestActor { trace_id: None })
+}
+
+pub(crate) fn actor_context_with_trace(trace_id: &'static str) -> ActorCapabilityContext<'static> {
+    ActorCapabilityContext::new(TestActor {
+        trace_id: Some(trace_id),
+    })
 }
 
 pub(crate) fn effects_context() -> EffectDispatchContext {
@@ -627,7 +633,9 @@ impl FileSourceStreamApi for TestFileSourceStream {
 }
 
 #[derive(Clone)]
-struct TestActor;
+struct TestActor {
+    trace_id: Option<&'static str>,
+}
 
 impl ActorCapabilityApi for TestActor {
     fn owned(&self) -> OwnedActorCapabilityContext {
@@ -669,7 +677,7 @@ impl ActorCapabilityApi for TestActor {
         None
     }
     fn trace_id(&self) -> Option<&str> {
-        None
+        self.trace_id
     }
 
     fn get_or_create_actor<'a>(
