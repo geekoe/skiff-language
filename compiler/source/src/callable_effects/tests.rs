@@ -1268,6 +1268,58 @@ fn map_empty_materialization_accumulator_uses_exact_native_semantics() {
 }
 
 #[test]
+fn json_decode_materialization_uses_exact_detached_semantics() {
+    let model = analyze_named(
+        r#"
+            type Event { id: string, values: Array<string> }
+
+            function materializeCompletedResult(encoded: string) -> Event? {
+              const decoded = catch<std.json.DecodeError>(
+                std.json.decode<Event>(encoded)
+              )
+              if decoded.tag != "ok" {
+                return null
+              }
+              return decoded.value
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "responses",
+        "agine.ai/llm-api",
+    );
+
+    assert_eq!(
+        effects_in(&model, "responses", "materializeCompletedResult"),
+        no_effects()
+    );
+    let CallableProvenanceSummary::Analyzed {
+        return_origins,
+        throw_origins,
+        escape_lanes,
+    } = provenance_in(&model, "responses", "materializeCompletedResult")
+    else {
+        panic!("std.json.decode should retain exact detached provenance");
+    };
+    assert!(
+        return_origins.contains(&ValueProvenance::Fresh)
+            && return_origins.contains(&ValueProvenance::Constant)
+            && !return_origins
+                .iter()
+                .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. })),
+        "unexpected return provenance: {return_origins:?}"
+    );
+    assert!(throw_origins.is_empty());
+    assert!(escape_lanes.is_empty());
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::NativeFunction { binding_key }
+                if binding_key == "std.json.decode"
+        )
+    }));
+}
+
+#[test]
 fn optional_date_parse_wrapper_uses_exact_native_semantics() {
     let model = analyze_named(
         r#"

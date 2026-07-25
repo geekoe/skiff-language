@@ -182,6 +182,11 @@ pub(super) fn native_route_matches_required_context(
     required_context: NativeRequiredContext,
     route: RuntimeNativeRoute,
 ) -> bool {
+    if matches!(binding_key, "std.json.decode" | "std.json.encode") {
+        return required_context == NativeRequiredContext::None
+            && route == RuntimeNativeRoute::Json;
+    }
+
     if matches!(
         binding_key,
         "std.http.request.headers"

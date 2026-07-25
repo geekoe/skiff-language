@@ -200,6 +200,117 @@ fn map_empty_semantics_rejects_malformed_native_signatures_and_lookalikes() {
 }
 
 #[test]
+fn json_decode_semantics_matches_exact_generic_signature_and_json_route() {
+    let binding_key = "std.json.decode";
+    let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|entry| entry.binding_key == binding_key)
+        .expect("audited std.json.decode semantics should be registered");
+
+    validate_native_callable_semantics_registry(
+        std::slice::from_ref(semantics),
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect("std.json.decode semantics should match its canonical Json route");
+    assert_eq!(
+        runtime_shared_native_route_for_validation(binding_key, true),
+        Some(RuntimeNativeRoute::Json)
+    );
+    assert_eq!(
+        semantics.return_provenance,
+        skiff_artifact_model::ValueProvenance::Fresh
+    );
+    assert_eq!(
+        semantics.effects,
+        skiff_artifact_model::CallableMayEffects {
+            writes_caller_reachable: false,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        }
+    );
+}
+
+#[test]
+fn json_decode_semantics_rejects_malformed_signatures_routes_and_lookalikes() {
+    let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|entry| entry.binding_key == "std.json.decode")
+        .cloned()
+        .expect("std.json.decode callable semantics should be registered");
+    let canonical = *STD_NATIVE_SIGNATURES
+        .iter()
+        .find(|signature| signature.binding_key == "std.json.decode")
+        .expect("std.json.decode native signature should exist");
+
+    let cases = [
+        {
+            let mut signature = canonical;
+            signature.target = "platform.json.decode";
+            ("identity", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.type_param_count = 0;
+            ("generic arity", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.params = &[];
+            ("value arity", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.params = &[NativeSignatureTypeExpr::TypeParam(0)];
+            ("argument", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.return_type = NativeSignatureTypeExpr::Builtin("Json");
+            ("return", signature)
+        },
+    ];
+
+    for (case, signature) in cases {
+        let error = validate_native_callable_semantics_registry(
+            std::slice::from_ref(&semantics),
+            &[signature],
+            NATIVE_BINDINGS,
+        )
+        .expect_err("malformed std.json.decode signature should fail closed");
+        assert!(
+            error.contains("std.json.decode")
+                && error.contains("does not match the exact shared native signature"),
+            "{case}: unexpected error: {error}"
+        );
+    }
+
+    assert!(!native_route_matches_required_context(
+        "std.json.decode",
+        NativeRequiredContext::None,
+        RuntimeNativeRoute::NativeRegistry,
+    ));
+
+    let mut lookalike = semantics;
+    lookalike.binding_key = "platform.json.decode";
+    let error = validate_native_callable_semantics_registry(
+        &[lookalike],
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect_err("non-canonical json.decode lookalike should fail closed");
+    assert!(
+        error.contains("platform.json.decode")
+            && error.contains("not in the exact audited registry"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn date_parse_semantics_matches_exact_native_signature_and_runtime_handler() {
     let binding_key = "core.date.parse";
     let semantics = STD_NATIVE_CALLABLE_SEMANTICS

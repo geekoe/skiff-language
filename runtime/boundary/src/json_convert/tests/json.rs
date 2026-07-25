@@ -1,3 +1,5 @@
+use skiff_runtime_model::error::WirePayload;
+
 use crate::{
     error::RuntimeError,
     json::RuntimeBoundaryCodec,
@@ -12,7 +14,7 @@ use crate::{
 
 use super::{
     super::{decode_json_text_runtime_value, encode_json_runtime_value, to_json_runtime_value},
-    helpers::{alias, named, record},
+    helpers::{alias, array, named, record},
 };
 
 fn assert_reserved_legacy_metadata_error(error: RuntimeError) {
@@ -241,6 +243,73 @@ fn runtime_json_decode_text_coerces_json_to_record() {
     );
     assert_eq!(heap.stats().materialize_depth, 0);
     assert_eq!(heap.stats().materialize_output_bytes, 0);
+}
+
+#[test]
+fn runtime_json_decode_materializes_scalars_records_and_nested_collections() {
+    let mut heap = RequestHeap::default();
+
+    assert_eq!(
+        decode_json_text_runtime_value("\"Ada\"", &named("string"), &mut heap)
+            .expect("string should decode"),
+        RuntimeValue::String("Ada".to_string())
+    );
+
+    let expected = record(
+        "Envelope",
+        vec![
+            ("owner", record("Owner", vec![("name", named("string"))])),
+            (
+                "events",
+                array(record("Event", vec![("id", named("string"))])),
+            ),
+        ],
+    );
+    let first = decode_json_text_runtime_value(
+        r#"{"owner":{"name":"Ada"},"events":[{"id":"evt-1"}]}"#,
+        &expected,
+        &mut heap,
+    )
+    .expect("nested record and collection should decode");
+    let second = decode_json_text_runtime_value(
+        r#"{"owner":{"name":"Ada"},"events":[{"id":"evt-1"}]}"#,
+        &expected,
+        &mut heap,
+    )
+    .expect("a second decode should materialize independently");
+
+    let (RuntimeValue::Heap(first), RuntimeValue::Heap(second)) = (first, second) else {
+        panic!("record decodes should allocate heap values");
+    };
+    assert_ne!(
+        first, second,
+        "each decode must allocate a fresh root graph"
+    );
+}
+
+#[test]
+fn runtime_json_decode_preserves_decode_error_target_for_syntax_and_type_errors() {
+    let mut heap = RequestHeap::default();
+    let expected = record("User", vec![("name", named("string"))]);
+
+    let syntax_error = decode_json_text_runtime_value("{", &expected, &mut heap)
+        .expect_err("invalid JSON syntax should fail");
+    let payload = syntax_error.payload();
+    assert_eq!(payload.code, "std.json.DecodeError");
+    assert_eq!(
+        payload
+            .details
+            .as_ref()
+            .and_then(|details| details["target"].as_str()),
+        Some("std.json.decode")
+    );
+
+    let type_error = decode_json_text_runtime_value(r#"{"name":42}"#, &expected, &mut heap)
+        .expect_err("invalid decoded target type should fail");
+    assert!(
+        type_error.to_string().contains("string"),
+        "unexpected error: {type_error}"
+    );
 }
 
 #[test]
