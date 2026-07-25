@@ -1,6 +1,7 @@
 # P5-F329 Service error async, stream and cancel consumer
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F329-service-error-async-stream-consumer-result.md`。
 
 ## 直接父节点
 
@@ -89,4 +90,3 @@ selector必须非零。不得运行完整eval/workspace/root/stable/live。
 - 风险：最高，stream/lifetime/cancel；新的一次性Agent，5分钟内先建立typed carrier并替换provider terminal；
 - 提交并返回async/stream/cancel/capability/legacy矩阵和lifecycle证据；
 - 不push、不承接R4/W2-W或验收。
-
