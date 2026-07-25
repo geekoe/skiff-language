@@ -167,6 +167,10 @@ pub struct TestEffectDouble {
 }
 
 pub trait TestEffectDoubleContextApi: Any + Send + Sync {
+    fn ensure_fully_consumed(&self) -> Result<()> {
+        Ok(())
+    }
+
     fn next_test_effect_double(&self, target: &str) -> Option<TestEffectDouble>;
     fn dispatch_test_effect_double(
         &self,
@@ -214,6 +218,10 @@ impl TestEffectDoubleContext {
 
     pub fn next_test_effect_double(&self, target: &str) -> Option<TestEffectDouble> {
         self.inner.next_test_effect_double(target)
+    }
+
+    pub fn ensure_fully_consumed(&self) -> Result<()> {
+        self.inner.ensure_fully_consumed()
     }
 
     pub fn dispatch_test_effect_double(

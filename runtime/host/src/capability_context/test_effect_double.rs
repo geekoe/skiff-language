@@ -13,7 +13,9 @@ use skiff_runtime_model::{
     type_plan::{RuntimeTypeNode, RuntimeTypePlan},
 };
 
-use super::{StreamRuntime, TARGET_STD_HTTP_REQUEST, TARGET_STD_HTTP_SSE, TARGET_STD_HTTP_STREAM};
+#[cfg(test)]
+use super::TARGET_STD_HTTP_REQUEST;
+use super::{StreamRuntime, TARGET_STD_HTTP_SSE, TARGET_STD_HTTP_STREAM};
 use crate::{
     config_view::materialize_internal_json,
     error::{Result, RuntimeError},
@@ -104,18 +106,40 @@ impl TestEffectDoubleRegistry {
                 test_effect_doubles
                     .into_iter()
                     .map(|(target, doubles)| {
-                        let reusable = doubles.len() == 1;
                         (
                             target,
                             doubles
                                 .into_iter()
-                                .map(|double| RegisteredTestEffectDouble { double, reusable })
+                                .map(|double| RegisteredTestEffectDouble {
+                                    double,
+                                    reusable: false,
+                                })
                                 .collect(),
                         )
                     })
                     .collect(),
             )),
         }
+    }
+
+    pub fn contains(&self, target: &str) -> bool {
+        self.entries
+            .lock()
+            .expect("test effect double registry lock poisoned")
+            .contains_key(target)
+    }
+
+    pub fn remaining(&self) -> Vec<(String, usize)> {
+        let registry = self
+            .entries
+            .lock()
+            .expect("test effect double registry lock poisoned");
+        let mut remaining = registry
+            .iter()
+            .map(|(target, entries)| (target.clone(), entries.len()))
+            .collect::<Vec<_>>();
+        remaining.sort_by(|left, right| left.0.cmp(&right.0));
+        remaining
     }
 
     pub fn next(&self, target: &str) -> Option<TestEffectDouble> {
@@ -202,12 +226,26 @@ impl TestEffectDoubleContext {
         self.registry.next(target)
     }
 
+    pub fn unused_effects_error(&self) -> Option<RuntimeError> {
+        let remaining = self.registry.remaining();
+        (!remaining.is_empty()).then(|| {
+            RuntimeError::Decode(format!(
+                "unused test effects: {}",
+                remaining
+                    .iter()
+                    .map(|(target, count)| format!("{target} ({count} outcome(s))"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })
+    }
+
     pub fn dispatch_test_effect_double(
         &self,
         target: &str,
         input: Option<&Value>,
     ) -> Option<Result<Value>> {
-        if !is_test_double_target(target) {
+        if !self.registry.contains(target) {
             return None;
         }
         let double = self.next_test_effect_double(target)?;
@@ -274,7 +312,7 @@ impl TestEffectDoubleContext {
         return_plan: Option<&RuntimeTypePlan>,
         heap: &mut RequestHeap,
     ) -> Option<Result<RuntimeValue>> {
-        if !is_test_double_target(target) {
+        if !self.registry.contains(target) {
             return None;
         }
         let Some(double) = self.next_test_effect_double(target) else {
@@ -321,6 +359,30 @@ impl TestEffectDoubleContext {
                     "test double expectation failed for {target}: expected request subset {expected}, got a nonmatching materialized request"
                 ))));
             }
+        }
+        if let Some(payload) = typed_throw_payload(&double.response) {
+            return Some(Err(RuntimeError::Opaque(Box::new(TestTypedEffectError {
+                target: target.to_string(),
+                payload: payload.clone(),
+            }))));
+        }
+        if let Some(events) = stream_outcome_events(&double.response) {
+            let events = match events
+                .iter()
+                .cloned()
+                .map(materialize_internal_json)
+                .collect::<Result<Vec<_>>>()
+            {
+                Ok(events) => events,
+                Err(error) => return Some(Err(error)),
+            };
+            let response = self.stream_runtime.buffered_stream(events);
+            return Some(runtime_from_wire_internal_handle_required_plan(
+                &response,
+                return_plan,
+                &format!("{target} stream response"),
+                heap,
+            ));
         }
         let response = if is_stream_source_double_target(target) {
             let events = match &double.response {
@@ -421,11 +483,48 @@ fn is_stream_source_double_target(target: &str) -> bool {
     target == TARGET_STD_HTTP_SSE
 }
 
-fn is_test_double_target(target: &str) -> bool {
-    matches!(
-        target,
-        TARGET_STD_HTTP_REQUEST | TARGET_STD_HTTP_STREAM | TARGET_STD_HTTP_SSE
-    ) || is_std_log_stable_target(target)
+fn typed_throw_payload(value: &Value) -> Option<&Value> {
+    let object = value.as_object()?;
+    (object.get("__skiffTestEffectOutcome")?.as_str()? == "throw")
+        .then(|| object.get("payload"))
+        .flatten()
+}
+
+fn stream_outcome_events(value: &Value) -> Option<&[Value]> {
+    let object = value.as_object()?;
+    if object.get("__skiffTestEffectOutcome")?.as_str()? != "stream" {
+        return None;
+    }
+    object.get("events")?.as_array().map(Vec::as_slice)
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("test effect `{target}` threw its declared typed payload")]
+struct TestTypedEffectError {
+    target: String,
+    payload: Value,
+}
+
+impl skiff_runtime_model::error::WirePayload for TestTypedEffectError {
+    fn payload(&self) -> skiff_runtime_model::error::RuntimeErrorPayload {
+        skiff_runtime_model::error::RuntimeErrorPayload {
+            code: "TestTypedEffect".to_string(),
+            message: self.to_string(),
+            status: None,
+            details: Some(self.payload.clone()),
+        }
+    }
+
+    fn catch_projection(&self) -> Option<(skiff_runtime_model::error::TypeIdentity, Value)> {
+        Some((
+            skiff_runtime_model::error::TypeIdentity::builtin("TestTypedEffect"),
+            self.payload.clone(),
+        ))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 fn is_std_log_stable_target(target: &str) -> bool {
@@ -615,5 +714,65 @@ mod tests {
             second.response
         );
         assert!(registry.next(TARGET_STD_HTTP_REQUEST).is_none());
+    }
+
+    #[test]
+    fn single_outcome_is_consumed_and_exhaustion_is_observable() {
+        let registry = TestEffectDoubleRegistry::one_shot_sequences(HashMap::from([(
+            "dependency.call".to_string(),
+            vec![TestEffectDouble {
+                expect_request: None,
+                response: json!("only"),
+            }],
+        )]));
+        assert_eq!(
+            registry.next("dependency.call").unwrap().response,
+            json!("only")
+        );
+        assert!(registry.next("dependency.call").is_none());
+    }
+
+    #[test]
+    fn remaining_reports_unused_outcomes_precisely() {
+        let registry = TestEffectDoubleRegistry::one_shot_sequences(HashMap::from([(
+            "dependency.call".to_string(),
+            vec![
+                TestEffectDouble {
+                    expect_request: None,
+                    response: json!(1),
+                },
+                TestEffectDouble {
+                    expect_request: None,
+                    response: json!(2),
+                },
+            ],
+        )]));
+        let _ = registry.next("dependency.call");
+        assert_eq!(
+            registry.remaining(),
+            vec![("dependency.call".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn registries_are_isolated_between_parallel_cases() {
+        let case = || {
+            TestEffectDoubleRegistry::one_shot_sequences(HashMap::from([(
+                "dependency.call".to_string(),
+                vec![TestEffectDouble {
+                    expect_request: None,
+                    response: json!("case"),
+                }],
+            )]))
+        };
+        let left = case();
+        let right = case();
+        let left_thread = std::thread::spawn(move || left.next("dependency.call"));
+        let right_thread = std::thread::spawn(move || right.next("dependency.call"));
+        assert_eq!(left_thread.join().unwrap().unwrap().response, json!("case"));
+        assert_eq!(
+            right_thread.join().unwrap().unwrap().response,
+            json!("case")
+        );
     }
 }

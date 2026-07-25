@@ -10,13 +10,13 @@ use skiff_artifact_identity::runtime_assembly_ref;
 
 use crate::{
     canonical_fixture::CanonicalFixtureError,
-    canonical_package::CanonicalPackageProject,
+    canonical_package::{read_root_package_manifest, CanonicalPackageProject},
     canonical_store::CanonicalBaseAssembly,
+    inline_effects::{self, RuntimeTestEffect, RuntimeTestEffectPlan},
     package_test_assembly::{
         assemble_package_test_fixture_for_run_with_config, CanonicalPackageTestEntrypoint,
     },
     test_discovery::PackageTestCase,
-    test_doubles::{self, TestEffectDoubles},
     test_overlay::compile_package_test_overlay,
     SkiffTestOptions, SkiffTestResult, SkiffTestSummary,
 };
@@ -40,6 +40,10 @@ pub fn run_package_cases(
     activation_url: &str,
     options: &SkiffTestOptions,
 ) -> Result<SkiffTestSummary, CanonicalFixtureError> {
+    inline_effects::reject_legacy_manifest(package_root)?;
+    let manifest = read_root_package_manifest(&options.platform_sources, package_root)
+        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    let test_effect_plans = inline_effects::compile_case_plans(&project, &manifest, &cases)?;
     let candidate_generation = options.expected_generation.checked_add(1).ok_or_else(|| {
         CanonicalFixtureError::InvalidInput(
             "assembly activation expected generation cannot advance".to_string(),
@@ -53,8 +57,7 @@ pub fn run_package_cases(
         &project,
         &cases,
     )?;
-    let mut test_config_literals = test_doubles::load_config_literals(package_root, &project)?;
-    test_config_literals.extend(options.test_config_literals.iter().cloned());
+    let test_config_literals = options.test_config_literals.clone();
     let run_scope = package_test_run_scope()?;
     let fixture = assemble_package_test_fixture_for_run_with_config(
         &project,
@@ -119,17 +122,15 @@ pub fn run_package_cases(
         )
     })?;
 
-    let ingress_url = options.ingress_url.as_deref().ok_or_else(|| {
+    options.ingress_url.as_deref().ok_or_else(|| {
         CanonicalFixtureError::InvalidInput(
             "canonical execution requires --ingress-url".to_string(),
         )
     })?;
-    let test_effect_doubles = test_doubles::load(package_root)?;
     Ok(execute_entrypoints(
         fixture.entrypoints,
-        ingress_url,
         activation_url,
-        &test_effect_doubles,
+        &test_effect_plans,
     ))
 }
 
@@ -148,33 +149,16 @@ fn package_test_run_scope() -> Result<String, CanonicalFixtureError> {
 
 fn execute_entrypoints(
     entrypoints: Vec<CanonicalPackageTestEntrypoint>,
-    ingress_url: &str,
     activation_url: &str,
-    test_effect_doubles: &TestEffectDoubles,
+    test_effect_plans: &HashMap<String, RuntimeTestEffectPlan>,
 ) -> SkiffTestSummary {
     let mut results = Vec::with_capacity(entrypoints.len());
     for entrypoint in entrypoints {
-        let test_key = format!("{}::{}", entrypoint.case.module_path, entrypoint.case.name);
-        let doubles = test_effect_doubles.get(&test_key);
         let (passed, message) = execute_business_request_once(|| {
-            if let Some(doubles) = doubles {
-                execute_control_test_dispatch(activation_url, &entrypoint, doubles)
-            } else {
-                let url = format!(
-                    "{}{}",
-                    ingress_url.trim_end_matches('/'),
-                    entrypoint.selector.path
-                );
-                http::request_url(
-                    &url,
-                    entrypoint.selector.method.as_deref().unwrap_or("POST"),
-                    Some(&entrypoint.selector.host),
-                    &[],
-                    deadline_after(HTTP_TIMEOUT)?,
-                    MAX_HTTP_RESPONSE_BYTES,
-                )
-                .map(|connected| connected.response)
-            }
+            let effects = test_effect_plans
+                .get(&entrypoint.case.case_identity)
+                .expect("every discovered case has one typed inline effect plan");
+            execute_control_test_dispatch(activation_url, &entrypoint, effects)
         });
         results.push(SkiffTestResult {
             module_path: entrypoint.case.module_path,
@@ -197,7 +181,7 @@ fn execute_entrypoints(
 fn execute_control_test_dispatch(
     activation_url: &str,
     entrypoint: &CanonicalPackageTestEntrypoint,
-    doubles: &HashMap<String, Vec<test_doubles::TestEffectDouble>>,
+    effects: &HashMap<String, Vec<RuntimeTestEffect>>,
 ) -> Result<http::HttpResponse, CanonicalFixtureError> {
     let control_url = activation_url
         .strip_suffix("/__skiff/activate-assembly")
@@ -212,7 +196,7 @@ fn execute_control_test_dispatch(
         "ingress": entrypoint.selector,
         "payloadBase64": "",
         "testEffectsEnabled": true,
-        "testEffectDoubles": doubles,
+        "testEffectDoubles": effects,
         "timeoutMs": 30_000,
     }))
     .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;

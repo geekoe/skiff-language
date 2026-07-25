@@ -474,6 +474,10 @@ impl Interpreter {
         self.test_effect_doubles.clone()
     }
 
+    pub fn ensure_test_effects_consumed(&self) -> Result<()> {
+        self.test_effect_doubles.ensure_fully_consumed()
+    }
+
     pub(crate) fn clone_for_stream_producer(&self) -> Self {
         Self {
             program: self.program.clone(),

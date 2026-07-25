@@ -118,6 +118,9 @@ pub async fn execute_runtime_assembly_request(
         )
         .await
         .map_err(RequestError::from)?;
+        interpreter
+            .ensure_test_effects_consumed()
+            .map_err(RequestError::from)?;
         return boundary_response_from_eval_websocket_adapter_result(
             websocket_phase.expect("WebSocket adapter phase checked above"),
             result,
@@ -131,7 +134,11 @@ pub async fn execute_runtime_assembly_request(
         &request_context,
     )
     .await;
-    match result.map_err(RequestError::from)? {
+    let result = result.map_err(RequestError::from)?;
+    interpreter
+        .ensure_test_effects_consumed()
+        .map_err(RequestError::from)?;
+    match result {
         InProcessBoundaryIngressResponse::RuntimePayload(payload) => {
             Ok(BoundaryResponse::payload(payload))
         }
