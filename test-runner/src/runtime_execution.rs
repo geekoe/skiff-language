@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     path::Path,
     sync::atomic::{AtomicU64, Ordering},
     time::SystemTime,
@@ -15,6 +16,7 @@ use crate::{
         assemble_package_test_fixture_for_run_with_config, CanonicalPackageTestEntrypoint,
     },
     test_discovery::PackageTestCase,
+    test_doubles::{self, TestEffectDoubles},
     test_overlay::compile_package_test_overlay,
     SkiffTestOptions, SkiffTestResult, SkiffTestSummary,
 };
@@ -120,7 +122,13 @@ pub fn run_package_cases(
             "canonical execution requires --ingress-url".to_string(),
         )
     })?;
-    Ok(execute_entrypoints(fixture.entrypoints, ingress_url))
+    let test_effect_doubles = test_doubles::load(package_root)?;
+    Ok(execute_entrypoints(
+        fixture.entrypoints,
+        ingress_url,
+        activation_url,
+        &test_effect_doubles,
+    ))
 }
 
 fn package_test_run_scope() -> Result<String, CanonicalFixtureError> {
@@ -139,24 +147,32 @@ fn package_test_run_scope() -> Result<String, CanonicalFixtureError> {
 fn execute_entrypoints(
     entrypoints: Vec<CanonicalPackageTestEntrypoint>,
     ingress_url: &str,
+    activation_url: &str,
+    test_effect_doubles: &TestEffectDoubles,
 ) -> SkiffTestSummary {
     let mut results = Vec::with_capacity(entrypoints.len());
     for entrypoint in entrypoints {
-        let url = format!(
-            "{}{}",
-            ingress_url.trim_end_matches('/'),
-            entrypoint.selector.path
-        );
+        let test_key = format!("{}::{}", entrypoint.case.module_path, entrypoint.case.name);
+        let doubles = test_effect_doubles.get(&test_key);
         let (passed, message) = execute_business_request_once(|| {
-            http::request_url(
-                &url,
-                entrypoint.selector.method.as_deref().unwrap_or("POST"),
-                Some(&entrypoint.selector.host),
-                &[],
-                deadline_after(HTTP_TIMEOUT)?,
-                MAX_HTTP_RESPONSE_BYTES,
-            )
-            .map(|connected| connected.response)
+            if let Some(doubles) = doubles {
+                execute_control_test_dispatch(activation_url, &entrypoint, doubles)
+            } else {
+                let url = format!(
+                    "{}{}",
+                    ingress_url.trim_end_matches('/'),
+                    entrypoint.selector.path
+                );
+                http::request_url(
+                    &url,
+                    entrypoint.selector.method.as_deref().unwrap_or("POST"),
+                    Some(&entrypoint.selector.host),
+                    &[],
+                    deadline_after(HTTP_TIMEOUT)?,
+                    MAX_HTTP_RESPONSE_BYTES,
+                )
+                .map(|connected| connected.response)
+            }
         });
         results.push(SkiffTestResult {
             module_path: entrypoint.case.module_path,
@@ -174,6 +190,39 @@ fn execute_entrypoints(
         failed,
         results,
     }
+}
+
+fn execute_control_test_dispatch(
+    activation_url: &str,
+    entrypoint: &CanonicalPackageTestEntrypoint,
+    doubles: &HashMap<String, Vec<test_doubles::TestEffectDouble>>,
+) -> Result<http::HttpResponse, CanonicalFixtureError> {
+    let control_url = activation_url
+        .strip_suffix("/__skiff/activate-assembly")
+        .ok_or_else(|| {
+            CanonicalFixtureError::InvalidInput(
+                "activation URL is not canonical for test dispatch".to_string(),
+            )
+        })?;
+    let body = serde_json::to_vec(&serde_json::json!({
+        "kind": "runtimeAssembly",
+        "contractOperationId": entrypoint.operation,
+        "ingress": entrypoint.selector,
+        "payloadBase64": "",
+        "testEffectsEnabled": true,
+        "testEffectDoubles": doubles,
+        "timeoutMs": 30_000,
+    }))
+    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    http::request_url(
+        &format!("{control_url}/__skiff/test-dispatch"),
+        "POST",
+        None,
+        &body,
+        deadline_after(HTTP_TIMEOUT)?,
+        MAX_HTTP_RESPONSE_BYTES,
+    )
+    .map(|connected| connected.response)
 }
 
 fn execute_business_request_once(

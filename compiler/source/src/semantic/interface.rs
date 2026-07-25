@@ -229,7 +229,6 @@ impl InterfaceSemantics {
             .map(|index| &self.conformances[*index])
     }
 
-
     pub fn is_nominal_source_type(&self, symbol: &SourceSymbolKey) -> bool {
         self.source_types
             .get(symbol)

@@ -604,15 +604,11 @@ mod tests {
     fn package_schema_index_rejects_non_public_named_types() {
         let type_id = PackageSchemaTypeId::new("type:user");
         let mut types = BTreeMap::from([("api.User".to_string(), index_entry(type_id))]);
-        types.get_mut("api.User").unwrap().nameability =
-            ContractTypeNameability::ClosureOnly;
+        types.get_mut("api.User").unwrap().nameability = ContractTypeNameability::ClosureOnly;
         let index = PackageSchemaIndex {
             package_id: "example.pkg".to_string(),
-            package_schema_index_identity: package_schema_index_identity(
-                "example.pkg",
-                &types,
-            )
-            .unwrap(),
+            package_schema_index_identity: package_schema_index_identity("example.pkg", &types)
+                .unwrap(),
             types,
         };
         let error = validate_package_schema_index(&index).unwrap_err();

@@ -6,9 +6,10 @@ use skiff_artifact_model::{
 };
 
 use crate::{
-    ActivationRelativeServiceCall, ExecutableAddr, FileAddr, LinkedExecutable, LinkedFileUnit,
-    LinkedPackageDirectCall, PackageCodeSlotIndex, RuntimeTypeContext, SharedPackageCode,
-    SharedPackageImageError, SharedPackageLinkedImage, TypeAddr, UnitAddr,
+    ActivationRelativeServiceCall, ExecutableAddr, FileAddr, LinkOverlay, LinkedExecutable,
+    LinkedFileUnit, LinkedPackageDirectCall, PackageCodeSlotIndex, PackageSymbolKey,
+    ResolvedSymbol, RuntimeTypeContext, SharedPackageCode, SharedPackageImageError,
+    SharedPackageLinkedImage, TypeAddr, UnitAddr,
 };
 
 /// Immutable, activation-independent executable/type image for one admitted assembly.
@@ -17,6 +18,7 @@ pub struct AssemblyExecutionImage {
     shared_packages: Arc<SharedPackageLinkedImage>,
     code_slots: Vec<Arc<AssemblyPackageExecutionCode>>,
     code_slot_by_build: BTreeMap<PackageBuildId, PackageCodeSlotIndex>,
+    link_overlay: LinkOverlay,
     types: RuntimeTypeContext,
 }
 
@@ -76,10 +78,12 @@ impl AssemblyExecutionImage {
                 });
             }
         }
+        let link_overlay = execution_link_overlay(shared_packages.as_ref(), &code_slots, &types)?;
         Ok(Self {
             shared_packages,
             code_slots,
             code_slot_by_build,
+            link_overlay,
             types,
         })
     }
@@ -107,6 +111,10 @@ impl AssemblyExecutionImage {
 
     pub fn types(&self) -> &RuntimeTypeContext {
         &self.types
+    }
+
+    pub fn link_overlay(&self) -> &LinkOverlay {
+        &self.link_overlay
     }
 
     pub fn executable_at(
@@ -245,6 +253,61 @@ impl AssemblyExecutionImage {
     }
 }
 
+fn execution_link_overlay(
+    shared: &SharedPackageLinkedImage,
+    code_slots: &[Arc<AssemblyPackageExecutionCode>],
+    types: &RuntimeTypeContext,
+) -> AssemblyExecutionResult<LinkOverlay> {
+    let mut overlay = LinkOverlay::default();
+    for (slot, (shared_code, execution_code)) in
+        shared.code_slots().iter().zip(code_slots).enumerate()
+    {
+        let package_id = shared_code.artifact().package_id.clone();
+        if overlay
+            .package_slots_by_id
+            .insert(package_id.clone(), slot)
+            .is_some()
+        {
+            return Err(AssemblyExecutionImageError::DuplicatePackageId { package_id });
+        }
+        let mut files = std::collections::HashMap::new();
+        for (index, file) in execution_code.files().iter().enumerate() {
+            if files
+                .insert(
+                    file.file_ir_identity.clone(),
+                    FileAddr::LoadedFileIndex(index),
+                )
+                .is_some()
+            {
+                return Err(AssemblyExecutionImageError::DuplicateExecutionFile {
+                    package_build_id: execution_code.package_build_id().clone(),
+                    file_ir_identity: file.file_ir_identity.clone(),
+                });
+            }
+        }
+        overlay.package_files_by_identity.insert(slot, files);
+        for symbol in shared_code.artifact().implementation_links.types.keys() {
+            let Some(addr) = types.exported_package_type(slot, symbol).cloned() else {
+                return Err(AssemblyExecutionImageError::MissingPackageTypeExport {
+                    package_id: shared_code.artifact().package_id.clone(),
+                    symbol: symbol.clone(),
+                });
+            };
+            overlay.symbols.insert_package(
+                PackageSymbolKey::new(slot, symbol.clone()),
+                ResolvedSymbol::Type { addr: addr.clone() },
+            );
+            if shared_code.artifact().package_id == "skiff.run/std" {
+                overlay.symbols.insert_package(
+                    PackageSymbolKey::new(slot, format!("std.{symbol}")),
+                    ResolvedSymbol::Type { addr },
+                );
+            }
+        }
+    }
+    Ok(overlay)
+}
+
 impl AssemblyPackageExecutionCode {
     pub fn try_new(
         shared: &SharedPackageCode,
@@ -340,6 +403,13 @@ pub enum AssemblyExecutionImageError {
     },
     DuplicatePackageBuild {
         package_build_id: PackageBuildId,
+    },
+    DuplicatePackageId {
+        package_id: String,
+    },
+    MissingPackageTypeExport {
+        package_id: String,
+        symbol: String,
     },
     PackageBuildNotLoaded {
         package_build_id: PackageBuildId,

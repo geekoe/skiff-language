@@ -1077,8 +1077,7 @@ impl<'a> EvalContext<'a> {
             ))),
             LinkedCallTarget::ActorDispatch { plan } => {
                 let frame = self.suspend_actor_segment()?;
-                let result =
-                    crate::actor_dispatch::dispatch_actor_method(self, plan, values).await;
+                let result = crate::actor_dispatch::dispatch_actor_method(self, plan, values).await;
                 self.resume_actor_segment(frame).await?;
                 result
             }

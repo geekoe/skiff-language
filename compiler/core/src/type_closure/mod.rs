@@ -59,7 +59,6 @@ pub trait TypeClosurePolicy {
     ) -> Result<(), Self::Error> {
         Ok(())
     }
-
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

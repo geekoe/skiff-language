@@ -50,7 +50,7 @@ impl AssemblyAdmissionController {
                             assembly_identity = %transition.assembly.assembly_identity,
                             generation = transition.candidate_generation,
                             reason = ?reason,
-                            error = %error
+                            error = %format_args!("{error:#}")
                         );
                         transition.reject_control(replica_id, reason)
                     }
@@ -90,7 +90,7 @@ impl AssemblyAdmissionController {
                             assembly_identity = %transition.assembly.assembly_identity,
                             generation = transition.candidate_generation,
                             reason = ?reason,
-                            error = %error
+                            error = %format_args!("{error:#}")
                         );
                         transition.reject_control(replica_id, reason)
                     }

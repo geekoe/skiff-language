@@ -36,6 +36,7 @@ impl RuntimeAssemblyExecutionProjection {
             .iter()
             .map(|code| code.static_resources().clone())
             .collect();
+        let link_overlay = image.link_overlay().clone();
         Self {
             image,
             storage: Arc::new(AssemblyProjectionStorage {
@@ -44,7 +45,7 @@ impl RuntimeAssemblyExecutionProjection {
                 package_files,
                 service_resources: PublicationResourceTable::default(),
                 package_resources,
-                link_overlay: LinkOverlay::default(),
+                link_overlay,
             }),
         }
     }

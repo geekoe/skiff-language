@@ -7,8 +7,8 @@ pub use skiff_compiler_core::spawn_targets::PackageSpawnTargetSource;
 
 use crate::file_ir::FileIrUnit;
 use skiff_compiler_source::{
-    parsed_sources::ParsedCompilerSource,
-    PackageSourceModel, SourceCompileError as PublicationError,
+    parsed_sources::ParsedCompilerSource, PackageSourceModel,
+    SourceCompileError as PublicationError,
 };
 
 use super::{CompiledPackageSource, LoweredPackage};

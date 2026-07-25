@@ -288,6 +288,27 @@ async fn runtime_assembly_request_rejects_wrong_tuple_http_effects_adapter_and_s
         assert_no_second_terminal(&mut receiver).await;
     }
 
+    let mut trusted_test = canonical_header(&route, "runtime-assembly-trusted-test-effects");
+    trusted_test.caller.target = "__skiff.runtime-assembly-test-dispatch".to_string();
+    trusted_test.test_effects_enabled = true;
+    trusted_test.test_effect_doubles = HashMap::from([(
+        "unused.effect".to_string(),
+        vec![RuntimeAssemblyRequestTestEffectDoubleFrameHeader {
+            expect_request: None,
+            response: Value::Null,
+        }],
+    )]);
+    let frame = encode_binary_frame(&trusted_test, &[]).expect("trusted test request encodes");
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    dispatch(&host, &frame, &sender)
+        .await
+        .expect("trusted test request should reach canonical execution");
+    let Terminal::End(response, _) = recv_terminal(&mut receiver).await else {
+        panic!("trusted canonical test controls should execute")
+    };
+    assert_eq!(response.request_id, trusted_test.request_id);
+    assert_no_second_terminal(&mut receiver).await;
+
     websocket_without_adapter.request_id =
         "runtime-assembly-reject-websocket-without-adapter".to_string();
     let frame = encode_binary_frame(&websocket_without_adapter, &[])

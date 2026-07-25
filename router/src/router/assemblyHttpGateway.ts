@@ -213,6 +213,12 @@ export function assemblyHttpRequestHeader(input: {
   requestId: string;
   timeoutMs: number;
   httpRequest: HttpRequestFrameMetadata;
+  testEffectsEnabled?: boolean;
+  testEffectDoubles?: Record<
+    string,
+    Array<{ expectRequest?: unknown; response: unknown }>
+  >;
+  callerTarget?: string;
 }): RuntimeAssemblyRequestStartFrameHeader {
   const selector = input.binding.selector;
   if (selector.protocol !== 'http' || selector.method === null) {
@@ -225,7 +231,7 @@ export function assemblyHttpRequestHeader(input: {
     mode: input.binding.operationMode,
     caller: {
       kind: 'gateway',
-      target: '__skiff.runtime-assembly-ingress'
+      target: input.callerTarget ?? '__skiff.runtime-assembly-ingress'
     },
     routing: {
       kind: 'runtimeAssembly',
@@ -248,8 +254,8 @@ export function assemblyHttpRequestHeader(input: {
       spanId: randomUUID()
     },
     httpRequest: input.httpRequest,
-    testEffectsEnabled: false,
-    testEffectDoubles: {}
+    testEffectsEnabled: input.testEffectsEnabled ?? false,
+    testEffectDoubles: input.testEffectDoubles ?? {}
   } as const;
   const validation = validateRuntimeAssemblyRequestStartFrameHeader(candidate);
   if (!validation.ok) {

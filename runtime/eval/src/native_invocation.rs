@@ -17,7 +17,9 @@ use skiff_runtime_native_contract::{
 
 use super::{
     env::Env,
-    program_types::{program_package_type_addr, program_publication_type_addr},
+    program_types::{
+        normalize_program_type_ref, program_package_type_addr, program_publication_type_addr,
+    },
     Interpreter,
 };
 use crate::{
@@ -82,7 +84,22 @@ fn resolve_runtime_native_invocation_in_type_view(
                 return Err(RuntimeError::InvalidArtifact(message));
             }
         };
-    let actor_metadata = resolve_actor_native_metadata(program, binding_key, &target_name, call)?;
+    let normalized_actor_call =
+        (runtime_shared_native_route(binding_key) == Some(RuntimeNativeRoute::Actor)).then(|| {
+            let mut normalized = call.clone();
+            for type_arg in normalized.type_args.values_mut() {
+                *type_arg = normalize_program_type_ref(
+                    program,
+                    current_addr,
+                    type_arg,
+                    &env.type_substitutions,
+                );
+            }
+            normalized
+        });
+    let resolved_call = normalized_actor_call.as_ref().unwrap_or(call);
+    let actor_metadata =
+        resolve_actor_native_metadata(program, binding_key, &target_name, resolved_call)?;
     let resource_owner = (runtime_shared_native_route(binding_key)
         == Some(RuntimeNativeRoute::Resource))
     .then(|| current_addr.unit.clone());
@@ -92,7 +109,7 @@ fn resolve_runtime_native_invocation_in_type_view(
     // try to manufacture a TypeAddr/descriptor for T0. Keep the real argument
     // plans (T1/T2) and use a detached scalar only for the unused return lane.
     let actor_plan_call = actor_metadata.as_ref().map(|_| {
-        let mut plan_call = call.clone();
+        let mut plan_call = resolved_call.clone();
         plan_call.type_args.insert(
             "T0".to_string(),
             LinkedTypeRef::Native {
@@ -102,7 +119,7 @@ fn resolve_runtime_native_invocation_in_type_view(
         );
         plan_call
     });
-    let plan_call = actor_plan_call.as_ref().unwrap_or(call);
+    let plan_call = actor_plan_call.as_ref().unwrap_or(resolved_call);
     let plan = match resolve_runtime_native_call_plan(
         program,
         current_addr,
@@ -163,17 +180,25 @@ fn resolve_actor_native_metadata(
         return Ok(None);
     }
     validate_actor_native_call_arg_count(binding_key, diagnostic_target, call)?;
-    let linked_metadata = call.actor_metadata.as_ref().ok_or_else(|| {
-        RuntimeError::InvalidArtifact(format!(
-            "{diagnostic_target} call is missing linked actor declaration metadata"
-        ))
-    })?;
-    let declaration = actor_declaration_for_owner(program, &linked_metadata.declaration_owner)?;
-    if declaration.actor_abi_identity != linked_metadata.actor_abi_identity {
-        return Err(RuntimeError::InvalidArtifact(format!(
-            "{diagnostic_target} actor declaration ABI identity does not match call metadata"
-        )));
-    }
+    let actor_symbol = match call.type_args.get("T0") {
+        Some(LinkedTypeRef::ServiceSymbol { symbol }) => symbol,
+        _ => {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "{diagnostic_target} actor typeArgs[0] is not a nominal actor ServiceSymbol"
+            )));
+        }
+    };
+    let declaration = if let Some(linked_metadata) = call.actor_metadata.as_ref() {
+        let declaration = actor_declaration_for_owner(program, &linked_metadata.declaration_owner)?;
+        if declaration.actor_abi_identity != linked_metadata.actor_abi_identity {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "{diagnostic_target} actor declaration ABI identity does not match call metadata"
+            )));
+        }
+        declaration
+    } else {
+        actor_declaration_for_symbol(program, actor_symbol)?
+    };
     let expected_actor_type = LinkedTypeRef::ServiceSymbol {
         symbol: declaration.actor_type.clone(),
     };
@@ -214,6 +239,37 @@ fn resolve_actor_native_metadata(
             .as_str()
             .to_string(),
     )))
+}
+
+fn actor_declaration_for_symbol<'a>(
+    program: ProgramTypeView<'a>,
+    symbol: &skiff_runtime_linked_program::ServiceSymbolRef,
+) -> Result<&'a LinkedActorDeclaration> {
+    let mut matches = program
+        .service_files
+        .iter()
+        .chain(program.package_files.iter().flatten())
+        .flat_map(|file| file.actor_declarations.iter())
+        .filter(|declaration| declaration.actor_type == *symbol);
+    let declaration = matches.next().ok_or_else(|| {
+        RuntimeError::InvalidArtifact(format!(
+            "actor type {}.{} does not resolve to an actor declaration",
+            symbol.module_path, symbol.symbol
+        ))
+    })?;
+    if matches.next().is_some() {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "actor type {}.{} resolves ambiguously",
+            symbol.module_path, symbol.symbol
+        )));
+    }
+    if declaration.implementation_owner.is_none() {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "actor type {}.{} has no linked implementation owner",
+            symbol.module_path, symbol.symbol
+        )));
+    }
+    Ok(declaration)
 }
 
 fn actor_declaration_for_owner<'a>(

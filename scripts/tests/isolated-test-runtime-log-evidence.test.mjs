@@ -10,6 +10,7 @@ import {
   captureIsolatedRuntimeLogEvidence,
   ISOLATED_RUNTIME_LOG_EVIDENCE_PROPERTY,
   ISOLATED_RUNTIME_LOG_TAIL_MAX_BYTES,
+  renderIsolatedRuntimeLogEvidence,
 } from '../lib/isolated-test-runtime-log-evidence.mjs';
 import { runInIsolatedTestRuntime } from '../lib/isolated-test-runtime.mjs';
 
@@ -134,6 +135,34 @@ test('failed isolated test keeps evidence after cleanup and combines cleanup fai
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('isolated failure evidence renderer exposes only non-empty sanitized tails', () => {
+  const error = new Error('failed');
+  Object.defineProperty(error, ISOLATED_RUNTIME_LOG_EVIDENCE_PROPERTY, {
+    value: {
+      schemaVersion: 'skiff-isolated-runtime-failure-log-evidence-v1',
+      logs: [
+        {
+          component: 'router',
+          stream: 'stderr',
+          sanitizedTail: '',
+          truncated: false,
+        },
+        {
+          component: 'runtime',
+          stream: 'stdout',
+          sanitizedTail: 'link failed at <PATH>\n',
+          truncated: true,
+        },
+      ],
+    },
+  });
+  assert.equal(
+    renderIsolatedRuntimeLogEvidence(error),
+    '[isolated runtime stdout (tail, truncated)]\nlink failed at <PATH>',
+  );
+  assert.equal(renderIsolatedRuntimeLogEvidence(new Error('plain')), '');
 });
 
 function pickLogFacts(log) {

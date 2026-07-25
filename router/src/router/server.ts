@@ -155,6 +155,7 @@ runtimeEndpoint.setWebSocketGenerationLifecycle(generationLifecycle);
 registry.setConnectionPinCounter(generationLifecycle);
 const controlPlane = new AssemblyControlPlane({
   coordinator,
+  dispatcher,
   registry,
   runtimeRegistry,
   snapshots

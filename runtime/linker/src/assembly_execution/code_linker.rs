@@ -358,8 +358,12 @@ impl<'a> AssemblyCodeLinker<'a> {
                         }
                         self.link_type_ref(code_slot, file_index, type_arg)?;
                     }
-                    call.actor_metadata =
-                        self.validate_actor_registry_call(code_slot, file_index, call)?;
+                    call.actor_metadata = self.validate_actor_registry_call(
+                        code_slot,
+                        file_index,
+                        enclosing_type_params,
+                        call,
+                    )?;
                     validate_call_semantics(
                         &AssemblyCallSemanticDelegate::new(self, code_slot, file_index),
                         context,
@@ -408,6 +412,7 @@ impl<'a> AssemblyCodeLinker<'a> {
         &self,
         code_slot: usize,
         file_index: usize,
+        enclosing_type_params: &[String],
         call: &skiff_runtime_linked_program::CallIr,
     ) -> anyhow::Result<Option<LinkedActorNativeMetadata>> {
         let Some(target_name) = actor_registry_target_name(&call.target) else {
@@ -434,6 +439,12 @@ impl<'a> AssemblyCodeLinker<'a> {
             );
         }
         let actor_type = &call.type_args["T0"];
+        if let LinkedTypeRef::TypeParam { name } = actor_type {
+            if enclosing_type_params.contains(name) {
+                return Ok(None);
+            }
+            anyhow::bail!("{target_name} T0 references unknown type parameter {name}");
+        }
         let LinkedTypeRef::ServiceSymbol { symbol } = actor_type else {
             anyhow::bail!("{target_name} T0 must be a nominal actor ServiceSymbol");
         };

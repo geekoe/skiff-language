@@ -611,6 +611,7 @@ async function createFixture(
   endpoint.setDispatcher(dispatcher);
   const controlPlane = new AssemblyControlPlane({
     coordinator,
+    dispatcher,
     registry: assemblyRegistry,
     runtimeRegistry,
     snapshots

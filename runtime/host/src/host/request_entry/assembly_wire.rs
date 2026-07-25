@@ -1,11 +1,11 @@
 use serde_json::{Map, Value};
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
-    GatewayAdapterArg, GatewayAdapterSource, HttpNameValue, RequestEnvelope, ResponseEvent,
-    RouterWriterMessage, WebSocketAdapter, WebSocketAdapterKind, WebSocketConnectRequest,
-    WebSocketContextCodec, WebSocketContextExpectation, WebSocketMessage, WebSocketMessageEncoding,
-    WebSocketMessageTag, WebSocketPayloadSegment, WebSocketPayloadSegmentKind,
-    WebSocketReceiveRequest,
+    GatewayAdapterArg, GatewayAdapterSource, HttpNameValue, RequestEffectDouble, RequestEnvelope,
+    ResponseEvent, RouterWriterMessage, WebSocketAdapter, WebSocketAdapterKind,
+    WebSocketConnectRequest, WebSocketContextCodec, WebSocketContextExpectation, WebSocketMessage,
+    WebSocketMessageEncoding, WebSocketMessageTag, WebSocketPayloadSegment,
+    WebSocketPayloadSegmentKind, WebSocketReceiveRequest,
 };
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestIngressProtocol, RuntimeAssemblyRequestStartFrameHeader,
@@ -123,7 +123,9 @@ fn validate_narrow_unary_header(header: &RuntimeAssemblyRequestStartFrameHeader)
             "canonical assembly ingress requires caller.kind gateway".to_string(),
         ));
     }
-    if header.test_effects_enabled || !header.test_effect_doubles.is_empty() {
+    if (header.test_effects_enabled || !header.test_effect_doubles.is_empty())
+        && header.caller.target != "__skiff.runtime-assembly-test-dispatch"
+    {
         return Err(RuntimeError::Unsupported(
             "canonical unary bridge does not accept test effects".to_string(),
         ));
@@ -272,8 +274,23 @@ fn request_envelope_from_route(
         binary_http: None,
         http_adapter: None,
         websocket_adapter,
-        test_effects_enabled: false,
-        test_effect_doubles: Default::default(),
+        test_effects_enabled: header.test_effects_enabled,
+        test_effect_doubles: header
+            .test_effect_doubles
+            .into_iter()
+            .map(|(target, sequence)| {
+                (
+                    target,
+                    sequence
+                        .into_iter()
+                        .map(|double| RequestEffectDouble {
+                            expect_request: double.expect_request,
+                            response: double.response,
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
         payload_bytes: payload,
         extra,
     })

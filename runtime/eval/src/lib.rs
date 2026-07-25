@@ -308,6 +308,28 @@ impl Interpreter {
         }
     }
 
+    pub fn for_runtime_assembly_with_test_effect_double_sequences(
+        test_effect_doubles: HashMap<String, Vec<TestEffectDouble>>,
+        runtime_factory: EvalRuntimeFactory,
+    ) -> Self {
+        let stream_runtime = runtime_factory.stream_runtime();
+        let test_effect_doubles = runtime_factory.one_shot_test_effect_double_sequences(
+            test_effect_doubles,
+            &stream_runtime,
+            true,
+        );
+        let stream_runtime_owner = stream_runtime.owner();
+        Self {
+            program: None,
+            native_registry: NativeRegistry,
+            stream_runtime,
+            _stream_runtime_owner: Some(stream_runtime_owner),
+            http_options: HttpRuntimeOptions::from_env(),
+            test_effect_doubles,
+            deferred_stream_producers: program_stream::DeferredStreamProducerRegistry::default(),
+        }
+    }
+
     pub fn with_program(
         program: Arc<impl EvalRuntimeProgramSource>,
         runtime_factory: EvalRuntimeFactory,

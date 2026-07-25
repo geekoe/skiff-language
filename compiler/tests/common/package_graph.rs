@@ -174,14 +174,11 @@ impl<'a> PackageGraphCompiler<'a> {
             .get(&(package_id.clone(), manifest.version.clone()))
         {
             for schema in explicit {
-                if let Some(position) = resolved_package_schemas
-                    .iter()
-                    .position(|candidate| {
-                        candidate.alias() == schema.alias()
-                            && candidate.package_id() == schema.package_id()
-                            && candidate.exact_version() == schema.exact_version()
-                    })
-                {
+                if let Some(position) = resolved_package_schemas.iter().position(|candidate| {
+                    candidate.alias() == schema.alias()
+                        && candidate.package_id() == schema.package_id()
+                        && candidate.exact_version() == schema.exact_version()
+                }) {
                     resolved_package_schemas[position] = schema.clone();
                 } else {
                     resolved_package_schemas.push(schema.clone());

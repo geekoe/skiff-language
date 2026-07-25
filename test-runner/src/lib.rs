@@ -22,6 +22,7 @@ pub mod package_service_host_fixture;
 pub mod package_test_assembly;
 pub mod runtime_execution;
 pub mod test_discovery;
+mod test_doubles;
 pub mod test_overlay;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

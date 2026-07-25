@@ -698,6 +698,50 @@ fn assembly_execution_links_actor_registry_call_to_declaration_owner() {
 }
 
 #[test]
+fn assembly_execution_defers_actor_metadata_for_generic_native_declaration() {
+    use skiff_artifact_model::{ExprIr, TypeRefIr};
+    use skiff_runtime_linked_program::LinkedExprIr;
+
+    let image = link_identity_valid_execution_image(|file| {
+        append_actor_registry_call(
+            file,
+            "std.actor.getOrCreate",
+            TypeRefIr::builtin("string"),
+            Some(TypeRefIr::Record {
+                fields: BTreeMap::from([("nextSeq".to_string(), TypeRefIr::builtin("number"))]),
+            }),
+        );
+        file.executables[0]
+            .type_params
+            .push("ActorType".to_string());
+        let ExprIr::Call { call } = file.executables[0]
+            .body
+            .expressions
+            .last_mut()
+            .expect("Actor call")
+        else {
+            panic!("last expression must be Actor call")
+        };
+        call.type_args.insert(
+            "T0".to_string(),
+            TypeRefIr::TypeParam {
+                name: "ActorType".to_string(),
+            },
+        );
+    })
+    .expect("generic Actor native declaration should defer concrete owner resolution");
+    let LinkedExprIr::Call { call } = image.code_slots()[0].files()[0].executables[0]
+        .body
+        .expressions
+        .last()
+        .expect("Actor call")
+    else {
+        panic!("last expression must be Actor call")
+    };
+    assert!(call.actor_metadata.is_none());
+}
+
+#[test]
 fn assembly_execution_rejects_actor_registry_id_and_bootstrap_mismatch() {
     use skiff_artifact_model::TypeRefIr;
 

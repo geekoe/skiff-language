@@ -3,7 +3,7 @@ use std::sync::{atomic::AtomicBool, Arc};
 use skiff_runtime_capability_context::CancellationToken;
 use skiff_runtime_eval::{
     dispatch_ingress_via_in_process_boundary, dispatch_websocket_ingress_via_in_process_boundary,
-    InProcessBoundaryIngressResponse, Interpreter,
+    InProcessBoundaryIngressResponse, Interpreter, TestEffectDouble,
 };
 
 mod websocket_request;
@@ -49,7 +49,29 @@ pub async fn execute_runtime_assembly_request(
         .ensure_execution_ready()
         .map_err(|error| RequestError::Decode(error.to_string()))?;
     let adapter = &handles.eval_adapter;
-    let interpreter = Interpreter::for_runtime_assembly(adapter.runtime_factory());
+    let interpreter = if request.test_effects_enabled || !request.test_effect_doubles.is_empty() {
+        Interpreter::for_runtime_assembly_with_test_effect_double_sequences(
+            request
+                .test_effect_doubles
+                .iter()
+                .map(|(target, sequence)| {
+                    (
+                        target.clone(),
+                        sequence
+                            .iter()
+                            .map(|double| TestEffectDouble {
+                                expect_request: double.expect_request.clone(),
+                                response: double.response.clone(),
+                            })
+                            .collect(),
+                    )
+                })
+                .collect(),
+            adapter.runtime_factory(),
+        )
+    } else {
+        Interpreter::for_runtime_assembly(adapter.runtime_factory())
+    };
     let operation = canonical_runtime_operation(target, &request);
     let execution = ExecutionControl::new(cancellation.clone(), &execution_budget);
     execution.check_cancelled().map_err(RequestError::from)?;

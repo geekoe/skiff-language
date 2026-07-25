@@ -47,6 +47,29 @@ export async function captureIsolatedRuntimeLogEvidence(tempRoot, {
   });
 }
 
+export function renderIsolatedRuntimeLogEvidence(error) {
+  const evidence = error?.[ISOLATED_RUNTIME_LOG_EVIDENCE_PROPERTY];
+  if (
+    evidence?.schemaVersion !== ISOLATED_RUNTIME_LOG_EVIDENCE_SCHEMA_VERSION
+    || !Array.isArray(evidence.logs)
+  ) {
+    return '';
+  }
+  const rendered = evidence.logs.flatMap((log) => {
+    if (
+      typeof log?.component !== 'string'
+      || typeof log?.stream !== 'string'
+      || typeof log?.sanitizedTail !== 'string'
+      || log.sanitizedTail.trim().length === 0
+    ) {
+      return [];
+    }
+    const suffix = log.truncated === true ? ' (tail, truncated)' : '';
+    return [`[isolated ${log.component} ${log.stream}${suffix}]\n${log.sanitizedTail.trimEnd()}`];
+  });
+  return rendered.join('\n');
+}
+
 async function captureLog(component, stream, path, read) {
   let contents;
   try {

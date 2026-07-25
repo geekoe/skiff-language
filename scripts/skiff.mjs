@@ -12,6 +12,7 @@ import {
   runInIsolatedTestRuntime,
   shouldUseIsolatedTestRuntime,
 } from './lib/isolated-test-runtime.mjs';
+import { renderIsolatedRuntimeLogEvidence } from './lib/isolated-test-runtime-log-evidence.mjs';
 import { runOwnedCommand } from './lib/owned-command.mjs';
 import {
   defaultProjectPackageDir,
@@ -796,5 +797,7 @@ function run(command, args, cwd) {
 }
 
 function formatError(error) {
-  return error?.message || String(error);
+  const message = error?.message || String(error);
+  const evidence = renderIsolatedRuntimeLogEvidence(error);
+  return evidence.length === 0 ? message : `${message}\n${evidence}`;
 }

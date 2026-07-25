@@ -525,8 +525,9 @@ function validateAssemblyRequest(
   }
   const request = validation.envelope;
   if (
-    request.testEffectsEnabled !== false ||
-    Object.keys(request.testEffectDoubles).length !== 0
+    (request.testEffectsEnabled !== false ||
+      Object.keys(request.testEffectDoubles).length !== 0) &&
+    request.caller.target !== '__skiff.runtime-assembly-test-dispatch'
   ) {
     return new ServiceProtocolBoundaryError(
       'active RuntimeAssembly dispatch rejects test effect controls'
