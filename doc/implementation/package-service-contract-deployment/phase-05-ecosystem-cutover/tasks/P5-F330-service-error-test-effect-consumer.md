@@ -1,6 +1,7 @@
 # P5-F330 Service error test-effect consumer
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F330-service-error-test-effect-consumer-result.md`。
 
 ## 直接父节点
 
@@ -74,4 +75,3 @@ fixture证明service effect路径并记录遮挡，不修改WebSocket/compiler�
 - 风险：高，test boundary parity；新的一次性Agent，5分钟内先分开service/package throw路径；
 - 提交并返回service/package/heap/opaque/stack/sequence矩阵；
 - 不push、不承接R4/W2-W或验收。
-
