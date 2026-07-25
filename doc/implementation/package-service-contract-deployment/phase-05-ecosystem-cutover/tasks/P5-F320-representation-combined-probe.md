@@ -1,6 +1,7 @@
 # P5-F320 Representation carrier combined probe
 
-状态：Ready。
+状态：Completed with blockers。结果见
+`P5-F320-representation-combined-probe-result.md`。
 
 ## 直接父节点
 
