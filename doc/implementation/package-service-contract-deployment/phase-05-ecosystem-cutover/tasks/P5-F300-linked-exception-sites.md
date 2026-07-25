@@ -1,10 +1,11 @@
 # P5-F300 Linked exception instruction facts
 
-状态：Blocked on F298 integration。
+状态：Ready。
 
 ## 直接父节点与权威链
 
 - 阻塞结果：`P5-F299-runtime-local-exception-carrier-result.md`
+- 共享fixture前置：`P5-F298-service-error-type-index-result.md`
 - artifact source/lowering检查点：
   `P5-F286-open-error-language-source-lowering-result.md`
 - linked type检查点：
@@ -15,8 +16,8 @@
 ## DAG位置与依赖
 
 - 节点：F299前置的linked exception instruction facts检查点。
-- 语义依赖已满足；因F298正在修改同一crate的共享tests/fixtures，本任务只在F298提交合入
-  integration后启动，避免并行写入冲突。
+- 语义依赖与F298共享fixture前置均已满足；从包含F298集成提交
+  `3ac1dd8264d3118586f088bad155e5615d50653b`的新checkpoint启动。
 - 完成后解除重新派发F299。
 - 当前是实现检查点，不是稳定候选。
 
