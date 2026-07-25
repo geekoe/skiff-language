@@ -110,7 +110,7 @@ mod tests {
         RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     };
     use skiff_runtime_linked_program::{
-        AssemblyExecutionImage, RuntimeTypeContext, SharedPackageLinkedImage,
+        AssemblyExecutionImage, RuntimeTypeContext, ServiceErrorTypeIndex, SharedPackageLinkedImage,
     };
 
     use super::*;
@@ -135,9 +135,13 @@ mod tests {
         let shared = Arc::new(
             SharedPackageLinkedImage::from_runtime_assembly(&assembly, Vec::new()).unwrap(),
         );
-        let image =
-            AssemblyExecutionImage::try_new(shared, Vec::new(), RuntimeTypeContext::default())
-                .unwrap();
+        let image = AssemblyExecutionImage::try_new(
+            shared,
+            Vec::new(),
+            RuntimeTypeContext::default(),
+            Arc::new(ServiceErrorTypeIndex::default()),
+        )
+        .unwrap();
 
         assert!(matches!(
             RuntimeAssemblyTypePlanTarget::from_execution_image(
