@@ -424,6 +424,21 @@ Payload segment validation:
 
 ## WebSocket connection model
 
+WebSocket connect 和 receive operation 可以挂起；例如 receive 在一次消息处理期间顺序消费
+上游 stream，并通过非挂起的 `connection.send` 发送多个下行事件。挂起不改变 ingress 的
+unary 边界：每个入站 connect 或 message 仍只创建一次 dispatch，Runtime 等待该 operation
+完成后才结束本次 dispatch，不把它隐式拆成 detached work，也不重复执行。
+
+同一物理连接同时最多有一个 receive dispatch 处于 active 状态。后续消息按到达顺序进入
+有界队列，只有前一条 operation 完成后才开始下一条，从而使 operation 内的挂起不会改变
+消息顺序。连接关闭时 gateway 移除连接索引、丢弃尚未开始的排队消息，并终止与该连接绑定的
+active transport dispatch。该关闭属于整个 ingress request 的生命周期收尾，不是对 operation
+暴露独立 cancel handle；operation 仍声明 `NotCancellable`，active dispatch 只结算一次，也不会
+因为关闭而重新 dispatch。关闭后才到达 gateway 的下行发送会按已关闭连接正常失败。
+
+`std.websocket` 的 connection send 操作本身保持非挂起；它只尝试把 frame 交给 gateway，
+不等待客户端消费或为慢客户端提供 backpressure await。
+
 目标 std surface：
 
 ```skiff

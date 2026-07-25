@@ -87,12 +87,22 @@ pub(super) fn project_operation_contract(
         },
     };
     let (return_value, stream) = return_projection.expect("checked complete return projection");
+    let websocket_ingress = matches!(
+        parameters.as_slice(),
+        [BoundaryParameter {
+            name,
+            ty: ContractTypeRef::Builtin { name: builtin, arguments },
+            ..
+        }] if name == "event"
+            && builtin == "std.websocket.WebSocketIngressEvent"
+            && arguments.len() == 1
+    );
     Some(BoundaryOperationContract {
         parameters,
         return_value,
         errors,
         stream,
-        cancellation: if signature.may_suspend {
+        cancellation: if signature.may_suspend && !websocket_ingress {
             BoundaryCancellationContract::Cooperative
         } else {
             BoundaryCancellationContract::NotCancellable

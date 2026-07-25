@@ -37,7 +37,8 @@ const PACKAGE_ID: &str = "example.com/websocket-provider";
 
 #[test]
 fn websocket_ingress_contract_first_source_projects_and_deploys_exactly() {
-    let expected = websocket_operation(ContractTypeRef::builtin("null"));
+    let mut expected = websocket_operation(ContractTypeRef::builtin("null"));
+    expected.may_suspend = true;
     let contract = compile_service_contract(ServiceContractDefinition {
         service_id: SERVICE_ID.to_string(),
         contract_version: CONTRACT_VERSION.to_string(),
@@ -71,6 +72,7 @@ function acceptConnection() -> std.websocket.WebSocketConnectResult<null> {
 }
 
 function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.websocket.WebSocketConnectResult<null>? {
+  std.time.sleep(Duration.milliseconds(0))
   if event.tag == "connect" {
     return acceptConnection()
   }

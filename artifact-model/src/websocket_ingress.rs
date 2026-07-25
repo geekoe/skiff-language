@@ -541,11 +541,6 @@ where
             "WebSocket ingress operation must be unary",
         ));
     }
-    if operation.may_suspend {
-        return Err(WebSocketIngressContractError::new(
-            "WebSocket ingress operation must not suspend",
-        ));
-    }
     if !matches!(
         operation.cancellation,
         BoundaryCancellationContract::NotCancellable
