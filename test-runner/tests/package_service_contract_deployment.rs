@@ -41,7 +41,7 @@ use skiff_test_runner::{
 const EXPECTED_PRELUDE_IDENTITY: &str =
     "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699";
 const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
-    "skiff-package-build-v4:sha256:0f8896f1b33024fab18961732bb274fc47ece8f02a443b44f2958ca0b0bd4ec0";
+    "skiff-package-build-v4:sha256:fb02ab8f45ecd20b6e5a4b870d6c1280a51e0690481c6916f93423e8ea666536";
 
 #[test]
 fn platform_source_context_contract() {

@@ -85,6 +85,7 @@ function truncate(value: string, maxBytes: number) -> string {
                     callable_id: truncate_callable_id.as_str().to_string(),
                 },
             ],
+            direct_return_origins: vec![ValueProvenance::Fresh],
             throw_origins: Vec::new(),
             escape_lanes: Vec::new(),
         }
@@ -172,6 +173,7 @@ function handler(request: std.http.HttpRequest) -> std.http.HttpResponse {
         facts.provenance,
         CallableProvenanceSummary::Analyzed {
             return_origins: vec![ValueProvenance::Fresh, ValueProvenance::Constant],
+            direct_return_origins: vec![ValueProvenance::Fresh],
             throw_origins: Vec::new(),
             escape_lanes: Vec::new(),
         }

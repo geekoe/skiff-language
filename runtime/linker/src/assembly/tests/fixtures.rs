@@ -676,6 +676,7 @@ fn package(
     let effects = no_effects();
     let provenance = CallableProvenanceSummary::Analyzed {
         return_origins: Vec::new(),
+        direct_return_origins: Vec::new(),
         throw_origins: Vec::new(),
         escape_lanes: Vec::new(),
     };
