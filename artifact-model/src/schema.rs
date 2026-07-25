@@ -7,8 +7,8 @@ pub const PACKAGE_TEST_ENTRYPOINT_KIND: &str = "testOnly";
 pub const BUNDLE_SCHEMA_VERSION: &str = "skiff-bundle-v1";
 pub const ARTIFACT_INDEX_SCHEMA_VERSION: &str = "skiff-artifact-index-v1";
 pub const CONTRACT_SCHEMA_ARTIFACT_VERSION: &str = "skiff-contract-schema-v1";
-pub const FILE_IR_SCHEMA_VERSION: &str = "skiff-file-ir-v7";
-pub const FILE_IR_FORMAT_VERSION: &str = "skiff-file-ir-format-v5";
+pub const FILE_IR_SCHEMA_VERSION: &str = "skiff-file-ir-v8";
+pub const FILE_IR_FORMAT_VERSION: &str = "skiff-file-ir-format-v6";
 pub const FILE_IR_OPCODE_TABLE_VERSION: &str = "skiff-opcode-table-v1";
 pub const PUBLICATION_ABI_UNIT_SCHEMA_VERSION: &str = "skiff-publication-abi-unit-v1";
 pub const PACKAGE_UNIT_SCHEMA_VERSION: &str = "skiff-package-unit-v1";
@@ -28,8 +28,8 @@ mod tests {
 
     #[test]
     fn open_error_channel_schema_versions_have_one_strict_generation() {
-        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v7");
-        assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v5");
+        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v8");
+        assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v6");
         assert_eq!(PACKAGE_ARTIFACT_SCHEMA_VERSION, "skiff-package-artifact-v5");
         assert_eq!(SERVICE_CONTRACT_SCHEMA_VERSION, "skiff-service-contract-v4");
         assert_eq!(
@@ -38,6 +38,8 @@ mod tests {
         );
 
         for legacy in [
+            "skiff-file-ir-v7",
+            "skiff-file-ir-format-v5",
             "skiff-file-ir-v6",
             "skiff-file-ir-format-v4",
             "skiff-package-artifact-v4",

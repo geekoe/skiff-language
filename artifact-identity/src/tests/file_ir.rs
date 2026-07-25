@@ -1,6 +1,7 @@
 use super::*;
 use skiff_artifact_model::{
-    FileIrPackageCallValidationError, NominalTypeRefBaseIr, TypeDeclIr, TypeDescriptorIr,
+    ExecutableBody, ExprRefIr, FileIrPackageCallValidationError, LiteralIr, NominalTypeRefBaseIr,
+    TypeDeclIr, TypeDescriptorIr,
 };
 
 #[test]
@@ -47,8 +48,8 @@ fn file_ir_identity_validation_rejects_stale_identity() {
 #[test]
 fn file_ir_identity_validation_rejects_non_current_generation_even_when_recomputed() {
     for (field, stale) in [
-        ("schemaVersion", "skiff-file-ir-v6"),
-        ("irFormatVersion", "skiff-file-ir-format-v4"),
+        ("schemaVersion", "skiff-file-ir-v7"),
+        ("irFormatVersion", "skiff-file-ir-format-v5"),
         ("opcodeTableVersion", "skiff-opcode-table-v0"),
     ] {
         let mut unit = FileIrUnit::empty("internal.example", "source-ast-hash-a");
@@ -82,7 +83,7 @@ fn file_ir_identity_validation_rejects_non_current_generation_even_when_recomput
 fn file_ir_identity_validation_rejects_stale_prefix_with_current_preimage() {
     let mut unit = FileIrUnit::empty("internal.example", "source-ast-hash-a");
     let current = file_ir_identity(&unit).expect("current identity");
-    unit.file_ir_identity = current.replacen(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v6:sha256", 1);
+    unit.file_ir_identity = current.replacen(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v7:sha256", 1);
 
     assert!(matches!(
         validate_file_ir_identity(&unit),
@@ -183,6 +184,136 @@ fn nominal_declaration(name: &str, type_params: &[&str]) -> TypeDeclIr {
 }
 
 #[test]
+fn representation_wrap_owner_nested_argument_and_child_enter_file_ir_identity() {
+    let baseline = representation_wrap_file_ir(0, "string", 0);
+    let owner_changed = representation_wrap_file_ir(1, "string", 0);
+    let nested_argument_changed = representation_wrap_file_ir(0, "number", 0);
+    let child_changed = representation_wrap_file_ir(0, "string", 1);
+
+    let identities = [
+        file_ir_identity(&baseline).unwrap(),
+        file_ir_identity(&owner_changed).unwrap(),
+        file_ir_identity(&nested_argument_changed).unwrap(),
+        file_ir_identity(&child_changed).unwrap(),
+    ];
+    for left in 0..identities.len() {
+        for right in (left + 1)..identities.len() {
+            assert_ne!(
+                identities[left], identities[right],
+                "every exact representation carrier input must enter identity"
+            );
+        }
+    }
+
+    let assigned = file_ir_with_identity(baseline).unwrap();
+    let mut owner_tampered = assigned.clone();
+    let ExprIr::RepresentationWrap { type_ref, .. } =
+        &mut owner_tampered.constants[0].body.expressions[2]
+    else {
+        panic!("fixture expression must be representationWrap")
+    };
+    let TypeRefIr::AppliedNominal { base, .. } = type_ref else {
+        panic!("fixture target must be applied")
+    };
+    *base = NominalTypeRefBaseIr::LocalType { type_index: 1 };
+
+    let mut argument_tampered = assigned.clone();
+    let ExprIr::RepresentationWrap { type_ref, .. } =
+        &mut argument_tampered.constants[0].body.expressions[2]
+    else {
+        panic!("fixture expression must be representationWrap")
+    };
+    let TypeRefIr::AppliedNominal { arguments, .. } = type_ref else {
+        panic!("fixture target must be applied")
+    };
+    let TypeRefIr::AppliedNominal {
+        arguments: nested_arguments,
+        ..
+    } = &mut arguments[0]
+    else {
+        panic!("fixture argument must be nested applied nominal")
+    };
+    nested_arguments[0] = TypeRefIr::builtin("number");
+
+    let mut child_tampered = assigned.clone();
+    let ExprIr::RepresentationWrap { value, .. } =
+        &mut child_tampered.constants[0].body.expressions[2]
+    else {
+        panic!("fixture expression must be representationWrap")
+    };
+    value.expression = 1;
+
+    for tampered in [owner_tampered, argument_tampered, child_tampered] {
+        assert!(matches!(
+            validate_file_ir_identity(&tampered),
+            Err(ArtifactIdentityError::FileIrIdentityMismatch { .. })
+        ));
+    }
+}
+
+fn representation_wrap_file_ir(
+    owner_index: u32,
+    nested_argument: &str,
+    child_index: u32,
+) -> FileIrUnit {
+    let mut unit = FileIrUnit::empty("identity.representation", "source");
+    unit.type_table = vec![
+        representation_declaration("OuterA", "T"),
+        representation_declaration("OuterB", "T"),
+        representation_declaration("Inner", "U"),
+    ];
+    unit.constants.push(skiff_artifact_model::ConstIr {
+        name: "wrapped".to_string(),
+        ty: TypeRefIr::builtin("string"),
+        body: ExecutableBody {
+            expressions: vec![
+                ExprIr::Literal {
+                    value: LiteralIr::String {
+                        value: "first".to_string(),
+                    },
+                },
+                ExprIr::Literal {
+                    value: LiteralIr::String {
+                        value: "second".to_string(),
+                    },
+                },
+                ExprIr::RepresentationWrap {
+                    value: ExprRefIr {
+                        expression: child_index,
+                    },
+                    type_ref: TypeRefIr::AppliedNominal {
+                        base: NominalTypeRefBaseIr::LocalType {
+                            type_index: owner_index,
+                        },
+                        arguments: vec![TypeRefIr::AppliedNominal {
+                            base: NominalTypeRefBaseIr::LocalType { type_index: 2 },
+                            arguments: vec![TypeRefIr::builtin(nested_argument)],
+                        }],
+                    },
+                },
+            ],
+            ..ExecutableBody::default()
+        },
+        source_span: None,
+    });
+    unit
+}
+
+fn representation_declaration(name: &str, type_param: &str) -> TypeDeclIr {
+    TypeDeclIr {
+        name: name.to_string(),
+        descriptor: TypeDescriptorIr::Representation {
+            representation: TypeRefIr::TypeParam {
+                name: type_param.to_string(),
+            },
+        },
+        type_params: vec![type_param.to_string()],
+        implements: Vec::new(),
+        source_span: None,
+    }
+}
+
+#[test]
 fn encrypted_db_field_storage_participates_in_file_ir_identity() {
     let mut identity = FileIrUnit::empty("internal.example", "source-ast-hash-a");
     identity.declarations.db.insert(
@@ -263,7 +394,7 @@ fn service_call_table_and_instruction_indices_participate_in_file_ir_identity() 
     let baseline = file_ir_identity(&base).expect("valid service-call File IR identity");
     assert_eq!(
         baseline,
-        "skiff-file-ir-v7:sha256:4eff18aa8b01dcf7f18cbcc7b4cee4562b1d511227c86abbd501c9c222e3333b"
+        "skiff-file-ir-v8:sha256:084a479340fa5af4c1bbb233adab76c50c4ac137380008256ef3894e5dd11184"
     );
 
     let mut changed_ref = base.clone();

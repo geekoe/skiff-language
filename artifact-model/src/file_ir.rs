@@ -534,6 +534,178 @@ pub fn validate_file_ir_type_refs(unit: &FileIrUnit) -> Result<(), FileIrTypeRef
         })?;
     }
 
+    validate_representation_wraps(unit)?;
+
+    Ok(())
+}
+
+fn validate_representation_wraps(unit: &FileIrUnit) -> Result<(), FileIrTypeRefValidationError> {
+    for (owner, expression_index, expression) in file_ir_expressions(unit) {
+        let ExprIr::RepresentationWrap { value, type_ref } = expression else {
+            continue;
+        };
+        let (location, expression_count) = match owner {
+            FileIrExpressionOwner::Constant { constant_index } => (
+                format!("constants[{constant_index}].body.expressions[{expression_index}]"),
+                unit.constants[constant_index].body.expressions.len(),
+            ),
+            FileIrExpressionOwner::Executable { executable_index } => (
+                format!("executables[{executable_index}].body.expressions[{expression_index}]"),
+                unit.executables[executable_index].body.expressions.len(),
+            ),
+        };
+        if value.expression as usize >= expression_count {
+            return type_ref_error(
+                format!("{location}.value"),
+                format!(
+                    "representationWrap child expression {} does not exist in owner body with {expression_count} expressions",
+                    value.expression
+                ),
+            );
+        }
+        validate_representation_wrap_target(unit, type_ref, &format!("{location}.typeRef"))?;
+        visit_type_ref(type_ref, &mut |nested| {
+            if let TypeRefIr::TypeParam { name } = nested {
+                return type_ref_error(
+                    format!("{location}.typeRef"),
+                    format!("representationWrap target retains unresolved type parameter {name}"),
+                );
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+fn validate_representation_wrap_target(
+    unit: &FileIrUnit,
+    type_ref: &TypeRefIr,
+    location: &str,
+) -> Result<(), FileIrTypeRefValidationError> {
+    match type_ref {
+        TypeRefIr::LocalType { type_index } => {
+            validate_representation_declaration(unit, *type_index, None, location)
+        }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } if module_path == &unit.module_path => {
+            validate_representation_declaration(unit, *type_index, None, location)
+        }
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            if arguments.is_empty() {
+                return type_ref_error(
+                    location,
+                    "representationWrap applied target arguments must be non-empty",
+                );
+            }
+            match base {
+                NominalTypeRefBaseIr::LocalType { type_index } => {
+                    validate_representation_declaration(
+                        unit,
+                        *type_index,
+                        Some(arguments.len()),
+                        location,
+                    )
+                }
+                NominalTypeRefBaseIr::PublicationType {
+                    module_path,
+                    type_index,
+                } if module_path == &unit.module_path => {
+                    validate_representation_declaration(
+                        unit,
+                        *type_index,
+                        Some(arguments.len()),
+                        location,
+                    )
+                }
+                NominalTypeRefBaseIr::PackageSchema { .. } => type_ref_error(
+                    location,
+                    "applied PackageSchema is not admitted in this artifact generation",
+                ),
+                NominalTypeRefBaseIr::PublicationType { .. }
+                | NominalTypeRefBaseIr::ServiceSymbol { .. }
+                | NominalTypeRefBaseIr::PackageSymbol { .. } => type_ref_error(
+                    location,
+                    "representationWrap applied target base cannot be resolved to an exact File IR representation declaration",
+                ),
+            }
+        }
+        TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. } => type_ref_error(
+            location,
+            "representationWrap target cannot be resolved to an exact File IR representation declaration",
+        ),
+        TypeRefIr::Builtin { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Record { .. }
+        | TypeRefIr::Union { .. }
+        | TypeRefIr::Nullable { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. }
+        | TypeRefIr::AnyInterface { .. }
+        | TypeRefIr::Function { .. } => type_ref_error(
+            location,
+            "representationWrap target must be a plain or applied nominal representation",
+        ),
+    }
+}
+
+fn validate_representation_declaration(
+    unit: &FileIrUnit,
+    type_index: u32,
+    applied_arity: Option<usize>,
+    location: &str,
+) -> Result<(), FileIrTypeRefValidationError> {
+    let Some(declaration) = unit.type_table.get(type_index as usize) else {
+        return type_ref_error(
+            location,
+            format!("representationWrap target type index {type_index} does not exist"),
+        );
+    };
+    if !matches!(
+        declaration.descriptor,
+        TypeDescriptorIr::Representation { .. }
+    ) {
+        let actual = match declaration.descriptor {
+            TypeDescriptorIr::Record { .. } => "record",
+            TypeDescriptorIr::Representation { .. } => unreachable!(),
+            TypeDescriptorIr::Union { .. } => "union",
+            TypeDescriptorIr::Alias { .. } => "alias",
+            TypeDescriptorIr::Interface => "interface",
+        };
+        return type_ref_error(
+            location,
+            format!(
+                "representationWrap target type index {type_index} is {actual}, not representation"
+            ),
+        );
+    }
+    match applied_arity {
+        Some(actual) => {
+            let expected = declaration.type_params.len();
+            if expected == 0 || actual != expected {
+                return type_ref_error(
+                    location,
+                    format!(
+                        "representationWrap applied target type index {type_index} has arity {actual}, expected {expected}"
+                    ),
+                );
+            }
+        }
+        None if !declaration.type_params.is_empty() => {
+            return type_ref_error(
+                location,
+                format!(
+                    "representationWrap plain target type index {type_index} requires {} type arguments",
+                    declaration.type_params.len()
+                ),
+            );
+        }
+        None => {}
+    }
     Ok(())
 }
 
@@ -869,6 +1041,9 @@ mod applied_nominal_tests {
             .contains("non-empty"));
     }
 }
+
+#[cfg(test)]
+mod representation_wrap_tests;
 
 impl SourceMapDto {
     pub fn empty() -> Self {

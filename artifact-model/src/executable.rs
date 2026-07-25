@@ -359,6 +359,10 @@ pub enum ExprIr {
         type_ref: TypeRefIr,
         fields: BTreeMap<String, ExprRefIr>,
     },
+    RepresentationWrap {
+        value: ExprRefIr,
+        type_ref: TypeRefIr,
+    },
     InterfaceBox {
         value: ExprRefIr,
         interface: InterfaceInstantiationRef,
@@ -887,6 +891,7 @@ fn visit_expression_type_refs<E>(
     match expression {
         ExprIr::ActorSelfField { field_type, .. } => visit_type_ref(field_type, visitor)?,
         ExprIr::Construct { type_ref, .. } => visit_type_ref(type_ref, visitor)?,
+        ExprIr::RepresentationWrap { type_ref, .. } => visit_type_ref(type_ref, visitor)?,
         ExprIr::InterfaceBox {
             interface, source, ..
         } => {
@@ -1094,5 +1099,91 @@ mod tests {
             }
             assert!(serde_json::from_value::<ExprIr>(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn representation_wrap_has_one_required_wire_shape() {
+        let expected = ExprIr::RepresentationWrap {
+            value: ExprRefIr { expression: 4 },
+            type_ref: TypeRefIr::AppliedNominal {
+                base: crate::NominalTypeRefBaseIr::LocalType { type_index: 2 },
+                arguments: vec![TypeRefIr::builtin("string")],
+            },
+        };
+        let wire = json!({
+            "kind": "representationWrap",
+            "value": { "expression": 4 },
+            "typeRef": {
+                "kind": "appliedNominal",
+                "base": { "kind": "localType", "typeIndex": 2 },
+                "arguments": [{ "kind": "builtin", "name": "string" }]
+            }
+        });
+        assert_eq!(serde_json::to_value(&expected).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<ExprIr>(wire.clone()).unwrap(),
+            expected
+        );
+
+        let mut invalid = Vec::new();
+        for missing in ["value", "typeRef"] {
+            let mut candidate = wire.clone();
+            candidate.as_object_mut().unwrap().remove(missing);
+            invalid.push(candidate);
+        }
+        let mut null_type = wire.clone();
+        null_type["typeRef"] = serde_json::Value::Null;
+        invalid.push(null_type);
+        for forbidden in ["display", "fields", "site", "identity"] {
+            let mut candidate = wire.clone();
+            candidate[forbidden] = json!("forbidden");
+            invalid.push(candidate);
+        }
+        let mut legacy_type = wire;
+        legacy_type["type"] = legacy_type["typeRef"].clone();
+        legacy_type.as_object_mut().unwrap().remove("typeRef");
+        invalid.push(legacy_type);
+
+        for candidate in invalid {
+            assert!(
+                serde_json::from_value::<ExprIr>(candidate.clone()).is_err(),
+                "strict representationWrap wire must reject {candidate}"
+            );
+        }
+    }
+
+    #[test]
+    fn representation_wrap_type_visitor_reaches_all_nested_arguments() {
+        let nested_argument = TypeRefIr::AppliedNominal {
+            base: crate::NominalTypeRefBaseIr::LocalType { type_index: 1 },
+            arguments: vec![TypeRefIr::builtin("string")],
+        };
+        let body = ExecutableBody {
+            expressions: vec![ExprIr::RepresentationWrap {
+                value: ExprRefIr { expression: 0 },
+                type_ref: TypeRefIr::AppliedNominal {
+                    base: crate::NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                    arguments: vec![nested_argument.clone()],
+                },
+            }],
+            ..ExecutableBody::default()
+        };
+        let mut visited = Vec::new();
+        visit_executable_body_type_refs(&body, &mut |ty| {
+            visited.push(ty.clone());
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+
+        assert_eq!(visited.len(), 3);
+        assert!(matches!(
+            &visited[0],
+            TypeRefIr::AppliedNominal {
+                base: crate::NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                ..
+            }
+        ));
+        assert_eq!(visited[1], nested_argument);
+        assert_eq!(visited[2], TypeRefIr::builtin("string"));
     }
 }
