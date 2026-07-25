@@ -1,6 +1,7 @@
 # P5-F315 Representation wrap compiler producer
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F315-representation-wrap-compiler-producer-result.md`。
 
 ## 直接父节点
 
@@ -68,4 +69,3 @@ selector非零。不运行compiler integration（由combined owner）、runtime/
 - 风险：中高；一次性Agent，5分钟内修改；
 - 提交并返回producer/side-effect/site/generation矩阵与验证；
 - 不push、不承接linked/eval。
-

@@ -1,6 +1,7 @@
 # P5-F317 Eval open error contract fixture batch
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F317-eval-open-error-contract-fixtures-result.md`。
 
 ## 直接父节点
 
