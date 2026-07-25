@@ -1,13 +1,19 @@
 import { request as createHttpRequest } from 'node:http';
 
+import { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   encodeRuntimeFrame,
   RUNTIME_FRAME_SCHEMA_VERSION,
+  TELEMETRY_PROTOCOL,
+  type TelemetryBatchEnvelope,
   type TelemetryEvent
 } from '../src/protocol/envelope.js';
-import type { RouterTelemetryEventSink } from '../src/telemetry/producer.js';
+import {
+  RouterTelemetryProducer,
+  type RouterTelemetryEventSink
+} from '../src/telemetry/producer.js';
 import { ActivationLookup } from '../src/artifacts/activationLookup.js';
 import {
   DEFAULT_TEST_BUILD_ID,
@@ -67,6 +73,7 @@ describe('router HTTP telemetry', () => {
     expect(telemetry.events[0]).toMatchObject({
       topic: 'trace',
       source: 'router',
+      visibility: 'operational',
       name: 'http.request',
       serviceId: manifest.service.id,
       buildId: DEFAULT_TEST_BUILD_ID,
@@ -102,6 +109,7 @@ describe('router HTTP telemetry', () => {
     expect(telemetry.events[0]).toMatchObject({
       topic: 'trace',
       source: 'router',
+      visibility: 'operational',
       name: 'http.request',
       attrs: {
         method: 'GET',
@@ -179,6 +187,7 @@ describe('router HTTP telemetry', () => {
     expect(telemetry.events[0]).toMatchObject({
       topic: 'trace',
       source: 'router',
+      visibility: 'operational',
       name: 'http.request',
       attrs: {
         method: 'POST',
@@ -192,7 +201,114 @@ describe('router HTTP telemetry', () => {
       }
     });
   });
+
+  it('forwards telemetry visibility and top-level errorId without rewriting the event', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await waitForWebSocketServer(server);
+    const address = server.address();
+    if (address === null || typeof address === 'string') {
+      throw new Error('telemetry test server did not bind to a TCP port');
+    }
+
+    let producer: RouterTelemetryProducer | undefined;
+    try {
+      const batchPromise = readForwardedBatch(server);
+      producer = new RouterTelemetryProducer({
+        endpoint: `ws://127.0.0.1:${address.port}`,
+        protocol: TELEMETRY_PROTOCOL,
+        topics: ['trace'],
+        queueMaxEvents: 10,
+        batchMaxEvents: 1,
+        batchMaxBytes: 64 * 1024,
+        flushIntervalMs: 10,
+        enabled: true
+      });
+      const event: TelemetryEvent = {
+        topic: 'trace',
+        ts: '2026-05-06T12:00:00.000Z',
+        source: 'runtime',
+        visibility: 'restricted',
+        traceId: 'trace-router-forward-1',
+        errorId: 'error-router-forward-1',
+        name: 'service.error.restricted',
+        error: {
+          causeKind: 'internalError'
+        }
+      };
+
+      producer.start();
+      producer.emit(event);
+
+      await expect(batchPromise).resolves.toMatchObject({
+        events: [event]
+      });
+    } finally {
+      await producer?.shutdown();
+      await closeWebSocketServer(server);
+    }
+  });
 });
+
+async function waitForWebSocketServer(server: WebSocketServer): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+}
+
+async function readForwardedBatch(server: WebSocketServer): Promise<TelemetryBatchEnvelope> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error('timed out waiting for forwarded telemetry batch'));
+    }, 1000);
+    server.once('connection', (socket) => {
+      socket.on('message', (data) => {
+        let message: unknown;
+        try {
+          message = JSON.parse(data.toString());
+        } catch (error) {
+          clearTimeout(timeout);
+          reject(error);
+          return;
+        }
+        if (!isRecord(message)) {
+          return;
+        }
+        if (message.type === 'telemetry.register' && typeof message.producerId === 'string') {
+          socket.send(JSON.stringify({
+            type: 'telemetry.registered',
+            producerId: message.producerId
+          }));
+          return;
+        }
+        if (message.type === 'telemetry.batch') {
+          clearTimeout(timeout);
+          resolve(message as unknown as TelemetryBatchEnvelope);
+        }
+      });
+      socket.once('error', (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+    });
+  });
+}
+
+async function closeWebSocketServer(server: WebSocketServer): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 async function waitForTelemetryEvent(telemetry: MemoryTelemetrySink): Promise<void> {
   const deadline = Date.now() + 1000;

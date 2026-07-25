@@ -11,6 +11,13 @@ const DEFAULT_MAX_OBJECT_KEYS = 100;
 const sensitiveKeyPattern =
   /(?:^|[_\-.])(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|authorization|cookie|set[_-]?cookie|private[_-]?key|mongo[_-]?url)(?:$|[_\-.])/i;
 
+const sensitiveValuePatterns = [
+  /(?:^|[^a-z0-9])secret(?:$|[^a-z0-9])/i,
+  /\b(?:bearer|basic)\s+\S+/i,
+  /\b(?:password|passwd|pwd|token|api[_-]?key|access[_-]?key|authorization|cookie|private[_-]?key)\s*[:=]\s*\S+/i,
+  /^[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^@\s/]+@/i
+] as const;
+
 export interface RedactionOptions {
   maxDepth?: number;
   maxStringLength?: number;
@@ -24,6 +31,9 @@ export function redactTelemetryEvent(
 ): TelemetryEvent {
   return {
     ...event,
+    ...(event.message !== undefined
+      ? { message: redactTelemetryString(event.message, options) }
+      : {}),
     ...(event.attrs !== undefined
       ? { attrs: redactJsonObject(event.attrs, options) }
       : {}),
@@ -60,6 +70,9 @@ export function redactJsonValue(
   }
 
   if (typeof value === 'string') {
+    if (isSensitiveValue(value)) {
+      return REDACTED;
+    }
     const maxLength = options.maxStringLength ?? DEFAULT_MAX_STRING_LENGTH;
     return value.length > maxLength ? `${value.slice(0, maxLength)}${TRUNCATED}` : value;
   }
@@ -91,6 +104,19 @@ export function redactJsonValue(
   return String(value);
 }
 
+function redactTelemetryString(value: string, options: RedactionOptions): string {
+  const redacted = redactJsonValue(value, options);
+  return typeof redacted === 'string' ? redacted : TRUNCATED;
+}
+
 function isSensitiveKey(key: string): boolean {
-  return key.length > 0 && sensitiveKeyPattern.test(key);
+  if (key.length === 0) {
+    return false;
+  }
+  const normalized = key.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
+  return sensitiveKeyPattern.test(normalized);
+}
+
+function isSensitiveValue(value: string): boolean {
+  return sensitiveValuePatterns.some((pattern) => pattern.test(value));
 }

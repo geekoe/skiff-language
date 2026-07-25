@@ -1008,6 +1008,7 @@ export class HttpGateway {
       topic: 'trace',
       ts: new Date().toISOString(),
       source: 'router',
+      visibility: 'operational',
       name: 'http.request',
       durationMs,
       ...(telemetry.serviceId !== undefined ? { serviceId: telemetry.serviceId } : {}),
