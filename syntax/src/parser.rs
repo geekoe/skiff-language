@@ -948,15 +948,6 @@ impl Parser {
         })
     }
 
-    fn parse_qualified_type_ref(&mut self, message: &str) -> Result<TypeRef> {
-        let mut name = self.expect_ident(message)?;
-        while self.match_symbol(".") {
-            name.push('.');
-            name.push_str(&self.expect_ident("expected qualified type segment")?);
-        }
-        Ok(TypeRef { name })
-    }
-
     fn parse_field_path(&mut self, message: &str) -> Result<Vec<String>> {
         let mut path = vec![self.expect_ident(message)?];
         while self.match_symbol(".") {

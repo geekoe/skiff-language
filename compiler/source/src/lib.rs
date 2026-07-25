@@ -37,7 +37,6 @@ pub mod source_graph;
 pub mod source_identity;
 pub mod source_name_resolution;
 pub(crate) mod source_rules;
-pub mod test_effects;
 mod test_rules;
 pub(crate) mod type_resolution_model;
 mod type_symbol_index;
@@ -85,12 +84,12 @@ pub use expression_model::{
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceFact, ExpressionSourceMap,
 };
 pub use expression_type_model::{
-    runtime_receiver_root_from_type_ref, ConstructorFieldTypeMismatch, ConstructorFieldValueSource,
-    ConstructorProvidedField, ConstructorValidation, DuplicateConstructorField, ExpressionTypeFact,
-    ExpressionTypeModel, ExpressionTypeModelBuildError, MaterializedConstructorField,
-    MaterializedObjectField, MissingConstructorField, ObjectFieldValueSource,
-    ObjectMaterializationKind, RepresentationConstructorValidation,
-    TargetTypedObjectMaterialization, UnknownConstructorField,
+    package_type_ref_from_contract_type, runtime_receiver_root_from_type_ref,
+    ConstructorFieldTypeMismatch, ConstructorFieldValueSource, ConstructorProvidedField,
+    ConstructorValidation, DuplicateConstructorField, ExpressionTypeFact, ExpressionTypeModel,
+    ExpressionTypeModelBuildError, MaterializedConstructorField, MaterializedObjectField,
+    MissingConstructorField, ObjectFieldValueSource, ObjectMaterializationKind,
+    RepresentationConstructorValidation, TargetTypedObjectMaterialization, UnknownConstructorField,
 };
 pub use linked_facts::{SourceCompileLinkedFacts, SourceCompileLinkedFactsInput};
 pub use linked_publication::CompileParsedPackageSourcesInput;
@@ -104,11 +103,6 @@ pub use shared::publication_error::PublicationError as SourceCompileError;
 pub use source_file_facts::{
     publication_db_metadata_index, type_indices, type_text_with_args, LocalDbObjectIndex,
     PackageInterfaceMethodIndex, PublicationDbMetadata, PublicationDbMetadataIndex,
-};
-pub use test_effects::{
-    validate_and_plan_test_effects, ResolvedTestEffectTarget, TestEffectExpressionExpectation,
-    TestEffectPlanValidator, TypedTestEffect, TypedTestEffectExpression, TypedTestEffectOutcome,
-    TypedTestEffectPlan,
 };
 pub use type_resolution_model::{
     AnyInterfaceMethodResolution, ConstructorTargetResolution,

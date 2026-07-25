@@ -84,6 +84,7 @@ pub fn lower_service_calls(
         let ResolvedCallTarget::ContractOperation {
             contract_requirement,
             contract_operation_id,
+            ..
         } = target
         else {
             continue;
@@ -128,6 +129,7 @@ pub fn lower_service_calls(
         let ResolvedCallTarget::ContractOperation {
             contract_requirement,
             contract_operation_id,
+            ..
         } = target
         else {
             continue;

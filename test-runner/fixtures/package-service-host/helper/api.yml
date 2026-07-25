@@ -1,3 +1,9 @@
 Box: main.Box
+EffectRequest: main.EffectRequest
+EffectResponse: main.EffectResponse
+EffectFailure: main.EffectFailure
 tools:
   mutate: main.mutate
+  lookup: main.lookup
+  fail: main.fail
+  events: main.events

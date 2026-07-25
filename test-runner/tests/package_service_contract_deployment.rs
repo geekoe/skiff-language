@@ -1162,7 +1162,7 @@ fn fresh_helper_mutation_then_detached_service_call_projects_and_assembles() {
     );
 
     let cases = discover_package_test_cases(&consumer, &consumer, false).unwrap();
-    assert_eq!(cases.len(), 1);
+    assert_eq!(cases.len(), 5);
     let overlay =
         compile_package_test_overlay(&platform_sources(), &consumer, &artifacts, &project, &cases)
             .unwrap();

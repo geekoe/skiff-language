@@ -13,9 +13,10 @@ mod projected_environment;
 mod type_projection;
 
 pub(super) use projected_environment::ContractProjectionState;
+pub use type_projection::package_type_ref_from_contract_type;
 pub(super) use type_projection::{
     contract_source_assignability, contract_source_assignability_with_projections,
-    local_ir_json_compatible, package_type_ref_from_contract_type, package_type_target_assignable,
+    local_ir_json_compatible, package_type_target_assignable,
 };
 use type_projection::{resolved_contract_type, ContractCallTypeProjection};
 

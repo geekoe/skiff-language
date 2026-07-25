@@ -168,9 +168,10 @@ pub enum StmtIr {
     },
     /// Installs one compiler-checked test effect outcome in the current test
     /// execution context. This statement is emitted only in compiler-owned
-    /// hidden test setup executables. The package callable id is an exact
-    /// immutable-artifact link key; assembly linking replaces it with the
-    /// executable target used by runtime dispatch.
+    /// hidden test setup executables. Package targets retain an immutable
+    /// package callable key; service targets retain the canonical file-owned
+    /// service-call ref. Assembly linking replaces either form with the same
+    /// exact target used by normal runtime dispatch.
     TestEffectRegister {
         target: TestEffectRegisterTargetIr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -204,6 +205,9 @@ pub enum TestEffectRegisterTargetIr {
     PackageCallable {
         package_ref: PackageRefIr,
         callable_id: PackageCallableId,
+    },
+    ContractOperation {
+        service_call_ref_index: ServiceCallRefIndex,
     },
 }
 

@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
-    ActorMethodIdentity, BuiltinReceiverOp, ContractOperationId, ContractRequirement,
-    PackageCallableId, PackageCallableSignature, PackageLocalAbiIdentity,
+    ActorMethodIdentity, BoundaryOperationDescriptor, BuiltinReceiverOp, ContractOperationId,
+    ContractRequirement, PackageCallableId, PackageCallableSignature, PackageLocalAbiIdentity,
 };
 
 use crate::{ExpressionKey, SourceSymbolKey};
@@ -100,6 +100,7 @@ pub enum UnknownCallTargetReason {
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedCallTargetFacts {
     targets: BTreeMap<ExpressionKey, ResolvedCallTarget>,
+    contract_operations: BTreeMap<ExpressionKey, BoundaryOperationDescriptor>,
 }
 
 impl ResolvedCallTargetFacts {
@@ -108,7 +109,20 @@ impl ResolvedCallTargetFacts {
     }
 
     pub fn from_targets(targets: BTreeMap<ExpressionKey, ResolvedCallTarget>) -> Self {
-        Self { targets }
+        Self {
+            targets,
+            contract_operations: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn from_targets_and_contract_operations(
+        targets: BTreeMap<ExpressionKey, ResolvedCallTarget>,
+        contract_operations: BTreeMap<ExpressionKey, BoundaryOperationDescriptor>,
+    ) -> Self {
+        Self {
+            targets,
+            contract_operations,
+        }
     }
 
     pub fn target(&self, expression: &ExpressionKey) -> Option<&ResolvedCallTarget> {
@@ -117,6 +131,13 @@ impl ResolvedCallTargetFacts {
 
     pub fn iter(&self) -> impl Iterator<Item = (&ExpressionKey, &ResolvedCallTarget)> {
         self.targets.iter()
+    }
+
+    pub fn contract_operation(
+        &self,
+        expression: &ExpressionKey,
+    ) -> Option<&BoundaryOperationDescriptor> {
+        self.contract_operations.get(expression)
     }
 
     pub fn is_empty(&self) -> bool {

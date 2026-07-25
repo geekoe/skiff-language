@@ -196,7 +196,7 @@ fn package_type_ref_from_resolved_ir(
     }
 }
 
-pub(crate) fn package_type_ref_from_contract_type(ty: &ContractTypeRef) -> PackageTypeRef {
+pub fn package_type_ref_from_contract_type(ty: &ContractTypeRef) -> PackageTypeRef {
     match ty {
         ContractTypeRef::Builtin { name, arguments } => PackageTypeRef::Container {
             name: name.clone(),

@@ -4,7 +4,9 @@ use std::{
 };
 
 use serde_json::Value;
-use skiff_artifact_model::{PackageBuildId, PackageCallableId};
+use skiff_artifact_model::{
+    ContractOperationId, PackageBuildId, PackageCallableId, ServiceProtocolIdentity,
+};
 use skiff_runtime_model::{
     error::TypeIdentity, request_heap::RequestHeap, runtime_value::RuntimeValue,
     type_plan::RuntimeTypePlan,
@@ -20,16 +22,58 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct TestEffectTarget {
-    package_build_id: PackageBuildId,
-    callable_id: PackageCallableId,
+pub(crate) enum TestEffectTarget {
+    PackageCallable {
+        package_build_id: PackageBuildId,
+        callable_id: PackageCallableId,
+    },
+    ContractOperation {
+        caller_package_build_id: PackageBuildId,
+        service_requirement_slot: u32,
+        operation_id: ContractOperationId,
+        expected_protocol_identity: ServiceProtocolIdentity,
+    },
 }
 
 impl TestEffectTarget {
-    pub(crate) fn new(package_build_id: PackageBuildId, callable_id: PackageCallableId) -> Self {
-        Self {
+    pub(crate) fn package_callable(
+        package_build_id: PackageBuildId,
+        callable_id: PackageCallableId,
+    ) -> Self {
+        Self::PackageCallable {
             package_build_id,
             callable_id,
+        }
+    }
+
+    pub(crate) fn contract_operation(
+        caller_package_build_id: PackageBuildId,
+        service_requirement_slot: u32,
+        operation_id: ContractOperationId,
+        expected_protocol_identity: ServiceProtocolIdentity,
+    ) -> Self {
+        Self::ContractOperation {
+            caller_package_build_id,
+            service_requirement_slot,
+            operation_id,
+            expected_protocol_identity,
+        }
+    }
+
+    fn diagnostic(&self) -> String {
+        match self {
+            Self::PackageCallable {
+                package_build_id,
+                callable_id,
+            } => format!("package:{package_build_id}:{callable_id}"),
+            Self::ContractOperation {
+                caller_package_build_id,
+                service_requirement_slot,
+                operation_id,
+                expected_protocol_identity,
+            } => format!(
+                "service:{caller_package_build_id}:{service_requirement_slot}:{operation_id}:{expected_protocol_identity}"
+            ),
         }
     }
 }
@@ -168,12 +212,7 @@ impl RuntimeTestEffectRegistry {
         let mut remaining = entries
             .iter()
             .map(|(target, outcomes)| {
-                format!(
-                    "{}:{} ({} outcome(s))",
-                    target.package_build_id,
-                    target.callable_id,
-                    outcomes.len()
-                )
+                format!("{} ({} outcome(s))", target.diagnostic(), outcomes.len())
             })
             .collect::<Vec<_>>();
         remaining.sort();
@@ -213,10 +252,67 @@ mod tests {
     use skiff_runtime_model::addr::{FileAddr, TypeAddr, UnitAddr};
 
     fn target() -> TestEffectTarget {
-        TestEffectTarget::new(
+        TestEffectTarget::package_callable(
             PackageBuildId::new("build:test"),
             PackageCallableId::new("callable:test"),
         )
+    }
+
+    fn service_target(slot: u32, operation: &str, protocol: &str) -> TestEffectTarget {
+        TestEffectTarget::contract_operation(
+            PackageBuildId::new("build:caller"),
+            slot,
+            ContractOperationId::new(operation),
+            ServiceProtocolIdentity::new(protocol),
+        )
+    }
+
+    #[test]
+    fn package_target_does_not_match_a_different_exact_callable() {
+        let registry = RuntimeTestEffectRegistry::default();
+        registry.register(
+            target(),
+            RegisteredTestEffect {
+                expect: None,
+                outcome: RegisteredTestEffectOutcome::Respond(RuntimeValue::Null),
+            },
+        );
+        let other = TestEffectTarget::package_callable(
+            PackageBuildId::new("build:dependency"),
+            PackageCallableId::new("callable:other"),
+        );
+        assert!(registry
+            .dispatch(&other, &[], None, &mut RequestHeap::default())
+            .is_none());
+        assert!(registry
+            .dispatch(&target(), &[], None, &mut RequestHeap::default())
+            .is_some());
+    }
+
+    #[test]
+    fn service_target_matches_only_the_exact_activation_relative_identity() {
+        let registry = RuntimeTestEffectRegistry::default();
+        let exact = service_target(3, "operation:lookup", "protocol:v1");
+        registry.register(
+            exact.clone(),
+            RegisteredTestEffect {
+                expect: None,
+                outcome: RegisteredTestEffectOutcome::Respond(RuntimeValue::Null),
+            },
+        );
+
+        for wrong in [
+            service_target(4, "operation:lookup", "protocol:v1"),
+            service_target(3, "operation:other", "protocol:v1"),
+            service_target(3, "operation:lookup", "protocol:v2"),
+        ] {
+            assert!(registry
+                .dispatch(&wrong, &[], None, &mut RequestHeap::default())
+                .is_none());
+        }
+        assert!(registry
+            .dispatch(&exact, &[], None, &mut RequestHeap::default())
+            .is_some());
     }
 
     #[test]

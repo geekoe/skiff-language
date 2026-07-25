@@ -8,6 +8,9 @@
 - Effect expressions now traverse ordinary compiler name resolution, typing,
   call-target resolution, effect/config analysis and lowering. The runner no
   longer interprets a second expression language.
+- The temporary F266 `validate_and_plan_test_effects` /
+  `TypedTestEffectPlan` API and its duplicate validation tests were removed.
+  Hidden setup lowering is the only compiler/runtime handoff for inline effects.
 - Artifact IR carries the exact immutable package reference and
   `PackageCallableId`. Runtime dispatch is keyed by
   `(PackageBuildId, PackageCallableId)`, not source spelling.

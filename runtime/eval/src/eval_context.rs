@@ -328,10 +328,27 @@ impl<'a> EvalContext<'a> {
                         "test effect setup cannot run outside test execution".to_string(),
                     ));
                 }
-                let LinkedCallTarget::PackageDirect { call: target } = target else {
-                    return Err(RuntimeError::InvalidArtifact(
-                        "test effect target did not link to a package callable".to_string(),
-                    ));
+                let effect_target = match target {
+                    LinkedCallTarget::PackageDirect { call: target } => {
+                        TestEffectTarget::package_callable(
+                            target.dependency_package_build_id().clone(),
+                            target.package_callable_id().clone(),
+                        )
+                    }
+                    LinkedCallTarget::ActivationRelativeService { instruction } => {
+                        TestEffectTarget::contract_operation(
+                            instruction.caller_package_build_id().clone(),
+                            instruction.service_requirement_slot(),
+                            instruction.operation_id().clone(),
+                            instruction.expected_protocol_identity().clone(),
+                        )
+                    }
+                    _ => {
+                        return Err(RuntimeError::InvalidArtifact(
+                            "test effect target did not link to a package callable or contract operation"
+                                .to_string(),
+                        ));
+                    }
                 };
                 let expect = match expect {
                     Some(expected) => Some(self.eval_program_expr_ref(expected.value).await?),
@@ -369,13 +386,9 @@ impl<'a> EvalContext<'a> {
                         }
                     }
                 };
-                self.interpreter.runtime_test_effects.register(
-                    TestEffectTarget::new(
-                        target.dependency_package_build_id().clone(),
-                        target.package_callable_id().clone(),
-                    ),
-                    RegisteredTestEffect { expect, outcome },
-                );
+                self.interpreter
+                    .runtime_test_effects
+                    .register(effect_target, RegisteredTestEffect { expect, outcome });
                 Ok(Flow::Continue)
             }
             LinkedStmtIr::Throw {
@@ -1116,7 +1129,7 @@ impl<'a> EvalContext<'a> {
             }
             LinkedCallTarget::PackageDirect { call: target } => {
                 if self.interpreter.test_effects_enabled {
-                    let effect_target = TestEffectTarget::new(
+                    let effect_target = TestEffectTarget::package_callable(
                         target.dependency_package_build_id().clone(),
                         target.package_callable_id().clone(),
                     );
@@ -1132,6 +1145,22 @@ impl<'a> EvalContext<'a> {
                 super::assembly_execution::dispatch_package_direct(self, call, target, values).await
             }
             LinkedCallTarget::ActivationRelativeService { instruction } => {
+                if self.interpreter.test_effects_enabled {
+                    let effect_target = TestEffectTarget::contract_operation(
+                        instruction.caller_package_build_id().clone(),
+                        instruction.service_requirement_slot(),
+                        instruction.operation_id().clone(),
+                        instruction.expected_protocol_identity().clone(),
+                    );
+                    if let Some(result) = self.interpreter.runtime_test_effects.dispatch(
+                        &effect_target,
+                        &values,
+                        Some(&self.interpreter.stream_runtime),
+                        self.heap,
+                    ) {
+                        return result;
+                    }
+                }
                 let frame = self.suspend_actor_segment()?;
                 let result = super::assembly_execution::dispatch_service_call(
                     self,

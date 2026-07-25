@@ -2,9 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Number;
 use skiff_artifact_model::{
-    builtin_receiver_op_by_name, validate_supported_receiver_builtin_op, ReceiverCallAbi,
+    builtin_receiver_op_by_name, validate_supported_receiver_builtin_op, BoundaryStreamContract,
+    ReceiverCallAbi,
 };
 use skiff_compiler_source::{
+    package_type_ref_from_contract_type,
     prelude_registry::{prelude_registry, shared_native_alias_target},
     semantic::{executable_symbol, impl_method_declaration_name, InterfaceSemantics},
     ConstructorFieldValueSource, ExpressionKey, ExpressionOwnerKey, ExpressionTypeModel,
@@ -320,49 +322,120 @@ impl<'a> FunctionLowerer<'a> {
                             "test effect `{target}` has no resolved package target"
                         ))
                     })?;
-                let ResolvedCallTarget::DependencyPackageFunction {
-                    package_requirement_alias,
-                    package_callable_id,
-                    exact_signature,
-                    ..
-                } = resolved
-                else {
-                    return Err(CompileError::Semantic(format!(
-                        "test effect `{target}` must resolve to an exact package callable"
-                    )));
-                };
                 let Expr::Call { callee, .. } = target_probe else {
                     return Err(CompileError::Semantic(
                         "compiler test effect target probe is not a call".to_string(),
                     ));
                 };
                 self.consume_static_callee_expression_keys(callee)?;
-                let signature = exact_signature.clone().ok_or_else(|| {
-                    CompileError::Semantic(format!(
-                        "test effect `{target}` has no exact package signature"
-                    ))
-                })?;
+                let (register_target, parameters, return_type, stream_item) = match resolved {
+                    ResolvedCallTarget::DependencyPackageFunction {
+                        package_requirement_alias,
+                        package_callable_id,
+                        exact_signature,
+                        ..
+                    } => {
+                        let signature = exact_signature.clone().ok_or_else(|| {
+                            CompileError::Semantic(format!(
+                                "test effect `{target}` has no exact package signature"
+                            ))
+                        })?;
+                        let stream_item = match &signature.return_type {
+                            skiff_artifact_model::PackageTypeRef::Container { name, arguments }
+                                if name == "Stream" && arguments.len() == 1 =>
+                            {
+                                Some(execution_type_ref(&arguments[0]))
+                            }
+                            _ => None,
+                        };
+                        (
+                            TestEffectRegisterTargetIr::PackageCallable {
+                                package_ref: PackageRefIr::Dependency {
+                                    dependency_ref: package_requirement_alias.clone(),
+                                },
+                                callable_id: package_callable_id.clone(),
+                            },
+                            signature
+                                .parameters
+                                .iter()
+                                .map(|parameter| execution_type_ref(&parameter.ty))
+                                .collect::<Vec<_>>(),
+                            execution_type_ref(&signature.return_type),
+                            stream_item,
+                        )
+                    }
+                    ResolvedCallTarget::ContractOperation { .. } => {
+                        let operation = self
+                                .resolved_call_targets
+                                .contract_operation(&target_key)
+                                .ok_or_else(|| {
+                                    CompileError::Semantic(format!(
+                                        "test effect `{target}` has no exact contract operation descriptor"
+                                    ))
+                                })?;
+                        let service_call_ref_index = self
+                            .service_calls
+                            .service_call_ref_index(&target_key)
+                            .ok_or_else(|| {
+                                CompileError::Semantic(format!(
+                                    "test effect `{target}` has no canonical service call ref"
+                                ))
+                            })?;
+                        let contract = &operation.contract;
+                        let stream_item = match &contract.stream {
+                            BoundaryStreamContract::ServerStream { item_type, .. } => Some(
+                                execution_type_ref(&package_type_ref_from_contract_type(item_type)),
+                            ),
+                            BoundaryStreamContract::Unary => None,
+                            BoundaryStreamContract::Unsupported { .. } => {
+                                return Err(CompileError::Semantic(format!(
+                                    "test effect `{target}` has an unsupported stream contract"
+                                )));
+                            }
+                        };
+                        (
+                            TestEffectRegisterTargetIr::ContractOperation {
+                                service_call_ref_index,
+                            },
+                            contract
+                                .parameters
+                                .iter()
+                                .map(|parameter| {
+                                    execution_type_ref(&package_type_ref_from_contract_type(
+                                        &parameter.ty,
+                                    ))
+                                })
+                                .collect(),
+                            execution_type_ref(&package_type_ref_from_contract_type(
+                                &contract.return_value.ty,
+                            )),
+                            stream_item,
+                        )
+                    }
+                    _ => {
+                        return Err(CompileError::Semantic(format!(
+                                "test effect `{target}` must resolve to an exact package or contract operation"
+                            )));
+                    }
+                };
                 let expected = expect
                     .as_ref()
                     .map(|value| {
-                        let [parameter] = signature.parameters.as_slice() else {
+                        let [parameter] = parameters.as_slice() else {
                             return Err(CompileError::Semantic(format!(
                                 "test effect `{target}` expect requires one parameter"
                             )));
                         };
                         Ok(TestEffectExpectedIr {
                             value: self.lower_expr_with_expected(value, None)?,
-                            request_type: execution_type_ref(&parameter.ty),
+                            request_type: parameter.clone(),
                         })
                     })
                     .transpose()?;
                 let outcome = match outcome {
                     TestEffectOutcome::Respond { value } => TestEffectOutcomeIr::Respond {
-                        value: self.lower_expr_with_expected(
-                            value,
-                            Some(&execution_type_ref(&signature.return_type)),
-                        )?,
-                        value_type: execution_type_ref(&signature.return_type),
+                        value: self.lower_expr_with_expected(value, Some(&return_type))?,
+                        value_type: return_type.clone(),
                     },
                     TestEffectOutcome::Throw { value } => {
                         let key = self.peek_expression_key().ok_or_else(|| {
@@ -385,19 +458,11 @@ impl<'a> FunctionLowerer<'a> {
                         }
                     }
                     TestEffectOutcome::Stream { events } => {
-                        let TypeRefIr::Builtin { name, args } =
-                            execution_type_ref(&signature.return_type)
-                        else {
+                        let Some(item_type) = stream_item.clone() else {
                             return Err(CompileError::Semantic(format!(
                                 "test effect `{target}` stream target is not Stream<T>"
                             )));
                         };
-                        if name != "Stream" || args.len() != 1 {
-                            return Err(CompileError::Semantic(format!(
-                                "test effect `{target}` stream target is not Stream<T>"
-                            )));
-                        }
-                        let item_type = args[0].clone();
                         TestEffectOutcomeIr::Stream {
                             values: events
                                 .iter()
@@ -408,12 +473,7 @@ impl<'a> FunctionLowerer<'a> {
                     }
                 };
                 StmtIr::TestEffectRegister {
-                    target: TestEffectRegisterTargetIr::PackageCallable {
-                        package_ref: PackageRefIr::Dependency {
-                            dependency_ref: package_requirement_alias.clone(),
-                        },
-                        callable_id: package_callable_id.clone(),
-                    },
+                    target: register_target,
                     expect: expected,
                     outcome,
                 }

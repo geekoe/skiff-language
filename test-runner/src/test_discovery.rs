@@ -3,10 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use skiff_syntax::{
-    ast::{SourceFile, TestEffectDeclaration},
-    parser::parse_source,
-};
+use skiff_syntax::{ast::SourceFile, parser::parse_source};
 
 use crate::canonical_fixture::CanonicalFixtureError;
 
@@ -22,13 +19,6 @@ pub struct PackageTestCase {
     pub test_index: usize,
     pub source_text: String,
     pub source_ast: SourceFile,
-    pub effect_plan: ParsedInlineTestEffectPlan,
-}
-
-#[derive(Debug, Clone)]
-pub struct ParsedInlineTestEffectPlan {
-    pub case_identity: String,
-    pub effects: Vec<TestEffectDeclaration>,
 }
 
 pub fn discover_package_test_cases(
@@ -75,10 +65,6 @@ pub fn discover_package_test_cases(
                     test_index,
                     source_text: source_text.clone(),
                     source_ast: source_ast.clone(),
-                    effect_plan: ParsedInlineTestEffectPlan {
-                        case_identity,
-                        effects: test.effects.clone(),
-                    },
                 });
             }
         }

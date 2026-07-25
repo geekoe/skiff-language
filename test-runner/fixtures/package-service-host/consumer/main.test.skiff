@@ -1,3 +1,46 @@
 test "provider observes helper mutation" {
   assert root.main.run() == "provider-observed-helper-mutated"
 }
+
+test "inline package effect sequence uses typed setup and request subset" effects {
+  helper/tools.lookup {
+    expect: { id: "sequence" },
+    respondSequence: [
+      { value: "first" },
+      { value: "second" },
+    ],
+  }
+} {
+  assert root.main.effectLookup("sequence", "detail-is-not-in-subset") == "first"
+  assert root.main.effectLookup("sequence", "different-extra-detail") == "second"
+}
+
+test "inline package effect preserves nominal throw identity" effects {
+  helper/tools.fail {
+    expect: { id: "denied" },
+    throw: { code: "exact-nominal-error" },
+  }
+} {
+  assert root.main.effectFailureCode("denied") == "exact-nominal-error"
+}
+
+test "inline package effect materializes stream events" effects {
+  helper/tools.events {
+    expect: { id: "events" },
+    stream: [
+      { value: "first" },
+      { value: ":second" },
+    ],
+  }
+} {
+  assert root.main.effectEvents("events") == "first:second"
+}
+
+test "inline service effect bypasses the bound provider by exact contract operation" effects {
+  payments/echo {
+    expect: "service-request",
+    respond: "service-effect-response",
+  }
+} {
+  assert root.main.serviceEffect("service-request") == "service-effect-response"
+}

@@ -125,6 +125,7 @@ impl Evaluator<'_, '_> {
             Some(ResolvedCallTarget::ContractOperation {
                 contract_requirement,
                 contract_operation_id,
+                ..
             }) => {
                 let Some(callee) = self
                     .dependency_analysis

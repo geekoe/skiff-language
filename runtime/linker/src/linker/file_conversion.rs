@@ -703,14 +703,20 @@ fn linked_stmt(
             expect,
             outcome,
         } => {
-            let artifact::TestEffectRegisterTargetIr::PackageCallable {
-                package_ref,
-                callable_id,
-            } = target;
-            let target = canonical_call(&artifact::CallTargetIr::PackageCallable {
-                package_ref: package_ref.clone(),
-                package_callable_id: callable_id.clone(),
-            })?;
+            let target = match target {
+                artifact::TestEffectRegisterTargetIr::PackageCallable {
+                    package_ref,
+                    callable_id,
+                } => canonical_call(&artifact::CallTargetIr::PackageCallable {
+                    package_ref: package_ref.clone(),
+                    package_callable_id: callable_id.clone(),
+                })?,
+                artifact::TestEffectRegisterTargetIr::ContractOperation {
+                    service_call_ref_index,
+                } => canonical_call(&artifact::CallTargetIr::ServiceCall {
+                    service_call_ref_index: *service_call_ref_index,
+                })?,
+            };
             LinkedStmtIr::TestEffectRegister {
                 target,
                 expect: expect.as_ref().map(|expected| LinkedTestEffectExpectedIr {

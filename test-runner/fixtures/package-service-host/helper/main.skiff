@@ -1,5 +1,26 @@
 type Box { value: string }
 
+type EffectRequest {
+  id: string,
+  detail: string,
+}
+
+type EffectResponse { value: string }
+
+type EffectFailure { code: string }
+
 function mutate(input: Box) -> void {
   input.value = "helper-mutated"
+}
+
+function lookup(input: EffectRequest) -> EffectResponse {
+  return EffectResponse { value: input.id.concat(":real") }
+}
+
+function fail(input: EffectRequest) -> EffectResponse {
+  throw EffectFailure { code: input.id }
+}
+
+function events(input: EffectRequest) -> Stream<EffectResponse> {
+  emit(EffectResponse { value: input.id.concat(":real") })
 }

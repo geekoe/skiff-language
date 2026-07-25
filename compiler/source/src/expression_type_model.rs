@@ -30,6 +30,7 @@ mod db_projection;
 mod expression_assignability;
 mod object_materialization;
 
+pub use contract_call_typing::package_type_ref_from_contract_type;
 use contract_call_typing::{
     contract_source_assignability_with_projections, package_type_target_assignable,
     ContractCallOutcome, ContractCallTyping, ContractProjectionState,
@@ -725,19 +726,81 @@ impl<'a> OwnerChecker<'a> {
                     ));
                     return false;
                 };
-                let Some(callable) = dependencies.package_callable_by_source_path(target) else {
-                    self.diagnostics.push(format!(
-                        "{}: unresolved compiler test effect target `{target}`",
-                        self.module_path
-                    ));
-                    return false;
-                };
-                let Some(signature) = callable.signature().cloned() else {
-                    self.diagnostics.push(format!(
-                        "{}: compiler test effect target `{target}` has no exact signature",
-                        self.module_path
-                    ));
-                    return false;
+                let signature = match dependencies.resolve_path(target) {
+                    crate::dependency_analysis::ResolvedDependencyAnalysisTarget::Package {
+                        callable,
+                        ..
+                    } => {
+                        let Some(signature) = callable.signature().cloned() else {
+                            self.diagnostics.push(format!(
+                                "{}: compiler test effect target `{target}` has no exact signature",
+                                self.module_path
+                            ));
+                            return false;
+                        };
+                        signature
+                    }
+                    crate::dependency_analysis::ResolvedDependencyAnalysisTarget::Contract {
+                        operation,
+                        ..
+                    } => {
+                        let contract = &operation.contract;
+                        let return_type = match &contract.stream {
+                            skiff_artifact_model::BoundaryStreamContract::Unary => {
+                                package_type_ref_from_contract_type(&contract.return_value.ty)
+                            }
+                            skiff_artifact_model::BoundaryStreamContract::ServerStream {
+                                item_type,
+                                ..
+                            } => PackageTypeRef::Container {
+                                name: "Stream".to_string(),
+                                arguments: vec![package_type_ref_from_contract_type(item_type)],
+                            },
+                            skiff_artifact_model::BoundaryStreamContract::Unsupported {
+                                ..
+                            } => {
+                                self.diagnostics.push(format!(
+                                    "{}: compiler test effect target `{target}` has an unsupported stream contract",
+                                    self.module_path
+                                ));
+                                return false;
+                            }
+                        };
+                        let throw_types = match &contract.errors {
+                            skiff_artifact_model::BoundaryErrorContract::None => Vec::new(),
+                            skiff_artifact_model::BoundaryErrorContract::Typed {
+                                payload_type,
+                                ..
+                            } => vec![package_type_ref_from_contract_type(payload_type)],
+                            skiff_artifact_model::BoundaryErrorContract::Unsupported { .. } => {
+                                self.diagnostics.push(format!(
+                                    "{}: compiler test effect target `{target}` has an unsupported error contract",
+                                    self.module_path
+                                ));
+                                return false;
+                            }
+                        };
+                        skiff_artifact_model::PackageCallableSignature {
+                            parameters: contract
+                                .parameters
+                                .iter()
+                                .map(|parameter| skiff_artifact_model::PackageCallableParameter {
+                                    name: parameter.name.clone(),
+                                    ty: package_type_ref_from_contract_type(&parameter.ty),
+                                })
+                                .collect(),
+                            return_type,
+                            throw_types,
+                            may_suspend: contract.may_suspend,
+                        }
+                    }
+                    _ => {
+                        self.diagnostics.push(format!(
+                            "{}: unresolved compiler test effect target `{target}`",
+                            self.module_path
+                        ));
+                        return false;
+                    }
                 };
                 if let Some(expect) = expect {
                     let [parameter] = signature.parameters.as_slice() else {

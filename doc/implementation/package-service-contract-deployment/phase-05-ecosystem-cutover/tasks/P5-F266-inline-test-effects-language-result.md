@@ -9,11 +9,11 @@
   DSL; they do not introduce a general Skiff array literal.
 - Parsing rejects duplicate targets, empty sequences, duplicate or unknown
   fields, missing outcomes and multiple outcome kinds.
-- `validate_and_plan_test_effects` is the compiler-owned typed-plan boundary.
-  A caller must resolve every source target to an exact identity plus
-  `PackageCallableSignature`, and must validate every expression against the
-  supplied exact, one-of or request-subset constraint. There is no unresolved
-  string target in `TypedTestEffectPlan`.
+- F266 originally introduced a separate `TypedTestEffectPlan` validation API.
+  F267 replaced that parallel boundary with compiler-generated test setup:
+  effect targets and expressions now pass through the ordinary source compiler
+  models and lower directly into executable IR. The obsolete planning API was
+  removed rather than retained as a second type-checking path.
 - Direct `Stream<T>` targets accept typed event lists. Stream terminal/error
   shapes not represented by that signature are rejected rather than inferred.
 - Test discovery carries a module-and-index case identity that does not
@@ -21,13 +21,12 @@
 - Production source stripping removes the entire declaration including effects,
   so changing test effects does not change production source identity.
 
-F267 must implement `TestEffectPlanValidator` using the assembled test-service
-dependency/signature graph, compile the constrained expressions, and consume
-only `TypedTestEffectPlan`. F266 does not depend on F265's authoring changes.
+F267 consumes the syntax AST while generating the hidden setup callable; there
+is no runner-owned typed plan or expression interpreter. F266 does not depend
+on F265's authoring changes.
 
 ## Validation
 
 - `cargo test -p skiff-syntax`
-- `cargo test -p skiff-compiler-source test_effects --no-fail-fast`
 - `cargo test -p skiff-test-runner test_discovery --no-fail-fast`
 - `cargo check --workspace`

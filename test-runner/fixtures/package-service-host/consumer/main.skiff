@@ -13,3 +13,36 @@ function run() -> string {
   helper/tools.mutate(box)
   return payments/echo(box.value)
 }
+
+function effectLookup(id: string, detail: string) -> string {
+  return helper/tools.lookup({
+    id: id,
+    detail: detail
+  }).value
+}
+
+function effectFailureCode(id: string) -> string {
+  const result = catch<helper.EffectFailure>(helper/tools.fail({
+    id: id,
+    detail: "throw"
+  }))
+  if result.tag == "error" {
+    return result.error.code
+  }
+  return "missing-error"
+}
+
+function effectEvents(id: string) -> string {
+  let output = ""
+  for event in helper/tools.events({
+    id: id,
+    detail: "stream"
+  }) {
+    output = output.concat(event.value)
+  }
+  return output
+}
+
+function serviceEffect(value: string) -> string {
+  return payments/echo(value)
+}

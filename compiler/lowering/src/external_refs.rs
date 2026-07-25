@@ -163,17 +163,19 @@ fn collect_stmt_external_refs(stmt: &StmtIr, refs: &mut ExternalRefTable) {
             expect,
             outcome,
         } => {
-            let TestEffectRegisterTargetIr::PackageCallable {
+            if let TestEffectRegisterTargetIr::PackageCallable {
                 package_ref,
                 callable_id,
-            } = target;
-            push_unique(
-                &mut refs.package_callables,
-                PackageCallableRef {
-                    package_ref: package_ref.clone(),
-                    package_callable_id: callable_id.clone(),
-                },
-            );
+            } = target
+            {
+                push_unique(
+                    &mut refs.package_callables,
+                    PackageCallableRef {
+                        package_ref: package_ref.clone(),
+                        package_callable_id: callable_id.clone(),
+                    },
+                );
+            }
             if let Some(expect) = expect {
                 collect_type_ref_external_refs(&expect.request_type, refs);
             }

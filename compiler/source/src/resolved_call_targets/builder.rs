@@ -136,7 +136,23 @@ pub(super) fn build_resolved_call_targets(
             ),
         });
     }
-    Ok(ResolvedCallTargetFacts::from_targets(targets))
+    let contract_operations = targets
+        .iter()
+        .filter_map(|(key, target)| {
+            let ResolvedCallTarget::ContractOperation {
+                contract_requirement,
+                contract_operation_id,
+            } = target
+            else {
+                return None;
+            };
+            dependencies
+                .exact_contract_operation(contract_requirement, contract_operation_id)
+                .cloned()
+                .map(|operation| (key.clone(), operation))
+        })
+        .collect();
+    Ok(ResolvedCallTargetFacts::from_targets_and_contract_operations(targets, contract_operations))
 }
 
 #[allow(clippy::too_many_arguments)]
