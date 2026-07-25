@@ -1,6 +1,7 @@
 # P5-F337 Service error wire checkpoint acceptance
 
-状态：Ready（独立只读验收）。
+状态：Completed（FAIL）。结果见
+`P5-F337-service-error-wire-checkpoint-acceptance-result.md`。
 
 ## 验收输入
 
