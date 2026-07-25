@@ -89,6 +89,7 @@ impl Evaluator<'_, '_> {
                     for root in object_roots {
                         value.fresh_roots.remove(&root);
                     }
+                    value.project_caller_parameter_origins();
                     value.reference = reference;
                     if !reference {
                         value.caller_references.clear();

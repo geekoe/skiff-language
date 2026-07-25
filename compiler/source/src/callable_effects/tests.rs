@@ -1156,6 +1156,107 @@ fn conditional_map_lookup_tracks_distinct_fresh_and_formal_candidates() {
 }
 
 #[test]
+fn helper_map_projection_can_be_mutated_and_reinserted_without_becoming_the_map_root() {
+    let model = analyze(
+        r#"
+            type State { key: string, value: string }
+
+            function stateFor(
+              states: Map<string, State>,
+              key: string
+            ) -> State {
+              let state: State? = states.get(key)
+              if state == null {
+                state = State { key: key, value: "" }
+                states.set(key, state)
+              }
+              return state
+            }
+
+            function local(key: string) -> State {
+              const states = Map.empty<string, State>()
+              const state = stateFor(states, key)
+              state.value = "completed"
+              states.set(key, state)
+              return state
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(
+        effects(&model, "stateFor"),
+        CallableMayEffects {
+            writes_caller_reachable: true,
+            returns_caller_alias: true,
+            requires_same_heap_identity: true,
+            ..no_effects()
+        }
+    );
+    assert_eq!(effects(&model, "local"), no_effects());
+    assert!(matches!(
+        provenance(&model, "local"),
+        CallableProvenanceSummary::Analyzed { .. }
+    ));
+}
+
+#[test]
+fn helper_parameter_store_distinguishes_field_projection_from_root_cycle() {
+    let model = analyze(
+        r#"
+            type StreamState {
+              key: string,
+              status: string,
+              snapshot: string
+            }
+
+            function update(state: StreamState, status: string) -> void {
+              state.status = status
+              state.snapshot = state.status
+            }
+
+            function local(status: string) -> StreamState {
+              const state = StreamState {
+                key: "response",
+                status: "",
+                snapshot: ""
+              }
+              update(state, status)
+              return state
+            }
+
+            type Node { child: Node? }
+
+            function selfStore(node: Node) -> void {
+              node.child = node
+            }
+
+            function helperCycle() -> Node {
+              const node = Node { child: null }
+              selfStore(node)
+              return node
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(
+        effects(&model, "update"),
+        CallableMayEffects {
+            writes_caller_reachable: true,
+            requires_same_heap_identity: true,
+            ..no_effects()
+        }
+    );
+    assert_eq!(effects(&model, "local"), no_effects());
+    assert!(matches!(
+        provenance(&model, "local"),
+        CallableProvenanceSummary::Analyzed { .. }
+    ));
+    assert_heap_store_fail_closed(&model, "helperCycle");
+}
+
+#[test]
 fn recursive_scc_reaches_alias_fixed_point() {
     let model = analyze(
         r#"

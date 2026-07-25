@@ -10,6 +10,11 @@ pub(super) enum Origin {
     Fresh,
     Constant,
     CallerParameter(u32),
+    /// A value selected from a caller parameter's reachable graph rather than
+    /// the formal root itself. This identity is evaluator-local: artifacts
+    /// deliberately collapse it back to `CallerParameter` so dependency
+    /// boundaries remain conservative.
+    CallerParameterProjection(u32),
     DependencyReturn(String),
 }
 
@@ -168,19 +173,35 @@ impl AbstractValue {
 
     pub fn contains_caller_value(&self) -> bool {
         self.contains_caller_reference()
-            || self
-                .origins
-                .iter()
-                .any(|origin| matches!(origin, Origin::CallerParameter(_)))
+            || self.origins.iter().any(|origin| {
+                matches!(
+                    origin,
+                    Origin::CallerParameter(_) | Origin::CallerParameterProjection(_)
+                )
+            })
     }
 
     pub fn formal_parameters(&self) -> BTreeSet<u32> {
         let mut parameters = self.caller_references.clone();
         parameters.extend(self.origins.iter().filter_map(|origin| match origin {
-            Origin::CallerParameter(index) => Some(*index),
+            Origin::CallerParameter(index) | Origin::CallerParameterProjection(index) => {
+                Some(*index)
+            }
             _ => None,
         }));
         parameters
+    }
+
+    /// Marks formal-root provenance as a field/container projection while
+    /// retaining caller reachability for reference values.
+    pub fn project_caller_parameter_origins(&mut self) {
+        self.origins = std::mem::take(&mut self.origins)
+            .into_iter()
+            .map(|origin| match origin {
+                Origin::CallerParameter(index) => Origin::CallerParameterProjection(index),
+                other => other,
+            })
+            .collect();
     }
 }
 
@@ -318,16 +339,8 @@ impl CallableState {
         let provenance = match self.unknown {
             Some(reason) => CallableProvenanceSummary::Unknown { reason },
             None => CallableProvenanceSummary::Analyzed {
-                return_origins: self
-                    .return_origins
-                    .into_iter()
-                    .map(ValueProvenance::from)
-                    .collect(),
-                throw_origins: self
-                    .throw_origins
-                    .into_iter()
-                    .map(ValueProvenance::from)
-                    .collect(),
+                return_origins: public_origins(self.return_origins),
+                throw_origins: public_origins(self.throw_origins),
                 escape_lanes: self
                     .escape_lanes
                     .into_iter()
@@ -370,6 +383,17 @@ impl CallableState {
         }
         state
     }
+}
+
+fn public_origins(origins: BTreeSet<Origin>) -> Vec<ValueProvenance> {
+    let mut public = Vec::new();
+    for origin in origins {
+        let origin = ValueProvenance::from(origin);
+        if !public.contains(&origin) {
+            public.push(origin);
+        }
+    }
+    public
 }
 
 pub(super) fn no_effects() -> CallableMayEffects {
@@ -434,7 +458,9 @@ impl From<Origin> for ValueProvenance {
         match value {
             Origin::Fresh => Self::Fresh,
             Origin::Constant => Self::Constant,
-            Origin::CallerParameter(index) => Self::CallerParameter { index },
+            Origin::CallerParameter(index) | Origin::CallerParameterProjection(index) => {
+                Self::CallerParameter { index }
+            }
             Origin::DependencyReturn(callable_id) => Self::DependencyReturn { callable_id },
         }
     }

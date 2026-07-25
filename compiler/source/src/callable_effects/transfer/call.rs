@@ -85,7 +85,6 @@ impl Evaluator<'_, '_> {
                     );
                 };
                 self.apply_exact_receiver_call(
-                    call_key,
                     op,
                     &callee_value,
                     receiver,
@@ -227,7 +226,6 @@ impl Evaluator<'_, '_> {
 
     fn apply_exact_receiver_call(
         &mut self,
-        call_key: &ExpressionKey,
         op: BuiltinReceiverOp,
         callee_value: &AbstractValue,
         receiver: AbstractValue,
@@ -281,7 +279,7 @@ impl Evaluator<'_, '_> {
             callee.effects.requires_same_heap_identity = false;
             callee.same_heap_identity_parameters.clear();
         }
-        let mut result = self.apply_callee(&callee, &actuals, return_reference, None);
+        let result = self.apply_callee(&callee, &actuals, return_reference, None);
         if is_map_set && !receiver.fresh_roots.is_empty() {
             // Map entries are heap edges owned by the Map allocation, not
             // aliases to the Map object itself. Reinserting a mutated local
@@ -289,18 +287,6 @@ impl Evaluator<'_, '_> {
             if let Some(value) = args.get(1) {
                 self.store_into_fresh_roots(&receiver.fresh_roots, value);
             }
-        }
-        if op.canonical_key == "receiver:Map.get@1" && !receiver.fresh_roots.is_empty() {
-            // A lookup may return an entry stored in the receiver, but the
-            // entry is a distinct object. Keep caller-owned candidates mapped
-            // through the receiver while assigning local candidates their own
-            // allocation site.
-            for root in &receiver.fresh_roots {
-                result.fresh_roots.remove(root);
-            }
-            let local_candidate =
-                self.allocate_fresh_container(call_key.preorder_index(), AbstractValue::default());
-            result.join(&local_candidate);
         }
         result
     }
@@ -563,6 +549,15 @@ fn receiver_callable_callee(op: BuiltinReceiverOp) -> Option<CallableState> {
         state
             .return_origins
             .insert(Origin::from(semantics.return_provenance.clone()));
+        if matches!(
+            op.canonical_key,
+            "receiver:Map.get@1" | "receiver:JsonObject.get@1"
+        ) {
+            state.return_origins.remove(&Origin::CallerParameter(0));
+            state
+                .return_origins
+                .insert(Origin::CallerParameterProjection(0));
+        }
         return Some(state);
     }
     let mut state = CallableState::bottom();
@@ -625,6 +620,23 @@ fn map_origins(
                 }
                 mapped.join(&actual);
             }
+            Origin::CallerParameterProjection(index) => {
+                let Some(actual) = usize::try_from(*index)
+                    .ok()
+                    .and_then(|index| actuals.get(index))
+                else {
+                    mapped.unknown = true;
+                    continue;
+                };
+                let mut projection = actual.clone();
+                projection.project_caller_parameter_origins();
+                projection.fresh_roots.clear();
+                projection.catch_result = None;
+                if !preserve_caller_references {
+                    projection.caller_references.clear();
+                }
+                mapped.join(&projection);
+            }
             Origin::Fresh | Origin::Constant | Origin::DependencyReturn(_) => {
                 mapped.origins.insert(origin.clone());
             }
@@ -655,7 +667,9 @@ fn caller_parameter_indices(
     origins
         .iter()
         .filter_map(|origin| match origin {
-            Origin::CallerParameter(index) => Some(*index),
+            Origin::CallerParameter(index) | Origin::CallerParameterProjection(index) => {
+                Some(*index)
+            }
             _ => None,
         })
         .collect()
