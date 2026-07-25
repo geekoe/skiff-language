@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use skiff_artifact_model::{
     builtin_receiver_callable_semantics, native_callable_semantics, BoundaryCallbackContract,
-    BoundaryErrorContract, BoundaryOperationDescriptor, BoundaryStreamContract, BuiltinReceiverOp,
+    BoundaryOperationDescriptor, BoundaryStreamContract, BuiltinReceiverOp,
     CallableProvenanceUnknownReason, ValueProjectionPath,
 };
 
@@ -634,7 +634,6 @@ fn detached_contract_callee(operation: &BoundaryOperationDescriptor) -> Option<C
     let guarantee = contract.effect_guarantee;
     if !matches!(contract.stream, BoundaryStreamContract::Unary)
         || !matches!(contract.callbacks, BoundaryCallbackContract::None)
-        || !matches!(contract.errors, BoundaryErrorContract::None)
         || !guarantee.detached_parameters
         || !guarantee.detached_return
         || !guarantee.detached_error
@@ -648,6 +647,7 @@ fn detached_contract_callee(operation: &BoundaryOperationDescriptor) -> Option<C
     state.effects.may_suspend = contract.may_suspend;
     state.return_origins.insert(Origin::Fresh);
     state.return_direct_origins.insert(Origin::Fresh);
+    state.throw_origins.insert(Origin::Fresh);
     Some(state)
 }
 
