@@ -70,3 +70,19 @@ impl capability_contract::TelemetryCapabilityApi for RuntimeTelemetryCapabilityC
             .map_err(capability_contract::CapabilityError::opaque)
     }
 }
+
+impl capability_contract::RestrictedServiceDiagnosticSink for RuntimeTelemetryCapabilityContext {
+    fn submit(
+        &self,
+        diagnostic: &capability_contract::RestrictedServiceDiagnostic,
+    ) -> capability_contract::CapabilityResult<()> {
+        if self.0.emit_restricted_service_diagnostic(diagnostic) {
+            Ok(())
+        } else {
+            Err(capability_contract::CapabilityError::provider_unavailable(
+                "restricted-service-diagnostic",
+                "request telemetry emitter did not accept the diagnostic",
+            ))
+        }
+    }
+}

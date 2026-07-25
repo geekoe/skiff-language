@@ -671,17 +671,15 @@ async fn binary_response_error_completes_pending_outbound_request() {
         )
         .expect("pending outbound response should register");
     let frame = encode_binary_frame(
-        &ResponseErrorFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "response.error".to_string(),
-            request_id: "request-outbound-error".to_string(),
-            error: RuntimeErrorFramePayload {
+        &ResponseErrorFrameHeader::control(
+            "request-outbound-error".to_string(),
+            RuntimeErrorFramePayload {
                 code: "RemoteError".to_string(),
                 message: "callee failed".to_string(),
                 status: Some(503),
                 details: None,
             },
-        },
+        ),
         &[],
     )
     .expect("response.error frame should encode");
@@ -708,6 +706,60 @@ async fn binary_response_error_completes_pending_outbound_request() {
     assert!(host.outbound_requests.contains("request-outbound-error"));
     lease.complete();
     assert!(!host.outbound_requests.contains("request-outbound-error"));
+    assert!(control.is_none());
+    assert!(artifact_fingerprint.is_none());
+}
+
+#[tokio::test]
+async fn binary_fixed_response_error_preserves_exact_bytes_for_pending_outbound_request() {
+    let host = test_host();
+    let (sender, _receiver) = mpsc::unbounded_channel();
+    let mut control = None;
+    let mut artifact_fingerprint = None;
+    let (response_sender, mut response_receiver) = mpsc::unbounded_channel();
+    let lease = host
+        .outbound_requests
+        .insert_with_lease(
+            "request-outbound-fixed".to_string(),
+            response_sender,
+            None,
+            "caller_cancel",
+        )
+        .expect("pending outbound response should register");
+    let encoded = br#"{
+      "kind":"internalError",
+      "payload":{
+        "message":"The service could not complete the request.",
+        "traceId":"trace-fixed",
+        "errorId":"error-fixed"
+      }
+    }"#;
+    let frame = encode_binary_frame(
+        &ResponseErrorFrameHeader::fixed_service("request-outbound-fixed".to_string()),
+        encoded,
+    )
+    .expect("fixed response.error frame should encode");
+
+    dispatch_router_binary_frame(
+        &host,
+        &frame,
+        &sender,
+        &mut control,
+        &mut artifact_fingerprint,
+    )
+    .await
+    .expect("fixed response.error should route to pending outbound request");
+
+    let response = response_receiver
+        .recv()
+        .await
+        .expect("pending outbound receiver should complete");
+    assert!(matches!(
+        response,
+        skiff_runtime_request::OutboundResponse::FixedServiceFailure(failure)
+            if failure.error().encoded_bytes() == encoded
+    ));
+    lease.complete();
     assert!(control.is_none());
     assert!(artifact_fingerprint.is_none());
 }

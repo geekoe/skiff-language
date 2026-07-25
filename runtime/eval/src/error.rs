@@ -1283,7 +1283,7 @@ impl RuntimeError {
     /// Returns only the strict fixed carrier, recursively ignoring local
     /// diagnostic wrappers. Generic wire payloads and message/code projections
     /// are intentionally not accepted.
-    pub(crate) fn fixed_service_failure(&self) -> Option<&OpaqueServiceError> {
+    pub fn fixed_service_failure(&self) -> Option<&OpaqueServiceError> {
         match self {
             Self::FixedServiceFailure(error) => Some(error),
             Self::WithSource { error, .. } | Self::WithDiagnosticFrame { error, .. } => {

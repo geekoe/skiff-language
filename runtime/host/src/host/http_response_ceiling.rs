@@ -18,6 +18,7 @@ pub(super) fn validate_unary_response(
             payload.len()
         }
         BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::WebSocket(_)))
+        | BoundaryResponse::Event(ResponseEvent::FixedServiceFailure(_))
         | BoundaryResponse::Event(ResponseEvent::Error(_))
         | BoundaryResponse::StreamSent => return Ok(()),
     };
@@ -75,8 +76,10 @@ fn response_limit_error(max_bytes: usize) -> ResponseError {
 #[cfg(test)]
 mod tests {
     use skiff_runtime_capability_context::HttpResponseMetadata;
+    use skiff_runtime_model::service_error::OpaqueServiceError;
     use skiff_runtime_request::{
-        BoundaryResponse, ResponseStreamEvent, WebSocketConnectContext, WebSocketResponse,
+        BoundaryResponse, FixedServiceResponseFailure, ResponseEvent, ResponseStreamEvent,
+        WebSocketConnectContext, WebSocketResponse,
     };
 
     use super::*;
@@ -139,5 +142,19 @@ mod tests {
             true,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn fixed_service_failure_is_a_legal_terminal_not_an_http_body() {
+        let fixed = OpaqueServiceError::decode(
+            br#"{"kind":"internalError","payload":{"message":"The service could not complete the request.","traceId":"trace-fixed","errorId":"error-fixed"}}"#
+                .to_vec(),
+        )
+        .expect("fixed fixture");
+        let response = BoundaryResponse::Event(ResponseEvent::FixedServiceFailure(
+            FixedServiceResponseFailure::new(fixed),
+        ));
+
+        assert!(validate_unary_response(&response, 0, true).is_ok());
     }
 }

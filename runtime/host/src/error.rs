@@ -2,7 +2,10 @@ use std::fmt;
 
 use serde_json::{json, Map, Value};
 
-pub use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+pub use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiagnosticSource {
@@ -80,21 +83,22 @@ impl WirePayload for HostRuntimeLeafError {
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
         match self {
             Self::DecodeTarget { target, message } => {
-                decode_target_error_code(target).map(|code| {
-                    (
-                        TypeIdentity::builtin(code),
+                decode_target_error_code(target).and_then(|code| {
+                    let identity = PlatformBuiltinErrorIdentity::from_symbol(code)?;
+                    Some((
+                        identity.catch_identity(),
                         serde_json::json!({
                             "target": target,
                             "message": message,
                         }),
-                    )
+                    ))
                 })
             }
             Self::HttpError { message, detail } => Some((
-                TypeIdentity::builtin("std.http.HttpError"),
+                PlatformBuiltinErrorIdentity::Http.catch_identity(),
                 serde_json::json!({
                     "message": message,
                     "detail": detail,
@@ -328,7 +332,7 @@ impl WirePayload for Diagnosed {
         Diagnosed::payload(self)
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
         self.inner.as_wire().catch_projection()
     }
 
@@ -589,19 +593,19 @@ impl WirePayload for RuntimeError {
         RuntimeError::payload(self)
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
         match self {
             RuntimeError::Diagnosed(error) => error.catch_projection(),
             RuntimeError::Opaque(error) => error.catch_projection(),
             RuntimeError::ProviderUnavailable { target, reason } => Some((
-                TypeIdentity::builtin("std.service.ProviderUnavailableError"),
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
                 serde_json::json!({
                     "target": target,
                     "reason": reason,
                 }),
             )),
             RuntimeError::Protocol { target, message } => Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 serde_json::json!({
                     "target": target,
                     "message": message,

@@ -57,9 +57,9 @@ pub use outbound::{
     SpawnFailControlRequest, SpawnRenewControlRequest, SpawnSubmitControlRequest,
 };
 pub use response_event::{
-    BoundaryResponse, HttpResponseMetadata, ResponseEnd, ResponseError, ResponseEvent,
-    ResponseStreamEvent, WebSocketConnectAccept, WebSocketConnectContext, WebSocketConnectReject,
-    WebSocketResponse,
+    BoundaryResponse, FixedServiceResponseFailure, HttpResponseMetadata, ResponseEnd,
+    ResponseError, ResponseEvent, ResponseStreamEvent, WebSocketConnectAccept,
+    WebSocketConnectContext, WebSocketConnectReject, WebSocketResponse,
 };
 pub use response_writer::ResponseEventSink;
 pub use runner::{

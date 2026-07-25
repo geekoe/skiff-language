@@ -102,8 +102,9 @@ fn response_event_into_transport_message(
 #[cfg(test)]
 mod tests {
     use skiff_runtime_capability_context::ExecutionBudgetReason;
+    use skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity;
 
-    use crate::error::{RuntimeError, TypeIdentity, WirePayload};
+    use crate::error::{RuntimeError, WirePayload};
 
     use super::*;
 
@@ -124,7 +125,7 @@ mod tests {
         assert_eq!(
             WirePayload::catch_projection(&error),
             Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 serde_json::json!({
                     "target": "svc.account",
                     "message": "bad frame",
