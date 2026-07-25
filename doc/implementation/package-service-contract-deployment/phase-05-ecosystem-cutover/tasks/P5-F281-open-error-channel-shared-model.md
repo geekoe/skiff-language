@@ -32,6 +32,8 @@ mutation tests改由后续唯一artifact/contract consumer在同一提交中拥�
 - `artifact-model/src/executable.rs`
 - `artifact-model/src/package_artifact.rs`
 - `artifact-model/src/boundary/operation.rs`
+- `artifact-model/src/websocket_ingress.rs`，仅删除`BoundaryErrorContract` import与已失效的
+  “WebSocket operation must not declare throws”检查
 - `artifact-model/src/schema.rs`
 - `artifact-model/src/lib.rs`
 - `runtime/model/src/error.rs`
