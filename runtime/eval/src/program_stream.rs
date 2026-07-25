@@ -34,7 +34,10 @@ use super::{
     Interpreter,
 };
 use crate::{
-    assembly_execution::RuntimeExecutionProjection,
+    assembly_execution::{
+        service_error_channel::{CanonicalServiceErrorChannel, ServiceErrorImportContext},
+        RuntimeExecutionProjection,
+    },
     capabilities::StreamConsumerCleanup,
     error::{materialize_stream_runtime_error, RequestHeapOwnedStreamError, Result, RuntimeError},
     test_effect_registry::TestEffectTarget,
@@ -75,7 +78,11 @@ impl Interpreter {
             };
             let item = match item {
                 Ok(item) => item,
-                Err(error) => return Err(materialize_stream_runtime_error(error, heap)?),
+                Err(error) => {
+                    return Err(materialize_consumed_stream_error(
+                        self, &context, error, heap,
+                    )?)
+                }
             };
             let item_value = match item {
                 StreamPoll::InternalItem(item) => {
@@ -710,8 +717,51 @@ fn prepared_stream_error_after_drain(
 ) -> RuntimeError {
     match drain_result {
         Ok(()) => consumer_error,
-        Err(error) => RuntimeError::from(error),
+        Err(error) => match error.fixed_service_failure_parts() {
+            Some((error, _)) => RuntimeError::FixedServiceFailure(error.clone()),
+            None => RuntimeError::from(error),
+        },
     }
+}
+
+fn materialize_consumed_stream_error(
+    interpreter: &Interpreter,
+    context: &ProgramExecutionContext<'_>,
+    error: StreamRuntimeError,
+    caller_heap: &mut RequestHeap,
+) -> Result<RuntimeError> {
+    let Some((fixed, import)) = error.fixed_service_failure_parts() else {
+        return materialize_stream_runtime_error(error, caller_heap);
+    };
+    let fixed = fixed.clone();
+    let Some((
+        caller_package_build_id,
+        caller_executable_addr,
+        call_site,
+        caller_stack_at_site,
+        remote_service_id,
+        remote_operation_id,
+    )) = import
+    else {
+        return Ok(RuntimeError::FixedServiceFailure(fixed));
+    };
+    let target = context.runtime_assembly_target()?;
+    let projection = RuntimeExecutionProjection::for_context(interpreter, context)?;
+    let exception = CanonicalServiceErrorChannel::import_caller_failure(
+        fixed,
+        ServiceErrorImportContext {
+            execution_image: target.execution_image().as_ref(),
+            type_view: projection.type_view(),
+            caller_heap,
+            caller_package_build_id,
+            caller_executable_addr,
+            call_site,
+            caller_stack_at_site,
+            remote_service_id,
+            remote_operation_id,
+        },
+    )?;
+    Ok(RuntimeError::UserException(exception))
 }
 
 fn stream_item_plan_from_return_type(
@@ -1315,9 +1365,18 @@ mod tests {
 #[cfg(test)]
 mod prepared_stream_drain_tests {
     use skiff_runtime_capability_context::StreamRuntimeError;
+    use skiff_runtime_model::service_error::OpaqueServiceError;
 
     use super::prepared_stream_error_after_drain;
     use crate::error::RuntimeError;
+
+    fn fixed_service_error() -> OpaqueServiceError {
+        OpaqueServiceError::decode(
+            br#"{"kind":"internalError","payload":{"message":"Internal service error","traceId":"trace-stream","errorId":"trace-stream:error"}}"#
+                .to_vec(),
+        )
+        .expect("fixed service error fixture should decode")
+    }
 
     #[test]
     fn unknown_stream_after_consumer_error_fails_closed() {
@@ -1365,5 +1424,24 @@ mod prepared_stream_drain_tests {
             error,
             RuntimeError::Decode(message) if message == "unexpected stream registry failure"
         ));
+    }
+
+    #[test]
+    fn fixed_drain_terminal_overrides_consumer_error_without_reencoding() {
+        let fixed = fixed_service_error();
+        let exact = fixed.encoded_bytes().to_vec();
+        let error = prepared_stream_error_after_drain(
+            RuntimeError::FileError {
+                message: "consumer failed".to_string(),
+            },
+            Err(StreamRuntimeError::fixed_service_failure(fixed)),
+        );
+
+        match error {
+            RuntimeError::FixedServiceFailure(error) => {
+                assert_eq!(error.encoded_bytes(), exact)
+            }
+            _ => panic!("fixed producer terminal must remain typed"),
+        }
     }
 }

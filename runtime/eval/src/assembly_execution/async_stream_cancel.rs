@@ -13,6 +13,7 @@ use serde_json::Value;
 use skiff_artifact_model::{
     BoundaryCancellationContract, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
+    InstructionSourceSite, PackageBuildId,
 };
 use skiff_runtime_activation::RequestStreamLease;
 use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
@@ -26,13 +27,17 @@ use skiff_runtime_capability_context::{
 };
 use skiff_runtime_linked_program::CallIr;
 use skiff_runtime_model::{
-    request_heap::RequestHeap, runtime_value::RuntimeValue, type_plan::RuntimeTypePlan,
+    request_heap::RequestHeap,
+    runtime_value::RuntimeValue,
+    service_error::{ExceptionStackFrame, OpaqueServiceError},
+    type_plan::RuntimeTypePlan,
 };
 
 use super::{
     boundary_materialization::CanonicalServiceBoundaryPlan,
-    callback_native::CallbackNativeCapabilityHooks, AssemblyExecutionHandoffError,
-    AssemblyExecutionLaneKind, RuntimeExecutionProjection,
+    callback_native::CallbackNativeCapabilityHooks,
+    service_error_channel::{CanonicalServiceErrorChannel, ServiceErrorExportContext},
+    AssemblyExecutionHandoffError, AssemblyExecutionLaneKind, RuntimeExecutionProjection,
 };
 use crate::{
     capabilities::{StreamRuntimeOwner, StreamSink, StreamSinkApi},
@@ -98,6 +103,12 @@ async fn execute_provider_unary(
         target.schema_records().as_ref(),
         args.len(),
     )?;
+    let caller_package_build_id = context
+        .context
+        .runtime_assembly_target()?
+        .activation_context()
+        .implementation_package_build_id()
+        .clone();
     let mut provider_heap = boundary.fresh_provider_heap(context.context.request_heap_limits());
     let caller_hooks = CallbackNativeCapabilityHooks::new(&context.context);
     let provider_args =
@@ -140,6 +151,25 @@ async fn execute_provider_unary(
     };
 
     let provider_context = owned_provider.borrow();
+    let provider_result = match provider_result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(RuntimeError::FixedServiceFailure(export_provider_failure(
+            context.interpreter,
+            &provider_context,
+            &provider_heap,
+            &caller_package_build_id,
+            target
+                .provider_activation()
+                .implementation_package_build_id(),
+            &target
+                .provider_activation()
+                .identity()
+                .deployment
+                .service_id,
+            target.descriptor().operation_id.as_str(),
+            &error,
+        )?)),
+    };
     let hooks = CallbackNativeCapabilityHooks::new(&provider_context);
     boundary.materialize_provider_result(provider_result, &mut provider_heap, context.heap, &hooks)
 }
@@ -192,6 +222,25 @@ fn start_provider_stream(
         target.schema_records().as_ref(),
         args.len(),
     )?;
+    let caller_package_build_id = context
+        .context
+        .runtime_assembly_target()?
+        .activation_context()
+        .implementation_package_build_id()
+        .clone();
+    let call_site = call.site.clone();
+    let caller_stack_at_site = context.context.exception_stack_for_site(call_site.clone());
+    let provider_package_build_id = target
+        .provider_activation()
+        .implementation_package_build_id()
+        .clone();
+    let provider_service_id = target
+        .provider_activation()
+        .identity()
+        .deployment
+        .service_id
+        .clone();
+    let operation_id = target.descriptor().operation_id.as_str().to_string();
     canonical_scope(
         item_value_plan,
         BoundaryValueOwner::Provider,
@@ -262,7 +311,13 @@ fn start_provider_stream(
         provider_heap,
         provider_env: producer_env,
         caller_addr: context.addr.clone(),
+        caller_package_build_id,
+        call_site,
+        caller_stack_at_site,
         provider_addr: target.executable_addr().clone(),
+        provider_package_build_id,
+        provider_service_id,
+        operation_id,
         type_args: call.type_args.clone(),
         args: provider_args,
         stream_value,
@@ -315,7 +370,13 @@ struct ProviderStreamTask {
     provider_heap: RequestHeap,
     provider_env: Env,
     caller_addr: skiff_runtime_linked_program::ExecutableAddr,
+    caller_package_build_id: PackageBuildId,
+    call_site: InstructionSourceSite,
+    caller_stack_at_site: Vec<ExceptionStackFrame>,
     provider_addr: skiff_runtime_linked_program::ExecutableAddr,
+    provider_package_build_id: PackageBuildId,
+    provider_service_id: String,
+    operation_id: String,
     type_args: BTreeMap<String, skiff_runtime_linked_program::LinkedTypeRef>,
     args: Vec<RuntimeValue>,
     stream_value: Value,
@@ -347,29 +408,13 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
             &producer.type_args,
             args,
         );
-        tokio::pin!(provider_future);
-        match producer.cancellation_contract {
-            BoundaryCancellationContract::Cooperative => {
-                tokio::select! {
-                    biased;
-                    _ = producer.stream_cancel.wait_cancelled() => ProviderTerminal::ConsumerCancelled,
-                    _ = producer.cancellation.wait_cancelled() => ProviderTerminal::RequestCancelled,
-                    result = &mut provider_future => ProviderTerminal::Provider(result),
-                }
-            }
-            BoundaryCancellationContract::NotCancellable => {
-                tokio::select! {
-                    biased;
-                    _ = producer.stream_cancel.wait_cancelled() => ProviderTerminal::ConsumerCancelled,
-                    result = &mut provider_future => ProviderTerminal::Provider(result),
-                }
-            }
-            BoundaryCancellationContract::Unsupported { reason } => {
-                ProviderTerminal::Provider(Err(RuntimeError::Unsupported(format!(
-                    "unsupported stream cancellation semantics: {reason:?}"
-                ))))
-            }
-        }
+        await_provider_stream_terminal(
+            &producer.cancellation_contract,
+            &producer.stream_cancel,
+            &producer.cancellation,
+            provider_future,
+        )
+        .await
     };
 
     match terminal {
@@ -384,11 +429,29 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
                 .cancel(&producer.stream_value);
         }
         ProviderTerminal::Provider(Err(error)) => {
-            publish_provider_terminal(
-                &producer,
-                ProviderStreamPublication::Error(StreamRuntimeError::producer(error)),
-            )
-            .await;
+            let provider_context = producer.provider_context.borrow();
+            let terminal = match export_provider_failure(
+                &producer.interpreter,
+                &provider_context,
+                &producer.provider_heap,
+                &producer.caller_package_build_id,
+                &producer.provider_package_build_id,
+                &producer.provider_service_id,
+                &producer.operation_id,
+                &error,
+            ) {
+                Ok(error) => StreamRuntimeError::fixed_service_failure_with_import(
+                    error,
+                    producer.caller_package_build_id.clone(),
+                    producer.caller_addr.clone(),
+                    producer.call_site.clone(),
+                    producer.caller_stack_at_site.clone(),
+                    producer.provider_service_id.clone(),
+                    producer.operation_id.clone(),
+                ),
+                Err(error) => StreamRuntimeError::producer(error),
+            };
+            publish_provider_terminal(&producer, ProviderStreamPublication::Error(terminal)).await;
         }
         ProviderTerminal::ConsumerCancelled => {
             producer
@@ -445,6 +508,40 @@ enum ProviderTerminal {
     RequestCancelled,
 }
 
+async fn await_provider_stream_terminal<F>(
+    cancellation_contract: &BoundaryCancellationContract,
+    stream_cancel: &StreamCancelSignal,
+    request_cancellation: &CancellationToken,
+    provider_future: F,
+) -> ProviderTerminal
+where
+    F: Future<Output = Result<RuntimeValue>>,
+{
+    tokio::pin!(provider_future);
+    match cancellation_contract {
+        BoundaryCancellationContract::Cooperative => {
+            tokio::select! {
+                biased;
+                _ = stream_cancel.wait_cancelled() => ProviderTerminal::ConsumerCancelled,
+                _ = request_cancellation.wait_cancelled() => ProviderTerminal::RequestCancelled,
+                result = &mut provider_future => ProviderTerminal::Provider(result),
+            }
+        }
+        BoundaryCancellationContract::NotCancellable => {
+            tokio::select! {
+                biased;
+                _ = stream_cancel.wait_cancelled() => ProviderTerminal::ConsumerCancelled,
+                result = &mut provider_future => ProviderTerminal::Provider(result),
+            }
+        }
+        BoundaryCancellationContract::Unsupported { reason } => {
+            ProviderTerminal::Provider(Err(RuntimeError::Unsupported(format!(
+                "unsupported stream cancellation semantics: {reason:?}"
+            ))))
+        }
+    }
+}
+
 enum ProviderStreamPublication {
     End,
     Error(StreamRuntimeError),
@@ -459,7 +556,36 @@ fn provider_execution_context<'a>(
         .with_request_activation(target.provider_request().clone())?;
     Ok(receiver
         .clone()
-        .with_runtime_assembly_target(provider_target))
+        .with_runtime_assembly_target(provider_target)
+        .with_provider_service_stack_scope())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn export_provider_failure(
+    interpreter: &crate::Interpreter,
+    provider_context: &ProgramExecutionContext<'_>,
+    provider_heap: &RequestHeap,
+    caller_package_build_id: &PackageBuildId,
+    provider_package_build_id: &PackageBuildId,
+    provider_service_id: &str,
+    operation_id: &str,
+    error: &RuntimeError,
+) -> Result<OpaqueServiceError> {
+    let target = provider_context.runtime_assembly_target()?;
+    let projection = RuntimeExecutionProjection::for_context(interpreter, provider_context)?;
+    CanonicalServiceErrorChannel::export_provider_failure(
+        error,
+        ServiceErrorExportContext {
+            execution_image: target.execution_image().as_ref(),
+            type_view: projection.type_view(),
+            provider_heap,
+            provider_package_build_id,
+            caller_package_build_id: Some(caller_package_build_id),
+            provider_service_id,
+            operation_id,
+        },
+        || provider_context.next_exception_correlation(),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -733,6 +859,7 @@ mod tests {
         ActivationContext, ActivationIdentity, ActivationOwnedBindings, RequestActivationContext,
     };
     use skiff_runtime_boundary::service_linkable::FailClosedServiceLinkableCapabilityHooks;
+    use skiff_runtime_capability_context::StreamCancelSignalApi;
     use skiff_runtime_model::{
         runtime_value::{HeapNode, RuntimeObject, RuntimeObjectFields},
         type_plan::RuntimeTypeNode,
@@ -741,6 +868,23 @@ mod tests {
     use crate::runtime_ops::runtime_to_wire_required_plan;
 
     use super::*;
+
+    #[derive(Debug)]
+    struct TestStreamCancel(CancellationToken);
+
+    impl StreamCancelSignalApi for TestStreamCancel {
+        fn wait_cancelled<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            Box::pin(async move { self.0.wait_cancelled().await })
+        }
+    }
+
+    fn test_stream_cancel() -> (CancellationToken, StreamCancelSignal) {
+        let token = CancellationToken::new();
+        (
+            token.clone(),
+            StreamCancelSignal::new(TestStreamCancel(token)),
+        )
+    }
 
     #[test]
     fn in_process_stream_spawn_matrix_is_exhaustive() {
@@ -778,6 +922,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn in_process_unary_caller_cancel_precedes_ready_provider_error() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let error = await_provider_unary(
+            "operation:cancel-race",
+            &BoundaryCancellationContract::Cooperative,
+            &cancellation,
+            async {
+                Err(RuntimeError::FileError {
+                    message: "provider failure must not outrank caller cancellation".to_string(),
+                })
+            },
+        )
+        .await
+        .expect_err("pre-cancelled caller should win the biased select");
+
+        assert!(matches!(error, RuntimeError::Cancelled));
+    }
+
+    #[tokio::test]
     async fn in_process_stream_not_cancellable_waits_for_provider_terminal() {
         let cancellation = CancellationToken::new();
         let (complete, completed) = tokio::sync::oneshot::channel();
@@ -807,6 +971,92 @@ mod tests {
         );
         complete.send(()).unwrap();
         assert_eq!(waiter.await.unwrap().unwrap(), RuntimeValue::Bool(true));
+    }
+
+    #[tokio::test]
+    async fn provider_stream_normal_completion_remains_provider_terminal() {
+        let (_consumer_cancel, stream_cancel) = test_stream_cancel();
+        let request_cancel = CancellationToken::new();
+        let terminal = await_provider_stream_terminal(
+            &BoundaryCancellationContract::Cooperative,
+            &stream_cancel,
+            &request_cancel,
+            async { Ok(RuntimeValue::Bool(true)) },
+        )
+        .await;
+
+        assert!(matches!(
+            terminal,
+            ProviderTerminal::Provider(Ok(RuntimeValue::Bool(true)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn provider_stream_consumer_cancel_is_control_terminal() {
+        let (consumer_cancel, stream_cancel) = test_stream_cancel();
+        let request_cancel = CancellationToken::new();
+        consumer_cancel.cancel();
+        let terminal = await_provider_stream_terminal(
+            &BoundaryCancellationContract::Cooperative,
+            &stream_cancel,
+            &request_cancel,
+            std::future::pending(),
+        )
+        .await;
+
+        assert!(matches!(terminal, ProviderTerminal::ConsumerCancelled));
+    }
+
+    #[tokio::test]
+    async fn provider_stream_request_cancel_is_control_terminal() {
+        let (_consumer_cancel, stream_cancel) = test_stream_cancel();
+        let request_cancel = CancellationToken::new();
+        request_cancel.cancel();
+        let terminal = await_provider_stream_terminal(
+            &BoundaryCancellationContract::Cooperative,
+            &stream_cancel,
+            &request_cancel,
+            std::future::pending(),
+        )
+        .await;
+
+        assert!(matches!(terminal, ProviderTerminal::RequestCancelled));
+    }
+
+    #[tokio::test]
+    async fn provider_stream_control_ordering_precedes_ready_provider_error() {
+        let (consumer_cancel, stream_cancel) = test_stream_cancel();
+        let request_cancel = CancellationToken::new();
+        consumer_cancel.cancel();
+        request_cancel.cancel();
+        let terminal = await_provider_stream_terminal(
+            &BoundaryCancellationContract::Cooperative,
+            &stream_cancel,
+            &request_cancel,
+            async {
+                Err(RuntimeError::FileError {
+                    message: "ready provider error".to_string(),
+                })
+            },
+        )
+        .await;
+        assert!(matches!(terminal, ProviderTerminal::ConsumerCancelled));
+
+        let (_consumer_cancel, stream_cancel) = test_stream_cancel();
+        let request_cancel = CancellationToken::new();
+        request_cancel.cancel();
+        let terminal = await_provider_stream_terminal(
+            &BoundaryCancellationContract::Cooperative,
+            &stream_cancel,
+            &request_cancel,
+            async {
+                Err(RuntimeError::FileError {
+                    message: "ready provider error".to_string(),
+                })
+            },
+        )
+        .await;
+        assert!(matches!(terminal, ProviderTerminal::RequestCancelled));
     }
 
     #[test]

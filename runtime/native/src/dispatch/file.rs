@@ -259,7 +259,7 @@ fn file_capability_error_from_native(error: RuntimeError) -> FileCapabilityError
             ),
         ),
         RuntimeError::Opaque(error) => FileCapabilityError::Stream(
-            skiff_runtime_capability_context::StreamRuntimeError::Producer(error),
+            skiff_runtime_capability_context::StreamRuntimeError::producer_boxed(error),
         ),
         RuntimeError::Json(error) => FileCapabilityError::Stream(
             skiff_runtime_capability_context::StreamRuntimeError::producer(RuntimeError::Json(

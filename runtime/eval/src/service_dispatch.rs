@@ -34,6 +34,9 @@ use crate::error::{Result, RuntimeError};
 #[cfg(any(test, feature = "test-support"))]
 use skiff_runtime_capability_context::RequestStartControl;
 
+const GENERIC_RESPONSE_ERROR_PROTOCOL_MESSAGE: &str =
+    "generic response.error is not a typed fixed service failure";
+
 pub async fn call_outbound_service(
     interpreter: &Interpreter,
     context: &OutboundServiceContext,
@@ -175,7 +178,9 @@ async fn await_outbound_response(
         }
     };
     match response {
-        response @ (OutboundResponse::End { .. } | OutboundResponse::Error(_)) => {
+        response @ (OutboundResponse::End { .. }
+        | OutboundResponse::FixedServiceFailure(_)
+        | OutboundResponse::Error(_)) => {
             lease.complete();
             outbound_router_response_into_result(response, &dispatch.target)
         }
@@ -310,14 +315,18 @@ impl OutboundServiceStreamSource {
                     self.lease.complete();
                     return Ok(None);
                 }
-                OutboundResponse::Error(error) => {
+                OutboundResponse::FixedServiceFailure(error) => {
                     self.lease.complete();
-                    return Err(StreamRuntimeError::producer(
-                        RuntimeError::ProviderUnavailable {
-                            target: self.target.clone(),
-                            reason: error.message,
-                        },
+                    return Err(StreamRuntimeError::fixed_service_failure(
+                        error.into_error(),
                     ));
+                }
+                OutboundResponse::Error(_) => {
+                    self.lease.complete();
+                    return Err(StreamRuntimeError::producer(RuntimeError::Protocol {
+                        target: self.target.clone(),
+                        message: GENERIC_RESPONSE_ERROR_PROTOCOL_MESSAGE.to_string(),
+                    }));
                 }
             }
         }
@@ -747,9 +756,12 @@ fn outbound_router_response_into_result(
 ) -> Result<OutboundServiceResponse> {
     match response {
         OutboundResponse::End { payload } => Ok(OutboundServiceResponse { payload }),
-        OutboundResponse::Error(error) => Err(RuntimeError::ProviderUnavailable {
+        OutboundResponse::FixedServiceFailure(error) => {
+            Err(RuntimeError::FixedServiceFailure(error.into_error()))
+        }
+        OutboundResponse::Error(_) => Err(RuntimeError::Protocol {
             target: target.to_string(),
-            reason: error.message,
+            message: GENERIC_RESPONSE_ERROR_PROTOCOL_MESSAGE.to_string(),
         }),
         other => Err(RuntimeError::ProviderUnavailable {
             target: target.to_string(),
@@ -765,14 +777,144 @@ mod tests {
     use skiff_runtime_capability_context::{
         CancellationToken, OutboundRequestCancelSendError, OutboundRequestCancelSender,
         OutboundRequestRegistry, OutboundResponse, OutboundResponseReceiver,
-        OutboundStartedRequest,
+        OutboundStartedRequest, ResponseError,
     };
     use skiff_runtime_linked_program::ServiceDependencyConstraint;
-    use skiff_runtime_model::request_heap::{RequestHeap, RequestHeapLimits};
+    use skiff_runtime_model::{
+        request_heap::{RequestHeap, RequestHeapLimits},
+        service_error::OpaqueServiceError,
+    };
     use tokio::sync::mpsc;
 
     use super::super::capabilities::{EvalCapabilityFuture, OutboundServiceApi};
     use super::*;
+
+    fn fixed_service_error(label: &str) -> OpaqueServiceError {
+        OpaqueServiceError::decode(
+            format!(
+                r#"{{"kind":"internalError","payload":{{"message":"Internal service error","traceId":"trace-{label}","errorId":"trace-{label}:error"}}}}"#
+            )
+            .into_bytes(),
+        )
+        .expect("fixed service error fixture should decode")
+    }
+
+    #[test]
+    fn outbound_response_mapper_preserves_typed_fixed_bytes() {
+        let fixed = fixed_service_error("unary");
+        let exact = fixed.encoded_bytes().to_vec();
+        let result = outbound_router_response_into_result(
+            OutboundResponse::fixed_service_failure(fixed),
+            "service.operation",
+        );
+
+        match result {
+            Err(RuntimeError::FixedServiceFailure(error)) => {
+                assert_eq!(error.encoded_bytes(), exact)
+            }
+            _ => panic!("typed fixed response must pass through unchanged"),
+        }
+    }
+
+    #[test]
+    fn generic_response_error_fails_protocol_without_message_classification() {
+        let result = outbound_router_response_into_result(
+            OutboundResponse::Error(ResponseError {
+                code: "std.service.ProviderUnavailableError".to_string(),
+                message: "attacker-controlled provider unavailable message".to_string(),
+                status: Some(503),
+                details: None,
+            }),
+            "service.operation",
+        );
+
+        match result {
+            Err(RuntimeError::Protocol { target, message }) => {
+                assert_eq!(target, "service.operation");
+                assert_eq!(message, GENERIC_RESPONSE_ERROR_PROTOCOL_MESSAGE);
+                assert!(!message.contains("attacker-controlled"));
+            }
+            _ => panic!("generic response.error must fail closed as Protocol"),
+        }
+    }
+
+    fn outbound_stream_source_with_terminal(
+        terminal: OutboundResponse,
+    ) -> (OutboundRequestRegistry, OutboundServiceStreamSource) {
+        let registry = OutboundRequestRegistry::default();
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let lease = registry
+            .insert_with_lease(
+                "request-stream-terminal".to_string(),
+                sender.clone(),
+                None,
+                "stream_cancelled",
+            )
+            .expect("stream lease should insert");
+        sender.send(terminal).expect("terminal should enqueue");
+        (
+            registry,
+            OutboundServiceStreamSource {
+                lease,
+                context: OutboundServiceContext::new(DummyOutboundService),
+                target: "service.stream".to_string(),
+                target_service: PayloadServiceRef::new("service.test".to_string()),
+                receiver,
+                item_plan: RuntimeTypePlan::json_value_plan(),
+                next_seq: 0,
+                started: false,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn outbound_stream_typed_fixed_terminal_preserves_bytes() {
+        let fixed = fixed_service_error("stream");
+        let exact = fixed.encoded_bytes().to_vec();
+        let (registry, mut source) =
+            outbound_stream_source_with_terminal(OutboundResponse::fixed_service_failure(fixed));
+
+        let error = source
+            .next_item()
+            .await
+            .expect_err("typed terminal should fail the stream");
+        let (fixed, import) = error
+            .fixed_service_failure_parts()
+            .expect("stream terminal should remain typed");
+        assert_eq!(fixed.encoded_bytes(), exact);
+        assert!(
+            import.is_none(),
+            "outbound handoff awaits W2-W import facts"
+        );
+        assert_eq!(registry.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn outbound_stream_generic_error_fails_protocol_without_message_classification() {
+        let (registry, mut source) =
+            outbound_stream_source_with_terminal(OutboundResponse::Error(ResponseError {
+                code: "std.service.ProviderUnavailableError".to_string(),
+                message: "attacker-controlled stream message".to_string(),
+                status: Some(503),
+                details: None,
+            }));
+
+        let error = RuntimeError::from(
+            source
+                .next_item()
+                .await
+                .expect_err("generic terminal should fail the stream"),
+        );
+        match error {
+            RuntimeError::Protocol { target, message } => {
+                assert_eq!(target, "service.stream");
+                assert_eq!(message, GENERIC_RESPONSE_ERROR_PROTOCOL_MESSAGE);
+                assert!(!message.contains("attacker-controlled"));
+            }
+            _ => panic!("generic stream response.error must fail closed as Protocol"),
+        }
+        assert_eq!(registry.pending_count(), 0);
+    }
 
     #[tokio::test]
     async fn outbound_service_stream_source_drop_cancels_lease_and_registry() {
