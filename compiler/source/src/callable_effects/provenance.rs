@@ -206,13 +206,19 @@ impl CallableState {
         }
     }
 
-    pub fn record_throw(&mut self, value: &AbstractValue) {
-        self.throw_origins.extend(value.origins.iter().cloned());
-        self.effects.throws_caller_alias |= value.contains_caller_reference();
+    pub fn record_wire_detached_throw(&mut self, value: &AbstractValue) {
+        // Runtime throw/rethrow crosses the canonical wire-value boundary
+        // before a catch observes it. Operand evaluation has already
+        // transferred its calls, writes, escapes, and suspension into this
+        // state, but the emitted exception itself is rebuilt in the receiving
+        // heap and therefore cannot retain caller alias identity.
         if value.unknown {
-            self.mark_unknown_value_if_unowned();
-            self.effects.throws_caller_alias = true;
+            self.join(&Self::fail_closed(
+                CallableProvenanceUnknownReason::UnsupportedControlFlow,
+            ));
+            return;
         }
+        self.throw_origins.insert(Origin::Fresh);
     }
 
     pub fn record_escape(&mut self, value: &AbstractValue, lane: EscapeLane) {

@@ -7,7 +7,7 @@ use crate::shared::ast::{
 
 use super::{
     super::analysis::ModuleConstantFact,
-    super::provenance::{all_effects, join_effects, AbstractValue, EscapeLane},
+    super::provenance::{AbstractValue, EscapeLane},
     join_environments, Environment, Evaluator,
 };
 
@@ -119,13 +119,13 @@ impl Evaluator<'_, '_> {
             }
             Expr::Throw { value } => {
                 let value = self.eval_expr(value, env);
-                self.state.record_throw(&value);
+                self.state.record_wire_detached_throw(&value);
                 AbstractValue::constant(false)
             }
             Expr::Rethrow { exception } => {
-                self.eval_expr(exception, env);
-                self.mark_unsupported_control_flow();
-                AbstractValue::unknown(reference)
+                let exception = self.eval_expr(exception, env);
+                self.state.record_wire_detached_throw(&exception);
+                AbstractValue::constant(false)
             }
             Expr::Catch { try_expr, .. } => {
                 let value = self.eval_expr(try_expr, env);
@@ -283,12 +283,6 @@ impl Evaluator<'_, '_> {
             inputs.join(&self.eval_expr(value, env));
         }
         inputs
-    }
-
-    fn mark_unsupported_control_flow(&mut self) {
-        join_effects(&mut self.state.effects, &all_effects());
-        self.state
-            .mark_unknown(CallableProvenanceUnknownReason::UnsupportedControlFlow);
     }
 }
 

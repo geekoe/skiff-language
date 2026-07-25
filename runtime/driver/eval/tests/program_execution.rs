@@ -2543,6 +2543,41 @@ fn user_exception_rethrow_envelope_accepts_erased_payload() {
 }
 
 #[test]
+fn user_exception_wire_roundtrip_detaches_payload_and_envelope_identity() {
+    let mut caller_payload = json!({
+        "message": "denied",
+        "nested": { "attempt": 1 }
+    });
+    let exception = UserException::from_typed_payload(
+        caller_payload.clone(),
+        TypeIdentity::address(service_type_addr(0)),
+        Some(TypeIdentity::address(service_type_addr(0))),
+    )
+    .expect("typed user exception should be constructed");
+
+    caller_payload["nested"]["attempt"] = json!(2);
+    assert_eq!(
+        exception.envelope().pointer("/error/nested/attempt"),
+        Some(&json!(1)),
+        "throw must own a detached wire value"
+    );
+
+    let mut wire_envelope = exception.envelope();
+    let rethrown =
+        UserException::from_envelope(wire_envelope.clone()).expect("wire envelope should rethrow");
+    wire_envelope["error"]["nested"]["attempt"] = json!(3);
+    assert_eq!(
+        rethrown.envelope().pointer("/error/nested/attempt"),
+        Some(&json!(1)),
+        "rethrow must rebuild from an owned wire envelope"
+    );
+    assert_eq!(
+        rethrown.actual_payload_type(),
+        &TypeIdentity::address(service_type_addr(0))
+    );
+}
+
+#[test]
 fn user_exception_rethrow_rejects_string_payload_type_identity() {
     let exception = UserException::from_typed_payload(
         json!({ "message": "denied" }),

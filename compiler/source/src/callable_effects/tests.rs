@@ -779,7 +779,7 @@ fn recursive_scc_reaches_alias_fixed_point() {
 }
 
 #[test]
-fn normal_return_and_throw_alias_remain_independent() {
+fn normal_return_and_wire_detached_throw_remain_independent() {
     let model = analyze(
         r#"
             type Boxed { value: string }
@@ -800,7 +800,87 @@ fn normal_return_and_throw_alias_remain_independent() {
     assert!(!returned.throws_caller_alias);
     let thrown = effects(&model, "throwAlias");
     assert!(!thrown.returns_caller_alias);
-    assert!(thrown.throws_caller_alias);
+    assert!(!thrown.throws_caller_alias);
+    assert!(matches!(
+        provenance(&model, "throwAlias"),
+        CallableProvenanceSummary::Analyzed { throw_origins, .. }
+            if throw_origins == &vec![ValueProvenance::Fresh]
+    ));
+}
+
+#[test]
+fn throw_and_rethrow_preserve_operand_effects_but_detach_emitted_provenance() {
+    let model = analyze(
+        r#"
+            type Boxed { value: string }
+            type Failure { message: string }
+
+            function buildFailure(input: Boxed) -> Failure {
+              input.value = "changed"
+              std.time.sleep(Duration.milliseconds(1))
+              return Failure { message: input.value }
+            }
+
+            function throwStatement(input: Boxed) -> void {
+              throw buildFailure(input)
+            }
+
+            function throwExpression(input: Boxed) -> Failure {
+              return throw buildFailure(input)
+            }
+
+            function rethrowStatement(input: Boxed) -> void {
+              const attempted = catch<Failure>(throw Failure { message: input.value })
+              if attempted.tag == "err" {
+                rethrow attempted.exception
+              }
+            }
+
+            function rethrowExpression(input: Boxed) -> Failure {
+              const attempted = catch<Failure>(throw Failure { message: input.value })
+              if attempted.tag == "err" {
+                return rethrow attempted.exception
+              }
+              return Failure { message: "unreachable" }
+            }
+
+            function nestedRethrow(input: Boxed) -> void {
+              const outer = catch<Failure>(rethrowStatement(input))
+              if outer.tag == "err" {
+                rethrow outer.exception
+              }
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    for callable in [
+        "throwStatement",
+        "throwExpression",
+        "rethrowStatement",
+        "rethrowExpression",
+        "nestedRethrow",
+    ] {
+        let effects = effects(&model, callable);
+        assert!(!effects.throws_caller_alias, "{callable}: {effects:?}");
+        assert!(
+            !effects.requires_same_heap_identity,
+            "{callable}: {effects:?}"
+        );
+        assert!(!effects.invokes_unknown_target, "{callable}: {effects:?}");
+        assert!(matches!(
+            provenance(&model, callable),
+            CallableProvenanceSummary::Analyzed { throw_origins, .. }
+                if throw_origins == &vec![ValueProvenance::Fresh]
+        ));
+    }
+
+    assert!(effects(&model, "throwStatement").writes_caller_reachable);
+    assert!(effects(&model, "throwExpression").writes_caller_reachable);
+    assert!(effects(&model, "throwStatement").may_suspend);
+    assert!(effects(&model, "throwExpression").may_suspend);
+    assert!(!effects(&model, "rethrowStatement").writes_caller_reachable);
+    assert!(!effects(&model, "rethrowExpression").writes_caller_reachable);
 }
 
 #[test]

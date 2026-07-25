@@ -5,7 +5,7 @@ use skiff_artifact_model::CallableProvenanceUnknownReason;
 use crate::shared::ast::{ForBinding, Stmt};
 
 use super::{
-    super::provenance::{all_effects, join_effects, AbstractValue, CallableState, EscapeLane},
+    super::provenance::{AbstractValue, CallableState, EscapeLane},
     join_environments, pattern_bindings, Environment, Evaluator,
 };
 
@@ -108,13 +108,11 @@ impl Evaluator<'_, '_> {
             }
             Stmt::Throw { value } => {
                 let value = self.eval_expr(value, env);
-                self.state.record_throw(&value);
+                self.state.record_wire_detached_throw(&value);
             }
             Stmt::Rethrow { exception } => {
-                self.eval_expr(exception, env);
-                join_effects(&mut self.state.effects, &all_effects());
-                self.state
-                    .mark_unknown(CallableProvenanceUnknownReason::UnsupportedControlFlow);
+                let exception = self.eval_expr(exception, env);
+                self.state.record_wire_detached_throw(&exception);
             }
             Stmt::Emit(value) => {
                 let value = self.eval_expr(value, env);
