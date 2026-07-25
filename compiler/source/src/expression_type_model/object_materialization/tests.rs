@@ -309,6 +309,52 @@ fn map_and_json_targets_keep_map_materialization_facts() {
 }
 
 #[test]
+fn nested_object_targets_reject_missing_extra_and_incompatible_fields() {
+    for (source, expected) in [
+        (
+            r#"
+              type Details { enabled: bool }
+              type Envelope { details: Details }
+              function invalid() -> Envelope {
+                return { details: {} }
+              }
+            "#,
+            "object literal field `details` type mismatch",
+        ),
+        (
+            r#"
+              type Details { enabled: bool }
+              type Envelope { details: Details }
+              function invalid() -> Envelope {
+                return { details: { enabled: true, extra: "no" } }
+              }
+            "#,
+            "object literal field `details` type mismatch",
+        ),
+        (
+            r#"
+              type Details { enabled: bool }
+              type Envelope { details: Details }
+              function invalid() -> Envelope {
+                return { details: { enabled: "no" } }
+              }
+            "#,
+            "object literal field `details` type mismatch",
+        ),
+    ] {
+        let error = build(source).expect_err("invalid nested object must be rejected");
+        assert!(
+            error
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains(expected)),
+            "expected `{expected}` in {:?}",
+            error.diagnostics
+        );
+    }
+}
+
+#[test]
 fn stream_emit_materializes_record_union_nullable_and_nested_object_facts() {
     let built = build(
         r#"

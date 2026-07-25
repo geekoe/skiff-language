@@ -3491,12 +3491,23 @@ impl<'a> OwnerChecker<'a> {
                         provided.value_span,
                     );
                 } else {
-                    self.diagnostics.push(format!(
-                        "{}: {context} object literal field `{name}` has no resolved expression type at {}",
-                        self.module_path,
-                        span_label(provided.value_span)
-                    ));
-                    valid = false;
+                    // Exact contract-derived and flow-assigned bindings can be
+                    // name-resolved without carrying a structural
+                    // ResolvedTypeRef. Once the enclosing object has selected
+                    // a unique target, retain that exact field target for the
+                    // identifier instead of abandoning recursive
+                    // materialization.
+                    if !expression_accepts_contextual_target(
+                        object_literal_field_value(value, name)
+                            .expect("materialization plan field must exist in object literal"),
+                    ) {
+                        self.diagnostics.push(format!(
+                            "{}: {context} object literal field `{name}` has no resolved expression type at {}",
+                            self.module_path,
+                            span_label(provided.value_span)
+                        ));
+                        valid = false;
+                    }
                 }
                 ObjectFieldValueSource::Provided {
                     expression: provided.expression.clone(),
@@ -4191,6 +4202,10 @@ fn object_literal_field_value<'a>(value: &'a Expr, name: &str) -> Option<&'a Exp
     entries.iter().find_map(|entry| {
         (object_literal_key_text(&entry.key).as_deref() == Some(name)).then_some(&entry.value)
     })
+}
+
+fn expression_accepts_contextual_target(value: &Expr) -> bool {
+    matches!(value, Expr::Identifier(_))
 }
 
 fn expr_is_null_literal(expr: &Expr) -> bool {
