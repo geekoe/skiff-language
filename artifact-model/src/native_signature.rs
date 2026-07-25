@@ -90,6 +90,7 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_scalar_native("core.map.empty"),
     detached_scalar_native("core.bytes.concat"),
     detached_scalar_native("core.bytes.fromBase64"),
+    detached_scalar_native("core.bytes.fromHex"),
     detached_scalar_native("core.bytes.fromUtf8"),
     detached_scalar_native("core.date.fromEpochMilliseconds"),
     detached_scalar_native("core.date.now"),
@@ -912,6 +913,7 @@ mod tests {
             "core.map.empty",
             "core.bytes.concat",
             "core.bytes.fromBase64",
+            "core.bytes.fromHex",
             "core.bytes.fromUtf8",
             "core.date.fromEpochMilliseconds",
             "core.date.now",
@@ -1151,7 +1153,48 @@ mod tests {
             "core.bytes.fromBase64.custom",
             "std.bytes.fromBase64",
             "bytes.fromBase64",
-            "core.bytes.fromHex",
+            "core.bytes.fromBase64Url",
+        ] {
+            assert_eq!(
+                native_callable_semantics(near_miss),
+                None,
+                "{near_miss} must not inherit exact callable semantics"
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_from_hex_semantics_match_exact_signature() {
+        let semantics = native_callable_semantics("core.bytes.fromHex")
+            .expect("audited hex decoder should have exact semantics");
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+        let signature = STD_NATIVE_SIGNATURES
+            .iter()
+            .find(|signature| signature.binding_key == semantics.binding_key)
+            .expect("audited hex decoder should have a native signature");
+        assert_eq!(signature.target, "std.bytes.fromHex");
+        assert_eq!(signature.aliases, &["bytes.fromHex"]);
+        assert_eq!(signature.params, &[super::STRING]);
+        assert_eq!(signature.return_type, super::BYTES);
+
+        for near_miss in [
+            "core.bytes.fromHex.custom",
+            "std.bytes.fromHex",
+            "bytes.fromHex",
+            "core.bytes.fromHEX",
         ] {
             assert_eq!(
                 native_callable_semantics(near_miss),

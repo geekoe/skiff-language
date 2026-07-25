@@ -1534,6 +1534,38 @@ fn bytes_from_base64_wrapper_uses_exact_native_semantics() {
 }
 
 #[test]
+fn bytes_from_hex_wrapper_uses_exact_native_semantics() {
+    let model = analyze(
+        r#"
+            function exactChunk(value: string) -> bytes {
+              return bytes.fromHex(value)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(effects(&model, "exactChunk"), no_effects());
+    let CallableProvenanceSummary::Analyzed {
+        return_origins,
+        throw_origins,
+        escape_lanes,
+    } = provenance(&model, "exactChunk")
+    else {
+        panic!("hex decoder wrapper should retain exact native provenance");
+    };
+    assert_eq!(return_origins, &vec![ValueProvenance::Fresh]);
+    assert!(throw_origins.is_empty());
+    assert!(escape_lanes.is_empty());
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::NativeFunction { binding_key }
+                if binding_key == "core.bytes.fromHex"
+        )
+    }));
+}
+
+#[test]
 fn bytes_concat_openai_multipart_shape_uses_exact_native_semantics() {
     let model = analyze(
         r#"

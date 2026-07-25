@@ -334,6 +334,76 @@ fn bytes_from_base64_lowers_to_exact_native_binding() {
 }
 
 #[test]
+fn bytes_from_hex_lowers_to_exact_native_binding() {
+    let artifact = compile_package_file_ir(
+        r#"
+            function exactChunk(value: string) -> bytes {
+                return bytes.fromHex(value)
+            }
+        "#,
+        "internal/hex.skiff",
+        "internal.hex",
+    )
+    .expect("hex decoder fixture should compile");
+    let artifact_value = artifact.value();
+    let callable = executable_entry(&artifact_value, "exactChunk");
+    let calls = call_exprs(callable);
+
+    assert!(
+        has_native_call(&calls, "std.bytes", "fromHex", "core.bytes.fromHex"),
+        "bytes.fromHex should lower through the exact canonical native binding"
+    );
+
+    for (name, source, expected) in [
+        (
+            "missing_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.fromHex()
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.fromHex("61", "62")
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "wrong_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.fromHex(1)
+                }
+            "#,
+            "call `bytes.fromHex` argument 1",
+        ),
+        (
+            "wrong_return",
+            r#"
+                function run() -> string {
+                    return bytes.fromHex("61")
+                }
+            "#,
+            "return type mismatch",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/hex_{name}.skiff"),
+            format!("internal.hex_{name}"),
+        )
+        .expect_err("invalid bytes.fromHex call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
 fn bytes_concat_lowers_to_exact_native_binding_and_rejects_malformed_calls() {
     let artifact = compile_package_file_ir(
         r#"
