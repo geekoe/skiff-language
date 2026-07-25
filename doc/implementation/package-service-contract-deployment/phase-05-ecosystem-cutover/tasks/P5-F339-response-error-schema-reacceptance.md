@@ -1,6 +1,7 @@
 # P5-F339 Response error schema blocker reacceptance
 
-状态：Ready（F337 精确 blocker 只读复验）。
+状态：Completed（PASS）。结果见
+`P5-F339-response-error-schema-reacceptance-result.md`。
 
 ## 直接父节点
 
