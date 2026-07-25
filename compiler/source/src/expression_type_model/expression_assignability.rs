@@ -281,7 +281,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
     ) -> bool {
         let expected = non_nullable_object_target(expected);
         self.type_resolution
-            .resolve_constructor_target_text(&expected.source_text, self.type_context)
+            .resolve_constructor_target_resolved(&expected, self.type_context)
             .ok()
             .is_some_and(|target| {
                 self.object_fields_assignable_to_target(actual_fields, &target.fields)
@@ -519,7 +519,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         if candidates.is_empty() {
             if let Ok(target) = self
                 .type_resolution
-                .resolve_constructor_target_text(&expected.source_text, self.type_context)
+                .resolve_constructor_target_resolved(expected, self.type_context)
             {
                 candidates.push(ObjectLiteralTargetCandidate {
                     label: target.ty.source_text.clone(),
@@ -722,6 +722,13 @@ fn substitute_std_type_params_in_ir(
             args: args
                 .iter()
                 .map(|arg| substitute_std_type_params_in_ir(arg, substitutions))
+                .collect(),
+        },
+        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+            base: base.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| substitute_std_type_params_in_ir(argument, substitutions))
                 .collect(),
         },
         TypeRefIr::Record { fields } => TypeRefIr::Record {

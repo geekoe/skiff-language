@@ -1431,33 +1431,33 @@ fn std_http_body_bytes_receiver_chain_lowers_to_receiver_builtin() {
 }
 
 #[test]
-fn nominal_match_pattern_is_rejected_before_runtime_type_lookup() {
-    let error = compile_package_file_ir(
+fn generic_nominal_match_pattern_emits_applied_nominal_type_pattern() {
+    let artifact = compile_package_file_ir(
         r#"
-            type User {
-              status: string
+            type Box<T> {
+              value: T
             }
 
-            function run(user: User) -> string {
-                match user {
-                  User { status } => {
-                    return status
+            function run(boxed: Box<string>) -> string {
+                match boxed {
+                  Box<string> { value } => {
+                    return "matched"
                   }
                   _ => {
-                    return "unknown"
+                    return "missing"
                   }
                 }
             }
         "#,
-        "internal/nominal_pattern.skiff",
-        "internal.nominal_pattern",
+        "internal/generic_nominal_pattern.skiff",
+        "internal.generic_nominal_pattern",
     )
-    .expect_err("nominal match pattern should be rejected before File IR emits PatternIr::Type")
-    .to_string();
+    .expect("generic nominal pattern should lower to PatternIr::Type");
 
     assert!(
-        error.contains("nominal pattern `User` cannot match an erased runtime value"),
-        "unexpected nominal pattern error: {error}"
+        json_contains_applied_nominal_pattern(&artifact.value()),
+        "generic nominal pattern must preserve ordered arguments in PatternIr::Type: {}",
+        artifact.value()
     );
 }
 
@@ -2119,6 +2119,24 @@ fn json_contains_pattern_type(value: &Value) -> bool {
     match value {
         Value::Array(items) => items.iter().any(json_contains_pattern_type),
         Value::Object(object) => object.values().any(json_contains_pattern_type),
+        _ => false,
+    }
+}
+
+fn json_contains_applied_nominal_pattern(value: &Value) -> bool {
+    if value.get("kind").and_then(Value::as_str) == Some("type") {
+        let ty = &value["ty"];
+        if ty["kind"] == "appliedNominal"
+            && ty["base"]["kind"] == "localType"
+            && ty["arguments"][0]["kind"] == "builtin"
+            && ty["arguments"][0]["name"] == "string"
+        {
+            return true;
+        }
+    }
+    match value {
+        Value::Array(items) => items.iter().any(json_contains_applied_nominal_pattern),
+        Value::Object(object) => object.values().any(json_contains_applied_nominal_pattern),
         _ => false,
     }
 }

@@ -393,7 +393,7 @@ fn package_interface_conformance_stays_owned_by_canonical_package_facts() {
         .expect("local receiver resolves");
     let expected = model
         .type_resolution()
-        .resolve_type_text("pkg.Reader<string>", &context)
+        .resolve_type_text("any pkg.Reader<string>", &context)
         .expect("package interface resolves");
     let conformance = model
         .type_resolution()

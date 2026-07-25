@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::{canonical_interface_method_abi_id, interface_instantiation_ref};
 use skiff_artifact_model::{
-    FunctionTypeParamIr, InterfaceInstantiationRef, LiteralIr, ServiceSymbolRef, TypeRefIr,
+    FunctionTypeParamIr, InterfaceInstantiationRef, LiteralIr, NominalTypeRefBaseIr,
+    ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref;
 
@@ -977,6 +978,28 @@ fn contains_external_nominal(ty: &TypeRefIr, index: &InterfaceIndex) -> bool {
         TypeRefIr::Builtin { args, .. } => {
             args.iter().any(|arg| contains_external_nominal(arg, index))
         }
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            let external_base = match base {
+                NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+                    let key = SourceSymbolKey::new(
+                        symbol
+                            .module_path
+                            .strip_prefix("root.")
+                            .unwrap_or(&symbol.module_path),
+                        &symbol.symbol,
+                    );
+                    !index.source_types.contains_key(&key) && !index.interfaces.contains_key(&key)
+                }
+                NominalTypeRefBaseIr::PackageSchema { .. } => true,
+                NominalTypeRefBaseIr::LocalType { .. }
+                | NominalTypeRefBaseIr::PublicationType { .. }
+                | NominalTypeRefBaseIr::PackageSymbol { .. } => false,
+            };
+            external_base
+                || arguments
+                    .iter()
+                    .any(|argument| contains_external_nominal(argument, index))
+        }
         TypeRefIr::Record { fields } => fields
             .values()
             .any(|field| contains_external_nominal(field, index)),
@@ -1096,6 +1119,13 @@ fn substitute_requirement_type(
                 .map(|arg| substitute_requirement_type(arg, interface, conformance))
                 .collect::<Result<Vec<_>>>()?,
         },
+        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+            base: base.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| substitute_requirement_type(argument, interface, conformance))
+                .collect::<Result<Vec<_>>>()?,
+        },
         TypeRefIr::Record { fields } => TypeRefIr::Record {
             fields: fields
                 .iter()
@@ -1174,6 +1204,7 @@ fn is_self_type(ty: &TypeRefIr) -> bool {
 fn contains_self_type(ty: &TypeRefIr) -> bool {
     match ty {
         TypeRefIr::Builtin { args, .. } => is_self_type(ty) || args.iter().any(contains_self_type),
+        TypeRefIr::AppliedNominal { arguments, .. } => arguments.iter().any(contains_self_type),
         TypeRefIr::Record { fields } => fields.values().any(contains_self_type),
         TypeRefIr::Union { items } => items.iter().any(contains_self_type),
         TypeRefIr::Nullable { inner } => contains_self_type(inner),
@@ -1682,6 +1713,15 @@ fn type_ref_display(ty: &TypeRefIr) -> String {
             stable_schema_key,
             ..
         } => format!("{package_id}::{stable_schema_key}"),
+        TypeRefIr::AppliedNominal { base, arguments } => format!(
+            "{}<{}>",
+            nominal_base_display(base),
+            arguments
+                .iter()
+                .map(type_ref_display)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         TypeRefIr::Record { fields } => format!(
             "{{ {} }}",
             fields
@@ -1731,6 +1771,23 @@ fn type_ref_display(ty: &TypeRefIr) -> String {
                 .join(", "),
             type_ref_display(return_type)
         ),
+    }
+}
+
+fn nominal_base_display(base: &NominalTypeRefBaseIr) -> String {
+    match base {
+        NominalTypeRefBaseIr::LocalType { type_index } => format!("$localType{type_index}"),
+        NominalTypeRefBaseIr::PublicationType {
+            module_path,
+            type_index,
+        } => format!("publicationType({module_path}:{type_index})"),
+        NominalTypeRefBaseIr::ServiceSymbol { symbol } => symbol.symbol_path(),
+        NominalTypeRefBaseIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
+        NominalTypeRefBaseIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => format!("{package_id}::{stable_schema_key}"),
     }
 }
 

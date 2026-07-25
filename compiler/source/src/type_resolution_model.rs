@@ -3,9 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_identity::{canonical_interface_method_abi_id, interface_instantiation_ref};
 use skiff_artifact_model::{
     ContractTypeDescriptor, ContractTypeRef, FileIrUnit, FunctionTypeParamIr,
-    InterfaceInstantiationRef, LiteralIr, NamedUnionBranchIr, PackageArtifact, PackageBuildId,
-    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeRecord,
-    PackageSymbolRef, PackageTypeRef, ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
+    InterfaceInstantiationRef, LiteralIr, NamedUnionBranchIr, NominalTypeRefBaseIr,
+    PackageArtifact, PackageBuildId, PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr,
+    PackageSchemaTypeRecord, PackageSymbolRef, PackageTypeRef, ServiceSymbolRef, TypeDescriptorIr,
+    TypeRefIr,
 };
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref;
 
@@ -539,6 +540,33 @@ impl TypeResolutionModel {
         self.resolve_type_text(&ty.name, context)
     }
 
+    pub fn resolve_named_type_ref(
+        &self,
+        name: &str,
+        arguments: &[TypeRef],
+        context: &TypeResolutionContext<'_>,
+    ) -> Result<ResolvedTypeRef, String> {
+        let argument_exprs = arguments
+            .iter()
+            .map(|argument| TypeExpr::parse(&argument.name))
+            .collect::<Vec<_>>();
+        let ir = self.resolve_named_type(name, &argument_exprs, context)?;
+        let ir = self.expand_alias_type_ref(&ir, context)?;
+        let source_text = if arguments.is_empty() {
+            name.to_string()
+        } else {
+            format!(
+                "{name}<{}>",
+                arguments
+                    .iter()
+                    .map(|argument| argument.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        Ok(ResolvedTypeRef { source_text, ir })
+    }
+
     pub fn resolve_type_text(
         &self,
         raw: &str,
@@ -671,6 +699,74 @@ impl TypeResolutionModel {
                         "package alias {canonical_package_id}/{public_path} has no exact RHS type"
                     )),
                 };
+                visiting.remove(&visit_key);
+                result
+            }
+            TypeRefIr::AppliedNominal { base, arguments } => {
+                let arguments = arguments
+                    .iter()
+                    .map(|argument| self.expand_alias_type_ref_inner(argument, context, visiting))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let base_type = nominal_base_type_ref(base);
+                let Some(named) = self.resolved_named_type(&base_type, context) else {
+                    return Ok(TypeRefIr::AppliedNominal {
+                        base: base.clone(),
+                        arguments,
+                    });
+                };
+                let SourceTypeKind::Alias {
+                    target,
+                    canonical_target,
+                } = &named.resolution.kind
+                else {
+                    return Ok(TypeRefIr::AppliedNominal {
+                        base: base.clone(),
+                        arguments,
+                    });
+                };
+                if named.resolution.type_params.len() != arguments.len() {
+                    return Err(format!(
+                        "alias {}.{} expects {} type arguments, found {}",
+                        named.resolution.module_path,
+                        named.resolution.name,
+                        named.resolution.type_params.len(),
+                        arguments.len()
+                    ));
+                }
+                let visit_key = match &named.visit_key {
+                    InterfaceTypeVisitKey::Source(key) => AliasTypeVisitKey::Source(key.clone()),
+                    InterfaceTypeVisitKey::Package(key) => AliasTypeVisitKey::Package(key.clone()),
+                };
+                if !visiting.insert(visit_key.clone()) {
+                    return Err(format!(
+                        "alias cycle detected while expanding {}.{}",
+                        named.resolution.module_path, named.resolution.name
+                    ));
+                }
+                let substitutions = named
+                    .resolution
+                    .type_params
+                    .iter()
+                    .cloned()
+                    .zip(arguments)
+                    .collect::<BTreeMap<_, _>>();
+                let target = if let Some(target) = canonical_target {
+                    target.clone()
+                } else {
+                    let alias_context = TypeResolutionContext::with_type_params(
+                        &named.resolution.module_path,
+                        named.resolution.type_params.iter().cloned().collect(),
+                    );
+                    let target =
+                        self.resolve_type_expr(&TypeExpr::parse(target), &alias_context)?;
+                    if named.resolution.module_path == context.module_path {
+                        target
+                    } else {
+                        self.externalize_local_type_ir(&target, &named.resolution.module_path)
+                    }
+                };
+                let target = substitute_type_params_in_type_ref_ref(&target, &substitutions);
+                let result = self.expand_alias_type_ref_inner(&target, context, visiting);
                 visiting.remove(&visit_key);
                 result
             }
@@ -972,66 +1068,7 @@ impl TypeResolutionModel {
     ) -> Result<ConstructorTargetResolution, String> {
         let target_text = type_text_with_args(type_name, type_args);
         let target = self.resolve_type_text(&target_text, context)?;
-        let shape = self.constructor_shape(type_name, context)?;
-        let resolved_args = type_args
-            .iter()
-            .map(|arg| self.resolve_type_ref(arg, context))
-            .collect::<Result<Vec<_>, _>>()?;
-        if !shape.type_params.is_empty() && shape.type_params.len() != resolved_args.len() {
-            return Err(format!(
-                "constructor `{type_name}` expects {} type arguments, found {}",
-                shape.type_params.len(),
-                resolved_args.len()
-            ));
-        }
-        let substitutions = shape
-            .type_params
-            .iter()
-            .cloned()
-            .zip(resolved_args.iter().map(|arg| arg.source_text.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let canonical_substitutions = shape
-            .type_params
-            .iter()
-            .cloned()
-            .zip(resolved_args.iter().map(|arg| arg.ir.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let field_context = TypeResolutionContext {
-            module_path: shape.module_path.as_str(),
-            type_params: context.type_params.clone(),
-        };
-        let mut fields = BTreeMap::new();
-        for (name, field_ty) in shape.fields {
-            let resolved = if let Some(canonical_field) = shape
-                .canonical_fields
-                .as_ref()
-                .and_then(|fields| fields.get(&name))
-            {
-                let substituted = substitute_type_params_in_type_ref_ref(
-                    canonical_field,
-                    &canonical_substitutions,
-                );
-                let ir = self.expand_alias_type_ref(&substituted, &field_context)?;
-                ResolvedTypeRef {
-                    source_text: type_ref_debug_text(&ir),
-                    ir,
-                }
-            } else {
-                let substituted = substitute_type_params(&field_ty, &substitutions);
-                self.resolve_type_text(&substituted, &field_context)?
-            };
-            let resolved = if shape.module_path == context.module_path {
-                resolved
-            } else {
-                self.externalize_local_type_refs(&resolved, &shape.module_path)
-            };
-            fields.insert(name, resolved);
-        }
-        Ok(ConstructorTargetResolution {
-            ty: target,
-            fields,
-            type_params: shape.type_params,
-        })
+        self.resolve_constructor_target_resolved(&target, context)
     }
 
     pub fn actor_type_resolution(
@@ -1120,6 +1157,242 @@ impl TypeResolutionModel {
         self.resolve_constructor_target(&name, &type_args, context)
     }
 
+    pub fn resolve_constructor_target_resolved(
+        &self,
+        target: &ResolvedTypeRef,
+        context: &TypeResolutionContext<'_>,
+    ) -> Result<ConstructorTargetResolution, String> {
+        let (base, arguments) = match &target.ir {
+            TypeRefIr::AppliedNominal { base, arguments } => {
+                (nominal_base_type_ref(base), arguments.as_slice())
+            }
+            other => (other.clone(), &[][..]),
+        };
+
+        if let TypeRefIr::PackageSymbol { symbol } = &base {
+            if let PackageRefIr::PackageId { package_id } = &symbol.package {
+                if let Some((alias, schema_type)) =
+                    self.service_api_schemas
+                        .iter()
+                        .find_map(|(alias, records)| {
+                            records
+                                .get(&symbol.symbol_path)
+                                .filter(|record| record.package_id == *package_id)
+                                .map(|record| (alias.as_str(), record))
+                        })
+                {
+                    let ContractTypeDescriptor::Record { fields } =
+                        &schema_type.canonical_descriptor.descriptor
+                    else {
+                        return Err(format!(
+                            "constructor target `{}` is not a nominal record",
+                            target.source_text
+                        ));
+                    };
+                    let type_params = &schema_type.canonical_descriptor.type_params;
+                    if type_params.len() != arguments.len() {
+                        return Err(format!(
+                            "constructor `{}` expects {} type arguments, found {}",
+                            target.source_text,
+                            type_params.len(),
+                            arguments.len()
+                        ));
+                    }
+                    let substitutions = type_params
+                        .iter()
+                        .cloned()
+                        .zip(arguments.iter().cloned())
+                        .collect::<BTreeMap<_, _>>();
+                    let fields = fields
+                        .iter()
+                        .map(|(name, field_ty)| {
+                            let field_ty = contract_type_ref_ir(alias, field_ty)?;
+                            let field_ty =
+                                substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
+                            Ok((
+                                name.clone(),
+                                ResolvedTypeRef {
+                                    source_text: type_ref_debug_text(&field_ty),
+                                    ir: field_ty,
+                                },
+                            ))
+                        })
+                        .collect::<Result<_, String>>()?;
+                    return Ok(ConstructorTargetResolution {
+                        ty: target.clone(),
+                        fields,
+                        type_params: type_params.clone(),
+                    });
+                }
+            }
+        }
+
+        let prelude_symbol = match &base {
+            TypeRefIr::Builtin { name, .. } => Some(name.as_str()),
+            TypeRefIr::PackageSymbol { symbol }
+                if matches!(
+                    &symbol.package,
+                    PackageRefIr::PackageId { package_id }
+                        if package_id == SKIFF_STD_PUBLICATION_ID
+                ) =>
+            {
+                Some(symbol.symbol_path.as_str())
+            }
+            _ => None,
+        };
+        if let Some(shape) = prelude_symbol.and_then(prelude_constructor_shape) {
+            return self.instantiate_constructor_shape(target, shape, arguments, context);
+        }
+
+        let named = self.resolved_named_type(&base, context).ok_or_else(|| {
+            format!(
+                "constructor target `{}` is not a resolved nominal type",
+                target.source_text
+            )
+        })?;
+        if named.resolution.type_params.len() != arguments.len() {
+            return Err(format!(
+                "constructor `{}` expects {} type arguments, found {}",
+                target.source_text,
+                named.resolution.type_params.len(),
+                arguments.len()
+            ));
+        }
+        let (fields, canonical_fields) = match &named.resolution.kind {
+            SourceTypeKind::Record {
+                fields,
+                canonical_fields,
+            } => (fields, canonical_fields),
+            SourceTypeKind::Actor { .. } => {
+                return Err(format!(
+                    "actor `{}` is a nominal handle and cannot be constructed directly; use std.actor.getOrCreate or std.actor.replace",
+                    target.source_text
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "constructor target `{}` is not a nominal record",
+                    target.source_text
+                ));
+            }
+        };
+        let substitutions = named
+            .resolution
+            .type_params
+            .iter()
+            .cloned()
+            .zip(arguments.iter().cloned())
+            .collect::<BTreeMap<_, _>>();
+        let declaration_context = TypeResolutionContext::with_type_params(
+            &named.source_module_path,
+            named.resolution.type_params.iter().cloned().collect(),
+        );
+        let fields = fields
+            .iter()
+            .map(|(name, field_text)| {
+                let field_ty = if let Some(field_ty) = canonical_fields
+                    .as_ref()
+                    .and_then(|canonical| canonical.get(name))
+                {
+                    field_ty.clone()
+                } else {
+                    let qualified = named
+                        .package_root
+                        .as_deref()
+                        .map(|package_root| {
+                            qualify_package_type_text(
+                                field_text,
+                                package_root,
+                                &named.resolution.local_type_names,
+                            )
+                        })
+                        .unwrap_or_else(|| field_text.clone());
+                    self.resolve_type_expr(&TypeExpr::parse(&qualified), &declaration_context)?
+                };
+                let field_ty = substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
+                let field_ty = self.expand_alias_type_ref(&field_ty, &declaration_context)?;
+                let field = ResolvedTypeRef {
+                    source_text: type_ref_debug_text(&field_ty),
+                    ir: field_ty,
+                };
+                Ok((
+                    name.clone(),
+                    if named.source_module_path == context.module_path {
+                        field
+                    } else {
+                        self.externalize_local_type_refs(&field, &named.source_module_path)
+                    },
+                ))
+            })
+            .collect::<Result<_, String>>()?;
+        Ok(ConstructorTargetResolution {
+            ty: target.clone(),
+            fields,
+            type_params: named.resolution.type_params.clone(),
+        })
+    }
+
+    fn instantiate_constructor_shape(
+        &self,
+        target: &ResolvedTypeRef,
+        shape: ConstructorShape,
+        arguments: &[TypeRefIr],
+        context: &TypeResolutionContext<'_>,
+    ) -> Result<ConstructorTargetResolution, String> {
+        if shape.type_params.len() != arguments.len() {
+            return Err(format!(
+                "constructor `{}` expects {} type arguments, found {}",
+                target.source_text,
+                shape.type_params.len(),
+                arguments.len()
+            ));
+        }
+        let substitutions = shape
+            .type_params
+            .iter()
+            .cloned()
+            .zip(arguments.iter().cloned())
+            .collect::<BTreeMap<_, _>>();
+        let declaration_context = TypeResolutionContext::with_type_params(
+            &shape.module_path,
+            shape.type_params.iter().cloned().collect(),
+        );
+        let fields = shape
+            .fields
+            .iter()
+            .map(|(name, field_text)| {
+                let field_ty = if let Some(field_ty) = shape
+                    .canonical_fields
+                    .as_ref()
+                    .and_then(|canonical| canonical.get(name))
+                {
+                    field_ty.clone()
+                } else {
+                    self.resolve_type_expr(&TypeExpr::parse(field_text), &declaration_context)?
+                };
+                let field_ty = substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
+                let field_ty = self.expand_alias_type_ref(&field_ty, &declaration_context)?;
+                let field = ResolvedTypeRef {
+                    source_text: type_ref_debug_text(&field_ty),
+                    ir: field_ty,
+                };
+                Ok((
+                    name.clone(),
+                    if shape.module_path == context.module_path {
+                        field
+                    } else {
+                        self.externalize_local_type_refs(&field, &shape.module_path)
+                    },
+                ))
+            })
+            .collect::<Result<_, String>>()?;
+        Ok(ConstructorTargetResolution {
+            ty: target.clone(),
+            fields,
+            type_params: shape.type_params,
+        })
+    }
+
     pub fn resolve_representation_constructor(
         &self,
         type_name: &str,
@@ -1131,29 +1404,42 @@ impl TypeResolutionModel {
         };
         let target_text = type_text_with_args(type_name, type_args);
         let wrapper = self.resolve_type_text(&target_text, context)?;
-        let resolved_args = type_args
-            .iter()
-            .map(|arg| self.resolve_type_ref(arg, context))
-            .collect::<Result<Vec<_>, _>>()?;
-        if !shape.type_params.is_empty() && shape.type_params.len() != resolved_args.len() {
+        let arguments = match &wrapper.ir {
+            TypeRefIr::AppliedNominal { arguments, .. }
+            | TypeRefIr::Builtin {
+                args: arguments, ..
+            } => arguments.as_slice(),
+            _ => &[],
+        };
+        if shape.type_params.len() != arguments.len() {
             return Err(format!(
                 "representation constructor `{type_name}` expects {} type arguments, found {}",
                 shape.type_params.len(),
-                resolved_args.len()
+                arguments.len()
             ));
         }
         let substitutions = shape
             .type_params
             .iter()
             .cloned()
-            .zip(resolved_args.iter().map(|arg| arg.source_text.clone()))
+            .zip(arguments.iter().cloned())
             .collect::<BTreeMap<_, _>>();
-        let payload_text = substitute_type_params(&shape.payload, &substitutions);
-        let payload_context = TypeResolutionContext {
-            module_path: shape.module_path.as_str(),
-            type_params: context.type_params.clone(),
+        let payload_context = TypeResolutionContext::with_type_params(
+            &shape.module_path,
+            shape.type_params.iter().cloned().collect(),
+        );
+        let payload = self.resolve_type_expr(&TypeExpr::parse(&shape.payload), &payload_context)?;
+        let payload = substitute_type_params_in_type_ref_ref(&payload, &substitutions);
+        let payload = self.expand_alias_type_ref(&payload, &payload_context)?;
+        let payload = ResolvedTypeRef {
+            source_text: type_ref_debug_text(&payload),
+            ir: payload,
         };
-        let payload = self.resolve_type_text(&payload_text, &payload_context)?;
+        let payload = if shape.module_path == context.module_path {
+            payload
+        } else {
+            self.externalize_local_type_refs(&payload, &shape.module_path)
+        };
         Ok(Some(RepresentationConstructorResolution {
             wrapper,
             payload,
@@ -1309,63 +1595,54 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
         visited: &mut BTreeSet<InterfaceTypeVisitKey>,
     ) -> bool {
-        self.contains_interface_type_ref_inner(
-            &ty.ir,
-            Some(ty.source_text.as_str()),
-            context,
-            visited,
-        )
+        self.contains_interface_type_ref_inner(&ty.ir, context, visited)
     }
 
     fn contains_interface_type_ref_inner(
         &self,
         ty: &TypeRefIr,
-        source_text: Option<&str>,
         context: &TypeResolutionContext<'_>,
         visited: &mut BTreeSet<InterfaceTypeVisitKey>,
     ) -> bool {
         if self.interface_identity_for_type_ref(ty, context).is_some() {
             return true;
         }
-        if let Some(source_text) = source_text {
-            if self
-                .resolved_type_arg_texts(source_text)
-                .into_iter()
-                .filter_map(|arg| self.resolve_type_text(&arg, context).ok())
-                .any(|arg| self.contains_interface_resolved_type(&arg, context, visited))
-            {
-                return true;
-            }
-        }
         if self.resolved_named_type(ty, context).is_some_and(|named| {
-            self.contains_interface_named_type(named, source_text, context, visited)
+            let arguments = match ty {
+                TypeRefIr::AppliedNominal { arguments, .. } => arguments.as_slice(),
+                _ => &[],
+            };
+            self.contains_interface_named_type(named, arguments, context, visited)
         }) {
             return true;
         }
         match ty {
             TypeRefIr::Builtin { args, .. } => args
                 .iter()
-                .any(|arg| self.contains_interface_type_ref_inner(arg, None, context, visited)),
+                .any(|arg| self.contains_interface_type_ref_inner(arg, context, visited)),
+            TypeRefIr::AppliedNominal { arguments, .. } => arguments
+                .iter()
+                .any(|arg| self.contains_interface_type_ref_inner(arg, context, visited)),
             TypeRefIr::Record { fields } => fields
                 .values()
-                .any(|field| self.contains_interface_type_ref_inner(field, None, context, visited)),
+                .any(|field| self.contains_interface_type_ref_inner(field, context, visited)),
             TypeRefIr::Union { items } => items
                 .iter()
-                .any(|item| self.contains_interface_type_ref_inner(item, None, context, visited)),
+                .any(|item| self.contains_interface_type_ref_inner(item, context, visited)),
             TypeRefIr::Nullable { inner } => {
-                self.contains_interface_type_ref_inner(inner, None, context, visited)
+                self.contains_interface_type_ref_inner(inner, context, visited)
             }
             TypeRefIr::AnyInterface { interface } => interface
                 .canonical_type_args
                 .iter()
-                .any(|arg| self.contains_interface_type_ref_inner(arg, None, context, visited)),
+                .any(|arg| self.contains_interface_type_ref_inner(arg, context, visited)),
             TypeRefIr::Function {
                 params,
                 return_type,
             } => {
                 params.iter().any(|param| {
-                    self.contains_interface_type_ref_inner(&param.ty, None, context, visited)
-                }) || self.contains_interface_type_ref_inner(return_type, None, context, visited)
+                    self.contains_interface_type_ref_inner(&param.ty, context, visited)
+                }) || self.contains_interface_type_ref_inner(return_type, context, visited)
             }
             TypeRefIr::LocalType { .. }
             | TypeRefIr::PublicationType { .. }
@@ -1381,7 +1658,7 @@ impl TypeResolutionModel {
     fn contains_interface_named_type(
         &self,
         named: ResolvedNamedType<'_>,
-        source_text: Option<&str>,
+        arguments: &[TypeRefIr],
         caller_context: &TypeResolutionContext<'_>,
         visited: &mut BTreeSet<InterfaceTypeVisitKey>,
     ) -> bool {
@@ -1389,15 +1666,12 @@ impl TypeResolutionModel {
             return false;
         }
 
-        let type_arg_texts = source_text
-            .map(|source_text| self.resolved_type_arg_texts(source_text))
-            .unwrap_or_default();
         let substitutions = named
             .resolution
             .type_params
             .iter()
             .cloned()
-            .zip(type_arg_texts)
+            .zip(arguments.iter().cloned())
             .collect::<BTreeMap<_, _>>();
         let mut type_params = caller_context.type_params.clone();
         type_params.extend(named.resolution.type_params.iter().cloned());
@@ -1411,12 +1685,9 @@ impl TypeResolutionModel {
             } => {
                 if let Some(fields) = canonical_fields {
                     fields.values().any(|field_ty| {
-                        self.contains_interface_type_ref_inner(
-                            field_ty,
-                            None,
-                            &source_context,
-                            visited,
-                        )
+                        let field_ty =
+                            substitute_type_params_in_type_ref_ref(field_ty, &substitutions);
+                        self.contains_interface_type_ref_inner(&field_ty, &source_context, visited)
                     })
                 } else {
                     fields.values().any(|field_ty| {
@@ -1436,7 +1707,8 @@ impl TypeResolutionModel {
                 canonical_target,
             } => {
                 if let Some(target) = canonical_target {
-                    self.contains_interface_type_ref_inner(target, None, &source_context, visited)
+                    let target = substitute_type_params_in_type_ref_ref(target, &substitutions);
+                    self.contains_interface_type_ref_inner(&target, &source_context, visited)
                 } else {
                     self.contains_interface_type_text_in_named_type(
                         target,
@@ -1468,19 +1740,20 @@ impl TypeResolutionModel {
         raw: &str,
         package_root: Option<&str>,
         local_type_names: &BTreeSet<String>,
-        substitutions: &BTreeMap<String, String>,
+        substitutions: &BTreeMap<String, TypeRefIr>,
         context: &TypeResolutionContext<'_>,
         visited: &mut BTreeSet<InterfaceTypeVisitKey>,
     ) -> bool {
         let qualified = package_root
             .map(|package_root| qualify_package_type_text(raw, package_root, local_type_names))
             .unwrap_or_else(|| raw.to_string());
-        let substituted = substitute_type_params(&qualified, substitutions);
-        self.resolve_type_text(&substituted, context)
-            .ok()
-            .is_some_and(|resolved| {
-                self.contains_interface_resolved_type(&resolved, context, visited)
-            })
+        let resolved = self
+            .resolve_type_expr(&TypeExpr::parse(&qualified), context)
+            .ok();
+        resolved.is_some_and(|resolved| {
+            let substituted = substitute_type_params_in_type_ref_ref(&resolved, substitutions);
+            self.contains_interface_type_ref_inner(&substituted, context, visited)
+        })
     }
 
     pub fn assignable(&self, actual: &ResolvedTypeRef, expected: &ResolvedTypeRef) -> bool {
@@ -1531,6 +1804,17 @@ impl TypeResolutionModel {
                     &self.canonical_symbol_path(&format!("{module_path}.{}", symbol.symbol)),
                 )
             }
+            TypeRefIr::AppliedNominal { base, arguments } => {
+                let canonical_base = self.canonicalize_type_ref(&nominal_base_type_ref(base));
+                TypeRefIr::AppliedNominal {
+                    base: nominal_base_from_type_ref(canonical_base)
+                        .expect("canonical nominal base remains nominal"),
+                    arguments: arguments
+                        .iter()
+                        .map(|argument| self.canonicalize_type_ref(argument))
+                        .collect(),
+                }
+            }
             TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
                 name: name.clone(),
                 args: args
@@ -1580,6 +1864,20 @@ impl TypeResolutionModel {
                 .local_type_name_for_index(owner_module, *type_index)
                 .map(|name| canonical_named_symbol(&source_path(owner_module, name)))
                 .unwrap_or_else(|| ty.clone()),
+            TypeRefIr::AppliedNominal { base, arguments } => {
+                let canonical_base = self
+                    .canonicalize_type_ref_for_module(module_path, &nominal_base_type_ref(base));
+                TypeRefIr::AppliedNominal {
+                    base: nominal_base_from_type_ref(canonical_base)
+                        .expect("canonical nominal base remains nominal"),
+                    arguments: arguments
+                        .iter()
+                        .map(|argument| {
+                            self.canonicalize_type_ref_for_module(module_path, argument)
+                        })
+                        .collect(),
+                }
+            }
             TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
                 name: name.clone(),
                 args: args
@@ -1641,130 +1939,6 @@ impl TypeResolutionModel {
             .get(stripped)
             .cloned()
             .unwrap_or_else(|| stripped.to_string())
-    }
-
-    fn constructor_shape(
-        &self,
-        type_name: &str,
-        context: &TypeResolutionContext<'_>,
-    ) -> Result<ConstructorShape, String> {
-        let name = strip_generic(type_name.trim());
-        if let Some((alias, schema_type)) = self.service_api_type(name)? {
-            let ContractTypeDescriptor::Record { fields } =
-                &schema_type.canonical_descriptor.descriptor
-            else {
-                return Err(format!(
-                    "constructor target `{type_name}` is not a nominal record"
-                ));
-            };
-            return Ok(ConstructorShape {
-                module_path: alias.to_string(),
-                type_params: schema_type.canonical_descriptor.type_params.clone(),
-                fields: fields
-                    .iter()
-                    .map(|(field, ty)| {
-                        Ok((field.clone(), self.contract_type_source_text(alias, ty)?))
-                    })
-                    .collect::<Result<_, String>>()?,
-                canonical_fields: Some(
-                    fields
-                        .iter()
-                        .map(|(field, ty)| Ok((field.clone(), contract_type_ref_ir(alias, ty)?)))
-                        .collect::<Result<_, String>>()?,
-                ),
-            });
-        }
-        if let Some(key) = self.resolve_source_type_key(name, context) {
-            let resolved = self
-                .source_types
-                .get(&key)
-                .ok_or_else(|| format!("unresolved constructor target `{type_name}`"))?;
-            return self.constructor_shape_from_resolution(type_name, resolved, context);
-        } else if let Some(key) = self.external_type_symbols.resolve_source_text(name) {
-            let resolved = self
-                .source_types
-                .get(key)
-                .ok_or_else(|| format!("unresolved constructor target `{type_name}`"))?;
-            return self.constructor_shape_from_resolution(type_name, resolved, context);
-        } else if let Some(package_symbol) = self.resolve_package_type_symbol_path(name) {
-            if let Some(resolved) = self.package_type_resolution(
-                &package_symbol.dependency_ref,
-                &package_symbol.symbol_path,
-            ) {
-                return self.constructor_shape_from_resolution(type_name, resolved, context);
-            }
-            if let Some(shape) = prelude_constructor_shape(name) {
-                return Ok(shape);
-            }
-            return Err(format!(
-                "package constructor target `{name}` is unavailable in loaded package facts"
-            ));
-        } else if let Some(shape) = prelude_constructor_shape(name) {
-            return Ok(shape);
-        } else {
-            return Err(format!("unresolved constructor target `{type_name}`"));
-        }
-    }
-
-    fn constructor_shape_from_resolution(
-        &self,
-        type_name: &str,
-        resolved: &SourceTypeResolution,
-        context: &TypeResolutionContext<'_>,
-    ) -> Result<ConstructorShape, String> {
-        match &resolved.kind {
-            SourceTypeKind::Record {
-                fields,
-                canonical_fields,
-            } => {
-                let fields = resolved
-                    .public_path
-                    .as_deref()
-                    .and_then(|_| package_root_from_type_name(type_name))
-                    .map(|package_root| {
-                        qualify_package_record_fields(
-                            fields,
-                            &package_root,
-                            &resolved.local_type_names,
-                        )
-                    })
-                    .unwrap_or_else(|| fields.clone());
-                Ok(ConstructorShape {
-                    module_path: resolved.module_path.clone(),
-                    type_params: resolved.type_params.clone(),
-                    fields,
-                    canonical_fields: canonical_fields.clone(),
-                })
-            }
-            SourceTypeKind::Actor { .. } => Err(format!(
-                "actor `{type_name}` is a nominal handle and cannot be constructed directly; use std.actor.getOrCreate or std.actor.replace"
-            )),
-            SourceTypeKind::Representation { .. } => Err(format!(
-                "constructor target `{type_name}` is not a nominal record"
-            )),
-            SourceTypeKind::Alias { target, .. } => {
-                let target = resolved
-                    .public_path
-                    .as_deref()
-                    .and_then(|_| package_root_from_type_name(type_name))
-                    .map(|package_root| {
-                        qualify_package_type_text(
-                            target,
-                            &package_root,
-                            &resolved.local_type_names,
-                        )
-                    })
-                    .unwrap_or_else(|| target.clone());
-                let alias_context = TypeResolutionContext::with_type_params(
-                    &resolved.module_path,
-                    context.type_params.clone(),
-                );
-                self.constructor_shape(&target, &alias_context)
-            }
-            SourceTypeKind::External => Err(format!(
-                "constructor target `{type_name}` is not a nominal record"
-            )),
-        }
     }
 
     fn representation_shape(
@@ -2366,22 +2540,25 @@ impl TypeResolutionModel {
                 name: service_name.to_string(),
             });
         }
-        if let Some(canonical_name) = builtin_type_name(name) {
-            if canonical_name == "Map"
-                && resolved_args.len() == 2
-                && type_ref_contains_any_interface(&resolved_args[0])
-            {
-                return Err(format!(
-                    "Map key type `{}` cannot contain an `any` interface value",
-                    args[0].to_type_string()
-                ));
+        let source_type_key = self.resolve_source_type_key(name, context);
+        if source_type_key.is_none() {
+            if let Some(canonical_name) = builtin_type_name(name) {
+                if canonical_name == "Map"
+                    && resolved_args.len() == 2
+                    && type_ref_contains_any_interface(&resolved_args[0])
+                {
+                    return Err(format!(
+                        "Map key type `{}` cannot contain an `any` interface value",
+                        args[0].to_type_string()
+                    ));
+                }
+                return Ok(TypeRefIr::Builtin {
+                    name: canonical_name,
+                    args: resolved_args,
+                });
             }
-            return Ok(TypeRefIr::Builtin {
-                name: canonical_name,
-                args: resolved_args,
-            });
         }
-        if let Some(key) = self.resolve_source_type_key(name, context) {
+        if let Some(key) = source_type_key {
             let resolution = self
                 .source_types
                 .get(&key)
@@ -2393,21 +2570,38 @@ impl TypeResolutionModel {
                     resolved_args.len()
                 ));
             }
+            if !resolved_args.is_empty()
+                && (self.source_interfaces.contains(&key)
+                    || matches!(
+                        resolution.kind,
+                        SourceTypeKind::Actor { .. } | SourceTypeKind::External
+                    ))
+            {
+                return Err(format!(
+                    "source type `{name}` cannot be used as an applied nominal base"
+                ));
+            }
             let module = self
                 .modules
                 .get(context.module_path)
                 .ok_or_else(|| format!("missing type resolution module {}", context.module_path))?;
             if key.module_path() == context.module_path {
                 if let Some(index) = module.type_indices.get(key.symbol()) {
-                    return Ok(TypeRefIr::LocalType { type_index: *index });
+                    return apply_nominal_arguments(
+                        TypeRefIr::LocalType { type_index: *index },
+                        resolved_args,
+                    );
                 }
             }
-            return Ok(TypeRefIr::ServiceSymbol {
-                symbol: ServiceSymbolRef {
-                    module_path: key.module_path().to_string(),
-                    symbol: key.symbol().to_string(),
+            return apply_nominal_arguments(
+                TypeRefIr::ServiceSymbol {
+                    symbol: ServiceSymbolRef {
+                        module_path: key.module_path().to_string(),
+                        symbol: key.symbol().to_string(),
+                    },
                 },
-            });
+                resolved_args,
+            );
         }
         if let Some(type_ref) = contextual_prelude_type_ref(name, resolved_args.clone(), context) {
             validate_prelude_type_arity(name, resolved_args.len())?;
@@ -2425,21 +2619,35 @@ impl TypeResolutionModel {
                     resolved_args.len()
                 ));
             }
-            return Ok(TypeRefIr::PackageSymbol {
-                symbol: PackageSymbolRef {
-                    package: PackageRefIr::PackageId {
-                        package_id: schema_type.package_id.clone(),
+            if !resolved_args.is_empty()
+                && matches!(
+                    schema_type.canonical_descriptor.descriptor,
+                    ContractTypeDescriptor::CallbackInterface { .. }
+                )
+            {
+                return Err(format!(
+                    "service API type `{name}` cannot be used as an applied nominal base"
+                ));
+            }
+            return apply_nominal_arguments(
+                TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: schema_type.package_id.clone(),
+                        },
+                        symbol_path: schema_type.stable_schema_key.clone(),
+                        abi_expectation: None,
                     },
-                    symbol_path: schema_type.stable_schema_key.clone(),
-                    abi_expectation: None,
                 },
-            });
+                resolved_args,
+            );
         }
         if let Some(package_symbol) = self.resolve_package_type_symbol_path(name) {
-            if let Some(resolution) = self.package_type_resolution(
+            let resolution = self.package_type_resolution(
                 &package_symbol.dependency_ref,
                 &package_symbol.symbol_path,
-            ) {
+            );
+            if let Some(resolution) = resolution {
                 if resolution.type_params.len() != resolved_args.len() {
                     return Err(format!(
                         "package type `{name}` expects {} type arguments, found {}",
@@ -2447,20 +2655,42 @@ impl TypeResolutionModel {
                         resolved_args.len()
                     ));
                 }
+                if !resolved_args.is_empty()
+                    && (matches!(
+                        resolution.kind,
+                        SourceTypeKind::Actor { .. } | SourceTypeKind::External
+                    ) || self
+                        .package_interface_fact(
+                            &package_symbol.dependency_ref,
+                            &package_symbol.symbol_path,
+                        )
+                        .is_some())
+                {
+                    return Err(format!(
+                        "package type `{name}` cannot be used as an applied nominal base"
+                    ));
+                }
+            } else if !resolved_args.is_empty() {
+                return Err(format!(
+                    "package type `{name}` has no exact declaration for generic arity validation"
+                ));
             }
             let abi_expectation = self
                 .package_artifact_identities
                 .get(&package_symbol.dependency_ref)
                 .map(|(abi, _)| abi.as_str().to_string());
-            return Ok(TypeRefIr::PackageSymbol {
-                symbol: PackageSymbolRef {
-                    package: PackageRefIr::Dependency {
-                        dependency_ref: package_symbol.dependency_ref,
+            return apply_nominal_arguments(
+                TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::Dependency {
+                            dependency_ref: package_symbol.dependency_ref,
+                        },
+                        symbol_path: package_symbol.symbol_path,
+                        abi_expectation,
                     },
-                    symbol_path: package_symbol.symbol_path,
-                    abi_expectation,
                 },
-            });
+                resolved_args,
+            );
         }
         let dependency_root = name
             .split_once('/')
@@ -2479,14 +2709,29 @@ impl TypeResolutionModel {
             });
         }
         if let Some(symbol) = self.external_type_symbols.resolve_source_text(name) {
+            if !resolved_args.is_empty() {
+                return Err(format!(
+                    "external type `{name}` has no exact declaration for generic arity validation"
+                ));
+            }
             return Ok(TypeRefIr::ServiceSymbol {
                 symbol: service_symbol_ref_from_source_key(symbol),
             });
         }
         if let Some(symbol) = self.resolve_db_object_symbol(service_name, context)? {
+            if !resolved_args.is_empty() {
+                return Err(format!(
+                    "db object type `{name}` cannot be used as an applied nominal base"
+                ));
+            }
             return Ok(TypeRefIr::DbObjectSymbol { symbol });
         }
         if name.contains('.') {
+            if !resolved_args.is_empty() {
+                return Err(format!(
+                    "unresolved nominal type `{name}` cannot accept type arguments"
+                ));
+            }
             return Ok(TypeRefIr::ServiceSymbol {
                 symbol: service_symbol_ref(name),
             });
@@ -2562,14 +2807,6 @@ impl TypeResolutionModel {
             methods,
             source_module: alias.to_string(),
         })
-    }
-
-    fn contract_type_source_text(
-        &self,
-        alias: &str,
-        ty: &ContractTypeRef,
-    ) -> Result<String, String> {
-        contract_type_source_text(alias, ty)
     }
 
     fn package_type_resolution(
@@ -2754,14 +2991,10 @@ impl TypeResolutionModel {
                     }),
                 })
             }
+            TypeRefIr::AppliedNominal { base, .. } => {
+                self.resolved_named_type(&nominal_base_type_ref(base), context)
+            }
             _ => None,
-        }
-    }
-
-    fn resolved_type_arg_texts(&self, source_text: &str) -> Vec<String> {
-        match TypeExpr::parse(source_text) {
-            TypeExpr::Named { args, .. } => args.iter().map(TypeExpr::to_type_string).collect(),
-            _ => Vec::new(),
         }
     }
 
@@ -3010,8 +3243,49 @@ impl TypeResolutionModel {
         raw: &str,
         context: &TypeResolutionContext<'_>,
     ) -> Result<Option<InterfaceInstantiationResolution>, String> {
-        let resolved = self.resolve_type_text(raw, context)?;
-        self.interface_instantiation_from_resolved(&resolved, context)
+        let TypeExpr::Named { name, args } = TypeExpr::parse(raw) else {
+            return Ok(None);
+        };
+        let arguments = self.resolve_interface_selector_args(&args, context)?;
+        if let Some(key) = self.resolve_source_type_key(&name, context) {
+            if !self.source_type_is_interface(&key) {
+                return Ok(None);
+            }
+            let resolution = self
+                .source_types
+                .get(&key)
+                .ok_or_else(|| format!("missing source interface declaration `{key}`"))?;
+            if resolution.type_params.len() != arguments.len() {
+                return Err(format!(
+                    "interface `{name}` expects {} type arguments, found {}",
+                    resolution.type_params.len(),
+                    arguments.len()
+                ));
+            }
+            return Ok(Some(InterfaceInstantiationResolution {
+                identity: interface_symbol_type_ref(&key),
+                args: arguments,
+            }));
+        }
+        if let Some((alias, schema_type)) = self.service_api_type(&name)? {
+            let Some(interface) = self.service_api_interface(alias, &schema_type.stable_schema_key)
+            else {
+                return Ok(None);
+            };
+            self.require_package_interface_type_args(raw, &interface.type_params, &arguments)?;
+            return Ok(Some(InterfaceInstantiationResolution {
+                identity: interface.identity,
+                args: arguments,
+            }));
+        }
+        let Some(interface) = self.resolve_package_interface(&name) else {
+            return Ok(None);
+        };
+        self.require_package_interface_type_args(raw, &interface.type_params, &arguments)?;
+        Ok(Some(InterfaceInstantiationResolution {
+            identity: interface.identity,
+            args: arguments,
+        }))
     }
 
     fn interface_instantiation_from_resolved(
@@ -3019,17 +3293,47 @@ impl TypeResolutionModel {
         resolved: &ResolvedTypeRef,
         context: &TypeResolutionContext<'_>,
     ) -> Result<Option<InterfaceInstantiationResolution>, String> {
+        if let TypeRefIr::AnyInterface { interface } = &resolved.ir {
+            let identity = serde_json::from_str(&interface.interface_abi_id).map_err(|error| {
+                format!("resolved any-interface identity is not a canonical TypeRefIr: {error}")
+            })?;
+            return Ok(Some(InterfaceInstantiationResolution {
+                identity,
+                args: interface.canonical_type_args.clone(),
+            }));
+        }
         let Some(identity) = self.interface_identity_for_type_ref(&resolved.ir, context) else {
             return Ok(None);
         };
-        let TypeExpr::Named { args, .. } = TypeExpr::parse(&resolved.source_text) else {
-            return Ok(None);
+        let expected_arity = match &identity {
+            TypeRefIr::ServiceSymbol { symbol } => {
+                let module_path = symbol
+                    .module_path
+                    .strip_prefix("root.")
+                    .unwrap_or(&symbol.module_path);
+                self.source_types
+                    .get(&SourceSymbolKey::new(module_path, &symbol.symbol))
+                    .map_or(0, |resolution| resolution.type_params.len())
+            }
+            TypeRefIr::PackageSymbol { symbol } => {
+                let dependency_ref = match &symbol.package {
+                    PackageRefIr::Dependency { dependency_ref } => dependency_ref.as_str(),
+                    PackageRefIr::PackageId { package_id } => package_id.as_str(),
+                };
+                self.package_interface_fact(dependency_ref, &symbol.symbol_path)
+                    .map_or(0, |interface| interface.type_params.len())
+            }
+            _ => 0,
         };
-        let args = args
-            .iter()
-            .map(|arg| self.resolve_type_expr(arg, context))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Some(InterfaceInstantiationResolution { identity, args }))
+        if expected_arity != 0 {
+            return Err(format!(
+                "resolved generic interface requires {expected_arity} structured type arguments"
+            ));
+        }
+        Ok(Some(InterfaceInstantiationResolution {
+            identity,
+            args: Vec::new(),
+        }))
     }
 
     fn interface_identity_for_type_ref(
@@ -3604,19 +3908,8 @@ fn artifact_named_union_branch_text(
     symbolic_types: &ArtifactSymbolicTypeIndex,
 ) -> Result<String, String> {
     match branch {
-        NamedUnionBranchIr::ConcreteNominal {
-            nominal_type,
-            type_arguments,
-        } => {
-            let nominal = artifact_type_text(package_id, nominal_type, symbolic_types)?;
-            if type_arguments.is_empty() {
-                return Ok(nominal);
-            }
-            let arguments = type_arguments
-                .values()
-                .map(|argument| artifact_type_text(package_id, argument, symbolic_types))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(format!("{nominal}<{}>", arguments.join(", ")))
+        NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+            artifact_type_text(package_id, nominal_type, symbolic_types)
         }
         NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
             artifact_type_text(package_id, payload_type, symbolic_types)
@@ -3642,6 +3935,15 @@ fn artifact_type_text(
             "{name}<{}>",
             args.iter()
                 .map(|arg| artifact_type_text(package_id, arg, symbolic_types))
+                .collect::<Result<Vec<_>, _>>()?
+                .join(", ")
+        )),
+        TypeRefIr::AppliedNominal { base, arguments } => Ok(format!(
+            "{}<{}>",
+            artifact_type_text(package_id, &nominal_base_type_ref(base), symbolic_types)?,
+            arguments
+                .iter()
+                .map(|argument| artifact_type_text(package_id, argument, symbolic_types))
                 .collect::<Result<Vec<_>, _>>()?
                 .join(", ")
         )),
@@ -4062,13 +4364,6 @@ fn resolve_package_fact_alias_expr(
             if let Some(name) = builtin_type_name(name) {
                 return Ok(TypeRefIr::Builtin { name, args });
             }
-            if !args.is_empty() {
-                return Err(format!(
-                    "package {} alias target {} uses unsupported nominal type arguments",
-                    package.package_id,
-                    expr.to_type_string()
-                ));
-            }
             if let Some((dependency_alias, symbol_path)) = name.split_once('.') {
                 if let Some(dependency) = package
                     .dependencies
@@ -4079,6 +4374,14 @@ fn resolve_package_fact_alias_expr(
                         return Err(format!(
                             "package {} alias target {name} has no dependency symbol path",
                             package.package_id
+                        ));
+                    }
+                    if !args.is_empty() {
+                        return Err(format!(
+                            "package {} alias target {} cannot validate the exact generic declaration owned by dependency {}",
+                            package.package_id,
+                            expr.to_type_string(),
+                            dependency.package_id
                         ));
                     }
                     return Ok(TypeRefIr::PackageSymbol {
@@ -4111,15 +4414,50 @@ fn resolve_package_fact_alias_expr(
                     package.package_id
                 ));
             }
-            Ok(TypeRefIr::PackageSymbol {
-                symbol: PackageSymbolRef {
-                    package: PackageRefIr::PackageId {
-                        package_id: package.package_id.to_string(),
+            let resolution = package_source_type_resolution(
+                candidate.source_ast,
+                candidate.source_module,
+                candidate.source_symbol,
+                Some(candidate.public_path.to_string()),
+            )
+            .ok_or_else(|| {
+                format!(
+                    "package {} alias target `{name}` has no exact source declaration",
+                    package.package_id
+                )
+            })?;
+            if resolution.type_params.len() != args.len() {
+                return Err(format!(
+                    "package {} alias target `{name}` expects {} type arguments, found {}",
+                    package.package_id,
+                    resolution.type_params.len(),
+                    args.len()
+                ));
+            }
+            if !args.is_empty()
+                && (candidate.kind != PublicTypeKind::Type
+                    || matches!(
+                        resolution.kind,
+                        SourceTypeKind::Actor { .. } | SourceTypeKind::External
+                    ))
+            {
+                return Err(format!(
+                    "package {} alias target `{name}` cannot be used as an applied nominal base",
+                    package.package_id
+                ));
+            }
+            apply_nominal_arguments(
+                TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: package.package_id.to_string(),
+                        },
+                        symbol_path: candidate.public_path.to_string(),
+                        abi_expectation: None,
                     },
-                    symbol_path: candidate.public_path.to_string(),
-                    abi_expectation: None,
                 },
-            })
+                args,
+            )
         }
         TypeExpr::Nullable(inner) => Ok(TypeRefIr::Nullable {
             inner: Box::new(resolve_package_fact_alias_expr(
@@ -4719,25 +5057,6 @@ fn validate_prelude_type_arity(name: &str, found: usize) -> Result<(), String> {
     ))
 }
 
-fn substitute_type_params(raw: &str, substitutions: &BTreeMap<String, String>) -> String {
-    TypeExpr::parse(raw)
-        .map_named_types(|name| {
-            substitutions
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| name.to_string())
-        })
-        .to_type_string()
-}
-
-fn package_root_from_type_name(type_name: &str) -> Option<String> {
-    let name = strip_generic(type_name.trim());
-    if let Some((root, _)) = name.split_once('/') {
-        return Some(format!("{root}/"));
-    }
-    name.split_once('.').map(|(root, _)| root.to_string())
-}
-
 fn package_root_for_module(module_path: &str) -> Option<&str> {
     module_path
         .split('.')
@@ -4765,22 +5084,6 @@ fn package_root_for_symbol(
         PackageDependencyAccess::Public => dependency_ref.to_string(),
         PackageDependencyAccess::TopLevel => format!("{dependency_ref}/"),
     })
-}
-
-fn qualify_package_record_fields(
-    fields: &BTreeMap<String, String>,
-    package_root: &str,
-    local_type_names: &BTreeSet<String>,
-) -> BTreeMap<String, String> {
-    fields
-        .iter()
-        .map(|(name, ty)| {
-            (
-                name.clone(),
-                qualify_package_type_text(ty, package_root, local_type_names),
-            )
-        })
-        .collect()
 }
 
 fn qualify_package_type_text(
@@ -4911,6 +5214,15 @@ fn type_ref_debug_text(ty: &TypeRefIr) -> String {
             stable_schema_key,
             ..
         } => format!("{package_id}::{stable_schema_key}"),
+        TypeRefIr::AppliedNominal { base, arguments } => format!(
+            "{}<{}>",
+            type_ref_debug_text(&nominal_base_type_ref(base)),
+            arguments
+                .iter()
+                .map(type_ref_debug_text)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         TypeRefIr::AnyInterface { interface } => {
             let interface_name = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
                 .map_or_else(
@@ -4936,47 +5248,6 @@ fn type_ref_debug_text(ty: &TypeRefIr) -> String {
         TypeRefIr::TypeParam { name } => name.clone(),
         TypeRefIr::Function { .. } => "fn".to_string(),
     }
-}
-
-fn contract_type_source_text(alias: &str, ty: &ContractTypeRef) -> Result<String, String> {
-    Ok(match ty {
-        ContractTypeRef::Builtin { name, arguments } if arguments.is_empty() => name.clone(),
-        ContractTypeRef::Builtin { name, arguments } => format!(
-            "{name}<{}>",
-            arguments
-                .iter()
-                .map(|argument| contract_type_source_text(alias, argument))
-                .collect::<Result<Vec<_>, _>>()?
-                .join(", ")
-        ),
-        ContractTypeRef::PackageSchema {
-            stable_schema_key, ..
-        } => format!("{alias}.{stable_schema_key}"),
-        ContractTypeRef::TypeParam { name } => name.clone(),
-        ContractTypeRef::Nullable { inner } => {
-            format!("{}?", contract_type_source_text(alias, inner)?)
-        }
-        ContractTypeRef::AnyInterface { interface, .. } => {
-            format!("any {}", contract_type_source_text(alias, interface)?)
-        }
-        ContractTypeRef::Record { fields } => format!(
-            "{{ {} }}",
-            fields
-                .iter()
-                .map(|(name, ty)| Ok(format!("{name}: {}", contract_type_source_text(alias, ty)?)))
-                .collect::<Result<Vec<_>, String>>()?
-                .join(", ")
-        ),
-        ContractTypeRef::StructuralUnion { variants } => variants
-            .iter()
-            .map(|ty| contract_type_source_text(alias, ty))
-            .collect::<Result<Vec<_>, _>>()?
-            .join(" | "),
-        ContractTypeRef::Literal {
-            value: skiff_artifact_model::ContractLiteral::String { value },
-        } => serde_json::to_string(value)
-            .map_err(|error| format!("service API literal cannot be rendered: {error}"))?,
-    })
 }
 
 fn contract_type_shape_ir(
@@ -5164,6 +5435,7 @@ fn type_ref_contains_self(ty: &TypeRefIr) -> bool {
         TypeRefIr::Builtin { args, .. } => {
             is_self_type_ref(ty) || args.iter().any(type_ref_contains_self)
         }
+        TypeRefIr::AppliedNominal { arguments, .. } => arguments.iter().any(type_ref_contains_self),
         TypeRefIr::Record { fields } => fields.values().any(type_ref_contains_self),
         TypeRefIr::Union { items } => items.iter().any(type_ref_contains_self),
         TypeRefIr::Nullable { inner } => type_ref_contains_self(inner),
@@ -5193,6 +5465,9 @@ fn type_ref_contains_any_interface(ty: &TypeRefIr) -> bool {
     match ty {
         TypeRefIr::AnyInterface { .. } => true,
         TypeRefIr::Builtin { args, .. } => args.iter().any(type_ref_contains_any_interface),
+        TypeRefIr::AppliedNominal { arguments, .. } => {
+            arguments.iter().any(type_ref_contains_any_interface)
+        }
         TypeRefIr::Record { fields } => fields.values().any(type_ref_contains_any_interface),
         TypeRefIr::Union { items } => items.iter().any(type_ref_contains_any_interface),
         TypeRefIr::Nullable { inner } => type_ref_contains_any_interface(inner),
@@ -5263,13 +5538,87 @@ fn prelude_symbol_type_ref(symbol: String, args: Vec<TypeRefIr>) -> TypeRefIr {
     if is_std_abi_generic_type_symbol(&symbol) {
         return TypeRefIr::Builtin { name: symbol, args };
     }
-    TypeRefIr::PackageSymbol {
+    let base = TypeRefIr::PackageSymbol {
         symbol: PackageSymbolRef {
             package: PackageRefIr::PackageId {
                 package_id: SKIFF_STD_PUBLICATION_ID.to_string(),
             },
             symbol_path: symbol,
             abi_expectation: None,
+        },
+    };
+    apply_nominal_arguments(base, args)
+        .expect("prelude registry nominal symbols always lower to a nominal base")
+}
+
+fn apply_nominal_arguments(
+    base: TypeRefIr,
+    arguments: Vec<TypeRefIr>,
+) -> Result<TypeRefIr, String> {
+    if arguments.is_empty() {
+        return Ok(base);
+    }
+    let base = nominal_base_from_type_ref(base)?;
+    Ok(TypeRefIr::AppliedNominal { base, arguments })
+}
+
+fn nominal_base_from_type_ref(ty: TypeRefIr) -> Result<NominalTypeRefBaseIr, String> {
+    match ty {
+        TypeRefIr::LocalType { type_index } => Ok(NominalTypeRefBaseIr::LocalType { type_index }),
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => Ok(NominalTypeRefBaseIr::PublicationType {
+            module_path,
+            type_index,
+        }),
+        TypeRefIr::ServiceSymbol { symbol } => Ok(NominalTypeRefBaseIr::ServiceSymbol { symbol }),
+        TypeRefIr::PackageSymbol { symbol } => Ok(NominalTypeRefBaseIr::PackageSymbol { symbol }),
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => Ok(NominalTypeRefBaseIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        }),
+        TypeRefIr::DbObjectSymbol { .. } => {
+            Err("db object types cannot be applied nominal bases".to_string())
+        }
+        other => Err(format!(
+            "`{}` is not a legal applied nominal base",
+            type_ref_debug_text(&other)
+        )),
+    }
+}
+
+fn nominal_base_type_ref(base: &NominalTypeRefBaseIr) -> TypeRefIr {
+    match base {
+        NominalTypeRefBaseIr::LocalType { type_index } => TypeRefIr::LocalType {
+            type_index: *type_index,
+        },
+        NominalTypeRefBaseIr::PublicationType {
+            module_path,
+            type_index,
+        } => TypeRefIr::PublicationType {
+            module_path: module_path.clone(),
+            type_index: *type_index,
+        },
+        NominalTypeRefBaseIr::ServiceSymbol { symbol } => TypeRefIr::ServiceSymbol {
+            symbol: symbol.clone(),
+        },
+        NominalTypeRefBaseIr::PackageSymbol { symbol } => TypeRefIr::PackageSymbol {
+            symbol: symbol.clone(),
+        },
+        NominalTypeRefBaseIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => TypeRefIr::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
         },
     }
 }
@@ -5359,7 +5708,9 @@ mod tests {
         source_graph::CompilerSourceFile,
         ExpressionSourceMap, PublicationTypeSymbolIndex,
     };
-    use skiff_artifact_model::{InterfaceDeclIr, InterfaceOperationIr};
+    use skiff_artifact_model::{
+        InterfaceDeclIr, InterfaceOperationIr, TypeDeclIr, TypeDeclarationIr,
+    };
 
     use super::*;
 
@@ -5476,6 +5827,328 @@ mod tests {
 
     fn context() -> TypeResolutionContext<'static> {
         TypeResolutionContext::source(MODULE)
+    }
+
+    fn initialize_test_prelude() {
+        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root resolves");
+        let platform_sources = skiff_compiler_input::CompilerPlatformSources::new(&platform_root)
+            .expect("platform sources load");
+        crate::prelude_registry::initialize_prelude_registry(&platform_sources)
+            .expect("prelude registry initializes");
+    }
+
+    #[test]
+    fn applied_nominal_resolution_preserves_ordered_nested_arguments_and_alias_targets() {
+        let (_parsed, model) = type_resolution(
+            r#"
+              type Id = string
+              type Box<T> { value: T }
+              type Outer<A, B> { first: A, second: B }
+              type Token<T> = string
+              alias StringBox = Box<string>
+            "#,
+        );
+        let module = model.modules.get(MODULE).expect("test module is indexed");
+        let box_index = module.type_indices["Box"];
+        let outer_index = module.type_indices["Outer"];
+        let token_index = module.type_indices["Token"];
+
+        let string_box = model
+            .resolve_type_text("Box<string>", &context())
+            .expect("generic local record resolves");
+        let number_box = model
+            .resolve_type_text("Box<number>", &context())
+            .expect("same declaration with another argument resolves");
+        assert_eq!(
+            string_box.ir,
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::LocalType {
+                    type_index: box_index,
+                },
+                arguments: vec![TypeRefIr::builtin("string")],
+            }
+        );
+        assert_eq!(
+            number_box.ir,
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::LocalType {
+                    type_index: box_index,
+                },
+                arguments: vec![TypeRefIr::builtin("number")],
+            }
+        );
+        assert_ne!(string_box.ir, number_box.ir);
+
+        let nested = model
+            .resolve_type_text("Outer<Box<string>, Array<Id>>", &context())
+            .expect("nested nominal arguments resolve structurally");
+        assert_eq!(
+            nested.ir,
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::LocalType {
+                    type_index: outer_index,
+                },
+                arguments: vec![
+                    string_box.ir.clone(),
+                    TypeRefIr::Builtin {
+                        name: "Array".to_string(),
+                        args: vec![TypeRefIr::LocalType {
+                            type_index: module.type_indices["Id"],
+                        }],
+                    },
+                ],
+            }
+        );
+
+        let token = model
+            .resolve_type_text("Token<string>", &context())
+            .expect("generic representation resolves");
+        assert_eq!(
+            token.ir,
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::LocalType {
+                    type_index: token_index,
+                },
+                arguments: vec![TypeRefIr::builtin("string")],
+            },
+            "representation use must retain its nominal owner"
+        );
+        let alias = model
+            .resolve_type_text("StringBox", &context())
+            .expect("transparent alias to an applied nominal resolves");
+        assert_eq!(alias.ir, string_box.ir);
+
+        let string_fields = model
+            .resolve_constructor_target_resolved(&string_box, &context())
+            .expect("structured applied record is constructible")
+            .fields;
+        let number_fields = model
+            .resolve_constructor_target_resolved(&number_box, &context())
+            .expect("structured applied record is constructible")
+            .fields;
+        assert_eq!(string_fields["value"].ir, TypeRefIr::builtin("string"));
+        assert_eq!(number_fields["value"].ir, TypeRefIr::builtin("number"));
+    }
+
+    #[test]
+    fn applied_nominal_resolution_keeps_local_and_package_owners_distinct() {
+        initialize_test_prelude();
+        let parsed_sources = parsed_sources("type Box<T> { value: T }");
+        let package_source = CompilerSourceFile::parse(
+            PathBuf::from("pkg/box.skiff"),
+            "pkg.box".to_string(),
+            false,
+            false,
+            "type Box<T> { value: T }".to_string(),
+            "pkg/box.skiff",
+        )
+        .expect("package source parses");
+        let package_parsed =
+            parse_publication_sources(&PathBuf::from("/package"), &[package_source])
+                .expect("package source facts build");
+        let mut package_unit = FileIrUnit::empty("pkg.box", "generic-package");
+        package_unit.type_table.push(TypeDeclIr {
+            name: "Box".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::from([(
+                    "value".to_string(),
+                    TypeRefIr::TypeParam {
+                        name: "T".to_string(),
+                    },
+                )]),
+            },
+            type_params: vec!["T".to_string()],
+            implements: Vec::new(),
+            source_span: None,
+        });
+        package_unit.declarations.types.insert(
+            "Box".to_string(),
+            TypeDeclarationIr {
+                type_index: 0,
+                symbol: "Box".to_string(),
+                source_span: None,
+            },
+        );
+        let package_facts = vec![TypeResolutionPackageFacts {
+            package_id: "dep.generic",
+            dependencies: Vec::new(),
+            schema_types: vec![TypeResolutionPackageSchemaTypeFact {
+                public_path: "Box",
+                source_module: "pkg.box",
+                source_symbol: "Box",
+                kind: PublicTypeKind::Type,
+                source_ast: package_parsed[0].ast(),
+                file_ir_unit: Some(&package_unit),
+            }],
+            callables: Vec::new(),
+        }];
+        let mut dependency = PackageDependency::id("dep.generic");
+        dependency.alias = Some("pkg".to_string());
+        let model = TypeResolutionModel::build(
+            &parsed_sources,
+            &BTreeMap::from([("pkg".to_string(), vec![String::new()])]),
+            &[dependency],
+            Some(&package_facts),
+            None,
+            &PublicationTypeSymbolIndex::default(),
+        )
+        .expect("consumer and package generic facts build");
+
+        let local = model
+            .resolve_type_text("Box<string>", &context())
+            .expect("local Box resolves");
+        let package = model
+            .resolve_type_text("pkg.Box<string>", &context())
+            .expect("package Box resolves");
+        assert!(matches!(
+            local.ir,
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::LocalType { .. },
+                ..
+            }
+        ));
+        assert_eq!(
+            package.ir,
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::Dependency {
+                            dependency_ref: "pkg".to_string(),
+                        },
+                        symbol_path: "Box".to_string(),
+                        abi_expectation: None,
+                    },
+                },
+                arguments: vec![TypeRefIr::builtin("string")],
+            }
+        );
+        assert_ne!(local.ir, package.ir);
+    }
+
+    #[test]
+    fn invalid_applied_nominal_bases_arity_and_type_param_scope_fail_closed() {
+        initialize_test_prelude();
+        let (_parsed, model) = type_resolution(
+            r#"
+              type Box<T> { value: T }
+              type Plain { value: string }
+              type WorkerBox { value: string }
+              alias Alias = Box<string>
+              interface Provider<T> {
+                function get(self: Self) -> T
+              }
+              actor Worker id string {}
+            "#,
+        );
+        let cases = [
+            ("Box", "expects 1 type arguments, found 0"),
+            ("Box<string, number>", "expects 1 type arguments, found 2"),
+            ("Box<Missing>", "unresolved type `Missing`"),
+            ("Plain<string>", "expects 0 type arguments, found 1"),
+            ("Alias<string>", "does not accept type arguments"),
+            (
+                "Provider<string>",
+                "cannot be used as an applied nominal base",
+            ),
+            ("Worker<string>", "expects 0 type arguments, found 1"),
+            ("T", "unresolved type `T`"),
+        ];
+        for (source, expected) in cases {
+            let error = match model.resolve_type_text(source, &context()) {
+                Ok(resolved) => panic!("`{source}` must fail closed, found {:?}", resolved.ir),
+                Err(error) => error,
+            };
+            assert!(error.contains(expected), "`{source}`: {error}");
+        }
+
+        let generic_context =
+            TypeResolutionContext::with_type_params(MODULE, BTreeSet::from(["T".to_string()]));
+        assert_eq!(
+            model
+                .resolve_type_text("T", &generic_context)
+                .expect("in-scope declaration parameter resolves")
+                .ir,
+            TypeRefIr::TypeParam {
+                name: "T".to_string(),
+            }
+        );
+        assert!(
+            model
+                .resolve_type_text("T<string>", &generic_context)
+                .is_err(),
+            "a type parameter cannot become an applied nominal base"
+        );
+    }
+
+    #[test]
+    fn generic_catch_leaves_keep_applied_union_owner_and_substituted_branch_identity() {
+        let (_parsed, model) = type_resolution(
+            r#"
+              type Branch<T> { value: T }
+              type Choice<T> discriminator "kind" =
+                Branch<T> |
+                { kind: "inline", value: T } |
+                "literal"
+            "#,
+        );
+        let string_choice = model
+            .resolve_type_text("Choice<string>", &context())
+            .expect("string choice resolves");
+        let number_choice = model
+            .resolve_type_text("Choice<number>", &context())
+            .expect("number choice resolves");
+        let string_leaves = model
+            .catch_leaves(&string_choice, &context())
+            .expect("fully instantiated generic named union has catch leaves");
+        let number_leaves = model
+            .catch_leaves(&number_choice, &context())
+            .expect("same generic union with another argument has catch leaves");
+
+        assert_eq!(string_leaves.len(), 3);
+        assert_eq!(number_leaves.len(), 3);
+        assert_ne!(string_leaves, number_leaves);
+        assert!(string_leaves.identities().iter().all(|leaf| {
+            matches!(
+                leaf,
+                CatchLeafIdentity::NamedUnionBranch { union_type, .. }
+                    if union_type == &string_choice.ir
+            )
+        }));
+        assert!(matches!(
+            &string_leaves.identities()[0],
+            CatchLeafIdentity::NamedUnionBranch {
+                branch:
+                    NamedUnionBranchIr::ConcreteNominal {
+                        nominal_type:
+                            TypeRefIr::AppliedNominal {
+                                arguments,
+                                ..
+                            },
+                    },
+                ..
+            } if arguments == &vec![TypeRefIr::builtin("string")]
+        ));
+        assert!(matches!(
+            &string_leaves.identities()[1],
+            CatchLeafIdentity::NamedUnionBranch {
+                branch:
+                    NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type: TypeRefIr::Record { fields },
+                        ..
+                    },
+                ..
+            } if fields["value"] == TypeRefIr::builtin("string")
+        ));
+        assert!(matches!(
+            &string_leaves.identities()[2],
+            CatchLeafIdentity::NamedUnionBranch {
+                branch: NamedUnionBranchIr::Literal { .. },
+                ..
+            }
+        ));
     }
 
     fn signature_rehydration_artifact() -> PackageArtifact {
@@ -5820,6 +6493,21 @@ mod tests {
         "#
     }
 
+    fn resolved_test_interface(argument: TypeRefIr) -> ResolvedTypeRef {
+        let identity = TypeRefIr::ServiceSymbol {
+            symbol: ServiceSymbolRef {
+                module_path: MODULE.to_string(),
+                symbol: "I".to_string(),
+            },
+        };
+        ResolvedTypeRef {
+            source_text: format!("I<{}>", type_ref_debug_text(&argument)),
+            ir: TypeRefIr::AnyInterface {
+                interface: interface_instantiation_ref(identity, vec![argument]),
+            },
+        }
+    }
+
     fn object_safe_interface_source() -> &'static str {
         r#"
           interface Provider {
@@ -5957,7 +6645,7 @@ mod tests {
             .resolve_type_text("Host", &context)
             .expect("Host should resolve");
         let expected = type_resolution
-            .resolve_type_text("pkg.Reader<string>", &context)
+            .resolve_type_text("any pkg.Reader<string>", &context)
             .expect("package interface should resolve");
 
         let conformance = type_resolution
@@ -6220,7 +6908,7 @@ mod tests {
             .resolve_type_text("Host", &context)
             .expect("Host should resolve");
         let expected = type_resolution
-            .resolve_type_text("pkg.Reader<string>", &context)
+            .resolve_type_text("any pkg.Reader<string>", &context)
             .expect("package interface should resolve");
 
         assert!(
@@ -6246,9 +6934,7 @@ mod tests {
         let actual = type_resolution
             .resolve_type_text("Box<string>", &context)
             .expect("actual type should resolve");
-        let expected = type_resolution
-            .resolve_type_text("I<string>", &context)
-            .expect("interface type should resolve");
+        let expected = resolved_test_interface(TypeRefIr::builtin("string"));
 
         assert!(
             !type_resolution.assignable_in_context(&actual, &expected, &context),
@@ -6263,9 +6949,7 @@ mod tests {
         let actual = type_resolution
             .resolve_type_text("Box<string>", &context)
             .expect("actual type should resolve");
-        let expected = type_resolution
-            .resolve_type_text("I<string>", &context)
-            .expect("interface type should resolve");
+        let expected = resolved_test_interface(TypeRefIr::builtin("string"));
 
         let matched = type_resolution
             .concrete_type_conforms_to_interface(&actual, &expected, &context)
@@ -6294,9 +6978,7 @@ mod tests {
         let actual = type_resolution
             .resolve_type_text("Box<string>", &context)
             .expect("actual type should resolve");
-        let expected = type_resolution
-            .resolve_type_text("I<number>", &context)
-            .expect("interface type should resolve");
+        let expected = resolved_test_interface(TypeRefIr::builtin("number"));
 
         assert!(
             type_resolution
@@ -6311,9 +6993,7 @@ mod tests {
     fn concrete_type_conformance_requires_exact_nominal_receiver_and_interface() {
         let (_parsed_sources, type_resolution) = type_resolution(conformance_source());
         let context = context();
-        let expected = type_resolution
-            .resolve_type_text("I<string>", &context)
-            .expect("interface type should resolve");
+        let expected = resolved_test_interface(TypeRefIr::builtin("string"));
 
         let nullable = type_resolution
             .resolve_type_text("Box<string>?", &context)
@@ -6712,17 +7392,23 @@ mod tests {
     }
 
     #[test]
-    fn nested_package_public_record_fields_use_only_the_dependency_root() {
+    fn package_record_field_qualification_uses_the_exact_dependency_root() {
         assert_eq!(
-            package_root_from_type_name("llmProviders.chatgptPlan.OauthSession"),
-            Some("llmProviders".to_string())
+            qualify_package_type_text(
+                "chatgptPlan.OauthError?",
+                "llmProviders",
+                &BTreeSet::from(["chatgptPlan.OauthError".to_string()]),
+            ),
+            "llmProviders.chatgptPlan.OauthError?"
         );
-        let fields = qualify_package_record_fields(
-            &BTreeMap::from([("error".to_string(), "chatgptPlan.OauthError?".to_string())]),
-            "llmProviders",
-            &BTreeSet::from(["chatgptPlan.OauthError".to_string()]),
+        assert_eq!(
+            qualify_package_type_text(
+                "chatgptPlan.OauthError?",
+                "llmProviders/",
+                &BTreeSet::from(["chatgptPlan.OauthError".to_string()]),
+            ),
+            "llmProviders/chatgptPlan.OauthError?"
         );
-        assert_eq!(fields["error"], "llmProviders.chatgptPlan.OauthError?");
     }
 
     #[test]

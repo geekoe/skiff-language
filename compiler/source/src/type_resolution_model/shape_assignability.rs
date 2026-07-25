@@ -48,7 +48,7 @@ impl TypeResolutionModel {
         let Some(receiver) = self.actual_receiver_symbol(actual, context) else {
             return Ok(None);
         };
-        let receiver_args = self.resolved_named_type_args(&actual.source_text, context)?;
+        let receiver_args = self.resolved_named_type_args(actual);
         for conformance in self
             .interface_conformances
             .iter()
@@ -117,7 +117,7 @@ impl TypeResolutionModel {
         let Some(receiver) = self.actual_receiver_symbol(actual, context) else {
             return Ok(None);
         };
-        let receiver_args = self.resolved_named_type_args(&actual.source_text, context)?;
+        let receiver_args = self.resolved_named_type_args(actual);
         for conformance in self
             .interface_conformances
             .iter()
@@ -681,6 +681,12 @@ impl TypeResolutionModel {
                     })
                     .map(|_| key)
             }
+            TypeRefIr::AppliedNominal { base, .. } => {
+                let named = self.resolved_named_type(&nominal_base_type_ref(base), context)?;
+                matches!(named.resolution.kind, SourceTypeKind::Record { .. }).then(|| {
+                    SourceSymbolKey::new(&named.resolution.module_path, &named.resolution.name)
+                })
+            }
             _ => None,
         }
     }
@@ -689,9 +695,9 @@ impl TypeResolutionModel {
         &self,
         actual: &ResolvedTypeRef,
         conformance: &InterfaceConformanceResolution,
-        context: &TypeResolutionContext<'_>,
+        _context: &TypeResolutionContext<'_>,
     ) -> Result<Option<BTreeMap<String, TypeRefIr>>, String> {
-        let args = self.resolved_named_type_args(&actual.source_text, context)?;
+        let args = self.resolved_named_type_args(actual);
         if args.len() != conformance.receiver_type_params.len() {
             return Ok(None);
         }
@@ -705,17 +711,11 @@ impl TypeResolutionModel {
         ))
     }
 
-    fn resolved_named_type_args(
-        &self,
-        source_text: &str,
-        context: &TypeResolutionContext<'_>,
-    ) -> Result<Vec<TypeRefIr>, String> {
-        let TypeExpr::Named { args, .. } = TypeExpr::parse(source_text) else {
-            return Ok(Vec::new());
-        };
-        args.iter()
-            .map(|arg| self.resolve_type_expr(arg, context))
-            .collect::<Result<Vec<_>, _>>()
+    fn resolved_named_type_args(&self, resolved: &ResolvedTypeRef) -> Vec<TypeRefIr> {
+        match &resolved.ir {
+            TypeRefIr::AppliedNominal { arguments, .. } => arguments.clone(),
+            _ => Vec::new(),
+        }
     }
 
     fn interface_instantiations_match(
@@ -1106,6 +1106,18 @@ impl TypeResolutionModel {
                     },
                 }))
             }
+            TypeRefIr::AppliedNominal { base, arguments } => {
+                let base_type = nominal_base_type_ref(base);
+                let rebound_base = recurse(&base_type)?;
+                let rebound_base = nominal_base_from_type_ref(rebound_base)?;
+                Ok(TypeRefIr::AppliedNominal {
+                    base: rebound_base,
+                    arguments: arguments
+                        .iter()
+                        .map(recurse)
+                        .collect::<Result<Vec<_>, _>>()?,
+                })
+            }
             TypeRefIr::Builtin { name, args } => Ok(TypeRefIr::Builtin {
                 name: name.clone(),
                 args: args.iter().map(recurse).collect::<Result<_, _>>()?,
@@ -1214,7 +1226,7 @@ impl TypeResolutionModel {
         // otherwise `Package.Record.field: Package.Alias` is widened to the
         // alias descriptor (for example, a literal union).
         if let Some(field_ty) = self
-            .resolve_constructor_target_text(&ty.source_text, context)
+            .resolve_constructor_target_resolved(ty, context)
             .ok()
             .and_then(|target| target.fields.get(field).cloned())
         {
@@ -1238,9 +1250,7 @@ impl TypeResolutionModel {
     ) -> Option<TypeRefIr> {
         let type_args = match &ty.ir {
             TypeRefIr::Builtin { args, .. } => args.clone(),
-            _ => self
-                .resolved_named_type_args(&ty.source_text, context)
-                .ok()?,
+            _ => self.resolved_named_type_args(ty),
         };
         match &ty.ir {
             TypeRefIr::Record { .. } | TypeRefIr::Union { .. } => Some(ty.ir.clone()),
@@ -1328,9 +1338,17 @@ impl TypeResolutionModel {
                         )
                     })
             }
-            TypeRefIr::Builtin { name, args } => self
-                .prelude_type_shape_ir(name, args, context)
-                .or_else(|| self.prelude_type_shape_ir(&ty.source_text, args, context)),
+            TypeRefIr::AppliedNominal { base, .. } => {
+                let named = self.resolved_named_type(&nominal_base_type_ref(base), context)?;
+                self.source_type_shape_ir(
+                    named.resolution,
+                    &type_args,
+                    context,
+                    named.package_root.as_deref(),
+                    &named.source_module_path,
+                )
+            }
+            TypeRefIr::Builtin { name, args } => self.prelude_type_shape_ir(name, args, context),
             _ => None,
         }
     }
@@ -1581,6 +1599,18 @@ impl TypeResolutionModel {
                     .map(|arg| self.externalize_local_type_ir(arg, module_path))
                     .collect(),
             },
+            TypeRefIr::AppliedNominal { base, arguments } => {
+                let external_base =
+                    self.externalize_local_type_ir(&nominal_base_type_ref(base), module_path);
+                TypeRefIr::AppliedNominal {
+                    base: nominal_base_from_type_ref(external_base)
+                        .expect("externalizing a nominal base preserves its nominal kind"),
+                    arguments: arguments
+                        .iter()
+                        .map(|argument| self.externalize_local_type_ir(argument, module_path))
+                        .collect(),
+                }
+            }
             TypeRefIr::Nullable { inner } => TypeRefIr::Nullable {
                 inner: Box::new(self.externalize_local_type_ir(inner, module_path)),
             },
@@ -1689,6 +1719,9 @@ impl TypeResolutionModel {
                     })
                     .unwrap_or_else(|| ty.clone())
             }
+            TypeRefIr::AppliedNominal { .. } => self
+                .expand_alias_type_ref(ty, context)
+                .unwrap_or_else(|_| ty.clone()),
             TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
                 name: name.clone(),
                 args: args
@@ -1815,6 +1848,14 @@ fn bind_package_type_ir_to_dependency(
             name: name.clone(),
             args: args.iter().map(bind).collect(),
         },
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            let bound_base = bind(&nominal_base_type_ref(base));
+            TypeRefIr::AppliedNominal {
+                base: nominal_base_from_type_ref(bound_base)
+                    .expect("rebinding a package nominal base preserves its nominal kind"),
+                arguments: arguments.iter().map(bind).collect(),
+            }
+        }
         TypeRefIr::Record { fields } => TypeRefIr::Record {
             fields: fields
                 .iter()
@@ -1880,6 +1921,13 @@ fn replace_self_type_ref(ty: TypeRefIr, concrete_self: &TypeRefIr) -> TypeRefIr 
             args: args
                 .into_iter()
                 .map(|arg| replace_self_type_ref(arg, concrete_self))
+                .collect(),
+        },
+        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+            base,
+            arguments: arguments
+                .into_iter()
+                .map(|argument| replace_self_type_ref(argument, concrete_self))
                 .collect(),
         },
         TypeRefIr::Record { fields } => TypeRefIr::Record {

@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr, PackageRefIr,
-    PackageSymbolRef, PackageTypeRef, TypeRefIr,
+    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr,
+    NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir;
 
@@ -1793,7 +1793,9 @@ impl<'a> OwnerChecker<'a> {
                     };
                     let expected_interface = ResolvedTypeRef {
                         source_text: selector.source_text.clone(),
-                        ir: selector.identity.clone(),
+                        ir: TypeRefIr::AnyInterface {
+                            interface: selector.instantiation_ref.clone(),
+                        },
                     };
                     match self.type_resolution.concrete_type_conforms_to_interface(
                         &value_ty,
@@ -3181,16 +3183,10 @@ impl<'a> OwnerChecker<'a> {
         let params = params
             .enumerate()
             .filter_map(|(index, raw)| {
-                if let Some(resolved) =
-                    self.exact_type_arg_substitution(raw, type_params, type_args)
-                {
-                    return Some((format!("arg{index}"), resolved));
-                }
-                let text = self.substitute_type_params_in_text(raw, type_params, type_args);
-                match self.type_resolution.resolve_type_text(&text, context) {
-                    Ok(resolved) => Some((format!("arg{index}"), resolved)),
-                    Err(error) => {
-                        let _ = (callable, error);
+                match self.resolve_callable_signature_type(raw, context, type_params, type_args) {
+                    Some(resolved) => Some((format!("arg{index}"), resolved)),
+                    None => {
+                        let _ = callable;
                         complete = false;
                         None
                     }
@@ -3207,18 +3203,24 @@ impl<'a> OwnerChecker<'a> {
         type_params: &[String],
         type_args: &[TypeRef],
     ) -> Option<ResolvedTypeRef> {
-        if let Some(resolved) = self.exact_type_arg_substitution(raw, type_params, type_args) {
-            return Some(resolved);
-        }
-        if let Some(resolved) =
-            self.structured_type_arg_substitution(raw, context, type_params, type_args)
-        {
-            return Some(resolved);
-        }
-        let substituted = self.substitute_type_params_in_text(raw, type_params, type_args);
-        self.type_resolution
-            .resolve_type_text(&substituted, context)
-            .ok()
+        self.resolve_callable_signature_type(raw, context, type_params, type_args)
+    }
+
+    fn resolve_callable_signature_type(
+        &self,
+        raw: &str,
+        context: &TypeResolutionContext<'_>,
+        type_params: &[String],
+        type_args: &[TypeRef],
+    ) -> Option<ResolvedTypeRef> {
+        self.exact_type_arg_substitution(raw, type_params, type_args)
+            .or_else(|| self.structured_type_arg_substitution(raw, context, type_params, type_args))
+            .or_else(|| {
+                type_params
+                    .is_empty()
+                    .then(|| self.type_resolution.resolve_type_text(raw, context).ok())
+                    .flatten()
+            })
     }
 
     fn exact_type_arg_substitution(
@@ -3436,37 +3438,6 @@ impl<'a> OwnerChecker<'a> {
                 self.expression_span(key),
             );
         }
-    }
-
-    fn substitute_type_params_in_text(
-        &self,
-        raw: &str,
-        type_params: &[String],
-        type_args: &[TypeRef],
-    ) -> String {
-        if type_params.is_empty() || type_args.is_empty() {
-            return raw.to_string();
-        }
-        let substitutions = type_params
-            .iter()
-            .zip(type_args)
-            .map(|(param, arg)| {
-                let resolved = self
-                    .type_resolution
-                    .resolve_type_ref(arg, &self.type_context)
-                    .map(|ty| ty.source_text)
-                    .unwrap_or_else(|_| arg.name.clone());
-                (param.clone(), resolved)
-            })
-            .collect::<BTreeMap<_, _>>();
-        TypeExpr::parse(raw)
-            .map_named_types(|name| {
-                substitutions
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| name.to_string())
-            })
-            .to_type_string()
     }
 
     fn config_intrinsic_call_type(
@@ -4488,6 +4459,9 @@ fn type_contains_type_param(ty: &TypeRefIr) -> bool {
         TypeRefIr::Builtin { args, .. } | TypeRefIr::Union { items: args } => {
             args.iter().any(type_contains_type_param)
         }
+        TypeRefIr::AppliedNominal { arguments, .. } => {
+            arguments.iter().any(type_contains_type_param)
+        }
         TypeRefIr::Nullable { inner } => type_contains_type_param(inner),
         TypeRefIr::AnyInterface { interface } => interface
             .canonical_type_args
@@ -4995,6 +4969,15 @@ fn type_ref_debug_text(ty: &TypeRefIr) -> String {
             stable_schema_key,
             ..
         } => format!("{package_id}::{stable_schema_key}"),
+        TypeRefIr::AppliedNominal { base, arguments } => format!(
+            "{}<{}>",
+            nominal_base_debug_text(base),
+            arguments
+                .iter()
+                .map(type_ref_debug_text)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         TypeRefIr::AnyInterface { interface } => {
             let interface_name = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
                 .map_or_else(
@@ -5086,6 +5069,10 @@ fn ordinary_package_local_type_ir(ty: &TypeRefIr) -> TypeRefIr {
             name: name.clone(),
             args: args.iter().map(recurse).collect(),
         },
+        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+            base: base.clone(),
+            arguments: arguments.iter().map(recurse).collect(),
+        },
         TypeRefIr::Record { fields } => TypeRefIr::Record {
             fields: fields
                 .iter()
@@ -5134,6 +5121,23 @@ fn ordinary_package_local_type_ir(ty: &TypeRefIr) -> TypeRefIr {
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => ty.clone(),
+    }
+}
+
+fn nominal_base_debug_text(base: &NominalTypeRefBaseIr) -> String {
+    match base {
+        NominalTypeRefBaseIr::LocalType { type_index } => format!("#{type_index}"),
+        NominalTypeRefBaseIr::PublicationType {
+            module_path,
+            type_index,
+        } => format!("{module_path}#{type_index}"),
+        NominalTypeRefBaseIr::ServiceSymbol { symbol } => symbol.symbol_path(),
+        NominalTypeRefBaseIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
+        NominalTypeRefBaseIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => format!("{package_id}::{stable_schema_key}"),
     }
 }
 
@@ -5455,18 +5459,20 @@ mod tests {
                 const anonymous = catch<RecordFailure | PrimitiveFailure>(value)
               }
 
-              function rethrowStatement(exception: Exception<RecordFailure>) -> void {
+              function rethrowStatement(
+                exception: Exception<GenericFailure<string>>
+              ) -> void {
                 rethrow exception
               }
 
               function rethrowExpression(
-                exception: Exception<RecordFailure>
-              ) -> RecordFailure {
+                exception: Exception<GenericFailure<string>>
+              ) -> GenericFailure<string> {
                 return rethrow exception
               }
             "#,
         )
-        .expect("every non-generic nominal catch identity shape should be accepted");
+        .expect("nominal catch identities and generic rethrow envelopes should be accepted");
     }
 
     #[test]

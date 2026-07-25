@@ -11,6 +11,7 @@ pub enum TypeGraphNodeKind {
     PublicationType,
     ServiceSymbol,
     PackageSymbol,
+    AppliedNominal,
     DbObjectSymbol,
     Record,
     Union,
@@ -107,6 +108,7 @@ impl TypeGraphAnalyzer {
             TypeRefIr::ServiceSymbol { .. } => TypeGraphNodeKind::ServiceSymbol,
             TypeRefIr::PackageSymbol { .. } => TypeGraphNodeKind::PackageSymbol,
             TypeRefIr::PackageSchema { .. } => TypeGraphNodeKind::PackageSymbol,
+            TypeRefIr::AppliedNominal { .. } => TypeGraphNodeKind::AppliedNominal,
             TypeRefIr::DbObjectSymbol { .. } => TypeGraphNodeKind::DbObjectSymbol,
             TypeRefIr::Record { .. } => TypeGraphNodeKind::Record,
             TypeRefIr::Union { .. } => TypeGraphNodeKind::Union,
@@ -140,6 +142,24 @@ impl TypeGraphAnalyzer {
             }
             TypeRefIr::PackageSymbol { .. } | TypeRefIr::PackageSchema { .. } => {
                 facts.contains_package_symbol = true;
+                facts.schema_projectable_plain_data = false;
+            }
+            TypeRefIr::AppliedNominal { base, .. } => {
+                use skiff_artifact_model::NominalTypeRefBaseIr;
+
+                match base {
+                    NominalTypeRefBaseIr::LocalType { .. }
+                    | NominalTypeRefBaseIr::PublicationType { .. } => {
+                        facts.contains_local_type = true;
+                    }
+                    NominalTypeRefBaseIr::ServiceSymbol { .. } => {
+                        facts.contains_service_symbol = true;
+                    }
+                    NominalTypeRefBaseIr::PackageSymbol { .. }
+                    | NominalTypeRefBaseIr::PackageSchema { .. } => {
+                        facts.contains_package_symbol = true;
+                    }
+                }
                 facts.schema_projectable_plain_data = false;
             }
             TypeRefIr::DbObjectSymbol { .. } => {

@@ -5,6 +5,7 @@ use crate::type_ref::TypeRefVisitPathSegment;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeClosureTraceSegment {
     NativeArg { name: String, index: usize },
+    AppliedNominalArgument { index: usize },
     RecordField { name: String },
     UnionItem { index: usize },
     NullableInner,
@@ -17,7 +18,6 @@ pub enum TypeClosureTraceSegment {
     DeclarationField { name: String },
     NamedUnionBranch { index: usize },
     NamedUnionConcreteType,
-    NamedUnionTypeArgument { name: String },
     NamedUnionSyntheticPayload,
 }
 
@@ -25,6 +25,9 @@ impl From<TypeRefVisitPathSegment> for TypeClosureTraceSegment {
     fn from(segment: TypeRefVisitPathSegment) -> Self {
         match segment {
             TypeRefVisitPathSegment::NativeArg { name, index } => Self::NativeArg { name, index },
+            TypeRefVisitPathSegment::AppliedNominalArgument { index } => {
+                Self::AppliedNominalArgument { index }
+            }
             TypeRefVisitPathSegment::RecordField { name } => Self::RecordField { name },
             TypeRefVisitPathSegment::UnionItem { index } => Self::UnionItem { index },
             TypeRefVisitPathSegment::NullableInner => Self::NullableInner,

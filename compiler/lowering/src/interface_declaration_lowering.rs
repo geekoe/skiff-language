@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use skiff_artifact_model::PackageTypeRef;
 use skiff_compiler_source::{
     SourceExecutableReceiver, SourceInterfaceMethodKey, SourceInterfaceRequirementSignature,
     SourceInterfaceSignatureFacts, SourceSymbolKey,
@@ -9,7 +10,7 @@ use skiff_syntax::{
     error::{CompileError, Result},
 };
 
-use crate::file_ir::{FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr};
+use crate::file_ir::{FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, TypeRefIr};
 
 use super::{
     executable_type_projection::execution_type_ref, source_unit_lowering::source_span_ref,
@@ -86,7 +87,7 @@ fn lower_interface_operation(
                 "interface operation `{operation_name}` has no exact receiver"
             )));
         }
-        SourceExecutableReceiver::Implicit { ty } => Some(execution_type_ref(ty)),
+        SourceExecutableReceiver::Implicit { ty } => Some(interface_execution_type_ref(ty)),
         SourceExecutableReceiver::ExplicitParameter { parameter_index: 0 } => {
             if !signature
                 .parameters
@@ -113,13 +114,20 @@ fn lower_interface_operation(
             .iter()
             .map(|param| FunctionTypeParamIr {
                 name: param.name.clone(),
-                ty: execution_type_ref(&param.ty),
+                ty: interface_execution_type_ref(&param.ty),
             })
             .collect(),
-        return_type: execution_type_ref(&signature.return_type),
+        return_type: interface_execution_type_ref(&signature.return_type),
         is_native: signature.is_native,
         is_provider: signature.is_provider,
         is_static: signature.is_static,
         implicit_self,
     })
+}
+
+fn interface_execution_type_ref(ty: &PackageTypeRef) -> TypeRefIr {
+    match execution_type_ref(ty) {
+        TypeRefIr::TypeParam { name } if name == "Self" => TypeRefIr::builtin("Self"),
+        ty => ty,
+    }
 }

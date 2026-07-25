@@ -1130,7 +1130,9 @@ impl<'a> FunctionLowerer<'a> {
         }
         let expected = ResolvedTypeRef {
             source_text: selector.source_text.clone(),
-            ir: selector.identity.clone(),
+            ir: TypeRefIr::AnyInterface {
+                interface: selector.instantiation_ref.clone(),
+            },
         };
         let conformance = self
             .type_resolution
@@ -1906,29 +1908,11 @@ impl<'a> FunctionLowerer<'a> {
 
     fn receiver_type_for_call_object(&self, object: &Expr) -> Result<Option<(String, TypeRefIr)>> {
         if let Some((source_text, ty)) = self.expression_type_at_offset(1) {
-            let ty = match ty {
-                TypeRefIr::AnyInterface { .. } => ty,
-                _ => self.lower_receiver_type_text(&source_text).unwrap_or(ty),
-            };
             if !is_unknown_type_ref(&ty) {
                 return Ok(Some((source_text, ty)));
             }
         }
         self.infer_receiver_expr_type(object)
-    }
-
-    fn lower_receiver_type_text(&self, source_text: &str) -> Option<TypeRefIr> {
-        lower_type_text(
-            source_text,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
-            self.value_type_context(),
-        )
-        .ok()
     }
 
     fn infer_receiver_expr_type(&self, expr: &Expr) -> Result<Option<(String, TypeRefIr)>> {
@@ -2271,10 +2255,34 @@ impl<'a> FunctionLowerer<'a> {
             skiff_syntax::ast::Pattern::Binding(name) => PatternIr::Binding {
                 slot: self.declare_slot(name, SlotKind::Pattern, false)?,
             },
-            skiff_syntax::ast::Pattern::Nominal { name, .. } => {
-                return Err(CompileError::Semantic(format!(
-                    "nominal pattern `{name}` cannot match an erased runtime value; use a record, literal, binding, or wildcard pattern"
-                )));
+            skiff_syntax::ast::Pattern::Nominal {
+                name,
+                type_args,
+                fields,
+            } => {
+                let resolved = self
+                    .type_resolution
+                    .resolve_named_type_ref(name, type_args, &self.type_resolution_context())
+                    .map_err(|error| {
+                        CompileError::Semantic(format!(
+                            "nominal pattern `{name}` has invalid type: {error}"
+                        ))
+                    })?;
+                if !matches!(
+                    resolved.ir,
+                    TypeRefIr::LocalType { .. }
+                        | TypeRefIr::PublicationType { .. }
+                        | TypeRefIr::ServiceSymbol { .. }
+                        | TypeRefIr::PackageSymbol { .. }
+                        | TypeRefIr::PackageSchema { .. }
+                        | TypeRefIr::AppliedNominal { .. }
+                ) {
+                    return Err(CompileError::Semantic(format!(
+                        "nominal pattern `{name}` does not resolve to an exact nominal type"
+                    )));
+                }
+                self.declare_pattern_fields(fields)?;
+                PatternIr::Type { ty: resolved.ir }
             }
             skiff_syntax::ast::Pattern::Record { fields } => {
                 self.declare_pattern_fields(fields)?;

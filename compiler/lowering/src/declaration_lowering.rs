@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::file_ir::{
     FileIrUnit, LiteralIr, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeRefIr,
 };
+use skiff_artifact_identity::interface_instantiation_ref;
 use skiff_artifact_model::NamedUnionBranchIr;
 use skiff_compiler_source::{
     LocalDbObjectIndex, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
@@ -11,7 +12,7 @@ use skiff_compiler_source::{
 use skiff_syntax::{
     ast::{AliasDecl, InterfaceDecl, TypeDecl, TypeRef},
     error::{CompileError, Result},
-    type_syntax::{generic_parts, split_top_level},
+    type_syntax::split_top_level,
 };
 
 use super::{
@@ -76,16 +77,42 @@ pub(super) fn lower_type_declarations(
                 .implements
                 .iter()
                 .map(|implemented| {
-                    lower_type_ref(
-                        implemented,
-                        type_indices,
-                        local_db_objects,
-                        publication_db_metadata,
-                        package_aliases,
-                        external_type_symbols,
-                        source_alias_targets,
-                        TypeLoweringContext::value_with_type_params(&type_params),
-                    )
+                    let context =
+                        TypeResolutionContext::with_type_params(module_path, type_params.clone());
+                    type_resolution
+                        .resolve_canonical_interface_selector_type_ref(implemented, &context)
+                        .and_then(|selector| {
+                            let identity = match selector.identity {
+                                TypeRefIr::ServiceSymbol { symbol }
+                                    if symbol
+                                        .module_path
+                                        .strip_prefix("root.")
+                                        .unwrap_or(&symbol.module_path)
+                                        == module_path =>
+                                {
+                                    TypeRefIr::LocalType {
+                                        type_index: *type_indices
+                                            .get(&symbol.symbol)
+                                            .ok_or_else(|| {
+                                                format!(
+                                                    "local interface `{}` has no File IR type index",
+                                                    symbol.symbol
+                                                )
+                                            })?,
+                                    }
+                                }
+                                identity => identity,
+                            };
+                            Ok(TypeRefIr::AnyInterface {
+                                interface: interface_instantiation_ref(identity, selector.args),
+                            })
+                        })
+                        .map_err(|error| {
+                            CompileError::Semantic(format!(
+                                "type `{}` implements invalid interface selector `{}`: {error}",
+                                ty.name, implemented.name
+                            ))
+                        })
                 })
                 .collect::<Result<Vec<_>>>()?,
             source_span: Some(source_span.clone()),
@@ -204,21 +231,7 @@ fn lower_type_decl_descriptor(
             return Ok(TypeDescriptorIr::Union {
                 branches: branches
                     .into_iter()
-                    .map(|branch| {
-                        lower_named_union_branch(
-                            ty,
-                            branch,
-                            &context,
-                            type_indices,
-                            local_db_objects,
-                            publication_db_metadata,
-                            package_aliases,
-                            external_type_symbols,
-                            source_alias_targets,
-                            type_resolution,
-                            type_param_scope,
-                        )
-                    })
+                    .map(|branch| lower_named_union_branch(ty, branch, &context, type_resolution))
                     .collect::<Result<Vec<_>>>()?,
             });
         }
@@ -258,33 +271,24 @@ fn lower_type_decl_descriptor(
     Ok(TypeDescriptorIr::Record { fields })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn lower_named_union_branch(
     owner: &TypeDecl,
     branch: &str,
     type_context: &TypeResolutionContext<'_>,
-    type_indices: &BTreeMap<String, u32>,
-    local_db_objects: &LocalDbObjectIndex,
-    publication_db_metadata: &PublicationDbMetadataIndex,
-    package_aliases: &BTreeMap<String, Vec<String>>,
-    external_type_symbols: &PublicationTypeSymbolIndex,
-    source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
-    type_param_scope: &BTreeSet<String>,
 ) -> Result<NamedUnionBranchIr> {
     let branch_ref = TypeRef {
         name: branch.to_string(),
     };
-    let lowered = lower_type_ref(
-        &branch_ref,
-        type_indices,
-        local_db_objects,
-        publication_db_metadata,
-        package_aliases,
-        external_type_symbols,
-        source_alias_targets,
-        TypeLoweringContext::value_with_type_params(type_param_scope),
-    );
+    let lowered = type_resolution
+        .resolve_type_ref(&branch_ref, type_context)
+        .map(|resolved| resolved.ir)
+        .map_err(|error| {
+            CompileError::Semantic(format!(
+                "named union `{}` branch `{branch}` has invalid nominal type: {error}",
+                owner.name
+            ))
+        });
 
     if branch.trim().starts_with('{') {
         let payload_type = lowered?;
@@ -318,20 +322,7 @@ fn lower_named_union_branch(
         return Ok(NamedUnionBranchIr::Literal { value });
     }
 
-    let root = generic_parts(branch).map_or(branch.trim(), |parts| parts.root);
-    let nominal_ref = TypeRef {
-        name: root.to_string(),
-    };
-    let nominal_type = lower_type_ref(
-        &nominal_ref,
-        type_indices,
-        local_db_objects,
-        publication_db_metadata,
-        package_aliases,
-        external_type_symbols,
-        source_alias_targets,
-        TypeLoweringContext::value_with_type_params(type_param_scope),
-    )?;
+    let nominal_type = lowered?;
     if !matches!(
         nominal_type,
         TypeRefIr::LocalType { .. }
@@ -339,21 +330,11 @@ fn lower_named_union_branch(
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::PackageSymbol { .. }
             | TypeRefIr::PackageSchema { .. }
+            | TypeRefIr::AppliedNominal { .. }
     ) {
         return Err(invalid_named_union_branch(owner, branch));
     }
-    let type_arguments = type_resolution
-        .nominal_type_argument_bindings(&branch_ref, type_context)
-        .map_err(|error| {
-            CompileError::Semantic(format!(
-                "named union `{}` branch `{branch}` has invalid nominal arguments: {error}",
-                owner.name
-            ))
-        })?;
-    Ok(NamedUnionBranchIr::ConcreteNominal {
-        nominal_type,
-        type_arguments,
-    })
+    Ok(NamedUnionBranchIr::ConcreteNominal { nominal_type })
 }
 
 fn invalid_named_union_branch(owner: &TypeDecl, branch: &str) -> CompileError {

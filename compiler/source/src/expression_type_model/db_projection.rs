@@ -4,8 +4,8 @@ use skiff_artifact_model::{FunctionTypeParamIr, TypeRefIr};
 use skiff_compiler_core::db_projection::project_db_read_type;
 
 use crate::{
-    shared::type_expr::TypeExpr, PublicationDbMetadata, PublicationDbMetadataIndex,
-    ResolvedTypeRef, TypeResolutionContext, TypeResolutionModel,
+    PublicationDbMetadata, PublicationDbMetadataIndex, ResolvedTypeRef, TypeResolutionContext,
+    TypeResolutionModel,
 };
 
 pub(super) struct DbProjectionTypeResolver<'a> {
@@ -96,53 +96,73 @@ impl<'a> DbProjectionTypeResolver<'a> {
         context: &TypeResolutionContext<'_>,
         seen: &mut BTreeSet<String>,
     ) -> Result<TypeRefIr, String> {
-        let expression = TypeExpr::parse(&resolved.source_text);
-        match expression {
-            TypeExpr::EmptyRecord => Ok(TypeRefIr::Record {
-                fields: BTreeMap::new(),
-            }),
-            TypeExpr::Nullable(inner) => Ok(TypeRefIr::Nullable {
-                inner: Box::new(self.resolve_structural_type(
-                    &inner.to_type_string(),
-                    context,
-                    seen,
-                )?),
-            }),
-            TypeExpr::Union(items) => Ok(TypeRefIr::Union {
-                items: items
-                    .iter()
-                    .map(|item| self.resolve_structural_type(&item.to_type_string(), context, seen))
-                    .collect::<Result<Vec<_>, _>>()?,
-            }),
-            TypeExpr::Record(fields) => Ok(TypeRefIr::Record {
+        let recurse = |ty: &TypeRefIr, seen: &mut BTreeSet<String>| {
+            self.expand_structural_type(
+                &ResolvedTypeRef {
+                    source_text: String::new(),
+                    ir: ty.clone(),
+                },
+                context,
+                seen,
+            )
+        };
+        match &resolved.ir {
+            TypeRefIr::Record { fields } => Ok(TypeRefIr::Record {
                 fields: fields
                     .iter()
-                    .map(|field| {
-                        Ok((
-                            field.name.clone(),
-                            self.resolve_structural_type(
-                                &field.ty.to_type_string(),
-                                context,
-                                seen,
-                            )?,
-                        ))
-                    })
-                    .collect::<Result<BTreeMap<_, _>, String>>()?,
+                    .map(|(name, ty)| Ok((name.clone(), recurse(ty, seen)?)))
+                    .collect::<Result<_, String>>()?,
             }),
-            TypeExpr::Named { name: _, args } => {
-                let marker = format!("{}::{}", context.module_path, resolved.source_text);
+            TypeRefIr::Nullable { inner } => Ok(TypeRefIr::Nullable {
+                inner: Box::new(recurse(inner, seen)?),
+            }),
+            TypeRefIr::Union { items } => Ok(TypeRefIr::Union {
+                items: items
+                    .iter()
+                    .map(|item| recurse(item, seen))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            TypeRefIr::Function {
+                params,
+                return_type,
+            } => Ok(TypeRefIr::Function {
+                params: params
+                    .iter()
+                    .map(|param| {
+                        Ok(FunctionTypeParamIr {
+                            name: param.name.clone(),
+                            ty: recurse(&param.ty, seen)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
+                return_type: Box::new(recurse(return_type, seen)?),
+            }),
+            TypeRefIr::Builtin { name, args } => Ok(TypeRefIr::Builtin {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| recurse(arg, seen))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
+            | TypeRefIr::ServiceSymbol { .. }
+            | TypeRefIr::PackageSymbol { .. }
+            | TypeRefIr::AppliedNominal { .. } => {
+                let marker = serde_json::to_string(&resolved.ir)
+                    .map_err(|error| format!("DB projection type marker failed: {error}"))?;
                 if matches!(
                     &resolved.ir,
                     TypeRefIr::LocalType { .. }
                         | TypeRefIr::PublicationType { .. }
                         | TypeRefIr::ServiceSymbol { .. }
                         | TypeRefIr::PackageSymbol { .. }
-                        | TypeRefIr::DbObjectSymbol { .. }
+                        | TypeRefIr::AppliedNominal { .. }
                 ) && seen.insert(marker.clone())
                 {
                     if let Ok(target) = self
                         .type_resolution
-                        .resolve_constructor_target_text(&resolved.source_text, context)
+                        .resolve_constructor_target_resolved(resolved, context)
                     {
                         let fields = target
                             .fields
@@ -156,47 +176,9 @@ impl<'a> DbProjectionTypeResolver<'a> {
                     }
                     seen.remove(&marker);
                 }
-
-                match &resolved.ir {
-                    TypeRefIr::Builtin {
-                        name: resolved_name,
-                        args: resolved_args,
-                    } if args.len() == resolved_args.len() => Ok(TypeRefIr::Builtin {
-                        name: resolved_name.clone(),
-                        args: args
-                            .iter()
-                            .map(|arg| {
-                                self.resolve_structural_type(&arg.to_type_string(), context, seen)
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                    }),
-                    _ => Ok(resolved.ir.clone()),
-                }
+                Ok(resolved.ir.clone())
             }
-            TypeExpr::Function {
-                params,
-                return_type,
-            } => Ok(TypeRefIr::Function {
-                params: params
-                    .iter()
-                    .map(|param| {
-                        Ok(FunctionTypeParamIr {
-                            name: param.name.clone(),
-                            ty: self.resolve_structural_type(
-                                &param.ty.to_type_string(),
-                                context,
-                                seen,
-                            )?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?,
-                return_type: Box::new(self.resolve_structural_type(
-                    &return_type.to_type_string(),
-                    context,
-                    seen,
-                )?),
-            }),
-            TypeExpr::StringLiteral(_) | TypeExpr::AnyInterface { .. } => Ok(resolved.ir.clone()),
+            _ => Ok(resolved.ir.clone()),
         }
     }
 }
