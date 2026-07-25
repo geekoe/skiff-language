@@ -1,6 +1,7 @@
 # P5-F314 Eval platform catch and legacy fixture closure
 
-状态：Ready。
+状态：Implemented；剩余同类fixture由F317批量关闭。结果见
+`P5-F314-eval-platform-catch-fixture-closure-result.md`。
 
 ## 直接父节点
 
@@ -77,4 +78,3 @@ owner tests并记录精确首错；不得越界修复。不运行workspace/stabl
 - 风险：中高，进入A5；
 - 一次性Agent，5分钟内修改；提交并返回platform/request-local/site矩阵、旧路径反搜和验证；
 - 不push、不承接request/host。
-
