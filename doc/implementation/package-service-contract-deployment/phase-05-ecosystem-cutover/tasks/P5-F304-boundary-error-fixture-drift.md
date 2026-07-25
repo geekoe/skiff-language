@@ -1,6 +1,7 @@
 # P5-F304 Removed boundary error fixture migration
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F304-boundary-error-fixture-drift-result.md`。
 
 ## 直接父节点
 
@@ -52,4 +53,3 @@ selector必须非零。若运行语义被F302-B2遮挡，只记录精确首错�
 - branch：`codex/p5-f304-boundary-fixtures`
 - 新的一次性开发Agent；5分钟内完成首次修改；
 - 提交并返回commit、五处迁移、反搜与验证；不push、不操作stable、不承接其它节点。
-
