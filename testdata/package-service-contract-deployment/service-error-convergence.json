@@ -1,0 +1,129 @@
+{
+  "corpusCase": "internal-fixed-service-error",
+  "traceId": "trace-internal-1",
+  "errorId": "error-internal-1",
+  "privateSentinel": "provider-private-secret",
+  "hops": [
+    {
+      "name": "A",
+      "serviceId": "example.com/service-a",
+      "activationId": "activation-a",
+      "operationId": "service-a.run",
+      "source": {
+        "kind": "source",
+        "span": {
+          "sourceId": 101,
+          "start": {
+            "line": 11,
+            "column": 5,
+            "offset": 105
+          },
+          "end": {
+            "line": 11,
+            "column": 19,
+            "offset": 119
+          }
+        }
+      },
+      "localStack": [
+        {
+          "kind": "source",
+          "span": {
+            "sourceId": 101,
+            "start": {
+              "line": 11,
+              "column": 5,
+              "offset": 105
+            },
+            "end": {
+              "line": 11,
+              "column": 19,
+              "offset": 119
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "B",
+      "serviceId": "example.com/service-b",
+      "activationId": "activation-b",
+      "operationId": "service-b.forward",
+      "source": {
+        "kind": "source",
+        "span": {
+          "sourceId": 202,
+          "start": {
+            "line": 22,
+            "column": 7,
+            "offset": 207
+          },
+          "end": {
+            "line": 22,
+            "column": 28,
+            "offset": 228
+          }
+        }
+      },
+      "localStack": [
+        {
+          "kind": "source",
+          "span": {
+            "sourceId": 202,
+            "start": {
+              "line": 22,
+              "column": 7,
+              "offset": 207
+            },
+            "end": {
+              "line": 22,
+              "column": 28,
+              "offset": 228
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "C",
+      "serviceId": "example.com/service-c",
+      "activationId": "activation-c",
+      "operationId": "service-c.forward",
+      "source": {
+        "kind": "source",
+        "span": {
+          "sourceId": 303,
+          "start": {
+            "line": 33,
+            "column": 9,
+            "offset": 309
+          },
+          "end": {
+            "line": 33,
+            "column": 31,
+            "offset": 331
+          }
+        }
+      },
+      "localStack": [
+        {
+          "kind": "source",
+          "span": {
+            "sourceId": 303,
+            "start": {
+              "line": 33,
+              "column": 9,
+              "offset": 309
+            },
+            "end": {
+              "line": 33,
+              "column": 31,
+              "offset": 331
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "externalSafeMessage": "Service request failed"
+}
