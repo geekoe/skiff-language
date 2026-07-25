@@ -1,6 +1,7 @@
 # P5-F312 Service DB platform catch consumer
 
-状态：Ready。
+状态：Completed with unrelated suite blockers。结果见
+`P5-F312-service-db-platform-catch-consumer-result.md`。
 
 ## 直接父节点
 
@@ -38,4 +39,3 @@ selector非零。不运行eval/host/downstream/workspace/stable/live。
 - branch：`codex/p5-f312-service-db-catch`
 - 一次性Agent，5分钟内修改；提交并返回conflict/None/forwarding矩阵与验证；
 - 不push、不承接host。
-
