@@ -24,7 +24,8 @@
   - artifact identity marker/prefix尚未同步切换。
 - 并行节点：
   - F287只改std/prelude/tooling；
-  - F285/F286只改compiler source/language；
+  - F285只改有界package-call type resolution；
+  - 未来W2 language叶子只在F285 result落盘后建档，并在派发前重新审计写入面；
   - 后续runtime不得在本任务完成前实现自己的artifact identity fallback。
 - 完成后解除：W2-R runtime loader/index/channel与W2 language/artifact combined compile。
 
@@ -68,14 +69,17 @@ skiff-packages或internals。
 
 在唯一artifact-identity owner中同步bump并验证：
 
-- File IR identity marker/prefix，对应File IR v6；
-- PackageArtifact build identity marker/prefix，对应artifact v4与新boundary/signature shape；
-- Package Local ABI identity marker/prefix，因为public callable signature删除field；
-- ServiceProtocolIdentity marker/prefix，因为operation shape删除恒定`errors`；
+- `FILE_IR_IDENTITY_PREFIX`：v5 → v6，对应File IR v6；
+- `PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER`：v2 → v3；
+- `PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX`：v4 → v5；
+- `PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER`：v1 → v2；
+- `PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX`：v3 → v4；
+- `SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER`与`SERVICE_PROTOCOL_IDENTITY_PREFIX`：v3 → v4；
 - 任何直接把上述canonical projection schema写入preimage的版本marker。
 
 必须证明：
 
+- 不修改legacy `PACKAGE_BUILD_IDENTITY_*`与`PACKAGE_LOCAL_ABI_IDENTITY_*`常量；
 - `ContractOperationId`不变；
 - Publication/Operation ABI identity不因本任务新增throw set；
 - PackageSchemaTypeId与PackageSchemaIndexIdentity算法不变；
@@ -85,6 +89,8 @@ skiff-packages或internals。
 ### 3. Strict admission与golden
 
 - 新validator只接受A1新schema与新identity generation；
+- `artifact-identity/src/file_ir.rs::validate_file_ir_identity`必须拒绝非当前File IR
+  schema/format/opcode，不能按输入携带的任意旧version重新计算后接受；
 - 旧`throwTypes/errors`已由model strict拒绝，consumer不得用serde default/legacy reader重建；
 - stale旧identity prefix、旧preimage、owner/key/type id错配继续fail closed；
 - 更新golden前必须用mutation test证明每个预期改变/不变的identity domain，不盲改字符串；
@@ -101,6 +107,11 @@ skiff-packages或internals。
 - old schema/prefix与stale artifact严格拒绝；
 - contract closure只含parameter/return/stream/callback所需roots；
 - F278 same-heap identity正负结果不变。
+
+本任务的strict admission结论只覆盖Rust artifact/contract owner。Router的
+`router/src/router/filesystemRuntimeAssemblySnapshotLoader.ts`仍硬编码File IR v5、Package artifact build
+v4与ServiceProtocol v3，并独立校验protocol identity；它不在本任务范围。后续W2-W transport/router任务必须
+显式依赖F288，迁移该loader及相关protocol/manifest validators并刷新tooling golden，仍禁止legacy fallback。
 
 本任务唯一拥有以下聚焦验证；先用`--list`确认非零：
 
