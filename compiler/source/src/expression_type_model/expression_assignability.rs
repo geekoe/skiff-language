@@ -632,7 +632,7 @@ fn standard_library_object_literal_targets(
     let registry = prelude_registry();
     let symbol = registry.known_type_symbol(name)?;
     let decl = registry.type_decl(&symbol)?;
-    let decl = lower_prelude_type_decl(decl);
+    let decl = lower_prelude_type_decl(decl).ok()?;
     if decl.type_params.len() != args.len() {
         return None;
     }
@@ -654,14 +654,26 @@ fn object_literal_targets_from_descriptor(
             fields,
             substitutions,
         )]),
-        TypeDescriptorIr::Alias { target } => {
-            object_literal_targets_from_type_ref(target, substitutions)
+        TypeDescriptorIr::Alias { target }
+        | TypeDescriptorIr::Representation {
+            representation: target,
+        } => object_literal_targets_from_type_ref(target, substitutions),
+        TypeDescriptorIr::Union { branches } => {
+            let targets = branches
+                .iter()
+                .filter_map(|branch| match branch {
+                    skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type,
+                        ..
+                    } => object_literal_targets_from_type_ref(payload_type, substitutions),
+                    skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal { .. }
+                    | skiff_artifact_model::NamedUnionBranchIr::Literal { .. } => None,
+                })
+                .flatten()
+                .collect::<Vec<_>>();
+            (!targets.is_empty()).then_some(targets)
         }
-        TypeDescriptorIr::Union { variants } => variants
-            .iter()
-            .map(|variant| object_literal_targets_from_type_ref(variant, substitutions))
-            .collect::<Option<Vec<_>>>()
-            .map(|items| items.into_iter().flatten().collect()),
+        TypeDescriptorIr::Interface => None,
     }
 }
 

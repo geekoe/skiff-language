@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::file_ir::{
     BlockIr, CallIr, CallTargetIr, ConstDeclarationIr, ConstIr, ExecutableBody,
     ExecutableDeclarationIr, ExecutableIr, ExecutableKind, ExprIr, FileIrUnit, FunctionTypeParamIr,
-    ParamIr, SlotKind, SlotLayout, StmtIr, TypeRefIr,
+    InstructionSourceSite, ParamIr, SlotKind, SlotLayout, StmtIr, SyntheticInstructionSiteReason,
+    TypeRefIr,
 };
 use skiff_compiler_source::{
     semantic::{
@@ -738,6 +739,9 @@ fn lower_function_with_params(
             call: CallIr {
                 target: CallTargetIr::Native {
                     target: native_target_from_symbol(&executable_symbol),
+                },
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
                 },
                 args,
                 type_args,

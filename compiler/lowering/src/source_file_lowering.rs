@@ -423,6 +423,7 @@ fn lower_source_file_ir_unit(
         exact_interface_signatures,
         &type_indices,
         module_path,
+        type_resolution,
         &local_db_objects,
         publication_db_metadata,
         package_aliases,
@@ -830,7 +831,9 @@ mod tests {
     };
     use skiff_artifact_model::{
         validate_file_ir_service_calls, ContractOperationId, ContractRequirement,
-        PackageCallableId, PackageLocalAbiIdentity, ReceiverCallAbi, ServiceProtocolIdentity,
+        InstructionSourceSite, LiteralIr, NamedUnionBranchIr, PackageCallableId,
+        PackageLocalAbiIdentity, ReceiverCallAbi, ServiceProtocolIdentity,
+        SyntheticInstructionSiteReason, TypeDescriptorIr,
     };
     use skiff_compiler_input::CompilerPlatformSources;
     use skiff_compiler_source::{
@@ -963,6 +966,257 @@ mod tests {
             .first()
             .expect("one file IR unit should be emitted")
             .clone()
+    }
+
+    #[test]
+    fn source_declarations_lower_to_exact_mutually_exclusive_descriptors_and_branch_inputs() {
+        let unit = lowered_unit(
+            r#"
+              type ShapeA { value: string }
+              type ShapeB { value: string }
+              type Box<T> { value: T }
+              type PrimitiveFailure = string
+              type UnionOne discriminator "kind" =
+                ShapeA |
+                Box<string> |
+                { kind: "same", value: string } |
+                "literal"
+              type UnionTwo discriminator "kind" =
+                ShapeB |
+                { kind: "same", value: string } |
+                "literal"
+              alias TransparentFailure = ShapeA
+              interface Marker {
+                function label(self: Self) -> string
+              }
+            "#,
+        );
+
+        let declaration = |name: &str| {
+            unit.type_table
+                .iter()
+                .find(|declaration| declaration.name == name)
+                .unwrap_or_else(|| panic!("missing declaration `{name}`"))
+        };
+        let shape_a = declaration("ShapeA");
+        let shape_b = declaration("ShapeB");
+        assert!(matches!(
+            (&shape_a.descriptor, &shape_b.descriptor),
+            (
+                TypeDescriptorIr::Record { fields: left },
+                TypeDescriptorIr::Record { fields: right },
+            ) if left == right
+        ));
+        assert!(matches!(
+            declaration("PrimitiveFailure").descriptor,
+            TypeDescriptorIr::Representation { ref representation }
+                if representation == &TypeRefIr::builtin("string")
+        ));
+        assert!(matches!(
+            declaration("TransparentFailure").descriptor,
+            TypeDescriptorIr::Alias {
+                target: TypeRefIr::LocalType { type_index: 0 },
+            }
+        ));
+        assert!(matches!(
+            declaration("Marker").descriptor,
+            TypeDescriptorIr::Interface
+        ));
+
+        let TypeDescriptorIr::Union {
+            branches: union_one,
+        } = &declaration("UnionOne").descriptor
+        else {
+            panic!("UnionOne must lower as a named union");
+        };
+        assert_eq!(union_one.len(), 4);
+        assert!(matches!(
+            &union_one[0],
+            NamedUnionBranchIr::ConcreteNominal {
+                nominal_type: TypeRefIr::LocalType { type_index: 0 },
+                type_arguments,
+            } if type_arguments.is_empty()
+        ));
+        assert!(matches!(
+            &union_one[1],
+            NamedUnionBranchIr::ConcreteNominal {
+                nominal_type: TypeRefIr::LocalType { type_index: 2 },
+                type_arguments,
+            } if type_arguments == &BTreeMap::from([(
+                "T".to_string(),
+                TypeRefIr::builtin("string"),
+            )])
+        ));
+        assert!(matches!(
+            &union_one[2],
+            NamedUnionBranchIr::SyntheticDiscriminator {
+                payload_type: TypeRefIr::Record { fields },
+                discriminator_field,
+                discriminator_value,
+            } if discriminator_field == "kind"
+                && discriminator_value == "same"
+                && fields["kind"] == TypeRefIr::Literal {
+                    value: LiteralIr::String {
+                        value: "same".to_string(),
+                    },
+                }
+        ));
+        assert!(matches!(
+            &union_one[3],
+            NamedUnionBranchIr::Literal {
+                value: LiteralIr::String { value },
+            } if value == "literal"
+        ));
+
+        let TypeDescriptorIr::Union {
+            branches: union_two,
+        } = &declaration("UnionTwo").descriptor
+        else {
+            panic!("UnionTwo must lower as a distinct named union");
+        };
+        assert!(matches!(
+            &union_two[0],
+            NamedUnionBranchIr::ConcreteNominal {
+                nominal_type: TypeRefIr::LocalType { type_index: 1 },
+                ..
+            }
+        ));
+        assert_eq!(union_one[2], union_two[1]);
+        assert_eq!(union_one[3], union_two[2]);
+        assert_ne!(declaration("UnionOne").name, declaration("UnionTwo").name);
+    }
+
+    #[test]
+    fn source_calls_and_throws_keep_real_sites_and_catch_type_is_required() {
+        let unit = lowered_unit(
+            r#"
+              type Failure { message: string }
+
+              function callee(value: string) -> string {
+                return value
+              }
+
+              function statement(failure: Failure) -> void {
+                callee("call")
+                throw failure
+              }
+
+              function expression(failure: Failure) -> Failure {
+                return throw failure
+              }
+
+              function caught(value: string) -> void {
+                const attempted = catch<Failure>(callee(value))
+              }
+            "#,
+        );
+
+        let statement = executable(&unit, "statement");
+        let call = statement
+            .body
+            .expressions
+            .iter()
+            .find_map(|expression| match expression {
+                ExprIr::Call { call } => Some(call),
+                _ => None,
+            })
+            .expect("source call lowers");
+        assert!(matches!(
+            call.site,
+            InstructionSourceSite::Source { ref span }
+                if span.source_id == 0 && span.start.line > 0
+        ));
+        let throw_site = statement
+            .body
+            .statements
+            .iter()
+            .find_map(|statement| match statement {
+                skiff_artifact_model::StmtIr::Throw {
+                    payload_type, site, ..
+                } => Some((payload_type, site)),
+                _ => None,
+            })
+            .expect("statement throw lowers");
+        assert_eq!(throw_site.0, &TypeRefIr::LocalType { type_index: 0 });
+        assert!(matches!(
+            throw_site.1,
+            InstructionSourceSite::Source { span }
+                if span.source_id == 0 && span.start.line > 0
+        ));
+
+        let expression = executable(&unit, "expression");
+        assert!(expression.body.expressions.iter().any(|expression| {
+            matches!(
+                expression,
+                ExprIr::Throw {
+                    payload_type: TypeRefIr::LocalType { type_index: 0 },
+                    site: InstructionSourceSite::Source { span },
+                    ..
+                } if span.source_id == 0 && span.start.line > 0
+            )
+        }));
+
+        let caught = executable(&unit, "caught");
+        assert!(caught.body.expressions.iter().any(|expression| {
+            matches!(
+                expression,
+                ExprIr::Catch {
+                    catch_type: TypeRefIr::LocalType { type_index: 0 },
+                    ..
+                }
+            )
+        }));
+        assert!(caught.body.expressions.iter().any(|expression| {
+            matches!(
+                expression,
+                ExprIr::Call {
+                    call: CallIr {
+                        site: InstructionSourceSite::Source { span },
+                        ..
+                    },
+                } if span.source_id == 0 && span.start.line > 0
+            )
+        }));
+
+        let wire = serde_json::to_value(&unit).expect("File IR serializes");
+        assert!(
+            !wire.to_string().contains("\"catchType\":null"),
+            "typed catch cannot serialize an implicit catch-all"
+        );
+    }
+
+    #[test]
+    fn compiler_generated_native_wrapper_uses_only_the_wrapper_synthetic_reason() {
+        let mut units = lowered_units_for_package(
+            "skiff.run/std",
+            vec![(
+                "std/wrapper_fixture.skiff",
+                "std.wrapper_fixture",
+                "native function passthrough(value: string) -> string",
+            )],
+        );
+        let unit = units.pop().expect("one native wrapper File IR unit");
+        let wrapper = unit
+            .executables
+            .iter()
+            .find(|executable| executable.symbol == "std.wrapper_fixture.passthrough")
+            .expect("native wrapper executable lowers");
+        let call = wrapper
+            .body
+            .expressions
+            .iter()
+            .find_map(|expression| match expression {
+                ExprIr::Call { call } => Some(call),
+                _ => None,
+            })
+            .expect("native wrapper contains its generated native call");
+
+        assert!(matches!(
+            call.site,
+            InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
+            }
+        ));
     }
 
     #[test]
@@ -1930,7 +2184,7 @@ mod tests {
         assert!(!wire.contains("operationAbiId"));
         assert!(unit
             .file_ir_identity
-            .starts_with("skiff-file-ir-v5:sha256:"));
+            .starts_with("skiff-file-ir-v6:sha256:"));
     }
 
     #[test]

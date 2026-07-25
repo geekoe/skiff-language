@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    LiteralIr, PackageRefIr, PackageSymbolRef, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+    LiteralIr, NamedUnionBranchIr, PackageRefIr, PackageSymbolRef, TypeDeclIr, TypeDescriptorIr,
+    TypeRefIr,
 };
 
 use crate::{
@@ -268,22 +269,23 @@ fn record_type_descriptor_fields(
     fields
 }
 
-pub fn lower_prelude_type_decl(ty: &TypeDecl) -> TypeDeclIr {
+pub fn lower_prelude_type_decl(ty: &TypeDecl) -> Result<TypeDeclIr, String> {
     let type_params = ty.type_params.iter().cloned().collect::<BTreeSet<_>>();
     let bindings = RuntimeBindings::new(ProviderRuntimePolicy::disabled());
     let descriptor = if let Some(alias) = &ty.alias {
         let target = prelude_type_text_descriptor(alias.name.trim(), &bindings, &type_params);
         match target {
-            TypeRefIr::Union { items } => TypeDescriptorIr::Union { variants: items },
-            other => TypeDescriptorIr::Alias { target: other },
-        }
-    } else if ty.discriminator.is_some() {
-        TypeDescriptorIr::Union {
-            variants: ty
-                .fields
-                .iter()
-                .map(|f| prelude_type_text_descriptor(f.ty.name.trim(), &bindings, &type_params))
-                .collect(),
+            TypeRefIr::Union { .. } => TypeDescriptorIr::Union {
+                branches: split_top_level(&alias.name, '|')
+                    .into_iter()
+                    .map(|branch| {
+                        lower_prelude_named_union_branch(ty, branch, &bindings, &type_params)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
+            other => TypeDescriptorIr::Representation {
+                representation: other,
+            },
         }
     } else {
         TypeDescriptorIr::Record {
@@ -299,13 +301,104 @@ pub fn lower_prelude_type_decl(ty: &TypeDecl) -> TypeDeclIr {
                 .collect(),
         }
     };
-    TypeDeclIr {
+    Ok(TypeDeclIr {
         name: ty.name.clone(),
         descriptor,
         type_params: ty.type_params.clone(),
-        discriminator: ty.discriminator.clone(),
         implements: Vec::new(),
         source_span: None,
+    })
+}
+
+fn lower_prelude_named_union_branch(
+    owner: &TypeDecl,
+    branch: &str,
+    bindings: &RuntimeBindings,
+    type_params: &BTreeSet<String>,
+) -> Result<NamedUnionBranchIr, String> {
+    let payload_type = prelude_type_text_descriptor(branch, bindings, type_params);
+    match payload_type {
+        TypeRefIr::Record { ref fields } => {
+            let discriminator_field = owner.discriminator.as_deref().ok_or_else(|| {
+                format!(
+                    "prelude named union `{}` anonymous branch lacks a discriminator",
+                    owner.name
+                )
+            })?;
+            let Some(TypeRefIr::Literal {
+                value:
+                    LiteralIr::String {
+                        value: discriminator_value,
+                    },
+            }) = fields.get(discriminator_field)
+            else {
+                return Err(format!(
+                    "prelude named union `{}` branch `{branch}` lacks discriminator literal `{discriminator_field}`",
+                    owner.name
+                ));
+            };
+            let discriminator_value = discriminator_value.clone();
+            Ok(NamedUnionBranchIr::SyntheticDiscriminator {
+                payload_type,
+                discriminator_field: discriminator_field.to_string(),
+                discriminator_value,
+            })
+        }
+        TypeRefIr::Literal { value } => Ok(NamedUnionBranchIr::Literal { value }),
+        nominal_type
+            if matches!(
+                nominal_type,
+                TypeRefIr::LocalType { .. }
+                    | TypeRefIr::PublicationType { .. }
+                    | TypeRefIr::ServiceSymbol { .. }
+                    | TypeRefIr::PackageSymbol { .. }
+                    | TypeRefIr::PackageSchema { .. }
+            ) =>
+        {
+            let type_arguments = generic_parts(branch)
+                .map(|parts| {
+                    let symbol = prelude_registry()
+                        .known_type_symbol(parts.root)
+                        .ok_or_else(|| {
+                            format!(
+                                "prelude named union `{}` branch `{branch}` is not a known nominal type",
+                                owner.name
+                            )
+                        })?;
+                    let declaration = prelude_registry().type_decl(&symbol).ok_or_else(|| {
+                        format!(
+                            "prelude named union `{}` branch `{branch}` has no declaration",
+                            owner.name
+                        )
+                    })?;
+                    if declaration.type_params.len() != parts.args.len() {
+                        return Err(format!(
+                            "prelude named union `{}` branch `{branch}` expects {} type arguments, found {}",
+                            owner.name,
+                            declaration.type_params.len(),
+                            parts.args.len()
+                        ));
+                    }
+                    Ok(declaration
+                        .type_params
+                        .iter()
+                        .cloned()
+                        .zip(parts.args.iter().map(|argument| {
+                            prelude_type_text_descriptor(argument, bindings, type_params)
+                        }))
+                        .collect())
+                })
+                .transpose()?
+                .unwrap_or_default();
+            Ok(NamedUnionBranchIr::ConcreteNominal {
+                nominal_type,
+                type_arguments,
+            })
+        }
+        _ => Err(format!(
+            "prelude named union `{}` branch `{branch}` has no nominal branch identity",
+            owner.name
+        )),
     }
 }
 
@@ -370,5 +463,74 @@ fn substitute_prelude_type_params_in_ir(ty: &mut TypeRefIr, type_params: &BTreeS
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use skiff_compiler_input::CompilerPlatformSources;
+
+    use super::*;
+    use crate::prelude_registry::initialize_prelude_registry;
+
+    fn initialize_test_prelude() {
+        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root resolves");
+        let platform_sources =
+            CompilerPlatformSources::new(&platform_root).expect("platform sources load");
+        initialize_prelude_registry(&platform_sources).expect("prelude registry initializes");
+    }
+
+    #[test]
+    fn prelude_declarations_preserve_record_representation_and_named_union_kinds() {
+        initialize_test_prelude();
+        let registry = prelude_registry();
+
+        let record = lower_prelude_type_decl(
+            registry
+                .type_decl("std.json.DecodeError")
+                .expect("DecodeError declaration"),
+        )
+        .expect("record declaration lowers");
+        assert!(matches!(
+            record.descriptor,
+            TypeDescriptorIr::Record { ref fields }
+                if fields["target"] == TypeRefIr::builtin("string")
+                    && fields["message"] == TypeRefIr::builtin("string")
+        ));
+
+        let representation = lower_prelude_type_decl(
+            registry
+                .type_decl("std.time.Duration")
+                .expect("Duration declaration"),
+        )
+        .expect("representation declaration lowers");
+        assert!(matches!(
+            representation.descriptor,
+            TypeDescriptorIr::Representation { ref representation }
+                if representation == &TypeRefIr::builtin("integer")
+        ));
+
+        let union = lower_prelude_type_decl(
+            registry
+                .type_decl("std.http.HttpResponseStreamEvent")
+                .expect("HttpResponseStreamEvent declaration"),
+        )
+        .expect("named union declaration lowers");
+        let TypeDescriptorIr::Union { branches } = union.descriptor else {
+            panic!("prelude named union must remain a named union");
+        };
+        assert_eq!(branches.len(), 3);
+        assert!(branches.iter().all(|branch| matches!(
+            branch,
+            NamedUnionBranchIr::SyntheticDiscriminator {
+                discriminator_field,
+                ..
+            } if discriminator_field == "tag"
+        )));
     }
 }

@@ -299,6 +299,7 @@ fn root_qualified_and_catch_wrapped_helpers_keep_exact_local_targets() {
         r#"
             type Input { value: string }
             type Output { value: string }
+            type Failure = string
 
             function detach(input: Input) -> Output {
               return Output { value: input.value }
@@ -309,7 +310,7 @@ fn root_qualified_and_catch_wrapped_helpers_keep_exact_local_targets() {
             }
 
             function catchWrapper(input: Input) -> Output? {
-              const attempted = catch<string>(detach(input))
+              const attempted = catch<Failure>(detach(input))
               if attempted.tag == "ok" { return attempted.value }
               return null
             }
@@ -331,6 +332,7 @@ fn typed_catch_tag_narrowing_keeps_success_and_error_provenance_separate() {
     let model = analyze(
         r#"
             type Boxed { value: string }
+            type Failure = string
 
             function fresh(input: Boxed) -> Boxed {
               return Boxed { value: input.value }
@@ -345,37 +347,37 @@ fn typed_catch_tag_narrowing_keeps_success_and_error_provenance_separate() {
             }
 
             function okEq(input: Boxed) -> Boxed? {
-              const attempted = catch<string>(fresh(input))
+              const attempted = catch<Failure>(fresh(input))
               if attempted.tag == "ok" { return attempted.value }
               return null
             }
 
             function okNeEarly(input: Boxed) -> Boxed? {
-              const attempted = catch<string>(fresh(input))
+              const attempted = catch<Failure>(fresh(input))
               if attempted.tag != "ok" { return null }
               return attempted.value
             }
 
             function nested(input: Boxed) -> Boxed? {
-              const attempted = catch<string>(okEq(input))
+              const attempted = catch<Failure>(okEq(input))
               if attempted.tag != "ok" { return null }
               return attempted.value
             }
 
             function exactAlias(input: Boxed) -> Boxed? {
-              const attempted = catch<string>(alias(input))
+              const attempted = catch<Failure>(alias(input))
               if attempted.tag != "ok" { return null }
               return attempted.value
             }
 
-            function errorBranch(input: Boxed) -> Exception<string>? {
-              const attempted = catch<string>(alias(input))
+            function errorBranch(input: Boxed) -> Exception<Failure>? {
+              const attempted = catch<Failure>(alias(input))
               if attempted.tag == "err" { return attempted.exception }
               return null
             }
 
             function nullableCheck(input: Boxed) -> bool {
-              const attempted = catch<string>(nullableAlias(input))
+              const attempted = catch<Failure>(nullableAlias(input))
               if attempted.tag != "ok" { return false }
               return attempted.value == null
             }
@@ -424,13 +426,14 @@ fn typed_catch_does_not_sanitize_unknown_success_provenance() {
     let model = analyze(
         r#"
             type Boxed { value: string }
+            type Failure = string
 
             interface Provider {
               function run(self: Self, input: Boxed) -> Boxed
             }
 
             function unknown(input: Boxed, provider: any Provider) -> Boxed? {
-              const attempted = catch<string>(provider.run(input))
+              const attempted = catch<Failure>(provider.run(input))
               if attempted.tag != "ok" { return null }
               return attempted.value
             }

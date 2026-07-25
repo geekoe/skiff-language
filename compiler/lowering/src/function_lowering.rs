@@ -26,11 +26,11 @@ use skiff_syntax::{
 
 use crate::file_ir::{
     AssignTargetIr, BinaryOpIr, BlockIr, BoxSourceIr, CallIr, CallTargetIr, ExecutableBody, ExprIr,
-    ExprRefIr, FunctionTypeParamIr, InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr,
-    InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr, LiteralIr, MatchArmIr, MetadataValue,
-    NativeTarget, PackageRefIr, PackageSymbolRef, PatternIr, ServiceSymbolRef, SlotIr, SlotKind,
-    StmtIr, StmtRefIr, TestEffectExpectedIr, TestEffectOutcomeIr, TestEffectRegisterTargetIr,
-    TypeRefIr, UnaryOpIr,
+    ExprRefIr, FunctionTypeParamIr, InstructionSourceSite, InterfaceMethodSlotPlanIr,
+    InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr,
+    LiteralIr, MatchArmIr, MetadataValue, NativeTarget, PackageRefIr, PackageSymbolRef, PatternIr,
+    ServiceSymbolRef, SlotIr, SlotKind, StmtIr, StmtRefIr, TestEffectExpectedIr,
+    TestEffectOutcomeIr, TestEffectRegisterTargetIr, TypeRefIr, UnaryOpIr,
 };
 
 use super::{
@@ -38,6 +38,7 @@ use super::{
     db_lowering::{is_db_readonly_result_operation, DbMetadataIr, LoweredPackageDbMetadataIndex},
     executable_type_projection::execution_type_ref,
     service_call_lowering::LoweredServiceCalls,
+    source_unit_lowering::source_span_ref,
     type_lowering::{
         is_official_std_module_path, is_official_std_package_ref, is_unknown_type_ref,
         lower_named_type, lower_type_ref, lower_type_text, package_scoped_root_path,
@@ -465,7 +466,7 @@ impl<'a> FunctionLowerer<'a> {
                             .and_then(|fact| fact.test_effect_throw_payload_type.clone())
                             .ok_or_else(|| {
                                 CompileError::Semantic(format!(
-                                    "test effect `{target}` throw has no selected declared payload type"
+                                    "test effect `{target}` throw has no validated nominal payload type fact"
                                 ))
                             })?;
                         TestEffectOutcomeIr::Throw {
@@ -641,10 +642,15 @@ impl<'a> FunctionLowerer<'a> {
                 value: self.lower_expr(value)?,
             },
             Stmt::Throw { value } => {
+                let site = self.source_instruction_site(
+                    self.peek_expression_key().as_ref(),
+                    "statement throw",
+                )?;
                 let payload_type = self.throw_payload_type(value, 0)?;
                 StmtIr::Throw {
                     value: self.lower_expr(value)?,
                     payload_type,
+                    site,
                 }
             }
             Stmt::Rethrow { exception } => StmtIr::Rethrow {
@@ -936,6 +942,29 @@ impl<'a> FunctionLowerer<'a> {
             ))
         })?;
         Ok((ty.source_text.clone(), ty.ir.clone()))
+    }
+
+    fn source_instruction_site(
+        &self,
+        key: Option<&ExpressionKey>,
+        purpose: &str,
+    ) -> Result<InstructionSourceSite> {
+        let key = key.ok_or_else(|| {
+            CompileError::Semantic(format!(
+                "{purpose} lowering requires a source expression identity"
+            ))
+        })?;
+        let fact = self
+            .expression_types
+            .and_then(|types| types.fact(key))
+            .ok_or_else(|| {
+                CompileError::Semantic(format!(
+                    "{purpose} lowering requires a source span fact for ExpressionKey {key:?}"
+                ))
+            })?;
+        Ok(InstructionSourceSite::Source {
+            span: source_span_ref(fact.span),
+        })
     }
 
     fn lower_record_construct(
@@ -1305,10 +1334,13 @@ impl<'a> FunctionLowerer<'a> {
                 )));
             }
             Expr::Throw { value } => {
+                let site =
+                    self.source_instruction_site(expression_key.as_ref(), "expression throw")?;
                 let payload_type = self.throw_payload_type(value, 1)?;
                 ExprIr::Throw {
                     value: self.lower_expr(value)?,
                     payload_type,
+                    site,
                 }
             }
             Expr::Rethrow { exception } => ExprIr::Rethrow {
@@ -1323,7 +1355,7 @@ impl<'a> FunctionLowerer<'a> {
                 ExprIr::Catch {
                     try_expression: self.lower_expr(try_expr)?,
                     catch_slot,
-                    catch_type: Some(lower_type_ref(
+                    catch_type: lower_type_ref(
                         catch_type,
                         self.type_indices,
                         self.local_db_objects,
@@ -1332,7 +1364,7 @@ impl<'a> FunctionLowerer<'a> {
                         self.external_type_symbols,
                         self.source_alias_targets,
                         self.value_type_context(),
-                    )?),
+                    )?,
                     body: self.push_expr(ExprIr::LoadSlot { slot: catch_slot }),
                 }
             }
@@ -1484,6 +1516,7 @@ impl<'a> FunctionLowerer<'a> {
         Ok(ExprIr::Call {
             call: CallIr {
                 target,
+                site: self.source_instruction_site(expression_key, "call")?,
                 args: lowered_args,
                 type_args,
                 metadata,

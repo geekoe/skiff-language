@@ -16,6 +16,7 @@ use crate::file_ir::{
     ServiceSymbolRef, TypeDescriptorIr, TypeLinkTargetIr, TypeRefIr,
 };
 use skiff_artifact_identity::type_ref_abi_key;
+use skiff_artifact_model::NamedUnionBranchIr;
 use skiff_compiler_core::source_role::PublicationSourceRole;
 use skiff_compiler_source::api::PublicSymbolKind;
 use skiff_compiler_source::parsed_sources::ParsedCompilerSource;
@@ -704,11 +705,44 @@ fn derive_file_ir_link_targets(units: &mut [FileIrUnit], seed: &PublicationApiSe
             TypeDescriptorIr::Alias { target } => {
                 collect_type_ref_named_locations(&index, &module_path, target, &mut refs);
             }
-            TypeDescriptorIr::Union { variants } => {
-                for variant in variants {
-                    collect_type_ref_named_locations(&index, &module_path, variant, &mut refs);
+            TypeDescriptorIr::Representation { representation } => {
+                collect_type_ref_named_locations(&index, &module_path, representation, &mut refs);
+            }
+            TypeDescriptorIr::Union { branches } => {
+                for branch in branches {
+                    match branch {
+                        NamedUnionBranchIr::ConcreteNominal {
+                            nominal_type,
+                            type_arguments,
+                        } => {
+                            collect_type_ref_named_locations(
+                                &index,
+                                &module_path,
+                                nominal_type,
+                                &mut refs,
+                            );
+                            for argument in type_arguments.values() {
+                                collect_type_ref_named_locations(
+                                    &index,
+                                    &module_path,
+                                    argument,
+                                    &mut refs,
+                                );
+                            }
+                        }
+                        NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                            collect_type_ref_named_locations(
+                                &index,
+                                &module_path,
+                                payload_type,
+                                &mut refs,
+                            );
+                        }
+                        NamedUnionBranchIr::Literal { .. } => {}
+                    }
                 }
             }
+            TypeDescriptorIr::Interface => {}
         }
         // Interfaces declared in this module contribute their operation signatures.
         if let Some(interface) = unit.declarations.interfaces.get(&ty.name) {

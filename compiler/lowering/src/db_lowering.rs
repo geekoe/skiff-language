@@ -7,8 +7,10 @@ use crate::file_ir::{
     DbOpKindIr, DbOperationIr, DbOrderEntryIr, DbPredicateCompareOpIr, DbPredicateIr,
     DbProjectionIr, DbQueryIr, DbQueryValueIr, DbRetentionIr, DbRetentionUnitIr, DbSelectorIr,
     DbTargetIr, DbTransactionIr, ExprIr, ExprRefIr, FieldPathIr, FileIrUnit, FunctionTypeParamIr,
-    LiteralIr, MetadataValue, ServiceSymbolRef, SlotKind, StmtIr, TypeDescriptorIr, TypeRefIr,
+    InstructionSourceSite, LiteralIr, MetadataValue, ServiceSymbolRef, SlotKind, StmtIr,
+    SyntheticInstructionSiteReason, TypeDescriptorIr, TypeRefIr,
 };
+use skiff_artifact_model::NamedUnionBranchIr;
 use skiff_compiler_core::db_projection::project_db_read_type;
 use skiff_compiler_source::{
     semantic::DbAttachmentIndex, LocalDbObjectIndex, PublicationDbMetadata,
@@ -523,12 +525,36 @@ fn expand_db_storage_type_ref(
                 TypeDescriptorIr::Alias { target } => {
                     expand_db_storage_type_ref(target, unit, seen_local_types)?
                 }
-                TypeDescriptorIr::Union { variants } => TypeRefIr::Union {
-                    items: variants
+                TypeDescriptorIr::Representation { representation } => {
+                    expand_db_storage_type_ref(representation, unit, seen_local_types)?
+                }
+                TypeDescriptorIr::Union { branches } => TypeRefIr::Union {
+                    items: branches
                         .iter()
-                        .map(|variant| expand_db_storage_type_ref(variant, unit, seen_local_types))
+                        .map(|branch| {
+                            let branch_type = match branch {
+                                NamedUnionBranchIr::ConcreteNominal { nominal_type, .. } => {
+                                    nominal_type
+                                }
+                                NamedUnionBranchIr::SyntheticDiscriminator {
+                                    payload_type, ..
+                                } => payload_type,
+                                NamedUnionBranchIr::Literal { value } => {
+                                    return Ok(TypeRefIr::Literal {
+                                        value: value.clone(),
+                                    });
+                                }
+                            };
+                            expand_db_storage_type_ref(branch_type, unit, seen_local_types)
+                        })
                         .collect::<Result<Vec<_>>>()?,
                 },
+                TypeDescriptorIr::Interface => {
+                    return Err(CompileError::Semantic(format!(
+                        "interface type `{}` cannot be used as db storage",
+                        decl.name
+                    )));
+                }
             };
             seen_local_types.remove(type_index);
             Ok(expanded)
@@ -808,6 +834,9 @@ impl<'a> FunctionLowerer<'a> {
             call: CallIr {
                 target: CallTargetIr::Builtin {
                     op: "db.transaction".to_string(),
+                },
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerDesugaring,
                 },
                 args: vec![block_arg],
                 type_args: BTreeMap::new(),

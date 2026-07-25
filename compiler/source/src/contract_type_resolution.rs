@@ -77,7 +77,6 @@ impl SourceExecutableSignature {
         Ok(PackageCallableSignature {
             parameters,
             return_type: self.return_type.clone(),
-            throw_types: Vec::new(),
             may_suspend: self.may_suspend,
         })
     }

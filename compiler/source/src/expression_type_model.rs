@@ -800,20 +800,6 @@ impl<'a> OwnerChecker<'a> {
                                 return false;
                             }
                         };
-                        let throw_types = match &contract.errors {
-                            skiff_artifact_model::BoundaryErrorContract::None => Vec::new(),
-                            skiff_artifact_model::BoundaryErrorContract::Typed {
-                                payload_type,
-                                ..
-                            } => vec![package_type_ref_from_contract_type(payload_type)],
-                            skiff_artifact_model::BoundaryErrorContract::Unsupported { .. } => {
-                                self.diagnostics.push(format!(
-                                    "{}: compiler test effect target `{target}` has an unsupported error contract",
-                                    self.module_path
-                                ));
-                                return false;
-                            }
-                        };
                         (
                             skiff_artifact_model::PackageCallableSignature {
                                 parameters: contract
@@ -827,7 +813,6 @@ impl<'a> OwnerChecker<'a> {
                                     })
                                     .collect(),
                                 return_type,
-                                throw_types,
                                 may_suspend: contract.may_suspend,
                             },
                             ExactTestEffectTarget::Service {
@@ -886,7 +871,7 @@ impl<'a> OwnerChecker<'a> {
                         }
                     }
                     crate::shared::ast::TestEffectStepOutcome::Throw { value } => {
-                        self.check_test_effect_throw(value, &signature.throw_types, target);
+                        self.check_test_effect_throw(value, target);
                     }
                     crate::shared::ast::TestEffectStepOutcome::Stream { events } => {
                         let Some(item) = direct_stream_item_type(&signature.return_type) else {
@@ -1123,7 +1108,10 @@ impl<'a> OwnerChecker<'a> {
             }
             Stmt::DbTransaction { body } => self.check_block(body),
             Stmt::Throw { value } => {
-                self.check_expr(value);
+                let key = self.peek_key();
+                if let Some(actual) = self.check_expr(value) {
+                    self.validate_throw_payload(&key, &actual, "throw");
+                }
                 true
             }
             Stmt::Emit(value) => {
@@ -1167,7 +1155,10 @@ impl<'a> OwnerChecker<'a> {
                 false
             }
             Stmt::Rethrow { exception } => {
-                self.check_expr(exception);
+                let key = self.peek_key();
+                if let Some(actual) = self.check_expr(exception) {
+                    self.validate_rethrow_operand(&key, &actual);
+                }
                 true
             }
             Stmt::Return(value) => {
@@ -1264,66 +1255,58 @@ impl<'a> OwnerChecker<'a> {
         );
     }
 
-    fn check_test_effect_throw(&mut self, value: &Expr, declared: &[PackageTypeRef], target: &str) {
+    fn check_test_effect_throw(&mut self, value: &Expr, target: &str) {
         let key = self.peek_key();
         let Some(actual) = self.check_expr(value) else {
             return;
         };
-        let actual_projected = self
-            .contract_projection
-            .expression_type(&key)
-            .cloned()
-            .or_else(|| {
-                self.dependency_analysis.and_then(|dependencies| {
-                    ContractProjectionState::project_resolved_type(
-                        &actual,
-                        self.type_resolution,
-                        dependencies,
-                        &self.type_context,
-                    )
-                    .ok()
-                })
-            });
-        let matches = match (actual_projected.as_ref(), self.dependency_analysis) {
-            (Some(actual), Some(dependencies)) => declared
-                .iter()
-                .filter(|expected| package_type_target_assignable(actual, expected, dependencies))
-                .collect::<Vec<_>>(),
-            _ => declared
-                .iter()
-                .filter(|expected| {
-                    self.type_resolution.assignable_in_context(
-                        &actual,
-                        &resolved_package_type_ref(expected),
-                        &self.type_context,
-                    )
-                })
-                .collect::<Vec<_>>(),
-        };
-        let [selected] = matches.as_slice() else {
+        if let Err(error) = self
+            .type_resolution
+            .catch_leaves(&actual, &self.type_context)
+        {
             self.diagnostics.push(format!(
-                "{}: test effect `{target}` throw must match exactly one declared payload type, matched {}; actual projection: {:?}; declared: {:?}",
+                "{}: test effect `{target}` throw has invalid catch payload at {}: {error}",
                 self.module_path,
-                matches.len(),
-                actual_projected,
-                declared,
+                self.expression_span_label(&key),
             ));
             return;
-        };
-        if let Some(fact) = self.facts.get_mut(&key) {
-            fact.test_effect_throw_payload_type =
-                Some(resolved_package_type_ref(selected).ir.clone());
         }
-        self.check_value_assignable_to_expected(
-            None,
-            value,
-            &key,
-            &actual,
-            &resolved_package_type_ref(selected),
-            Some(selected),
-            "test effect throw",
-            self.expression_span(&key),
-        );
+        if let Some(fact) = self.facts.get_mut(&key) {
+            fact.test_effect_throw_payload_type = Some(actual.ir);
+        }
+    }
+
+    fn validate_throw_payload(
+        &mut self,
+        key: &ExpressionKey,
+        actual: &ResolvedTypeRef,
+        construct: &str,
+    ) {
+        if let Err(error) = self
+            .type_resolution
+            .catch_leaves(actual, &self.type_context)
+        {
+            self.diagnostics.push(format!(
+                "{}: {construct} payload `{}` has no valid nominal catch identity at {}: {error}",
+                self.module_path,
+                actual.source_text,
+                self.expression_span_label(key)
+            ));
+        }
+    }
+
+    fn validate_rethrow_operand(&mut self, key: &ExpressionKey, actual: &ResolvedTypeRef) {
+        if let Err(error) = self
+            .type_resolution
+            .exception_catch_leaves(actual, &self.type_context)
+        {
+            self.diagnostics.push(format!(
+                "{}: invalid rethrow operand `{}` at {}: {error}",
+                self.module_path,
+                actual.source_text,
+                self.expression_span_label(key)
+            ));
+        }
     }
 
     fn check_block_scoped(&mut self, block: &Block, narrowing: &TypeNarrowing) -> bool {
@@ -1981,11 +1964,15 @@ impl<'a> OwnerChecker<'a> {
                     None
                 }
                 Expr::Throw { value } => {
-                    self.check_expr(value);
+                    if let Some(actual) = self.check_expr(value) {
+                        self.validate_throw_payload(&key, &actual, "throw expression");
+                    }
                     None
                 }
                 Expr::Rethrow { exception } => {
-                    self.check_expr(exception);
+                    if let Some(actual) = self.check_expr(exception) {
+                        self.validate_rethrow_operand(&key, &actual);
+                    }
                     None
                 }
                 Expr::Catch {
@@ -1993,10 +1980,31 @@ impl<'a> OwnerChecker<'a> {
                     try_expr,
                 } => {
                     let try_ty = self.check_expr(try_expr)?;
-                    let catch_ty = self
+                    let catch_ty = match self
                         .type_resolution
                         .resolve_type_ref(catch_type, &self.type_context)
-                        .ok()?;
+                    {
+                        Ok(catch_ty) => catch_ty,
+                        Err(error) => {
+                            self.diagnostics.push(format!(
+                                "{}: catch type cannot be resolved at {}: {error}",
+                                self.module_path,
+                                self.expression_span_label(&key)
+                            ));
+                            return None;
+                        }
+                    };
+                    if let Err(error) = self
+                        .type_resolution
+                        .catch_leaves(&catch_ty, &self.type_context)
+                    {
+                        self.diagnostics.push(format!(
+                            "{}: invalid catch type `{}` at {}: {error}",
+                            self.module_path,
+                            catch_ty.source_text,
+                            self.expression_span_label(&key)
+                        ));
+                    }
                     Some(catch_result_type(try_ty, catch_ty))
                 }
                 Expr::DbOperation(operation) => {
@@ -5183,12 +5191,25 @@ fn record_field_value_source_span(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{
+        collections::BTreeMap,
+        path::{Path, PathBuf},
+    };
 
     use crate::{
+        build_package_from_parsed_sources_with_dependency_analysis,
+        contract_dependency_test_fixture::resolved_contract_fixture,
         parsed_sources::parse_publication_sources, prelude_registry::initialize_prelude_registry,
         publication_db_metadata_index, source_graph::CompilerSourceFile,
-        PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
+        CompileParsedPackageSourcesInput, PackageCompilePolicy, PackageDependencyAnalysisFacts,
+        PackageDependencyCallableAnalysis, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
+        SourceDependencyAnalysisInput,
+    };
+    use skiff_artifact_model::{
+        CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
+        CallableProvenanceUnknownReason, CallableSemanticFacts, PackageBuildId, PackageCallableId,
+        PackageCallableParameter, PackageCallableSignature, PackageLocalAbiIdentity,
+        PackageTypeRef,
     };
     use skiff_compiler_input::CompilerPlatformSources;
 
@@ -5397,35 +5418,277 @@ mod tests {
     }
 
     #[test]
+    fn catch_leaves_accept_nominal_representations_aliases_unions_and_rethrow_envelopes() {
+        expression_type_result(
+            r#"
+              type RecordFailure { message: string }
+              type PrimitiveFailure = string
+              type GenericFailure<T> { value: T }
+              alias TransparentFailure = RecordFailure
+              type FailureUnion discriminator "kind" =
+                RecordFailure |
+                { kind: "synthetic", message: string } |
+                "literal"
+
+              function throwEveryShape(
+                record: RecordFailure,
+                primitive: PrimitiveFailure,
+                generic: GenericFailure<string>,
+                transparent: TransparentFailure,
+                named: FailureUnion,
+                anonymous: RecordFailure | PrimitiveFailure
+              ) -> void {
+                throw record
+                throw primitive
+                throw generic
+                throw transparent
+                throw named
+                throw anonymous
+              }
+
+              function catchEveryShape(value: RecordFailure) -> void {
+                const record = catch<RecordFailure>(value)
+                const primitive = catch<PrimitiveFailure>(value)
+                const generic = catch<GenericFailure<string>>(value)
+                const transparent = catch<TransparentFailure>(value)
+                const named = catch<FailureUnion>(value)
+                const anonymous = catch<RecordFailure | PrimitiveFailure>(value)
+              }
+
+              function rethrowStatement(exception: Exception<RecordFailure>) -> void {
+                rethrow exception
+              }
+
+              function rethrowExpression(
+                exception: Exception<RecordFailure>
+              ) -> RecordFailure {
+                return rethrow exception
+              }
+            "#,
+        )
+        .expect("every non-generic nominal catch identity shape should be accepted");
+    }
+
+    #[test]
+    fn catch_leaves_reject_every_non_nominal_shape_at_throw_and_catch() {
+        let cases = [
+            ("primitive", "string", ""),
+            ("literal", "\"literal\"", ""),
+            ("anonymous record", "{ message: string }", ""),
+            ("container", "Array<string>", ""),
+            (
+                "interface",
+                "any Marker",
+                "interface Marker { function value(self: Self) -> string }",
+            ),
+            ("unknown", "unknown", ""),
+            ("function", "fn(input: string) -> string", ""),
+            ("nullable", "RecordFailure?", ""),
+            ("unconstrained generic", "T", ""),
+            ("mixed union", "RecordFailure | string", ""),
+        ];
+
+        for (label, invalid_type, declarations) in cases {
+            let type_params = (label == "unconstrained generic")
+                .then_some("<T>")
+                .unwrap_or("");
+            let source = format!(
+                r#"
+                  type RecordFailure {{ message: string }}
+                  {declarations}
+                  function invalid{type_params}(
+                    value: {invalid_type},
+                    valid: RecordFailure
+                  ) -> void {{
+                    throw value
+                    const attempted = catch<{invalid_type}>(valid)
+                  }}
+                "#,
+            );
+            let message = match expression_type_result(&source) {
+                Ok(_) => panic!("{label} should be rejected"),
+                Err(error) => error.message(),
+            };
+            assert!(
+                message.contains("throw payload") && message.contains("invalid catch type"),
+                "{label}: {message}"
+            );
+            assert!(
+                message.contains(" at "),
+                "{label} diagnostics must retain a source location: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn rethrow_requires_exception_with_valid_non_empty_catch_leaves() {
+        let message = expression_type_result(
+            r#"
+              type Failure { message: string }
+
+              function wrongEnvelope(value: Failure) -> void {
+                rethrow value
+              }
+
+              function invalidPayload(value: Exception<string>) -> void {
+                rethrow value
+              }
+            "#,
+        )
+        .expect_err("invalid rethrow operands must fail in source typing")
+        .message();
+
+        assert!(
+            message.contains("rethrow operand must be Exception<E>"),
+            "{message}"
+        );
+        assert!(
+            message.contains("unwrapped primitive or container `string`"),
+            "{message}"
+        );
+        assert!(message.matches(" at ").count() >= 2, "{message}");
+    }
+
+    #[test]
+    fn package_and_service_test_effect_throw_use_open_nominal_payloads() {
+        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root resolves");
+        let platform_sources =
+            CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load");
+        initialize_prelude_registry(&platform_sources).expect("prelude registry initializes");
+
+        let source_text = r#"
+          type ArbitraryFailure { message: string }
+
+          test "open throws" effects {
+            dep/tools.run {
+              throw: ArbitraryFailure { message: "package" },
+            },
+            echo/run {
+              throw: ArbitraryFailure { message: "service" },
+            },
+          } {
+            assert true
+          }
+        "#;
+        let source = CompilerSourceFile::parse(
+            PathBuf::from("internal/open_errors.test.skiff"),
+            "internal.open_errors.__test".to_string(),
+            false,
+            true,
+            source_text.to_string(),
+            "internal/open_errors.test.skiff",
+        )
+        .expect("test effect source parses");
+        let parsed_sources = parse_publication_sources(
+            Path::new("/tmp/open-error-test-effects"),
+            std::slice::from_ref(&source),
+        )
+        .expect("test effect source facts build");
+
+        let callable = PackageDependencyCallableAnalysis::new(
+            PackageCallableId::new("callable:dep-tools-run"),
+            CallableSemanticFacts {
+                effects: CallableEffectSummary::Analyzed {
+                    effects: CallableMayEffects {
+                        writes_caller_reachable: false,
+                        returns_caller_alias: false,
+                        throws_caller_alias: false,
+                        escapes_caller_value: false,
+                        requires_same_heap_identity: false,
+                        invokes_unknown_target: false,
+                        may_suspend: false,
+                    },
+                },
+                provenance: CallableProvenanceSummary::Unknown {
+                    reason: CallableProvenanceUnknownReason::AnalysisPending,
+                },
+                resolved_call_targets: BTreeMap::new(),
+            },
+        )
+        .with_signature(PackageCallableSignature {
+            parameters: vec![PackageCallableParameter {
+                name: "input".to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: TypeRefIr::builtin("string"),
+                },
+            }],
+            return_type: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("string"),
+            },
+            may_suspend: false,
+        });
+        let dependencies = SourceDependencyAnalysisInput::new(
+            [(
+                "dep".to_string(),
+                PackageDependencyAnalysisFacts::new(
+                    PackageBuildId::new("build:dep"),
+                    PackageLocalAbiIdentity::new("abi:dep"),
+                    BTreeMap::from([("tools.run".to_string(), callable)]),
+                ),
+            )],
+            [resolved_contract_fixture(
+                "echo",
+                "example.echo",
+                "run",
+                "input",
+                "output",
+            )],
+        )
+        .expect("exact dependency analysis facts build");
+        let package_aliases = BTreeMap::new();
+        let package_dependencies = Vec::new();
+
+        build_package_from_parsed_sources_with_dependency_analysis(
+            CompileParsedPackageSourcesInput {
+                parsed_sources,
+                production_sources: Vec::new(),
+                diagnostic_root: Path::new("/tmp/open-error-test-effects"),
+                publication_api: None,
+                package_aliases: &package_aliases,
+                package_dependencies: &package_dependencies,
+                package_facts: None,
+                package_artifacts: None,
+                policy: PackageCompilePolicy::new("example.com/open-error-test-effects"),
+            },
+            &dependencies,
+        )
+        .expect("test-effect throw accepts any nominal payload independent of declared sets");
+    }
+
+    #[test]
     fn typed_catch_value_requires_and_respects_tag_narrowing() {
         expression_type_result(
             r#"
               type Payload { value: string }
+              type Failure = string
 
               function make() -> Payload {
                 return Payload { value: "ok" }
               }
 
               function equalBranch() -> Payload? {
-                const attempted = catch<string>(make())
+                const attempted = catch<Failure>(make())
                 if attempted.tag == "ok" { return attempted.value }
                 return null
               }
 
               function reverseComparison() -> Payload? {
-                const attempted = catch<string>(make())
+                const attempted = catch<Failure>(make())
                 if "ok" != attempted.tag { return null }
                 return attempted.value
               }
 
               function earlyReturn() -> Payload? {
-                const attempted = catch<string>(make())
+                const attempted = catch<Failure>(make())
                 if attempted.tag != "ok" { return null }
                 return attempted.value
               }
 
               function nestedCatch() -> Payload? {
-                const outer = catch<string>(equalBranch())
+                const outer = catch<Failure>(equalBranch())
                 if outer.tag != "ok" { return null }
                 return outer.value
               }
@@ -5436,9 +5699,10 @@ mod tests {
         let unnarrowed = expression_type_result(
             r#"
               type Payload { value: string }
+              type Failure = string
               function make() -> Payload { return Payload { value: "ok" } }
               function invalid() -> Payload {
-                const attempted = catch<string>(make())
+                const attempted = catch<Failure>(make())
                 return attempted.value
               }
             "#,
@@ -5453,9 +5717,10 @@ mod tests {
         let error_branch = expression_type_result(
             r#"
               type Payload { value: string }
+              type Failure = string
               function make() -> Payload { return Payload { value: "ok" } }
               function invalid() -> Payload? {
-                const attempted = catch<string>(make())
+                const attempted = catch<Failure>(make())
                 if attempted.tag == "err" { return attempted.value }
                 return null
               }
@@ -5474,6 +5739,7 @@ mod tests {
         test_expression_type_result(
             r#"
               type Payload { value: string }
+              type Failure = string
 
               function make() -> Payload {
                 return Payload { value: "ok" }
@@ -5490,14 +5756,14 @@ mod tests {
               }
 
               test "tagged catch result" {
-                const attempted = catch<string>(make())
+                const attempted = catch<Failure>(make())
                 assert attempted.tag == "ok"
                 assert attempted.value.value == "ok"
               }
 
               test "conjunction" {
                 const value: Payload? = maybe()
-                const attempted = catch<string>(make())
+                const attempted = catch<Failure>(make())
                 assert value != null && attempted.tag == "ok"
                 assert value.value == attempted.value.value
               }
