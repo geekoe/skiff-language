@@ -1,6 +1,7 @@
 # P5-F321 Imported service exception cause
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F321-imported-service-exception-cause-result.md`。
 
 ## 直接父节点
 
@@ -80,4 +81,3 @@ selector必须非零。不运行eval/workspace/stable/live。
 - 风险：高，共享request-local模型；进入R0 independent acceptance；
 - 新的一次性Agent，5分钟内修改；提交并返回API矩阵、raw-byte/catch/rethrow证据；
 - 不push、不承接R0c。
-
