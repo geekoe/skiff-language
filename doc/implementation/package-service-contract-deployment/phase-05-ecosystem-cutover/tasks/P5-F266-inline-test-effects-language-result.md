@@ -4,9 +4,11 @@
 
 - `test "name" effects { ... } { ... }` now has a first-class syntax AST,
   expression source spans and read/write walker coverage.
-- The mutually exclusive outcome fields are `respond`, `respondSequence`,
-  `throw`, `throwSequence` and `stream`. Sequence brackets belong only to this
-  DSL; they do not introduce a general Skiff array literal.
+- The original `respondSequence` / `throwSequence` surface was superseded
+  before repository migration. The canonical mutually exclusive outcome fields
+  are `respond`, `throw`, `stream` and `sequence`; each sequence step has an
+  optional additional `expect` and exactly one outcome. Sequence brackets
+  belong only to this DSL; they do not introduce a general Skiff array literal.
 - Parsing rejects duplicate targets, empty sequences, duplicate or unknown
   fields, missing outcomes and multiple outcome kinds.
 - F266 originally introduced a separate `TypedTestEffectPlan` validation API.

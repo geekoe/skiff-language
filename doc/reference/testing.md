@@ -166,13 +166,29 @@ test "request succeeds" effects {
 }
 ```
 
-多次调用使用 `respondSequence`。声明的 typed error 使用 `throw`，多次调用全部返回
-typed error 时使用 `throwSequence`。stream effect 使用 `stream` 声明非空 event 序列：
+单次调用使用 `respond`、`throw` 或 `stream`。多次调用统一使用 `sequence`，每一步可以
+声明自己的 request subset 和一种结果：
 
 ```skiff
 test "sequence and stream" effects {
   dependency.retry {
-    respondSequence: [{ status: 503 }, { status: 200 }],
+    expect: {
+      method: "POST",
+    },
+    sequence: [
+      {
+        expect: { url: "https://example.test/first" },
+        respond: { status: 503 },
+      },
+      {
+        expect: { url: "https://example.test/second" },
+        throw: RequestFailure { code: "denied" },
+      },
+      {
+        expect: { url: "https://example.test/events" },
+        stream: [{ value: "first" }, { value: "second" }],
+      },
+    ],
   },
   dependency.events {
     stream: [{ value: "first" }, { value: "second" }],
@@ -185,9 +201,12 @@ test "sequence and stream" effects {
 }
 ```
 
-`respond`、`respondSequence`、`throw`、`throwSequence` 与 `stream` 互斥；一个 target
-必须且只能声明其中一个结果字段。序列使用 effect DSL 的 `[expr, ...]`，不是 Skiff
-通用 array literal。
+`respond`、`throw`、`stream` 与 `sequence` 互斥；一个 target 必须且只能声明其中一个
+结果字段。`sequence` 必须非空，每一步可以声明一个可选 `expect`，并且必须且只能声明
+`respond`、`throw` 或 `stream` 之一。target 顶层 `expect` 是每一步都必须满足的公共
+request subset；step `expect` 是该次调用额外必须满足的 subset。两者分别匹配并取逻辑
+AND，不做 object merge 或覆盖。序列和 stream event 表使用 effect DSL 的
+`[item, ...]`，不是 Skiff 通用 array literal。
 
 规则：
 

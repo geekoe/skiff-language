@@ -8,13 +8,14 @@
 
 - Add `test "name" effects { ... } { ... }` syntax and AST.
 - Resolve every effect target exactly at compile time.
-- Type-check `expect`, `respond`, `respondSequence`, typed errors and stream
-  response/event sequences against the target signature.
+- Type-check target-level and per-step `expect`, plus `respond`, typed `throw`
+  and `stream` response/event sequences against the target signature.
 - Lower inline declarations into test-only typed effect plans associated with
   the canonical test case identity.
 - Effect plans never enter production PackageArtifact/API/config metadata.
-- Reject empty sequences, duplicate targets, malformed request subsets,
-  incompatible responses and effect declarations outside test blocks.
+- Reject empty sequences, steps without exactly one outcome, duplicate targets,
+  malformed request subsets, incompatible responses and effect declarations
+  outside test blocks.
 - No stringly typed target fallback.
 
 ## Acceptance
