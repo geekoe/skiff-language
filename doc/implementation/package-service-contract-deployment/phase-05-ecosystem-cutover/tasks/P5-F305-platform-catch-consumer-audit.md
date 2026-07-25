@@ -1,6 +1,7 @@
 # P5-F305 Platform catch identity consumer audit
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F305-platform-catch-consumer-audit-result.md`。
 
 ## 直接父节点与权威链
 
@@ -34,4 +35,3 @@ leaf划分；不得修改/提交文件，不运行测试，不操作stable/live�
 
 只允许`rg`、文件读取、Cargo metadata/manifest与git只读检查。返回精确`file:line`、完整矩阵与最短DAG；
 不承接实现。
-

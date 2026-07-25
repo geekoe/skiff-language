@@ -1,6 +1,7 @@
 # P5-F306 Representation constructor carrier handoff audit
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F306-representation-constructor-carrier-audit-result.md`。
 
 ## 直接父节点与权威链
 
@@ -38,4 +39,3 @@
    选项，不自行决定。
 
 只允许`rg`、文件读取和git只读检查。返回精确`file:line`、推荐DAG与是否需要用户决策；不承接实现。
-
