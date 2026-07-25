@@ -974,6 +974,47 @@ fn bytes_from_base64_wrapper_uses_exact_native_semantics() {
 }
 
 #[test]
+fn bytes_concat_openai_multipart_shape_uses_exact_native_semantics() {
+    let model = analyze(
+        r#"
+            type MultipartPart { body: bytes }
+
+            function multipartBody(parts: Array<MultipartPart>, boundary: string) -> bytes {
+              const chunks = Array.empty<bytes>()
+              for part in parts {
+                chunks.push(bytes.fromUtf8("--".concat(boundary).concat("\r\n")))
+                chunks.push(part.body)
+                chunks.push(bytes.fromUtf8("\r\n"))
+              }
+              chunks.push(bytes.fromUtf8("--".concat(boundary).concat("--\r\n")))
+              return bytes.concat(chunks)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(effects(&model, "multipartBody"), no_effects());
+    let CallableProvenanceSummary::Analyzed {
+        return_origins,
+        throw_origins,
+        escape_lanes,
+    } = provenance(&model, "multipartBody")
+    else {
+        panic!("multipart bytes concatenation should retain exact native provenance");
+    };
+    assert_eq!(return_origins, &vec![ValueProvenance::Fresh]);
+    assert!(throw_origins.is_empty());
+    assert!(escape_lanes.is_empty());
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::NativeFunction { binding_key }
+                if binding_key == "core.bytes.concat"
+        )
+    }));
+}
+
+#[test]
 fn exact_http_request_natives_transfer_through_local_helpers() {
     let model = analyze(
         r#"

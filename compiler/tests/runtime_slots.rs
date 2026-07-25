@@ -339,6 +339,76 @@ fn bytes_from_base64_lowers_to_exact_native_binding() {
 }
 
 #[test]
+fn bytes_concat_lowers_to_exact_native_binding_and_rejects_malformed_calls() {
+    let artifact = compile_package_file_ir(
+        r#"
+            function multipart(chunks: Array<bytes>) -> bytes {
+                return bytes.concat(chunks)
+            }
+        "#,
+        "internal/bytes_concat.skiff",
+        "internal.bytes_concat",
+    )
+    .expect("bytes concat fixture should compile");
+    let artifact_value = artifact.value();
+    let callable = executable_entry(&artifact_value, "multipart");
+    let calls = call_exprs(callable);
+
+    assert!(
+        has_native_call(&calls, "std.bytes", "concat", "core.bytes.concat"),
+        "bytes.concat should lower through the exact canonical native binding"
+    );
+
+    for (name, source, expected) in [
+        (
+            "missing_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.concat()
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run(chunks: Array<bytes>) -> bytes {
+                    return bytes.concat(chunks, chunks)
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "wrong_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.concat(Array.empty<string>())
+                }
+            "#,
+            "call `bytes.concat` argument 1",
+        ),
+        (
+            "wrong_return",
+            r#"
+                function run(chunks: Array<bytes>) -> string {
+                    return bytes.concat(chunks)
+                }
+            "#,
+            "return type mismatch",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/bytes_concat_{name}.skiff"),
+            format!("internal.bytes_concat_{name}"),
+        )
+        .expect_err("invalid bytes.concat call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
 fn std_http_json_infers_native_type_arg_from_record_payload() {
     let artifact = compile_package_file_ir(
         r#"

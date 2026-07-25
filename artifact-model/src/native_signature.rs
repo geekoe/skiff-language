@@ -71,6 +71,7 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_native("std.actor.find", true),
     detached_native("std.actor.remove", true),
     detached_scalar_native("core.array.empty"),
+    detached_scalar_native("core.bytes.concat"),
     detached_scalar_native("core.bytes.fromBase64"),
     detached_scalar_native("core.bytes.fromUtf8"),
     detached_scalar_native("core.date.fromEpochMilliseconds"),
@@ -881,6 +882,7 @@ mod tests {
             "std.actor.remove",
             "std.actor.replace",
             "core.array.empty",
+            "core.bytes.concat",
             "core.bytes.fromBase64",
             "core.bytes.fromUtf8",
             "core.date.fromEpochMilliseconds",
@@ -1019,6 +1021,47 @@ mod tests {
             "std.bytes.fromBase64",
             "bytes.fromBase64",
             "core.bytes.fromHex",
+        ] {
+            assert_eq!(
+                native_callable_semantics(near_miss),
+                None,
+                "{near_miss} must not inherit exact callable semantics"
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_concat_semantics_match_exact_signature() {
+        let semantics = native_callable_semantics("core.bytes.concat")
+            .expect("audited bytes concatenation should have exact semantics");
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+        let signature = STD_NATIVE_SIGNATURES
+            .iter()
+            .find(|signature| signature.binding_key == semantics.binding_key)
+            .expect("audited bytes concatenation should have a native signature");
+        assert_eq!(signature.target, "std.bytes.concat");
+        assert_eq!(signature.aliases, &["bytes.concat"]);
+        assert_eq!(signature.params, &[super::BYTES_ARRAY]);
+        assert_eq!(signature.return_type, super::BYTES);
+
+        for near_miss in [
+            "core.bytes.concat.custom",
+            "std.bytes.concat",
+            "bytes.concat",
+            "core.array.concat",
         ] {
             assert_eq!(
                 native_callable_semantics(near_miss),
