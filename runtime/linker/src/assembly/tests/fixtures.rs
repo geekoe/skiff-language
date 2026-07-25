@@ -858,7 +858,6 @@ fn file(module_path: &str) -> FileIrUnit {
             fields: BTreeMap::new(),
         },
         type_params: Vec::new(),
-        discriminator: None,
         implements: Vec::new(),
         source_span: None,
     });

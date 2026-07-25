@@ -429,6 +429,15 @@ pub(super) fn substitute_interface_method_type(
                 .map(|arg| substitute_interface_method_type(arg, substitutions, self_type))
                 .collect::<ProgramResult<Vec<_>>>()?,
         },
+        LinkedTypeRef::AppliedNominal { base, arguments } => LinkedTypeRef::AppliedNominal {
+            base: base.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| {
+                    substitute_interface_method_type(argument, substitutions, self_type)
+                })
+                .collect::<ProgramResult<Vec<_>>>()?,
+        },
         LinkedTypeRef::Record { fields } => LinkedTypeRef::Record {
             fields: fields
                 .iter()
@@ -615,6 +624,9 @@ pub(super) fn unresolved_type_param_name<'a>(
         LinkedTypeRef::Native { args, .. } => args
             .iter()
             .find_map(|arg| unresolved_type_param_name(arg, allowed_unresolved)),
+        LinkedTypeRef::AppliedNominal { arguments, .. } => arguments
+            .iter()
+            .find_map(|argument| unresolved_type_param_name(argument, allowed_unresolved)),
         LinkedTypeRef::Record { fields } => fields
             .values()
             .find_map(|field| unresolved_type_param_name(field, allowed_unresolved)),
