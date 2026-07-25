@@ -1,9 +1,15 @@
-type ProviderUnavailableError implements ErrorPayload {
+type ProviderUnavailableError {
   target: string,
   reason: string,
 }
 
-type ProtocolError implements ErrorPayload {
+type ProtocolError {
   target: string,
   message: string,
+}
+
+type InternalError {
+  message: string,
+  traceId: string,
+  errorId: string,
 }

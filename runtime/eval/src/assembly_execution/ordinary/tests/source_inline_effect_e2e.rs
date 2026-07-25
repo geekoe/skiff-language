@@ -438,7 +438,7 @@ fn write_error_package(root: &Path) {
     fs::write(root.join("api.yml"), "Failure: main.Failure\n").expect("error package API");
     fs::write(
         root.join("main.skiff"),
-        r#"type Failure implements ErrorPayload {
+        r#"type Failure {
   message: string,
 }
 "#,

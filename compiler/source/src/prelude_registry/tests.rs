@@ -97,15 +97,15 @@ fn platform_source_context_pins_current_prelude_identity() {
     let registry = prelude_registry();
     assert_eq!(
         registry.schema_identity(),
-        // c277e45 added std.websocket.WebSocketIngressEvent to the validated
-        // platform API, changing the schema identity as well.
-        "skiff-prelude-schema-v1:sha256:4a9245f8f56b0d10ec4d6d98937d55b9e03650d3d5a2f60d3f4744c0db06d277"
+        // The schema identity includes the ordinary public
+        // std.service.InternalError record.
+        "skiff-prelude-schema-v1:sha256:60a69e98e44a7dd3012937dcf54518e9fd5109d900eeeb944697338cb7fb4f83"
     );
     assert_eq!(
         registry.native_identity(),
-        // Native identity also commits to the validated manifest and source
-        // fingerprints changed by c277e45's WebSocketIngressEvent addition.
-        "skiff-prelude-native-v1:sha256:c2b047b40c64f0e904455de04396746d7cf5b25893821dbe4e6565f3f6f9ab8b"
+        // Native identity also commits to the validated marker-free source and
+        // manifest fingerprints.
+        "skiff-prelude-native-v1:sha256:0c070485c653e1a3113a170ac417caa960779bf85857168cbff4e389979169b3"
     );
     assert_eq!(registry.schema_identity(), prelude_schema_identity());
     assert_eq!(
@@ -114,9 +114,9 @@ fn platform_source_context_pins_current_prelude_identity() {
     );
     assert_eq!(
         prelude_identity(),
-        // c277e45 added std.websocket.WebSocketIngressEvent to the validated
-        // platform source/API fingerprint, producing this current identity.
-        "skiff-prelude-v1:sha256:06b874079b74b70aab0092e4e2ffb9781fb34cd57238f3ee90d2789f5eb6019c"
+        // The full identity includes the marker-free std/prelude sources and
+        // ordinary std.service.InternalError public surface.
+        "skiff-prelude-v1:sha256:2ebbd0569d4baf3d7dccf07c4326ec62deb5707c11a8d0eb0ac0722d1ee9d3bd"
     );
 }
 
@@ -516,11 +516,7 @@ impl MinimalPlatformFixture {
             "id: skiff.run/std\nversion: 1.0.0\n",
         )
         .unwrap();
-        fs::write(
-            root.join("prelude/error.skiff"),
-            "native type ErrorPayload\n",
-        )
-        .unwrap();
+        fs::write(root.join("prelude/error.skiff"), "").unwrap();
         Self { root }
     }
 

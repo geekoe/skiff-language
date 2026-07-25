@@ -86,6 +86,7 @@ string:
 service:
   ProviderUnavailableError: service.ProviderUnavailableError
   ProtocolError: service.ProtocolError
+  InternalError: service.InternalError
 websocket:
   TextConnectionMessage: websocket.TextConnectionMessage
   BinaryConnectionMessage: websocket.BinaryConnectionMessage

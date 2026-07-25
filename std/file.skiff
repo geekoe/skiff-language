@@ -1,4 +1,4 @@
-type FileError implements ErrorPayload {
+type FileError {
   message: string,
 }
 

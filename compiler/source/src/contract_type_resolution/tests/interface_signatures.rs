@@ -211,31 +211,24 @@ fn interface_conformance_fails_closed_for_missing_method_and_receiver_mismatch()
 }
 
 #[test]
-fn compiler_known_interfaces_stay_outside_source_exact_conformance_ownership() {
+fn ordinary_nominal_types_stay_outside_source_exact_conformance_ownership() {
     let model = build_interface_model(
         r#"
             actor ShortActor id string {}
-            type ShortFailure implements ErrorPayload {}
+            type ShortFailure {}
         "#,
         &SourceDependencyAnalysisInput::default(),
     )
-    .expect("compiler-known interface conformances keep their semantic owner");
+    .expect("ordinary nominal declarations should build");
 
     assert!(model.interface_signatures().conformances().next().is_none());
     let context = TypeResolutionContext::source("api");
-    for selector in ["ErrorPayload", "std.error.ErrorPayload"] {
-        assert!(matches!(
-            model
-                .type_resolution()
-                .classify_canonical_interface_owner(selector, &context),
-            crate::type_resolution_model::CanonicalInterfaceOwnerResolution::CompilerKnown { .. }
-        ));
-    }
     for selector in [
         "Actor<string>",
         "std.actor.Actor<string>",
         "Missing",
         "ShortActor",
+        "ShortFailure",
     ] {
         assert!(matches!(
             model

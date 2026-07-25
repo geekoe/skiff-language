@@ -1,4 +1,4 @@
-type ResourceError implements ErrorPayload {
+type ResourceError {
   path: string,
   message: string,
 }

@@ -284,11 +284,7 @@ impl PlatformFixture {
             "function request() -> string { return \"ok\" }\n",
         )
         .unwrap();
-        fs::write(
-            root.join("prelude/error.skiff"),
-            "native type ErrorPayload\n",
-        )
-        .unwrap();
+        fs::write(root.join("prelude/error.skiff"), "").unwrap();
         Self { base, root }
     }
 

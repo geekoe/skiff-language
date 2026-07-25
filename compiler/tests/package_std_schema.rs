@@ -8,8 +8,8 @@ use common::{
 };
 
 #[test]
-fn ordinary_and_error_payload_records_keep_public_schema_fields() {
-    let temp = TestDir::new("skiff-compiler", "error-payload-schema-fields");
+fn ordinary_nominal_records_keep_public_schema_fields() {
+    let temp = TestDir::new("skiff-compiler", "nominal-record-schema-fields");
     temp.write("package.yml", "id: example.com/errors\nversion: 1.0.0\n");
     temp.write(
         "api.yml",
@@ -21,7 +21,7 @@ fn ordinary_and_error_payload_records_keep_public_schema_fields() {
   value: string,
 }
 
-type Failure implements ErrorPayload {
+type Failure {
   code: string,
   message: string,
 }

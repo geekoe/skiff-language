@@ -1,5 +1,5 @@
 
-type DecodeError implements ErrorPayload {
+type DecodeError {
   target: string,
   message: string,
 }
