@@ -268,7 +268,7 @@ fn project_websocket_fixture_deployment(
             resource_bindings: Vec::new(),
             runtime_capability_bindings: Vec::new(),
             policy: DeploymentPolicy {
-                timeout_ms: 30_000,
+                timeout_ms: Some(30_000),
                 resources: ResourcePolicy {
                     cpu_millis: 100,
                     memory_bytes: 64 * 1024 * 1024,

@@ -169,7 +169,8 @@ pub struct ActivationPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentPolicy {
-    pub timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
     pub resources: ResourcePolicy,
     pub activation: ActivationPolicy,
     pub principal: String,

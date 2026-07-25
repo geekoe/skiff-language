@@ -446,7 +446,7 @@ struct LifecycleAuthoring {
 fn deployment_policy(
     profile: &ServiceConfigProfileAuthoring,
 ) -> Result<DeploymentPolicy, GeneratedServiceDeploymentError> {
-    let timeout_ms: u64 = profile_field("timeout", &profile.timeout)?;
+    let timeout_ms: Option<u64> = optional_profile_field("timeout", &profile.timeout)?;
     let quota: QuotaAuthoring = profile_field("quota", &profile.quota)?;
     let lifecycle: LifecycleAuthoring = profile_field("lifecycle", &profile.lifecycle)?;
     let principal: String = profile_field("principal", &profile.principal)?;
@@ -474,6 +474,16 @@ fn profile_field<T: for<'de> Deserialize<'de>>(
             message: error.to_string(),
         }
     })
+}
+
+fn optional_profile_field<T: for<'de> Deserialize<'de>>(
+    field: &'static str,
+    value: &serde_json::Value,
+) -> Result<Option<T>, GeneratedServiceDeploymentError> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    profile_field(field, value).map(Some)
 }
 
 fn generated_revision(

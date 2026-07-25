@@ -37,7 +37,7 @@ fn empty_owned_bindings() -> ActivationOwnedBindings {
         state_bindings: Vec::new(),
         resource_bindings: Vec::new(),
         policy: DeploymentPolicy {
-            timeout_ms: 1_000,
+            timeout_ms: Some(1_000),
             resources: ResourcePolicy {
                 cpu_millis: 100,
                 memory_bytes: 1_024,

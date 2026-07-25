@@ -36,7 +36,7 @@ pub fn service_contract_ref_fixture() -> ServiceContractRef {
 
 pub fn deployment_policy_fixture() -> DeploymentPolicy {
     DeploymentPolicy {
-        timeout_ms: 5_000,
+        timeout_ms: Some(5_000),
         resources: ResourcePolicy {
             cpu_millis: 100,
             memory_bytes: 1_048_576,

@@ -352,7 +352,7 @@ fn validate_ingress(binding: &DeploymentIngressBinding) -> Result<()> {
 }
 
 fn validate_policy(policy: &DeploymentPolicy) -> Result<()> {
-    if policy.timeout_ms == 0 {
+    if policy.timeout_ms == Some(0) {
         return invalid_deployment("policy.timeoutMs must be greater than zero");
     }
     if policy.resources.cpu_millis == 0 || policy.resources.memory_bytes == 0 {

@@ -1876,7 +1876,7 @@ pub struct ResourcePolicy { pub cpu_millis: u32, pub memory_bytes: u64 }
 pub struct ActivationPolicy { pub max_concurrency: u32, pub idle_timeout_ms: Option<u64> }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentPolicy {
-  pub timeout_ms: u64, pub resources: ResourcePolicy, pub activation: ActivationPolicy,
+  pub timeout_ms: Option<u64>, pub resources: ResourcePolicy, pub activation: ActivationPolicy,
   pub principal: String,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

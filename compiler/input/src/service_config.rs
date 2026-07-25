@@ -240,6 +240,52 @@ mod tests {
     }
 
     #[test]
+    fn account_profile_without_timeout_is_canonical_null() {
+        let root = fixture_root("account-profile-without-timeout");
+        write(
+            &root,
+            "package.yml",
+            "id: skiff.run/account\nversion: 0.1.0\n",
+        );
+        write(&root, "api.yml", "functions: {}\n");
+        write(
+            &root,
+            "service.yml",
+            "id: skiff.run/account\nhttp: { routes: [] }\n",
+        );
+        write(
+            &root,
+            "config.dev.yml",
+            "config:\n  account:\n    dnsResolverBaseUrls: https://dns.alidns.com/resolve,https://doh.pub/dns-query,https://cloudflare-dns.com/dns-query\n  cookieName: skiff_account_session\n  maxAgeSeconds: 2592000\n",
+        );
+
+        let source = read_service_package_root(&root).unwrap();
+        assert!(source.config_profiles["dev"].authoring.timeout.is_null());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn config_profile_rejects_unknown_policy_fields() {
+        let root = fixture_root("profile-unknown-policy-field");
+        write(
+            &root,
+            "package.yml",
+            "id: example.com/account\nversion: 0.1.0\n",
+        );
+        write(&root, "api.yml", "functions: {}\n");
+        write(&root, "service.yml", "id: example.com/account\n");
+        write(
+            &root,
+            "config.dev.yml",
+            "timeout: 1000\ntimeoutUnit: milliseconds\n",
+        );
+
+        let error = read_service_package_root(&root).unwrap_err();
+        assert!(error.to_string().contains("unknown field `timeoutUnit`"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn service_root_requires_package_api_and_service_manifests() {
         for (name, files) in [
             (

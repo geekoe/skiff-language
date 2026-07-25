@@ -1603,7 +1603,7 @@ fn no_effects(may_suspend: bool) -> CallableMayEffects {
 
 fn policy() -> DeploymentPolicy {
     DeploymentPolicy {
-        timeout_ms: 1_000,
+        timeout_ms: Some(1_000),
         resources: ResourcePolicy {
             cpu_millis: 100,
             memory_bytes: 1_048_576,

@@ -43,6 +43,91 @@ fn generates_exact_operations_ingress_and_profile_bindings() {
 }
 
 #[test]
+fn omitted_or_null_timeout_does_not_generate_a_policy_override() {
+    let (project, service_api) = compile_fixture("generated-no-timeout", "\"ok\"");
+    let mut profile = profile();
+    profile.timeout = serde_json::Value::Null;
+
+    let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &manifest("read"),
+        profile_name: "prod",
+        profile: &profile,
+        service_api: &service_api,
+        implementation: &project.package.artifact,
+        package_closure: &[],
+        package_schema_records: &project.package.resolved_package_schema_type_records,
+    })
+    .unwrap();
+
+    assert_eq!(deployment.policy.timeout_ms, None);
+    let encoded = serde_json::to_value(&deployment).unwrap();
+    assert!(!encoded["policy"]
+        .as_object()
+        .unwrap()
+        .contains_key("timeoutMs"));
+
+    let decoded: skiff_artifact_model::ServiceDeployment = serde_json::from_value(encoded).unwrap();
+    assert_eq!(decoded, deployment);
+    assert_eq!(
+        decoded.deployment_artifact_identity,
+        deployment.deployment_artifact_identity
+    );
+}
+
+#[test]
+fn explicit_timeout_is_the_only_generated_timeout_override() {
+    let (project, service_api) = compile_fixture("generated-explicit-timeout", "\"ok\"");
+    let mut profile = profile();
+    profile.timeout = json!(1250);
+    let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &manifest("read"),
+        profile_name: "prod",
+        profile: &profile,
+        service_api: &service_api,
+        implementation: &project.package.artifact,
+        package_closure: &[],
+        package_schema_records: &project.package.resolved_package_schema_type_records,
+    })
+    .unwrap();
+
+    assert_eq!(deployment.policy.timeout_ms, Some(1250));
+    assert_eq!(
+        serde_json::to_value(&deployment).unwrap()["policy"]["timeoutMs"],
+        json!(1250)
+    );
+}
+
+#[test]
+fn invalid_timeout_values_fail_closed() {
+    let (project, service_api) = compile_fixture("generated-invalid-timeout", "\"ok\"");
+    for (label, timeout) in [
+        ("zero", json!(0)),
+        ("negative", json!(-1)),
+        ("fraction", json!(1.5)),
+        ("string", json!("1000")),
+        ("object-with-extra-field", json!({"milliseconds": 1000})),
+    ] {
+        let mut profile = profile();
+        profile.timeout = timeout;
+        let error = generate_service_deployment(GeneratedServiceDeploymentInput {
+            service: &manifest("read"),
+            profile_name: "prod",
+            profile: &profile,
+            service_api: &service_api,
+            implementation: &project.package.artifact,
+            package_closure: &[],
+            package_schema_records: &project.package.resolved_package_schema_type_records,
+        })
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("timeout") || message.contains("greater than zero"),
+            "{label}: {message}"
+        );
+    }
+}
+
+#[test]
 fn ingress_and_mapping_fail_closed() {
     let (project, mut service_api) = compile_fixture("generated-negative", "\"ok\"");
     let profile = profile();

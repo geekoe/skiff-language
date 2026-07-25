@@ -802,7 +802,8 @@ fn tampered_assembly_contract_deployment_package_and_file_fail_closed() {
         .contains("contract content is invalid"));
 
     let mut resolver = fixture.resolver();
-    Arc::make_mut(&mut resolver.deployment).policy.timeout_ms += 1;
+    let policy = &mut Arc::make_mut(&mut resolver.deployment).policy;
+    policy.timeout_ms = policy.timeout_ms.map(|timeout| timeout + 1);
     assert!(RuntimeAssemblyLoader::new(&resolver)
         .load(fixture.assembly.clone())
         .unwrap_err()
@@ -1071,7 +1072,7 @@ fn no_effects() -> CallableMayEffects {
 
 fn policy() -> DeploymentPolicy {
     DeploymentPolicy {
-        timeout_ms: 1_000,
+        timeout_ms: Some(1_000),
         resources: ResourcePolicy {
             cpu_millis: 100,
             memory_bytes: 1_024,
