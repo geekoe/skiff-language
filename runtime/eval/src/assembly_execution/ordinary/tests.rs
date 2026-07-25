@@ -1,3 +1,4 @@
+mod representation_combined_probe;
 mod source_inline_effect_e2e;
 #[path = "test_runtime.rs"]
 pub(crate) mod test_runtime;
@@ -693,7 +694,6 @@ fn package_direct_fixture_with_caller(caller_kind: CallerFixtureKind) -> Package
                 fields: BTreeMap::from([("message".to_string(), TypeRefIr::builtin("string"))]),
             },
             type_params: Vec::new(),
-            discriminator: None,
             implements: Vec::new(),
             source_span: None,
         });
@@ -1451,7 +1451,6 @@ fn callable_package(
                 return_type: PackageTypeRef::Local {
                     local_type: array_type,
                 },
-                throw_types: Vec::new(),
                 may_suspend: false,
             },
         },
@@ -1560,7 +1559,6 @@ fn stream_callable_package(
                 return_type: PackageTypeRef::Local {
                     local_type: stream_string_type(),
                 },
-                throw_types: Vec::new(),
                 may_suspend: true,
             },
         },
