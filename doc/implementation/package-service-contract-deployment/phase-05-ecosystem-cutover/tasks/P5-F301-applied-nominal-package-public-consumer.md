@@ -1,6 +1,7 @@
 # P5-F301 Applied nominal package/public compiler consumer
 
-状态：Ready。
+状态：Implemented checkpoint。结果见
+`P5-F301-applied-nominal-package-public-consumer-result.md`。
 
 ## 直接父节点与权威链
 
