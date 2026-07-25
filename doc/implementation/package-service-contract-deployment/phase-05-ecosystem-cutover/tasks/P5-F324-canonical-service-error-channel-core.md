@@ -1,6 +1,7 @@
 # P5-F324 Canonical service error channel core
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F324-canonical-service-error-channel-core-result.md`。
 
 ## 直接父节点
 
@@ -142,4 +143,3 @@ selector必须非零。完整eval当前仍有F323记录的trace fixture及WebSoc
 - 风险：最高；新的一次性Agent，5分钟内先创建core module/API skeleton并开始测试；
 - 提交并返回export/import/public/Internal/platform/opaque/stack矩阵、API签名、focused evidence与未决缺口；
 - 不push、不承接R1–R4或验收。
-
