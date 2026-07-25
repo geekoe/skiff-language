@@ -10,9 +10,9 @@ use skiff_artifact_model::{
     PackageBinding, PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableRef,
     PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageRefIr, PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
-    PackageSchemaIndexRef, PublicationResourceRef, RuntimeAssembly, ServiceCallRef,
-    ServiceProtocolIdentity, ServiceRequirement, SlotLayout, SyntheticInstructionSiteReason,
-    TypeRefIr, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    PackageSchemaIndex, PackageSchemaIndexRef, PublicationResourceRef, RuntimeAssembly,
+    ServiceCallRef, ServiceProtocolIdentity, ServiceRequirement, SlotLayout,
+    SyntheticInstructionSiteReason, TypeRefIr, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_model::resource::LoadedPublicationResource;
 
@@ -809,11 +809,13 @@ fn package_binding(
 }
 
 fn hydration(artifact: PackageArtifact, file: FileIrUnit) -> HydratedPackageCode {
+    let schema_index = empty_schema_index(&artifact);
     HydratedPackageCode::new(
         Arc::new(artifact),
         vec![Arc::new(file)],
         PublicationResourceTable::default(),
     )
+    .with_schema_index(Arc::new(schema_index))
 }
 
 fn hydration_with_resources<const N: usize>(
@@ -821,6 +823,7 @@ fn hydration_with_resources<const N: usize>(
     file: FileIrUnit,
     resources: [(&str, &[u8]); N],
 ) -> HydratedPackageCode {
+    let schema_index = empty_schema_index(&artifact);
     let mut table = PublicationResourceTable::default();
     for (path, bytes) in resources {
         let meta = artifact
@@ -838,6 +841,18 @@ fn hydration_with_resources<const N: usize>(
         );
     }
     HydratedPackageCode::new(Arc::new(artifact), vec![Arc::new(file)], table)
+        .with_schema_index(Arc::new(schema_index))
+}
+
+fn empty_schema_index(artifact: &PackageArtifact) -> PackageSchemaIndex {
+    PackageSchemaIndex {
+        package_id: artifact.package_id.clone(),
+        package_schema_index_identity: artifact
+            .package_schema_index
+            .package_schema_index_identity
+            .clone(),
+        types: BTreeMap::new(),
+    }
 }
 
 fn add_static_resource(artifact: &mut PackageArtifact, path: &str, bytes: &[u8]) {

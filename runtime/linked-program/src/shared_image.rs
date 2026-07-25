@@ -15,8 +15,8 @@ use skiff_artifact_model::{
     AssemblyIdentity, CanonicalPackageLinkPlan, ContractOperationId, FileIrRef, FileIrUnit,
     OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBuildId, PackageCallableId,
     PackageLocalAbi, PackageLocalAbiIdentity, PackageRefIr, PackageRequirementKey,
-    PackageSchemaTypeId, PackageSchemaTypeRecord, RuntimeAssembly, ServiceCallRef,
-    ServiceCallRefIndex, ServiceProtocolIdentity,
+    PackageSchemaIndex, PackageSchemaTypeId, PackageSchemaTypeRecord, RuntimeAssembly,
+    ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity,
 };
 
 use crate::{ExecutableAddr, FileAddr, PublicationResourceTable, UnitAddr};
@@ -27,6 +27,7 @@ pub struct HydratedPackageCode {
     artifact: Arc<PackageArtifact>,
     files: Vec<Arc<FileIrUnit>>,
     static_resources: PublicationResourceTable,
+    schema_index: Option<Arc<PackageSchemaIndex>>,
     schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
 }
 
@@ -40,8 +41,14 @@ impl HydratedPackageCode {
             artifact,
             files,
             static_resources,
+            schema_index: None,
             schema_records: BTreeMap::new(),
         }
+    }
+
+    pub fn with_schema_index(mut self, schema_index: Arc<PackageSchemaIndex>) -> Self {
+        self.schema_index = Some(schema_index);
+        self
     }
 
     pub fn with_schema_records(
@@ -80,6 +87,7 @@ pub struct SharedPackageCode {
     files: Vec<Arc<FileIrUnit>>,
     files_by_identity: BTreeMap<String, usize>,
     static_resources: PublicationResourceTable,
+    schema_index: Arc<PackageSchemaIndex>,
     schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
 }
 
@@ -124,6 +132,10 @@ impl SharedPackageCode {
 
     pub fn schema_records(&self) -> &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>> {
         &self.schema_records
+    }
+
+    pub fn schema_index(&self) -> &Arc<PackageSchemaIndex> {
+        &self.schema_index
     }
 
     pub fn callable_target(&self, callable_id: &PackageCallableId) -> Option<&OperationTargetRef> {
@@ -607,6 +619,22 @@ impl SharedPackageCode {
         }
 
         validate_static_resources(expected_ref, &hydrated.artifact, &hydrated.static_resources)?;
+        let schema_index = hydrated.schema_index.ok_or_else(|| {
+            SharedPackageImageError::MissingHydratedSchemaIndex {
+                package_build_id: expected_ref.package_build_id.clone(),
+            }
+        })?;
+        if schema_index.package_id != hydrated.artifact.package_schema_index.package_id
+            || schema_index.package_schema_index_identity
+                != hydrated
+                    .artifact
+                    .package_schema_index
+                    .package_schema_index_identity
+        {
+            return Err(SharedPackageImageError::HydratedSchemaIndexMismatch {
+                package_build_id: expected_ref.package_build_id.clone(),
+            });
+        }
 
         let code = Self {
             code_slot,
@@ -615,6 +643,7 @@ impl SharedPackageCode {
             files,
             files_by_identity,
             static_resources: hydrated.static_resources,
+            schema_index,
             schema_records: hydrated.schema_records,
         };
         for (callable_id, fact) in &code.artifact.callable_links {
@@ -976,6 +1005,12 @@ pub enum SharedPackageImageError {
     HydratedStaticResourceOutsideArtifact {
         package_build_id: PackageBuildId,
         path: String,
+    },
+    MissingHydratedSchemaIndex {
+        package_build_id: PackageBuildId,
+    },
+    HydratedSchemaIndexMismatch {
+        package_build_id: PackageBuildId,
     },
     DuplicatePackageLink {
         key: PackageRequirementKey,

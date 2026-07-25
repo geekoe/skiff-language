@@ -11,6 +11,7 @@ mod address_resolver;
 mod call_semantics;
 mod code_linker;
 mod indexes;
+mod service_error_index;
 
 pub(super) fn link_assembly_execution_image(
     shared: Arc<skiff_runtime_linked_program::SharedPackageLinkedImage>,
@@ -18,6 +19,8 @@ pub(super) fn link_assembly_execution_image(
     let converted = convert_canonical_files(shared.as_ref())?;
     let linked_files = code_linker::link_execution_files(shared.as_ref(), &converted)?;
     let types = indexes::build_execution_type_index(shared.as_ref(), &linked_files)?;
+    let service_error_types =
+        service_error_index::build_service_error_type_index(shared.as_ref(), &types)?;
     let code_slots = shared
         .code_slots()
         .iter()
@@ -28,7 +31,7 @@ pub(super) fn link_assembly_execution_image(
                 .map_err(anyhow::Error::new)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    AssemblyExecutionImage::try_new(shared, code_slots, types)
+    AssemblyExecutionImage::try_new(shared, code_slots, types, Arc::new(service_error_types))
         .map(Arc::new)
         .map_err(anyhow::Error::new)
 }

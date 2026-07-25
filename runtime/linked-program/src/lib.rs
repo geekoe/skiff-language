@@ -9,6 +9,7 @@ pub mod linked;
 mod overlay;
 pub mod package_unit;
 pub mod resolver;
+mod service_error_index;
 pub mod service_unit;
 mod shared_image;
 mod type_params;
@@ -55,6 +56,11 @@ pub use package_unit::{
 pub use resolver::{
     resolve_executable_from_units, resolve_file_from_units, LinkedProgramImageResolverExt,
     LinkedProgramResolveError, LinkedProgramResolveResult, ResolvedLinkedExecutable,
+};
+pub use service_error_index::{
+    ServiceErrorDeclarationKind, ServiceErrorExecutionContext, ServiceErrorExecutionKey,
+    ServiceErrorPublicIdentity, ServiceErrorTypeIndex, ServiceErrorTypeIndexError,
+    ServiceErrorTypeLink,
 };
 pub use service_unit::{
     GatewayConfig, OperationConstReceiverRef, OperationIngressKind, OperationMode,

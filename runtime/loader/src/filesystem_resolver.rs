@@ -1,9 +1,10 @@
 use std::{path::Path, sync::Arc};
 
 use skiff_artifact_model::{
-    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageSchemaTypeRecord,
-    PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssemblyRef, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageSchemaIndex,
+    PackageSchemaIndexRef, PackageSchemaTypeRecord, PackageSchemaTypeRecordRef,
+    PublicationResourceRef, RuntimeAssemblyRef, ServiceContract, ServiceContractRef,
+    ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
 
@@ -12,7 +13,7 @@ use crate::{
     RuntimeAssemblyRecordResolver,
 };
 
-/// Production filesystem resolver for the canonical four-record store.
+/// Production filesystem resolver for the typed canonical artifact store.
 ///
 /// Every path comes from an exact typed reference. Raw coordinates are checked
 /// before typed deserialization by the store; no legacy pointer/index or host
@@ -58,6 +59,13 @@ impl RuntimeAssemblyContentResolver for FilesystemRuntimeAssemblyContentResolver
         reference: &ServiceContractRef,
     ) -> anyhow::Result<Arc<ServiceContract>> {
         Ok(self.store.read_service_contract(reference)?)
+    }
+
+    fn resolve_package_schema_index(
+        &self,
+        reference: &PackageSchemaIndexRef,
+    ) -> anyhow::Result<Arc<PackageSchemaIndex>> {
+        Ok(self.store.read_package_schema_index(reference)?)
     }
 
     fn resolve_package_schema_type(

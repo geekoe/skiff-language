@@ -90,6 +90,7 @@ fn hydrated_package_code(
         slot.files().to_vec(),
         resources,
     )
+    .with_schema_index(Arc::clone(slot.schema_index()))
     .with_schema_records(slot.schema_records().clone()))
 }
 

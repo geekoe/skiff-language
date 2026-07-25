@@ -90,6 +90,13 @@ where
         self.inner.resolve_package_schema_type(reference)
     }
 
+    fn resolve_package_schema_index(
+        &self,
+        reference: &skiff_artifact_model::PackageSchemaIndexRef,
+    ) -> anyhow::Result<Arc<skiff_artifact_model::PackageSchemaIndex>> {
+        self.inner.resolve_package_schema_index(reference)
+    }
+
     fn resolve_package(
         &self,
         reference: &PackageArtifactRef,
