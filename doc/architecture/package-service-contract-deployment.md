@@ -409,7 +409,17 @@ DB、spawn、queue、persistent work item或其它跨request lane才要求recove
 和error payload不因为是boundary call就必须在未来request中恢复。
 
 ordinary data按contract生成detached value graph。caller可观察的alias、共享heap identity或原地
-mutation不能穿过service boundary。
+mutation不能穿过service boundary。这三类事实必须分别建模：
+
+- `writesCallerReachable`只表示callee会修改caller传入的引用图；
+- `returnsCallerAlias` / `throwsCallerAlias`只表示返回值或throw payload仍引用caller图；
+- `requiresSameHeapIdentity`只表示计算已经对caller-reachable引用执行了引用身份敏感操作，例如对
+  heap value执行`==` / `!=`，或调用语义明确等价的identity intrinsic。
+
+读取collection元素、投影字段、返回alias、把值写入caller对象、把值装进fresh对象或创建callback
+capability本身都不是same-heap identity observation；它们只能产生各自的provenance、write、escape或
+callback事实。unknown target由独立unknown/effect事实失败关闭，不能为了拒绝unknown而伪造一个已经发生的
+same-heap identity observation。
 
 本地`any I`或native handle若要跨service，只能投影成request-scope callback capability：
 
@@ -444,12 +454,14 @@ compiler执行sound may-analysis，至少追踪：
 - caller-reachable参数图的write；
 - 返回或throw payload是否alias caller graph；
 - caller value是否escape到capture、callback、stream、spawn、DB或native/external target；
-- 是否依赖same-heap identity；
+- 是否对caller-reachable引用执行了引用身份敏感操作；
 - callback/native adapter requirement；
 - unknown call/effect。
 
 分析允许保守拒绝，不允许漏掉boundary-visible行为。mutable helper、返回参数alias的函数和依赖本地
-identity的算法仍是合法package API，但deployment选择它们时以结构化原因失败。
+identity的算法仍是合法package API，但deployment选择它们时以各自独立的结构化原因失败。只要public
+callable可能对boundary输入执行引用身份比较，它就不能成为service operation；service materialization
+不得尝试保留caller heap identity来放宽该规则。
 
 第一版不要求新增`local`/`remote`源码修饰符。未来annotation只能作为compiler assertion，不能成为
 绕过分析的第二套规则。
