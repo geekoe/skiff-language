@@ -76,6 +76,7 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_scalar_native("core.bytes.fromUtf8"),
     detached_scalar_native("core.date.fromEpochMilliseconds"),
     detached_scalar_native("core.date.now"),
+    detached_scalar_native("core.date.parse"),
     detached_scalar_native("core.duration.milliseconds"),
     detached_scalar_native("core.duration.seconds"),
     detached_scalar_native("core.number.parse"),
@@ -887,6 +888,7 @@ mod tests {
             "core.bytes.fromUtf8",
             "core.date.fromEpochMilliseconds",
             "core.date.now",
+            "core.date.parse",
             "core.duration.milliseconds",
             "core.duration.seconds",
             "core.number.parse",
@@ -987,6 +989,47 @@ mod tests {
             .expect("audited Date constructor should have a native signature");
         assert_eq!(signature.params, &[super::INTEGER]);
         assert_eq!(signature.return_type, super::DATE);
+    }
+
+    #[test]
+    fn date_parse_semantics_match_exact_signature() {
+        let semantics = native_callable_semantics("core.date.parse")
+            .expect("audited Date parser should have exact semantics");
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+        let signature = STD_NATIVE_SIGNATURES
+            .iter()
+            .find(|signature| signature.binding_key == semantics.binding_key)
+            .expect("audited Date parser should have a native signature");
+        assert_eq!(signature.target, "Date.parse");
+        assert!(signature.aliases.is_empty());
+        assert_eq!(signature.params, &[super::STRING]);
+        assert_eq!(signature.return_type, super::DATE_NULLABLE);
+
+        for near_miss in [
+            "core.date.parse.custom",
+            "Date.parse",
+            "std.date.parse",
+            "core.date.requireParse",
+        ] {
+            assert_eq!(
+                native_callable_semantics(near_miss),
+                None,
+                "{near_miss} must not inherit exact callable semantics"
+            );
+        }
     }
 
     #[test]

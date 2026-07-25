@@ -1055,6 +1055,58 @@ fn date_from_epoch_milliseconds_wrapper_uses_exact_native_semantics() {
 }
 
 #[test]
+fn optional_date_parse_wrapper_uses_exact_native_semantics() {
+    let model = analyze_named(
+        r#"
+            function optionalInputDate(value: string?) -> Date? {
+              if value == null {
+                return null
+              }
+              return Date.parse(value)
+            }
+
+            function adminUpstreamSourceCreate(accessTokenExpiresAt: string?) -> Date? {
+              return optionalInputDate(accessTokenExpiresAt)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "upstream_sources",
+        "agine.ai/codex-relay",
+    );
+
+    for callable in ["optionalInputDate", "adminUpstreamSourceCreate"] {
+        assert_eq!(
+            effects_in(&model, "upstream_sources", callable),
+            no_effects(),
+            "{callable}"
+        );
+        let CallableProvenanceSummary::Analyzed {
+            return_origins,
+            throw_origins,
+            escape_lanes,
+        } = provenance_in(&model, "upstream_sources", callable)
+        else {
+            panic!("{callable} should retain exact native provenance");
+        };
+        assert!(
+            return_origins.contains(&ValueProvenance::Fresh)
+                && return_origins.contains(&ValueProvenance::Constant),
+            "{callable}: {return_origins:?}"
+        );
+        assert!(throw_origins.is_empty(), "{callable}");
+        assert!(escape_lanes.is_empty(), "{callable}");
+    }
+
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::NativeFunction { binding_key }
+                if binding_key == "core.date.parse"
+        )
+    }));
+}
+
+#[test]
 fn bytes_from_base64_wrapper_uses_exact_native_semantics() {
     let model = analyze(
         r#"
