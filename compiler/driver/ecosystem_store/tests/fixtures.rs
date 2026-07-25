@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use skiff_artifact_identity::service_contract_from_definition;
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryReturn, BoundaryStreamContract,
-    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, ContractTypeRef, ServiceContract, ServiceContractDefinition,
+    BoundaryOperationContract, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    ContractTypeRef, ServiceContract, ServiceContractDefinition,
     ServiceContractDefinitionDiagnosticText, SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION,
 };
 
@@ -37,7 +37,6 @@ fn operation_contract() -> BoundaryOperationContract {
                 lifetime: BoundaryValueLifetime::Call,
             },
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::Unary,
         cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,

@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
-    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ExecutableIr, PackageTypeRequirement, TypeRefIr,
+    BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, ExecutableIr, PackageTypeRequirement, TypeRefIr,
 };
 use skiff_compiler::{ServiceContractDefinition, ServiceContractDefinitionDiagnosticText};
 
@@ -187,7 +187,6 @@ fn contract_fixture() -> (
                     ty: request,
                     value_plan: linkable(BoundaryValueOwner::Provider),
                 },
-                errors: BoundaryErrorContract::None,
                 stream: BoundaryStreamContract::Unary,
                 cancellation: BoundaryCancellationContract::Cooperative,
                 callbacks: BoundaryCallbackContract::None,

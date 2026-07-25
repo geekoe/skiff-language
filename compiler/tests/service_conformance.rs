@@ -7,11 +7,11 @@ use skiff_artifact_identity::validate_service_contract_identities;
 use skiff_artifact_model::{
     file_ir_service_call_sites, validate_file_ir_service_calls, BoundaryCallableProjection,
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
-    BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary,
-    CallableMayEffects, CallableProvenanceSummary, ContractRequirement, ContractTypeRef,
-    PackageLocalAbiSymbol, PackageSchemaTypeId, PackageTypeRef, PackageTypeRequirement,
+    BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
+    BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary, CallableMayEffects,
+    CallableProvenanceSummary, ContractRequirement, ContractTypeRef, PackageLocalAbiSymbol,
+    PackageSchemaTypeId, PackageTypeRef, PackageTypeRequirement,
     ServiceCallRef, ServiceRequirement, ValueEscapeLane,
 };
 use skiff_compiler::{
@@ -882,7 +882,6 @@ fn contract_definition() -> ServiceContractDefinition {
                     ty: ContractTypeRef::builtin("string"),
                     value_plan: linkable(BoundaryValueOwner::Provider),
                 },
-                errors: BoundaryErrorContract::None,
                 stream: BoundaryStreamContract::Unary,
                 cancellation: BoundaryCancellationContract::NotCancellable,
                 callbacks: BoundaryCallbackContract::None,
