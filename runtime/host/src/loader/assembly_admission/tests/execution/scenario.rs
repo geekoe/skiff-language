@@ -6,7 +6,8 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_activation::RequestActivationContext;
 use skiff_runtime_eval::{
-    RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget, RuntimeAssemblyServiceCallTarget,
+    error::RuntimeError, RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget,
+    RuntimeAssemblyServiceCallTarget,
 };
 use skiff_runtime_linked_program::{
     ActivationRelativeServiceCall, ExecutableAddr, FileAddr, LinkedInterfaceInstantiationRef,
@@ -15,6 +16,7 @@ use skiff_runtime_linked_program::{
 use skiff_runtime_model::runtime_value::{
     CallbackCapabilityCarrier, InterfaceCarrier, InterfaceValue, RuntimeValue,
 };
+use skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity;
 
 use super::super::super::{ActiveAssembly, AssemblyAdmissionController};
 use super::{
@@ -186,9 +188,13 @@ impl TypedExecutionFixture {
             )
             .await
             .expect_err("callback checkpoint executable must reach the frozen callback hook");
-        assert!(
-            callback_error.to_string().contains("callback-interface"),
-            "callback executable stopped before the callback hook: {callback_error}"
+        let RuntimeError::UserException(exception) = callback_error else {
+            panic!("callback hook failure must remain a typed user exception: {callback_error}")
+        };
+        assert_eq!(
+            exception.actual_payload_type(),
+            Some(&PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity()),
+            "missing callback capability must keep its registered platform catch identity"
         );
     }
 }

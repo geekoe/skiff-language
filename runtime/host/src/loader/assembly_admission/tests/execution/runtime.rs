@@ -66,7 +66,12 @@ impl TypedExecutionRuntime {
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
             payload_bytes: Vec::new(),
-            extra: serde_json::Map::new(),
+            extra: serde_json::Map::from_iter([(
+                "trace".to_string(),
+                serde_json::json!({
+                    "traceId": "trace-phase-four-typed-execution",
+                }),
+            )]),
         };
         Self {
             request,

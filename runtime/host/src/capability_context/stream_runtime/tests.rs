@@ -702,7 +702,8 @@ fn stream_runtime_error_root_fold_boxes_eval_producer_error_and_preserves_payloa
     assert_eq!(
         WirePayload::catch_projection(&error),
         Some((
-            skiff_runtime_model::error::TypeIdentity::builtin("CancelError"),
+            skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity::Cancel
+                .catch_identity(),
             json!({
                 "message": "request was cancelled",
             }),

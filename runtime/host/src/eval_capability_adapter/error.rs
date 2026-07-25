@@ -56,7 +56,7 @@ fn root_diagnosed_into_eval(diagnosed: root_error::Diagnosed) -> RuntimeError {
 mod tests {
     use super::*;
     use serde_json::json;
-    use skiff_runtime_eval::error::TypeIdentity;
+    use skiff_runtime_eval::error::PlatformBuiltinErrorIdentity;
 
     fn mongo_write_conflict() -> mongodb::error::Error {
         let command_error: mongodb::error::CommandError = serde_json::from_value(json!({
@@ -108,7 +108,7 @@ mod tests {
                         assert_eq!(
                             WirePayload::catch_projection(error.as_ref()),
                             Some((
-                                TypeIdentity::builtin("std.db.DecodeError"),
+                                PlatformBuiltinErrorIdentity::DbDecode.catch_identity(),
                                 json!({
                                     "target": "std.db",
                                     "message": "db value missing key field id",
@@ -165,7 +165,7 @@ mod tests {
         assert_eq!(
             WirePayload::catch_projection(&eval_error),
             Some((
-                TypeIdentity::builtin("std.file.FileError"),
+                PlatformBuiltinErrorIdentity::File.catch_identity(),
                 json!({ "message": "std.file not found" }),
             ))
         );
@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(
             WirePayload::catch_projection(&eval_error),
             Some((
-                TypeIdentity::builtin("std.db.ConflictError"),
+                PlatformBuiltinErrorIdentity::DbConflict.catch_identity(),
                 json!({
                     "target": "std.db",
                     "message": "database conflict; retry only at an explicit side-effect-safe boundary",
