@@ -105,9 +105,18 @@ mod tests {
     use std::fmt;
 
     use serde_json::json;
+    use skiff_artifact_model::{
+        InstructionSourceSite, PackageBuildId, SyntheticInstructionSiteReason,
+    };
     use skiff_runtime_model::{
+        addr::ExecutableAddr,
         error::{RuntimeErrorPayload, WirePayload},
-        service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+        request_heap::RequestHeap,
+        runtime_value::RuntimeValue,
+        service_error::{
+            CatchIdentity, ExceptionStackFrame, OpaqueServiceError, PlatformBuiltinErrorIdentity,
+            ServiceErrorEnvelope,
+        },
     };
 
     use super::*;
@@ -151,6 +160,34 @@ mod tests {
         fn as_any(&self) -> &dyn std::any::Any {
             self
         }
+    }
+
+    fn fixed_service_error(label: &str) -> OpaqueServiceError {
+        OpaqueServiceError::decode(
+            format!(
+                r#"{{"kind":"internalError","payload":{{"message":"Internal service error","traceId":"trace-{label}","errorId":"trace-{label}:error"}}}}"#
+            )
+            .into_bytes(),
+        )
+        .expect("fixed service error fixture should decode")
+    }
+
+    fn public_service_error(stable_schema_key: &str, trace_id: &str) -> OpaqueServiceError {
+        OpaqueServiceError::decode(
+            format!(
+                r#"{{
+  "kind":"publicTypedError",
+  "packageId":"example.errors",
+  "stableSchemaKey":"{stable_schema_key}",
+  "packageSchemaTypeId":"schema:{stable_schema_key}",
+  "encodedPayload":[123,125],
+  "traceId":"{trace_id}",
+  "errorId":"{trace_id}:error"
+}}"#
+            )
+            .into_bytes(),
+        )
+        .expect("public service error fixture should decode")
     }
 
     #[test]
@@ -428,6 +465,127 @@ mod tests {
         let producer = StreamRuntimeError::producer(TestWirePayload);
         assert_eq!(producer.payload().code, "test.ProducerError");
         assert_eq!(producer.catch_projection(), test_fixture_catch_projection());
+    }
+
+    #[test]
+    fn fixed_service_stream_terminal_keeps_exact_bytes_and_typed_import_facts() {
+        let fixed = fixed_service_error("stream");
+        let exact = fixed.encoded_bytes().to_vec();
+        let call_site = InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+        };
+        let stack = vec![ExceptionStackFrame::Local {
+            site: call_site.clone(),
+        }];
+        let terminal = StreamRuntimeError::fixed_service_failure_with_import(
+            fixed,
+            PackageBuildId::new("caller-build"),
+            ExecutableAddr::service(2, 3),
+            call_site.clone(),
+            stack.clone(),
+            "svc.provider".to_string(),
+            "errors.stream".to_string(),
+        );
+
+        let (fixed, import) = terminal
+            .fixed_service_failure_parts()
+            .expect("typed fixed terminal");
+        let (
+            caller_build,
+            caller_executable,
+            terminal_site,
+            terminal_stack,
+            service_id,
+            operation_id,
+        ) = import.expect("in-process import provenance");
+        assert_eq!(fixed.encoded_bytes(), exact);
+        assert_eq!(caller_build.as_str(), "caller-build");
+        assert_eq!(caller_executable, &ExecutableAddr::service(2, 3));
+        assert_eq!(terminal_site, &call_site);
+        assert_eq!(terminal_stack, stack);
+        assert_eq!(service_id, "svc.provider");
+        assert_eq!(operation_id, "errors.stream");
+
+        assert!(StreamRuntimeError::producer(TestWirePayload)
+            .fixed_service_failure_parts()
+            .is_none());
+        assert!(StreamRuntimeError::cancelled()
+            .fixed_service_failure_parts()
+            .is_none());
+    }
+
+    #[test]
+    fn unlinked_fixed_stream_terminal_outlives_provider_heap_without_reencoding() {
+        let fixed = public_service_error("OpaqueFault", "trace-unlinked-stream");
+        let exact = fixed.encoded_bytes().to_vec();
+        let mut provider_heap = RequestHeap::default();
+        provider_heap
+            .alloc_array(vec![RuntimeValue::String(
+                "provider-only payload".to_string(),
+            )])
+            .expect("provider heap fixture allocation");
+        let terminal = StreamRuntimeError::fixed_service_failure(fixed);
+
+        drop(provider_heap);
+
+        let (fixed, import) = terminal
+            .fixed_service_failure_parts()
+            .expect("fixed terminal should remain typed");
+        assert!(import.is_none());
+        assert_eq!(fixed.encoded_bytes(), exact);
+    }
+
+    #[test]
+    fn fixed_stream_carrier_does_not_reclassify_platform_and_resource_errors() {
+        let platform = OpaqueServiceError::decode(
+            br#"{"kind":"platformError","builtinErrorIdentity":"std.db.ConflictError","encodedPayload":[123,125],"traceId":"trace-platform","errorId":"trace-platform:error"}"#
+                .to_vec(),
+        )
+        .expect("platform service error fixture should decode");
+        let resource = public_service_error("std.resource.ResourceError", "trace-resource");
+
+        let platform_terminal = StreamRuntimeError::fixed_service_failure(platform);
+        let resource_terminal = StreamRuntimeError::fixed_service_failure(resource);
+        let (platform, _) = platform_terminal
+            .fixed_service_failure_parts()
+            .expect("platform terminal");
+        let (resource, _) = resource_terminal
+            .fixed_service_failure_parts()
+            .expect("resource terminal");
+
+        assert!(matches!(
+            platform.envelope(),
+            ServiceErrorEnvelope::PlatformError { .. }
+        ));
+        assert!(matches!(
+            resource.envelope(),
+            ServiceErrorEnvelope::PublicTypedError {
+                stable_schema_key,
+                ..
+            } if stable_schema_key == "std.resource.ResourceError"
+        ));
+    }
+
+    #[test]
+    fn outbound_fixed_failure_is_distinct_from_generic_response_error() {
+        let fixed = fixed_service_error("response");
+        let exact = fixed.encoded_bytes().to_vec();
+        let response = OutboundResponse::fixed_service_failure(fixed);
+        assert_eq!(response.kind(), "response.error");
+        match response {
+            OutboundResponse::FixedServiceFailure(failure) => {
+                assert_eq!(failure.error().encoded_bytes(), exact)
+            }
+            _ => panic!("fixed response must retain its typed carrier"),
+        }
+
+        let generic = OutboundResponse::Error(ResponseError {
+            code: "std.service.ProviderUnavailableError".to_string(),
+            message: "same text is not classification authority".to_string(),
+            status: None,
+            details: None,
+        });
+        assert!(matches!(generic, OutboundResponse::Error(_)));
     }
 
     #[test]

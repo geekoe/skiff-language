@@ -8,11 +8,15 @@ use std::{
 };
 
 use serde_json::Value;
+use skiff_artifact_model::{InstructionSourceSite, PackageBuildId};
 use skiff_runtime_model::{
+    addr::ExecutableAddr,
     error::{RuntimeErrorPayload, WirePayload},
     request_heap::RequestHeap,
     runtime_value::RuntimeValue,
-    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+    service_error::{
+        CatchIdentity, ExceptionStackFrame, OpaqueServiceError, PlatformBuiltinErrorIdentity,
+    },
     type_plan::RuntimeTypePlan,
 };
 
@@ -22,11 +26,192 @@ pub type StreamRuntimeResult<T> = Result<T, StreamRuntimeError>;
 
 const REQUEST_CANCELLED_MESSAGE: &str = "request was cancelled";
 
+/// Caller-side facts captured when an in-process service stream is created.
+///
+/// The fixed failure itself remains independent of either request heap. These
+/// facts let eval invoke the canonical importer only when the terminal is
+/// observed, without retaining the provider heap or inferring provenance from
+/// a generic producer payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixedServiceStreamImport {
+    caller_package_build_id: PackageBuildId,
+    caller_executable_addr: ExecutableAddr,
+    call_site: InstructionSourceSite,
+    caller_stack_at_site: Vec<ExceptionStackFrame>,
+    remote_service_id: String,
+    remote_operation_id: String,
+}
+
+impl FixedServiceStreamImport {
+    pub fn new(
+        caller_package_build_id: PackageBuildId,
+        caller_executable_addr: ExecutableAddr,
+        call_site: InstructionSourceSite,
+        caller_stack_at_site: Vec<ExceptionStackFrame>,
+        remote_service_id: String,
+        remote_operation_id: String,
+    ) -> Self {
+        Self {
+            caller_package_build_id,
+            caller_executable_addr,
+            call_site,
+            caller_stack_at_site,
+            remote_service_id,
+            remote_operation_id,
+        }
+    }
+
+    pub fn caller_package_build_id(&self) -> &PackageBuildId {
+        &self.caller_package_build_id
+    }
+
+    pub fn caller_executable_addr(&self) -> &ExecutableAddr {
+        &self.caller_executable_addr
+    }
+
+    pub fn call_site(&self) -> &InstructionSourceSite {
+        &self.call_site
+    }
+
+    pub fn caller_stack_at_site(&self) -> &[ExceptionStackFrame] {
+        &self.caller_stack_at_site
+    }
+
+    pub fn remote_service_id(&self) -> &str {
+        &self.remote_service_id
+    }
+
+    pub fn remote_operation_id(&self) -> &str {
+        &self.remote_operation_id
+    }
+}
+
+/// Heap-independent, strict service failure carried by a stream terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixedServiceStreamFailure {
+    error: OpaqueServiceError,
+    import: Option<FixedServiceStreamImport>,
+}
+
+impl FixedServiceStreamFailure {
+    /// Creates a typed handoff without in-process import provenance, as used
+    /// by the outbound capability seam.
+    pub fn new(error: OpaqueServiceError) -> Self {
+        Self {
+            error,
+            import: None,
+        }
+    }
+
+    /// Creates an in-process terminal that can be imported in the consumer
+    /// heap after the provider task and heap have been destroyed.
+    pub fn with_import(error: OpaqueServiceError, import: FixedServiceStreamImport) -> Self {
+        Self {
+            error,
+            import: Some(import),
+        }
+    }
+
+    pub fn error(&self) -> &OpaqueServiceError {
+        &self.error
+    }
+
+    pub fn import(&self) -> Option<&FixedServiceStreamImport> {
+        self.import.as_ref()
+    }
+}
+
+impl fmt::Display for FixedServiceStreamFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("canonical service stream failure")
+    }
+}
+
+impl Error for FixedServiceStreamFailure {}
+
+impl WirePayload for FixedServiceStreamFailure {
+    fn payload(&self) -> RuntimeErrorPayload {
+        RuntimeErrorPayload {
+            code: "InternalError".to_string(),
+            message: "canonical service stream failure".to_string(),
+            status: None,
+            details: None,
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Borrowed typed branch of a producer terminal.
+pub enum StreamProducerFailureRef<'a> {
+    FixedService(&'a FixedServiceStreamFailure),
+    Dynamic(&'a dyn WirePayload),
+}
+
+/// Producer-terminal carrier with a first-class fixed service branch.
+///
+/// Eval can inspect [`StreamProducerFailureRef`] directly; only the dynamic
+/// branch exposes a generic wire payload.
+pub trait StreamProducerFailure: WirePayload {
+    fn failure_ref(&self) -> StreamProducerFailureRef<'_>;
+}
+
+impl StreamProducerFailure for FixedServiceStreamFailure {
+    fn failure_ref(&self) -> StreamProducerFailureRef<'_> {
+        StreamProducerFailureRef::FixedService(self)
+    }
+}
+
+#[derive(Debug)]
+struct DynamicStreamProducerFailure {
+    error: Box<dyn WirePayload>,
+}
+
+impl DynamicStreamProducerFailure {
+    fn new(error: Box<dyn WirePayload>) -> Self {
+        Self { error }
+    }
+}
+
+impl fmt::Display for DynamicStreamProducerFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.error)
+    }
+}
+
+impl Error for DynamicStreamProducerFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.error.as_ref())
+    }
+}
+
+impl WirePayload for DynamicStreamProducerFailure {
+    fn payload(&self) -> RuntimeErrorPayload {
+        self.error.payload()
+    }
+
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
+        self.error.catch_projection()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self.error.as_any()
+    }
+}
+
+impl StreamProducerFailure for DynamicStreamProducerFailure {
+    fn failure_ref(&self) -> StreamProducerFailureRef<'_> {
+        StreamProducerFailureRef::Dynamic(self.error.as_ref())
+    }
+}
+
 #[derive(Debug)]
 pub enum StreamRuntimeError {
     Decode(String),
     Cancelled,
-    Producer(Box<dyn WirePayload>),
+    Producer(Box<dyn StreamProducerFailure>),
 }
 
 impl StreamRuntimeError {
@@ -39,7 +224,72 @@ impl StreamRuntimeError {
     }
 
     pub fn producer(error: impl WirePayload) -> Self {
-        Self::Producer(Box::new(error))
+        Self::producer_boxed(Box::new(error))
+    }
+
+    pub fn producer_boxed(error: Box<dyn WirePayload>) -> Self {
+        Self::Producer(Box::new(DynamicStreamProducerFailure::new(error)))
+    }
+
+    pub fn fixed_service_failure(error: OpaqueServiceError) -> Self {
+        Self::Producer(Box::new(FixedServiceStreamFailure::new(error)))
+    }
+
+    pub fn fixed_service_failure_with_import(
+        error: OpaqueServiceError,
+        caller_package_build_id: PackageBuildId,
+        caller_executable_addr: ExecutableAddr,
+        call_site: InstructionSourceSite,
+        caller_stack_at_site: Vec<ExceptionStackFrame>,
+        remote_service_id: String,
+        remote_operation_id: String,
+    ) -> Self {
+        Self::Producer(Box::new(FixedServiceStreamFailure::with_import(
+            error,
+            FixedServiceStreamImport::new(
+                caller_package_build_id,
+                caller_executable_addr,
+                call_site,
+                caller_stack_at_site,
+                remote_service_id,
+                remote_operation_id,
+            ),
+        )))
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn fixed_service_failure_parts(
+        &self,
+    ) -> Option<(
+        &OpaqueServiceError,
+        Option<(
+            &PackageBuildId,
+            &ExecutableAddr,
+            &InstructionSourceSite,
+            &[ExceptionStackFrame],
+            &str,
+            &str,
+        )>,
+    )> {
+        let Self::Producer(error) = self else {
+            return None;
+        };
+        let StreamProducerFailureRef::FixedService(failure) = error.failure_ref() else {
+            return None;
+        };
+        Some((
+            failure.error(),
+            failure.import().map(|import| {
+                (
+                    import.caller_package_build_id(),
+                    import.caller_executable_addr(),
+                    import.call_site(),
+                    import.caller_stack_at_site(),
+                    import.remote_service_id(),
+                    import.remote_operation_id(),
+                )
+            }),
+        ))
     }
 }
 
