@@ -1,6 +1,7 @@
 # P5-F326 Service error core combined probe
 
-状态：Ready（只读合流探针）。
+状态：Completed。结果见
+`P5-F326-service-error-core-combined-probe-result.md`。
 
 ## 直接父节点
 
@@ -72,4 +73,3 @@ git diff --check
 - 新的一次性只读Agent；提交result并返回candidate commit/tree、矩阵和PASS/FAIL；
 - PASS只解除F327独立R0验收，不直接解除R1–R3；
 - 不push、不承接验收。
-
