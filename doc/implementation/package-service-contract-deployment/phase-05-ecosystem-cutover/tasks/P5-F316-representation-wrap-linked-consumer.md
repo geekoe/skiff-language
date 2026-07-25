@@ -1,6 +1,7 @@
 # P5-F316 Representation wrap linked consumer
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F316-representation-wrap-linked-consumer-result.md`。
 
 ## 直接父节点
 
@@ -67,4 +68,3 @@ selector非零，不运行eval/workspace/stable/live。
 - 风险：高；一次性Agent，5分钟内修改；
 - 提交并返回linked/kind/arguments矩阵与验证；
 - 不push、不承接eval。
-
