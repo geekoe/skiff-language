@@ -8,18 +8,24 @@ use skiff_runtime_boundary::{
     plan::BoundaryUse,
 };
 use skiff_runtime_model::{
-    request_heap::{deep_clone_runtime_value, deep_clone_runtime_value_carrier, RequestHeap},
+    request_heap::{
+        deep_clone_runtime_value, deep_clone_runtime_value_carrier,
+        deep_clone_runtime_value_carrier_between_heaps, RequestHeap,
+    },
     runtime_value::{
         runtime_map_has as model_runtime_map_has, runtime_values_equal, HeapNode, RuntimeBytes,
         RuntimeMap, RuntimeObject, RuntimeObjectFields, RuntimeValue, RuntimeValueCarrier,
         RuntimeValueKey,
     },
+    service_error::CatchIdentity,
     type_plan::{RuntimeTypeNode, RuntimeTypePlan},
 };
 
 use crate::error::{Result, RuntimeError};
 
-use super::runtime_value_view::RuntimeValueView;
+use super::{
+    exceptions::exact_target_accepts_catch_identity, runtime_value_view::RuntimeValueView,
+};
 
 pub fn runtime_from_wire(value: &Value, heap: &mut RequestHeap) -> Result<RuntimeValue> {
     Ok(decode_untyped_wire_json(value, heap)?)
@@ -89,7 +95,7 @@ pub fn runtime_carrier_for_plan(
     let value = value.into();
     if let (Some(actual), Some(expected)) = (value.catch_identity(), expected_type.catch_identity())
     {
-        if actual != expected {
+        if !exact_target_accepts_catch_identity(actual, expected) {
             return Err(RuntimeError::InvalidArtifact(format!(
                 "{boundary} materialized value carries an exact identity that does not match its linked type plan"
             )));
@@ -224,23 +230,123 @@ pub fn runtime_carrier_for_plan(
     }
 }
 
-fn runtime_plan_accepts_identity(
-    plan: &RuntimeTypePlan,
-    identity: &skiff_runtime_model::service_error::CatchIdentity,
-) -> bool {
-    if plan.catch_identity() == Some(identity) {
+pub fn runtime_representation_wrap_for_plan(
+    value: RuntimeValueCarrier,
+    target: &RuntimeTypePlan,
+    boundary: &str,
+    heap: &mut RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    let RuntimeTypeNode::Representation { payload, .. } = target.node() else {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{boundary} target did not resolve to an exact representation plan"
+        )));
+    };
+    let Some(CatchIdentity::Nominal(target_identity)) = target.catch_identity() else {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{boundary} target representation is missing its exact nominal identity"
+        )));
+    };
+    if runtime_plan_has_unidentified_representation(payload) {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{boundary} target representation payload plan is missing an exact identity"
+        )));
+    }
+
+    if let Some(actual) = value.catch_identity() {
+        if !runtime_plan_accepts_identity(payload, actual) {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "{boundary} payload carries an exact identity that conflicts with the representation payload plan"
+            )));
+        }
+    }
+    let mut validation_heap = RequestHeap::new(heap.limits().clone());
+    let validation_value =
+        deep_clone_runtime_value_carrier_between_heaps(heap, &mut validation_heap, &value)?;
+    let validated = runtime_carrier_for_plan(
+        validation_value.clone(),
+        payload,
+        boundary,
+        &mut validation_heap,
+    )?;
+    if value.catch_identity().is_none() && validated.catch_identity().is_some() {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{boundary} payload is missing the exact identity required by the representation payload plan"
+        )));
+    }
+    let validation_plan = value
+        .catch_identity()
+        .and_then(|identity| runtime_plan_for_identity(payload, identity))
+        .unwrap_or(payload);
+    RuntimeBoundaryContract::default()
+        .codec_for_expected(validation_plan, BoundaryUse::TypedJson, boundary)
+        .to_wire_json(validation_value.value(), &mut validation_heap)?;
+
+    Ok(RuntimeValueCarrier::identified(
+        value.into_value(),
+        CatchIdentity::Nominal(target_identity.clone()),
+    ))
+}
+
+fn runtime_plan_has_unidentified_representation(plan: &RuntimeTypePlan) -> bool {
+    match plan.node() {
+        RuntimeTypeNode::Representation { .. } if plan.catch_identity().is_none() => true,
+        RuntimeTypeNode::Alias(inner)
+        | RuntimeTypeNode::Nullable(inner)
+        | RuntimeTypeNode::Stream(inner)
+        | RuntimeTypeNode::Array(inner)
+        | RuntimeTypeNode::Representation { payload: inner, .. } => {
+            runtime_plan_has_unidentified_representation(inner)
+        }
+        RuntimeTypeNode::Union(branches) => branches
+            .iter()
+            .any(runtime_plan_has_unidentified_representation),
+        RuntimeTypeNode::Map { key, value } => {
+            runtime_plan_has_unidentified_representation(key)
+                || runtime_plan_has_unidentified_representation(value)
+        }
+        RuntimeTypeNode::Record { fields, .. } => fields
+            .iter()
+            .any(|field| runtime_plan_has_unidentified_representation(&field.ty)),
+        _ => false,
+    }
+}
+
+fn runtime_plan_accepts_identity(plan: &RuntimeTypePlan, identity: &CatchIdentity) -> bool {
+    if plan
+        .catch_identity()
+        .is_some_and(|target| exact_target_accepts_catch_identity(identity, target))
+    {
         return true;
     }
     match plan.node() {
-        RuntimeTypeNode::Alias(inner)
-        | RuntimeTypeNode::Nullable(inner)
-        | RuntimeTypeNode::Representation { payload: inner, .. } => {
+        RuntimeTypeNode::Alias(inner) | RuntimeTypeNode::Nullable(inner) => {
             runtime_plan_accepts_identity(inner, identity)
         }
         RuntimeTypeNode::Union(branches) => branches
             .iter()
             .any(|branch| runtime_plan_accepts_identity(branch, identity)),
         _ => false,
+    }
+}
+
+fn runtime_plan_for_identity<'a>(
+    plan: &'a RuntimeTypePlan,
+    identity: &CatchIdentity,
+) -> Option<&'a RuntimeTypePlan> {
+    if plan
+        .catch_identity()
+        .is_some_and(|target| exact_target_accepts_catch_identity(identity, target))
+    {
+        return Some(plan);
+    }
+    match plan.node() {
+        RuntimeTypeNode::Alias(inner) | RuntimeTypeNode::Nullable(inner) => {
+            runtime_plan_for_identity(inner, identity)
+        }
+        RuntimeTypeNode::Union(branches) => branches
+            .iter()
+            .find_map(|branch| runtime_plan_for_identity(branch, identity)),
+        _ => None,
     }
 }
 
