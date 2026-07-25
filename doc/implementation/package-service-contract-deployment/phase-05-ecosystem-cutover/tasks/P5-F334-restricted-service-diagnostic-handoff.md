@@ -1,6 +1,7 @@
 # P5-F334 Restricted service diagnostic handoff
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F334-restricted-service-diagnostic-handoff-result.md`。
 
 ## 直接父节点
 
