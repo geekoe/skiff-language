@@ -191,19 +191,23 @@ impl MapReceiverMethods {
                 runtime_map_get(receiver, key, heap).map(Some)
             }
             BuiltinReceiverMethod::Has => {
-                let key = args.first().unwrap_or(&RuntimeValue::Null);
+                let [key] = args else {
+                    return Err(RuntimeError::Decode(
+                        "Map.has requires exactly one key".to_string(),
+                    ));
+                };
                 Ok(Some(RuntimeValue::Bool(runtime_map_has(
                     receiver, key, heap,
                 )?)))
             }
             BuiltinReceiverMethod::Set => {
-                if args.len() < 2 {
+                let [key, value] = args else {
                     return Err(RuntimeError::Decode(
-                        "Map.set requires key and value".to_string(),
+                        "Map.set requires exactly one key and one value".to_string(),
                     ));
-                }
-                let key = map_key_from_runtime_value(&args[0], heap)?;
-                let value = args.get(1).cloned().unwrap_or(RuntimeValue::Null);
+                };
+                let key = map_key_from_runtime_value(key, heap)?;
+                let value = value.clone();
                 let handle = program_mutable_receiver_handle(receiver, heap, "Map.set")?;
                 apply_collection_mutation(heap, handle, CollectionMutation::MapSet { key, value })?;
                 Ok(Some(RuntimeValue::Null))
@@ -877,6 +881,87 @@ mod tests {
                 )
                 .expect("Map.get should dispatch");
             assert_eq!(result, expected, "unexpected Map.get result for {key}");
+        }
+    }
+
+    #[test]
+    fn map_has_and_set_preserve_identity_and_nested_values() {
+        let mut heap = RequestHeap::default();
+        let old_nested = heap
+            .alloc_array(vec![RuntimeValue::String("old".to_string())])
+            .expect("old nested allocation should succeed");
+        let new_nested = heap
+            .alloc_array(vec![RuntimeValue::String("new".to_string())])
+            .expect("new nested allocation should succeed");
+        let map = BTreeMap::from([(
+            RuntimeValueKey::string("present"),
+            RuntimeValue::Heap(old_nested),
+        )]);
+        let handle = heap
+            .alloc_map(map)
+            .expect("Map receiver allocation should succeed");
+        let receiver = RuntimeValue::Heap(handle);
+
+        for (key, expected) in [("present", true), ("missing", false)] {
+            let result = ReceiverMethodDispatch::new(&mut heap)
+                .dispatch_op(
+                    &receiver_op("Map", "has"),
+                    receiver.clone(),
+                    vec![RuntimeValue::String(key.to_string())],
+                )
+                .expect("Map.has should dispatch");
+            assert_eq!(result, RuntimeValue::Bool(expected));
+        }
+
+        for key in ["present", "inserted"] {
+            let result = ReceiverMethodDispatch::new(&mut heap)
+                .dispatch_op(
+                    &receiver_op("Map", "set"),
+                    receiver.clone(),
+                    vec![
+                        RuntimeValue::String(key.to_string()),
+                        RuntimeValue::Heap(new_nested),
+                    ],
+                )
+                .expect("Map.set should dispatch");
+            assert_eq!(result, RuntimeValue::Null);
+            assert_eq!(receiver, RuntimeValue::Heap(handle));
+        }
+
+        let HeapNode::Map(map) = heap.get(handle).expect("Map handle should remain live") else {
+            panic!("Map.set receiver must remain a map");
+        };
+        assert_eq!(
+            map.get(&RuntimeValueKey::string("present")),
+            Some(&RuntimeValue::Heap(new_nested))
+        );
+        assert_eq!(
+            map.get(&RuntimeValueKey::string("inserted")),
+            Some(&RuntimeValue::Heap(new_nested))
+        );
+    }
+
+    #[test]
+    fn map_has_and_set_reject_malformed_arity() {
+        let mut heap = RequestHeap::default();
+        let receiver = RuntimeValue::Heap(
+            heap.alloc_map(BTreeMap::new())
+                .expect("Map allocation should succeed"),
+        );
+        for (method, args) in [
+            ("has", vec![]),
+            (
+                "has",
+                vec![
+                    RuntimeValue::String("one".to_string()),
+                    RuntimeValue::String("two".to_string()),
+                ],
+            ),
+            ("set", vec![RuntimeValue::String("key".to_string())]),
+        ] {
+            ReceiverMethodDispatch::new(&mut heap)
+                .dispatch_op(&receiver_op("Map", method), receiver.clone(), args)
+                .expect_err("malformed Map receiver call must fail closed");
         }
     }
 

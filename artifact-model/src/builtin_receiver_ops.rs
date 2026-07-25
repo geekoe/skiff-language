@@ -320,6 +320,27 @@ const fn mutating_json_object_set() -> BuiltinReceiverCallableSemantics {
     }
 }
 
+const fn mutating_map_set() -> BuiltinReceiverCallableSemantics {
+    BuiltinReceiverCallableSemantics {
+        op: BuiltinReceiverOp {
+            receiver: BuiltinReceiverRoot::Map,
+            method: BuiltinReceiverMethod::Set,
+            signature_version: 1,
+            canonical_key: canonical_key(BuiltinReceiverRoot::Map, BuiltinReceiverMethod::Set, 1),
+        },
+        effects: CallableMayEffects {
+            writes_caller_reachable: true,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: true,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        },
+        return_provenance: ValueProvenance::Constant,
+    }
+}
+
 const fn mutating_json_object_delete() -> BuiltinReceiverCallableSemantics {
     BuiltinReceiverCallableSemantics {
         op: BuiltinReceiverOp {
@@ -394,6 +415,8 @@ pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantic
         BuiltinReceiverMethod::StartsWith,
     ),
     receiver_reachable_get(BuiltinReceiverRoot::Map),
+    detached_scalar_receiver(BuiltinReceiverRoot::Map, BuiltinReceiverMethod::Has),
+    mutating_map_set(),
     receiver_reachable_get(BuiltinReceiverRoot::JsonObject),
     detached_scalar_receiver(BuiltinReceiverRoot::JsonObject, BuiltinReceiverMethod::Has),
     detached_scalar_receiver(
@@ -1053,6 +1076,8 @@ mod tests {
             "receiver:JsonObject.has@1",
             "receiver:JsonObject.set@1",
             "receiver:Map.get@1",
+            "receiver:Map.has@1",
+            "receiver:Map.set@1",
             "receiver:bytes.length@1",
             "receiver:number.ceil@1",
             "receiver:number.floor@1",
@@ -1080,6 +1105,7 @@ mod tests {
             let mutates_receiver = matches!(
                 semantics.op.canonical_key,
                 "receiver:Array.push@1"
+                    | "receiver:Map.set@1"
                     | "receiver:JsonObject.set@1"
                     | "receiver:JsonObject.delete@1"
             );
@@ -1117,6 +1143,9 @@ mod tests {
         let mutable_json_object = builtin_receiver_op_by_name("JsonObject", "set")
             .expect("JsonObject.set must remain a supported runtime receiver op");
         assert!(builtin_receiver_callable_semantics(mutable_json_object).is_some());
+        let mutable_map = builtin_receiver_op_by_name("Map", "set")
+            .expect("Map.set must remain a supported runtime receiver op");
+        assert!(builtin_receiver_callable_semantics(mutable_map).is_some());
         let deleting_json_object = builtin_receiver_op_by_name("JsonObject", "delete")
             .expect("JsonObject.delete must remain a supported runtime receiver op");
         assert!(builtin_receiver_callable_semantics(deleting_json_object).is_some());
@@ -1247,6 +1276,67 @@ mod tests {
                 receiver: BuiltinReceiverRoot::JsonObject,
                 canonical_key: "receiver:Map.get@1",
                 ..op
+            },
+        ] {
+            assert_eq!(
+                builtin_receiver_callable_semantics(lookalike),
+                None,
+                "{} must remain fail closed",
+                lookalike.canonical_key
+            );
+        }
+    }
+
+    #[test]
+    fn map_has_and_set_callable_semantics_are_exact() {
+        let has = builtin_receiver_op_by_name("Map", "has").expect("Map.has op should exist");
+        let has_semantics =
+            builtin_receiver_callable_semantics(has).expect("Map.has semantics should exist");
+        assert_eq!(
+            has_semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(has_semantics.return_provenance, ValueProvenance::Fresh);
+
+        let set = builtin_receiver_op_by_name("Map", "set").expect("Map.set op should exist");
+        let set_semantics =
+            builtin_receiver_callable_semantics(set).expect("Map.set semantics should exist");
+        assert_eq!(
+            set_semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: true,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: true,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(set_semantics.return_provenance, ValueProvenance::Constant);
+
+        for lookalike in [
+            BuiltinReceiverOp {
+                signature_version: 2,
+                canonical_key: "receiver:Map.has@2",
+                ..has
+            },
+            BuiltinReceiverOp {
+                receiver: BuiltinReceiverRoot::JsonObject,
+                canonical_key: "receiver:Map.has@1",
+                ..has
+            },
+            BuiltinReceiverOp {
+                canonical_key: "receiver:Map.has@1",
+                ..set
             },
         ] {
             assert_eq!(

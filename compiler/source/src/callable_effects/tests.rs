@@ -2631,6 +2631,66 @@ fn exact_map_get_preserves_caller_alias_but_discharges_fresh_accumulator() {
 }
 
 #[test]
+fn exact_map_has_and_set_keep_contextual_receiver_semantics() {
+    let model = analyze_named(
+        r#"
+            type Item { value: string }
+
+            function inspect(items: Map<string, Item>, key: string) -> bool {
+              return items.has(key)
+            }
+
+            function updateCaller(items: Map<string, Item>, key: string, value: Item) -> void {
+              return items.set(key, value)
+            }
+
+            function local(key: string, value: Item) -> bool {
+              const items = Map.empty<string, Item>()
+              items.set(key, value)
+              return items.has(key)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "responses",
+        "agine.ai/llm-api",
+    );
+
+    assert_eq!(effects_in(&model, "responses", "inspect"), no_effects());
+    assert_eq!(
+        effects_in(&model, "responses", "updateCaller"),
+        CallableMayEffects {
+            writes_caller_reachable: true,
+            requires_same_heap_identity: true,
+            ..no_effects()
+        }
+    );
+    assert_eq!(
+        effects_in(&model, "responses", "local"),
+        no_effects(),
+        "a fresh local Map must discharge set write and same-heap effects"
+    );
+    assert!(matches!(
+        provenance_in(&model, "responses", "inspect"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins == &vec![ValueProvenance::Fresh]
+    ));
+    assert!(matches!(
+        provenance_in(&model, "responses", "updateCaller"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins == &vec![ValueProvenance::Constant]
+    ));
+    for canonical_key in ["receiver:Map.has@1", "receiver:Map.set@1"] {
+        assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+            matches!(
+                target,
+                ResolvedCallTarget::ReceiverBuiltin { op }
+                    if op.canonical_key == canonical_key
+            )
+        }));
+    }
+}
+
+#[test]
 fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
     let model = analyze_named(
         r#"

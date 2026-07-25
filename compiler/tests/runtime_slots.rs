@@ -745,6 +745,93 @@ fn json_object_has_enforces_exact_receiver_and_arity() {
 }
 
 #[test]
+fn map_has_and_set_enforce_generic_key_value_and_return_types() {
+    let artifact = compile_package_file_ir(
+        r#"
+            type Item { value: string }
+
+            function run(items: Map<string, Item>, key: string, value: Item) -> bool {
+                items.set(key, value)
+                return items.has(key)
+            }
+        "#,
+        "internal/map_has_set.skiff",
+        "internal.map_has_set",
+    )
+    .expect("well-typed Map.has/set calls should compile");
+    let artifact_value = artifact.value();
+    let function = executable_entry(&artifact_value, "run");
+    assert!(receiver_builtin_call(function, "Map", "has").is_some());
+    assert!(receiver_builtin_call(function, "Map", "set").is_some());
+
+    for (name, source, expected) in [
+        (
+            "has_wrong_key",
+            r#"
+                function run(value: Map<string, number>) -> bool {
+                    return value.has(1)
+                }
+            "#,
+            "call `Map.has` argument 1",
+        ),
+        (
+            "has_extra",
+            r#"
+                function run(value: Map<string, number>) -> bool {
+                    return value.has("key", "extra")
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "set_wrong_key",
+            r#"
+                function run(value: Map<string, number>) -> void {
+                    value.set(1, 2)
+                }
+            "#,
+            "call `Map.set` argument 1",
+        ),
+        (
+            "set_wrong_value",
+            r#"
+                function run(value: Map<string, number>) -> void {
+                    value.set("key", "value")
+                }
+            "#,
+            "call `Map.set` argument 2",
+        ),
+        (
+            "set_missing",
+            r#"
+                function run(value: Map<string, number>) -> void {
+                    value.set("key")
+                }
+            "#,
+            "expected 2 arguments",
+        ),
+        (
+            "has_wrong_return",
+            r#"
+                function run(value: Map<string, number>) -> string {
+                    return value.has("key")
+                }
+            "#,
+            "return type mismatch",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/map_has_set_{name}.skiff"),
+            format!("internal.map_has_set_{name}"),
+        )
+        .expect_err("invalid Map.has/set call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
 fn json_object_delete_enforces_exact_receiver_key_and_return() {
     let artifact = compile_package_file_ir(
         r#"

@@ -2837,6 +2837,9 @@ impl<'a> OwnerChecker<'a> {
                 arg_types,
             );
         }
+        if receiver_root.as_deref() == Some("Map") && matches!(method_name, "has" | "set") {
+            self.validate_map_has_or_set_args(&receiver_ty, method_name, args, arg_types);
+        }
         if let Some(projected) =
             self.expression_projection_at_offset(key, offset)
                 .and_then(|receiver| {
@@ -2999,6 +3002,29 @@ impl<'a> OwnerChecker<'a> {
             "call `Array.push` argument 1",
             self.expression_span(key),
         );
+    }
+
+    fn validate_map_has_or_set_args(
+        &mut self,
+        receiver_ty: &ResolvedTypeRef,
+        method_name: &str,
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) {
+        let Some(key_ty) = map_key_type_ir(&receiver_ty.ir).map(|ty| resolved_type_from_ir(&ty))
+        else {
+            return;
+        };
+        let mut params = vec![("key".to_string(), key_ty)];
+        if method_name == "set" {
+            let Some(value_ty) =
+                map_value_type_ir(&receiver_ty.ir).map(|ty| resolved_type_from_ir(&ty))
+            else {
+                return;
+            };
+            params.push(("value".to_string(), value_ty));
+        }
+        self.validate_resolved_call_params(&format!("Map.{method_name}"), params, args, arg_types);
     }
 
     fn any_interface_receiver_call_type(
