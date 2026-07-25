@@ -861,12 +861,24 @@ impl TypeResolutionModel {
         ty: &ResolvedTypeRef,
         context: &TypeResolutionContext<'_>,
     ) -> Option<TypeRefIr> {
+        let type_args = match &ty.ir {
+            TypeRefIr::Builtin { args, .. } => args.clone(),
+            _ => self
+                .resolved_named_type_args(&ty.source_text, context)
+                .ok()?,
+        };
         match &ty.ir {
             TypeRefIr::Record { .. } | TypeRefIr::Union { .. } => Some(ty.ir.clone()),
             TypeRefIr::LocalType { type_index } => self
                 .local_type_resolution(context.module_path, *type_index)
                 .and_then(|resolution| {
-                    self.source_type_shape_ir(resolution, context, None, context.module_path)
+                    self.source_type_shape_ir(
+                        resolution,
+                        &type_args,
+                        context,
+                        None,
+                        context.module_path,
+                    )
                 }),
             TypeRefIr::PublicationType {
                 module_path,
@@ -874,7 +886,7 @@ impl TypeResolutionModel {
             } => self
                 .local_type_resolution(module_path, *type_index)
                 .and_then(|resolution| {
-                    self.source_type_shape_ir(resolution, context, None, module_path)
+                    self.source_type_shape_ir(resolution, &type_args, context, None, module_path)
                 }),
             TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
                 let key = SourceSymbolKey::new(&symbol.module_path, &symbol.symbol);
@@ -883,6 +895,7 @@ impl TypeResolutionModel {
                     .and_then(|resolution| {
                         self.source_type_shape_ir(
                             resolution,
+                            &type_args,
                             context,
                             None,
                             symbol.module_path.as_str(),
@@ -896,6 +909,7 @@ impl TypeResolutionModel {
                         self.package_type_shape_by_symbol_path(
                             &symbol.module_path,
                             &symbol.symbol,
+                            &type_args,
                             context,
                         )
                     })
@@ -915,7 +929,7 @@ impl TypeResolutionModel {
                         .ok();
                     }
                 }
-                if let Some(shape) = self.std_package_symbol_shape_ir(symbol, context) {
+                if let Some(shape) = self.std_package_symbol_shape_ir(symbol, &type_args, context) {
                     return Some(shape);
                 }
 
@@ -928,6 +942,7 @@ impl TypeResolutionModel {
                     .and_then(|resolution| {
                         self.source_type_shape_ir(
                             resolution,
+                            &type_args,
                             context,
                             package_root,
                             resolution.module_path.as_str(),
@@ -944,15 +959,20 @@ impl TypeResolutionModel {
     fn std_package_symbol_shape_ir(
         &self,
         symbol: &PackageSymbolRef,
+        type_args: &[TypeRefIr],
         context: &TypeResolutionContext<'_>,
     ) -> Option<TypeRefIr> {
         if !is_std_package_ref(&symbol.package) {
             return None;
         }
 
-        self.prelude_type_shape_ir(&symbol.symbol_path, &[], context)
+        self.prelude_type_shape_ir(&symbol.symbol_path, type_args, context)
             .or_else(|| {
-                self.prelude_type_shape_ir(&format!("std.{}", symbol.symbol_path), &[], context)
+                self.prelude_type_shape_ir(
+                    &format!("std.{}", symbol.symbol_path),
+                    type_args,
+                    context,
+                )
             })
     }
 
@@ -964,6 +984,7 @@ impl TypeResolutionModel {
         &self,
         module_path: &str,
         symbol: &str,
+        type_args: &[TypeRefIr],
         context: &TypeResolutionContext<'_>,
     ) -> Option<TypeRefIr> {
         let module = module_path.strip_prefix("root.").unwrap_or(module_path);
@@ -971,7 +992,13 @@ impl TypeResolutionModel {
         let resolution = self.package_type_by_symbol_path(&candidate)?;
         let package_root = package_root_for_module(&resolution.module_path);
         let source_module = resolution.module_path.clone();
-        self.source_type_shape_ir(resolution, context, package_root, source_module.as_str())
+        self.source_type_shape_ir(
+            resolution,
+            type_args,
+            context,
+            package_root,
+            source_module.as_str(),
+        )
     }
 
     pub(super) fn local_type_resolution(
@@ -992,14 +1019,24 @@ impl TypeResolutionModel {
     fn source_type_shape_ir(
         &self,
         resolved: &SourceTypeResolution,
+        type_args: &[TypeRefIr],
         caller_context: &TypeResolutionContext<'_>,
         package_root: Option<&str>,
         source_module_path: &str,
     ) -> Option<TypeRefIr> {
-        let source_context = TypeResolutionContext::with_type_params(
-            source_module_path,
-            caller_context.type_params.clone(),
-        );
+        if resolved.type_params.len() != type_args.len() {
+            return None;
+        }
+        let mut source_type_params = caller_context.type_params.clone();
+        source_type_params.extend(resolved.type_params.iter().cloned());
+        let source_context =
+            TypeResolutionContext::with_type_params(source_module_path, source_type_params);
+        let substitutions = resolved
+            .type_params
+            .iter()
+            .cloned()
+            .zip(type_args.iter().cloned())
+            .collect::<BTreeMap<_, _>>();
         let resolved = match &resolved.kind {
             SourceTypeKind::Record { fields } => TypeRefIr::Record {
                 fields: fields
@@ -1030,11 +1067,15 @@ impl TypeResolutionModel {
             }
             SourceTypeKind::Actor { .. } | SourceTypeKind::External => return None,
         };
-        Some(if source_module_path == caller_context.module_path {
+        let resolved = if source_module_path == caller_context.module_path {
             resolved
         } else {
             self.externalize_local_type_ir(&resolved, source_module_path)
-        })
+        };
+        Some(substitute_type_params_in_type_ref_ref(
+            &resolved,
+            &substitutions,
+        ))
     }
 
     fn prelude_type_shape_ir(
@@ -1047,33 +1088,41 @@ impl TypeResolutionModel {
         let decl_name = registry.prelude_type_decl_name(type_name)?;
         let decl = registry.type_decl(decl_name)?;
         let module_path = registry.type_decl_module(decl_name)?;
+        if decl.type_params.len() != args.len() {
+            return None;
+        }
+        let mut source_type_params = context.type_params.clone();
+        source_type_params.extend(decl.type_params.iter().cloned());
         let source_context =
-            TypeResolutionContext::with_type_params(module_path, context.type_params.clone());
+            TypeResolutionContext::with_type_params(module_path, source_type_params);
         let substitutions = decl
             .type_params
             .iter()
             .cloned()
-            .zip(args.iter().map(type_ref_debug_text))
+            .zip(args.iter().cloned())
             .collect::<BTreeMap<_, _>>();
-        if let Some(alias) = &decl.alias {
-            let target = substitute_type_params(&alias.name, &substitutions);
-            return self
-                .resolve_type_text(&target, &source_context)
-                .ok()
-                .map(|resolved| resolved.ir);
-        }
-        Some(TypeRefIr::Record {
-            fields: decl
-                .fields
-                .iter()
-                .filter_map(|field| {
-                    let ty = substitute_type_params(&field.ty.name, &substitutions);
-                    self.resolve_type_text(&ty, &source_context)
-                        .ok()
-                        .map(|resolved| (field.name.clone(), resolved.ir))
-                })
-                .collect(),
-        })
+        let shape = if let Some(alias) = &decl.alias {
+            self.resolve_type_text(&alias.name, &source_context)
+                .ok()?
+                .ir
+        } else {
+            TypeRefIr::Record {
+                fields: decl
+                    .fields
+                    .iter()
+                    .filter_map(|field| {
+                        self.resolve_type_text(&field.ty.name, &source_context)
+                            .ok()
+                            .map(|resolved| (field.name.clone(), resolved.ir))
+                    })
+                    .collect(),
+            }
+        };
+        let shape = self.externalize_local_type_ir(&shape, module_path);
+        Some(substitute_type_params_in_type_ref_ref(
+            &shape,
+            &substitutions,
+        ))
     }
 
     fn externalize_local_type_ir(&self, ty: &TypeRefIr, module_path: &str) -> TypeRefIr {

@@ -1963,9 +1963,11 @@ impl TypeResolutionModel {
             });
         }
         if let Some(type_ref) = contextual_prelude_type_ref(name, resolved_args.clone(), context) {
+            validate_prelude_type_arity(name, resolved_args.len())?;
             return Ok(type_ref);
         }
         if let Some(type_ref) = prelude_known_type_ref(name, resolved_args.clone()) {
+            validate_prelude_type_arity(name, resolved_args.len())?;
             return Ok(type_ref);
         }
         if let Some((_alias, schema_type)) = self.service_api_type(name)? {
@@ -1989,6 +1991,18 @@ impl TypeResolutionModel {
         if let Some(package_symbol) =
             PackageExportResolver::new(&self.package_aliases).resolve_package_symbol_path(name)
         {
+            if let Some(resolution) = self.package_type_resolution(
+                &package_symbol.dependency_ref,
+                &package_symbol.symbol_path,
+            ) {
+                if resolution.type_params.len() != resolved_args.len() {
+                    return Err(format!(
+                        "package type `{name}` expects {} type arguments, found {}",
+                        resolution.type_params.len(),
+                        resolved_args.len()
+                    ));
+                }
+            }
             return Ok(TypeRefIr::PackageSymbol {
                 symbol: PackageSymbolRef {
                     package: PackageRefIr::Dependency {
@@ -3649,6 +3663,23 @@ fn reject_generic_alias_uses(
 
 fn strip_generic(name: &str) -> &str {
     name.split('<').next().unwrap_or(name).trim()
+}
+
+fn validate_prelude_type_arity(name: &str, found: usize) -> Result<(), String> {
+    let registry = prelude_registry();
+    let Some(decl_name) = registry.prelude_type_decl_name(name) else {
+        return Ok(());
+    };
+    let Some(decl) = registry.type_decl(decl_name) else {
+        return Ok(());
+    };
+    if decl.type_params.len() == found {
+        return Ok(());
+    }
+    Err(format!(
+        "package type `{name}` expects {} type arguments, found {found}",
+        decl.type_params.len()
+    ))
 }
 
 fn substitute_type_params(raw: &str, substitutions: &BTreeMap<String, String>) -> String {

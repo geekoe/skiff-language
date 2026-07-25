@@ -158,6 +158,20 @@ fn websocket_nominal_context_normal_source_reaches_exact_deployment_and_erased_e
 type Context {}
 
 function websocket(event: std.websocket.WebSocketIngressEvent<Context>) -> std.websocket.WebSocketConnectResult<Context>? {
+  if event.tag == "connect" {
+    const request = event.connectRequest
+    return {
+      tag: "accept",
+      context: Context {},
+      businessIdentity: request.connectionId,
+      connectionPolicy: null
+    }
+  }
+  if event.tag == "receive" {
+    const receiveEvent = event.receiveEvent
+    const context: Context = receiveEvent.connection.context
+    std.websocket.sendTextToConnection(receiveEvent.connection.id, receiveEvent.message.tag)
+  }
   return null
 }
 "#,
@@ -204,13 +218,17 @@ function websocket(event: std.websocket.WebSocketIngressEvent<Context>) -> std.w
     assert_eq!(websocket.params[0].name, "event");
     assert_eq!(
         websocket.params[0].ty,
-        generic_execution_type("std.websocket.WebSocketIngressEvent")
+        generic_execution_type(
+            "std.websocket.WebSocketIngressEvent",
+            TypeRefIr::LocalType { type_index: 0 },
+        )
     );
     assert_eq!(
         websocket.return_type,
         TypeRefIr::Nullable {
             inner: Box::new(generic_execution_type(
                 "std.websocket.WebSocketConnectResult",
+                TypeRefIr::LocalType { type_index: 0 },
             )),
         }
     );
@@ -231,6 +249,98 @@ function websocket(event: std.websocket.WebSocketIngressEvent<Context>) -> std.w
         deployment.operation_bindings[0].contract_operation_id,
         operation_id
     );
+}
+
+#[test]
+fn imported_generic_expands_builtin_and_nested_local_nominal_arguments() {
+    for (fixture, context, assertion) in [
+        ("builtin", "string", "const context: string"),
+        (
+            "nested-local",
+            "Array<Context?>",
+            "const context: Array<Context?>",
+        ),
+    ] {
+        let temp = TestDir::new("skiff-compiler", &format!("websocket-{fixture}-context"));
+        temp.write(
+            "package.yml",
+            "id: example.com/generic-probe\nversion: 1.0.0\n",
+        );
+        temp.write("api.yml", "probe: main.probe\n");
+        temp.write(
+            "main.skiff",
+            format!(
+                r#"import std
+
+type Context {{
+  value: string,
+}}
+
+function probe(event: std.websocket.WebSocketIngressEvent<{context}>) -> null {{
+  if event.tag == "connect" {{
+    const request = event.connectRequest
+    const id: string = request.connectionId
+  }}
+  if event.tag == "receive" {{
+    const receiveEvent = event.receiveEvent
+    {assertion} = receiveEvent.connection.context
+    const messageTag: string = receiveEvent.message.tag
+  }}
+  return null
+}}
+"#
+            ),
+        );
+        compile_package_project(temp.path())
+            .unwrap_or_else(|error| panic!("{fixture} generic context should expand: {error}"));
+    }
+}
+
+#[test]
+fn imported_generic_rejects_wrong_arity_unresolved_and_different_nominal_arguments() {
+    for (fixture, source, expected) in [
+        (
+            "missing-argument",
+            "function probe(event: std.websocket.WebSocketIngressEvent) -> null { return null }",
+            "expects 1 type arguments, found 0",
+        ),
+        (
+            "extra-argument",
+            "function probe(event: std.websocket.WebSocketIngressEvent<string, bool>) -> null { return null }",
+            "expects 1 type arguments, found 2",
+        ),
+        (
+            "unresolved-argument",
+            "function probe(event: std.websocket.WebSocketIngressEvent<Missing>) -> null { return null }",
+            "unresolved type `Missing`",
+        ),
+        (
+            "different-nominal",
+            r#"
+type Expected {}
+type Actual {}
+function take(value: Expected) -> null { return null }
+function probe(event: std.websocket.WebSocketIngressEvent<Actual>) -> null {
+  if event.tag == "receive" {
+    take(event.receiveEvent.connection.context)
+  }
+  return null
+}
+"#,
+            "argument",
+        ),
+    ] {
+        let temp = TestDir::new("skiff-compiler", &format!("websocket-{fixture}"));
+        temp.write("package.yml", "id: example.com/generic-probe\nversion: 1.0.0\n");
+        temp.write("api.yml", "probe: main.probe\n");
+        temp.write("main.skiff", format!("import std\n{source}\n"));
+        let error = compile_package_project(temp.path())
+            .expect_err("invalid imported generic instantiation must fail");
+        assert!(
+            error.to_string().contains(expected),
+            "{fixture} should report {expected:?}, got: {error}"
+        );
+    }
 }
 
 fn project_websocket_fixture_deployment(
@@ -291,10 +401,10 @@ fn project_websocket_fixture_deployment(
     .expect("deployment must consume the exact normal-source WebSocket projection")
 }
 
-fn generic_execution_type(name: &str) -> TypeRefIr {
+fn generic_execution_type(name: &str, argument: TypeRefIr) -> TypeRefIr {
     TypeRefIr::Builtin {
         name: name.to_string(),
-        args: vec![TypeRefIr::builtin("unknown")],
+        args: vec![argument],
     }
 }
 
