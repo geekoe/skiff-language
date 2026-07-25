@@ -212,6 +212,94 @@ packages:
 }
 
 #[test]
+fn package_nominal_object_literals_keep_the_exact_file_ir_construct_target() {
+    let temp = TestDir::new("skiff-compiler", "package-nominal-object-lowering");
+    fs::write(
+        temp.path().join("package.yml"),
+        r#"id: example.com/tool-consumer
+version: 1.0.0
+packages:
+  - id: example.com/tool-types
+    version: 0.1.0
+    alias: tools
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("main.skiff"),
+        r#"
+import tools
+
+function automatic() -> tools.ToolChoice {
+  return { tag: "auto" }
+}
+
+function named(name: string) -> tools.ToolChoice {
+  return { tag: "tool", name: name, options: { note: null } }
+}
+"#,
+    )
+    .unwrap();
+
+    let dependency = temp
+        .path()
+        .join(".skiff-packages/example~com~~tool-types/0.1.0");
+    fs::create_dir_all(&dependency).unwrap();
+    fs::write(
+        dependency.join("package.yml"),
+        "id: example.com/tool-types\nversion: 0.1.0\n",
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("api.yml"),
+        "ToolChoice: types.ToolChoice\nToolOptions: types.ToolOptions\n",
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("types.skiff"),
+        r#"
+type ToolOptions { note: string? }
+type ToolChoice discriminator "tag" =
+  { tag: "auto" }
+  | { tag: "tool", name: string, options: ToolOptions? }
+"#,
+    )
+    .unwrap();
+
+    let project =
+        compile_package_project(temp.path()).expect("Package nominal constructors should lower");
+    let file = module_artifact(&project.package, "main");
+    let targets = file
+        .unit
+        .executables
+        .iter()
+        .flat_map(|executable| executable.body.expressions.iter())
+        .filter_map(|expression| match expression {
+            skiff_artifact_model::ExprIr::Construct { type_ref, .. } => Some(type_ref),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        targets
+            .iter()
+            .filter(|target| matches!(
+                target,
+                skiff_artifact_model::TypeRefIr::PackageSymbol {
+                    symbol: skiff_artifact_model::PackageSymbolRef {
+                        package: skiff_artifact_model::PackageRefIr::Dependency { dependency_ref },
+                        symbol_path,
+                        ..
+                    }
+                } if dependency_ref == "tools" && symbol_path == "ToolChoice"
+            ))
+            .count()
+            >= 2,
+        "both tagged variants must retain the exact Package nominal target: {}",
+        file.value()
+    );
+}
+
+#[test]
 fn transitive_aliases_are_owned_by_each_package_artifact() {
     let temp = TestDir::new("skiff-compiler", "transitive-package-alias");
     fs::write(

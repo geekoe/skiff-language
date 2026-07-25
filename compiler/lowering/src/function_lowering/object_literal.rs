@@ -219,7 +219,10 @@ impl FunctionLowerer<'_> {
             }),
             ObjectMaterializationKind::DiscriminatedUnionBranch { branch } => {
                 Ok(ExprIr::Construct {
-                    type_ref: branch.ir,
+                    type_ref: match materialization.resolved_target.ir {
+                        package_target @ TypeRefIr::PackageSymbol { .. } => package_target,
+                        _ => branch.ir,
+                    },
                     fields: lowered_fields,
                 })
             }
