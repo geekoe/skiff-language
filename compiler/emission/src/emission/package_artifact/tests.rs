@@ -239,6 +239,7 @@ fn fixture() -> (
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
+            implementation_symbols: BTreeMap::new(),
         },
         package_schema_index: PackageSchemaIndexRef {
             package_id: "example.com/pkg".to_string(),

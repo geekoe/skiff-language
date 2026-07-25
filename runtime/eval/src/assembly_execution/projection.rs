@@ -738,6 +738,7 @@ mod tests {
             package_local_abi: PackageLocalAbi {
                 local_abi_identity: PackageLocalAbiIdentity::new(format!("{package_id}:abi")),
                 public_symbols: BTreeMap::new(),
+                implementation_symbols: BTreeMap::new(),
             },
             package_schema_index: PackageSchemaIndexRef {
                 package_id: package_id.to_string(),
@@ -842,6 +843,7 @@ mod tests {
             package_local_abi: PackageLocalAbi {
                 local_abi_identity: PackageLocalAbiIdentity::new("projection-abi"),
                 public_symbols: BTreeMap::new(),
+                implementation_symbols: BTreeMap::new(),
             },
             package_schema_index: PackageSchemaIndexRef {
                 package_id: "projection.package".to_string(),

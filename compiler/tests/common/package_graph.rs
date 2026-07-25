@@ -190,11 +190,16 @@ impl<'a> PackageGraphCompiler<'a> {
             .get(&(package_id.clone(), manifest.version.clone()))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let input =
+        let mut input =
             PackageCompileInput::new(self.platform_sources, &package, &aliases, &package_id)
                 .with_canonical_dependencies(&dependency_artifacts, contract_dependencies)
                 .with_available_canonical_packages(&available_artifacts)
                 .with_resolved_package_schemas(&resolved_package_schemas);
+        if manifest.dependencies.iter().any(|dependency| {
+            dependency.access == skiff_compiler_input::PackageDependencyAccess::TopLevel
+        }) {
+            input = input.for_test_service();
+        }
         Ok(compile_package(input)?)
     }
 }

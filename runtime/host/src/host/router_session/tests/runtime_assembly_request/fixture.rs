@@ -350,6 +350,7 @@ fn void_package(
                     },
                 },
             )]),
+            implementation_symbols: BTreeMap::new(),
         },
         package_schema_index: PackageSchemaIndexRef {
             package_id: "example.canonical-void-package".to_string(),

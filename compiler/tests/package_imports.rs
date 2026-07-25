@@ -212,6 +212,78 @@ packages:
 }
 
 #[test]
+fn top_level_access_ignores_api_paths_instead_of_merging_surfaces() {
+    let temp = TestDir::new("skiff-compiler", "top-level-exclusive");
+    fs::write(
+        temp.path().join("package.yml"),
+        r#"id: example.com/widget-tests
+version: 1.0.0
+packages:
+  - id: example.com/widget
+    version: 1.0.0
+    alias: widget
+    access: topLevel
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("main.skiff"),
+        "import widget\nfunction run() -> string { return widget/internal.codec.codec() }\n",
+    )
+    .unwrap();
+    let dependency = temp
+        .path()
+        .join(".skiff-packages/example~com~~widget/1.0.0");
+    fs::create_dir_all(dependency.join("internal")).unwrap();
+    fs::write(
+        dependency.join("package.yml"),
+        "id: example.com/widget\nversion: 1.0.0\n",
+    )
+    .unwrap();
+    // The same path deliberately points at another implementation in api.yml.
+    fs::write(
+        dependency.join("api.yml"),
+        "internal:\n  codec:\n    codec: public_api.decoy\npublicOnly: public_api.decoy\n",
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("internal/codec.skiff"),
+        "function codec() -> string { return \"private\" }\n",
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("public_api.skiff"),
+        "function decoy() -> string { return \"public\" }\n",
+    )
+    .unwrap();
+
+    let project = compile_package_project(temp.path()).expect("top-level test service compiles");
+    let file = module_artifact(&project.package, "main");
+    assert!(file
+        .unit
+        .external_refs
+        .package_callables
+        .iter()
+        .any(|callable| {
+            callable.package_callable_id.as_str()
+                == "pkg-callable:example.com/widget:top-level:internal.codec.codec"
+        }));
+
+    fs::write(
+        temp.path().join("main.skiff"),
+        "import widget\nfunction run() -> string { return widget/publicOnly() }\n",
+    )
+    .unwrap();
+    let error = compile_package_project(temp.path())
+        .expect_err("top-level mode must not fall back to api.yml")
+        .to_string();
+    assert!(
+        error.contains("has no callable public path `publicOnly`"),
+        "{error}"
+    );
+}
+
+#[test]
 fn package_nominal_object_literals_keep_the_exact_file_ir_construct_target() {
     let temp = TestDir::new("skiff-compiler", "package-nominal-object-lowering");
     fs::write(

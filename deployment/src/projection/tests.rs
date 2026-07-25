@@ -136,6 +136,7 @@ impl ProjectionFixture {
                         },
                     },
                 )]),
+                implementation_symbols: BTreeMap::new(),
             },
             package_schema_index: PackageSchemaIndexRef {
                 package_id: package_id.to_string(),
@@ -1032,6 +1033,7 @@ fn dependency_artifact(resource_hash: &str) -> PackageArtifact {
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
+            implementation_symbols: BTreeMap::new(),
         },
         package_schema_index: PackageSchemaIndexRef {
             package_id: "example.util".to_string(),

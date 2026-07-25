@@ -19,8 +19,8 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     parse_runtime_assembly_yml, ContractRequirement, PackageArtifact, PackageArtifactRef,
-    PackageSchemaTypeId, PackageSchemaTypeRecord, ServiceContract, ServiceContractRef,
-    ServiceDeployment, ServiceDeploymentRef,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, ServiceAuthoringKind, ServiceContract,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_compiler_input::{
     package_config::{read_user_package_manifest, PackageManifest, PACKAGE_CONFIG_FILE},
@@ -131,6 +131,12 @@ fn build_package_after_platform_context_guard(
     let service_root = root.join("service.yml").is_file();
     let (published, service_data, service_api_receipt) = if service_root {
         let service = read_service_package_root(root)?;
+        if service.service.kind == ServiceAuthoringKind::Test {
+            return Err(invalid_input(format!(
+                "test service {} may be built only by `skiff test`; ordinary publish, deploy and watch workflows reject service.yml kind: test",
+                root.display()
+            )));
+        }
         let compiled = compile_service_package(input, &service.service.id)?;
         let receipt = json!({
             "serviceId": &compiled.service_api.contract.service_id,
@@ -143,6 +149,15 @@ fn build_package_after_platform_context_guard(
             Some(receipt),
         )
     } else {
+        if let Some(dependency) = manifest.dependencies.iter().find(|dependency| {
+            dependency.access == skiff_compiler_input::PackageDependencyAccess::TopLevel
+        }) {
+            return Err(invalid_input(format!(
+                "package {} dependency {} uses access: topLevel, which is allowed only for service.yml kind: test",
+                root.display(),
+                dependency.effective_alias()
+            )));
+        }
         let published = compile_package(input)?;
         (published, None, None)
     };

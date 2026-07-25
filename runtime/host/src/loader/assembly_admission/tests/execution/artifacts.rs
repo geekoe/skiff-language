@@ -1500,6 +1500,7 @@ fn implementation_package(
                     },
                 },
             )]),
+            implementation_symbols: BTreeMap::new(),
         },
         package_schema_index: PackageSchemaIndexRef {
             package_id: package_id.to_string(),

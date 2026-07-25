@@ -993,6 +993,7 @@ fn package_dependency(id: &str, version: &str) -> PackageDependency {
         id: id.to_string(),
         version: version.to_string(),
         alias: Some("pkg".to_string()),
+        access: crate::PackageDependencyAccess::Public,
         config: empty_dependency_config(),
         collection_name_mapping: BTreeMap::new(),
     }

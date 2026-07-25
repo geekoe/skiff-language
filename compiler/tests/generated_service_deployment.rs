@@ -366,6 +366,7 @@ fn compile_fixture(
 fn manifest(operation: &str) -> ServiceManifestAuthoring {
     ServiceManifestAuthoring {
         id: "example.com/registry".to_string(),
+        kind: skiff_artifact_model::ServiceAuthoringKind::Service,
         http: Some(json!({
             "routes": [{
                 "method": "GET",

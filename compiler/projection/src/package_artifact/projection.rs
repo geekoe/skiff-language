@@ -145,6 +145,7 @@ pub(super) fn project_package_artifact_facts(
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: callables.public_symbols,
+            implementation_symbols: callables.implementation_symbols,
         },
         package_schema_index: PackageSchemaIndexRef {
             package_id: input.package_id.to_string(),

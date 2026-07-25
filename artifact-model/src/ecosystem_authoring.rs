@@ -74,10 +74,20 @@ impl From<serde_yaml::Error> for EcosystemAuthoringError {
 
 /// Service-only source manifest. A service source root remains a normal package
 /// root; this DTO deliberately has no version, dependency or API surface.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ServiceAuthoringKind {
+    #[default]
+    Service,
+    Test,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceManifestAuthoring {
     pub id: String,
+    #[serde(default)]
+    pub kind: ServiceAuthoringKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

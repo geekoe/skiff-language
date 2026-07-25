@@ -607,6 +607,7 @@ fn artifact(
         package_local_abi: PackageLocalAbi {
             local_abi_identity: local_abi(local_abi_identity),
             public_symbols: BTreeMap::new(),
+            implementation_symbols: BTreeMap::new(),
         },
         package_schema_index: PackageSchemaIndexRef {
             package_id: package_id.to_string(),

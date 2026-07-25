@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_identity::validate_package_artifact_identities;
 use skiff_artifact_model::{PackageArtifact, PackageLocalAbiSymbol};
-use skiff_compiler_input::ResolvedContractDependency;
+use skiff_compiler_input::{PackageDependencyAccess, ResolvedContractDependency};
 use skiff_compiler_projection_input::ResolvedPackageSchema;
 use skiff_compiler_source::{
     PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis,
@@ -47,6 +47,18 @@ fn package_analysis(
     input: &PackageCompileInput<'_>,
     resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<Vec<(String, PackageDependencyAnalysisFacts)>, PackageCompileError> {
+    if !input.is_test_service() {
+        if let Some(dependency) = input
+            .package_dependencies
+            .iter()
+            .find(|dependency| dependency.access == PackageDependencyAccess::TopLevel)
+        {
+            return Err(validation_error(format!(
+                "package dependency {} uses access: topLevel outside a test service",
+                dependency.effective_alias()
+            )));
+        }
+    }
     let artifacts = input
         .dependency_packages
         .iter()
@@ -108,11 +120,13 @@ fn package_callable_analysis(
     dependency: &PackageDependency,
     artifact: &PackageArtifact,
 ) -> Result<BTreeMap<String, PackageDependencyCallableAnalysis>, PackageCompileError> {
-    artifact
-        .package_local_abi
-        .public_symbols
+    let symbols = match dependency.access {
+        PackageDependencyAccess::Public => &artifact.package_local_abi.public_symbols,
+        PackageDependencyAccess::TopLevel => &artifact.package_local_abi.implementation_symbols,
+    };
+    symbols
         .iter()
-        .filter_map(|(public_path, symbol)| {
+        .filter_map(|(selected_path, symbol)| {
             let PackageLocalAbiSymbol::Callable {
                 callable_id,
                 signature,
@@ -132,7 +146,7 @@ fn package_callable_analysis(
                 })
                 .map(|semantic_facts| {
                     (
-                        dependency_member_path(dependency, public_path),
+                        dependency_member_path(dependency, selected_path),
                         PackageDependencyCallableAnalysis::new(callable_id.clone(), semantic_facts)
                             .with_signature(signature.clone()),
                     )

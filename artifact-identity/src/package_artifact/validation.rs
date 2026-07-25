@@ -165,15 +165,46 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
             validate_package_type_ref(artifact, ty, &format!("constant {const_id}"))?;
         }
     }
+    let mut implementation_callables = BTreeSet::new();
+    for (source_path, symbol) in &artifact.package_local_abi.implementation_symbols {
+        if source_path.trim().is_empty() || !source_path.contains('.') {
+            return invalid_artifact(
+                "package implementation symbol must use a non-empty source module/name path",
+            );
+        }
+        let PackageLocalAbiSymbol::Callable {
+            callable_id,
+            signature: _,
+        } = symbol
+        else {
+            return invalid_artifact(format!(
+                "package implementation symbol {source_path} is not callable"
+            ));
+        };
+        if public_callables.contains(callable_id)
+            || !implementation_callables.insert(callable_id.clone())
+        {
+            return invalid_artifact(format!(
+                "package implementation surface repeats callable id {callable_id}"
+            ));
+        }
+        // Implementation signatures are exact File IR types, not a public
+        // package schema surface. Their nested references are validated with
+        // the owning File IR and package requirement closure.
+    }
 
     let link_keys = artifact
         .callable_links
         .keys()
         .cloned()
         .collect::<BTreeSet<_>>();
-    if link_keys != public_callables {
+    let all_callables = public_callables
+        .union(&implementation_callables)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if link_keys != all_callables {
         return invalid_artifact(format!(
-            "callableLinks keys must exactly match public callable ids; expected {public_callables:?}, got {link_keys:?}"
+            "callableLinks keys must exactly match public and implementation callable ids; expected {all_callables:?}, got {link_keys:?}"
         ));
     }
     for (key, link) in &artifact.callable_links {
@@ -210,10 +241,10 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
             }
         }
     }
-    for callable_id in &public_callables {
+    for callable_id in &all_callables {
         if !artifact.callable_semantic_facts.contains_key(callable_id) {
             return invalid_artifact(format!(
-                "public callable {callable_id} has no callableSemanticFacts entry"
+                "callable {callable_id} has no callableSemanticFacts entry"
             ));
         }
     }

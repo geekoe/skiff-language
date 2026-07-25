@@ -23,6 +23,7 @@ pub struct PackageCompileInput<'a> {
     canonical: CanonicalPackageCompileInput<'a>,
     resolved_package_schemas: &'a [ResolvedPackageSchema],
     canonical_artifact_store: Option<&'a CanonicalArtifactStore>,
+    test_service: bool,
 }
 
 impl<'a> PackageCompileInput<'a> {
@@ -37,6 +38,7 @@ impl<'a> PackageCompileInput<'a> {
             canonical: CanonicalPackageCompileInput::new(package, package_aliases, package_id),
             resolved_package_schemas: &[],
             canonical_artifact_store: None,
+            test_service: false,
         }
     }
 
@@ -93,6 +95,17 @@ impl<'a> PackageCompileInput<'a> {
 
     pub(crate) fn canonical_artifact_store(&self) -> Option<&'a CanonicalArtifactStore> {
         self.canonical_artifact_store
+    }
+
+    /// Enables the test-service-only dependency visibility mode. This flag is
+    /// compiler workflow authority; artifact shape remains ordinary.
+    pub fn for_test_service(mut self) -> Self {
+        self.test_service = true;
+        self
+    }
+
+    pub(crate) fn is_test_service(&self) -> bool {
+        self.test_service
     }
 }
 

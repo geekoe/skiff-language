@@ -5,7 +5,9 @@ use std::{
 };
 
 use serde_yaml::Value as YamlValue;
-use skiff_artifact_model::{ServiceConfigProfileAuthoring, ServiceManifestAuthoring};
+use skiff_artifact_model::{
+    ServiceAuthoringKind, ServiceConfigProfileAuthoring, ServiceManifestAuthoring,
+};
 use thiserror::Error;
 
 use crate::{
@@ -56,11 +58,38 @@ pub fn read_service_package_root(
     require_control_file(&service_path)?;
     let package = read_user_package_manifest(&package_path)?;
     let service = read_service_manifest(&service_path)?;
+    validate_dependency_access(&package, service.kind, &package_path)?;
     let config_profiles = read_config_profiles(root)?;
     Ok(ServicePackageRoot {
         package,
         service,
         config_profiles,
+    })
+}
+
+fn validate_dependency_access(
+    package: &PackageManifest,
+    service_kind: ServiceAuthoringKind,
+    package_path: &Path,
+) -> Result<(), ServiceSourceConfigError> {
+    if service_kind == ServiceAuthoringKind::Test {
+        return Ok(());
+    }
+    let top_level = package
+        .dependencies
+        .iter()
+        .filter(|dependency| dependency.access == crate::PackageDependencyAccess::TopLevel)
+        .map(|dependency| dependency.effective_alias())
+        .collect::<Vec<_>>();
+    if top_level.is_empty() {
+        return Ok(());
+    }
+    Err(ServiceSourceConfigError::Validation {
+        message: format!(
+            "- {}: packages access topLevel is allowed only when service.yml declares kind: test (dependencies: {})",
+            package_path.display(),
+            top_level.join(", ")
+        ),
     })
 }
 
@@ -235,8 +264,43 @@ mod tests {
         assert_eq!(source.package.id.as_str(), "example.com/account-package");
         assert_eq!(source.package.services[0].effective_alias(), "payment");
         assert_eq!(source.service.id, "example.com/account");
+        assert_eq!(source.service.kind, ServiceAuthoringKind::Service);
         assert!(source.config_profiles.contains_key("dev"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn top_level_dependency_access_is_exclusive_to_test_services() {
+        let package = "id: example.com/widget-tests\nversion: 1.0.0\npackages:\n  - id: example.com/widget\n    version: 1.0.0\n    alias: widget\n    access: topLevel\n";
+        let test_root = fixture_root("test-top-level");
+        write(&test_root, "package.yml", package);
+        write(&test_root, "api.yml", "functions: {}\n");
+        write(
+            &test_root,
+            "service.yml",
+            "id: example.com/widget-tests\nkind: test\n",
+        );
+        let source = read_service_package_root(&test_root).unwrap();
+        assert_eq!(source.service.kind, ServiceAuthoringKind::Test);
+        assert_eq!(
+            source.package.dependencies[0].access,
+            crate::PackageDependencyAccess::TopLevel
+        );
+        fs::remove_dir_all(test_root).unwrap();
+
+        let production_root = fixture_root("production-top-level");
+        write(&production_root, "package.yml", package);
+        write(&production_root, "api.yml", "functions: {}\n");
+        write(
+            &production_root,
+            "service.yml",
+            "id: example.com/widget-tests\n",
+        );
+        let error = read_service_package_root(&production_root).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("allowed only when service.yml declares kind: test"));
+        fs::remove_dir_all(production_root).unwrap();
     }
 
     #[test]

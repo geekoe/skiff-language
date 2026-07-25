@@ -269,6 +269,7 @@ impl Fixture {
                         },
                     },
                 )]),
+                implementation_symbols: BTreeMap::new(),
             },
             package_schema_index: PackageSchemaIndexRef {
                 package_id: "example.health-provider".to_string(),

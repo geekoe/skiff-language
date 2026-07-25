@@ -339,6 +339,7 @@ mod tests {
             id: "example.com/llm".to_string(),
             version: "0.1.0".to_string(),
             alias: Some("llm".to_string()),
+            access: crate::PackageDependencyAccess::Public,
             config: serde_json::json!({}),
             collection_name_mapping: BTreeMap::new(),
         };

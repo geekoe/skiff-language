@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{de, Deserialize, Deserializer};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use skiff_compiler_core::id::{PublicationId, SKIFF_STD_PUBLICATION_ID};
 
@@ -8,11 +8,20 @@ pub use skiff_compiler_core::path_safety::{
     is_safe_publication_artifact_id_component, is_safe_publication_artifact_path_segment,
 };
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PackageDependencyAccess {
+    #[default]
+    Public,
+    TopLevel,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageDependency {
     pub id: String,
     pub version: String,
     pub alias: Option<String>,
+    pub access: PackageDependencyAccess,
     pub config: Value,
     pub collection_name_mapping: BTreeMap<String, String>,
 }
@@ -23,6 +32,7 @@ impl PackageDependency {
             id: id.into(),
             version: "1.0.0".to_string(),
             alias: None,
+            access: PackageDependencyAccess::Public,
             config: empty_dependency_config(),
             collection_name_mapping: BTreeMap::new(),
         }
@@ -50,6 +60,7 @@ impl<'de> Deserialize<'de> for PackageDependency {
             id: Option<String>,
             version: Option<String>,
             alias: Option<String>,
+            access: Option<PackageDependencyAccess>,
             collection_name_mapping: Option<BTreeMap<String, String>>,
         }
 
@@ -64,6 +75,7 @@ impl<'de> Deserialize<'de> for PackageDependency {
             id,
             version,
             alias: dependency.alias,
+            access: dependency.access.unwrap_or_default(),
             config: empty_dependency_config(),
             collection_name_mapping: dependency.collection_name_mapping.unwrap_or_default(),
         })
