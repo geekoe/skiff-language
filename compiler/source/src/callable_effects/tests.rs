@@ -4,7 +4,8 @@ use skiff_artifact_identity::assign_service_contract_identities;
 use skiff_artifact_model::{
     CallableEffectSummary, CallableEffectUnknownReason, CallableMayEffects,
     CallableProvenanceSummary, CallableProvenanceUnknownReason, CallableSemanticFacts,
-    ContractTypeRef, PackageCallableId, PackageLocalAbiIdentity, ValueEscapeLane, ValueProvenance,
+    ContractTypeRef, PackageCallableId, PackageLocalAbiIdentity, ValueEscapeLane,
+    ValueProjectionPath, ValueProvenance,
 };
 use skiff_compiler_input::{CompilerPlatformSources, ResolvedContractDependency};
 
@@ -1036,7 +1037,7 @@ fn nested_heap_store_remains_fail_closed_and_direct_reference_store_is_precise()
 }
 
 #[test]
-fn mutated_fresh_root_can_reenter_owning_map_but_other_escapes_remain_fail_closed() {
+fn mutated_fresh_root_can_enter_acyclic_local_containers_but_database_escape_fails_closed() {
     let model = analyze(
         r#"
             type State { value: string }
@@ -1079,16 +1080,14 @@ fn mutated_fresh_root_can_reenter_owning_map_but_other_escapes_remain_fail_close
         SourceDependencyAnalysisInput::default(),
     );
 
-    for callable in ["intoMap", "ambiguousAlias"] {
+    for callable in ["intoMap", "intoArray", "ambiguousAlias"] {
         assert_eq!(effects(&model, callable), no_effects(), "{callable}");
         assert!(matches!(
             provenance(&model, callable),
             CallableProvenanceSummary::Analyzed { .. }
         ));
     }
-    for callable in ["intoArray", "intoDatabase"] {
-        assert_heap_store_fail_closed(&model, callable);
-    }
+    assert_heap_store_fail_closed(&model, "intoDatabase");
 }
 
 #[test]
@@ -1201,6 +1200,259 @@ fn helper_map_projection_can_be_mutated_and_reinserted_without_becoming_the_map_
 }
 
 #[test]
+fn helper_field_projection_keeps_parent_edge_and_rejects_real_cycle() {
+    let model = analyze(
+        r#"
+            type Child { parent: Parent? }
+            type Parent { child: Child }
+
+            function childOf(parent: Parent) -> Child {
+              return parent.child
+            }
+
+            function cycle() -> Parent {
+              const child = Child { parent: null }
+              const parent = Parent { child: child }
+              const selected = childOf(parent)
+              selected.parent = parent
+              return parent
+            }
+
+            type Node { next: Node? }
+
+            function transitiveCycle() -> Node {
+              const first = Node { next: null }
+              const second = Node { next: null }
+              first.next = second
+              second.next = first
+              return first
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(
+        provenance(&model, "childOf"),
+        &CallableProvenanceSummary::Analyzed {
+            return_origins: vec![caller_field_projection(0, "child")],
+            direct_return_origins: vec![caller_field_projection(0, "child")],
+            throw_origins: Vec::new(),
+            escape_lanes: Vec::new(),
+        }
+    );
+    assert_heap_store_fail_closed(&model, "cycle");
+    assert_heap_store_fail_closed(&model, "transitiveCycle");
+}
+
+#[test]
+fn scalar_field_projection_does_not_invent_a_heap_cycle_in_relay_state_updates() {
+    let model = analyze(
+        r#"
+            type RelayState { bytes: integer }
+
+            function currentBytes(state: RelayState) -> integer {
+              return state.bytes
+            }
+
+            function local() -> RelayState {
+              const state = RelayState { bytes: 0 }
+              const next = currentBytes(state) + 1
+              state.bytes = next
+              return state
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(effects(&model, "currentBytes"), no_effects());
+    assert_eq!(effects(&model, "local"), no_effects());
+    assert!(matches!(
+        provenance(&model, "local"),
+        CallableProvenanceSummary::Analyzed { .. }
+    ));
+}
+
+#[test]
+fn fresh_json_root_stays_distinct_from_caller_reachable_payload() {
+    let model = analyze(
+        r#"
+            type Wrapper { payload: JsonObject }
+
+            function wrap(input: JsonObject) -> Wrapper {
+              return Wrapper { payload: input }
+            }
+
+            function mutateWrappedPayload(input: JsonObject) -> void {
+              const wrapper = wrap(input)
+              const payload = wrapper.payload
+              payload.set("kind", "changed")
+            }
+
+            function project(tools: Array<JsonObject>) -> void {
+              const output = Array.empty<JsonObject>()
+              for tool in tools {
+                const projected: JsonObject = {
+                  payload: tool.get("payload")
+                }
+                projected.set("kind", "function")
+                output.push(projected)
+              }
+            }
+
+            function conditional(
+              input: JsonObject,
+              useFresh: bool
+            ) -> void {
+              let target: JsonObject = input
+              if useFresh {
+                const candidate: JsonObject = {
+                  payload: input.get("payload")
+                }
+                target = candidate
+              }
+              target.set("kind", "function")
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(
+        provenance(&model, "wrap"),
+        &CallableProvenanceSummary::Analyzed {
+            return_origins: vec![
+                ValueProvenance::Fresh,
+                ValueProvenance::CallerParameter { index: 0 },
+            ],
+            direct_return_origins: vec![ValueProvenance::Fresh],
+            throw_origins: Vec::new(),
+            escape_lanes: Vec::new(),
+        },
+        "the fresh wrapper is direct while its caller-owned payload remains reachable"
+    );
+    assert_eq!(
+        effects(&model, "mutateWrappedPayload"),
+        CallableMayEffects {
+            writes_caller_reachable: true,
+            requires_same_heap_identity: true,
+            ..no_effects()
+        },
+        "reading the payload back out of a fresh wrapper must recover its caller identity"
+    );
+
+    assert_eq!(
+        effects(&model, "project"),
+        CallableMayEffects {
+            requires_same_heap_identity: true,
+            ..no_effects()
+        },
+        "mutating the fresh projected object and fresh output array must not write caller roots"
+    );
+    assert!(matches!(
+        provenance(&model, "project"),
+        CallableProvenanceSummary::Analyzed { .. }
+    ));
+
+    assert_eq!(
+        effects(&model, "conditional"),
+        CallableMayEffects {
+            writes_caller_reachable: true,
+            requires_same_heap_identity: true,
+            ..no_effects()
+        },
+        "a fresh/caller receiver union must not discharge the caller candidate"
+    );
+}
+
+#[test]
+fn dependency_container_projection_can_be_mutated_and_reinserted_into_fresh_map() {
+    let model = analyze(
+        r#"
+            type State { key: string, value: string }
+
+            function local(key: string) -> State {
+              const states = Map.empty<string, State>()
+              let state: State? = dep/tools/find(states, key)
+              if state == null {
+                state = State { key: key, value: "" }
+                states.set(key, state)
+              }
+              state.value = "completed"
+              states.set(key, state)
+              return state
+            }
+        "#,
+        container_projection_dependency(),
+    );
+
+    assert_eq!(effects(&model, "local"), no_effects());
+    assert!(matches!(
+        provenance(&model, "local"),
+        CallableProvenanceSummary::Analyzed { .. }
+    ));
+}
+
+#[test]
+fn dependency_fresh_wrapper_keeps_payload_reachable_without_becoming_caller_owned() {
+    let model = analyze(
+        r#"
+            function mutate(
+              input: JsonObject
+            ) -> JsonObject {
+              const wrapped: JsonObject = dep/tools/wrap(input)
+              wrapped.set("kind", "function")
+              return wrapped
+            }
+
+            function conditional(
+              input: JsonObject,
+              useFresh: bool
+            ) -> void {
+              let target: JsonObject = input
+              if useFresh {
+                target = dep/tools/wrap(input)
+              }
+              target.set("kind", "function")
+            }
+        "#,
+        fresh_wrapper_dependency(),
+    );
+
+    assert_eq!(
+        effects(&model, "mutate"),
+        CallableMayEffects {
+            returns_caller_alias: true,
+            ..no_effects()
+        },
+        "mutating the dependency's fresh return root must not become a caller write"
+    );
+    assert_eq!(
+        provenance(&model, "mutate"),
+        &CallableProvenanceSummary::Analyzed {
+            return_origins: vec![
+                ValueProvenance::Fresh,
+                ValueProvenance::Constant,
+                ValueProvenance::CallerParameter { index: 0 },
+                ValueProvenance::DependencyReturn {
+                    callable_id: "pkg-callable:dep-tools-wrap".into(),
+                },
+            ],
+            direct_return_origins: vec![ValueProvenance::Fresh],
+            throw_origins: Vec::new(),
+            escape_lanes: Vec::new(),
+        }
+    );
+    assert_eq!(
+        effects(&model, "conditional"),
+        CallableMayEffects {
+            writes_caller_reachable: true,
+            requires_same_heap_identity: true,
+            ..no_effects()
+        },
+        "a direct Fresh/caller union remains conservative across a package boundary"
+    );
+}
+
+#[test]
 fn helper_parameter_store_distinguishes_field_projection_from_root_cycle() {
     let model = analyze(
         r#"
@@ -1276,6 +1528,27 @@ fn recursive_scc_reaches_alias_fixed_point() {
 
     assert!(effects(&model, "first").returns_caller_alias);
     assert!(effects(&model, "second").returns_caller_alias);
+}
+
+#[test]
+fn recursively_growing_projection_path_fails_closed_at_the_wire_limit() {
+    let model = analyze(
+        r#"
+            type Node { child: Node }
+
+            function descend(node: Node, stop: bool) -> Node {
+              if stop { return node.child }
+              return descend(node.child, true)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(effects(&model, "descend"), all_effects());
+    assert!(matches!(
+        provenance(&model, "descend"),
+        CallableProvenanceSummary::Unknown { .. }
+    ));
 }
 
 #[test]
@@ -1555,7 +1828,7 @@ fn database_value_transactions_transfer_the_exact_final_value() {
         &vec![
             ValueProvenance::Fresh,
             ValueProvenance::Constant,
-            ValueProvenance::CallerParameter { index: 0 }
+            caller_field_projection(0, "pointer")
         ]
     );
 
@@ -1670,6 +1943,7 @@ fn exact_context_free_native_uses_shared_callable_semantics() {
             return_origins,
             throw_origins,
             escape_lanes,
+            ..
         } = provenance(&model, callable)
         else {
             panic!("{callable} should retain exact native provenance");
@@ -1714,6 +1988,7 @@ fn date_from_epoch_milliseconds_wrapper_uses_exact_native_semantics() {
         return_origins,
         throw_origins,
         escape_lanes,
+        ..
     } = provenance(&model, "fromEpoch")
     else {
         panic!("Date constructor wrapper should retain exact native provenance");
@@ -1752,6 +2027,7 @@ fn map_empty_materialization_accumulator_uses_exact_native_semantics() {
         return_origins,
         throw_origins,
         escape_lanes,
+        ..
     } = provenance_in(&model, "responses", "materializeCompletedResult")
     else {
         panic!("Map.empty accumulator should retain exact native provenance");
@@ -1797,6 +2073,7 @@ fn json_decode_materialization_uses_exact_detached_semantics() {
         return_origins,
         throw_origins,
         escape_lanes,
+        ..
     } = provenance_in(&model, "responses", "materializeCompletedResult")
     else {
         panic!("std.json.decode should retain exact detached provenance");
@@ -1804,9 +2081,7 @@ fn json_decode_materialization_uses_exact_detached_semantics() {
     assert!(
         return_origins.contains(&ValueProvenance::Fresh)
             && return_origins.contains(&ValueProvenance::Constant)
-            && !return_origins
-                .iter()
-                .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. })),
+            && !return_origins.iter().any(is_caller_parameter_provenance),
         "unexpected return provenance: {return_origins:?}"
     );
     assert!(throw_origins.is_empty());
@@ -1847,6 +2122,7 @@ fn json_merge_materialization_uses_exact_detached_semantics() {
             return_origins,
             throw_origins,
             escape_lanes,
+            ..
         } if return_origins == &vec![ValueProvenance::Fresh]
             && throw_origins.is_empty()
             && escape_lanes.is_empty()
@@ -1890,6 +2166,7 @@ fn optional_date_parse_wrapper_uses_exact_native_semantics() {
             return_origins,
             throw_origins,
             escape_lanes,
+            ..
         } = provenance_in(&model, "upstream_sources", callable)
         else {
             panic!("{callable} should retain exact native provenance");
@@ -1928,6 +2205,7 @@ fn bytes_from_base64_wrapper_uses_exact_native_semantics() {
         return_origins,
         throw_origins,
         escape_lanes,
+        ..
     } = provenance(&model, "jwtPayload")
     else {
         panic!("Base64 decoder wrapper should retain exact native provenance");
@@ -1960,6 +2238,7 @@ fn bytes_from_hex_wrapper_uses_exact_native_semantics() {
         return_origins,
         throw_origins,
         escape_lanes,
+        ..
     } = provenance(&model, "exactChunk")
     else {
         panic!("hex decoder wrapper should retain exact native provenance");
@@ -2001,6 +2280,7 @@ fn bytes_concat_openai_multipart_shape_uses_exact_native_semantics() {
         return_origins,
         throw_origins,
         escape_lanes,
+        ..
     } = provenance(&model, "multipartBody")
     else {
         panic!("multipart bytes concatenation should retain exact native provenance");
@@ -2055,6 +2335,7 @@ fn exact_http_request_natives_transfer_through_local_helpers() {
             return_origins,
             throw_origins,
             escape_lanes,
+            ..
         } = provenance(&model, callable)
         else {
             panic!("{callable} should retain exact HTTP request native provenance");
@@ -2111,6 +2392,7 @@ fn exact_http_client_stream_is_fresh_detached_and_suspending_through_raw_request
             return_origins,
             throw_origins,
             escape_lanes,
+            ..
         } if return_origins == &vec![ValueProvenance::Fresh]
             && throw_origins.is_empty()
             && escape_lanes.is_empty()
@@ -2159,6 +2441,7 @@ fn exact_http_client_sse_is_fresh_detached_and_suspending_through_raw_request() 
             return_origins,
             throw_origins,
             escape_lanes,
+            ..
         } if return_origins == &vec![ValueProvenance::Fresh]
             && throw_origins.is_empty()
             && escape_lanes.is_empty()
@@ -2212,6 +2495,7 @@ fn exact_http_response_stream_event_constructors_are_fresh_and_effect_free() {
                 return_origins,
                 throw_origins,
                 escape_lanes,
+                ..
             } if return_origins == &vec![ValueProvenance::Fresh]
                 && throw_origins.is_empty()
                 && escape_lanes.is_empty()
@@ -2265,6 +2549,7 @@ fn exact_http_response_stream_emit_escapes_and_suspends_only_for_caller_event() 
             return_origins,
             throw_origins,
             escape_lanes,
+            ..
         } if return_origins.is_empty()
             && throw_origins.is_empty()
             && escape_lanes == &vec![ValueEscapeLane::External]
@@ -2915,10 +3200,7 @@ fn date_diff_milliseconds_keeps_interaction_duration_shape_detached() {
         CallableProvenanceSummary::Analyzed { return_origins, .. }
             if return_origins.contains(&ValueProvenance::Constant)
                 && return_origins.contains(&ValueProvenance::Fresh)
-                && !return_origins.iter().any(|origin| matches!(
-                    origin,
-                    ValueProvenance::CallerParameter { .. }
-                ))
+                && !return_origins.iter().any(is_caller_parameter_provenance)
     ));
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
@@ -3165,7 +3447,7 @@ fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detache
     assert!(matches!(
         provenance_in(&model, "chatgpt_plan.codec", "direct"),
         CallableProvenanceSummary::Analyzed { return_origins, .. }
-            if return_origins == &vec![ValueProvenance::CallerParameter { index: 0 }]
+            if return_origins == &vec![caller_container_projection(0)]
     ));
 
     for callable in ["jsonObject", "jsonField", "claimsFromJwt"] {
@@ -3184,9 +3466,7 @@ fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detache
             "{callable}: {return_origins:?}"
         );
         assert!(
-            !return_origins
-                .iter()
-                .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. })),
+            !return_origins.iter().any(is_caller_parameter_provenance),
             "{callable}: {return_origins:?}"
         );
     }
@@ -3230,7 +3510,7 @@ fn exact_map_get_preserves_caller_alias_but_discharges_fresh_accumulator() {
     assert!(matches!(
         provenance_in(&model, "responses", "direct"),
         CallableProvenanceSummary::Analyzed { return_origins, .. }
-            if return_origins == &vec![ValueProvenance::CallerParameter { index: 0 }]
+            if return_origins == &vec![caller_container_projection(0)]
     ));
 
     assert_eq!(
@@ -3603,6 +3883,7 @@ fn exact_file_creation_wrappers_are_fresh_and_only_suspend() {
                 return_origins,
                 throw_origins,
                 escape_lanes,
+                ..
             } if return_origins == &vec![ValueProvenance::Fresh]
                 && throw_origins.is_empty()
                 && escape_lanes.is_empty()
@@ -3636,6 +3917,7 @@ fn exact_dependency_callee_does_not_poison_known_target() {
             },
             provenance: CallableProvenanceSummary::Analyzed {
                 return_origins: vec![ValueProvenance::CallerParameter { index: 0 }],
+                direct_return_origins: vec![ValueProvenance::CallerParameter { index: 0 }],
                 throw_origins: Vec::new(),
                 escape_lanes: Vec::new(),
             },
@@ -3941,6 +4223,7 @@ fn exact_field_package_dependency() -> SourceDependencyAnalysisInput {
             },
             provenance: CallableProvenanceSummary::Analyzed {
                 return_origins: vec![ValueProvenance::Fresh],
+                direct_return_origins: vec![ValueProvenance::Fresh],
                 throw_origins: Vec::new(),
                 escape_lanes: Vec::new(),
             },
@@ -3954,6 +4237,76 @@ fn exact_field_package_dependency() -> SourceDependencyAnalysisInput {
                 skiff_artifact_model::PackageBuildId::new("build:dep"),
                 PackageLocalAbiIdentity::new("pkg-local-abi:dep"),
                 BTreeMap::from([("tools.run".to_string(), callable)]),
+            ),
+        )]),
+        Vec::new(),
+    )
+    .unwrap()
+}
+
+fn container_projection_dependency() -> SourceDependencyAnalysisInput {
+    let callable = PackageDependencyCallableAnalysis::new(
+        PackageCallableId::new("pkg-callable:dep-tools-find"),
+        CallableSemanticFacts {
+            effects: CallableEffectSummary::Analyzed {
+                effects: CallableMayEffects {
+                    returns_caller_alias: true,
+                    requires_same_heap_identity: true,
+                    ..no_effects()
+                },
+            },
+            provenance: CallableProvenanceSummary::Analyzed {
+                return_origins: vec![caller_container_projection(0)],
+                direct_return_origins: vec![caller_container_projection(0)],
+                throw_origins: Vec::new(),
+                escape_lanes: Vec::new(),
+            },
+            resolved_call_targets: BTreeMap::new(),
+        },
+    );
+    SourceDependencyAnalysisInput::new(
+        BTreeMap::from([(
+            "dep".to_string(),
+            PackageDependencyAnalysisFacts::new(
+                skiff_artifact_model::PackageBuildId::new("build:dep"),
+                PackageLocalAbiIdentity::new("pkg-local-abi:dep"),
+                BTreeMap::from([("tools.find".to_string(), callable)]),
+            ),
+        )]),
+        Vec::new(),
+    )
+    .unwrap()
+}
+
+fn fresh_wrapper_dependency() -> SourceDependencyAnalysisInput {
+    let callable = PackageDependencyCallableAnalysis::new(
+        PackageCallableId::new("pkg-callable:dep-tools-wrap"),
+        CallableSemanticFacts {
+            effects: CallableEffectSummary::Analyzed {
+                effects: CallableMayEffects {
+                    returns_caller_alias: true,
+                    ..no_effects()
+                },
+            },
+            provenance: CallableProvenanceSummary::Analyzed {
+                return_origins: vec![
+                    ValueProvenance::Fresh,
+                    ValueProvenance::CallerParameter { index: 0 },
+                ],
+                direct_return_origins: vec![ValueProvenance::Fresh],
+                throw_origins: Vec::new(),
+                escape_lanes: Vec::new(),
+            },
+            resolved_call_targets: BTreeMap::new(),
+        },
+    );
+    SourceDependencyAnalysisInput::new(
+        BTreeMap::from([(
+            "dep".to_string(),
+            PackageDependencyAnalysisFacts::new(
+                skiff_artifact_model::PackageBuildId::new("build:dep"),
+                PackageLocalAbiIdentity::new("pkg-local-abi:dep"),
+                BTreeMap::from([("tools.wrap".to_string(), callable)]),
             ),
         )]),
         Vec::new(),
@@ -4143,6 +4496,27 @@ fn assert_heap_store_fail_closed(model: &PackageSourceModel, symbol: &str) {
         },
         "{symbol}"
     );
+}
+
+fn caller_field_projection(index: u32, field: &str) -> ValueProvenance {
+    ValueProvenance::CallerParameterProjection {
+        index,
+        path: ValueProjectionPath::field(field).expect("test field projection is valid"),
+    }
+}
+
+fn caller_container_projection(index: u32) -> ValueProvenance {
+    ValueProvenance::CallerParameterProjection {
+        index,
+        path: ValueProjectionPath::container_element(),
+    }
+}
+
+fn is_caller_parameter_provenance(origin: &ValueProvenance) -> bool {
+    matches!(
+        origin,
+        ValueProvenance::CallerParameter { .. } | ValueProvenance::CallerParameterProjection { .. }
+    )
 }
 
 fn no_effects() -> CallableMayEffects {

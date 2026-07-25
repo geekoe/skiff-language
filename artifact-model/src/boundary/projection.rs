@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
+use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 
 use crate::{CallableEffectSummary, CallableMayEffects, ContractOperationId};
 
@@ -44,6 +45,7 @@ pub enum CallableProvenanceSummary {
     },
     Analyzed {
         return_origins: Vec<ValueProvenance>,
+        direct_return_origins: Vec<ValueProvenance>,
         throw_origins: Vec<ValueProvenance>,
         escape_lanes: Vec<ValueEscapeLane>,
     },
@@ -68,8 +70,121 @@ pub enum CallableProvenanceUnknownReason {
 pub enum ValueProvenance {
     Fresh,
     Constant,
-    CallerParameter { index: u32 },
-    DependencyReturn { callable_id: String },
+    CallerParameter {
+        index: u32,
+    },
+    CallerParameterProjection {
+        index: u32,
+        path: ValueProjectionPath,
+    },
+    DependencyReturn {
+        callable_id: String,
+    },
+}
+
+pub const MAX_VALUE_PROJECTION_PATH_STEPS: usize = 64;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ValueProjectionStep {
+    Field { name: String },
+    ContainerElement {},
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValueProjectionPath {
+    steps: Vec<ValueProjectionStep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueProjectionPathError {
+    message: String,
+}
+
+impl ValueProjectionPath {
+    pub fn new(steps: Vec<ValueProjectionStep>) -> Result<Self, ValueProjectionPathError> {
+        validate_projection_steps(&steps)?;
+        Ok(Self { steps })
+    }
+
+    pub fn field(name: impl Into<String>) -> Result<Self, ValueProjectionPathError> {
+        Self::new(vec![ValueProjectionStep::Field { name: name.into() }])
+    }
+
+    pub fn container_element() -> Self {
+        Self {
+            steps: vec![ValueProjectionStep::ContainerElement {}],
+        }
+    }
+
+    pub fn steps(&self) -> &[ValueProjectionStep] {
+        &self.steps
+    }
+
+    pub fn appended(&self, suffix: &ValueProjectionPath) -> Result<Self, ValueProjectionPathError> {
+        let mut steps = Vec::with_capacity(self.steps.len().saturating_add(suffix.steps.len()));
+        steps.extend(self.steps.iter().cloned());
+        steps.extend(suffix.steps.iter().cloned());
+        Self::new(steps)
+    }
+}
+
+impl fmt::Display for ValueProjectionPathError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ValueProjectionPathError {}
+
+impl<'de> Deserialize<'de> for ValueProjectionPath {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Wire {
+            steps: Vec<ValueProjectionStep>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.steps).map_err(de::Error::custom)
+    }
+}
+
+fn validate_projection_steps(
+    steps: &[ValueProjectionStep],
+) -> Result<(), ValueProjectionPathError> {
+    if steps.is_empty() {
+        return Err(ValueProjectionPathError {
+            message: "value projection path must contain at least one step".to_string(),
+        });
+    }
+    if steps.len() > MAX_VALUE_PROJECTION_PATH_STEPS {
+        return Err(ValueProjectionPathError {
+            message: format!(
+                "value projection path exceeds {MAX_VALUE_PROJECTION_PATH_STEPS} steps"
+            ),
+        });
+    }
+    for step in steps {
+        if let ValueProjectionStep::Field { name } = step {
+            if name.is_empty() || name.trim() != name {
+                return Err(ValueProjectionPathError {
+                    message: "value projection field name must be non-empty and unpadded"
+                        .to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

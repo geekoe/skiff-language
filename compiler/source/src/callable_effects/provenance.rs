@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
-    CallableProvenanceUnknownReason, ValueEscapeLane, ValueProvenance,
+    CallableProvenanceUnknownReason, ValueEscapeLane, ValueProjectionPath, ValueProjectionStep,
+    ValueProvenance, MAX_VALUE_PROJECTION_PATH_STEPS,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -10,12 +11,23 @@ pub(super) enum Origin {
     Fresh,
     Constant,
     CallerParameter(u32),
-    /// A value selected from a caller parameter's reachable graph rather than
-    /// the formal root itself. This identity is evaluator-local: artifacts
-    /// deliberately collapse it back to `CallerParameter` so dependency
-    /// boundaries remain conservative.
-    CallerParameterProjection(u32),
+    CallerParameterProjection {
+        index: u32,
+        path: ValueProjectionPath,
+    },
     DependencyReturn(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct CallerReference {
+    pub parameter: u32,
+    pub path: Vec<ValueProjectionStep>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct FreshRoot {
+    pub allocation: u32,
+    pub path: Vec<ValueProjectionStep>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -31,13 +43,27 @@ pub(super) enum EscapeLane {
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub(super) struct AbstractValue {
+    /// Origins reachable from this value, including its direct root.
     pub origins: BTreeSet<Origin>,
+    /// Origins that are possible identities of this value itself.
+    pub direct_origins: BTreeSet<Origin>,
     /// Parameters whose reference graph remains reachable from this value.
-    pub caller_references: BTreeSet<u32>,
+    pub caller_references: BTreeSet<CallerReference>,
+    /// Caller-owned roots that are possible identities of this value itself.
+    /// This excludes caller values merely reachable through a fresh
+    /// container's payload.
+    pub direct_caller_references: BTreeSet<CallerReference>,
     pub unknown: bool,
     pub reference: bool,
-    /// Evaluator-local allocation sites. Never serialized into an artifact.
-    pub fresh_roots: BTreeSet<u32>,
+    /// A direct `Fresh` summary branch that still needs a caller-site
+    /// allocation identity.
+    pub needs_fresh_root: bool,
+    /// Evaluator-local allocation sites plus structural projections. Never
+    /// serialized into an artifact.
+    pub fresh_roots: BTreeSet<FreshRoot>,
+    /// Fresh roots reachable anywhere in the value graph, including the
+    /// direct roots above.
+    pub fresh_references: BTreeSet<FreshRoot>,
     /// Field-sensitive payloads owned by a typed `catch`.  A catch result is
     /// an owner-local container, but reading its success value after tag
     /// narrowing must recover the try expression's exact provenance instead
@@ -55,6 +81,9 @@ pub(super) struct CatchResultValue {
 pub(super) struct CallableState {
     pub effects: CallableMayEffects,
     pub return_origins: BTreeSet<Origin>,
+    /// Direct-root subset of `return_origins`, serialized separately so
+    /// dependency replay does not confuse a fresh wrapper with its payload.
+    pub return_direct_origins: BTreeSet<Origin>,
     pub throw_origins: BTreeSet<Origin>,
     pub escape_lanes: BTreeSet<EscapeLane>,
     /// Formal parameters whose reachable graph is written. An empty set with
@@ -67,43 +96,147 @@ pub(super) struct CallableState {
     /// operation observable. An empty set with the public effect set means the
     /// dependency could not be attributed and must remain conservative.
     pub same_heap_identity_parameters: BTreeSet<u32>,
-    /// Compiler-internal formal-root store transfer.
-    pub parameter_stores: BTreeMap<u32, AbstractValue>,
+    /// Compiler-internal formal/projection store transfer.
+    pub parameter_stores: BTreeMap<CallerReference, AbstractValue>,
     pub unknown: Option<CallableProvenanceUnknownReason>,
+}
+
+impl Origin {
+    pub fn project(&self, suffix: &ValueProjectionPath) -> Result<Self, ()> {
+        match self {
+            Self::CallerParameter(index) => Ok(Self::CallerParameterProjection {
+                index: *index,
+                path: suffix.clone(),
+            }),
+            Self::CallerParameterProjection { index, path } => path
+                .appended(suffix)
+                .map(|path| Self::CallerParameterProjection {
+                    index: *index,
+                    path,
+                })
+                .map_err(|_| ()),
+            other => Ok(other.clone()),
+        }
+    }
+}
+
+impl CallerReference {
+    pub fn root(parameter: u32) -> Self {
+        Self {
+            parameter,
+            path: Vec::new(),
+        }
+    }
+
+    pub fn project(&self, suffix: &ValueProjectionPath) -> Result<Self, ()> {
+        Ok(Self {
+            parameter: self.parameter,
+            path: append_projection_steps(&self.path, suffix)?,
+        })
+    }
+
+    pub fn is_ancestor_of(&self, other: &Self) -> bool {
+        self.parameter == other.parameter && other.path.starts_with(&self.path)
+    }
+
+    fn matches_origin(&self, origin: &Origin) -> bool {
+        match origin {
+            Origin::CallerParameter(index) => self.parameter == *index && self.path.is_empty(),
+            Origin::CallerParameterProjection { index, path } => {
+                self.parameter == *index && self.path == path.steps()
+            }
+            _ => false,
+        }
+    }
+}
+
+impl FreshRoot {
+    pub fn allocation(allocation: u32) -> Self {
+        Self {
+            allocation,
+            path: Vec::new(),
+        }
+    }
+
+    pub fn project_step(&self, step: ValueProjectionStep) -> Result<Self, ()> {
+        if self.path.len() >= MAX_VALUE_PROJECTION_PATH_STEPS {
+            return Err(());
+        }
+        let mut path = self.path.clone();
+        path.push(step);
+        Ok(Self {
+            allocation: self.allocation,
+            path,
+        })
+    }
+
+    pub fn is_ancestor_of(&self, other: &Self) -> bool {
+        self.allocation == other.allocation && other.path.starts_with(&self.path)
+    }
+}
+
+fn append_projection_steps(
+    prefix: &[ValueProjectionStep],
+    suffix: &ValueProjectionPath,
+) -> Result<Vec<ValueProjectionStep>, ()> {
+    if prefix.len().saturating_add(suffix.steps().len()) > MAX_VALUE_PROJECTION_PATH_STEPS {
+        return Err(());
+    }
+    let mut path = Vec::with_capacity(prefix.len() + suffix.steps().len());
+    path.extend(prefix.iter().cloned());
+    path.extend(suffix.steps().iter().cloned());
+    Ok(path)
 }
 
 impl AbstractValue {
     pub fn constant(reference: bool) -> Self {
+        let origins = BTreeSet::from([Origin::Constant]);
         Self {
-            origins: BTreeSet::from([Origin::Constant]),
+            direct_origins: origins.clone(),
+            origins,
             caller_references: BTreeSet::new(),
+            direct_caller_references: BTreeSet::new(),
             unknown: false,
             reference,
+            needs_fresh_root: false,
             fresh_roots: BTreeSet::new(),
+            fresh_references: BTreeSet::new(),
             catch_result: None,
         }
     }
 
     pub fn fresh(reference: bool) -> Self {
+        let origins = BTreeSet::from([Origin::Fresh]);
         Self {
-            origins: BTreeSet::from([Origin::Fresh]),
+            direct_origins: origins.clone(),
+            origins,
             caller_references: BTreeSet::new(),
+            direct_caller_references: BTreeSet::new(),
             unknown: false,
             reference,
+            needs_fresh_root: reference,
             fresh_roots: BTreeSet::new(),
+            fresh_references: BTreeSet::new(),
             catch_result: None,
         }
     }
 
     pub fn parameter(index: u32, reference: bool) -> Self {
+        let origins = BTreeSet::from([Origin::CallerParameter(index)]);
         Self {
-            origins: BTreeSet::from([Origin::CallerParameter(index)]),
+            direct_origins: origins.clone(),
+            origins,
             caller_references: reference
-                .then(|| BTreeSet::from([index]))
+                .then(|| BTreeSet::from([CallerReference::root(index)]))
+                .unwrap_or_default(),
+            direct_caller_references: reference
+                .then(|| BTreeSet::from([CallerReference::root(index)]))
                 .unwrap_or_default(),
             unknown: false,
             reference,
+            needs_fresh_root: false,
             fresh_roots: BTreeSet::new(),
+            fresh_references: BTreeSet::new(),
             catch_result: None,
         }
     }
@@ -111,21 +244,32 @@ impl AbstractValue {
     pub fn unknown(reference: bool) -> Self {
         Self {
             origins: BTreeSet::new(),
+            direct_origins: BTreeSet::new(),
             caller_references: BTreeSet::new(),
+            direct_caller_references: BTreeSet::new(),
             unknown: true,
             reference,
+            needs_fresh_root: false,
             fresh_roots: BTreeSet::new(),
+            fresh_references: BTreeSet::new(),
             catch_result: None,
         }
     }
 
     pub fn join(&mut self, other: &Self) {
         self.origins.extend(other.origins.iter().cloned());
+        self.direct_origins
+            .extend(other.direct_origins.iter().cloned());
         self.caller_references
-            .extend(other.caller_references.iter().copied());
+            .extend(other.caller_references.iter().cloned());
+        self.direct_caller_references
+            .extend(other.direct_caller_references.iter().cloned());
         self.unknown |= other.unknown;
         self.reference |= other.reference;
-        self.fresh_roots.extend(other.fresh_roots.iter().copied());
+        self.needs_fresh_root |= other.needs_fresh_root;
+        self.fresh_roots.extend(other.fresh_roots.iter().cloned());
+        self.fresh_references
+            .extend(other.fresh_references.iter().cloned());
         match (&mut self.catch_result, &other.catch_result) {
             (Some(current), Some(other)) => {
                 current.success.join(&other.success);
@@ -138,7 +282,10 @@ impl AbstractValue {
 
     pub fn with_fresh_container(mut self, reference: bool) -> Self {
         self.origins.insert(Origin::Fresh);
+        self.direct_origins = BTreeSet::from([Origin::Fresh]);
+        self.direct_caller_references.clear();
         self.reference = reference;
+        self.needs_fresh_root = reference;
         self
     }
 
@@ -163,6 +310,10 @@ impl AbstractValue {
         value.reference = reference;
         if !reference {
             value.caller_references.clear();
+            value.direct_caller_references.clear();
+            value.fresh_roots.clear();
+            value.fresh_references.clear();
+            value.needs_fresh_root = false;
         }
         Some(value)
     }
@@ -171,20 +322,28 @@ impl AbstractValue {
         !self.caller_references.is_empty()
     }
 
+    pub fn contains_direct_caller_reference(&self) -> bool {
+        !self.direct_caller_references.is_empty()
+    }
+
     pub fn contains_caller_value(&self) -> bool {
         self.contains_caller_reference()
             || self.origins.iter().any(|origin| {
                 matches!(
                     origin,
-                    Origin::CallerParameter(_) | Origin::CallerParameterProjection(_)
+                    Origin::CallerParameter(_) | Origin::CallerParameterProjection { .. }
                 )
             })
     }
 
     pub fn formal_parameters(&self) -> BTreeSet<u32> {
-        let mut parameters = self.caller_references.clone();
+        let mut parameters = self
+            .caller_references
+            .iter()
+            .map(|reference| reference.parameter)
+            .collect::<BTreeSet<_>>();
         parameters.extend(self.origins.iter().filter_map(|origin| match origin {
-            Origin::CallerParameter(index) | Origin::CallerParameterProjection(index) => {
+            Origin::CallerParameter(index) | Origin::CallerParameterProjection { index, .. } => {
                 Some(*index)
             }
             _ => None,
@@ -192,17 +351,40 @@ impl AbstractValue {
         parameters
     }
 
-    /// Marks formal-root provenance as a field/container projection while
-    /// retaining caller reachability for reference values.
-    pub fn project_caller_parameter_origins(&mut self) {
-        self.origins = std::mem::take(&mut self.origins)
-            .into_iter()
-            .map(|origin| match origin {
-                Origin::CallerParameter(index) => Origin::CallerParameterProjection(index),
-                other => other,
-            })
-            .collect();
+    pub fn project_direct_caller_parameter_origins(
+        &mut self,
+        path: &ValueProjectionPath,
+        direct_references: &BTreeSet<CallerReference>,
+    ) -> Result<(), ()> {
+        self.origins =
+            project_matching_origins(std::mem::take(&mut self.origins), path, direct_references)?;
+        self.direct_origins = project_matching_origins(
+            std::mem::take(&mut self.direct_origins),
+            path,
+            direct_references,
+        )?;
+        Ok(())
     }
+}
+
+fn project_matching_origins(
+    origins: BTreeSet<Origin>,
+    path: &ValueProjectionPath,
+    direct_references: &BTreeSet<CallerReference>,
+) -> Result<BTreeSet<Origin>, ()> {
+    origins
+        .into_iter()
+        .map(|origin| {
+            if direct_references
+                .iter()
+                .any(|reference| reference.matches_origin(&origin))
+            {
+                origin.project(path)
+            } else {
+                Ok(origin)
+            }
+        })
+        .collect()
 }
 
 impl CallableState {
@@ -210,6 +392,7 @@ impl CallableState {
         Self {
             effects: no_effects(),
             return_origins: BTreeSet::new(),
+            return_direct_origins: BTreeSet::new(),
             throw_origins: BTreeSet::new(),
             escape_lanes: BTreeSet::new(),
             write_parameters: BTreeSet::new(),
@@ -224,6 +407,7 @@ impl CallableState {
         Self {
             effects: all_effects(),
             return_origins: BTreeSet::new(),
+            return_direct_origins: BTreeSet::new(),
             throw_origins: BTreeSet::new(),
             escape_lanes: BTreeSet::from([EscapeLane::External]),
             write_parameters: BTreeSet::new(),
@@ -239,6 +423,8 @@ impl CallableState {
         join_effects(&mut self.effects, &other.effects);
         self.return_origins
             .extend(other.return_origins.iter().cloned());
+        self.return_direct_origins
+            .extend(other.return_direct_origins.iter().cloned());
         self.throw_origins
             .extend(other.throw_origins.iter().cloned());
         self.escape_lanes.extend(other.escape_lanes.iter().copied());
@@ -252,9 +438,9 @@ impl CallableState {
         }
         self.same_heap_identity_parameters
             .extend(other.same_heap_identity_parameters.iter().copied());
-        for (parameter, value) in &other.parameter_stores {
+        for (reference, value) in &other.parameter_stores {
             self.parameter_stores
-                .entry(*parameter)
+                .entry(reference.clone())
                 .and_modify(|current| current.join(value))
                 .or_insert_with(|| value.clone());
         }
@@ -264,6 +450,8 @@ impl CallableState {
 
     pub fn record_return(&mut self, value: &AbstractValue) {
         self.return_origins.extend(value.origins.iter().cloned());
+        self.return_direct_origins
+            .extend(value.direct_origins.iter().cloned());
         self.effects.returns_caller_alias |= value.contains_caller_reference();
         if value.unknown {
             self.mark_unknown_value_if_unowned();
@@ -318,10 +506,14 @@ impl CallableState {
     }
 
     pub fn record_same_heap_identity(&mut self, value: &AbstractValue) {
-        if value.contains_caller_reference() || value.unknown {
+        if value.contains_direct_caller_reference() || value.unknown {
             self.effects.requires_same_heap_identity = true;
-            self.same_heap_identity_parameters
-                .extend(value.caller_references.iter().copied());
+            self.same_heap_identity_parameters.extend(
+                value
+                    .direct_caller_references
+                    .iter()
+                    .map(|reference| reference.parameter),
+            );
         }
     }
 
@@ -340,6 +532,7 @@ impl CallableState {
             Some(reason) => CallableProvenanceSummary::Unknown { reason },
             None => CallableProvenanceSummary::Analyzed {
                 return_origins: public_origins(self.return_origins),
+                direct_return_origins: public_origins(self.return_direct_origins),
                 throw_origins: public_origins(self.throw_origins),
                 escape_lanes: self
                     .escape_lanes
@@ -373,10 +566,16 @@ impl CallableState {
             CallableProvenanceSummary::Unknown { reason } => state.mark_unknown(*reason),
             CallableProvenanceSummary::Analyzed {
                 return_origins,
+                direct_return_origins,
                 throw_origins,
                 escape_lanes,
             } => {
                 state.return_origins = return_origins.iter().cloned().map(Origin::from).collect();
+                state.return_direct_origins = direct_return_origins
+                    .iter()
+                    .cloned()
+                    .map(Origin::from)
+                    .collect();
                 state.throw_origins = throw_origins.iter().cloned().map(Origin::from).collect();
                 state.escape_lanes = escape_lanes.iter().copied().map(EscapeLane::from).collect();
             }
@@ -458,8 +657,9 @@ impl From<Origin> for ValueProvenance {
         match value {
             Origin::Fresh => Self::Fresh,
             Origin::Constant => Self::Constant,
-            Origin::CallerParameter(index) | Origin::CallerParameterProjection(index) => {
-                Self::CallerParameter { index }
+            Origin::CallerParameter(index) => Self::CallerParameter { index },
+            Origin::CallerParameterProjection { index, path } => {
+                Self::CallerParameterProjection { index, path }
             }
             Origin::DependencyReturn(callable_id) => Self::DependencyReturn { callable_id },
         }
@@ -472,6 +672,9 @@ impl From<ValueProvenance> for Origin {
             ValueProvenance::Fresh => Self::Fresh,
             ValueProvenance::Constant => Self::Constant,
             ValueProvenance::CallerParameter { index } => Self::CallerParameter(index),
+            ValueProvenance::CallerParameterProjection { index, path } => {
+                Self::CallerParameterProjection { index, path }
+            }
             ValueProvenance::DependencyReturn { callable_id } => {
                 Self::DependencyReturn(callable_id)
             }

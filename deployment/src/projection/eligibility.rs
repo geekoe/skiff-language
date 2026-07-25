@@ -129,13 +129,12 @@ fn validate_provenance(
         },
         CallableProvenanceSummary::Analyzed {
             return_origins,
+            direct_return_origins,
             throw_origins,
             escape_lanes,
         } => {
             if guarantee.detached_return
-                && return_origins
-                    .iter()
-                    .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. }))
+                && return_origins.iter().any(is_caller_parameter_origin)
                 && (matches!(
                     effects,
                     CallableEffectSummary::Analyzed {
@@ -147,15 +146,15 @@ fn validate_provenance(
                 ) || !return_origins
                     .iter()
                     .any(|origin| matches!(origin, ValueProvenance::Fresh)))
-                && !detached_wrapped_return_origins(return_origins, escape_lanes)
+                && !detached_wrapped_return_origins(
+                    return_origins,
+                    direct_return_origins,
+                    escape_lanes,
+                )
             {
                 push_reason(reasons, BoundaryUnavailableReason::ReturnsCallerAlias);
             }
-            if guarantee.detached_error
-                && throw_origins
-                    .iter()
-                    .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. }))
-            {
+            if guarantee.detached_error && throw_origins.iter().any(is_caller_parameter_origin) {
                 push_reason(reasons, BoundaryUnavailableReason::ThrowsCallerAlias);
             }
             if guarantee.no_caller_value_escape {
@@ -217,9 +216,14 @@ fn detached_wrapped_return_is_materialized(
             provenance,
             CallableProvenanceSummary::Analyzed {
                 return_origins,
+                direct_return_origins,
                 escape_lanes,
                 ..
-            } if detached_wrapped_return_origins(return_origins, escape_lanes)
+            } if detached_wrapped_return_origins(
+                return_origins,
+                direct_return_origins,
+                escape_lanes,
+            )
         )
 }
 
@@ -235,6 +239,7 @@ fn has_no_unmaterialized_escape(provenance: &CallableProvenanceSummary) -> bool 
 
 fn detached_wrapped_return_origins(
     return_origins: &[ValueProvenance],
+    direct_return_origins: &[ValueProvenance],
     escape_lanes: &[ValueEscapeLane],
 ) -> bool {
     escape_lanes
@@ -243,9 +248,20 @@ fn detached_wrapped_return_origins(
         && return_origins
             .iter()
             .any(|origin| matches!(origin, ValueProvenance::Fresh))
-        && return_origins
+        && return_origins.iter().any(is_caller_parameter_origin)
+        && direct_return_origins
             .iter()
-            .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. }))
+            .any(|origin| matches!(origin, ValueProvenance::Fresh))
+        && direct_return_origins
+            .iter()
+            .all(|origin| matches!(origin, ValueProvenance::Fresh | ValueProvenance::Constant))
+}
+
+fn is_caller_parameter_origin(origin: &ValueProvenance) -> bool {
+    matches!(
+        origin,
+        ValueProvenance::CallerParameter { .. } | ValueProvenance::CallerParameterProjection { .. }
+    )
 }
 
 fn validate_call_targets(

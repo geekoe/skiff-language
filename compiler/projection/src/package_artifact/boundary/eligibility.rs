@@ -48,10 +48,9 @@ pub(super) fn semantic_unavailable_reasons(
             return_origins,
             throw_origins,
             escape_lanes,
+            ..
         } => {
-            if return_origins
-                .iter()
-                .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. }))
+            if return_origins.iter().any(is_caller_parameter_origin)
                 && (analyzed_effects(facts).is_some_and(|effects| effects.returns_caller_alias)
                     || !return_origins
                         .iter()
@@ -60,10 +59,7 @@ pub(super) fn semantic_unavailable_reasons(
             {
                 push_reason(&mut reasons, BoundaryUnavailableReason::ReturnsCallerAlias);
             }
-            if throw_origins
-                .iter()
-                .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. }))
-            {
+            if throw_origins.iter().any(is_caller_parameter_origin) {
                 push_reason(&mut reasons, BoundaryUnavailableReason::ThrowsCallerAlias);
             }
             for lane in escape_lanes {
@@ -158,6 +154,7 @@ fn detached_wrapped_return_is_materialized(
         &facts.provenance,
         CallableProvenanceSummary::Analyzed {
             return_origins,
+            direct_return_origins,
             escape_lanes,
             ..
         } if escape_lanes
@@ -168,7 +165,20 @@ fn detached_wrapped_return_is_materialized(
                 .any(|origin| matches!(origin, ValueProvenance::Fresh))
             && return_origins
                 .iter()
-                .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. }))
+                .any(is_caller_parameter_origin)
+            && direct_return_origins
+                .iter()
+                .any(|origin| matches!(origin, ValueProvenance::Fresh))
+            && direct_return_origins.iter().all(|origin| {
+                matches!(origin, ValueProvenance::Fresh | ValueProvenance::Constant)
+            })
+    )
+}
+
+fn is_caller_parameter_origin(origin: &ValueProvenance) -> bool {
+    matches!(
+        origin,
+        ValueProvenance::CallerParameter { .. } | ValueProvenance::CallerParameterProjection { .. }
     )
 }
 

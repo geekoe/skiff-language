@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     CallableProvenanceSummary, CallableSemanticFacts, ContractTypeRef, FileIrUnit,
-    PackageCallableSignature, PackageTypeRef, TypeRefIr, ValueProvenance,
+    PackageCallableSignature, PackageTypeRef, TypeRefIr, ValueProjectionStep, ValueProvenance,
 };
 
 use crate::package_artifact::boundary::ordering::escape_lane_rank;
@@ -10,12 +10,15 @@ use crate::package_artifact::boundary::ordering::escape_lane_rank;
 pub(super) fn normalize_semantic_facts(mut facts: CallableSemanticFacts) -> CallableSemanticFacts {
     if let CallableProvenanceSummary::Analyzed {
         return_origins,
+        direct_return_origins,
         throw_origins,
         escape_lanes,
     } = &mut facts.provenance
     {
         return_origins.sort_by_key(provenance_sort_key);
         return_origins.dedup();
+        direct_return_origins.sort_by_key(provenance_sort_key);
+        direct_return_origins.dedup();
         throw_origins.sort_by_key(provenance_sort_key);
         throw_origins.dedup();
         escape_lanes.sort_by_key(|lane| escape_lane_rank(*lane));
@@ -248,14 +251,28 @@ fn provenance_sort_key(origin: &ValueProvenance) -> (u8, String) {
         ValueProvenance::Fresh => (0, String::new()),
         ValueProvenance::Constant => (1, String::new()),
         ValueProvenance::CallerParameter { index } => (2, format!("{index:010}")),
-        ValueProvenance::DependencyReturn { callable_id } => (3, callable_id.clone()),
+        ValueProvenance::CallerParameterProjection { index, path } => {
+            let mut key = format!("{index:010}:");
+            for step in path.steps() {
+                match step {
+                    ValueProjectionStep::Field { name } => {
+                        key.push_str(&format!("f{}:{name};", name.len()));
+                    }
+                    ValueProjectionStep::ContainerElement {} => key.push_str("e;"),
+                }
+            }
+            (3, key)
+        }
+        ValueProvenance::DependencyReturn { callable_id } => (4, callable_id.clone()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skiff_artifact_model::{PackageCallableParameter, PackageSchemaTypeId, TypeDeclarationIr};
+    use skiff_artifact_model::{
+        CallableEffectSummary, PackageCallableParameter, PackageSchemaTypeId, TypeDeclarationIr,
+    };
 
     fn fixture() -> (Vec<FileIrUnit>, BTreeMap<(String, String), ContractTypeRef>) {
         let mut unit = FileIrUnit::empty("api", "source-hash");
@@ -343,6 +360,66 @@ mod tests {
         assert_eq!(
             normalize_package_type("api", &private, &units, &refs),
             private
+        );
+    }
+
+    #[test]
+    fn reachable_and_direct_return_origins_are_normalized_independently() {
+        let field = ValueProvenance::CallerParameterProjection {
+            index: 1,
+            path: skiff_artifact_model::ValueProjectionPath::field("payload").unwrap(),
+        };
+        let element = ValueProvenance::CallerParameterProjection {
+            index: 1,
+            path: skiff_artifact_model::ValueProjectionPath::container_element(),
+        };
+        let mut facts = CallableSemanticFacts {
+            effects: CallableEffectSummary::analysis_pending(),
+            provenance: CallableProvenanceSummary::Analyzed {
+                return_origins: vec![
+                    field.clone(),
+                    ValueProvenance::Fresh,
+                    field.clone(),
+                    element.clone(),
+                ],
+                direct_return_origins: vec![
+                    ValueProvenance::DependencyReturn {
+                        callable_id: "pkg-callable:z".into(),
+                    },
+                    ValueProvenance::Constant,
+                    element.clone(),
+                    ValueProvenance::Fresh,
+                    ValueProvenance::Constant,
+                ],
+                throw_origins: Vec::new(),
+                escape_lanes: Vec::new(),
+            },
+            resolved_call_targets: BTreeMap::new(),
+        };
+
+        facts = normalize_semantic_facts(facts);
+        let CallableProvenanceSummary::Analyzed {
+            return_origins,
+            direct_return_origins,
+            ..
+        } = facts.provenance
+        else {
+            panic!("fixture provenance must remain analyzed")
+        };
+        assert_eq!(
+            return_origins,
+            vec![ValueProvenance::Fresh, element.clone(), field]
+        );
+        assert_eq!(
+            direct_return_origins,
+            vec![
+                ValueProvenance::Fresh,
+                ValueProvenance::Constant,
+                element,
+                ValueProvenance::DependencyReturn {
+                    callable_id: "pkg-callable:z".into(),
+                },
+            ]
         );
     }
 }

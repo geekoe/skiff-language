@@ -85,7 +85,11 @@ Mutable root 是一次可变状态的语言层身份。`let` binding、record / 
 
 Root identity 不等于词法名。`const b = a` 复制引用并继承 `a` 的 root provenance；字段访问继承对应子路径 provenance；clone API 返回 fresh root；无法证明 provenance 的 mutable return 按 opaque root 处理。
 
+Root provenance 区分“当前值自身可能指向的 direct root”和“从当前值内容可达的 root”。fresh 容器中保存 caller-owned value 时，caller root 只属于后者；容器本身仍是 fresh root。读取该字段或容器元素时，结果重新获得对应 caller projection 的 direct root。控制流合并会合并所有可能的 direct root，不得因为其中存在 fresh 分支而丢弃 caller-owned 分支。
+
 Collection 和 object mutation 是原地 mutation。Runtime 沿编译后的 mutable access path 定位 heap node，检查目标类型，再执行短同步写入。第一版 request heap 不支持 cycle；会形成 cycle 的 mutation、materialize、wire payload 或 clone 必须失败。
+
+Cycle 检查沿 fresh root 和 caller projection 的可达边遍历，并以“同一 root 且路径为祖先”判断回边。字段或容器元素 projection 不能折叠回参数 root，也不能把任意深度 payload 提升为所读字段的 direct root；前者会误拒绝普通取出、修改、写回，后者会凭空制造 cycle。直接和间接真实回边都必须 fail closed。
 
 `Map<K,V>.keys()` 分配一个 fresh `Array<K>`，内容是调用时 map key 的快照。修改返回数组不影响原 map；调用后修改原 map 也不改变该数组的元素集合。
 

@@ -1158,6 +1158,7 @@ fn safe_facts() -> CallableSemanticFacts {
         },
         provenance: CallableProvenanceSummary::Analyzed {
             return_origins: vec![ValueProvenance::Fresh],
+            direct_return_origins: vec![ValueProvenance::Fresh],
             throw_origins: Vec::new(),
             escape_lanes: Vec::new(),
         },

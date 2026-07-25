@@ -1,4 +1,4 @@
-use skiff_artifact_model::CallableProvenanceUnknownReason;
+use skiff_artifact_model::{CallableProvenanceUnknownReason, ValueProjectionPath};
 
 use crate::shared::ast::{
     BinaryOp, DbBlockMode, DbBody, DbChangeOp, DbOperation, DbQueryBlock, DbSelector,
@@ -49,7 +49,8 @@ impl Evaluator<'_, '_> {
                 if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
                     && value.reference
                     && right.reference
-                    && (value.contains_caller_reference() || right.contains_caller_reference())
+                    && (value.contains_direct_caller_reference()
+                        || right.contains_direct_caller_reference())
                 {
                     let mut compared = value.clone();
                     compared.join(&right);
@@ -59,6 +60,10 @@ impl Evaluator<'_, '_> {
                 value.reference = reference;
                 if !reference {
                     value.caller_references.clear();
+                    value.direct_caller_references.clear();
+                    value.fresh_roots.clear();
+                    value.fresh_references.clear();
+                    value.needs_fresh_root = false;
                 }
                 value
             }
@@ -67,6 +72,10 @@ impl Evaluator<'_, '_> {
                 value.reference = reference;
                 if !reference {
                     value.caller_references.clear();
+                    value.direct_caller_references.clear();
+                    value.fresh_roots.clear();
+                    value.fresh_references.clear();
+                    value.needs_fresh_root = false;
                 }
                 value
             }
@@ -80,20 +89,17 @@ impl Evaluator<'_, '_> {
                 value
             }
             Expr::Field { object, field } => {
-                let mut value = self.eval_expr(object, env);
-                let object_roots = value.fresh_roots.clone();
+                let value = self.eval_expr(object, env);
                 if let Some(field_value) = value.catch_field(field, reference) {
                     field_value
                 } else {
-                    value = self.materialize_heap_value(&value);
-                    for root in object_roots {
-                        value.fresh_roots.remove(&root);
-                    }
-                    value.project_caller_parameter_origins();
-                    value.reference = reference;
-                    if !reference {
-                        value.caller_references.clear();
-                    }
+                    let Ok(path) = ValueProjectionPath::field(field.clone()) else {
+                        self.state.join(&CallableState::fail_closed(
+                            CallableProvenanceUnknownReason::UnsupportedHeapStore,
+                        ));
+                        return AbstractValue::unknown(reference);
+                    };
+                    let mut value = self.project_value(&value, &path, reference, true);
                     if reference
                         && value
                             .origins
@@ -273,6 +279,7 @@ impl Evaluator<'_, '_> {
         // `payload = input` is still an observable database escape.
         if is_static_field_projection(expression) && !value.unknown {
             value.caller_references.clear();
+            value.direct_caller_references.clear();
         }
         value
     }

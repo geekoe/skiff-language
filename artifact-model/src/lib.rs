@@ -67,7 +67,9 @@ pub use boundary::{
     BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding,
     BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
     BoundaryValuePlanUnavailableReason, CallableProvenanceSummary, CallableProvenanceUnknownReason,
-    CallableSemanticFacts, CallableTargetFact, ValueEscapeLane, ValueProvenance,
+    CallableSemanticFacts, CallableTargetFact, ValueEscapeLane, ValueProjectionPath,
+    ValueProjectionPathError, ValueProjectionStep, ValueProvenance,
+    MAX_VALUE_PROJECTION_PATH_STEPS,
 };
 pub use builtin_receiver_ops::{
     builtin_receiver_callable_semantics, builtin_receiver_op, builtin_receiver_op_by_name,

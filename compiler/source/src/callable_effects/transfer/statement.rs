@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use skiff_artifact_model::CallableProvenanceUnknownReason;
+use skiff_artifact_model::{CallableProvenanceUnknownReason, ValueProjectionPath};
 
 use crate::shared::ast::{ForBinding, Stmt};
 
@@ -75,14 +75,20 @@ impl Evaluator<'_, '_> {
                 body,
             } => {
                 let iterable = self.eval_expr(iterable, env);
+                let element_value = self.project_value(
+                    &iterable,
+                    &ValueProjectionPath::container_element(),
+                    true,
+                    true,
+                );
                 let mut body_env = env.clone();
                 match binding {
                     ForBinding::Item { item } => {
-                        body_env.insert(item.clone(), iterable.clone());
+                        body_env.insert(item.clone(), element_value);
                     }
                     ForBinding::Entry { key, value } => {
                         body_env.insert(key.clone(), AbstractValue::unknown(true));
-                        body_env.insert(value.clone(), iterable.clone());
+                        body_env.insert(value.clone(), element_value);
                     }
                 }
                 self.eval_block(body, &mut body_env);
@@ -181,10 +187,7 @@ impl Evaluator<'_, '_> {
     }
 
     fn transfer_field_store(&mut self, base: &AbstractValue, assigned: &AbstractValue) {
-        if base.unknown
-            || assigned.unknown
-            || self.store_would_create_cycle(&base.fresh_roots, assigned)
-        {
+        if base.unknown || assigned.unknown || self.store_would_create_cycle(base, assigned) {
             self.mark_unsupported_heap_store();
             return;
         }
@@ -193,19 +196,23 @@ impl Evaluator<'_, '_> {
             self.store_into_fresh_roots(&base.fresh_roots, assigned);
             transferred = true;
         }
-        if base.contains_caller_reference() {
+        if base.contains_direct_caller_reference() {
             self.state.effects.writes_caller_reachable = true;
             self.state.effects.requires_same_heap_identity = true;
-            self.state
-                .write_parameters
-                .extend(base.caller_references.iter().copied());
-            self.state
-                .same_heap_identity_parameters
-                .extend(base.caller_references.iter().copied());
-            for parameter in &base.caller_references {
+            self.state.write_parameters.extend(
+                base.direct_caller_references
+                    .iter()
+                    .map(|reference| reference.parameter),
+            );
+            self.state.same_heap_identity_parameters.extend(
+                base.direct_caller_references
+                    .iter()
+                    .map(|reference| reference.parameter),
+            );
+            for reference in &base.direct_caller_references {
                 self.state
                     .parameter_stores
-                    .entry(*parameter)
+                    .entry(reference.clone())
                     .and_modify(|value| value.join(assigned))
                     .or_insert_with(|| assigned.clone());
             }

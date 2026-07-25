@@ -81,6 +81,7 @@ fn synchronized_unsafe_effect_mutations_cannot_forge_available() {
     let mut fixture = ProjectionFixture::new();
     let provenance = CallableProvenanceSummary::Analyzed {
         return_origins: vec![ValueProvenance::Fresh],
+        direct_return_origins: vec![ValueProvenance::Fresh],
         throw_origins: Vec::new(),
         escape_lanes: vec![ValueEscapeLane::Capture],
     };
@@ -100,6 +101,7 @@ fn synchronized_unsafe_effect_mutations_cannot_forge_available() {
         (
             CallableProvenanceSummary::Analyzed {
                 return_origins: vec![ValueProvenance::CallerParameter { index: 0 }],
+                direct_return_origins: vec![ValueProvenance::CallerParameter { index: 0 }],
                 throw_origins: Vec::new(),
                 escape_lanes: Vec::new(),
             },
@@ -108,7 +110,35 @@ fn synchronized_unsafe_effect_mutations_cannot_forge_available() {
         (
             CallableProvenanceSummary::Analyzed {
                 return_origins: Vec::new(),
+                direct_return_origins: Vec::new(),
                 throw_origins: vec![ValueProvenance::CallerParameter { index: 0 }],
+                escape_lanes: Vec::new(),
+            },
+            BoundaryUnavailableReason::ThrowsCallerAlias,
+        ),
+        (
+            CallableProvenanceSummary::Analyzed {
+                return_origins: vec![ValueProvenance::CallerParameterProjection {
+                    index: 0,
+                    path: ValueProjectionPath::container_element(),
+                }],
+                direct_return_origins: vec![ValueProvenance::CallerParameterProjection {
+                    index: 0,
+                    path: ValueProjectionPath::container_element(),
+                }],
+                throw_origins: Vec::new(),
+                escape_lanes: Vec::new(),
+            },
+            BoundaryUnavailableReason::ReturnsCallerAlias,
+        ),
+        (
+            CallableProvenanceSummary::Analyzed {
+                return_origins: Vec::new(),
+                direct_return_origins: Vec::new(),
+                throw_origins: vec![ValueProvenance::CallerParameterProjection {
+                    index: 0,
+                    path: ValueProjectionPath::field("error").unwrap(),
+                }],
                 escape_lanes: Vec::new(),
             },
             BoundaryUnavailableReason::ThrowsCallerAlias,
@@ -132,6 +162,7 @@ fn canonical_return_materializes_only_a_fresh_wrapper_around_a_caller_value() {
             ValueProvenance::Fresh,
             ValueProvenance::CallerParameter { index: 0 },
         ],
+        direct_return_origins: vec![ValueProvenance::Fresh],
         throw_origins: Vec::new(),
         escape_lanes: Vec::new(),
     });
@@ -150,6 +181,7 @@ fn canonical_return_materializes_only_a_fresh_wrapper_around_a_caller_value() {
             ValueProvenance::Fresh,
             ValueProvenance::CallerParameter { index: 0 },
         ],
+        direct_return_origins: vec![ValueProvenance::Fresh],
         throw_origins: Vec::new(),
         escape_lanes: vec![ValueEscapeLane::Capture],
     });
@@ -159,6 +191,28 @@ fn canonical_return_materializes_only_a_fresh_wrapper_around_a_caller_value() {
         BoundaryUnavailableReason::EscapesCallerValue {
             lane: ValueEscapeLane::Capture,
         },
+    );
+
+    let mut conditional_root = ProjectionFixture::new();
+    let mut effects = no_effects();
+    effects.returns_caller_alias = true;
+    conditional_root.synchronize_effects(effects);
+    conditional_root.synchronize_provenance(CallableProvenanceSummary::Analyzed {
+        return_origins: vec![
+            ValueProvenance::Fresh,
+            ValueProvenance::CallerParameter { index: 0 },
+        ],
+        direct_return_origins: vec![
+            ValueProvenance::Fresh,
+            ValueProvenance::CallerParameter { index: 0 },
+        ],
+        throw_origins: Vec::new(),
+        escape_lanes: Vec::new(),
+    });
+    conditional_root.refresh_implementation_ref();
+    assert_eligibility_reason(
+        &conditional_root,
+        BoundaryUnavailableReason::ReturnsCallerAlias,
     );
 }
 

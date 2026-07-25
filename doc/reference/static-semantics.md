@@ -222,6 +222,22 @@ callback 捕获外层变量时，其读写集合并入承载 API 调用的 lane�
 
 递归和 mutual recursion 使用固定点推导。无法证明返回 root provenance 时，返回值视为 `opaque`。
 
+返回 provenance 同时记录两层事实：`returnOrigins` 是从返回值可达的全部 origin（包含
+返回值自身），`directReturnOrigins` 只表示返回值自身可能是哪一个 root。fresh 容器的
+直接 root 与其 payload 中可达的 caller root 因而不会混为一谈。payload 包含 caller
+值不等于容器本身是 caller alias；但控制流合并后若 direct root 可能同时为 fresh 和
+caller-owned，write / identity 分析必须保留 caller 候选并保守拒绝不安全边界。
+
+caller 参数的字段或容器元素投影必须保留为“参数序号 + 结构化 selector path”。path
+只允许稳定字段名和 `containerElement`，不得使用源码位置、表达式遍历序号或 callable
+名称。当前 heap 分析对字段内容是 field-insensitive 的：读取字段时只把接收者 root 的
+一层直接 payload 作为该字段的保守 direct 候选，不得把任意深度可达 root 都提升为字段
+自身，否则会制造不存在的 cycle。未知、非法或超过实现上限的 path 必须 fail closed。
+
+`returnOrigins`、`directReturnOrigins` 和结构化 path 都必须跨 Package artifact
+序列化，并参与 package build identity。它们是实现语义事实，不进入 Local ABI 或
+service protocol identity。
+
 `opaque` mutable root 不能在 `concurrent` sibling lane 中参与 mutation；若编译器无法证明 lane-local，必须报错。
 
 metadata 改变不改变 service protocol identity，但会改变 code revision、编译缓存和并发诊断结果。

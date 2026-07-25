@@ -1,7 +1,11 @@
-use skiff_artifact_identity::validate_package_artifact_identities;
+use skiff_artifact_identity::{
+    package_artifact_build_identity, package_artifact_local_abi_identity,
+    validate_package_artifact_identities,
+};
 use skiff_artifact_model::{
     config_shape_from_package_requirements, BoundaryCallableProjection, BoundaryUnavailableReason,
-    PackageLocalAbiSymbol, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    CallableProvenanceSummary, PackageLocalAbiSymbol, ValueProjectionPath, ValueProvenance,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::fixtures::{
@@ -193,4 +197,88 @@ fn implementation_requirements_change_build_not_local_abi_or_operation_contract(
         panic!("run must be available");
     };
     assert_eq!(first_contract, second_contract);
+}
+
+#[test]
+fn caller_projection_path_changes_build_identity_but_not_local_abi() {
+    let base = project_fixture(SignatureSet::Complete, "async").unwrap();
+    let base_local = package_artifact_local_abi_identity(&base).unwrap();
+    let base_build = package_artifact_build_identity(&base).unwrap();
+
+    let mut state_projection = base.clone();
+    let state_origin = ValueProvenance::CallerParameterProjection {
+        index: 0,
+        path: ValueProjectionPath::field("state").unwrap(),
+    };
+    let facts = state_projection
+        .callable_semantic_facts
+        .values_mut()
+        .next()
+        .expect("fixture callable facts");
+    facts.provenance = CallableProvenanceSummary::Analyzed {
+        return_origins: vec![state_origin.clone()],
+        direct_return_origins: vec![state_origin],
+        throw_origins: Vec::new(),
+        escape_lanes: Vec::new(),
+    };
+
+    let mut status_projection = state_projection.clone();
+    let CallableProvenanceSummary::Analyzed {
+        return_origins,
+        direct_return_origins,
+        ..
+    } = &mut status_projection
+        .callable_semantic_facts
+        .values_mut()
+        .next()
+        .expect("fixture callable facts")
+        .provenance
+    else {
+        panic!("fixture provenance must be analyzed")
+    };
+    let status_origin = ValueProvenance::CallerParameterProjection {
+        index: 0,
+        path: ValueProjectionPath::field("status").unwrap(),
+    };
+    *return_origins = vec![status_origin.clone()];
+    *direct_return_origins = vec![status_origin.clone()];
+
+    let mut direct_only_projection = state_projection.clone();
+    let CallableProvenanceSummary::Analyzed {
+        direct_return_origins,
+        ..
+    } = &mut direct_only_projection
+        .callable_semantic_facts
+        .values_mut()
+        .next()
+        .expect("fixture callable facts")
+        .provenance
+    else {
+        panic!("fixture provenance must be analyzed")
+    };
+    *direct_return_origins = vec![status_origin];
+
+    for changed in [
+        &state_projection,
+        &status_projection,
+        &direct_only_projection,
+    ] {
+        assert_eq!(
+            package_artifact_local_abi_identity(changed).unwrap(),
+            base_local
+        );
+        assert_ne!(
+            package_artifact_build_identity(changed).unwrap(),
+            base_build
+        );
+    }
+    assert_ne!(
+        package_artifact_build_identity(&state_projection).unwrap(),
+        package_artifact_build_identity(&status_projection).unwrap()
+    );
+    assert_ne!(
+        package_artifact_build_identity(&state_projection).unwrap(),
+        package_artifact_build_identity(&direct_only_projection).unwrap(),
+        "directReturnOrigins is part of package implementation identity"
+    );
 }
