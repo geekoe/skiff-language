@@ -44,18 +44,30 @@ export type RouterToRuntimeFrameHeaderName = RouterToRuntimeFrameHeader['type'];
 export interface ProtocolSchemaProperty {
   type: string | readonly string[];
   enum?: readonly string[];
+  minLength?: number;
+  pattern?: string;
+  minimum?: number;
+  maximum?: number;
   required?: readonly string[];
   properties?: Record<string, ProtocolSchemaProperty>;
   items?: ProtocolSchemaProperty;
   additionalProperties?: boolean;
 }
 
-export interface ProtocolEnvelopeSchema {
+export interface ProtocolEnvelopeObjectSchema {
   type: 'object';
   required: readonly string[];
   properties: Record<string, ProtocolSchemaProperty>;
   additionalProperties: boolean;
 }
+
+export interface ProtocolEnvelopeOneOfSchema {
+  oneOf: readonly ProtocolEnvelopeObjectSchema[];
+}
+
+export type ProtocolEnvelopeSchema =
+  | ProtocolEnvelopeObjectSchema
+  | ProtocolEnvelopeOneOfSchema;
 
 type FrameHeaderFixtureMap = {
   [Type in RuntimeProtocolFrameHeaderName]: Extract<RuntimeFrameHeader, { type: Type }>;
@@ -804,22 +816,61 @@ const packageTestStartFrameProperties = {
   }
 } as const satisfies Record<string, ProtocolSchemaProperty>;
 
-const responseErrorProperties = {
+const responseErrorNonBlankStringProperty = {
+  type: 'string',
+  minLength: 1,
+  pattern: '\\S'
+} as const satisfies ProtocolSchemaProperty;
+
+const responseErrorCommonProperties = {
+  schemaVersion: {
+    type: 'string',
+    enum: [RESPONSE_ERROR_FRAME_SCHEMA_VERSION]
+  },
   type: { type: 'string', enum: ['response.error'] },
-  requestId: { type: 'string' },
-  errorKind: { type: 'string', enum: ['fixedService', 'control'] },
-  error: {
-    type: 'object',
-    required: ['code', 'message'],
-    properties: {
-      code: { type: 'string' },
-      message: { type: 'string' },
-      status: { type: 'integer' },
-      details: { type: 'any' }
-    },
-    additionalProperties: false
-  }
+  requestId: responseErrorNonBlankStringProperty
 } as const satisfies Record<string, ProtocolSchemaProperty>;
+
+const responseErrorPayloadProperty = {
+  type: 'object',
+  required: ['code', 'message'],
+  properties: {
+    code: responseErrorNonBlankStringProperty,
+    message: responseErrorNonBlankStringProperty,
+    status: {
+      type: 'integer',
+      minimum: 400,
+      maximum: 599
+    },
+    details: { type: 'any' }
+  },
+  additionalProperties: false
+} as const satisfies ProtocolSchemaProperty;
+
+const fixedServiceResponseErrorSchema = {
+  type: 'object',
+  required: ['schemaVersion', 'type', 'requestId', 'errorKind'],
+  properties: {
+    ...responseErrorCommonProperties,
+    errorKind: { type: 'string', enum: ['fixedService'] }
+  },
+  additionalProperties: false
+} as const satisfies ProtocolEnvelopeObjectSchema;
+
+const controlResponseErrorSchema = {
+  type: 'object',
+  required: ['schemaVersion', 'type', 'requestId', 'errorKind', 'error'],
+  properties: {
+    ...responseErrorCommonProperties,
+    errorKind: { type: 'string', enum: ['control'] },
+    error: responseErrorPayloadProperty
+  },
+  additionalProperties: false
+} as const satisfies ProtocolEnvelopeObjectSchema;
+
+const responseErrorSchema = {
+  oneOf: [fixedServiceResponseErrorSchema, controlResponseErrorSchema]
+} as const satisfies ProtocolEnvelopeOneOfSchema;
 
 const requestCancelProperties = {
   type: { type: 'string', enum: ['request.cancel'] },
@@ -1539,15 +1590,7 @@ export const runtimeFrameHeaderSchemas = {
     },
     additionalProperties: false
   },
-  'response.error': {
-    type: 'object',
-    required: ['schemaVersion', 'type', 'requestId', 'errorKind'],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RESPONSE_ERROR_FRAME_SCHEMA_VERSION] },
-      ...responseErrorProperties
-    },
-    additionalProperties: false
-  },
+  'response.error': responseErrorSchema,
   'request.cancel': {
     type: 'object',
     required: ['schemaVersion', 'type', 'requestId', 'reason'],
@@ -2654,6 +2697,13 @@ function validateRuntimeRpcBase(
   );
 }
 
+function protocolEnvelopeSchemaPropertyNames(
+  schema: ProtocolEnvelopeSchema
+): string[] {
+  const branches = 'oneOf' in schema ? schema.oneOf : [schema];
+  return [...new Set(branches.flatMap((branch) => Object.keys(branch.properties)))];
+}
+
 function validateRuntimeRpcRequestBase(
   envelope: Record<string, unknown>,
   envelopeType: string
@@ -2664,7 +2714,7 @@ function validateRuntimeRpcRequestBase(
     rejectUnsupportedFrameHeaderFields(
       envelope,
       envelopeType,
-      Object.keys(schema.properties)
+      protocolEnvelopeSchemaPropertyNames(schema)
     ) ??
     validateRuntimeRpcBase(envelope, envelopeType) ??
     requireString(envelope, envelopeType, 'runtimeId') ??

@@ -17,6 +17,9 @@ import {
   validateRouterToRuntimeFrameHeader,
   validateTelemetryEvent,
   validateRuntimeToRouterFrameHeader,
+  type ProtocolEnvelopeObjectSchema,
+  type ProtocolEnvelopeSchema,
+  type ProtocolSchemaProperty,
   type RouterToRuntimeFrameHeaderName,
   type RuntimeProtocolFrameHeaderName,
   type RuntimeToRouterFrameHeaderName
@@ -127,6 +130,131 @@ const routerToRuntimeFrameHeaderTypes = [
   'response.chunk'
 ] as const satisfies readonly RouterToRuntimeFrameHeaderName[];
 
+function protocolEnvelopeSchemaBranches(
+  schema: ProtocolEnvelopeSchema
+): readonly ProtocolEnvelopeObjectSchema[] {
+  return 'oneOf' in schema ? schema.oneOf : [schema];
+}
+
+function matchesProtocolEnvelopeSchema(
+  schema: ProtocolEnvelopeSchema,
+  value: unknown
+): boolean {
+  const matchingBranches = protocolEnvelopeSchemaBranches(schema).filter((branch) =>
+    matchesProtocolObjectShape(
+      branch.required,
+      branch.properties,
+      branch.additionalProperties,
+      value
+    )
+  );
+  return matchingBranches.length === 1;
+}
+
+function matchesProtocolSchemaProperty(
+  schema: ProtocolSchemaProperty,
+  value: unknown
+): boolean {
+  const types: readonly string[] =
+    typeof schema.type === 'string' ? [schema.type] : schema.type;
+  if (!types.some((type) => matchesProtocolSchemaType(type, value))) {
+    return false;
+  }
+  if (
+    schema.enum !== undefined &&
+    (typeof value !== 'string' || !schema.enum.includes(value))
+  ) {
+    return false;
+  }
+  if (typeof value === 'string') {
+    if (schema.minLength !== undefined && value.length < schema.minLength) {
+      return false;
+    }
+    if (schema.pattern !== undefined && !new RegExp(schema.pattern).test(value)) {
+      return false;
+    }
+  }
+  if (typeof value === 'number') {
+    if (schema.minimum !== undefined && value < schema.minimum) {
+      return false;
+    }
+    if (schema.maximum !== undefined && value > schema.maximum) {
+      return false;
+    }
+  }
+  if (types.includes('object') && isProtocolObject(value)) {
+    return matchesProtocolObjectShape(
+      schema.required ?? [],
+      schema.properties ?? {},
+      schema.additionalProperties ?? true,
+      value
+    );
+  }
+  const itemSchema = schema.items;
+  if (types.includes('array') && itemSchema !== undefined && Array.isArray(value)) {
+    return value.every((item) => matchesProtocolSchemaProperty(itemSchema, item));
+  }
+  return true;
+}
+
+function matchesProtocolSchemaType(type: string, value: unknown): boolean {
+  switch (type) {
+    case 'any':
+      return true;
+    case 'null':
+      return value === null;
+    case 'string':
+      return typeof value === 'string';
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value);
+    case 'integer':
+      return typeof value === 'number' && Number.isInteger(value);
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'array':
+      return Array.isArray(value);
+    case 'object':
+      return isProtocolObject(value);
+    default:
+      return false;
+  }
+}
+
+function matchesProtocolObjectShape(
+  required: readonly string[],
+  properties: Record<string, ProtocolSchemaProperty>,
+  additionalProperties: boolean,
+  value: unknown
+): boolean {
+  if (!isProtocolObject(value)) {
+    return false;
+  }
+  if (
+    required.some(
+      (field) => !Object.prototype.hasOwnProperty.call(value, field)
+    )
+  ) {
+    return false;
+  }
+  for (const [field, fieldValue] of Object.entries(value)) {
+    const property = properties[field];
+    if (property === undefined) {
+      if (!additionalProperties) {
+        return false;
+      }
+      continue;
+    }
+    if (!matchesProtocolSchemaProperty(property, fieldValue)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isProtocolObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 const actorControlActivationIdentityCorpus = JSON.parse(
   readFileSync(
     new URL(
@@ -162,6 +290,42 @@ const serviceErrorResponseV2Corpus = JSON.parse(
   }>;
 };
 
+const serviceErrorResponseV2HeaderInvalidCaseNames = new Set([
+  'legacy-v1-generic-response-error',
+  'missing-error-kind',
+  'unknown-error-kind',
+  'wrong-envelope-type',
+  'fixed-header-extra-field',
+  'fixed-missing-request-id',
+  'fixed-empty-request-id',
+  'fixed-carries-generic-error',
+  'control-missing-error',
+  'control-error-extra-field',
+  'control-empty-code',
+  'control-empty-message',
+  'control-invalid-status-low'
+]);
+
+const serviceErrorResponseV2PayloadOnlyInvalidCaseNames = new Set([
+  'fixed-empty-payload',
+  'control-nonempty-payload',
+  'fixed-malformed-json',
+  'fixed-unknown-envelope-kind',
+  'fixed-envelope-extra-field',
+  'fixed-public-missing-type-id',
+  'fixed-public-whitespace-package-id',
+  'fixed-public-whitespace-schema-key',
+  'fixed-public-whitespace-type-id',
+  'fixed-public-empty-encoded-payload',
+  'fixed-public-non-byte-encoded-payload',
+  'fixed-public-encoded-payload-not-array',
+  'fixed-public-whitespace-trace-id',
+  'fixed-public-empty-error-id',
+  'fixed-platform-unknown-identity',
+  'fixed-internal-payload-extra-field',
+  'fixed-internal-empty-message'
+]);
+
 const observabilityFixture = JSON.parse(
   readFileSync(
     new URL('../../doc/architecture/fixtures/observability-minimal.json', import.meta.url),
@@ -182,6 +346,48 @@ const observabilityFixture = JSON.parse(
 };
 
 describe('runtime protocol fixtures and schemas', () => {
+  it('evaluates the response.error declarative oneOf against the shared header corpus', () => {
+    const schema = runtimeFrameHeaderSchemas['response.error'];
+    expect(schema.oneOf).toHaveLength(2);
+    expect(serviceErrorResponseV2HeaderInvalidCaseNames.size).toBe(13);
+    expect(serviceErrorResponseV2PayloadOnlyInvalidCaseNames.size).toBe(17);
+    expect(
+      [
+        ...serviceErrorResponseV2HeaderInvalidCaseNames,
+        ...serviceErrorResponseV2PayloadOnlyInvalidCaseNames
+      ].sort()
+    ).toEqual(serviceErrorResponseV2Corpus.invalidCases.map(({ name }) => name).sort());
+
+    for (const testCase of serviceErrorResponseV2Corpus.validCases) {
+      expect(matchesProtocolEnvelopeSchema(schema, testCase.header), testCase.name).toBe(
+        true
+      );
+    }
+
+    for (const testCase of serviceErrorResponseV2Corpus.invalidCases) {
+      if (serviceErrorResponseV2HeaderInvalidCaseNames.has(testCase.name)) {
+        expect(matchesProtocolEnvelopeSchema(schema, testCase.header), testCase.name).toBe(
+          false
+        );
+        continue;
+      }
+      expect(
+        serviceErrorResponseV2PayloadOnlyInvalidCaseNames.has(testCase.name),
+        testCase.name
+      ).toBe(true);
+      expect(matchesProtocolEnvelopeSchema(schema, testCase.header), testCase.name).toBe(
+        true
+      );
+      expect(
+        validateResponseErrorFrame(
+          testCase.header,
+          Buffer.from(testCase.payloadUtf8, 'utf8')
+        ).ok,
+        testCase.name
+      ).toBe(false);
+    }
+  });
+
   it('validates the shared service_error_response_v2 corpus without changing payload bytes', () => {
     expect(serviceErrorResponseV2Corpus.validCases).toHaveLength(4);
     expect(serviceErrorResponseV2Corpus.invalidCases.length).toBeGreaterThanOrEqual(20);
@@ -243,9 +449,6 @@ describe('runtime protocol fixtures and schemas', () => {
         testCase.name
       ).toBe(false);
     }
-    expect(
-      runtimeFrameHeaderSchemas['response.error'].properties.error.additionalProperties
-    ).toBe(false);
   });
 
   it('validates telemetry visibility and correlation against the shared fixture', () => {
@@ -1109,9 +1312,12 @@ describe('runtime protocol fixtures and schemas', () => {
 describe('runtime binary frame foundations', () => {
   it('covers the runtime binary frame header set', () => {
     for (const type of runtimeFrameHeaderTypes) {
-      expect(runtimeFrameHeaderSchemas[type]).toBeDefined();
+      const schema = runtimeFrameHeaderSchemas[type];
+      expect(schema).toBeDefined();
       expect(runtimeFrameHeaderFixtures[type]).toBeDefined();
-      expect(runtimeFrameHeaderSchemas[type].properties.type.enum).toContain(type);
+      for (const branch of protocolEnvelopeSchemaBranches(schema)) {
+        expect(branch.properties.type?.enum).toContain(type);
+      }
       expect(runtimeFrameHeaderFixtures[type].type).toBe(type);
       expect(runtimeFrameHeaderFixtures[type]).not.toHaveProperty('payload');
       expect(runtimeFrameHeaderFixtures[type]).not.toHaveProperty('payloadBytes');
