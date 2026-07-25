@@ -36,7 +36,85 @@ mod runtime_program;
 mod semantic;
 
 #[test]
-fn service_protocol_identity_hash_accepts_only_canonical_v3_identity() {
+fn canonical_generation_markers_bump_without_changing_legacy_package_domains() {
+    assert_eq!(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v6:sha256");
+    assert_eq!(
+        PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
+        "skiff-package-artifact-build-identity-v3"
+    );
+    assert_eq!(
+        PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+        "skiff-package-build-v5:sha256"
+    );
+    assert_eq!(
+        PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
+        "skiff-package-artifact-local-abi-identity-v2"
+    );
+    assert_eq!(
+        PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
+        "skiff-package-local-abi-v4:sha256"
+    );
+    assert_eq!(
+        SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER,
+        "skiff-service-protocol-identity-v4"
+    );
+    assert_eq!(
+        SERVICE_PROTOCOL_IDENTITY_PREFIX,
+        "skiff-service-protocol-v4:sha256"
+    );
+
+    assert_eq!(
+        PACKAGE_BUILD_IDENTITY_SCHEMA_MARKER,
+        "skiff-package-build-identity-v2"
+    );
+    assert_eq!(
+        PACKAGE_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
+        "skiff-package-local-abi-identity-v2"
+    );
+    assert_eq!(
+        PACKAGE_BUILD_IDENTITY_PREFIX,
+        "skiff-package-build-v2:sha256"
+    );
+    assert_eq!(
+        PACKAGE_LOCAL_ABI_IDENTITY_PREFIX,
+        "skiff-package-local-abi-v2:sha256"
+    );
+    assert_eq!(
+        PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER,
+        "skiff-package-schema-type-identity-v1"
+    );
+    assert_eq!(
+        PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX,
+        "skiff-package-schema-type-v1:sha256"
+    );
+    assert_eq!(
+        PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER,
+        "skiff-package-schema-index-identity-v1"
+    );
+    assert_eq!(
+        PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX,
+        "skiff-package-schema-index-v1:sha256"
+    );
+    assert_eq!(
+        CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER,
+        "skiff-contract-operation-identity-v1"
+    );
+    assert_eq!(
+        CONTRACT_OPERATION_IDENTITY_PREFIX,
+        "skiff-contract-operation-v1:sha256"
+    );
+    assert_eq!(
+        OPERATION_ABI_IDENTITY_PREFIX,
+        "skiff-operation-abi-v1:sha256"
+    );
+    assert_eq!(
+        PUBLICATION_ABI_IDENTITY_PREFIX,
+        "skiff-publication-abi-v1:sha256"
+    );
+}
+
+#[test]
+fn service_protocol_identity_hash_accepts_only_canonical_v4_identity() {
     let hash = "a".repeat(64);
     let identity = format!("{SERVICE_PROTOCOL_IDENTITY_PREFIX}:{hash}");
     assert_eq!(

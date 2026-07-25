@@ -258,11 +258,6 @@ fn bind_callable_signature_identity(
             })
             .collect(),
         return_type: bind_package_type_identity(&signature.return_type, artifact),
-        throw_types: signature
-            .throw_types
-            .iter()
-            .map(|ty| bind_package_type_identity(ty, artifact))
-            .collect(),
         may_suspend: signature.may_suspend,
     }
 }

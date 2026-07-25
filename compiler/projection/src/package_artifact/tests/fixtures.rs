@@ -259,7 +259,6 @@ pub(super) fn signature(ty: TypeRefIr) -> PackageCallableSignature {
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("string"),
         },
-        throw_types: Vec::new(),
         may_suspend: false,
     }
 }
@@ -283,7 +282,6 @@ pub(super) fn exact_typed_signature() -> PackageCallableSignature {
             },
         }],
         return_type: contract,
-        throw_types: Vec::new(),
         may_suspend: true,
     }
 }

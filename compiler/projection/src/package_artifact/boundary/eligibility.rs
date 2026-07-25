@@ -255,8 +255,8 @@ mod tests {
 
     use skiff_artifact_model::{
         BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-        BoundaryErrorContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
-        BoundaryValueLifetime, BoundaryValueOwner, ContractTypeRef, ValueEscapeLane,
+        BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueLifetime,
+        BoundaryValueOwner, ContractTypeRef, ValueEscapeLane,
     };
 
     use super::*;
@@ -279,7 +279,6 @@ mod tests {
                 ty: ContractTypeRef::builtin("Json"),
                 value_plan: detached_plan(BoundaryValueOwner::Provider),
             },
-            errors: BoundaryErrorContract::None,
             stream: BoundaryStreamContract::Unary,
             cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,

@@ -6,14 +6,13 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryOperationDescriptor,
-    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
-    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractDiagnosticText, ContractRequirement, ContractTypeDescriptor, ContractTypeNameability,
-    ContractTypeRef, PackageBuildId, PackageLocalAbiIdentity, PackageSchemaCanonicalDescriptor,
-    PackageSchemaIndex, PackageSchemaIndexEntry, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    PackageTypeRequirement, ServiceContract, ServiceProtocolIdentity,
-    SERVICE_CONTRACT_SCHEMA_VERSION,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn,
+    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, ContractDiagnosticText, ContractRequirement,
+    ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef, PackageBuildId,
+    PackageLocalAbiIdentity, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
+    PackageSchemaIndexEntry, PackageSchemaTypeId, PackageSchemaTypeRecord, PackageTypeRequirement,
+    ServiceContract, ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 use skiff_compiler_projection_input::ResolvedPackageSchema;
 
@@ -224,7 +223,6 @@ fn fixture() -> (ServiceContract, ResolvedPackageSchema) {
                 ty: ContractTypeRef::package_schema(package_id, stable_key, type_id.clone()),
                 value_plan: value_plan(BoundaryValueOwner::Provider),
             },
-            errors: BoundaryErrorContract::None,
             stream: BoundaryStreamContract::Unary,
             cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,

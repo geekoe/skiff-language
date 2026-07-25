@@ -19,7 +19,7 @@ pub enum ArtifactIdentityError {
     #[error("failed to serialize service protocol identity payload: {0}")]
     SerializeServiceProtocolIdentity(serde_json::Error),
     #[error(
-        "service protocol identity {identity} must use skiff-service-protocol-v3:sha256:<64 lowercase hex>"
+        "service protocol identity {identity} must use skiff-service-protocol-v4:sha256:<64 lowercase hex>"
     )]
     InvalidServiceProtocolIdentity { identity: String },
     #[error("service contract is invalid: {message}")]
@@ -62,6 +62,12 @@ pub enum ArtifactIdentityError {
     ServiceUnitMustBeObject,
     #[error("failed to serialize File IR identity payload: {0}")]
     SerializeFileIrIdentity(serde_json::Error),
+    #[error("File IR {field} must be {expected}, got {actual}")]
+    FileIrGenerationMismatch {
+        field: &'static str,
+        expected: &'static str,
+        actual: String,
+    },
     #[error("File IR service call refs are invalid: {0}")]
     InvalidFileIrServiceCalls(#[from] skiff_artifact_model::FileIrServiceCallValidationError),
     #[error("File IR package call refs are invalid: {0}")]

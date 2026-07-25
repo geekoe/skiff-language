@@ -154,13 +154,6 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
                 &signature.return_type,
                 &format!("callable {callable_id} return type"),
             )?;
-            for (index, throw_type) in signature.throw_types.iter().enumerate() {
-                validate_package_type_ref(
-                    artifact,
-                    throw_type,
-                    &format!("callable {callable_id} throw type {index}"),
-                )?;
-            }
         } else if let PackageLocalAbiSymbol::Constant { const_id, ty } = symbol {
             validate_package_type_ref(artifact, ty, &format!("constant {const_id}"))?;
         }

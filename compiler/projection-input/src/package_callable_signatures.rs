@@ -156,7 +156,6 @@ mod tests {
             return_type: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("string"),
             },
-            throw_types: Vec::new(),
             may_suspend: false,
         };
         let error = ProjectionPackageCallableSignatureFacts::try_from_entries([
@@ -165,6 +164,32 @@ mod tests {
         ])
         .expect_err("duplicate key must fail closed");
         assert_eq!(error.key(), &key);
+    }
+
+    #[test]
+    fn callable_signature_wire_contains_only_open_error_surface() {
+        let signature = PackageCallableSignature {
+            parameters: Vec::new(),
+            return_type: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("void"),
+            },
+            may_suspend: false,
+        };
+        let wire = serde_json::to_value(&signature).unwrap();
+
+        assert_eq!(
+            wire.as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["parameters", "returnType", "maySuspend"]
+        );
+        assert!(wire.get("throwTypes").is_none());
+
+        let mut legacy = wire;
+        legacy["throwTypes"] = serde_json::json!([]);
+        assert!(serde_json::from_value::<PackageCallableSignature>(legacy).is_err());
     }
 
     #[test]
@@ -186,7 +211,6 @@ mod tests {
                 },
             }],
             return_type: contract,
-            throw_types: Vec::new(),
             may_suspend: true,
         };
         let facts = ProjectionPackageCallableSignatureFacts::try_from_entries([(

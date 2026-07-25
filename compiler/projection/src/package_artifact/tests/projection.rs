@@ -1,11 +1,15 @@
 use skiff_artifact_identity::{
-    package_artifact_build_identity, package_artifact_local_abi_identity,
+    assign_service_contract_identities, contract_operation_id, package_artifact_build_identity,
+    package_artifact_build_identity_projection, package_artifact_local_abi_identity,
+    package_artifact_local_abi_identity_projection, service_protocol_identity,
     validate_package_artifact_identities,
 };
 use skiff_artifact_model::{
-    config_shape_from_package_requirements, BoundaryCallableProjection, BoundaryUnavailableReason,
-    CallableProvenanceSummary, PackageLocalAbiSymbol, ValueProjectionPath, ValueProvenance,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    config_shape_from_package_requirements, BoundaryCallableProjection,
+    BoundaryOperationDescriptor, BoundaryUnavailableReason, CallableEffectSummary,
+    CallableProvenanceSummary, ContractDiagnosticText, PackageLocalAbiSymbol, ServiceContract,
+    ServiceProtocolIdentity, ValueProjectionPath, ValueProvenance, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 use super::fixtures::{
@@ -18,11 +22,21 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
     let artifact = project_fixture(SignatureSet::Complete, "async").unwrap();
     validate_package_artifact_identities(&artifact).unwrap();
     assert_eq!(artifact.schema_version, PACKAGE_ARTIFACT_SCHEMA_VERSION);
-    assert_eq!(artifact.schema_version, "skiff-package-artifact-v3");
+    assert_eq!(artifact.schema_version, "skiff-package-artifact-v4");
     assert!(artifact
         .package_build_id
         .as_str()
-        .starts_with("skiff-package-build-v4:sha256:"));
+        .starts_with("skiff-package-build-v5:sha256:"));
+    assert_eq!(
+        serde_json::to_value(package_artifact_build_identity_projection(&artifact).unwrap())
+            .unwrap()["schema"],
+        "skiff-package-artifact-build-identity-v3"
+    );
+    assert_eq!(
+        serde_json::to_value(package_artifact_local_abi_identity_projection(&artifact).unwrap())
+            .unwrap()["schema"],
+        "skiff-package-artifact-local-abi-identity-v2"
+    );
 
     let callable_paths = artifact
         .package_local_abi
@@ -79,6 +93,8 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
 
     let wire = serde_json::to_string(&artifact).unwrap();
     for forbidden in [
+        "throwTypes",
+        "\"errors\"",
         "publicationAbi",
         "packageUnit",
         "serviceUnit",
@@ -99,7 +115,7 @@ fn exact_typed_signatures_reach_local_abi_and_public_instance_receiver_is_trimme
         .package_local_abi
         .local_abi_identity
         .as_str()
-        .starts_with("skiff-package-local-abi-v3:sha256:"));
+        .starts_with("skiff-package-local-abi-v4:sha256:"));
     let PackageLocalAbiSymbol::Callable {
         signature: run_signature,
         ..
@@ -118,6 +134,39 @@ fn exact_typed_signatures_reach_local_abi_and_public_instance_receiver_is_trimme
     };
     assert_eq!(instance_signature.parameters.len(), 1);
     assert_eq!(instance_signature.parameters[0].name, "value");
+}
+
+#[test]
+fn stale_package_artifact_schema_and_identity_prefixes_fail_closed() {
+    let base = project_fixture(SignatureSet::Complete, "async").unwrap();
+
+    let mut stale_schema = base.clone();
+    stale_schema.schema_version = "skiff-package-artifact-v3".to_string();
+    assert!(validate_package_artifact_identities(&stale_schema).is_err());
+
+    let mut stale_local = base.clone();
+    stale_local.package_local_abi.local_abi_identity =
+        skiff_artifact_model::PackageLocalAbiIdentity::new(
+            stale_local
+                .package_local_abi
+                .local_abi_identity
+                .as_str()
+                .replacen(
+                    "skiff-package-local-abi-v4:sha256",
+                    "skiff-package-local-abi-v3:sha256",
+                    1,
+                ),
+        );
+    assert!(validate_package_artifact_identities(&stale_local).is_err());
+
+    let mut stale_build = base;
+    stale_build.package_build_id =
+        skiff_artifact_model::PackageBuildId::new(stale_build.package_build_id.as_str().replacen(
+            "skiff-package-build-v5:sha256",
+            "skiff-package-build-v4:sha256",
+            1,
+        ));
+    assert!(validate_package_artifact_identities(&stale_build).is_err());
 }
 
 #[test]
@@ -197,6 +246,71 @@ fn implementation_requirements_change_build_not_local_abi_or_operation_contract(
         panic!("run must be available");
     };
     assert_eq!(first_contract, second_contract);
+}
+
+#[test]
+fn implementation_throw_facts_change_build_but_not_local_abi_or_service_protocol() {
+    let base = project_fixture(SignatureSet::Complete, "async").unwrap();
+    let callable_id = callable_id(&base, "run");
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = &base.boundary_projections[&callable_id]
+    else {
+        panic!("run must be available")
+    };
+    let operation_id = contract_operation_id("example.service", "1.0.0", "run").unwrap();
+    let mut contract = ServiceContract {
+        schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
+        service_id: "example.service".to_string(),
+        contract_version: "1.0.0".to_string(),
+        service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
+        operations: std::collections::BTreeMap::from([(
+            operation_id.clone(),
+            BoundaryOperationDescriptor {
+                operation_id,
+                stable_key: "run".to_string(),
+                contract: operation_contract.clone(),
+            },
+        )]),
+        package_type_requirements: Vec::new(),
+        diagnostic_text: ContractDiagnosticText {
+            service: "service".to_string(),
+            operations: std::collections::BTreeMap::new(),
+            types: std::collections::BTreeMap::new(),
+        },
+    };
+    assign_service_contract_identities(&mut contract).unwrap();
+    let baseline_protocol = service_protocol_identity(&contract).unwrap();
+    let baseline_local = package_artifact_local_abi_identity(&base).unwrap();
+    let baseline_build = package_artifact_build_identity(&base).unwrap();
+
+    let mut changed = base.clone();
+    let facts = changed
+        .callable_semantic_facts
+        .get_mut(&callable_id)
+        .expect("run semantic facts");
+    let CallableEffectSummary::Analyzed { effects } = &mut facts.effects else {
+        panic!("fixture effects must be analyzed")
+    };
+    effects.throws_caller_alias = true;
+    let CallableProvenanceSummary::Analyzed { throw_origins, .. } = &mut facts.provenance else {
+        panic!("fixture provenance must be analyzed")
+    };
+    *throw_origins = vec![ValueProvenance::CallerParameter { index: 0 }];
+
+    assert_eq!(
+        package_artifact_local_abi_identity(&changed).unwrap(),
+        baseline_local
+    );
+    assert_ne!(
+        package_artifact_build_identity(&changed).unwrap(),
+        baseline_build,
+        "open-error provenance remains an implementation/build fact"
+    );
+    assert_eq!(
+        service_protocol_identity(&contract).unwrap(),
+        baseline_protocol
+    );
 }
 
 #[test]

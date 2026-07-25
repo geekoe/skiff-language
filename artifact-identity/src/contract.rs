@@ -2,13 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryErrorContract, BoundaryOperationContract,
-    BoundaryOperationDescriptor, BoundaryStreamContract, ContractOperationId,
-    ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef, ContractTypeShape,
-    PackageSchemaCanonicalDescriptor, PackageSchemaIndex, PackageSchemaIndexEntry,
-    PackageSchemaIndexIdentity, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    PackageTypeRequirement, ServiceContract, ServiceContractRef, ServiceProtocolIdentity,
-    SERVICE_CONTRACT_SCHEMA_VERSION,
+    BoundaryCallbackContract, BoundaryOperationContract, BoundaryOperationDescriptor,
+    BoundaryStreamContract, ContractOperationId, ContractTypeDescriptor, ContractTypeNameability,
+    ContractTypeRef, ContractTypeShape, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
+    PackageSchemaIndexEntry, PackageSchemaIndexIdentity, PackageSchemaTypeId,
+    PackageSchemaTypeRecord, PackageTypeRequirement, ServiceContract, ServiceContractRef,
+    ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 use crate::{
@@ -334,9 +333,6 @@ fn validate_operation_existentials(operation: &BoundaryOperationContract) -> Res
         validate_existential_ref(&parameter.ty)?;
     }
     validate_existential_ref(&operation.return_value.ty)?;
-    if let BoundaryErrorContract::Typed { payload_type, .. } = &operation.errors {
-        validate_existential_ref(payload_type)?;
-    }
     if let BoundaryStreamContract::ServerStream { item_type, .. } = &operation.stream {
         validate_existential_ref(item_type)?;
     }
@@ -439,9 +435,6 @@ fn collect_operation_refs<'a>(
         collect_type_refs(&parameter.ty, out);
     }
     collect_type_refs(&operation.contract.return_value.ty, out);
-    if let BoundaryErrorContract::Typed { payload_type, .. } = &operation.contract.errors {
-        collect_type_refs(payload_type, out);
-    }
     if let BoundaryStreamContract::ServerStream { item_type, .. } = &operation.contract.stream {
         collect_type_refs(item_type, out);
     }
@@ -553,11 +546,12 @@ fn invalid_contract<T>(message: impl Into<String>) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use skiff_artifact_model::{
-        BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-        BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
-        BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-        BoundaryValueOwner, BoundaryValuePlan, ContractDiagnosticText, ContractTypeDescriptor,
-        PackageSchemaIndexEntry, PackageTypeRequirement,
+        BoundaryCallbackContract, BoundaryCallbackExpirationError, BoundaryCallbackLifetime,
+        BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+        BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+        BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+        ContractDiagnosticText, ContractTypeDescriptor, PackageSchemaIndexEntry,
+        PackageSchemaTypeRef, PackageTypeRequirement,
     };
 
     use super::*;
@@ -612,6 +606,125 @@ mod tests {
             .required_type_ids
             .push(user_id);
         assert!(service_protocol_identity(&contract).is_err());
+    }
+
+    #[test]
+    fn service_protocol_mutation_matrix_covers_open_operation_surface() {
+        let type_id = package_schema_type_id("example.pkg", "User", &descriptor("string")).unwrap();
+        let base = service_contract(type_id.clone());
+        let baseline = service_protocol_identity(&base).unwrap();
+        assert_eq!(
+            serde_json::to_value(service_protocol_identity_projection(&base).unwrap()).unwrap()
+                ["schema"],
+            SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER
+        );
+        let operation_id = base.operations.keys().next().unwrap().clone();
+
+        let mut mutations = Vec::new();
+
+        let mut parameter = base.clone();
+        parameter
+            .operations
+            .get_mut(&operation_id)
+            .unwrap()
+            .contract
+            .parameters[0]
+            .ty = ContractTypeRef::builtin("string");
+        mutations.push(parameter);
+
+        let mut returned = base.clone();
+        returned
+            .operations
+            .get_mut(&operation_id)
+            .unwrap()
+            .contract
+            .return_value
+            .ty = ContractTypeRef::builtin("string");
+        mutations.push(returned);
+
+        let mut streamed = base.clone();
+        streamed
+            .operations
+            .get_mut(&operation_id)
+            .unwrap()
+            .contract
+            .stream = BoundaryStreamContract::ServerStream {
+            item_type: ContractTypeRef::builtin("string"),
+            item_value_plan: value_plan(),
+        };
+        mutations.push(streamed);
+
+        let mut callback = base.clone();
+        callback
+            .operations
+            .get_mut(&operation_id)
+            .unwrap()
+            .contract
+            .callbacks = BoundaryCallbackContract::RequestScoped {
+            interface_types: vec![PackageSchemaTypeRef {
+                package_id: "example.pkg".to_string(),
+                stable_schema_key: "User".to_string(),
+                package_schema_type_id: type_id,
+            }],
+            lifetime: BoundaryCallbackLifetime::TopLevelRequest,
+            expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
+        };
+        mutations.push(callback);
+
+        for changed in mutations {
+            assert_ne!(service_protocol_identity(&changed).unwrap(), baseline);
+            assert_eq!(
+                changed.operations.keys().next().unwrap(),
+                &operation_id,
+                "ContractOperationId excludes mutable operation surface"
+            );
+        }
+    }
+
+    #[test]
+    fn service_contract_wire_omits_closed_error_set() {
+        let type_id = package_schema_type_id("example.pkg", "User", &descriptor("string")).unwrap();
+        let contract = service_contract(type_id);
+        let wire = serde_json::to_value(&contract).unwrap();
+        let operation = wire["operations"]
+            .as_object()
+            .and_then(|operations| operations.values().next())
+            .expect("operation wire");
+
+        assert!(operation["contract"].get("errors").is_none());
+
+        let mut legacy = wire;
+        legacy["operations"]
+            .as_object_mut()
+            .and_then(|operations| operations.values_mut().next())
+            .and_then(|operation| operation.get_mut("contract"))
+            .expect("operation contract wire")["errors"] = serde_json::json!({"kind": "none"});
+        assert!(serde_json::from_value::<ServiceContract>(legacy).is_err());
+    }
+
+    #[test]
+    fn stale_service_contract_generation_and_identity_prefix_fail_closed() {
+        let type_id = package_schema_type_id("example.pkg", "User", &descriptor("string")).unwrap();
+        let mut stale_schema = service_contract(type_id.clone());
+        stale_schema.schema_version = "skiff-service-contract-v3".to_string();
+        assert!(matches!(
+            service_protocol_identity(&stale_schema),
+            Err(ArtifactIdentityError::InvalidServiceContract { .. })
+        ));
+
+        let mut stale_identity = service_contract(type_id);
+        assign_service_contract_identities(&mut stale_identity).unwrap();
+        stale_identity.service_protocol_identity = ServiceProtocolIdentity::new(
+            stale_identity.service_protocol_identity.as_str().replacen(
+                SERVICE_PROTOCOL_IDENTITY_PREFIX,
+                "skiff-service-protocol-v3:sha256",
+                1,
+            ),
+        );
+        assert!(matches!(
+            validate_service_contract_identities(&stale_identity),
+            Err(ArtifactIdentityError::ServiceProtocolIdentityMismatch { .. })
+        ));
     }
 
     #[test]
@@ -683,7 +796,6 @@ mod tests {
                     ty: ContractTypeRef::builtin("void"),
                     value_plan: value_plan(),
                 },
-                errors: BoundaryErrorContract::None,
                 stream: BoundaryStreamContract::Unary,
                 cancellation: BoundaryCancellationContract::NotCancellable,
                 callbacks: BoundaryCallbackContract::None,

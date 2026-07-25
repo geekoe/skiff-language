@@ -43,6 +43,52 @@ fn file_ir_identity_validation_rejects_stale_identity() {
 }
 
 #[test]
+fn file_ir_identity_validation_rejects_non_current_generation_even_when_recomputed() {
+    for (field, stale) in [
+        ("schemaVersion", "skiff-file-ir-v5"),
+        ("irFormatVersion", "skiff-file-ir-format-v3"),
+        ("opcodeTableVersion", "skiff-opcode-table-v0"),
+    ] {
+        let mut unit = FileIrUnit::empty("internal.example", "source-ast-hash-a");
+        match field {
+            "schemaVersion" => unit.schema_version = stale.to_string(),
+            "irFormatVersion" => unit.ir_format_version = stale.to_string(),
+            "opcodeTableVersion" => unit.opcode_table_version = stale.to_string(),
+            _ => unreachable!("closed mutation matrix"),
+        }
+        unit.file_ir_identity =
+            file_ir_identity(&unit).expect("non-current preimage can still be framed");
+
+        assert!(matches!(
+            validate_file_ir_identity(&unit),
+            Err(ArtifactIdentityError::FileIrGenerationMismatch {
+                field: actual_field,
+                ..
+            }) if actual_field == field
+        ));
+        assert!(matches!(
+            assign_file_ir_identity(&mut unit),
+            Err(ArtifactIdentityError::FileIrGenerationMismatch {
+                field: actual_field,
+                ..
+            }) if actual_field == field
+        ));
+    }
+}
+
+#[test]
+fn file_ir_identity_validation_rejects_stale_prefix_with_current_preimage() {
+    let mut unit = FileIrUnit::empty("internal.example", "source-ast-hash-a");
+    let current = file_ir_identity(&unit).expect("current identity");
+    unit.file_ir_identity = current.replacen(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v5:sha256", 1);
+
+    assert!(matches!(
+        validate_file_ir_identity(&unit),
+        Err(ArtifactIdentityError::FileIrIdentityMismatch { .. })
+    ));
+}
+
+#[test]
 fn encrypted_db_field_storage_participates_in_file_ir_identity() {
     let mut identity = FileIrUnit::empty("internal.example", "source-ast-hash-a");
     identity.declarations.db.insert(
@@ -123,7 +169,7 @@ fn service_call_table_and_instruction_indices_participate_in_file_ir_identity() 
     let baseline = file_ir_identity(&base).expect("valid service-call File IR identity");
     assert_eq!(
         baseline,
-        "skiff-file-ir-v5:sha256:173750cd47164b1509d4e237bdc49dbc6382d6ebe6826c46aaf945b838ff37b6"
+        "skiff-file-ir-v6:sha256:57498432e8faeb4df5bff1930016a2b2a12906d86747c3a3c141b531366549d0"
     );
 
     let mut changed_ref = base.clone();
@@ -270,6 +316,9 @@ fn service_call_file_ir_fixture() -> FileIrUnit {
                         target: CallTargetIr::ServiceCall {
                             service_call_ref_index: ServiceCallRefIndex::new(index),
                         },
+                        site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                            reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                        },
                         args: Vec::new(),
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
@@ -303,6 +352,9 @@ fn package_call_file_ir_fixture() -> FileIrUnit {
                     target: CallTargetIr::PackageCallable {
                         package_ref,
                         package_callable_id,
+                    },
+                    site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                        reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                     },
                     args: Vec::new(),
                     type_args: BTreeMap::new(),
