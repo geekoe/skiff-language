@@ -1218,6 +1218,7 @@ mod tests {
     fn audited_receiver_identities_map_to_exact_native_signatures() {
         for (root, method, binding_key) in [
             ("Date", "compare", "core.date.compare"),
+            ("Date", "diffMilliseconds", "core.date.diffMilliseconds"),
             ("Date", "isBefore", "core.date.isBefore"),
             (
                 "Date",

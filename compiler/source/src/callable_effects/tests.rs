@@ -1707,6 +1707,10 @@ fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
               return left.compare(right)
             }
 
+            function diffMilliseconds(left: Date, right: Date) -> integer {
+              return left.diffMilliseconds(right)
+            }
+
             function epochMilliseconds(value: Date) -> integer {
               return value.toEpochMilliseconds()
             }
@@ -1723,6 +1727,7 @@ fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
     for callable in [
         "isBefore",
         "compare",
+        "diffMilliseconds",
         "epochMilliseconds",
         "durationMilliseconds",
     ] {
@@ -1744,11 +1749,61 @@ fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
         receiver_targets,
         std::collections::BTreeSet::from([
             "receiver:Date.compare@1",
+            "receiver:Date.diffMilliseconds@1",
             "receiver:Date.isBefore@1",
             "receiver:Date.toEpochMilliseconds@1",
             "receiver:Duration.toMilliseconds@1",
         ])
     );
+}
+
+#[test]
+fn date_diff_milliseconds_keeps_interaction_duration_shape_detached() {
+    let model = analyze_named(
+        r#"
+            function interactionDurationMs(startedAt: Date, completedAt: Date?) -> integer? {
+              if completedAt == null {
+                return null
+              }
+              return completedAt.diffMilliseconds(startedAt)
+            }
+
+            function adminLlmInteractionsList(
+              startedAt: Date,
+              completedAt: Date?
+            ) -> integer? {
+              return interactionDurationMs(startedAt, completedAt)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "interactions",
+        "skiff.run/codex-relay",
+    );
+
+    for callable in ["interactionDurationMs", "adminLlmInteractionsList"] {
+        assert_eq!(
+            effects_in(&model, "interactions", callable),
+            no_effects(),
+            "{callable}"
+        );
+    }
+    assert!(matches!(
+        provenance_in(&model, "interactions", "interactionDurationMs"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins.contains(&ValueProvenance::Constant)
+                && return_origins.contains(&ValueProvenance::Fresh)
+                && !return_origins.iter().any(|origin| matches!(
+                    origin,
+                    ValueProvenance::CallerParameter { .. }
+                ))
+    ));
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::ReceiverBuiltin { op }
+                if op.canonical_key == "receiver:Date.diffMilliseconds@1"
+        )
+    }));
 }
 
 #[test]

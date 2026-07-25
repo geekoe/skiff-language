@@ -348,6 +348,10 @@ pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantic
     ),
     detached_scalar_receiver(BuiltinReceiverRoot::JsonObject, BuiltinReceiverMethod::Has),
     detached_scalar_receiver(BuiltinReceiverRoot::Date, BuiltinReceiverMethod::Compare),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::Date,
+        BuiltinReceiverMethod::DiffMilliseconds,
+    ),
     detached_scalar_receiver(BuiltinReceiverRoot::Date, BuiltinReceiverMethod::IsBefore),
     detached_scalar_receiver(
         BuiltinReceiverRoot::Date,
@@ -985,6 +989,7 @@ mod tests {
             "receiver:Array.length@1",
             "receiver:Array.push@1",
             "receiver:Date.compare@1",
+            "receiver:Date.diffMilliseconds@1",
             "receiver:Date.isBefore@1",
             "receiver:Date.toEpochMilliseconds@1",
             "receiver:Duration.toMilliseconds@1",
