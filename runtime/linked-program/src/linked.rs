@@ -4,9 +4,9 @@ use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 pub use skiff_artifact_model::{
     ActorAbiIdentity, ActorFieldEncodingIr, ActorImplementationIdentity, ActorMethodIdentity,
-    BuiltinReceiverOp, FileIrRef, LiteralIr, MetadataValue, NativeTarget, OperationAbiRef,
-    PackageRefIr, PackageSymbolRef, ReceiverCallAbi, ServiceDependencySymbolRef, ServiceSymbolRef,
-    SourcePosition, SourceSpanRef, RECEIVER_BUILTIN_CAPABILITY_VERSION,
+    BuiltinReceiverOp, FileIrRef, InstructionSourceSite, LiteralIr, MetadataValue, NativeTarget,
+    OperationAbiRef, PackageRefIr, PackageSymbolRef, ReceiverCallAbi, ServiceDependencySymbolRef,
+    ServiceSymbolRef, SourcePosition, SourceSpanRef, RECEIVER_BUILTIN_CAPABILITY_VERSION,
 };
 
 use super::addr::{
@@ -799,6 +799,7 @@ pub enum LinkedStmtIr {
     Throw {
         value: ExprRefIr,
         payload_type: LinkedTypeRef,
+        site: InstructionSourceSite,
     },
     Rethrow {
         exception_slot: u32,
@@ -937,6 +938,7 @@ pub enum LinkedExprIr {
     Throw {
         value: ExprRefIr,
         payload_type: LinkedTypeRef,
+        site: InstructionSourceSite,
     },
     Rethrow {
         exception_slot: u32,
@@ -944,8 +946,7 @@ pub enum LinkedExprIr {
     Catch {
         try_expression: ExprRefIr,
         catch_slot: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        catch_type: Option<LinkedTypeRef>,
+        catch_type: LinkedTypeRef,
         body: ExprRefIr,
     },
     ValueBlock {
@@ -1204,6 +1205,7 @@ pub enum BinaryOpIr {
 #[serde(rename_all = "camelCase")]
 pub struct CallIr {
     pub target: LinkedCallTarget,
+    pub site: InstructionSourceSite,
     #[serde(default)]
     pub args: Vec<ExprRefIr>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1582,6 +1584,48 @@ where
     Err(E::custom(format!(
         "expected link target object with numeric {index_key}"
     )))
+}
+
+#[cfg(test)]
+mod exception_instruction_tests {
+    use super::*;
+
+    fn builtin_json() -> Value {
+        serde_json::json!({
+            "kind": "builtin",
+            "name": "string"
+        })
+    }
+
+    #[test]
+    fn linked_json_rejects_missing_throw_and_call_sites_and_catch_type() {
+        assert!(serde_json::from_value::<LinkedStmtIr>(serde_json::json!({
+            "kind": "throw",
+            "value": { "expression": 0 },
+            "payloadType": builtin_json()
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<LinkedExprIr>(serde_json::json!({
+            "kind": "throw",
+            "value": { "expression": 0 },
+            "payloadType": builtin_json()
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<CallIr>(serde_json::json!({
+            "target": {
+                "kind": "localExecutable",
+                "executableIndex": 0
+            }
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<LinkedExprIr>(serde_json::json!({
+            "kind": "catch",
+            "tryExpression": { "expression": 0 },
+            "catchSlot": 1,
+            "body": { "expression": 2 }
+        }))
+        .is_err());
+    }
 }
 
 #[cfg(test)]
