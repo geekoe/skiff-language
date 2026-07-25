@@ -48,6 +48,11 @@ artifact signature 当前总是发布空 `throw_types`，所以即使实现会�
    必要通用矩阵。
 5. 给出一个有界实现任务的精确写入文件、非目标、快速测试、真实正例和关键负例。
 
+工作目录：
+`/Users/geek/workspace/skiff-p5-f274-audit`；分支：
+`codex/p5-f274-package-throw-audit`。本节点只读，不产生实现提交；审计结论返回主 Agent
+落盘，worktree 随后删除。
+
 ## 禁止事项
 
 - 不修改或提交代码、文档、fixture。
@@ -68,4 +73,3 @@ artifact signature 当前总是发布空 `throw_types`，所以即使实现会�
 
 若 5 分钟内无法确认任务可执行，返回 `TASK_NOT_EXECUTABLE`、缺失事实和最小前置，不继续
 扩张调查。
-
