@@ -18,7 +18,7 @@ pub(super) use type_projection::{
     package_type_ref_from_contract_type,
 };
 use type_projection::{
-    package_type_assignable, resolved_contract_type, ContractCallTypeProjection,
+    package_type_target_assignable, resolved_contract_type, ContractCallTypeProjection,
 };
 
 pub(super) enum ContractCallOutcome {
@@ -170,7 +170,11 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
                     }
                 },
             };
-            if !package_type_assignable(&actual_projected, &expected) {
+            if !package_type_target_assignable(
+                &actual_projected,
+                &expected,
+                self.dependency_analysis,
+            ) {
                 let expected_label = resolved_contract_type(&parameter.ty, &call.alias)
                     .map(|ty| ty.source_text)
                     .unwrap_or_else(|_| format!("{:?}", parameter.ty));
