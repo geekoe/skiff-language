@@ -239,6 +239,13 @@ fn collect_type_refs(ty: &ContractTypeRef, out: &mut Vec<(String, String, Packag
             variants.iter().for_each(|ty| collect_type_refs(ty, out))
         }
         ContractTypeRef::Nullable { inner } => collect_type_refs(inner, out),
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            collect_type_refs(interface, out);
+            arguments.iter().for_each(|ty| collect_type_refs(ty, out));
+        }
         ContractTypeRef::TypeParam { .. } | ContractTypeRef::Literal { .. } => {}
     }
 }

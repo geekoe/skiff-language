@@ -25,6 +25,16 @@ pub(crate) fn execution_type_ref(ty: &PackageTypeRef) -> TypeRefIr {
         PackageTypeRef::Nullable { inner } => TypeRefIr::Nullable {
             inner: Box::new(execution_type_ref(inner)),
         },
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => TypeRefIr::AnyInterface {
+            interface: skiff_artifact_model::InterfaceInstantiationRef {
+                interface_abi_id: serde_json::to_string(&execution_type_ref(interface))
+                    .expect("PackageTypeRef interface identity must serialize"),
+                canonical_type_args: arguments.iter().map(execution_type_ref).collect(),
+            },
+        },
     }
 }
 
@@ -81,6 +91,41 @@ mod tests {
                 local_type: local.clone(),
             }),
             local
+        );
+    }
+
+    #[test]
+    fn package_owned_any_interface_keeps_exact_executable_target() {
+        let projected = execution_type_ref(&PackageTypeRef::Nullable {
+            inner: Box::new(PackageTypeRef::AnyInterface {
+                interface: Box::new(PackageTypeRef::PackageSchema {
+                    package_id: "example.interfaces".to_string(),
+                    stable_schema_key: "Reader".to_string(),
+                    package_schema_type_id: PackageSchemaTypeId::new("package-type:reader"),
+                }),
+                arguments: Vec::new(),
+            }),
+        });
+
+        assert_eq!(
+            projected,
+            TypeRefIr::Nullable {
+                inner: Box::new(TypeRefIr::AnyInterface {
+                    interface: skiff_artifact_model::InterfaceInstantiationRef {
+                        interface_abi_id: serde_json::to_string(&TypeRefIr::PackageSymbol {
+                            symbol: PackageSymbolRef {
+                                package: PackageRefIr::PackageId {
+                                    package_id: "example.interfaces".to_string(),
+                                },
+                                symbol_path: "Reader".to_string(),
+                                abi_expectation: None,
+                            },
+                        })
+                        .unwrap(),
+                        canonical_type_args: Vec::new(),
+                    },
+                }),
+            }
         );
     }
 }

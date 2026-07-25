@@ -318,6 +318,13 @@ fn collect_type_ids(
             fields.values().for_each(|ty| collect_type_ids(ty, out));
         }
         ContractTypeRef::Nullable { inner } => collect_type_ids(inner, out),
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            collect_type_ids(interface, out);
+            arguments.iter().for_each(|ty| collect_type_ids(ty, out));
+        }
         ContractTypeRef::TypeParam { .. } | ContractTypeRef::Literal { .. } => {}
     }
 }
@@ -401,6 +408,15 @@ fn validate_type_refs(
             }
         }
         ContractTypeRef::Nullable { inner } => validate_type_refs(alias, inner, records)?,
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            validate_type_refs(alias, interface, records)?;
+            for argument in arguments {
+                validate_type_refs(alias, argument, records)?;
+            }
+        }
         ContractTypeRef::TypeParam { .. } | ContractTypeRef::Literal { .. } => {}
     }
     Ok(())

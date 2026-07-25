@@ -56,6 +56,31 @@ pub(super) fn normalize_contract_type_ref(
         ContractTypeRef::PackageSchema { .. }
         | ContractTypeRef::TypeParam { .. }
         | ContractTypeRef::Literal { .. } => Ok(ty),
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            if !matches!(interface.as_ref(), ContractTypeRef::PackageSchema { .. }) {
+                return Err(ArtifactIdentityError::InvalidServiceContract {
+                    message: format!(
+                        "{path}.interface must be an exact PackageSchema interface nominal"
+                    ),
+                });
+            }
+            Ok(ContractTypeRef::AnyInterface {
+                interface: Box::new(normalize_contract_type_ref(
+                    *interface,
+                    &format!("{path}.interface"),
+                )?),
+                arguments: arguments
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, argument)| {
+                        normalize_contract_type_ref(argument, &format!("{path}.arguments[{index}]"))
+                    })
+                    .collect::<Result<_>>()?,
+            })
+        }
         ContractTypeRef::Record { fields } => Ok(ContractTypeRef::Record {
             fields: fields
                 .into_iter()

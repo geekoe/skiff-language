@@ -4493,6 +4493,16 @@ fn package_type_ref_ir(ty: &PackageTypeRef) -> TypeRefIr {
         PackageTypeRef::Nullable { inner } => TypeRefIr::Nullable {
             inner: Box::new(package_type_ref_ir(inner)),
         },
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => TypeRefIr::AnyInterface {
+            interface: skiff_artifact_model::InterfaceInstantiationRef {
+                interface_abi_id: serde_json::to_string(&package_type_ref_ir(interface))
+                    .expect("PackageTypeRef interface identity must serialize"),
+                canonical_type_args: arguments.iter().map(package_type_ref_ir).collect(),
+            },
+        },
     }
 }
 
@@ -4504,6 +4514,13 @@ fn package_type_contains_local_slot(ty: &PackageTypeRef) -> bool {
             arguments.iter().any(package_type_contains_local_slot)
         }
         PackageTypeRef::Nullable { inner } => package_type_contains_local_slot(inner),
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            package_type_contains_local_slot(interface)
+                || arguments.iter().any(package_type_contains_local_slot)
+        }
     }
 }
 

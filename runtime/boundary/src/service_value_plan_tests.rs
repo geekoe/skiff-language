@@ -808,6 +808,60 @@ fn service_value_plan_rejects_alias_callback_cycle_foreign_and_invalid_map_key()
 }
 
 #[test]
+fn service_value_plan_preserves_exact_any_interface_identity_and_fails_wire_closed() {
+    let interface_id = PackageSchemaTypeId::new("contract-type:Reader");
+    let interface_schema = BTreeMap::from([schema_type(
+        interface_id.as_str(),
+        "Reader",
+        ContractTypeDescriptor::CallbackInterface {
+            operations: BTreeMap::from([(
+                "read".to_string(),
+                BoundaryCallbackOperation {
+                    parameters: Vec::new(),
+                    return_type: ContractTypeRef::builtin("string"),
+                    may_suspend: false,
+                },
+            )]),
+        },
+    )]);
+    let existential = ContractTypeRef::AnyInterface {
+        interface: Box::new(package_ref(interface_id)),
+        arguments: Vec::new(),
+    };
+
+    let plan = ServiceValuePlan::compile(&existential, &interface_schema)
+        .expect("exact callback interface existential should compile");
+    assert_eq!(
+        plan.runtime_type_plan().identity.interface.as_deref(),
+        Some("package-schema:test.boundary:Reader:contract-type:Reader")
+    );
+    assert!(matches!(
+        plan.runtime_type_plan().node(),
+        skiff_runtime_model::type_plan::RuntimeTypeNode::Unknown
+    ));
+    assert!(plan
+        .decode_json_value(&json!({}), &mut RequestHeap::default())
+        .is_err());
+
+    let non_interface_id = PackageSchemaTypeId::new("contract-type:NotReader");
+    let non_interface_schema = BTreeMap::from([schema_type(
+        non_interface_id.as_str(),
+        "NotReader",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::new(),
+        },
+    )]);
+    let invalid = ContractTypeRef::AnyInterface {
+        interface: Box::new(package_ref(non_interface_id)),
+        arguments: Vec::new(),
+    };
+    assert!(matches!(
+        ServiceValuePlan::compile(&invalid, &non_interface_schema),
+        Err(ServiceLinkableMaterializationError::InvalidContractPlan { .. })
+    ));
+}
+
+#[test]
 fn service_value_plan_uses_expected_type_for_null_nominal_and_zero_byte_values() {
     let empty_id = PackageSchemaTypeId::new("contract-type:EmptyContext");
     let empty_schema = BTreeMap::from([schema_type(

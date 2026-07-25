@@ -1660,7 +1660,7 @@ mod tests {
         assert_eq!(symbol.symbol_path, "Reader");
         assert!(matches!(
             symbol.package,
-            PackageRefIr::PackageId { ref package_id } if package_id == PACKAGE_ID
+            PackageRefIr::Dependency { ref dependency_ref } if dependency_ref == "pkg"
         ));
         assert_eq!(
             interface.canonical_type_args,

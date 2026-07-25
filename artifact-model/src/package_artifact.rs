@@ -133,6 +133,64 @@ mod tests {
     }
 
     #[test]
+    fn any_interface_wire_preserves_exact_nested_package_identity() {
+        let ty = PackageTypeRef::Nullable {
+            inner: Box::new(PackageTypeRef::Container {
+                name: "Array".to_string(),
+                arguments: vec![PackageTypeRef::AnyInterface {
+                    interface: Box::new(PackageTypeRef::PackageSchema {
+                        package_id: "example.llm-api".to_string(),
+                        stable_schema_key: "LlmClient".to_string(),
+                        package_schema_type_id: "skiff-package-schema-type-v1:sha256:client".into(),
+                    }),
+                    arguments: Vec::new(),
+                }],
+            }),
+        };
+        let wire = serde_json::to_value(&ty).unwrap();
+        assert_eq!(
+            wire,
+            json!({
+                "kind": "nullable",
+                "inner": {
+                    "kind": "container",
+                    "name": "Array",
+                    "arguments": [{
+                        "kind": "anyInterface",
+                        "interface": {
+                            "kind": "packageSchema",
+                            "packageId": "example.llm-api",
+                            "stableSchemaKey": "LlmClient",
+                            "packageSchemaTypeId":
+                                "skiff-package-schema-type-v1:sha256:client"
+                        },
+                        "arguments": []
+                    }]
+                }
+            })
+        );
+        assert_eq!(serde_json::from_value::<PackageTypeRef>(wire).unwrap(), ty);
+    }
+
+    #[test]
+    fn any_interface_wire_rejects_missing_or_opaque_interface_target() {
+        let missing = json!({ "kind": "anyInterface" });
+        assert!(serde_json::from_value::<PackageTypeRef>(missing).is_err());
+
+        let unknown = json!({
+            "kind": "anyInterface",
+            "interface": {
+                "kind": "packageSchema",
+                "packageId": "example.llm-api",
+                "stableSchemaKey": "LlmClient",
+                "packageSchemaTypeId": "type:client",
+                "displayName": "LlmClient"
+            }
+        });
+        assert!(serde_json::from_value::<PackageTypeRef>(unknown).is_err());
+    }
+
+    #[test]
     fn package_artifact_wire_rejects_legacy_aggregate_fields() {
         let value = json!({
             "schemaVersion": "skiff-package-artifact-v2",

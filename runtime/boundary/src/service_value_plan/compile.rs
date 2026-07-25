@@ -80,10 +80,54 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
                 None,
                 RuntimeTypeNode::Nullable(Box::new(self.compile(inner)?)),
             )),
+            ContractTypeRef::AnyInterface { interface, .. } => {
+                self.compile_any_interface(interface)
+            }
             ContractTypeRef::Literal {
                 value: ContractLiteral::String { value },
             } => Ok(literal_plan(value)),
         }
+    }
+
+    fn compile_any_interface(
+        &mut self,
+        interface: &ContractTypeRef,
+    ) -> Result<RuntimeTypePlan, ServiceLinkableMaterializationError> {
+        let ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } = interface
+        else {
+            return invalid_contract_plan(
+                "any interface target must be an exact PackageSchema interface",
+            );
+        };
+        let record = self.schema_type(package_id, stable_schema_key, package_schema_type_id)?;
+        if !matches!(
+            record.canonical_descriptor.descriptor,
+            ContractTypeDescriptor::CallbackInterface { .. }
+        ) {
+            return invalid_contract_plan(format!(
+                "any interface target {package_schema_type_id} is not a callback interface"
+            ));
+        }
+        Ok(RuntimeTypePlan {
+            label: format!(
+                "any package interface {}:{}",
+                record.package_id, record.stable_schema_key
+            ),
+            named_type_name: None,
+            identity: RuntimeTypeIdentityPlan {
+                interface: Some(package_identity(record)),
+                ..RuntimeTypeIdentityPlan::default()
+            },
+            // Interface capability values are not JSON/wire values. Keeping
+            // the shape unresolved makes ordinary boundary codecs fail closed
+            // while retaining the exact interface identity for capability
+            // matching.
+            node: RuntimeTypeNode::Unknown,
+        })
     }
 
     fn compile_builtin(

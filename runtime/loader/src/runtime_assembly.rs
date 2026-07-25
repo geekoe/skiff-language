@@ -663,6 +663,16 @@ fn collect_reachable_type_refs(
         ContractTypeRef::Nullable { inner } => {
             collect_reachable_type_refs(inner, records, reachable)
         }
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            collect_reachable_type_refs(interface, records, reachable)?;
+            for argument in arguments {
+                collect_reachable_type_refs(argument, records, reachable)?;
+            }
+            Ok(())
+        }
         ContractTypeRef::TypeParam { .. } | ContractTypeRef::Literal { .. } => Ok(()),
     }
 }

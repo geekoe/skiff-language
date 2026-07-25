@@ -93,6 +93,23 @@ enum TypeRefIr {
 }
 ```
 
+Package callable 与 ServiceContract 不能把 existential 退化成 `Local` 或 display
+string。它们使用同一类结构化引用，并把 interface target、generic arguments
+分别保留为递归类型：
+
+```rust
+AnyInterface {
+    interface: Box<PackageTypeRef>, // ServiceContract 中为 ContractTypeRef
+    arguments: Vec<PackageTypeRef>,
+}
+```
+
+Package-owned interface target 必须是精确 `PackageSchema` nominal（owner、stable
+key、type id 三者一致）；package-local target 在 PackageArtifact 中保持 local
+identity，投影 ServiceContract 时解析为当前 Package 的精确 schema identity。
+`Nullable` 和 container 继续在 existential 外层保持结构，generic arguments
+不并入显示名称。
+
 规则：
 
 - `interface` 必须是完整 `InterfaceInstantiationRef`。generic interface 必须带完整 canonical type args。

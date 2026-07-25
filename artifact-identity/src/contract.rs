@@ -2,12 +2,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryErrorContract, BoundaryOperationDescriptor,
-    BoundaryStreamContract, ContractOperationId, ContractTypeDescriptor, ContractTypeNameability,
-    ContractTypeRef, ContractTypeShape, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
-    PackageSchemaIndexEntry, PackageSchemaIndexIdentity, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, PackageTypeRequirement, ServiceContract, ServiceContractRef,
-    ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
+    BoundaryCallbackContract, BoundaryErrorContract, BoundaryOperationContract,
+    BoundaryOperationDescriptor, BoundaryStreamContract, ContractOperationId,
+    ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef, ContractTypeShape,
+    PackageSchemaCanonicalDescriptor, PackageSchemaIndex, PackageSchemaIndexEntry,
+    PackageSchemaIndexIdentity, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    PackageTypeRequirement, ServiceContract, ServiceContractRef, ServiceProtocolIdentity,
+    SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 use crate::{
@@ -278,6 +279,7 @@ fn validate_service_contract_surface(contract: &ServiceContract) -> Result<()> {
                 descriptor.stable_key
             ));
         }
+        validate_operation_existentials(&descriptor.contract)?;
     }
     let mut previous_package: Option<&str> = None;
     let mut required = BTreeSet::new();
@@ -325,6 +327,48 @@ fn validate_service_contract_surface(contract: &ServiceContract) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn validate_operation_existentials(operation: &BoundaryOperationContract) -> Result<()> {
+    for parameter in &operation.parameters {
+        validate_existential_ref(&parameter.ty)?;
+    }
+    validate_existential_ref(&operation.return_value.ty)?;
+    if let BoundaryErrorContract::Typed { payload_type, .. } = &operation.errors {
+        validate_existential_ref(payload_type)?;
+    }
+    if let BoundaryStreamContract::ServerStream { item_type, .. } = &operation.stream {
+        validate_existential_ref(item_type)?;
+    }
+    Ok(())
+}
+
+fn validate_existential_ref(ty: &ContractTypeRef) -> Result<()> {
+    match ty {
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            if !matches!(interface.as_ref(), ContractTypeRef::PackageSchema { .. }) {
+                return invalid_contract(
+                    "anyInterface target must be an exact PackageSchema interface nominal",
+                );
+            }
+            validate_existential_ref(interface)?;
+            arguments.iter().try_for_each(validate_existential_ref)
+        }
+        ContractTypeRef::Builtin { arguments, .. }
+        | ContractTypeRef::StructuralUnion {
+            variants: arguments,
+        } => arguments.iter().try_for_each(validate_existential_ref),
+        ContractTypeRef::Record { fields } => {
+            fields.values().try_for_each(validate_existential_ref)
+        }
+        ContractTypeRef::Nullable { inner } => validate_existential_ref(inner),
+        ContractTypeRef::PackageSchema { .. }
+        | ContractTypeRef::TypeParam { .. }
+        | ContractTypeRef::Literal { .. } => Ok(()),
+    }
 }
 
 fn normalize_schema_descriptor(
@@ -479,6 +523,15 @@ fn collect_type_refs_with_keys<'a>(
         ContractTypeRef::Record { fields } => fields
             .values()
             .for_each(|child| collect_type_refs_with_keys(child, out)),
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            collect_type_refs_with_keys(interface, out);
+            arguments
+                .iter()
+                .for_each(|child| collect_type_refs_with_keys(child, out));
+        }
         ContractTypeRef::Nullable { inner } => collect_type_refs_with_keys(inner, out),
         ContractTypeRef::TypeParam { .. } | ContractTypeRef::Literal { .. } => {}
     }

@@ -109,9 +109,21 @@ impl ContractAwareTypeResolver<'_> {
             TypeExpr::Nullable(inner) => Ok(PackageTypeRef::Nullable {
                 inner: Box::new(self.resolve_expanded_expr(inner, context)?),
             }),
+            TypeExpr::AnyInterface { interface } => {
+                let arguments = match interface.as_ref() {
+                    TypeExpr::Named { args, .. } => args
+                        .iter()
+                        .map(|arg| self.resolve_expanded_expr(arg, context))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    _ => Vec::new(),
+                };
+                Ok(PackageTypeRef::AnyInterface {
+                    interface: Box::new(self.resolve_expanded_expr(interface, context)?),
+                    arguments,
+                })
+            }
             TypeExpr::EmptyRecord
             | TypeExpr::StringLiteral(_)
-            | TypeExpr::AnyInterface { .. }
             | TypeExpr::Union(_)
             | TypeExpr::Record(_)
             | TypeExpr::Function { .. } => {
@@ -183,6 +195,13 @@ pub(crate) fn package_type_contains_contract(ty: &PackageTypeRef) -> bool {
             arguments.iter().any(package_type_contains_contract)
         }
         PackageTypeRef::Nullable { inner } => package_type_contains_contract(inner),
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            package_type_contains_contract(interface)
+                || arguments.iter().any(package_type_contains_contract)
+        }
         PackageTypeRef::Local { .. } => false,
     }
 }
@@ -215,6 +234,16 @@ pub(super) fn package_type_ref_from_validated_contract_ref(
         }),
         ContractTypeRef::Nullable { inner } => Ok(PackageTypeRef::Nullable {
             inner: Box::new(package_type_ref_from_validated_contract_ref(inner)?),
+        }),
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => Ok(PackageTypeRef::AnyInterface {
+            interface: Box::new(package_type_ref_from_validated_contract_ref(interface)?),
+            arguments: arguments
+                .iter()
+                .map(package_type_ref_from_validated_contract_ref)
+                .collect::<Result<_, _>>()?,
         }),
         ContractTypeRef::Record { .. } => {
             Err("inline contract record has no exact PackageTypeRef representation".to_string())

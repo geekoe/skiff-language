@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    BoundaryCallableProjection, FileIrRef, PackageArtifact, PackageLocalAbiSymbol,
+    BoundaryCallableProjection, FileIrRef, PackageArtifact, PackageLocalAbiSymbol, PackageTypeRef,
     PublicationResourceRef, StateBindingKind, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
@@ -132,12 +132,37 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
         if public_path.trim().is_empty() {
             return invalid_artifact("package local ABI contains an empty public path");
         }
-        if let PackageLocalAbiSymbol::Callable { callable_id, .. } = symbol {
+        if let PackageLocalAbiSymbol::Callable {
+            callable_id,
+            signature,
+        } = symbol
+        {
             if !public_callables.insert(callable_id.clone()) {
                 return invalid_artifact(format!(
                     "package local ABI repeats callable id {callable_id}"
                 ));
             }
+            for parameter in &signature.parameters {
+                validate_package_type_ref(
+                    artifact,
+                    &parameter.ty,
+                    &format!("callable {callable_id} parameter {}", parameter.name),
+                )?;
+            }
+            validate_package_type_ref(
+                artifact,
+                &signature.return_type,
+                &format!("callable {callable_id} return type"),
+            )?;
+            for (index, throw_type) in signature.throw_types.iter().enumerate() {
+                validate_package_type_ref(
+                    artifact,
+                    throw_type,
+                    &format!("callable {callable_id} throw type {index}"),
+                )?;
+            }
+        } else if let PackageLocalAbiSymbol::Constant { const_id, ty } = symbol {
+            validate_package_type_ref(artifact, ty, &format!("constant {const_id}"))?;
         }
     }
 
@@ -193,6 +218,77 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn validate_package_type_ref(
+    artifact: &PackageArtifact,
+    ty: &PackageTypeRef,
+    location: &str,
+) -> Result<()> {
+    match ty {
+        PackageTypeRef::Local { .. } => Ok(()),
+        PackageTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => {
+            if package_id.trim().is_empty()
+                || stable_schema_key.trim().is_empty()
+                || package_schema_type_id.as_str().trim().is_empty()
+            {
+                return invalid_artifact(format!(
+                    "{location} contains an incomplete PackageSchema reference"
+                ));
+            }
+            if package_id == &artifact.package_id {
+                if !artifact
+                    .package_schema_type_records
+                    .contains_key(package_schema_type_id)
+                {
+                    return invalid_artifact(format!(
+                        "{location} references local PackageSchema type {package_schema_type_id} outside the artifact schema closure"
+                    ));
+                }
+            } else if !artifact
+                .package_requirements
+                .iter()
+                .any(|requirement| requirement.package_id == *package_id)
+            {
+                return invalid_artifact(format!(
+                    "{location} references undeclared package owner {package_id}"
+                ));
+            }
+            Ok(())
+        }
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            if !matches!(
+                interface.as_ref(),
+                PackageTypeRef::Local { .. } | PackageTypeRef::PackageSchema { .. }
+            ) {
+                return invalid_artifact(format!(
+                    "{location} anyInterface target must be an exact local or PackageSchema nominal"
+                ));
+            }
+            validate_package_type_ref(artifact, interface, location)?;
+            for argument in arguments {
+                validate_package_type_ref(artifact, argument, location)?;
+            }
+            Ok(())
+        }
+        PackageTypeRef::Container { name, arguments } => {
+            if name.trim().is_empty() {
+                return invalid_artifact(format!("{location} has an empty container name"));
+            }
+            for argument in arguments {
+                validate_package_type_ref(artifact, argument, location)?;
+            }
+            Ok(())
+        }
+        PackageTypeRef::Nullable { inner } => validate_package_type_ref(artifact, inner, location),
+    }
 }
 
 fn validate_service_calls(artifact: &PackageArtifact) -> Result<()> {

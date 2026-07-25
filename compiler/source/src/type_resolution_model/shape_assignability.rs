@@ -525,6 +525,18 @@ impl TypeResolutionModel {
             PackageTypeRef::Nullable { inner } => PackageTypeRef::Nullable {
                 inner: Box::new(self.canonicalize_source_signature_type(module_path, inner)),
             },
+            PackageTypeRef::AnyInterface {
+                interface,
+                arguments,
+            } => PackageTypeRef::AnyInterface {
+                interface: Box::new(
+                    self.canonicalize_source_signature_type(module_path, interface),
+                ),
+                arguments: arguments
+                    .iter()
+                    .map(|argument| self.canonicalize_source_signature_type(module_path, argument))
+                    .collect(),
+            },
             PackageTypeRef::Local { local_type } => PackageTypeRef::Local {
                 local_type: self.canonicalize_type_ref_for_module(
                     module_path,
@@ -573,6 +585,26 @@ impl TypeResolutionModel {
                     package_id,
                     inner,
                 )?),
+            },
+            PackageTypeRef::AnyInterface {
+                interface,
+                arguments,
+            } => PackageTypeRef::AnyInterface {
+                interface: Box::new(self.canonicalize_package_signature_type_for_owner(
+                    interface_module,
+                    package_id,
+                    interface,
+                )?),
+                arguments: arguments
+                    .iter()
+                    .map(|argument| {
+                        self.canonicalize_package_signature_type_for_owner(
+                            interface_module,
+                            package_id,
+                            argument,
+                        )
+                    })
+                    .collect::<Result<_, _>>()?,
             },
             PackageTypeRef::Local { local_type } => PackageTypeRef::Local {
                 local_type: self.canonicalize_package_method_type_ref(

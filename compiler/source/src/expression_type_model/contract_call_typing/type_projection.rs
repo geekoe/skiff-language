@@ -59,6 +59,13 @@ pub(crate) fn contract_source_assignability(
     let Some(dependency_analysis) = dependency_analysis else {
         return Ok(None);
     };
+    if matches!(expected.ir, TypeRefIr::AnyInterface { .. }) {
+        return Ok(Some(type_resolution.assignable_in_context(
+            actual,
+            expected,
+            type_context,
+        )));
+    }
     let projection =
         ContractCallTypeProjection::new(type_resolution, dependency_analysis, type_context);
     let actual = match actual_projected {
@@ -84,6 +91,13 @@ pub(crate) fn contract_source_assignability_with_projections(
     let Some(dependency_analysis) = dependency_analysis else {
         return Ok(None);
     };
+    if matches!(expected.ir, TypeRefIr::AnyInterface { .. }) {
+        return Ok(Some(type_resolution.assignable_in_context(
+            actual,
+            expected,
+            type_context,
+        )));
+    }
     let projection =
         ContractCallTypeProjection::new(type_resolution, dependency_analysis, type_context);
     let actual = match actual_projected {
@@ -120,6 +134,21 @@ fn package_type_ref_from_resolved_ir(
                 dependency_analysis,
             )?),
         }),
+        TypeRefIr::AnyInterface { interface } => Ok(PackageTypeRef::AnyInterface {
+            interface: Box::new(package_type_ref_from_resolved_ir(
+                &serde_json::from_str(&interface.interface_abi_id).map_err(|error| {
+                    format!("invalid canonical interface identity: {error}")
+                })?,
+                dependency_analysis,
+            )?),
+            arguments: interface
+                .canonical_type_args
+                .iter()
+                .map(|argument| {
+                    package_type_ref_from_resolved_ir(argument, dependency_analysis)
+                })
+                .collect::<Result<_, _>>()?,
+        }),
         TypeRefIr::ServiceSymbol { symbol } if dependency_analysis
             .contract_requirement(&symbol.module_path)
             .is_ok() => {
@@ -155,7 +184,6 @@ fn package_type_ref_from_resolved_ir(
         }
         TypeRefIr::Record { .. }
         | TypeRefIr::Union { .. }
-        | TypeRefIr::AnyInterface { .. }
         | TypeRefIr::Function { .. }
             if resolved_ir_contains_contract_symbol(ty, dependency_analysis) =>
         {
@@ -179,6 +207,16 @@ pub(crate) fn package_type_ref_from_contract_type(ty: &ContractTypeRef) -> Packa
         },
         ContractTypeRef::Nullable { inner } => PackageTypeRef::Nullable {
             inner: Box::new(package_type_ref_from_contract_type(inner)),
+        },
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => PackageTypeRef::AnyInterface {
+            interface: Box::new(package_type_ref_from_contract_type(interface)),
+            arguments: arguments
+                .iter()
+                .map(package_type_ref_from_contract_type)
+                .collect(),
         },
         ContractTypeRef::PackageSchema {
             package_id,
@@ -243,6 +281,21 @@ fn contract_type_ref_to_ir(ty: &ContractTypeRef) -> TypeRefIr {
         PackageTypeRef::Nullable { inner } => TypeRefIr::Nullable {
             inner: Box::new(contract_type_ref_to_ir_from_package(*inner)),
         },
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => TypeRefIr::AnyInterface {
+            interface: skiff_artifact_model::InterfaceInstantiationRef {
+                interface_abi_id: serde_json::to_string(&contract_type_ref_to_ir_from_package(
+                    *interface,
+                ))
+                .expect("PackageTypeRef interface identity must serialize"),
+                canonical_type_args: arguments
+                    .into_iter()
+                    .map(contract_type_ref_to_ir_from_package)
+                    .collect(),
+            },
+        },
     }
 }
 
@@ -269,6 +322,21 @@ fn contract_type_ref_to_ir_from_package(ty: PackageTypeRef) -> TypeRefIr {
         },
         PackageTypeRef::Nullable { inner } => TypeRefIr::Nullable {
             inner: Box::new(contract_type_ref_to_ir_from_package(*inner)),
+        },
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => TypeRefIr::AnyInterface {
+            interface: skiff_artifact_model::InterfaceInstantiationRef {
+                interface_abi_id: serde_json::to_string(&contract_type_ref_to_ir_from_package(
+                    *interface,
+                ))
+                .expect("PackageTypeRef interface identity must serialize"),
+                canonical_type_args: arguments
+                    .into_iter()
+                    .map(contract_type_ref_to_ir_from_package)
+                    .collect(),
+            },
         },
     }
 }
@@ -350,6 +418,23 @@ pub(super) fn package_type_assignable(actual: &PackageTypeRef, expected: &Packag
             PackageTypeRef::Nullable { inner: actual },
             PackageTypeRef::Nullable { inner: expected },
         ) => package_type_assignable(actual, expected),
+        (
+            PackageTypeRef::AnyInterface {
+                interface: actual,
+                arguments: actual_arguments,
+            },
+            PackageTypeRef::AnyInterface {
+                interface: expected,
+                arguments: expected_arguments,
+            },
+        ) => {
+            package_type_assignable(actual, expected)
+                && actual_arguments.len() == expected_arguments.len()
+                && actual_arguments
+                    .iter()
+                    .zip(expected_arguments)
+                    .all(|(actual, expected)| package_type_assignable(actual, expected))
+        }
         (actual, PackageTypeRef::Nullable { inner: expected }) => {
             package_type_is_null(actual) || package_type_assignable(actual, expected)
         }
@@ -416,6 +501,23 @@ pub(super) fn package_type_target_assignable(
             PackageTypeRef::Nullable { inner: actual },
             PackageTypeRef::Nullable { inner: expected },
         ) => package_type_target_assignable(actual, expected, dependency_analysis),
+        (
+            PackageTypeRef::AnyInterface {
+                interface: actual,
+                arguments: actual_arguments,
+            },
+            PackageTypeRef::AnyInterface {
+                interface: expected,
+                arguments: expected_arguments,
+            },
+        ) => {
+            package_type_assignable(actual, expected)
+                && actual_arguments.len() == expected_arguments.len()
+                && actual_arguments
+                    .iter()
+                    .zip(expected_arguments)
+                    .all(|(actual, expected)| package_type_assignable(actual, expected))
+        }
         (actual, PackageTypeRef::Nullable { inner: expected }) => {
             package_type_is_null(actual)
                 || package_type_target_assignable(actual, expected, dependency_analysis)
@@ -479,18 +581,12 @@ fn package_type_json_compatible(
         PackageTypeRef::Container { name, arguments } => match name.as_str() {
             "JsonObject" if arguments.is_empty() => true,
             "Json" if arguments.is_empty() => !object_only,
-            "string" | "integer" | "number" | "bool" | "null"
-                if arguments.is_empty() =>
-            {
+            "string" | "integer" | "number" | "bool" | "null" if arguments.is_empty() => {
                 !object_only
             }
             "Array" if arguments.len() == 1 => {
                 !object_only
-                    && package_type_json_compatible(
-                        &arguments[0],
-                        dependency_analysis,
-                        false,
-                    )
+                    && package_type_json_compatible(&arguments[0], dependency_analysis, false)
             }
             "Map" if arguments.len() == 2 => {
                 let string_key = matches!(
@@ -499,17 +595,14 @@ fn package_type_json_compatible(
                         if name == "string" && arguments.is_empty()
                 );
                 string_key
-                    && package_type_json_compatible(
-                        &arguments[1],
-                        dependency_analysis,
-                        false,
-                    )
+                    && package_type_json_compatible(&arguments[1], dependency_analysis, false)
             }
             _ => false,
         },
         PackageTypeRef::Nullable { inner } => {
             !object_only && package_type_json_compatible(inner, dependency_analysis, false)
         }
+        PackageTypeRef::AnyInterface { .. } => false,
         PackageTypeRef::Local { local_type } => {
             local_ir_json_compatible(local_type, dependency_analysis, object_only)
         }
@@ -767,6 +860,27 @@ pub(super) fn resolved_contract_type(
                 source_text: format!("{}?", inner.source_text),
                 ir: TypeRefIr::Nullable {
                     inner: Box::new(inner.ir),
+                },
+            })
+        }
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            let interface = resolved_contract_type(interface, alias)?;
+            Ok(ResolvedTypeRef {
+                source_text: format!("any {}", interface.source_text),
+                ir: TypeRefIr::AnyInterface {
+                    interface: skiff_artifact_model::InterfaceInstantiationRef {
+                        interface_abi_id: serde_json::to_string(&interface.ir)
+                            .map_err(|error| error.to_string())?,
+                        canonical_type_args: arguments
+                            .iter()
+                            .map(|argument| {
+                                resolved_contract_type(argument, alias).map(|value| value.ir)
+                            })
+                            .collect::<Result<_, _>>()?,
+                    },
                 },
             })
         }

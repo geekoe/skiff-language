@@ -738,6 +738,9 @@ where
         ContractTypeRef::TypeParam { name } => Err(WebSocketIngressContractError::new(format!(
             "{path} contains unresolved type parameter {name}"
         ))),
+        ContractTypeRef::AnyInterface { .. } => Err(WebSocketIngressContractError::new(format!(
+            "{path} contains non-persistable existential interface"
+        ))),
         ContractTypeRef::Record { fields } => fields.iter().try_for_each(|(name, ty)| {
             validate_persistable_context_ref(
                 contract,

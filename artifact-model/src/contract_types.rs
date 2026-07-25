@@ -40,6 +40,10 @@ pub enum ContractTypeRef {
         stable_schema_key: String,
         package_schema_type_id: PackageSchemaTypeId,
     },
+    AnyInterface {
+        interface: Box<ContractTypeRef>,
+        arguments: Vec<ContractTypeRef>,
+    },
     TypeParam {
         name: String,
     },
@@ -135,6 +139,15 @@ fn collect_type_package_schema_refs(
         ContractTypeRef::Record { fields } => fields
             .values()
             .for_each(|child| collect_type_package_schema_refs(child, refs)),
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            collect_type_package_schema_refs(interface, refs);
+            arguments
+                .iter()
+                .for_each(|child| collect_type_package_schema_refs(child, refs));
+        }
         ContractTypeRef::Nullable { inner } => collect_type_package_schema_refs(inner, refs),
         ContractTypeRef::TypeParam { .. } | ContractTypeRef::Literal { .. } => {}
     }
@@ -191,6 +204,16 @@ pub enum PackageTypeRef {
         package_id: String,
         stable_schema_key: String,
         package_schema_type_id: PackageSchemaTypeId,
+    },
+    /// An existential value implementing the exact interface named by
+    /// `interface`.
+    ///
+    /// The interface remains a PackageTypeRef instead of being flattened to a
+    /// display name so PackageSchema owner and type identity survive the wire
+    /// format and identity hashing.
+    AnyInterface {
+        interface: Box<PackageTypeRef>,
+        arguments: Vec<PackageTypeRef>,
     },
     Container {
         name: String,
@@ -336,6 +359,33 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn contract_any_interface_wire_preserves_exact_nominal_target() {
+        let ty = ContractTypeRef::AnyInterface {
+            interface: Box::new(ContractTypeRef::package_schema(
+                "example.llm-api",
+                "LlmClient",
+                PackageSchemaTypeId::new("type:llm-client"),
+            )),
+            arguments: Vec::new(),
+        };
+        let wire = serde_json::to_value(&ty).unwrap();
+        assert_eq!(
+            wire,
+            json!({
+                "kind": "anyInterface",
+                "interface": {
+                    "kind": "packageSchema",
+                    "packageId": "example.llm-api",
+                    "stableSchemaKey": "LlmClient",
+                    "packageSchemaTypeId": "type:llm-client"
+                },
+                "arguments": []
+            })
+        );
+        assert_eq!(serde_json::from_value::<ContractTypeRef>(wire).unwrap(), ty);
+    }
 
     #[test]
     fn package_schema_records_indexes_and_requirements_have_strict_wire() {

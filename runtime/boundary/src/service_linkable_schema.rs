@@ -66,6 +66,15 @@ fn validate_schema_closure_inner(
         ContractTypeRef::Nullable { inner } => {
             validate_schema_closure_inner(inner, schema, active)?;
         }
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            validate_schema_closure_inner(interface, schema, active)?;
+            for argument in arguments {
+                validate_schema_closure_inner(argument, schema, active)?;
+            }
+        }
         ContractTypeRef::Literal { .. } => {}
     }
     Ok(())

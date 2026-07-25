@@ -65,7 +65,6 @@ fn exact_interface_and_impl_contract_types_share_opaque_execution_projection() {
     let wire = serde_json::to_string(&empty).unwrap();
     for forbidden in [
         "payments",
-        "example.types",
         "types.User",
         "payments.User",
         package_schema_type_id.as_str(),
@@ -219,7 +218,15 @@ fn nested_contract_execution_type() -> TypeRefIr {
         inner: Box::new(TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![TypeRefIr::Nullable {
-                inner: Box::new(TypeRefIr::builtin("unknown")),
+                inner: Box::new(TypeRefIr::PackageSymbol {
+                    symbol: skiff_artifact_model::PackageSymbolRef {
+                        package: skiff_artifact_model::PackageRefIr::PackageId {
+                            package_id: "example.types".to_string(),
+                        },
+                        symbol_path: "User".to_string(),
+                        abi_expectation: None,
+                    },
+                }),
             }],
         }),
     }

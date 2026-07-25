@@ -66,6 +66,16 @@ pub(crate) fn substitute_package_type(
         PackageTypeRef::Nullable { inner } => Ok(PackageTypeRef::Nullable {
             inner: Box::new(substitute_package_type(inner, substitutions)?),
         }),
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => Ok(PackageTypeRef::AnyInterface {
+            interface: Box::new(substitute_package_type(interface, substitutions)?),
+            arguments: arguments
+                .iter()
+                .map(|argument| substitute_package_type(argument, substitutions))
+                .collect::<Result<_, _>>()?,
+        }),
     }
 }
 

@@ -215,6 +215,30 @@ fn project_package_type(
                 resolved_package_schemas,
             )?),
         }),
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => Ok(ContractTypeRef::AnyInterface {
+            interface: Box::new(project_package_type(
+                owner_module,
+                interface,
+                file_ir_units,
+                public_type_ids,
+                resolved_package_schemas,
+            )?),
+            arguments: arguments
+                .iter()
+                .map(|argument| {
+                    project_package_type(
+                        owner_module,
+                        argument,
+                        file_ir_units,
+                        public_type_ids,
+                        resolved_package_schemas,
+                    )
+                })
+                .collect::<Result<_, _>>()?,
+        }),
         PackageTypeRef::Local { local_type } => {
             validate_local_type_closure(
                 owner_module,
@@ -537,6 +561,42 @@ mod tests {
         PackageSchemaTypeId, PackageSchemaTypeRecord, TypeDeclIr, TypeDeclarationIr,
         TypeDescriptorIr,
     };
+
+    #[test]
+    fn package_any_interface_projects_exact_contract_target_recursively() {
+        let type_id = PackageSchemaTypeId::new("package-type:reader");
+        let projected = project_package_type(
+            "api",
+            &PackageTypeRef::Nullable {
+                inner: Box::new(PackageTypeRef::AnyInterface {
+                    interface: Box::new(PackageTypeRef::PackageSchema {
+                        package_id: "example.interfaces".to_string(),
+                        stable_schema_key: "Reader".to_string(),
+                        package_schema_type_id: type_id.clone(),
+                    }),
+                    arguments: Vec::new(),
+                }),
+            },
+            &[],
+            &BTreeMap::new(),
+            &[],
+        )
+        .expect("package existential should retain an exact contract representation");
+
+        assert_eq!(
+            projected,
+            ContractTypeRef::Nullable {
+                inner: Box::new(ContractTypeRef::AnyInterface {
+                    interface: Box::new(ContractTypeRef::PackageSchema {
+                        package_id: "example.interfaces".to_string(),
+                        stable_schema_key: "Reader".to_string(),
+                        package_schema_type_id: type_id,
+                    }),
+                    arguments: Vec::new(),
+                }),
+            }
+        );
+    }
 
     fn public_literal_union_fixture() -> (
         Vec<skiff_artifact_model::FileIrUnit>,

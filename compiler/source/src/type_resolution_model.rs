@@ -3896,6 +3896,9 @@ fn contract_type_source_text(alias: &str, ty: &ContractTypeRef) -> Result<String
         ContractTypeRef::Nullable { inner } => {
             format!("{}?", contract_type_source_text(alias, inner)?)
         }
+        ContractTypeRef::AnyInterface { interface, .. } => {
+            format!("any {}", contract_type_source_text(alias, interface)?)
+        }
         ContractTypeRef::Record { fields } => format!(
             "{{ {} }}",
             fields
@@ -3995,6 +3998,16 @@ fn contract_type_ref_ir(alias: &str, ty: &ContractTypeRef) -> Result<TypeRefIr, 
         ContractTypeRef::Nullable { inner } => Ok(TypeRefIr::Nullable {
             inner: Box::new(contract_type_ref_ir(alias, inner)?),
         }),
+        ContractTypeRef::AnyInterface { interface, .. } => {
+            let identity = contract_type_ref_ir(alias, interface)?;
+            Ok(TypeRefIr::AnyInterface {
+                interface: skiff_artifact_model::InterfaceInstantiationRef {
+                    interface_abi_id: serde_json::to_string(&identity)
+                        .map_err(|error| error.to_string())?,
+                    canonical_type_args: Vec::new(),
+                },
+            })
+        }
         ContractTypeRef::Literal {
             value: skiff_artifact_model::ContractLiteral::String { value },
         } => Ok(TypeRefIr::Literal {
