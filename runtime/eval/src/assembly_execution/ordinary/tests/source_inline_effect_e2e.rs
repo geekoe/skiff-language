@@ -12,12 +12,12 @@ use std::{
 use skiff_artifact_identity::{package_artifact_ref, service_contract_ref};
 use skiff_artifact_model::{
     AssemblyIdentity, BoundaryCallbackContract, BoundaryCancellationContract,
-    BoundaryEffectGuarantee, BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter,
-    BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CanonicalPackageLinkPlan,
-    ContractTypeRef, PackageArtifact, PackageBinding, PackageCallableId, PackageCodeSlot,
-    PackageRefIr, PackageRequirementKey, PackageTypeRequirement, RuntimeAssembly,
-    TestEffectOutcomeIr, TypeRefIr, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    BoundaryEffectGuarantee, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
+    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, CanonicalPackageLinkPlan, ContractTypeRef,
+    PackageArtifact, PackageBinding, PackageCallableId, PackageCodeSlot, PackageRefIr,
+    PackageRequirementKey, PackageTypeRequirement, RuntimeAssembly, TestEffectOutcomeIr, TypeRefIr,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -82,15 +82,7 @@ async fn source_inline_service_effect_sequence_typed_throw_is_caught_then_respon
         .get(ERROR_STABLE_SCHEMA_KEY)
         .expect("public Failure package schema");
 
-    publish_typed_service_contract(
-        &store,
-        ContractTypeRef::package_schema(
-            ERROR_PACKAGE_ID,
-            ERROR_STABLE_SCHEMA_KEY,
-            failure_entry.package_schema_type_id.clone(),
-        ),
-        failure_entry.package_schema_type_id.clone(),
-    );
+    publish_open_error_service_contract(&store, failure_entry.package_schema_type_id.clone());
 
     let consumer = fixture.child("consumer");
     write_consumer_package(&consumer);
@@ -233,9 +225,8 @@ async fn execute_overlay_case(
         .expect("both ordered service effect outcomes must be consumed");
 }
 
-fn publish_typed_service_contract(
+fn publish_open_error_service_contract(
     store: &CanonicalArtifactStore,
-    failure_type: ContractTypeRef,
     failure_type_id: skiff_artifact_model::PackageSchemaTypeId,
 ) {
     let contract = compile_contract(ServiceContractDefinition {
@@ -251,10 +242,6 @@ fn publish_typed_service_contract(
                 }],
                 return_value: BoundaryReturn {
                     ty: ContractTypeRef::builtin("string"),
-                    value_plan: linkable(BoundaryValueOwner::Provider),
-                },
-                errors: BoundaryErrorContract::Typed {
-                    payload_type: failure_type,
                     value_plan: linkable(BoundaryValueOwner::Provider),
                 },
                 stream: BoundaryStreamContract::Unary,
@@ -276,20 +263,22 @@ fn publish_typed_service_contract(
             required_type_ids: vec![failure_type_id],
         }],
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
-            service: "typed effect payments".to_string(),
+            service: "open error effect payments".to_string(),
             operations: BTreeMap::from([("echo".to_string(), "echo".to_string())]),
             types: BTreeMap::new(),
         },
     })
-    .expect("typed service contract compile");
-    let reference = service_contract_ref(&contract).expect("typed service contract reference");
+    .expect("open service error channel contract compile");
+    let reference =
+        service_contract_ref(&contract).expect("open service error channel contract reference");
     store
         .write_service_contract(&contract)
-        .expect("typed service contract record");
-    let pointer = ServiceContractPointer::new(reference).expect("typed service contract pointer");
+        .expect("open service error channel contract record");
+    let pointer = ServiceContractPointer::new(reference)
+        .expect("open service error channel contract pointer");
     store
         .compare_and_swap_service_contract_pointer(None, &pointer)
-        .expect("typed service contract pointer publication");
+        .expect("open service error channel contract pointer publication");
 }
 
 fn linkable(owner: BoundaryValueOwner) -> BoundaryValuePlan {

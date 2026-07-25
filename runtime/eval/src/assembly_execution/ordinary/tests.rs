@@ -1529,7 +1529,6 @@ fn stream_callable_package(
             ty: ContractTypeRef::builtin("void"),
             value_plan: detached_plan(BoundaryValueOwner::Provider),
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::ServerStream {
             item_type: ContractTypeRef::builtin("string"),
             item_value_plan,
@@ -1659,7 +1658,6 @@ fn ordinary_array_contract() -> BoundaryOperationContract {
             ty: array,
             value_plan: detached_plan(BoundaryValueOwner::Provider),
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::Unary,
         cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,
