@@ -26,6 +26,7 @@ use crate::{
 };
 
 const DEPENDENCY_ALIAS: &str = "mutableDependency";
+const TYPED_THROW_REQUEST_TRACE_ID: &str = "test-trace:inline-effect-typed-throw";
 
 fn test_instruction_site() -> InstructionSourceSite {
     InstructionSourceSite::Synthetic {
@@ -151,7 +152,11 @@ async fn inline_effect_typed_throw_is_caught_by_exact_linked_nominal_type() {
         Default::default(),
         test_runtime::runtime_factory(),
     );
-    let context = execution_context(&interpreter, fixture.eval_target);
+    let context = execution_context_with_trace(
+        &interpreter,
+        fixture.eval_target,
+        TYPED_THROW_REQUEST_TRACE_ID,
+    );
     let mut heap = RequestHeap::default();
     let input = heap
         .alloc_array(vec![RuntimeValue::String("request".to_string())])
@@ -211,12 +216,17 @@ async fn inline_effect_typed_throw_is_caught_by_exact_linked_nominal_type() {
         exception.stack().last(),
         Some(ExceptionStackFrame::Local { site }) if site == &expected_site
     ));
+    assert_eq!(
+        exception.correlation().trace_id,
+        TYPED_THROW_REQUEST_TRACE_ID,
+        "local exception correlation must retain the exact request trace",
+    );
     assert!(
-        exception.correlation().error_id.starts_with(&format!(
-            "{}:local-error:",
-            exception.correlation().trace_id
-        )),
-        "local exception correlation must retain the request trace",
+        exception
+            .correlation()
+            .error_id
+            .starts_with(&format!("{TYPED_THROW_REQUEST_TRACE_ID}:local-error:")),
+        "local exception error id must derive from the exact request trace",
     );
     let RuntimeValue::Heap(payload_handle) = exception
         .local_value()
@@ -1804,9 +1814,28 @@ fn execution_context<'a>(
     interpreter: &Interpreter,
     target: RuntimeAssemblyEvalTarget,
 ) -> ProgramExecutionContext<'a> {
+    execution_context_with_actor(interpreter, target, test_runtime::actor_context())
+}
+
+fn execution_context_with_trace<'a>(
+    interpreter: &Interpreter,
+    target: RuntimeAssemblyEvalTarget,
+    trace_id: &'static str,
+) -> ProgramExecutionContext<'a> {
+    execution_context_with_actor(
+        interpreter,
+        target,
+        test_runtime::actor_context_with_trace(trace_id),
+    )
+}
+
+fn execution_context_with_actor<'a>(
+    interpreter: &Interpreter,
+    target: RuntimeAssemblyEvalTarget,
+    actor: skiff_runtime_capability_context::ActorCapabilityContext<'static>,
+) -> ProgramExecutionContext<'a> {
     let execution = test_runtime::execution_control();
     let effects = test_runtime::effects_context();
-    let actor = test_runtime::actor_context();
     let runtime_activation = Arc::new(RuntimeActivation {
         service: skiff_runtime_linked_program::ServiceMeta {
             id: "example.package-direct-caller".to_string(),
