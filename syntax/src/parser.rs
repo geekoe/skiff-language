@@ -1638,7 +1638,7 @@ impl Parser {
             self.expect_symbol("{")?;
             let mut expect = None;
             let mut expect_spans = None;
-            let mut outcomes = None;
+            let mut outcome = None;
             let mut outcome_spans = None;
             while !self.check_symbol("}") && !self.is_at_end() {
                 let field_location = self.peek().span.start;
@@ -1656,76 +1656,38 @@ impl Parser {
                             field_location,
                         ))
                     }
-                    "respond" if outcomes.is_none() => {
+                    "respond" if outcome.is_none() => {
                         let parsed = self.parse_expression()?;
-                        outcomes = Some(vec![crate::ast::TestEffectOutcome::Respond {
-                            value: parsed.expr,
-                        }]);
-                        outcome_spans =
-                            Some(vec![crate::ast::TestEffectOutcomeSourceSpans::Respond(
-                                parsed.spans,
-                            )]);
+                        outcome =
+                            Some(crate::ast::TestEffectOutcome::Respond { value: parsed.expr });
+                        outcome_spans = Some(crate::ast::TestEffectOutcomeSourceSpans::Respond(
+                            parsed.spans,
+                        ));
                     }
-                    "throw" if outcomes.is_none() => {
+                    "throw" if outcome.is_none() => {
                         let parsed = self.parse_expression()?;
-                        outcomes = Some(vec![crate::ast::TestEffectOutcome::Throw {
-                            value: parsed.expr,
-                        }]);
-                        outcome_spans =
-                            Some(vec![crate::ast::TestEffectOutcomeSourceSpans::Throw(
-                                parsed.spans,
-                            )]);
+                        outcome = Some(crate::ast::TestEffectOutcome::Throw { value: parsed.expr });
+                        outcome_spans = Some(crate::ast::TestEffectOutcomeSourceSpans::Throw(
+                            parsed.spans,
+                        ));
                     }
-                    "respondSequence" if outcomes.is_none() => {
-                        let parsed =
-                            self.parse_test_effect_expression_sequence("respondSequence")?;
-                        outcomes = Some(
-                            parsed
-                                .iter()
-                                .map(|value| crate::ast::TestEffectOutcome::Respond {
-                                    value: value.expr.clone(),
-                                })
-                                .collect(),
-                        );
-                        outcome_spans = Some(
-                            parsed
-                                .into_iter()
-                                .map(|value| {
-                                    crate::ast::TestEffectOutcomeSourceSpans::Respond(value.spans)
-                                })
-                                .collect(),
-                        );
-                    }
-                    "throwSequence" if outcomes.is_none() => {
-                        let parsed = self.parse_test_effect_expression_sequence("throwSequence")?;
-                        outcomes = Some(
-                            parsed
-                                .iter()
-                                .map(|value| crate::ast::TestEffectOutcome::Throw {
-                                    value: value.expr.clone(),
-                                })
-                                .collect(),
-                        );
-                        outcome_spans = Some(
-                            parsed
-                                .into_iter()
-                                .map(|value| {
-                                    crate::ast::TestEffectOutcomeSourceSpans::Throw(value.spans)
-                                })
-                                .collect(),
-                        );
-                    }
-                    "stream" if outcomes.is_none() => {
+                    "stream" if outcome.is_none() => {
                         let parsed = self.parse_test_effect_expression_sequence("stream")?;
-                        outcomes = Some(vec![crate::ast::TestEffectOutcome::Stream {
+                        outcome = Some(crate::ast::TestEffectOutcome::Stream {
                             events: parsed.iter().map(|value| value.expr.clone()).collect(),
-                        }]);
-                        outcome_spans =
-                            Some(vec![crate::ast::TestEffectOutcomeSourceSpans::Stream(
-                                parsed.into_iter().map(|value| value.spans).collect(),
-                            )]);
+                        });
+                        outcome_spans = Some(crate::ast::TestEffectOutcomeSourceSpans::Stream(
+                            parsed.into_iter().map(|value| value.spans).collect(),
+                        ));
                     }
-                    "respond" | "throw" | "respondSequence" | "throwSequence" | "stream" => {
+                    "sequence" if outcome.is_none() => {
+                        let (steps, step_spans) = self.parse_test_effect_sequence()?;
+                        outcome = Some(crate::ast::TestEffectOutcome::Sequence { steps });
+                        outcome_spans = Some(crate::ast::TestEffectOutcomeSourceSpans::Sequence {
+                            steps: step_spans,
+                        });
+                    }
+                    "respond" | "throw" | "stream" | "sequence" => {
                         return Err(CompileError::syntax(
                             "test effect must declare exactly one outcome field",
                             field_location,
@@ -1741,7 +1703,7 @@ impl Parser {
                 self.match_symbol(",");
             }
             self.expect_symbol("}")?;
-            let Some(outcomes) = outcomes else {
+            let Some(outcome) = outcome else {
                 return Err(CompileError::syntax(
                     "test effect requires an outcome field",
                     start,
@@ -1751,12 +1713,12 @@ impl Parser {
             effects.push(crate::ast::TestEffectDeclaration {
                 target,
                 expect,
-                outcomes,
+                outcome,
                 span: SourceSpan { start, end },
             });
             effect_spans.push(crate::ast::TestEffectSourceSpans {
                 expect: expect_spans,
-                outcomes: outcome_spans.expect("parsed test effect outcome spans"),
+                outcome: outcome_spans.expect("parsed test effect outcome spans"),
             });
             self.match_symbol(",");
         }
@@ -1775,6 +1737,104 @@ impl Parser {
             target.push_str(&self.expect_ident("expected test effect target segment")?);
         }
         Ok(target)
+    }
+
+    fn parse_test_effect_sequence(
+        &mut self,
+    ) -> Result<(
+        Vec<crate::ast::TestEffectSequenceStep>,
+        Vec<crate::ast::TestEffectSequenceStepSourceSpans>,
+    )> {
+        self.expect_symbol("[")?;
+        let mut steps = Vec::new();
+        let mut step_spans = Vec::new();
+        while !self.check_symbol("]") && !self.is_at_end() {
+            let start = self.peek().span.start;
+            self.expect_symbol("{")?;
+            let mut expect = None;
+            let mut expect_spans = None;
+            let mut outcome = None;
+            let mut outcome_spans = None;
+            while !self.check_symbol("}") && !self.is_at_end() {
+                let field_location = self.peek().span.start;
+                let field = self.expect_ident("expected test effect sequence step field")?;
+                self.expect_symbol(":")?;
+                match field.as_str() {
+                    "expect" if expect.is_none() => {
+                        let parsed = self.parse_expression()?;
+                        expect = Some(parsed.expr);
+                        expect_spans = Some(parsed.spans);
+                    }
+                    "expect" => {
+                        return Err(CompileError::syntax(
+                            "duplicate test effect sequence step `expect` field",
+                            field_location,
+                        ))
+                    }
+                    "respond" if outcome.is_none() => {
+                        let parsed = self.parse_expression()?;
+                        outcome =
+                            Some(crate::ast::TestEffectStepOutcome::Respond { value: parsed.expr });
+                        outcome_spans = Some(
+                            crate::ast::TestEffectStepOutcomeSourceSpans::Respond(parsed.spans),
+                        );
+                    }
+                    "throw" if outcome.is_none() => {
+                        let parsed = self.parse_expression()?;
+                        outcome =
+                            Some(crate::ast::TestEffectStepOutcome::Throw { value: parsed.expr });
+                        outcome_spans = Some(crate::ast::TestEffectStepOutcomeSourceSpans::Throw(
+                            parsed.spans,
+                        ));
+                    }
+                    "stream" if outcome.is_none() => {
+                        let parsed = self.parse_test_effect_expression_sequence("stream")?;
+                        outcome = Some(crate::ast::TestEffectStepOutcome::Stream {
+                            events: parsed.iter().map(|value| value.expr.clone()).collect(),
+                        });
+                        outcome_spans = Some(crate::ast::TestEffectStepOutcomeSourceSpans::Stream(
+                            parsed.into_iter().map(|value| value.spans).collect(),
+                        ));
+                    }
+                    "respond" | "throw" | "stream" => {
+                        return Err(CompileError::syntax(
+                            "test effect sequence step must declare exactly one outcome field",
+                            field_location,
+                        ))
+                    }
+                    _ => {
+                        return Err(CompileError::syntax(
+                            format!("unknown test effect sequence step field `{field}`"),
+                            field_location,
+                        ))
+                    }
+                }
+                self.match_symbol(",");
+            }
+            self.expect_symbol("}")?;
+            let Some(outcome) = outcome else {
+                return Err(CompileError::syntax(
+                    "test effect sequence step requires an outcome field",
+                    start,
+                ));
+            };
+            steps.push(crate::ast::TestEffectSequenceStep { expect, outcome });
+            step_spans.push(crate::ast::TestEffectSequenceStepSourceSpans {
+                expect: expect_spans,
+                outcome: outcome_spans.expect("parsed test effect sequence step outcome spans"),
+            });
+            if !self.match_symbol(",") {
+                break;
+            }
+        }
+        self.expect_symbol("]")?;
+        if steps.is_empty() {
+            return Err(CompileError::syntax(
+                "test effect `sequence` cannot be empty",
+                self.previous().span.start,
+            ));
+        }
+        Ok((steps, step_spans))
     }
 
     fn parse_test_effect_expression_sequence(&mut self, field: &str) -> Result<Vec<ParsedExpr>> {

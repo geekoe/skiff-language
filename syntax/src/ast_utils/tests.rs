@@ -1,7 +1,8 @@
 use super::*;
 use crate::ast::{
     BinaryOp, Block, Expr, Literal, MatchArm, ObjectLiteralEntry, ObjectLiteralKey, Pattern,
-    PatternField, Stmt, TestEffectDeclaration, TestEffectOutcome, TypeRef,
+    PatternField, Stmt, TestEffectDeclaration, TestEffectOutcome, TestEffectSequenceStep,
+    TestEffectStepOutcome, TypeRef,
 };
 
 #[test]
@@ -256,25 +257,176 @@ fn test_effect_walkers_visit_every_embedded_expression() {
         }
     }
 
-    let effect = TestEffectDeclaration {
-        target: "std.http.request".to_string(),
-        expect: Some(Expr::Identifier("expect".to_string())),
-        outcomes: vec![
-            TestEffectOutcome::Respond {
+    let mut effects = vec![
+        TestEffectDeclaration {
+            target: "std.http.respond".to_string(),
+            expect: Some(Expr::Identifier("respond_expect".to_string())),
+            outcome: TestEffectOutcome::Respond {
                 value: Expr::Identifier("respond".to_string()),
             },
-            TestEffectOutcome::Throw {
+            span: crate::error::SourceSpan::synthetic(),
+        },
+        TestEffectDeclaration {
+            target: "std.http.throw".to_string(),
+            expect: None,
+            outcome: TestEffectOutcome::Throw {
                 value: Expr::Identifier("throw".to_string()),
             },
-            TestEffectOutcome::Stream {
+            span: crate::error::SourceSpan::synthetic(),
+        },
+        TestEffectDeclaration {
+            target: "std.http.stream".to_string(),
+            expect: None,
+            outcome: TestEffectOutcome::Stream {
                 events: vec![Expr::Identifier("event".to_string())],
             },
-        ],
-        span: crate::error::SourceSpan::synthetic(),
-    };
+            span: crate::error::SourceSpan::synthetic(),
+        },
+        TestEffectDeclaration {
+            target: "std.http.sequence".to_string(),
+            expect: Some(Expr::Identifier("sequence_expect".to_string())),
+            outcome: TestEffectOutcome::Sequence {
+                steps: vec![
+                    TestEffectSequenceStep {
+                        expect: Some(Expr::Identifier("step_expect".to_string())),
+                        outcome: TestEffectStepOutcome::Respond {
+                            value: Expr::Identifier("step_respond".to_string()),
+                        },
+                    },
+                    TestEffectSequenceStep {
+                        expect: None,
+                        outcome: TestEffectStepOutcome::Throw {
+                            value: Expr::Identifier("step_throw".to_string()),
+                        },
+                    },
+                    TestEffectSequenceStep {
+                        expect: None,
+                        outcome: TestEffectStepOutcome::Stream {
+                            events: vec![Expr::Identifier("step_event".to_string())],
+                        },
+                    },
+                ],
+            },
+            span: crate::error::SourceSpan::synthetic(),
+        },
+    ];
     let mut names = Names::default();
 
-    walk_test_effect(&mut names, &effect);
+    for effect in &effects {
+        walk_test_effect(&mut names, effect);
+    }
 
-    assert_eq!(names.0, ["expect", "respond", "throw", "event"]);
+    assert_eq!(
+        names.0,
+        [
+            "respond_expect",
+            "respond",
+            "throw",
+            "event",
+            "sequence_expect",
+            "step_expect",
+            "step_respond",
+            "step_throw",
+            "step_event",
+        ]
+    );
+
+    struct PrefixIdentifiers;
+
+    impl AstVisitorMut for PrefixIdentifiers {
+        fn visit_expr(&mut self, expr: &mut Expr) {
+            if let Expr::Identifier(name) = expr {
+                name.insert_str(0, "renamed_");
+            } else {
+                walk_expr_mut(self, expr);
+            }
+        }
+    }
+
+    let mut prefixer = PrefixIdentifiers;
+    for effect in &mut effects {
+        walk_test_effect_mut(&mut prefixer, effect);
+    }
+    let mut renamed_names = Names::default();
+    for effect in &effects {
+        walk_test_effect(&mut renamed_names, effect);
+    }
+    assert!(
+        renamed_names
+            .0
+            .iter()
+            .all(|name| name.starts_with("renamed_")),
+        "mutable walker missed an embedded expression: {:?}",
+        renamed_names.0
+    );
+}
+
+#[test]
+fn compiler_test_effect_walkers_keep_probe_and_expectation_order() {
+    #[derive(Default)]
+    struct Names(Vec<String>);
+
+    impl AstVisitor for Names {
+        fn visit_expr(&mut self, expr: &Expr) {
+            if let Expr::Identifier(name) = expr {
+                self.0.push(name.clone());
+            }
+            walk_expr(self, expr);
+        }
+    }
+
+    let mut stmt = Stmt::CompilerTestEffectRegister {
+        target: "std.http.request".to_string(),
+        target_probe: Expr::Identifier("target_probe".to_string()),
+        expect: Some(Expr::Identifier("common_expect".to_string())),
+        step_expect: Some(Expr::Identifier("step_expect".to_string())),
+        outcome: TestEffectStepOutcome::Respond {
+            value: Expr::Identifier("outcome".to_string()),
+        },
+    };
+    let mut names = Names::default();
+    names.visit_stmt(&stmt);
+    assert_eq!(
+        names.0,
+        ["target_probe", "common_expect", "step_expect", "outcome"]
+    );
+
+    let expression_names = compiler_test_effect_expressions(&stmt)
+        .unwrap()
+        .into_iter()
+        .map(|expr| match expr {
+            Expr::Identifier(name) => name.as_str(),
+            other => panic!("expected identifier, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        expression_names,
+        ["target_probe", "common_expect", "step_expect", "outcome"]
+    );
+
+    struct PrefixIdentifiers;
+
+    impl AstVisitorMut for PrefixIdentifiers {
+        fn visit_expr(&mut self, expr: &mut Expr) {
+            if let Expr::Identifier(name) = expr {
+                name.insert_str(0, "renamed_");
+            } else {
+                walk_expr_mut(self, expr);
+            }
+        }
+    }
+
+    let mut prefixer = PrefixIdentifiers;
+    prefixer.visit_stmt(&mut stmt);
+    let mut renamed_names = Names::default();
+    renamed_names.visit_stmt(&stmt);
+    assert_eq!(
+        renamed_names.0,
+        [
+            "renamed_target_probe",
+            "renamed_common_expect",
+            "renamed_step_expect",
+            "renamed_outcome",
+        ]
+    );
 }

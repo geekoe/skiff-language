@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::ast::{
     Block, DbBody, DbChangeOp, DbDecl, DbOperation, DbSelector, DbWhereClause, Expr, ForBinding,
     FunctionDecl, InterfaceOperation, MatchArm, Pattern, SourceFile, Stmt, TestEffectDeclaration,
-    TestEffectOutcome, TypeRef,
+    TestEffectOutcome, TestEffectStepOutcome, TypeRef,
 };
 use crate::type_syntax::{generic_parts, split_top_level, string_literal};
 
@@ -76,6 +76,7 @@ pub fn walk_stmt(visitor: &mut (impl AstVisitor + ?Sized), stmt: &Stmt) {
         Stmt::CompilerTestEffectRegister {
             target_probe,
             expect,
+            step_expect,
             outcome,
             ..
         } => {
@@ -83,15 +84,10 @@ pub fn walk_stmt(visitor: &mut (impl AstVisitor + ?Sized), stmt: &Stmt) {
             if let Some(expect) = expect {
                 visitor.visit_expr(expect);
             }
-            match outcome {
-                crate::ast::TestEffectOutcome::Respond { value }
-                | crate::ast::TestEffectOutcome::Throw { value } => visitor.visit_expr(value),
-                crate::ast::TestEffectOutcome::Stream { events } => {
-                    for event in events {
-                        visitor.visit_expr(event);
-                    }
-                }
+            if let Some(step_expect) = step_expect {
+                visitor.visit_expr(step_expect);
             }
+            walk_test_effect_step_outcome(visitor, outcome);
         }
         Stmt::Let { ty, value, .. } => {
             if let Some(ty) = ty {
@@ -141,19 +137,27 @@ pub fn walk_stmt(visitor: &mut (impl AstVisitor + ?Sized), stmt: &Stmt) {
 
 pub fn compiler_test_effect_expressions(stmt: &Stmt) -> Option<Vec<&Expr>> {
     let Stmt::CompilerTestEffectRegister {
-        expect, outcome, ..
+        target_probe,
+        expect,
+        step_expect,
+        outcome,
+        ..
     } = stmt
     else {
         return None;
     };
-    let mut expressions = Vec::new();
+    let mut expressions = vec![target_probe];
     if let Some(expect) = expect {
         expressions.push(expect);
     }
+    if let Some(step_expect) = step_expect {
+        expressions.push(step_expect);
+    }
     match outcome {
-        crate::ast::TestEffectOutcome::Respond { value }
-        | crate::ast::TestEffectOutcome::Throw { value } => expressions.push(value),
-        crate::ast::TestEffectOutcome::Stream { events } => expressions.extend(events),
+        TestEffectStepOutcome::Respond { value } | TestEffectStepOutcome::Throw { value } => {
+            expressions.push(value);
+        }
+        TestEffectStepOutcome::Stream { events } => expressions.extend(events),
     }
     Some(expressions)
 }
@@ -273,15 +277,41 @@ pub fn walk_test_effect(visitor: &mut (impl AstVisitor + ?Sized), effect: &TestE
     if let Some(expect) = &effect.expect {
         visitor.visit_expr(expect);
     }
-    for outcome in &effect.outcomes {
-        match outcome {
-            TestEffectOutcome::Respond { value } | TestEffectOutcome::Throw { value } => {
-                visitor.visit_expr(value);
+    walk_test_effect_outcome(visitor, &effect.outcome);
+}
+
+fn walk_test_effect_outcome(visitor: &mut (impl AstVisitor + ?Sized), outcome: &TestEffectOutcome) {
+    match outcome {
+        TestEffectOutcome::Respond { value } | TestEffectOutcome::Throw { value } => {
+            visitor.visit_expr(value);
+        }
+        TestEffectOutcome::Stream { events } => {
+            for event in events {
+                visitor.visit_expr(event);
             }
-            TestEffectOutcome::Stream { events } => {
-                for event in events {
-                    visitor.visit_expr(event);
+        }
+        TestEffectOutcome::Sequence { steps } => {
+            for step in steps {
+                if let Some(expect) = &step.expect {
+                    visitor.visit_expr(expect);
                 }
+                walk_test_effect_step_outcome(visitor, &step.outcome);
+            }
+        }
+    }
+}
+
+fn walk_test_effect_step_outcome(
+    visitor: &mut (impl AstVisitor + ?Sized),
+    outcome: &TestEffectStepOutcome,
+) {
+    match outcome {
+        TestEffectStepOutcome::Respond { value } | TestEffectStepOutcome::Throw { value } => {
+            visitor.visit_expr(value);
+        }
+        TestEffectStepOutcome::Stream { events } => {
+            for event in events {
+                visitor.visit_expr(event);
             }
         }
     }
@@ -473,15 +503,44 @@ pub fn walk_test_effect_mut(
     if let Some(expect) = &mut effect.expect {
         visitor.visit_expr(expect);
     }
-    for outcome in &mut effect.outcomes {
-        match outcome {
-            TestEffectOutcome::Respond { value } | TestEffectOutcome::Throw { value } => {
-                visitor.visit_expr(value);
+    walk_test_effect_outcome_mut(visitor, &mut effect.outcome);
+}
+
+fn walk_test_effect_outcome_mut(
+    visitor: &mut (impl AstVisitorMut + ?Sized),
+    outcome: &mut TestEffectOutcome,
+) {
+    match outcome {
+        TestEffectOutcome::Respond { value } | TestEffectOutcome::Throw { value } => {
+            visitor.visit_expr(value);
+        }
+        TestEffectOutcome::Stream { events } => {
+            for event in events {
+                visitor.visit_expr(event);
             }
-            TestEffectOutcome::Stream { events } => {
-                for event in events {
-                    visitor.visit_expr(event);
+        }
+        TestEffectOutcome::Sequence { steps } => {
+            for step in steps {
+                if let Some(expect) = &mut step.expect {
+                    visitor.visit_expr(expect);
                 }
+                walk_test_effect_step_outcome_mut(visitor, &mut step.outcome);
+            }
+        }
+    }
+}
+
+fn walk_test_effect_step_outcome_mut(
+    visitor: &mut (impl AstVisitorMut + ?Sized),
+    outcome: &mut TestEffectStepOutcome,
+) {
+    match outcome {
+        TestEffectStepOutcome::Respond { value } | TestEffectStepOutcome::Throw { value } => {
+            visitor.visit_expr(value);
+        }
+        TestEffectStepOutcome::Stream { events } => {
+            for event in events {
+                visitor.visit_expr(event);
             }
         }
     }
@@ -492,6 +551,7 @@ pub fn walk_stmt_mut(visitor: &mut (impl AstVisitorMut + ?Sized), stmt: &mut Stm
         Stmt::CompilerTestEffectRegister {
             target_probe,
             expect,
+            step_expect,
             outcome,
             ..
         } => {
@@ -499,15 +559,10 @@ pub fn walk_stmt_mut(visitor: &mut (impl AstVisitorMut + ?Sized), stmt: &mut Stm
             if let Some(expect) = expect {
                 visitor.visit_expr(expect);
             }
-            match outcome {
-                crate::ast::TestEffectOutcome::Respond { value }
-                | crate::ast::TestEffectOutcome::Throw { value } => visitor.visit_expr(value),
-                crate::ast::TestEffectOutcome::Stream { events } => {
-                    for event in events {
-                        visitor.visit_expr(event);
-                    }
-                }
+            if let Some(step_expect) = step_expect {
+                visitor.visit_expr(step_expect);
             }
+            walk_test_effect_step_outcome_mut(visitor, outcome);
         }
         Stmt::Let { ty, value, .. } => {
             if let Some(ty) = ty {
@@ -874,20 +929,18 @@ pub fn block_contains_expr(block: &Block, predicate: &mut impl FnMut(&Expr) -> b
 pub fn stmt_contains_expr(stmt: &Stmt, predicate: &mut impl FnMut(&Expr) -> bool) -> bool {
     match stmt {
         Stmt::CompilerTestEffectRegister {
-            expect, outcome, ..
+            expect,
+            step_expect,
+            outcome,
+            ..
         } => {
             expect
                 .as_ref()
                 .is_some_and(|value| expr_contains_with(value, predicate))
-                || match outcome {
-                    crate::ast::TestEffectOutcome::Respond { value }
-                    | crate::ast::TestEffectOutcome::Throw { value } => {
-                        expr_contains_with(value, predicate)
-                    }
-                    crate::ast::TestEffectOutcome::Stream { events } => events
-                        .iter()
-                        .any(|value| expr_contains_with(value, predicate)),
-                }
+                || step_expect
+                    .as_ref()
+                    .is_some_and(|value| expr_contains_with(value, predicate))
+                || test_effect_step_outcome_contains_expr(outcome, predicate)
         }
         Stmt::Let { value, .. } => expr_contains_with(value, predicate),
         Stmt::Assign { target, value } => {
@@ -924,6 +977,20 @@ pub fn stmt_contains_expr(stmt: &Stmt, predicate: &mut impl FnMut(&Expr) -> bool
             .as_ref()
             .is_some_and(|value| expr_contains_with(value, predicate)),
         Stmt::Break | Stmt::Continue => false,
+    }
+}
+
+fn test_effect_step_outcome_contains_expr(
+    outcome: &TestEffectStepOutcome,
+    predicate: &mut impl FnMut(&Expr) -> bool,
+) -> bool {
+    match outcome {
+        TestEffectStepOutcome::Respond { value } | TestEffectStepOutcome::Throw { value } => {
+            expr_contains_with(value, predicate)
+        }
+        TestEffectStepOutcome::Stream { events } => events
+            .iter()
+            .any(|value| expr_contains_with(value, predicate)),
     }
 }
 
@@ -995,20 +1062,51 @@ fn collect_source_expression_dotted_root_imports(
             if let Some(expect) = &effect.expect {
                 collect_expr_dotted_root_imports(expect, root, imports);
             }
-            for outcome in &effect.outcomes {
-                match outcome {
-                    TestEffectOutcome::Respond { value } | TestEffectOutcome::Throw { value } => {
-                        collect_expr_dotted_root_imports(value, root, imports);
-                    }
-                    TestEffectOutcome::Stream { events } => {
-                        for event in events {
-                            collect_expr_dotted_root_imports(event, root, imports);
-                        }
-                    }
-                }
-            }
+            collect_test_effect_outcome_dotted_root_imports(&effect.outcome, root, imports);
         }
         collect_block_dotted_root_imports(&test.body, root, imports);
+    }
+}
+
+fn collect_test_effect_outcome_dotted_root_imports(
+    outcome: &TestEffectOutcome,
+    root: &str,
+    imports: &mut BTreeSet<Vec<String>>,
+) {
+    match outcome {
+        TestEffectOutcome::Respond { value } | TestEffectOutcome::Throw { value } => {
+            collect_expr_dotted_root_imports(value, root, imports);
+        }
+        TestEffectOutcome::Stream { events } => {
+            for event in events {
+                collect_expr_dotted_root_imports(event, root, imports);
+            }
+        }
+        TestEffectOutcome::Sequence { steps } => {
+            for step in steps {
+                if let Some(expect) = &step.expect {
+                    collect_expr_dotted_root_imports(expect, root, imports);
+                }
+                collect_test_effect_step_outcome_dotted_root_imports(&step.outcome, root, imports);
+            }
+        }
+    }
+}
+
+fn collect_test_effect_step_outcome_dotted_root_imports(
+    outcome: &TestEffectStepOutcome,
+    root: &str,
+    imports: &mut BTreeSet<Vec<String>>,
+) {
+    match outcome {
+        TestEffectStepOutcome::Respond { value } | TestEffectStepOutcome::Throw { value } => {
+            collect_expr_dotted_root_imports(value, root, imports);
+        }
+        TestEffectStepOutcome::Stream { events } => {
+            for event in events {
+                collect_expr_dotted_root_imports(event, root, imports);
+            }
+        }
     }
 }
 
@@ -1105,22 +1203,18 @@ fn collect_stmt_type_ref_dotted_root_imports(
 ) {
     match stmt {
         Stmt::CompilerTestEffectRegister {
-            expect, outcome, ..
+            expect,
+            step_expect,
+            outcome,
+            ..
         } => {
             if let Some(expect) = expect {
                 collect_expr_type_ref_dotted_root_imports(expect, root, imports);
             }
-            match outcome {
-                crate::ast::TestEffectOutcome::Respond { value }
-                | crate::ast::TestEffectOutcome::Throw { value } => {
-                    collect_expr_type_ref_dotted_root_imports(value, root, imports)
-                }
-                crate::ast::TestEffectOutcome::Stream { events } => {
-                    for value in events {
-                        collect_expr_type_ref_dotted_root_imports(value, root, imports);
-                    }
-                }
+            if let Some(step_expect) = step_expect {
+                collect_expr_type_ref_dotted_root_imports(step_expect, root, imports);
             }
+            collect_test_effect_step_outcome_type_ref_dotted_root_imports(outcome, root, imports);
         }
         Stmt::Let { ty, value, .. } => {
             if let Some(ty) = ty {
@@ -1171,6 +1265,23 @@ fn collect_stmt_type_ref_dotted_root_imports(
             }
         }
         Stmt::Break | Stmt::Continue => {}
+    }
+}
+
+fn collect_test_effect_step_outcome_type_ref_dotted_root_imports(
+    outcome: &TestEffectStepOutcome,
+    root: &str,
+    imports: &mut BTreeSet<Vec<String>>,
+) {
+    match outcome {
+        TestEffectStepOutcome::Respond { value } | TestEffectStepOutcome::Throw { value } => {
+            collect_expr_type_ref_dotted_root_imports(value, root, imports);
+        }
+        TestEffectStepOutcome::Stream { events } => {
+            for value in events {
+                collect_expr_type_ref_dotted_root_imports(value, root, imports);
+            }
+        }
     }
 }
 
@@ -1357,22 +1468,18 @@ fn collect_block_dotted_root_imports(
 fn collect_stmt_dotted_root_imports(stmt: &Stmt, root: &str, imports: &mut BTreeSet<Vec<String>>) {
     match stmt {
         Stmt::CompilerTestEffectRegister {
-            expect, outcome, ..
+            expect,
+            step_expect,
+            outcome,
+            ..
         } => {
             if let Some(expect) = expect {
                 collect_expr_dotted_root_imports(expect, root, imports);
             }
-            match outcome {
-                crate::ast::TestEffectOutcome::Respond { value }
-                | crate::ast::TestEffectOutcome::Throw { value } => {
-                    collect_expr_dotted_root_imports(value, root, imports)
-                }
-                crate::ast::TestEffectOutcome::Stream { events } => {
-                    for value in events {
-                        collect_expr_dotted_root_imports(value, root, imports);
-                    }
-                }
+            if let Some(step_expect) = step_expect {
+                collect_expr_dotted_root_imports(step_expect, root, imports);
             }
+            collect_test_effect_step_outcome_dotted_root_imports(outcome, root, imports);
         }
         Stmt::Let { value, .. } => collect_expr_dotted_root_imports(value, root, imports),
         Stmt::Assign { target, value } => {

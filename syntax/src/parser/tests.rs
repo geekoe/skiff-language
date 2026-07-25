@@ -1,5 +1,6 @@
 use crate::ast::{
     DbIndexDirection, DbRetentionUnit, DbStorageCodec, ForBinding, Stmt, TestEffectOutcome,
+    TestEffectStepOutcome,
 };
 
 use super::{
@@ -1233,9 +1234,18 @@ fn parses_inline_test_effects_and_sequences() {
         test "calls dependency" effects {
           std.http.client.request {
             expect: { method: "POST" },
-            respondSequence: [
-              { status: 200 },
-              { status: 202 },
+            sequence: [
+              {
+                expect: { url: "https://example.test/first" },
+                respond: { status: 200 },
+              },
+              {
+                expect: { url: "https://example.test/second" },
+                throw: Failure { message: "no" },
+              },
+              {
+                stream: [{ value: 1 }, { value: 2 }],
+              },
             ],
           },
           subject/internal.stream {
@@ -1255,19 +1265,57 @@ fn parses_inline_test_effects_and_sequences() {
     assert_eq!(effects.len(), 3);
     assert_eq!(effects[0].target, "std.http.client.request");
     assert!(effects[0].expect.is_some());
-    assert_eq!(effects[0].outcomes.len(), 2);
-    assert!(effects[0]
-        .outcomes
-        .iter()
-        .all(|outcome| matches!(outcome, TestEffectOutcome::Respond { .. })));
+    let TestEffectOutcome::Sequence { steps } = &effects[0].outcome else {
+        panic!("expected sequence outcome");
+    };
+    assert_eq!(steps.len(), 3);
+    assert!(steps[0].expect.is_some());
+    assert!(matches!(
+        &steps[0].outcome,
+        TestEffectStepOutcome::Respond { .. }
+    ));
+    assert!(steps[1].expect.is_some());
+    assert!(matches!(
+        &steps[1].outcome,
+        TestEffectStepOutcome::Throw { .. }
+    ));
+    assert!(steps[2].expect.is_none());
+    assert!(matches!(
+        &steps[2].outcome,
+        TestEffectStepOutcome::Stream { events } if events.len() == 2
+    ));
     assert_eq!(effects[1].target, "subject/internal.stream");
     assert!(matches!(
-        &effects[1].outcomes[0],
+        &effects[1].outcome,
         TestEffectOutcome::Stream { events } if events.len() == 2
     ));
     assert!(matches!(
-        effects[2].outcomes[0],
+        &effects[2].outcome,
         TestEffectOutcome::Throw { .. }
+    ));
+
+    let effect_spans = &ast.source_spans.tests[0].effects;
+    assert_eq!(effect_spans.len(), 3);
+    assert!(effect_spans[0].expect.is_some());
+    let crate::ast::TestEffectOutcomeSourceSpans::Sequence { steps } = &effect_spans[0].outcome
+    else {
+        panic!("expected sequence source spans");
+    };
+    assert_eq!(steps.len(), 3);
+    assert!(steps[0].expect.is_some());
+    assert!(matches!(
+        &steps[0].outcome,
+        crate::ast::TestEffectStepOutcomeSourceSpans::Respond(_)
+    ));
+    assert!(steps[1].expect.is_some());
+    assert!(matches!(
+        &steps[1].outcome,
+        crate::ast::TestEffectStepOutcomeSourceSpans::Throw(_)
+    ));
+    assert!(steps[2].expect.is_none());
+    assert!(matches!(
+        &steps[2].outcome,
+        crate::ast::TestEffectStepOutcomeSourceSpans::Stream(events) if events.len() == 2
     ));
 }
 
@@ -1275,7 +1323,7 @@ fn parses_inline_test_effects_and_sequences() {
 fn rejects_invalid_inline_test_effect_shapes() {
     let cases = [
         (
-            r#"test "x" effects { std.http.get { respondSequence: [] } } {}"#,
+            r#"test "x" effects { std.http.get { sequence: [] } } {}"#,
             "cannot be empty",
         ),
         (
@@ -1292,8 +1340,57 @@ fn rejects_invalid_inline_test_effect_shapes() {
             "exactly one outcome",
         ),
         (
+            r#"test "x" effects {
+                std.http.get {
+                    respond: { ok: true },
+                    sequence: [{ respond: { ok: false } }]
+                }
+            } {}"#,
+            "exactly one outcome",
+        ),
+        (
             r#"test "x" effects { std.http.get { expect: {} } } {}"#,
             "requires an outcome",
+        ),
+        (
+            r#"test "x" effects {
+                std.http.get { sequence: [{ expect: { id: 1 } }] }
+            } {}"#,
+            "sequence step requires an outcome",
+        ),
+        (
+            r#"test "x" effects {
+                std.http.get {
+                    sequence: [{ respond: {}, throw: Failure {} }]
+                }
+            } {}"#,
+            "sequence step must declare exactly one outcome",
+        ),
+        (
+            r#"test "x" effects {
+                std.http.get {
+                    sequence: [{
+                        expect: { id: 1 },
+                        expect: { id: 2 },
+                        respond: {}
+                    }]
+                }
+            } {}"#,
+            "duplicate test effect sequence step `expect` field",
+        ),
+        (
+            r#"test "x" effects {
+                std.http.get { sequence: [{ sequence: [{ respond: {} }] }] }
+            } {}"#,
+            "unknown test effect sequence step field `sequence`",
+        ),
+        (
+            r#"test "x" effects { std.http.get { respondSequence: [{}] } } {}"#,
+            "unknown test effect field `respondSequence`",
+        ),
+        (
+            r#"test "x" effects { std.http.get { throwSequence: [Failure {}] } } {}"#,
+            "unknown test effect field `throwSequence`",
         ),
         (
             r#"test "x" effects { std.http.get { response: {} } } {}"#,
@@ -1330,7 +1427,12 @@ fn inline_effect_changes_do_not_change_production_source_text() {
     let second = r#"
         function production() -> number { return 1 }
         test "renamed" effects {
-          std.http.get { respondSequence: [{ status: 201 }, { status: 202 }] }
+          std.http.get {
+            sequence: [
+              { respond: { status: 201 } },
+              { respond: { status: 202 } },
+            ]
+          }
         } { assert false }
     "#;
     let first_ast = parse_source(first).unwrap();

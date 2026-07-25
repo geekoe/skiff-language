@@ -63,11 +63,27 @@ pub struct ExecutableSourceSpans {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TestEffectSourceSpans {
     pub expect: Option<ExprSourceSpans>,
-    pub outcomes: Vec<TestEffectOutcomeSourceSpans>,
+    pub outcome: TestEffectOutcomeSourceSpans,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TestEffectOutcomeSourceSpans {
+    Respond(ExprSourceSpans),
+    Throw(ExprSourceSpans),
+    Stream(Vec<ExprSourceSpans>),
+    Sequence {
+        steps: Vec<TestEffectSequenceStepSourceSpans>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestEffectSequenceStepSourceSpans {
+    pub expect: Option<ExprSourceSpans>,
+    pub outcome: TestEffectStepOutcomeSourceSpans,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TestEffectStepOutcomeSourceSpans {
     Respond(ExprSourceSpans),
     Throw(ExprSourceSpans),
     Stream(Vec<ExprSourceSpans>),
@@ -380,7 +396,8 @@ pub enum Stmt {
         target: String,
         target_probe: Expr,
         expect: Option<Expr>,
-        outcome: TestEffectOutcome,
+        step_expect: Option<Expr>,
+        outcome: TestEffectStepOutcome,
     },
     Assert {
         condition: Expr,
@@ -598,13 +615,29 @@ pub struct TestEffectDeclaration {
     pub target: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expect: Option<Expr>,
-    pub outcomes: Vec<TestEffectOutcome>,
+    pub outcome: TestEffectOutcome,
     pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum TestEffectOutcome {
+    Respond { value: Expr },
+    Throw { value: Expr },
+    Stream { events: Vec<Expr> },
+    Sequence { steps: Vec<TestEffectSequenceStep> },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TestEffectSequenceStep {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect: Option<Expr>,
+    pub outcome: TestEffectStepOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TestEffectStepOutcome {
     Respond { value: Expr },
     Throw { value: Expr },
     Stream { events: Vec<Expr> },
