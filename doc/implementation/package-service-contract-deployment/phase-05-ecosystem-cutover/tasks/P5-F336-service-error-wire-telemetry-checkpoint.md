@@ -1,6 +1,7 @@
 # P5-F336 Service error wire and telemetry checkpoint
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F336-service-error-wire-telemetry-checkpoint-result.md`。
 
 ## 直接父节点
 
