@@ -270,14 +270,12 @@ impl Evaluator<'_, '_> {
                 EscapeLane::Native,
             );
         };
-        // Receiver mutation and heap-identity requirements are contextual to
-        // the receiver graph, not to values merely embedded into that graph.
-        // A fresh local JsonObject therefore discharges set's W+I facts even
-        // when the inserted value originated at the caller boundary.
+        // Receiver mutation is contextual to the receiver graph, not to values
+        // merely embedded into that graph. A fresh local JsonObject therefore
+        // discharges the write fact even when the inserted value originated at
+        // the caller boundary.
         if !actuals[0].contains_direct_caller_reference() && !actuals[0].unknown {
             callee.effects.writes_caller_reachable = false;
-            callee.effects.requires_same_heap_identity = false;
-            callee.same_heap_identity_parameters.clear();
         }
         let result = self.apply_callee(&callee, &actuals, return_reference, None);
         if let Some(value) = stored_value {
@@ -384,14 +382,7 @@ impl Evaluator<'_, '_> {
                 }
                 if mapped_target.contains_direct_caller_reference() {
                     self.state.effects.writes_caller_reachable = true;
-                    self.state.effects.requires_same_heap_identity = true;
                     self.state.write_parameters.extend(
-                        mapped_target
-                            .direct_caller_references
-                            .iter()
-                            .map(|reference| reference.parameter),
-                    );
-                    self.state.same_heap_identity_parameters.extend(
                         mapped_target
                             .direct_caller_references
                             .iter()
@@ -417,12 +408,17 @@ impl Evaluator<'_, '_> {
         }
         if callee.effects.requires_same_heap_identity {
             let identity_actuals = indexed_actuals(&callee.same_heap_identity_parameters, actuals);
+            // Only a mapped caller-owned identity makes the callee's real
+            // observation visible here. An unknown actual remains rejected by
+            // its unknown facts without manufacturing an identity observation.
             let identity_is_observable = if callee.same_heap_identity_parameters.is_empty() {
-                any_caller_reference || callee.effects.invokes_unknown_target
+                actuals
+                    .iter()
+                    .any(|actual| actual.contains_direct_caller_reference())
             } else {
                 identity_actuals
                     .iter()
-                    .any(|actual| actual.contains_direct_caller_reference() || actual.unknown)
+                    .any(|actual| actual.contains_direct_caller_reference())
             };
             self.state.effects.requires_same_heap_identity |= identity_is_observable;
             if identity_is_observable {

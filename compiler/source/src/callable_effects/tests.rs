@@ -598,7 +598,7 @@ fn publication_wide_call_graph_closes_effects_and_provenance_across_files() {
     ] {
         let effects = effects_in(&model, module, symbol);
         assert!(effects.writes_caller_reachable, "{module}.{symbol}");
-        assert!(effects.requires_same_heap_identity, "{module}.{symbol}");
+        assert!(!effects.requires_same_heap_identity, "{module}.{symbol}");
     }
 
     for (module, symbol) in [
@@ -893,7 +893,7 @@ fn fresh_store_taint_propagates_through_callers_and_scc() {
 }
 
 #[test]
-fn direct_parameter_field_store_has_write_and_same_heap_effects() {
+fn direct_parameter_field_store_has_write_without_identity_observation() {
     let model = analyze(
         r#"
             type Boxed { value: string }
@@ -924,7 +924,6 @@ fn direct_parameter_field_store_has_write_and_same_heap_effects() {
             effects(&model, callable),
             CallableMayEffects {
                 writes_caller_reachable: true,
-                requires_same_heap_identity: true,
                 ..no_effects()
             },
             "{callable}"
@@ -981,7 +980,6 @@ fn fresh_alias_helper_loop_and_suspend_keep_relay_shaped_state_local() {
         effects(&model, "update"),
         CallableMayEffects {
             writes_caller_reachable: true,
-            requires_same_heap_identity: true,
             ..no_effects()
         }
     );
@@ -1023,7 +1021,6 @@ fn nested_heap_store_remains_fail_closed_and_direct_reference_store_is_precise()
         effects(&model, "reference"),
         CallableMayEffects {
             writes_caller_reachable: true,
-            requires_same_heap_identity: true,
             ..no_effects()
         }
     );
@@ -1140,7 +1137,6 @@ fn conditional_map_lookup_tracks_distinct_fresh_and_formal_candidates() {
         CallableMayEffects {
             writes_caller_reachable: true,
             returns_caller_alias: true,
-            requires_same_heap_identity: true,
             ..no_effects()
         }
     );
@@ -1188,7 +1184,6 @@ fn helper_map_projection_can_be_mutated_and_reinserted_without_becoming_the_map_
         CallableMayEffects {
             writes_caller_reachable: true,
             returns_caller_alias: true,
-            requires_same_heap_identity: true,
             ..no_effects()
         }
     );
@@ -1333,19 +1328,15 @@ fn fresh_json_root_stays_distinct_from_caller_reachable_payload() {
         effects(&model, "mutateWrappedPayload"),
         CallableMayEffects {
             writes_caller_reachable: true,
-            requires_same_heap_identity: true,
             ..no_effects()
         },
-        "reading the payload back out of a fresh wrapper must recover its caller identity"
+        "mutating a caller payload recovered from a fresh wrapper is a write, not an identity observation"
     );
 
     assert_eq!(
         effects(&model, "project"),
-        CallableMayEffects {
-            requires_same_heap_identity: true,
-            ..no_effects()
-        },
-        "mutating the fresh projected object and fresh output array must not write caller roots"
+        no_effects(),
+        "mutating the fresh projected object and fresh output array must remain local"
     );
     assert!(matches!(
         provenance(&model, "project"),
@@ -1356,7 +1347,6 @@ fn fresh_json_root_stays_distinct_from_caller_reachable_payload() {
         effects(&model, "conditional"),
         CallableMayEffects {
             writes_caller_reachable: true,
-            requires_same_heap_identity: true,
             ..no_effects()
         },
         "a fresh/caller receiver union must not discharge the caller candidate"
@@ -1445,7 +1435,6 @@ fn dependency_fresh_wrapper_keeps_payload_reachable_without_becoming_caller_owne
         effects(&model, "conditional"),
         CallableMayEffects {
             writes_caller_reachable: true,
-            requires_same_heap_identity: true,
             ..no_effects()
         },
         "a direct Fresh/caller union remains conservative across a package boundary"
@@ -1496,7 +1485,6 @@ fn helper_parameter_store_distinguishes_field_projection_from_root_cycle() {
         effects(&model, "update"),
         CallableMayEffects {
             writes_caller_reachable: true,
-            requires_same_heap_identity: true,
             ..no_effects()
         }
     );
@@ -1636,9 +1624,8 @@ fn throw_and_rethrow_preserve_operand_effects_but_detach_emitted_provenance() {
     ] {
         let effects = effects(&model, callable);
         assert!(!effects.throws_caller_alias, "{callable}: {effects:?}");
-        assert_eq!(
-            effects.requires_same_heap_identity,
-            matches!(callable, "throwStatement" | "throwExpression"),
+        assert!(
+            !effects.requires_same_heap_identity,
             "{callable}: {effects:?}"
         );
         assert!(!effects.invokes_unknown_target, "{callable}: {effects:?}");
@@ -1706,6 +1693,10 @@ fn stream_spawn_database_and_callback_escape_lanes_are_explicit() {
     assert!(effects(&model, "persist").may_suspend);
     assert_escape_lane(&model, "persist", ValueEscapeLane::Database);
     assert_escape_lane(&model, "callback", ValueEscapeLane::Callback);
+    assert!(
+        !effects(&model, "callback").requires_same_heap_identity,
+        "interface boxing is a callback escape, not an identity observation"
+    );
 }
 
 #[test]
@@ -2803,7 +2794,6 @@ fn exact_package_boundary_callables_transfer_canonical_effects_and_provenance() 
         effects_in(&model, "std.effect_test", "push"),
         CallableMayEffects {
             writes_caller_reachable: true,
-            requires_same_heap_identity: true,
             ..no_effects()
         }
     );
@@ -2849,7 +2839,6 @@ fn receiver_effects_are_contextual_to_caller_reachable_values() {
 
     let caller_effects = CallableMayEffects {
         writes_caller_reachable: true,
-        requires_same_heap_identity: true,
         ..no_effects()
     };
     for callable in ["append", "appendHop", "callerOwned"] {
@@ -2926,6 +2915,39 @@ fn local_call_transfer_maps_alias_and_identity_to_exact_formal_actuals() {
             ) -> JsonObject {
               return branch(chooseFirst, input, {})
             }
+
+            function callerInequality(input: JsonObject) -> bool {
+              return input != input
+            }
+
+            function recursiveIdentity(
+              input: JsonObject,
+              again: bool
+            ) -> bool {
+              if again {
+                return recursiveIdentity(input, false)
+              }
+              return input == input
+            }
+
+            function callerRecursive(input: JsonObject) -> bool {
+              return recursiveIdentity(input, true)
+            }
+
+            function freshRecursive() -> bool {
+              return recursiveIdentity({}, true)
+            }
+
+            function freshEquality() -> bool {
+              const left: JsonObject = {}
+              const right: JsonObject = {}
+              return left == right
+            }
+
+            function identityThenFresh(input: JsonObject) -> JsonObject {
+              const same = input == input
+              return {}
+            }
         "#,
         SourceDependencyAnalysisInput::default(),
     );
@@ -2953,6 +2975,25 @@ fn local_call_transfer_maps_alias_and_identity_to_exact_formal_actuals() {
             }),
             "{callable}: {return_origins:?}"
         );
+    }
+
+    for callable in [
+        "callerInequality",
+        "recursiveIdentity",
+        "callerRecursive",
+        "identityThenFresh",
+    ] {
+        assert_eq!(
+            effects(&model, callable),
+            CallableMayEffects {
+                requires_same_heap_identity: true,
+                ..no_effects()
+            },
+            "{callable}"
+        );
+    }
+    for callable in ["freshRecursive", "freshEquality"] {
+        assert_eq!(effects(&model, callable), no_effects(), "{callable}");
     }
 }
 
@@ -2985,7 +3026,6 @@ fn json_object_set_effects_are_contextual_to_caller_reachable_values() {
 
     let caller_effects = CallableMayEffects {
         writes_caller_reachable: true,
-        requires_same_heap_identity: true,
         ..no_effects()
     };
     for callable in ["setCallerOwned", "callerOwnedHop"] {
@@ -3357,7 +3397,6 @@ fn exact_json_object_delete_mutates_caller_receiver_but_discharges_fresh_receive
         effects_in(&model, "responses_projection", "deleteCallerField"),
         CallableMayEffects {
             writes_caller_reachable: true,
-            requires_same_heap_identity: true,
             ..no_effects()
         }
     );
@@ -3440,7 +3479,6 @@ fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detache
         effects_in(&model, "chatgpt_plan.codec", "direct"),
         CallableMayEffects {
             returns_caller_alias: true,
-            requires_same_heap_identity: true,
             ..no_effects()
         }
     );
@@ -3503,7 +3541,6 @@ fn exact_map_get_preserves_caller_alias_but_discharges_fresh_accumulator() {
         effects_in(&model, "responses", "direct"),
         CallableMayEffects {
             returns_caller_alias: true,
-            requires_same_heap_identity: true,
             ..no_effects()
         }
     );
@@ -3562,7 +3599,6 @@ fn exact_map_has_and_set_keep_contextual_receiver_semantics() {
         effects_in(&model, "responses", "updateCaller"),
         CallableMayEffects {
             writes_caller_reachable: true,
-            requires_same_heap_identity: true,
             ..no_effects()
         }
     );
@@ -3635,7 +3671,6 @@ fn formal_indexed_receiver_writes_ignore_unrelated_caller_actuals_through_helper
             effects_in(&model, "formal_write", callable),
             CallableMayEffects {
                 writes_caller_reachable: true,
-                requires_same_heap_identity: true,
                 ..no_effects()
             },
             "{callable}"
@@ -3764,7 +3799,7 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
     ] {
         let effects = effects_in(&model, "std.effect_test", callable);
         assert!(effects.invokes_unknown_target, "{callable}");
-        assert!(effects.requires_same_heap_identity, "{callable}");
+        assert!(!effects.requires_same_heap_identity, "{callable}");
         assert!(matches!(
             provenance_in(&model, "std.effect_test", callable),
             CallableProvenanceSummary::Unknown { .. }
@@ -3774,7 +3809,6 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
         effects_in(&model, "std.effect_test", "mutableReceiver"),
         CallableMayEffects {
             writes_caller_reachable: true,
-            requires_same_heap_identity: true,
             ..no_effects()
         }
     );
@@ -4182,7 +4216,7 @@ fn non_detached_or_unsupported_contract_remains_fail_closed() {
     assert!(effects.writes_caller_reachable);
     assert!(effects.throws_caller_alias);
     assert!(effects.escapes_caller_value);
-    assert!(effects.requires_same_heap_identity);
+    assert!(!effects.requires_same_heap_identity);
     assert!(effects.invokes_unknown_target);
     assert!(effects.may_suspend);
     assert!(matches!(
@@ -4544,7 +4578,7 @@ fn all_effects() -> CallableMayEffects {
         returns_caller_alias: true,
         throws_caller_alias: true,
         escapes_caller_value: true,
-        requires_same_heap_identity: true,
+        requires_same_heap_identity: false,
         invokes_unknown_target: true,
         may_suspend: true,
     }

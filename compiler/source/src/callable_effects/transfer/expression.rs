@@ -36,7 +36,6 @@ impl Evaluator<'_, '_> {
                 }
             }
             Expr::DependencySourceAddress(_) => {
-                self.state.effects.requires_same_heap_identity = true;
                 self.state.effects.invokes_unknown_target = true;
                 self.state.effects.may_suspend = true;
                 self.state
@@ -84,7 +83,6 @@ impl Evaluator<'_, '_> {
             Expr::InterfaceBox { value, .. } => {
                 let mut value = self.eval_expr(value, env);
                 value.reference = true;
-                self.state.record_same_heap_identity(&value);
                 self.state.record_escape(&value, EscapeLane::Callback);
                 value
             }

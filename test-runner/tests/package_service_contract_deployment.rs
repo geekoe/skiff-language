@@ -41,7 +41,7 @@ use skiff_test_runner::{
 const EXPECTED_PRELUDE_IDENTITY: &str =
     "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699";
 const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
-    "skiff-package-build-v4:sha256:fb02ab8f45ecd20b6e5a4b870d6c1280a51e0690481c6916f93423e8ea666536";
+    "skiff-package-build-v4:sha256:62177ac4e6d764166e2387c52847f97565ad38836d0631845af9a73e9f2512d1";
 
 #[test]
 fn platform_source_context_contract() {
@@ -1443,7 +1443,7 @@ fn assert_helper_mutation_semantics(
                 returns_caller_alias: false,
                 throws_caller_alias: false,
                 escapes_caller_value: false,
-                requires_same_heap_identity: true,
+                requires_same_heap_identity: false,
                 invokes_unknown_target: false,
                 may_suspend: false,
             }
@@ -1459,9 +1459,80 @@ fn assert_helper_mutation_semantics(
         panic!("mutating helper must remain unavailable at a detached boundary")
     };
     assert!(reasons.contains(&BoundaryUnavailableReason::WritesCallerReachable));
-    assert!(reasons.contains(&BoundaryUnavailableReason::RequiresSameHeapIdentity));
+    assert!(!reasons.contains(&BoundaryUnavailableReason::RequiresSameHeapIdentity));
     assert!(!reasons.contains(&BoundaryUnavailableReason::UnknownEffect));
     assert!(!reasons.contains(&BoundaryUnavailableReason::UnknownCallTarget));
+}
+
+#[test]
+fn caller_identity_comparisons_remain_boundary_unavailable_but_fresh_comparison_is_available() {
+    let root = TestRoot::new("same-heap-identity");
+    let artifacts = root.child("artifacts");
+    let package = root.child("package");
+    create_store(&artifacts);
+    write_package(
+        &package,
+        "id: example.com/same-heap\nversion: 1.0.0\n",
+        Some("Box: main.Box\nsame: main.same\nnotSame: main.notSame\nfresh: main.fresh\n"),
+        Some(
+            r#"type Box { value: string }
+
+function same(input: Box) -> bool {
+  return input == input
+}
+
+function notSame(input: Box) -> bool {
+  return input != input
+}
+
+function fresh() -> bool {
+  const left = Box { value: "left" }
+  const right = Box { value: "right" }
+  return left == right
+}
+"#,
+        ),
+    );
+    let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
+
+    for public_path in ["same", "notSame"] {
+        let PackageLocalAbiSymbol::Callable { callable_id, .. } =
+            &project.package.artifact.package_local_abi.public_symbols[public_path]
+        else {
+            panic!("{public_path} must be callable")
+        };
+        assert_eq!(
+            project.package.artifact.callable_semantic_facts[callable_id].effects,
+            CallableEffectSummary::Analyzed {
+                effects: CallableMayEffects {
+                    writes_caller_reachable: false,
+                    returns_caller_alias: false,
+                    throws_caller_alias: false,
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: true,
+                    invokes_unknown_target: false,
+                    may_suspend: false,
+                }
+            },
+            "{public_path}"
+        );
+        let BoundaryCallableProjection::Unavailable { reasons } =
+            &project.package.artifact.boundary_projections[callable_id]
+        else {
+            panic!("{public_path} must remain boundary unavailable")
+        };
+        assert!(
+            reasons.contains(&BoundaryUnavailableReason::RequiresSameHeapIdentity),
+            "{public_path}: {reasons:?}"
+        );
+        assert!(
+            !reasons.contains(&BoundaryUnavailableReason::UnknownEffect)
+                && !reasons.contains(&BoundaryUnavailableReason::UnknownCallTarget),
+            "{public_path}: {reasons:?}"
+        );
+    }
+
+    public_operation_projection(&project, "fresh");
 }
 
 #[test]

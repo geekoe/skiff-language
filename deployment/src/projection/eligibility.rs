@@ -94,10 +94,7 @@ fn effect_reasons(
     {
         push_reason(reasons, BoundaryUnavailableReason::UnknownEffect);
     }
-    if effects.requires_same_heap_identity
-        && guarantee.no_same_heap_identity
-        && !(detached_parameters && has_only_database_escape(provenance))
-    {
+    if effects.requires_same_heap_identity {
         push_reason(reasons, BoundaryUnavailableReason::RequiresSameHeapIdentity);
     }
     if effects.invokes_unknown_target {

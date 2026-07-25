@@ -506,7 +506,7 @@ impl CallableState {
     }
 
     pub fn record_same_heap_identity(&mut self, value: &AbstractValue) {
-        if value.contains_direct_caller_reference() || value.unknown {
+        if value.contains_direct_caller_reference() {
             self.effects.requires_same_heap_identity = true;
             self.same_heap_identity_parameters.extend(
                 value
@@ -608,12 +608,16 @@ pub(super) fn no_effects() -> CallableMayEffects {
 }
 
 pub(super) fn all_effects() -> CallableMayEffects {
+    // Unknown analysis must remain boundary-ineligible, but the identity bit is
+    // an observed-operation fact rather than a generic fail-closed marker.
+    // invokes_unknown_target and the other conservative effects carry the
+    // rejection without claiming that an identity comparison occurred.
     CallableMayEffects {
         writes_caller_reachable: true,
         returns_caller_alias: true,
         throws_caller_alias: true,
         escapes_caller_value: true,
-        requires_same_heap_identity: true,
+        requires_same_heap_identity: false,
         invokes_unknown_target: true,
         may_suspend: true,
     }

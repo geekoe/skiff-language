@@ -20,13 +20,7 @@ pub(super) fn semantic_unavailable_reasons(
             push_reason(&mut reasons, BoundaryUnavailableReason::UnknownEffect);
         }
         CallableEffectSummary::Analyzed { effects } => {
-            effect_unavailable_reasons(
-                *effects,
-                detached_wrapped_return,
-                detached_parameters,
-                facts,
-                &mut reasons,
-            );
+            effect_unavailable_reasons(*effects, detached_wrapped_return, &mut reasons);
         }
     }
     match &facts.provenance {
@@ -103,8 +97,6 @@ pub(super) fn semantic_unavailable_reasons(
 fn effect_unavailable_reasons(
     effects: CallableMayEffects,
     detached_wrapped_return: bool,
-    detached_parameters: bool,
-    facts: &CallableSemanticFacts,
     reasons: &mut Vec<BoundaryUnavailableReason>,
 ) {
     if effects.writes_caller_reachable {
@@ -116,9 +108,7 @@ fn effect_unavailable_reasons(
     if effects.throws_caller_alias {
         push_reason(reasons, BoundaryUnavailableReason::ThrowsCallerAlias);
     }
-    if effects.requires_same_heap_identity
-        && !(detached_parameters && has_only_materialized_database_escape(facts))
-    {
+    if effects.requires_same_heap_identity {
         push_reason(reasons, BoundaryUnavailableReason::RequiresSameHeapIdentity);
     }
     if effects.invokes_unknown_target {
@@ -256,5 +246,77 @@ fn reason_sort_key(reason: &BoundaryUnavailableReason) -> (u8, u8) {
         BoundaryUnavailableReason::NativeAdapterUnavailable => (9, 0),
         BoundaryUnavailableReason::UnsupportedBoundaryType => (10, 0),
         BoundaryUnavailableReason::UnsupportedStream => (11, 0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use skiff_artifact_model::{
+        BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
+        BoundaryErrorContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
+        BoundaryValueLifetime, BoundaryValueOwner, ContractTypeRef, ValueEscapeLane,
+    };
+
+    use super::*;
+
+    #[test]
+    fn identity_observation_survives_detachment_and_database_materialization() {
+        let detached_plan = |owner| BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::DetachedValueGraph,
+            encoding: BoundaryValueEncoding::CanonicalValue,
+            owner,
+            lifetime: BoundaryValueLifetime::Call,
+        };
+        let contract = BoundaryOperationContract {
+            parameters: vec![BoundaryParameter {
+                name: "value".to_string(),
+                ty: ContractTypeRef::builtin("Json"),
+                value_plan: detached_plan(BoundaryValueOwner::Caller),
+            }],
+            return_value: BoundaryReturn {
+                ty: ContractTypeRef::builtin("Json"),
+                value_plan: detached_plan(BoundaryValueOwner::Provider),
+            },
+            errors: BoundaryErrorContract::None,
+            stream: BoundaryStreamContract::Unary,
+            cancellation: BoundaryCancellationContract::NotCancellable,
+            callbacks: BoundaryCallbackContract::None,
+            may_suspend: true,
+            effect_guarantee: BoundaryEffectGuarantee {
+                detached_parameters: true,
+                detached_return: true,
+                detached_error: true,
+                no_caller_reachable_mutation: true,
+                no_caller_value_escape: true,
+                no_same_heap_identity: false,
+            },
+        };
+        let facts = CallableSemanticFacts {
+            effects: CallableEffectSummary::Analyzed {
+                effects: CallableMayEffects {
+                    writes_caller_reachable: false,
+                    returns_caller_alias: false,
+                    throws_caller_alias: false,
+                    escapes_caller_value: true,
+                    requires_same_heap_identity: true,
+                    invokes_unknown_target: false,
+                    may_suspend: true,
+                },
+            },
+            provenance: CallableProvenanceSummary::Analyzed {
+                return_origins: vec![ValueProvenance::Fresh],
+                direct_return_origins: vec![ValueProvenance::Fresh],
+                throw_origins: Vec::new(),
+                escape_lanes: vec![ValueEscapeLane::Database],
+            },
+            resolved_call_targets: BTreeMap::new(),
+        };
+
+        assert_eq!(
+            semantic_unavailable_reasons(&facts, Some(&contract)),
+            vec![BoundaryUnavailableReason::RequiresSameHeapIdentity]
+        );
     }
 }
