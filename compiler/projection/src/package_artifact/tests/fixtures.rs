@@ -264,7 +264,7 @@ pub(super) fn signature(ty: TypeRefIr) -> PackageCallableSignature {
 
 pub(super) fn exact_typed_signature() -> PackageCallableSignature {
     let contract = PackageTypeRef::PackageSchema {
-        package_id: "example.payments".to_string(),
+        package_id: "example.dependency".to_string(),
         stable_schema_key: "User".to_string(),
         package_schema_type_id: "package-type:user".into(),
     };

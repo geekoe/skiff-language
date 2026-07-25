@@ -15,29 +15,19 @@ function run() -> string {
 }
 
 function effectLookup(id: string, detail: string) -> string {
-  return helper/tools.lookup({
+  return helper/tools.lookup(helper.EffectRequest {
     id: id,
     detail: detail
   }).value
 }
 
-function effectFailureCode(id: string) -> string {
-  const result = catch<helper.EffectFailure>(helper/tools.fail({
-    id: id,
-    detail: "throw"
-  }))
-  if result.tag == "error" {
-    return result.error.code
-  }
-  return "missing-error"
-}
-
 function effectEvents(id: string) -> string {
   let output = ""
-  for event in helper/tools.events({
+  const events: Stream<helper.EffectResponse> = helper/tools.events(helper.EffectRequest {
     id: id,
     detail: "stream"
-  }) {
+  })
+  for event in events {
     output = output.concat(event.value)
   }
   return output

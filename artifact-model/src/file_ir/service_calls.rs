@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fmt};
 
 use crate::{
     compile_requirements::ServiceCallRef,
-    executable::{CallTargetIr, ExprIr},
+    executable::{CallTargetIr, ExprIr, StmtIr, TestEffectRegisterTargetIr},
 };
 
 use super::{file_ir_expressions, FileIrExpressionOwner, FileIrUnit, ServiceCallRefIndex};
@@ -108,6 +108,32 @@ pub fn validate_file_ir_service_calls(
             });
         };
         *referenced = true;
+    }
+    for (executable_index, executable) in unit.executables.iter().enumerate() {
+        for statement in &executable.body.statements {
+            let StmtIr::TestEffectRegister {
+                target:
+                    TestEffectRegisterTargetIr::ContractOperation {
+                        service_call_ref_index,
+                    },
+                ..
+            } = statement
+            else {
+                continue;
+            };
+            let index = service_call_ref_index.index() as usize;
+            let Some(referenced) = used.get_mut(index) else {
+                return Err(FileIrServiceCallValidationError::IndexOutOfRange {
+                    site: FileIrServiceCallSite {
+                        owner: FileIrServiceCallOwner::Executable { executable_index },
+                        expression_index: 0,
+                        service_call_ref_index: *service_call_ref_index,
+                    },
+                    table_len: used.len(),
+                });
+            };
+            *referenced = true;
+        }
     }
     if let Some(index) = used.iter().position(|referenced| !referenced) {
         return Err(FileIrServiceCallValidationError::OrphanRef { index });

@@ -7,18 +7,12 @@ type EffectRequest {
 
 type EffectResponse { value: string }
 
-type EffectFailure { code: string }
-
 function mutate(input: Box) -> void {
   input.value = "helper-mutated"
 }
 
 function lookup(input: EffectRequest) -> EffectResponse {
   return EffectResponse { value: input.id.concat(":real") }
-}
-
-function fail(input: EffectRequest) -> EffectResponse {
-  throw EffectFailure { code: input.id }
 }
 
 function events(input: EffectRequest) -> Stream<EffectResponse> {

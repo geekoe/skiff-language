@@ -47,7 +47,13 @@ pub(super) fn project_package_callable_surface(
     let mut callable_links = BTreeMap::new();
     let mut semantic_facts = BTreeMap::new();
     let mut boundary_projections = BTreeMap::new();
-    for callable in local_surface.callables {
+    for mut callable in local_surface.callables {
+        normalization::normalize_public_signature(
+            &callable.owner_module,
+            &mut callable.signature,
+            file_ir_units,
+            package_schema_refs,
+        );
         surface::insert_public_symbol(
             &mut local_surface.public_symbols,
             callable.public_path.clone(),

@@ -1163,6 +1163,20 @@ impl<'a> OwnerChecker<'a> {
         let Some(actual) = actual else {
             return;
         };
+        if let (Some(projected), Some(dependencies)) = (
+            self.contract_projection.expression_type(&key),
+            self.dependency_analysis,
+        ) {
+            if package_type_target_assignable(projected, expected, dependencies) {
+                return;
+            }
+            self.diagnostics.push(format!(
+                "{}: test effect {context} package type is not assignable to the declared target at {}",
+                self.module_path,
+                self.expression_span_label(&key)
+            ));
+            return;
+        }
         let resolved_expected = resolved_package_type_ref(expected);
         self.check_value_assignable_to_expected(
             None,
@@ -1214,9 +1228,11 @@ impl<'a> OwnerChecker<'a> {
         };
         let [selected] = matches.as_slice() else {
             self.diagnostics.push(format!(
-                "{}: test effect `{target}` throw must match exactly one declared payload type, matched {}",
+                "{}: test effect `{target}` throw must match exactly one declared payload type, matched {}; actual projection: {:?}; declared: {:?}",
                 self.module_path,
-                matches.len()
+                matches.len(),
+                actual_projected,
+                declared,
             ));
             return;
         };

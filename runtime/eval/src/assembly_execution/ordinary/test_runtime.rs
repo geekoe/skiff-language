@@ -1,14 +1,15 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex,
     },
 };
 
 use bytes::Bytes;
 use serde_json::Value;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
+use skiff_runtime_boundary::stream::{stream_id, stream_value};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorCapabilityApi, ActorCapabilityContext, ActorFindControlRequest,
     ActorGetOrCreateControlRequest, ActorRemoveControlRequest, ActorReplaceControlRequest,
@@ -85,7 +86,7 @@ struct TestRuntimeFactory;
 
 impl EvalRuntimeFactoryApi for TestRuntimeFactory {
     fn stream_runtime(&self) -> StreamRuntime {
-        StreamRuntime::new(TestStreamRuntime)
+        StreamRuntime::new(TestStreamRuntime::default())
     }
 
     fn reusable_test_effect_doubles(
@@ -107,8 +108,38 @@ impl EvalRuntimeFactoryApi for TestRuntimeFactory {
     }
 }
 
-#[derive(Debug)]
-struct TestStreamRuntime;
+#[derive(Debug, Default)]
+struct TestStreamRuntime {
+    next_id: AtomicU64,
+    buffered: Mutex<HashMap<u64, VecDeque<Value>>>,
+}
+
+impl TestStreamRuntime {
+    fn stream_id(value: &Value) -> StreamRuntimeResult<u64> {
+        stream_id(value)
+            .and_then(|id| id.parse().ok())
+            .ok_or_else(|| {
+                skiff_runtime_capability_context::StreamRuntimeError::decode(
+                    "ordinary test stream handle is invalid",
+                )
+            })
+    }
+
+    fn poll(&self, value: &Value) -> StreamRuntimeResult<StreamPoll> {
+        let id = Self::stream_id(value)?;
+        let mut buffered = self.buffered.lock().expect("test stream mutex poisoned");
+        let Some(items) = buffered.get_mut(&id) else {
+            return Ok(StreamPoll::End);
+        };
+        match items.pop_front() {
+            Some(item) => Ok(StreamPoll::Item(item)),
+            None => {
+                buffered.remove(&id);
+                Ok(StreamPoll::End)
+            }
+        }
+    }
+}
 
 impl StreamRuntimeApi for TestStreamRuntime {
     fn channel_stream(&self) -> (Value, StreamSink) {
@@ -127,39 +158,44 @@ impl StreamRuntimeApi for TestStreamRuntime {
         panic!("ordinary package-direct test does not create streams")
     }
 
-    fn buffered_stream(&self, _items: Vec<Value>) -> Value {
-        panic!("ordinary package-direct test does not create streams")
+    fn buffered_stream(&self, items: Vec<Value>) -> Value {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.buffered
+            .lock()
+            .expect("test stream mutex poisoned")
+            .insert(id, items.into());
+        stream_value(&id.to_string())
     }
 
     fn next_with_cancel<'a>(
         &'a self,
-        _value: &'a Value,
+        value: &'a Value,
         _signals: &'a [StreamCancelSignal],
         _cancel_flags: &'a [Arc<AtomicBool>],
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = StreamRuntimeResult<StreamPoll>> + Send + 'a>,
     > {
-        Box::pin(async { panic!("ordinary package-direct test does not poll streams") })
+        Box::pin(async move { self.poll(value) })
     }
 
     fn next_with_cancellation<'a>(
         &'a self,
-        _value: &'a Value,
+        value: &'a Value,
         _signals: &'a [StreamCancelSignal],
         _cancel_tokens: Vec<CancellationToken>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = StreamRuntimeResult<StreamPoll>> + Send + 'a>,
     > {
-        Box::pin(async { panic!("ordinary package-direct test does not poll streams") })
+        Box::pin(async move { self.poll(value) })
     }
 
     fn next<'a>(
         &'a self,
-        _value: &'a Value,
+        value: &'a Value,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = StreamRuntimeResult<StreamPoll>> + Send + 'a>,
     > {
-        Box::pin(async { panic!("ordinary package-direct test does not poll streams") })
+        Box::pin(async move { self.poll(value) })
     }
 
     fn cancel(&self, _value: &Value) {}

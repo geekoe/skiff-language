@@ -1421,6 +1421,14 @@ fn create_base_assembly_scenario() -> BaseAssemblyScenario {
     );
     assert_json_keys(&receipt_json["deployments"], &["consumer", "provider"]);
     assert_json_keys(&receipt_json["baseAssembly"], &["assemblyIdentity"]);
+    assert_eq!(
+        receipt.provider_package.package_id, "example.com/payments",
+        "a service implementation is published by the package with the same canonical id"
+    );
+    assert_eq!(
+        receipt.payments_contract.service_id, "example.com/payments",
+        "the provider package and its service contract must share their canonical id"
+    );
     let base = CanonicalBaseAssembly::load(
         &artifacts,
         Some(receipt.base_assembly.assembly_identity.as_str()),

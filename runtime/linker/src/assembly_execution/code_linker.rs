@@ -323,6 +323,27 @@ impl<'a> AssemblyCodeLinker<'a> {
                 LinkedStmtIr::Throw { payload_type, .. } => {
                     self.link_type_ref(code_slot, file_index, payload_type)?;
                 }
+                LinkedStmtIr::TestEffectRegister {
+                    expect, outcome, ..
+                } => {
+                    if let Some(expect) = expect {
+                        self.link_type_ref(code_slot, file_index, &mut expect.request_type)?;
+                    }
+                    match outcome {
+                        skiff_runtime_linked_program::LinkedTestEffectOutcomeIr::Respond {
+                            value_type,
+                            ..
+                        } => self.link_type_ref(code_slot, file_index, value_type)?,
+                        skiff_runtime_linked_program::LinkedTestEffectOutcomeIr::Throw {
+                            payload_type,
+                            ..
+                        } => self.link_type_ref(code_slot, file_index, payload_type)?,
+                        skiff_runtime_linked_program::LinkedTestEffectOutcomeIr::Stream {
+                            item_type,
+                            ..
+                        } => self.link_type_ref(code_slot, file_index, item_type)?,
+                    }
+                }
                 _ => {}
             }
         }

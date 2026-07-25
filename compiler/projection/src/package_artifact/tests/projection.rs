@@ -91,6 +91,11 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
 #[test]
 fn exact_typed_signatures_reach_local_abi_and_public_instance_receiver_is_trimmed() {
     let artifact = project_fixture(SignatureSet::ExactTyped, "async").unwrap();
+    assert!(artifact
+        .package_local_abi
+        .local_abi_identity
+        .as_str()
+        .starts_with("skiff-package-local-abi-v3:sha256:"));
     let PackageLocalAbiSymbol::Callable {
         signature: run_signature,
         ..

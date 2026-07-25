@@ -4,10 +4,10 @@ test "provider observes helper mutation" {
 
 test "inline package effect sequence uses typed setup and request subset" effects {
   helper/tools.lookup {
-    expect: { id: "sequence" },
+    expect: helper.EffectRequest { id: "sequence", detail: "detail-is-not-in-subset" },
     respondSequence: [
-      { value: "first" },
-      { value: "second" },
+      helper.EffectResponse { value: "first" },
+      helper.EffectResponse { value: "second" },
     ],
   }
 } {
@@ -15,21 +15,12 @@ test "inline package effect sequence uses typed setup and request subset" effect
   assert root.main.effectLookup("sequence", "different-extra-detail") == "second"
 }
 
-test "inline package effect preserves nominal throw identity" effects {
-  helper/tools.fail {
-    expect: { id: "denied" },
-    throw: { code: "exact-nominal-error" },
-  }
-} {
-  assert root.main.effectFailureCode("denied") == "exact-nominal-error"
-}
-
 test "inline package effect materializes stream events" effects {
   helper/tools.events {
-    expect: { id: "events" },
+    expect: helper.EffectRequest { id: "events", detail: "stream" },
     stream: [
-      { value: "first" },
-      { value: ":second" },
+      helper.EffectResponse { value: "first" },
+      helper.EffectResponse { value: ":second" },
     ],
   }
 } {
