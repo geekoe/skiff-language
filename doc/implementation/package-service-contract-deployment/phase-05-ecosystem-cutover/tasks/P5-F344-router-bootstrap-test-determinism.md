@@ -1,6 +1,7 @@
 # P5-F344 Router bootstrap test determinism
 
-状态：Ready（test-only）。
+状态：Completed（PASS）。结果见
+`P5-F344-router-bootstrap-test-determinism-result.md`。
 
 ## 直接父节点
 
