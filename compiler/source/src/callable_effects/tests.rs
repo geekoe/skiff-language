@@ -1609,6 +1609,10 @@ fn exact_package_boundary_callables_transfer_canonical_effects_and_provenance() 
               return value.floor()
             }
 
+            function ceil(value: number) -> number {
+              return value.ceil()
+            }
+
             function round(value: number) -> number {
               return value.round()
             }
@@ -1652,6 +1656,7 @@ fn exact_package_boundary_callables_transfer_canonical_effects_and_provenance() 
         "arrayLength",
         "bytesLength",
         "floor",
+        "ceil",
         "round",
         "concat",
         "endsWith",
@@ -1671,6 +1676,12 @@ fn exact_package_boundary_callables_transfer_canonical_effects_and_provenance() 
             "{callable}"
         );
     }
+    let CallableProvenanceSummary::Analyzed { return_origins, .. } =
+        provenance_in(&model, "std.effect_test", "ceil")
+    else {
+        panic!("number.ceil must keep exact detached provenance");
+    };
+    assert_eq!(return_origins, &vec![ValueProvenance::Fresh]);
 
     assert_eq!(
         effects_in(&model, "std.effect_test", "request"),

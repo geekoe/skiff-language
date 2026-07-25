@@ -403,7 +403,7 @@ impl NumberReceiverMethods {
     fn dispatch(
         op_method: BuiltinReceiverMethod,
         receiver: &RuntimeValue,
-        _args: &[RuntimeValue],
+        args: &[RuntimeValue],
         _heap: &mut RequestHeap,
     ) -> Result<Option<RuntimeValue>> {
         if !matches!(
@@ -416,6 +416,11 @@ impl NumberReceiverMethods {
         }
         if !matches!(receiver, RuntimeValue::Number(_)) {
             return Ok(None);
+        }
+        if matches!(op_method, BuiltinReceiverMethod::Ceil) && !args.is_empty() {
+            return Err(RuntimeError::Decode(
+                "number.ceil does not accept arguments".to_string(),
+            ));
         }
 
         match op_method {
@@ -877,5 +882,44 @@ mod tests {
                 .expect("Duration.toMilliseconds should dispatch"),
             runtime_integer_value(2_000)
         );
+    }
+
+    #[test]
+    fn number_ceil_preserves_numeric_boundaries_and_rejects_malformed_calls() {
+        let mut heap = RequestHeap::default();
+        let op = receiver_op("number", "ceil");
+
+        for (input, expected) in [
+            (1.25, RuntimeValue::Number(2.0)),
+            (-1.25, RuntimeValue::Number(-1.0)),
+            (
+                9_007_199_254_740_991.0,
+                RuntimeValue::Number(9_007_199_254_740_991.0),
+            ),
+            (f64::MAX, RuntimeValue::Number(f64::MAX)),
+            (f64::INFINITY, RuntimeValue::Null),
+        ] {
+            assert_eq!(
+                ReceiverMethodDispatch::new(&mut heap)
+                    .dispatch_op(&op, RuntimeValue::Number(input), vec![])
+                    .expect("canonical number.ceil should dispatch"),
+                expected,
+                "{input}"
+            );
+        }
+
+        let wrong_receiver = ReceiverMethodDispatch::new(&mut heap)
+            .dispatch_op(&op, RuntimeValue::String("1.25".to_string()), vec![])
+            .expect_err("number.ceil must reject a non-number receiver");
+        assert!(matches!(wrong_receiver, RuntimeError::Decode(_)));
+
+        let wrong_arity = ReceiverMethodDispatch::new(&mut heap)
+            .dispatch_op(
+                &op,
+                RuntimeValue::Number(1.25),
+                vec![RuntimeValue::Number(0.0)],
+            )
+            .expect_err("number.ceil must reject arguments");
+        assert!(matches!(wrong_arity, RuntimeError::Decode(_)));
     }
 }

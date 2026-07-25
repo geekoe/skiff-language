@@ -350,6 +350,7 @@ pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantic
     mutating_array_push(),
     detached_scalar_receiver(BuiltinReceiverRoot::Bytes, BuiltinReceiverMethod::Length),
     detached_scalar_receiver(BuiltinReceiverRoot::Number, BuiltinReceiverMethod::Floor),
+    detached_scalar_receiver(BuiltinReceiverRoot::Number, BuiltinReceiverMethod::Ceil),
     detached_scalar_receiver(BuiltinReceiverRoot::Number, BuiltinReceiverMethod::Round),
     detached_scalar_receiver(
         BuiltinReceiverRoot::StringText,
@@ -1023,6 +1024,7 @@ mod tests {
             "receiver:JsonObject.has@1",
             "receiver:JsonObject.set@1",
             "receiver:bytes.length@1",
+            "receiver:number.ceil@1",
             "receiver:number.floor@1",
             "receiver:number.round@1",
             "receiver:string.concat@1",
@@ -1108,6 +1110,59 @@ mod tests {
                 spec.public_return_type,
                 BuiltinReceiverPublicReturnType::Fixed("integer"),
                 "{root}.{method} should publish integer return type"
+            );
+        }
+    }
+
+    #[test]
+    fn number_ceil_callable_semantics_are_exact_and_detached() {
+        let op = builtin_receiver_op_by_name("number", "ceil")
+            .expect("number.ceil receiver op should exist");
+        let semantics =
+            builtin_receiver_callable_semantics(op).expect("number.ceil semantics should exist");
+
+        assert_eq!(op.canonical_key, "receiver:number.ceil@1");
+        assert_eq!(
+            builtin_receiver_op_spec_by_name("number", "ceil")
+                .expect("number.ceil spec should exist")
+                .public_return_type,
+            BuiltinReceiverPublicReturnType::Fixed("number")
+        );
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+        for lookalike in [
+            BuiltinReceiverOp {
+                signature_version: 2,
+                canonical_key: "receiver:number.ceil@2",
+                ..op
+            },
+            BuiltinReceiverOp {
+                canonical_key: "receiver:Number.ceil@1",
+                ..op
+            },
+            BuiltinReceiverOp {
+                method: BuiltinReceiverMethod::Floor,
+                canonical_key: "receiver:number.ceil@1",
+                ..op
+            },
+        ] {
+            assert_eq!(
+                builtin_receiver_callable_semantics(lookalike),
+                None,
+                "{} must remain fail closed",
+                lookalike.canonical_key
             );
         }
     }
