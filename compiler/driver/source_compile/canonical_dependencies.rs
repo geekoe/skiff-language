@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use skiff_artifact_identity::validate_package_artifact_identities;
 use skiff_artifact_model::{PackageArtifact, PackageLocalAbiSymbol};
 use skiff_compiler_input::ResolvedContractDependency;
+use skiff_compiler_projection_input::ResolvedPackageSchema;
 use skiff_compiler_source::{
     PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis,
     SourceDependencyAnalysisInput,
@@ -15,16 +16,18 @@ use crate::{
 
 pub(super) fn source_dependency_analysis(
     input: &PackageCompileInput<'_>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<SourceDependencyAnalysisInput, PackageCompileError> {
     SourceDependencyAnalysisInput::new(
-        package_analysis(input)?,
-        validated_contract_dependencies(input)?,
+        package_analysis(input, resolved_package_schemas)?,
+        validated_contract_dependencies(input, resolved_package_schemas)?,
     )
     .map_err(dependency_analysis_error)
 }
 
 fn validated_contract_dependencies(
     input: &PackageCompileInput<'_>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<Vec<ResolvedContractDependency>, PackageCompileError> {
     input
         .contract_dependencies
@@ -33,7 +36,7 @@ fn validated_contract_dependencies(
             ResolvedContractDependency::validated(
                 dependency.requirement.clone(),
                 dependency.contract.clone(),
-                input.resolved_package_schemas(),
+                resolved_package_schemas,
             )
         })
         .collect::<Result<Vec<_>, _>>()
@@ -42,6 +45,7 @@ fn validated_contract_dependencies(
 
 fn package_analysis(
     input: &PackageCompileInput<'_>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<Vec<(String, PackageDependencyAnalysisFacts)>, PackageCompileError> {
     let artifacts = input
         .dependency_packages
@@ -77,7 +81,7 @@ fn package_analysis(
             artifact.package_local_abi.local_abi_identity.clone(),
             callables,
         );
-        if let Some(schema) = input.resolved_package_schemas().iter().find(|schema| {
+        if let Some(schema) = resolved_package_schemas.iter().find(|schema| {
             schema.alias() == alias
                 && schema.package_id() == dependency.id
                 && schema.exact_version() == dependency.version

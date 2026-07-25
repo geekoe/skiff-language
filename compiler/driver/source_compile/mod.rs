@@ -2,6 +2,7 @@ use crate::{
     input::{compile_input::PackageCompileInput, PackageCompilePolicy},
     shared::package_compile_error::PackageCompileError,
 };
+use skiff_compiler_projection_input::ResolvedPackageSchema;
 use skiff_compiler_source::{
     CompileParsedPackageSourcesInput, PackageSourceModel, SourceDependencyAnalysisInput,
 };
@@ -15,10 +16,12 @@ mod canonical_dependencies;
 
 pub(crate) fn compile(
     input: &PackageCompileInput<'_>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<skiff_compiler_compiled::CompiledPackage, PackageCompileError> {
     #[cfg(test)]
     TEST_COMPILE_COUNT.with(|count| count.set(count.get() + 1));
-    let dependency_analysis = canonical_dependencies::source_dependency_analysis(input)?;
+    let dependency_analysis =
+        canonical_dependencies::source_dependency_analysis(input, resolved_package_schemas)?;
     if let Some(overlay) = &input.package.test_overlay {
         let manifest = &input.package.manifest;
         if overlay.production.package_id != manifest.id.as_str()

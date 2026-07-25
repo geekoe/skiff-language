@@ -82,8 +82,14 @@ pub(crate) fn validate_package_sources_with_dependency_analysis(
     } else {
         dependencies
     };
-    let package_test_allowed_internal_imports = package_production_module_paths(parsed_sources);
-    let no_allowed_internal_imports = BTreeSet::new();
+    let service_dependency_imports = dependency_analysis
+        .contract_aliases()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    let package_test_allowed_internal_imports = package_production_module_paths(parsed_sources)
+        .into_iter()
+        .chain(service_dependency_imports.iter().cloned())
+        .collect::<BTreeSet<_>>();
     let mut name_resolution_package_aliases = package_name_resolution_aliases(dependencies);
     for alias in dependency_analysis.package_aliases() {
         name_resolution_package_aliases
@@ -114,7 +120,7 @@ pub(crate) fn validate_package_sources_with_dependency_analysis(
         let allowed_internal_imports = if parsed.source().is_test_file {
             &package_test_allowed_internal_imports
         } else {
-            &no_allowed_internal_imports
+            &service_dependency_imports
         };
         validate_package_import_dependencies(
             &path,

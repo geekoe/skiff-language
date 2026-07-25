@@ -274,6 +274,85 @@ fn exact_package_schema_batch_rejects_missing_version_build_and_abi_mismatch() {
     );
 }
 
+#[test]
+fn pre_source_schema_binding_is_exact_direct_or_compiler_owned_std_only() {
+    let direct = canonical_artifact("example.types", "2.4.0");
+    let transitive = canonical_artifact("example.transitive", "9.0.0");
+    let std = canonical_artifact(SKIFF_STD_PUBLICATION_ID, "7.4.2");
+    let mut dependency = PackageDependency::id("example.types");
+    dependency.version = "2.4.0".to_string();
+    dependency.alias = Some("contractTypes".to_string());
+    let available = [direct.clone(), transitive.clone(), std.clone()];
+
+    let binding = pre_source_schema_binding(
+        "example.types",
+        std::slice::from_ref(&dependency),
+        std::slice::from_ref(&direct),
+        &available,
+    )
+    .unwrap()
+    .expect("exact direct owner");
+    assert_eq!(binding.0, "contractTypes");
+    assert_eq!(binding.1.package_build_id, direct.package_build_id);
+
+    assert!(pre_source_schema_binding(
+        "example.transitive",
+        std::slice::from_ref(&dependency),
+        std::slice::from_ref(&direct),
+        &[transitive],
+    )
+    .unwrap()
+    .is_none());
+
+    let binding = pre_source_schema_binding(
+        SKIFF_STD_PUBLICATION_ID,
+        std::slice::from_ref(&dependency),
+        std::slice::from_ref(&direct),
+        std::slice::from_ref(&std),
+    )
+    .unwrap()
+    .expect("compiler-owned std");
+    assert_eq!(binding.0, "std");
+    assert_eq!(binding.1.package_version, "7.4.2");
+}
+
+#[test]
+fn pre_source_schema_binding_rejects_duplicate_owner_version_and_artifact() {
+    let artifact = canonical_artifact("example.types", "1.0.0");
+    let mut first = PackageDependency::id("example.types");
+    first.version = "1.0.0".to_string();
+    first.alias = Some("types".to_string());
+    let mut second = first.clone();
+    second.alias = Some("otherTypes".to_string());
+
+    let duplicate_owner = pre_source_schema_binding(
+        "example.types",
+        &[first.clone(), second],
+        std::slice::from_ref(&artifact),
+        std::slice::from_ref(&artifact),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(duplicate_owner.contains("duplicate direct dependency declarations"));
+
+    let duplicate_artifact = pre_source_schema_binding(
+        "example.types",
+        std::slice::from_ref(&first),
+        &[artifact.clone(), artifact],
+        &[],
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(duplicate_artifact.contains("duplicate exact canonical artifacts"));
+
+    let std = canonical_artifact(SKIFF_STD_PUBLICATION_ID, "1.0.0");
+    let duplicate_std =
+        pre_source_schema_binding(SKIFF_STD_PUBLICATION_ID, &[], &[], &[std.clone(), std])
+            .unwrap_err()
+            .to_string();
+    assert!(duplicate_std.contains("duplicate exact canonical artifacts"));
+}
+
 fn canonical_artifact(package_id: &str, version: &str) -> PackageArtifact {
     let empty_schema_types = BTreeMap::new();
     let mut artifact = PackageArtifact {

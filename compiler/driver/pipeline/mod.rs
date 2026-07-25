@@ -45,7 +45,8 @@ pub fn compile_package(
     let package_version = input.package.manifest.version.clone();
     let declared_package_requirements = package_requirements(&input)?;
     let contract_requirements = contract_requirements(&input);
-    let compiled = source_compile::compile(&input)?;
+    let pre_source_package_schemas = pre_source_contract_package_schemas(&input)?;
+    let compiled = source_compile::compile(&input, &pre_source_package_schemas)?;
     let service_requirements = compiled
         .lowered()
         .service_calls()
@@ -70,7 +71,7 @@ pub fn compile_package(
     let resolved_package_schemas = exact_resolved_package_schemas(
         &package_requirements,
         input.available_packages,
-        input.resolved_package_schemas(),
+        &pre_source_package_schemas,
         input.canonical_artifact_store(),
     )?;
     let projected = project_compiled_package_artifact(PackageArtifactProjectionInput {
@@ -89,6 +90,160 @@ pub fn compile_package(
         &projected,
         &file_ir_units,
     )?)
+}
+
+/// Resolves the exact canonical schema owners needed while validating service
+/// contracts, before source compilation starts.
+///
+/// Non-platform owners are deliberately limited to exact direct manifest
+/// dependencies. `std` is the sole compiler-owned owner and is selected from
+/// the exact canonical artifact already supplied by the authoring boundary;
+/// this function never opens a latest-by-package-id pointer.
+fn pre_source_contract_package_schemas(
+    input: &PackageCompileInput<'_>,
+) -> Result<Vec<ResolvedPackageSchema>, PackageCompileError> {
+    let mut schemas = input.resolved_package_schemas().to_vec();
+    let owners = input
+        .contract_dependencies
+        .iter()
+        .flat_map(|dependency| &dependency.contract.package_type_requirements)
+        .map(|requirement| requirement.package_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for owner in owners.iter().copied() {
+        let binding = pre_source_schema_binding(
+            owner,
+            input.package_dependencies,
+            input.dependency_packages,
+            input.available_packages,
+        )?;
+        let Some((alias, artifact)) = binding else {
+            // Preserve MissingPackageSchema at the contract boundary for an
+            // undeclared owner or absent compiler-owned std.
+            continue;
+        };
+
+        let matching = schemas
+            .iter()
+            .filter(|schema| schema.package_id() == owner)
+            .collect::<Vec<_>>();
+        if matching.len() > 1 {
+            return Err(package_schema_input_error(format!(
+                "package schema owner {owner} has duplicate resolved schema bindings"
+            )));
+        }
+        if let Some(schema) = matching.first() {
+            validate_pre_source_schema(schema, &alias, artifact)?;
+            continue;
+        }
+
+        let Some(store) = input.canonical_artifact_store() else {
+            continue;
+        };
+        validate_package_artifact_identities(artifact).map_err(|error| {
+            package_schema_input_error(format!(
+                "pre-source package schema {alias}={owner}@{} PackageArtifact identity validation failed: {error}",
+                artifact.package_version
+            ))
+        })?;
+        let resolved = store
+            .resolve_package_artifact_schema(artifact)
+            .map_err(|error| {
+                package_schema_input_error(format!(
+                    "pre-source package schema {alias}={owner}@{} resolution failed: {error}",
+                    artifact.package_version
+                ))
+            })?;
+        let records = resolved
+            .records
+            .iter()
+            .map(|(type_id, record)| (type_id.clone(), record.as_ref().clone()))
+            .collect();
+        let schema = ResolvedPackageSchema::new(
+            alias,
+            artifact.package_id.clone(),
+            artifact.package_version.clone(),
+            artifact.package_build_id.clone(),
+            artifact.package_local_abi.local_abi_identity.clone(),
+            resolved.index.as_ref().clone(),
+            records,
+        )
+        .map_err(|error| package_schema_input_error(error.to_string()))?;
+        schemas.push(schema);
+    }
+    Ok(schemas)
+}
+
+fn pre_source_schema_binding<'a>(
+    owner: &str,
+    package_dependencies: &[PackageDependency],
+    dependency_packages: &'a [PackageArtifact],
+    available_packages: &'a [PackageArtifact],
+) -> Result<Option<(String, &'a PackageArtifact)>, PackageCompileError> {
+    if owner == SKIFF_STD_PUBLICATION_ID {
+        let matches = available_packages
+            .iter()
+            .filter(|artifact| artifact.package_id == owner)
+            .collect::<Vec<_>>();
+        if matches.len() > 1 {
+            return Err(package_schema_input_error(format!(
+                "compiler-owned package schema owner {owner} has duplicate exact canonical artifacts"
+            )));
+        }
+        return Ok(matches
+            .first()
+            .map(|artifact| ("std".to_string(), *artifact)));
+    }
+
+    let declarations = package_dependencies
+        .iter()
+        .filter(|dependency| dependency.id == owner)
+        .collect::<Vec<_>>();
+    if declarations.len() > 1 {
+        return Err(package_schema_input_error(format!(
+            "package schema owner {owner} has duplicate direct dependency declarations"
+        )));
+    }
+    let Some(dependency) = declarations.first() else {
+        return Ok(None);
+    };
+    let artifacts = dependency_packages
+        .iter()
+        .filter(|artifact| {
+            artifact.package_id == dependency.id && artifact.package_version == dependency.version
+        })
+        .collect::<Vec<_>>();
+    if artifacts.len() > 1 {
+        return Err(package_schema_input_error(format!(
+            "package schema owner {owner}@{} has duplicate exact canonical artifacts",
+            dependency.version
+        )));
+    }
+    Ok(artifacts
+        .first()
+        .map(|artifact| (dependency.effective_alias().to_string(), *artifact)))
+}
+
+fn validate_pre_source_schema(
+    schema: &ResolvedPackageSchema,
+    alias: &str,
+    artifact: &PackageArtifact,
+) -> Result<(), PackageCompileError> {
+    let requirement = PackageRequirement {
+        alias: alias.to_string(),
+        package_id: artifact.package_id.clone(),
+        exact_version: artifact.package_version.clone(),
+        expected_local_abi: artifact.package_local_abi.local_abi_identity.clone(),
+    };
+    validate_package_artifact_identities(artifact).map_err(|error| {
+        package_schema_input_error(format!(
+            "pre-source package schema {alias}={}@{} PackageArtifact identity validation failed: {error}",
+            artifact.package_id, artifact.package_version
+        ))
+    })?;
+    schema
+        .validate_exact_binding(&requirement, artifact)
+        .map_err(|error| package_schema_input_error(error.to_string()))
 }
 
 fn exact_resolved_package_schemas(
