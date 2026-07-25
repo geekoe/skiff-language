@@ -175,7 +175,8 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        CallIr, ContractOperationId, ExprIr, ExternalRefTable, FileIrUnit, ServiceProtocolIdentity,
+        CallIr, ContractOperationId, ExprIr, ExternalRefTable, FileIrUnit, InstructionSourceSite,
+        ServiceProtocolIdentity, SyntheticInstructionSiteReason,
     };
 
     use super::*;
@@ -277,6 +278,9 @@ mod tests {
             call: CallIr {
                 target: CallTargetIr::ServiceCall {
                     service_call_ref_index: ServiceCallRefIndex::new(index),
+                },
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                 },
                 args: Vec::new(),
                 type_args: BTreeMap::new(),

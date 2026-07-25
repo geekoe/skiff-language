@@ -61,14 +61,13 @@ pub use assembly_activation_control::{
 pub use boundary::{
     BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCallbackExpirationError,
     BoundaryCallbackLifetime, BoundaryCancellationContract, BoundaryConfigRequirement,
-    BoundaryEffectGuarantee, BoundaryErrorContract, BoundaryFeatureUnavailableReason,
-    BoundaryImplementationRequirements, BoundaryOperationContract, BoundaryOperationDescriptor,
-    BoundaryParameter, BoundaryReturn, BoundaryStateKind, BoundaryStateRequirement,
-    BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    BoundaryValuePlanUnavailableReason, CallableProvenanceSummary, CallableProvenanceUnknownReason,
-    CallableSemanticFacts, CallableTargetFact, ValueEscapeLane, ValueProjectionPath,
-    ValueProjectionPathError, ValueProjectionStep, ValueProvenance,
+    BoundaryEffectGuarantee, BoundaryFeatureUnavailableReason, BoundaryImplementationRequirements,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn,
+    BoundaryStateKind, BoundaryStateRequirement, BoundaryStreamContract, BoundaryUnavailableReason,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, BoundaryValuePlanUnavailableReason, CallableProvenanceSummary,
+    CallableProvenanceUnknownReason, CallableSemanticFacts, CallableTargetFact, ValueEscapeLane,
+    ValueProjectionPath, ValueProjectionPathError, ValueProjectionStep, ValueProvenance,
     MAX_VALUE_PROJECTION_PATH_STEPS,
 };
 pub use builtin_receiver_ops::{
@@ -207,8 +206,8 @@ pub use symbols::{
 };
 pub use targets::NativeTarget;
 pub use types::{
-    FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, LiteralIr, TypeDeclIr,
-    TypeDescriptorIr, TypeRefIr,
+    FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, LiteralIr, NamedUnionBranchIr,
+    TypeDeclIr, TypeDescriptorIr, TypeRefIr,
 };
 pub use websocket_ingress::{
     websocket_ingress_context, WebSocketIngressContext, WebSocketIngressContractError,

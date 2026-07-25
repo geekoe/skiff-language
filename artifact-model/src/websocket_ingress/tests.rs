@@ -2,13 +2,12 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryOperationDescriptor,
-    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
-    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractDiagnosticText, ContractOperationId, ContractTypeDescriptor, ContractTypeRef,
-    PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    PackageSchemaTypeRef, PackageTypeRequirement, ServiceContract, ServiceProtocolIdentity,
-    SERVICE_CONTRACT_SCHEMA_VERSION,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn,
+    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, ContractDiagnosticText, ContractOperationId,
+    ContractTypeDescriptor, ContractTypeRef, PackageSchemaCanonicalDescriptor, PackageSchemaTypeId,
+    PackageSchemaTypeRecord, PackageSchemaTypeRef, PackageTypeRequirement, ServiceContract,
+    ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 use super::{websocket_ingress_context, WebSocketIngressContext, WEBSOCKET_INGRESS_OPERATION_NAME};
@@ -159,7 +158,6 @@ fn websocket_contract(context: ContractTypeRef) -> (ServiceContract, ContractOpe
                 },
                 value_plan: value_plan(),
             },
-            errors: BoundaryErrorContract::None,
             stream: BoundaryStreamContract::Unary,
             cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,

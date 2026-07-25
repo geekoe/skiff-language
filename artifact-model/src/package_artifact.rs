@@ -31,7 +31,6 @@ pub struct PackageCallableParameter {
 pub struct PackageCallableSignature {
     pub parameters: Vec<PackageCallableParameter>,
     pub return_type: PackageTypeRef,
-    pub throw_types: Vec<PackageTypeRef>,
     pub may_suspend: bool,
 }
 
@@ -141,6 +140,23 @@ mod tests {
     }
 
     #[test]
+    fn package_callable_signature_rejects_closed_throw_set_field() {
+        let canonical = json!({
+            "parameters": [],
+            "returnType": {
+                "kind": "local",
+                "localType": { "kind": "builtin", "name": "void" }
+            },
+            "maySuspend": false
+        });
+        serde_json::from_value::<PackageCallableSignature>(canonical.clone()).unwrap();
+
+        let mut legacy = canonical;
+        legacy["throwTypes"] = json!([]);
+        assert!(serde_json::from_value::<PackageCallableSignature>(legacy).is_err());
+    }
+
+    #[test]
     fn any_interface_wire_preserves_exact_nested_package_identity() {
         let ty = PackageTypeRef::Nullable {
             inner: Box::new(PackageTypeRef::Container {
@@ -201,7 +217,7 @@ mod tests {
     #[test]
     fn package_artifact_wire_rejects_legacy_aggregate_fields() {
         let value = json!({
-            "schemaVersion": "skiff-package-artifact-v2",
+            "schemaVersion": "skiff-package-artifact-v4",
             "packageId": "example.pkg",
             "packageVersion": "1.0.0",
             "packageBuildId": "build",

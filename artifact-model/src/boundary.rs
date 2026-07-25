@@ -222,6 +222,13 @@ mod tests {
             projection
         );
 
+        let mut legacy_operation = serde_json::to_value(&operation_contract).unwrap();
+        legacy_operation["errors"] = json!({ "kind": "none" });
+        assert!(
+            serde_json::from_value::<BoundaryOperationContract>(legacy_operation).is_err(),
+            "operation-specific errors must not re-enter the open channel contract"
+        );
+
         for forbidden in ["descriptor", "operationId", "stableKey"] {
             let mut invalid = wire.clone();
             invalid
@@ -271,7 +278,6 @@ mod tests {
                     lifetime: BoundaryValueLifetime::Call,
                 },
             },
-            errors: BoundaryErrorContract::None,
             stream: BoundaryStreamContract::Unary,
             cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,

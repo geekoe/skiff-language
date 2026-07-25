@@ -1,9 +1,9 @@
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 
-use crate::addr::TypeAddr;
+use crate::service_error::CatchIdentity;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeModelError {
@@ -39,36 +39,10 @@ impl fmt::Display for RuntimeErrorPayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum TypeIdentity {
-    Address { addr: TypeAddr },
-    Builtin { name: String },
-}
-
-impl TypeIdentity {
-    pub fn address(addr: TypeAddr) -> Self {
-        Self::Address { addr }
-    }
-
-    pub fn builtin(name: impl Into<String>) -> Self {
-        Self::Builtin { name: name.into() }
-    }
-}
-
-impl fmt::Display for TypeIdentity {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Address { addr } => write!(formatter, "{addr}"),
-            Self::Builtin { name } => write!(formatter, "{name}"),
-        }
-    }
-}
-
 pub trait WirePayload: std::error::Error + Send + Sync + 'static {
     fn payload(&self) -> RuntimeErrorPayload;
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
         None
     }
 
