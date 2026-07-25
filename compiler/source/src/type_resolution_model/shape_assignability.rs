@@ -889,6 +889,313 @@ impl TypeResolutionModel {
         }
     }
 
+    pub(crate) fn rehydrate_package_signature_type_for_dependency(
+        &self,
+        dependency_ref: &str,
+        ty: &PackageTypeRef,
+    ) -> Result<PackageTypeRef, String> {
+        let package_id = self
+            .package_dependencies
+            .get(dependency_ref)
+            .ok_or_else(|| {
+                format!("dependency alias `{dependency_ref}` has no resolved package owner")
+            })?;
+        let (expected_local_abi, _) = self
+            .package_artifact_identities
+            .get(dependency_ref)
+            .ok_or_else(|| {
+                format!("dependency alias `{dependency_ref}` has no verified Local ABI identity")
+            })?;
+        self.rehydrate_package_signature_type(
+            dependency_ref,
+            package_id,
+            expected_local_abi.as_str(),
+            ty,
+        )
+    }
+
+    fn rehydrate_package_signature_type(
+        &self,
+        dependency_ref: &str,
+        package_id: &str,
+        expected_local_abi: &str,
+        ty: &PackageTypeRef,
+    ) -> Result<PackageTypeRef, String> {
+        let recurse = |ty| {
+            self.rehydrate_package_signature_type(
+                dependency_ref,
+                package_id,
+                expected_local_abi,
+                ty,
+            )
+        };
+        Ok(match ty {
+            PackageTypeRef::Local { local_type } => PackageTypeRef::Local {
+                local_type: self.rehydrate_package_signature_local_type(
+                    dependency_ref,
+                    package_id,
+                    expected_local_abi,
+                    local_type,
+                )?,
+            },
+            PackageTypeRef::PackageSchema {
+                package_id,
+                stable_schema_key,
+                package_schema_type_id,
+            } => PackageTypeRef::PackageSchema {
+                package_id: package_id.clone(),
+                stable_schema_key: stable_schema_key.clone(),
+                package_schema_type_id: package_schema_type_id.clone(),
+            },
+            PackageTypeRef::Container { name, arguments } => PackageTypeRef::Container {
+                name: name.clone(),
+                arguments: arguments.iter().map(recurse).collect::<Result<_, _>>()?,
+            },
+            PackageTypeRef::Nullable { inner } => PackageTypeRef::Nullable {
+                inner: Box::new(recurse(inner)?),
+            },
+            PackageTypeRef::AnyInterface {
+                interface,
+                arguments,
+            } => PackageTypeRef::AnyInterface {
+                interface: Box::new(recurse(interface)?),
+                arguments: arguments.iter().map(recurse).collect::<Result<_, _>>()?,
+            },
+        })
+    }
+
+    fn rehydrate_package_signature_local_type(
+        &self,
+        dependency_ref: &str,
+        package_id: &str,
+        expected_local_abi: &str,
+        ty: &TypeRefIr,
+    ) -> Result<TypeRefIr, String> {
+        let recurse = |ty| {
+            self.rehydrate_package_signature_local_type(
+                dependency_ref,
+                package_id,
+                expected_local_abi,
+                ty,
+            )
+        };
+        let bind_owner = |ty: &TypeRefIr| {
+            bind_package_type_ir_to_dependency(ty, dependency_ref, package_id, expected_local_abi)
+        };
+        match ty {
+            TypeRefIr::LocalType { type_index } => {
+                let candidates = self
+                    .package_type_slots
+                    .iter()
+                    .filter(|((owner, _, slot), _)| {
+                        (owner == dependency_ref || owner == package_id) && slot == type_index
+                    })
+                    .map(|((_, module_path, _), public_path)| {
+                        (module_path.clone(), public_path.clone())
+                    })
+                    .collect::<BTreeSet<_>>();
+                if candidates.len() != 1 {
+                    return Err(if candidates.is_empty() {
+                        format!(
+                            "dependency `{dependency_ref}` package `{package_id}` has no public Local ABI type slot #{type_index}"
+                        )
+                    } else {
+                        format!(
+                            "dependency `{dependency_ref}` package `{package_id}` Local ABI type slot #{type_index} has ambiguous owners: {}",
+                            candidates
+                                .iter()
+                                .map(|(module_path, public_path)| {
+                                    format!("{module_path} -> {public_path}")
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    });
+                }
+                let (module_path, _) = candidates
+                    .iter()
+                    .next()
+                    .expect("one Local ABI slot candidate was established");
+                let canonical = self
+                    .canonical_package_local_type_slot(package_id, module_path, *type_index)
+                    .ok_or_else(|| {
+                        format!(
+                            "dependency `{dependency_ref}` package `{package_id}` cannot resolve Local ABI type slot {module_path}#{type_index}"
+                        )
+                    })?;
+                Ok(bind_owner(&canonical))
+            }
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => {
+                let canonical = self
+                    .canonical_package_local_type_slot(package_id, module_path, *type_index)
+                    .ok_or_else(|| {
+                        format!(
+                            "dependency `{dependency_ref}` package `{package_id}` has no public Local ABI type slot {module_path}#{type_index}"
+                        )
+                    })?;
+                Ok(bind_owner(&canonical))
+            }
+            TypeRefIr::ServiceSymbol { symbol } => {
+                let canonical = self
+                    .canonical_package_service_symbol(dependency_ref, package_id, symbol)
+                    .ok_or_else(|| {
+                        format!(
+                            "dependency `{dependency_ref}` package `{package_id}` has no unique public Local ABI type for {}.{}",
+                            symbol.module_path, symbol.symbol
+                        )
+                    })?;
+                Ok(bind_owner(&canonical))
+            }
+            TypeRefIr::PackageSymbol { symbol } => {
+                let package_id_owner = matches!(
+                    &symbol.package,
+                    PackageRefIr::PackageId { package_id: owner } if owner == package_id
+                );
+                let dependency_owner = matches!(
+                    &symbol.package,
+                    PackageRefIr::Dependency { dependency_ref: owner }
+                        if owner == dependency_ref
+                            && symbol.abi_expectation.as_deref() == Some(expected_local_abi)
+                );
+                if !package_id_owner && !dependency_owner {
+                    return Ok(ty.clone());
+                }
+                let source_path = symbol
+                    .symbol_path
+                    .strip_prefix("root.")
+                    .unwrap_or(&symbol.symbol_path);
+                let selected_public_path = self
+                    .package_type_resolution(dependency_ref, source_path)
+                    .filter(|resolution| resolution.public_path.as_deref() == Some(source_path))
+                    .map(|_| source_path.to_string());
+                let (module_path, source_symbol) =
+                    source_path.rsplit_once('.').unwrap_or(("", source_path));
+                let linked_public_path = self
+                    .package_type_source_paths
+                    .get(&(
+                        dependency_ref.to_string(),
+                        module_path.to_string(),
+                        source_symbol.to_string(),
+                    ))
+                    .cloned();
+                let public_path = if package_id_owner {
+                    // Package-id refs in the provider signature name the source
+                    // implementation; its exact implementation link is authoritative.
+                    linked_public_path.or(selected_public_path)
+                } else {
+                    // A dependency ref carrying the expected ABI is already in the
+                    // consumer's selected public namespace.
+                    selected_public_path.or(linked_public_path)
+                }
+                    .ok_or_else(|| {
+                        format!(
+                            "dependency `{dependency_ref}` package `{package_id}` has no unique public Local ABI type `{}`",
+                            symbol.symbol_path
+                        )
+                    })?;
+                Ok(bind_owner(&TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: package_id.to_string(),
+                        },
+                        symbol_path: public_path,
+                        abi_expectation: None,
+                    },
+                }))
+            }
+            TypeRefIr::Builtin { name, args } => Ok(TypeRefIr::Builtin {
+                name: name.clone(),
+                args: args.iter().map(recurse).collect::<Result<_, _>>()?,
+            }),
+            TypeRefIr::Record { fields } => Ok(TypeRefIr::Record {
+                fields: fields
+                    .iter()
+                    .map(|(name, ty)| Ok((name.clone(), recurse(ty)?)))
+                    .collect::<Result<_, String>>()?,
+            }),
+            TypeRefIr::Union { items } => Ok(TypeRefIr::Union {
+                items: items.iter().map(recurse).collect::<Result<_, _>>()?,
+            }),
+            TypeRefIr::Nullable { inner } => Ok(TypeRefIr::Nullable {
+                inner: Box::new(recurse(inner)?),
+            }),
+            TypeRefIr::AnyInterface { interface } => {
+                let identity =
+                    serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).map_err(
+                        |error| {
+                            format!(
+                                "dependency `{dependency_ref}` package `{package_id}` has invalid any-interface identity: {error}"
+                            )
+                        },
+                    )?;
+                let identity = recurse(&identity)?;
+                Ok(TypeRefIr::AnyInterface {
+                    interface: InterfaceInstantiationRef {
+                        interface_abi_id: serde_json::to_string(&identity).map_err(|error| {
+                            format!(
+                                "dependency `{dependency_ref}` package `{package_id}` cannot encode any-interface identity: {error}"
+                            )
+                        })?,
+                        canonical_type_args: interface
+                            .canonical_type_args
+                            .iter()
+                            .map(recurse)
+                            .collect::<Result<_, _>>()?,
+                    },
+                })
+            }
+            TypeRefIr::Function {
+                params,
+                return_type,
+            } => Ok(TypeRefIr::Function {
+                params: params
+                    .iter()
+                    .map(|parameter| {
+                        Ok(FunctionTypeParamIr {
+                            name: parameter.name.clone(),
+                            ty: recurse(&parameter.ty)?,
+                        })
+                    })
+                    .collect::<Result<_, String>>()?,
+                return_type: Box::new(recurse(return_type)?),
+            }),
+            TypeRefIr::PackageSchema { .. }
+            | TypeRefIr::DbObjectSymbol { .. }
+            | TypeRefIr::Literal { .. }
+            | TypeRefIr::TypeParam { .. } => Ok(ty.clone()),
+        }
+    }
+
+    fn canonical_package_service_symbol(
+        &self,
+        dependency_ref: &str,
+        package_id: &str,
+        symbol: &ServiceSymbolRef,
+    ) -> Option<TypeRefIr> {
+        let module_path = symbol
+            .module_path
+            .strip_prefix("root.")
+            .unwrap_or(&symbol.module_path);
+        let public_path = self.package_type_source_paths.get(&(
+            dependency_ref.to_string(),
+            module_path.to_string(),
+            symbol.symbol.clone(),
+        ))?;
+        self.package_type_resolution(dependency_ref, public_path)?;
+        Some(TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.to_string(),
+                },
+                symbol_path: public_path.clone(),
+                abi_expectation: None,
+            },
+        })
+    }
+
     pub fn record_field_type(
         &self,
         ty: &ResolvedTypeRef,
@@ -1489,7 +1796,9 @@ fn bind_package_type_ir_to_dependency(
                 PackageRefIr::PackageId { package_id: owner } if owner == package_id
             ) || matches!(
                 &symbol.package,
-                PackageRefIr::Dependency { dependency_ref: owner } if owner == dependency_ref
+                PackageRefIr::Dependency { dependency_ref: owner }
+                    if owner == dependency_ref
+                        && symbol.abi_expectation.as_deref() == Some(expected_local_abi)
             ) =>
         {
             TypeRefIr::PackageSymbol {
