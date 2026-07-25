@@ -797,6 +797,8 @@ mod json_object_receiver_tests {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use skiff_artifact_model::builtin_receiver_op_by_name;
     use skiff_runtime_model::runtime_value::HeapNode;
@@ -836,6 +838,40 @@ mod tests {
             &vec![RuntimeValue::Number(1.0), RuntimeValue::Number(2.0)],
             "Array.push must mutate the caller-reachable receiver"
         );
+    }
+
+    #[test]
+    fn map_get_preserves_nested_identity_and_optional_missing_behavior() {
+        let mut heap = RequestHeap::default();
+        let nested = heap
+            .alloc_array(vec![RuntimeValue::String("nested".to_string())])
+            .expect("nested array allocation should succeed");
+        let map = BTreeMap::from([
+            (RuntimeValueKey::string("scalar"), RuntimeValue::Number(7.0)),
+            (
+                RuntimeValueKey::string("nested"),
+                RuntimeValue::Heap(nested),
+            ),
+        ]);
+        let receiver = RuntimeValue::Heap(
+            heap.alloc_map(map)
+                .expect("Map receiver allocation should succeed"),
+        );
+
+        for (key, expected) in [
+            ("scalar", RuntimeValue::Number(7.0)),
+            ("nested", RuntimeValue::Heap(nested)),
+            ("missing", RuntimeValue::Null),
+        ] {
+            let result = ReceiverMethodDispatch::new(&mut heap)
+                .dispatch_op(
+                    &receiver_op("Map", "get"),
+                    receiver.clone(),
+                    vec![RuntimeValue::String(key.to_string())],
+                )
+                .expect("Map.get should dispatch");
+            assert_eq!(result, expected, "unexpected Map.get result for {key}");
+        }
     }
 
     #[test]

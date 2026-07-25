@@ -2512,6 +2512,59 @@ fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detache
 }
 
 #[test]
+fn exact_map_get_preserves_caller_alias_but_discharges_fresh_accumulator() {
+    let model = analyze_named(
+        r#"
+            type Item { value: string }
+
+            function direct(items: Map<string, Item>, key: string) -> Item? {
+              return items.get(key)
+            }
+
+            function local(key: string) -> Item? {
+              const items = Map.empty<string, Item>()
+              return items.get(key)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "responses",
+        "agine.ai/llm-api",
+    );
+
+    assert_eq!(
+        effects_in(&model, "responses", "direct"),
+        CallableMayEffects {
+            returns_caller_alias: true,
+            requires_same_heap_identity: true,
+            ..no_effects()
+        }
+    );
+    assert!(matches!(
+        provenance_in(&model, "responses", "direct"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins == &vec![ValueProvenance::CallerParameter { index: 0 }]
+    ));
+
+    assert_eq!(
+        effects_in(&model, "responses", "local"),
+        no_effects(),
+        "a fresh local Map must discharge its receiver alias and same-heap requirements"
+    );
+    assert!(matches!(
+        provenance_in(&model, "responses", "local"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins == &vec![ValueProvenance::Fresh]
+    ));
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::ReceiverBuiltin { op }
+                if op.canonical_key == "receiver:Map.get@1"
+        )
+    }));
+}
+
+#[test]
 fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
     let model = analyze_named(
         r#"

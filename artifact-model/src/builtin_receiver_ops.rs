@@ -345,17 +345,13 @@ const fn mutating_json_object_delete() -> BuiltinReceiverCallableSemantics {
     }
 }
 
-const fn json_object_get() -> BuiltinReceiverCallableSemantics {
+const fn receiver_reachable_get(receiver: BuiltinReceiverRoot) -> BuiltinReceiverCallableSemantics {
     BuiltinReceiverCallableSemantics {
         op: BuiltinReceiverOp {
-            receiver: BuiltinReceiverRoot::JsonObject,
+            receiver,
             method: BuiltinReceiverMethod::Get,
             signature_version: 1,
-            canonical_key: canonical_key(
-                BuiltinReceiverRoot::JsonObject,
-                BuiltinReceiverMethod::Get,
-                1,
-            ),
+            canonical_key: canonical_key(receiver, BuiltinReceiverMethod::Get, 1),
         },
         effects: CallableMayEffects {
             writes_caller_reachable: false,
@@ -397,7 +393,8 @@ pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantic
         BuiltinReceiverRoot::StringText,
         BuiltinReceiverMethod::StartsWith,
     ),
-    json_object_get(),
+    receiver_reachable_get(BuiltinReceiverRoot::Map),
+    receiver_reachable_get(BuiltinReceiverRoot::JsonObject),
     detached_scalar_receiver(BuiltinReceiverRoot::JsonObject, BuiltinReceiverMethod::Has),
     detached_scalar_receiver(BuiltinReceiverRoot::Date, BuiltinReceiverMethod::Compare),
     detached_scalar_receiver(
@@ -1050,6 +1047,7 @@ mod tests {
             "receiver:JsonObject.get@1",
             "receiver:JsonObject.has@1",
             "receiver:JsonObject.set@1",
+            "receiver:Map.get@1",
             "receiver:bytes.length@1",
             "receiver:number.ceil@1",
             "receiver:number.floor@1",
@@ -1080,7 +1078,10 @@ mod tests {
                     | "receiver:JsonObject.set@1"
                     | "receiver:JsonObject.delete@1"
             );
-            let aliases_receiver = semantics.op.canonical_key == "receiver:JsonObject.get@1";
+            let aliases_receiver = matches!(
+                semantics.op.canonical_key,
+                "receiver:JsonObject.get@1" | "receiver:Map.get@1"
+            );
             assert_eq!(
                 semantics.effects,
                 CallableMayEffects {
@@ -1184,6 +1185,62 @@ mod tests {
             BuiltinReceiverOp {
                 method: BuiltinReceiverMethod::Floor,
                 canonical_key: "receiver:number.ceil@1",
+                ..op
+            },
+        ] {
+            assert_eq!(
+                builtin_receiver_callable_semantics(lookalike),
+                None,
+                "{} must remain fail closed",
+                lookalike.canonical_key
+            );
+        }
+    }
+
+    #[test]
+    fn map_get_callable_semantics_are_exact_and_receiver_reachable() {
+        let op =
+            builtin_receiver_op_by_name("Map", "get").expect("Map.get receiver op should exist");
+        let semantics =
+            builtin_receiver_callable_semantics(op).expect("Map.get semantics should exist");
+
+        assert_eq!(op.canonical_key, "receiver:Map.get@1");
+        assert_eq!(
+            builtin_receiver_op_spec_by_name("Map", "get")
+                .expect("Map.get spec should exist")
+                .public_return_type,
+            BuiltinReceiverPublicReturnType::MapValue
+        );
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: true,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: true,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(
+            semantics.return_provenance,
+            ValueProvenance::CallerParameter { index: 0 }
+        );
+
+        for lookalike in [
+            BuiltinReceiverOp {
+                signature_version: 2,
+                canonical_key: "receiver:Map.get@2",
+                ..op
+            },
+            BuiltinReceiverOp {
+                canonical_key: "receiver:map.get@1",
+                ..op
+            },
+            BuiltinReceiverOp {
+                receiver: BuiltinReceiverRoot::JsonObject,
+                canonical_key: "receiver:Map.get@1",
                 ..op
             },
         ] {
