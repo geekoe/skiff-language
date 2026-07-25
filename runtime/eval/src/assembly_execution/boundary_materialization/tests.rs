@@ -1,13 +1,12 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use serde_json::json;
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryOperationDescriptor,
-    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
-    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractOperationId, ContractTypeDescriptor, ContractTypeRef, PackageSchemaCanonicalDescriptor,
-    PackageSchemaTypeId, PackageSchemaTypeRecord,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn,
+    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, ContractOperationId, ContractTypeDescriptor,
+    ContractTypeRef, PackageSchemaCanonicalDescriptor, PackageSchemaTypeId,
+    PackageSchemaTypeRecord,
 };
 use skiff_runtime_boundary::service_linkable::FailClosedServiceLinkableCapabilityHooks;
 use skiff_runtime_model::{
@@ -23,11 +22,7 @@ fn ordinary_in_process_uses_shared_planner_for_detached_parameters_and_return() 
         name: "Array".to_string(),
         arguments: vec![ContractTypeRef::builtin("string")],
     };
-    let descriptor = operation(
-        vec![array_type.clone()],
-        array_type,
-        BoundaryErrorContract::None,
-    );
+    let descriptor = operation(vec![array_type.clone()], array_type);
     let schema = BTreeMap::new();
     let mut caller_heap = RequestHeap::default();
     let source = caller_heap
@@ -86,11 +81,7 @@ fn ordinary_in_process_uses_shared_planner_for_detached_parameters_and_return() 
         "api.Missing",
         PackageSchemaTypeId::new("schema:missing"),
     );
-    let invalid_operation = operation(
-        vec![missing_type],
-        ContractTypeRef::builtin("void"),
-        BoundaryErrorContract::None,
-    );
+    let invalid_operation = operation(vec![missing_type], ContractTypeRef::builtin("void"));
     let schema_error = CanonicalServiceBoundaryPlan::new(&invalid_operation, &schema, 1)
         .err()
         .expect("schema mismatch must fail shared preflight");
@@ -99,7 +90,6 @@ fn ordinary_in_process_uses_shared_planner_for_detached_parameters_and_return() 
     let mut invalid_plan_operation = operation(
         vec![ContractTypeRef::builtin("string")],
         ContractTypeRef::builtin("void"),
-        BoundaryErrorContract::None,
     );
     invalid_plan_operation.contract.parameters[0].value_plan =
         detached_plan(BoundaryValueOwner::Provider);
@@ -110,7 +100,7 @@ fn ordinary_in_process_uses_shared_planner_for_detached_parameters_and_return() 
 }
 
 #[test]
-fn package_named_parameter_return_and_typed_error_keep_full_owner_identity() {
+fn package_named_parameter_and_return_keep_full_owner_identity() {
     let first = package_record("example.first", "api.Payload", "schema:first");
     let second = package_record("example.second", "api.Payload", "schema:second");
     let first_ref = ContractTypeRef::package_schema(
@@ -123,14 +113,7 @@ fn package_named_parameter_return_and_typed_error_keep_full_owner_identity() {
         second.stable_schema_key.clone(),
         second.package_schema_type_id.clone(),
     );
-    let descriptor = operation(
-        vec![first_ref.clone()],
-        second_ref,
-        BoundaryErrorContract::Typed {
-            payload_type: first_ref,
-            value_plan: detached_plan(BoundaryValueOwner::Provider),
-        },
-    );
+    let descriptor = operation(vec![first_ref], second_ref);
     let schema = BTreeMap::from([
         (
             first.package_schema_type_id.clone(),
@@ -162,7 +145,6 @@ fn package_named_parameter_return_and_typed_error_keep_full_owner_identity() {
 fn operation(
     parameters: Vec<ContractTypeRef>,
     return_type: ContractTypeRef,
-    errors: BoundaryErrorContract,
 ) -> BoundaryOperationDescriptor {
     BoundaryOperationDescriptor {
         operation_id: ContractOperationId::new("operation:shared-boundary-test"),
@@ -181,7 +163,6 @@ fn operation(
                 ty: return_type,
                 value_plan: detached_plan(BoundaryValueOwner::Provider),
             },
-            errors,
             stream: BoundaryStreamContract::Unary,
             cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,
