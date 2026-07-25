@@ -560,6 +560,110 @@ fn package_spelling_is_rejected() {
     assert_eq!(outcome.errors[0].path, "package.api.user.UserDoc");
 }
 
+#[test]
+fn lexical_package_local_is_not_treated_as_legacy_root() {
+    let index = RootRefIndex::new();
+    let mut consumer = parse_source(
+        r#"
+            type Parcel {
+              id: string
+            }
+
+            function accept(value: Parcel) -> string {
+              return value.id
+            }
+
+            function run() -> string {
+              const package = Parcel { id: "p1" }
+              accept(package)
+              return package.id
+            }
+        "#,
+    )
+    .expect("lexical package source should parse");
+
+    let outcome = resolve_root_refs_in_ast(&mut consumer, &index);
+
+    assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+}
+
+#[test]
+fn lexical_package_parameter_can_be_used_as_a_member_receiver() {
+    let index = RootRefIndex::new();
+    let consumer = parse_source(
+        r#"
+            type Parcel {
+              id: string
+            }
+
+            function read(package: Parcel) -> string {
+              return package.id
+            }
+        "#,
+    )
+    .expect("package parameter source should parse");
+
+    let outcome = collect_root_refs_in_ast(&consumer, &index);
+
+    assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+}
+
+#[test]
+fn package_shadowing_is_limited_to_its_nested_lexical_scope() {
+    let index = RootRefIndex::new();
+    let consumer = parse_source(
+        r#"
+            type Parcel {
+              id: string
+            }
+
+            function run() -> string {
+              if true {
+                const package = Parcel { id: "p1" }
+                package.id
+              }
+              return package.api.user.UserDoc
+            }
+        "#,
+    )
+    .expect("nested package binding source should parse");
+
+    let outcome = collect_root_refs_in_ast(&consumer, &index);
+
+    assert_eq!(outcome.errors.len(), 1);
+    assert_eq!(outcome.errors[0].path, "package.api.user.UserDoc");
+    assert_eq!(
+        outcome.errors[0].reason,
+        RootRefErrorReason::RemovedPackageSyntax
+    );
+}
+
+#[test]
+fn unbound_package_root_is_rejected_inside_nested_call_arguments() {
+    let index = RootRefIndex::new();
+    let consumer = parse_source(
+        r#"
+            function accept(value: string) -> string {
+              return value
+            }
+
+            function run() -> string {
+              return accept(package.api.user.name)
+            }
+        "#,
+    )
+    .expect("nested legacy package root source should parse");
+
+    let outcome = collect_root_refs_in_ast(&consumer, &index);
+
+    assert_eq!(outcome.errors.len(), 1);
+    assert_eq!(outcome.errors[0].path, "package.api.user.name");
+    assert_eq!(
+        outcome.errors[0].reason,
+        RootRefErrorReason::RemovedPackageSyntax
+    );
+}
+
 // Suppress unused-import warnings under cfg(test) for items only referenced from doc comments.
 #[allow(dead_code)]
 fn _touch(_: BuiltinPackage, _: PackageId, _: FieldDecl) {}
