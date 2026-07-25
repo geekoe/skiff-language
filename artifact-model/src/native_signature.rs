@@ -71,6 +71,7 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_native("std.actor.find", true),
     detached_native("std.actor.remove", true),
     detached_scalar_native("core.array.empty"),
+    detached_scalar_native("core.map.empty"),
     detached_scalar_native("core.bytes.concat"),
     detached_scalar_native("core.bytes.fromBase64"),
     detached_scalar_native("core.bytes.fromUtf8"),
@@ -890,6 +891,7 @@ mod tests {
             "std.actor.remove",
             "std.actor.replace",
             "core.array.empty",
+            "core.map.empty",
             "core.bytes.concat",
             "core.bytes.fromBase64",
             "core.bytes.fromUtf8",
@@ -1011,6 +1013,51 @@ mod tests {
             .expect("audited Date constructor should have a native signature");
         assert_eq!(signature.params, &[super::INTEGER]);
         assert_eq!(signature.return_type, super::DATE);
+    }
+
+    #[test]
+    fn map_empty_semantics_match_exact_generic_signature() {
+        let semantics = native_callable_semantics("core.map.empty")
+            .expect("audited Map.empty constructor should have exact semantics");
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+        let signature = STD_NATIVE_SIGNATURES
+            .iter()
+            .find(|signature| signature.binding_key == semantics.binding_key)
+            .expect("audited Map.empty constructor should have a native signature");
+        assert_eq!(signature.target, "Map.empty");
+        assert!(signature.aliases.is_empty());
+        assert_eq!(signature.type_param_count, 2);
+        assert!(signature.params.is_empty());
+        assert_eq!(
+            signature.return_type,
+            super::NativeSignatureTypeExpr::Map(&super::T0, &super::T1)
+        );
+
+        for near_miss in [
+            "core.map.empty.custom",
+            "Map.empty",
+            "std.map.empty",
+            "core.map.empt",
+        ] {
+            assert_eq!(
+                native_callable_semantics(near_miss),
+                None,
+                "{near_miss} must not inherit exact callable semantics"
+            );
+        }
     }
 
     #[test]

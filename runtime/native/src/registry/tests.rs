@@ -8,7 +8,7 @@ use skiff_runtime_native_contract::NativeRequiredContext;
 
 use crate::{
     dispatch::{runtime_shared_native_route_for_validation, RuntimeNativeRoute},
-    handlers::array_empty,
+    handlers::{array_empty, map_empty},
 };
 
 use super::{
@@ -93,6 +93,109 @@ fn date_from_epoch_milliseconds_semantics_has_exact_runtime_handler() {
             .count(),
         1,
         "Date constructor should have exactly one native registry handler"
+    );
+}
+
+#[test]
+fn map_empty_semantics_matches_exact_generic_signature_and_runtime_handler() {
+    let binding_key = "core.map.empty";
+    let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|entry| entry.binding_key == binding_key)
+        .expect("audited Map.empty semantics should be registered");
+
+    validate_native_callable_semantics_registry(
+        std::slice::from_ref(semantics),
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect("Map.empty semantics should match its canonical runtime route");
+    assert_eq!(
+        NATIVE_BINDINGS
+            .iter()
+            .filter(|entry| entry.binding_key == binding_key)
+            .count(),
+        1,
+    );
+    assert_eq!(
+        semantics.return_provenance,
+        skiff_artifact_model::ValueProvenance::Fresh
+    );
+    assert_eq!(
+        semantics.effects,
+        skiff_artifact_model::CallableMayEffects {
+            writes_caller_reachable: false,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        }
+    );
+}
+
+#[test]
+fn map_empty_semantics_rejects_malformed_native_signatures_and_lookalikes() {
+    let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|entry| entry.binding_key == "core.map.empty")
+        .cloned()
+        .expect("Map.empty callable semantics should be registered");
+    let canonical = *STD_NATIVE_SIGNATURES
+        .iter()
+        .find(|signature| signature.binding_key == "core.map.empty")
+        .expect("Map.empty native signature should exist");
+
+    let cases = [
+        {
+            let mut signature = canonical;
+            signature.target = "std.map.empty";
+            ("identity", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.type_param_count = 1;
+            ("generic arity", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.params = &[NativeSignatureTypeExpr::TypeParam(0)];
+            ("value arity", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.return_type =
+                NativeSignatureTypeExpr::Array(&NativeSignatureTypeExpr::TypeParam(0));
+            ("return", signature)
+        },
+    ];
+
+    for (case, signature) in cases {
+        let error = validate_native_callable_semantics_registry(
+            std::slice::from_ref(&semantics),
+            &[signature],
+            NATIVE_BINDINGS,
+        )
+        .expect_err("malformed Map.empty native signature should fail closed");
+        assert!(
+            error.contains("core.map.empty")
+                && error.contains("does not match the exact shared native signature"),
+            "{case}: unexpected error: {error}"
+        );
+    }
+
+    let mut lookalike = semantics;
+    lookalike.binding_key = "std.map.empty";
+    let error = validate_native_callable_semantics_registry(
+        &[lookalike],
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect_err("non-canonical Map.empty lookalike should fail closed");
+    assert!(
+        error.contains("std.map.empty") && error.contains("not in the exact audited registry"),
+        "unexpected error: {error}"
     );
 }
 
@@ -1433,6 +1536,20 @@ fn date_native_targets_dispatch() {
         "std.time.DecodeError",
         "requires RFC3339 Date",
     );
+}
+
+#[test]
+fn map_empty_runtime_values_are_independent() {
+    let mut first = map_empty(&[]).expect("first Map.empty should succeed");
+    let second = map_empty(&[]).expect("second Map.empty should succeed");
+
+    first
+        .as_object_mut()
+        .expect("Map.empty should return an object")
+        .insert("event".to_string(), json!("completed"));
+
+    assert_eq!(first, json!({ "event": "completed" }));
+    assert_eq!(second, json!({}));
 }
 
 #[test]

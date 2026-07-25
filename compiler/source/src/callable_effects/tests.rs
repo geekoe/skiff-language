@@ -1150,6 +1150,44 @@ fn date_from_epoch_milliseconds_wrapper_uses_exact_native_semantics() {
 }
 
 #[test]
+fn map_empty_materialization_accumulator_uses_exact_native_semantics() {
+    let model = analyze_named(
+        r#"
+            function materializeCompletedResult() -> Map<string, Json> {
+              const accumulator = Map.empty<string, Json>()
+              return accumulator
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "responses",
+        "agine.ai/llm-api",
+    );
+
+    assert_eq!(
+        effects_in(&model, "responses", "materializeCompletedResult"),
+        no_effects()
+    );
+    let CallableProvenanceSummary::Analyzed {
+        return_origins,
+        throw_origins,
+        escape_lanes,
+    } = provenance_in(&model, "responses", "materializeCompletedResult")
+    else {
+        panic!("Map.empty accumulator should retain exact native provenance");
+    };
+    assert_eq!(return_origins, &vec![ValueProvenance::Fresh]);
+    assert!(throw_origins.is_empty());
+    assert!(escape_lanes.is_empty());
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::NativeFunction { binding_key }
+                if binding_key == "core.map.empty"
+        )
+    }));
+}
+
+#[test]
 fn optional_date_parse_wrapper_uses_exact_native_semantics() {
     let model = analyze_named(
         r#"
