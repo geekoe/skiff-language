@@ -1,6 +1,7 @@
 # P5-F307 Representation wrap shared File IR model
 
-状态：Ready。
+状态：Implemented，等待F308独立验收。结果见
+`P5-F307-representation-wrap-shared-model-result.md`。
 
 ## 直接父节点与权威链
 
@@ -90,4 +91,3 @@ mutation。selector必须非零，不运行compiler/runtime/workspace/stable/liv
 - 风险：高；后续必须由独立F308验收；
 - 新的一次性开发Agent，5分钟内开始production修改；
 - 提交并返回commit、generation matrix、strict admission/identity证据；不push、不承接consumer。
-
