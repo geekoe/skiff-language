@@ -103,25 +103,32 @@ fn duplicate_source_executable_fact_fails_closed() {
 }
 
 #[test]
-fn inline_source_shape_with_contract_nominal_has_no_local_projection_fallback() {
+fn inline_source_shape_preserves_nested_contract_nominal_identity() {
     let dependency_analysis = contract_dependencies();
-    let (parsed_sources, type_resolution) = parsed_type_model(
+    let model = build_model(
         "function submit(input: { user: payments.User }) -> void {}",
-        "inline-contract-shape",
-    );
-    let effects = crate::SourceCallableEffectFacts::analysis_pending(&parsed_sources);
-    let error = SourceExecutableSignatureFacts::build(
-        &parsed_sources,
-        &type_resolution,
         &dependency_analysis,
-        &effects,
+        &BTreeMap::new(),
     )
-    .expect_err("inline source shape cannot erase its contract nominal");
-    assert!(
-        error.contains("embeds a contract nominal")
-            && error.contains("no exact PackageTypeRef representation"),
-        "unexpected error: {error}"
-    );
+    .expect("inline source shape should retain the exact nested contract nominal");
+    let signature = model
+        .executable_signatures()
+        .signature(&crate::SourceSymbolKey::new("api", "submit"))
+        .expect("submit executable signature");
+    let PackageTypeRef::Local {
+        local_type: TypeRefIr::Record { fields },
+    } = &signature.parameters[0].ty
+    else {
+        panic!("inline record should remain a structural local type")
+    };
+    assert!(matches!(
+        fields.get("user"),
+        Some(TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        }) if package_id == "example.payments.package" && stable_schema_key == "User"
+    ));
 }
 
 #[test]

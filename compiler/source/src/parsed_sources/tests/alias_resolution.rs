@@ -53,3 +53,24 @@ fn parsed_sources_are_constructed_with_alias_resolution() {
         Some("api.user.LocalUser")
     );
 }
+
+#[test]
+fn parsed_sources_reject_recursive_alias_cycles() {
+    let sources = vec![test_source(
+        "api/cycle.skiff",
+        "api.cycle",
+        r#"
+            alias First = Second
+            alias Second = Array<First?>
+        "#,
+    )];
+
+    let error = parse_publication_sources(Path::new("/tmp/alias-cycle"), &sources)
+        .expect_err("recursive aliases must fail before type lowering");
+    assert!(
+        error.to_string().contains(
+            "recursive alias cycle api.cycle.First -> api.cycle.Second -> api.cycle.First"
+        ),
+        "unexpected alias-cycle diagnostic: {error}"
+    );
+}

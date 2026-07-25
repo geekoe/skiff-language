@@ -6,6 +6,7 @@ use skiff_artifact_model::{
     InterfaceInstantiationRef, LiteralIr, PackageArtifact, PackageLocalAbiSymbol, PackageRefIr,
     PackageSchemaTypeRecord, PackageSymbolRef, ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
 };
+use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref;
 
 use crate::{
     package_export_resolver::PackageExportResolver,
@@ -21,8 +22,8 @@ use crate::{
         ast::{AliasDecl, FunctionDecl, InterfaceOperation, SourceFile, TypeDecl, TypeRef},
         id::SKIFF_STD_PUBLICATION_ID,
         package_interface_methods::{
-            instantiate_interface_method_signatures, package_interface_method_signatures,
-            InterfaceMethodSignature, PackageTypeSymbolIndex,
+            instantiate_interface_method_signatures, normalize_package_interface_type_ref,
+            package_interface_method_signatures, InterfaceMethodSignature, PackageTypeSymbolIndex,
         },
         prelude_registry::prelude_registry,
         type_expr::TypeExpr,
@@ -90,6 +91,7 @@ struct SourceTypeResolution {
 enum SourceTypeKind {
     Record {
         fields: BTreeMap<String, String>,
+        canonical_fields: Option<BTreeMap<String, TypeRefIr>>,
     },
     Actor {
         id_type: String,
@@ -100,6 +102,7 @@ enum SourceTypeKind {
     },
     Alias {
         target: String,
+        canonical_target: Option<TypeRefIr>,
     },
     External,
 }
@@ -112,6 +115,12 @@ struct PackageSymbolKey {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum InterfaceTypeVisitKey {
+    Source(SourceSymbolKey),
+    Package(PackageSymbolKey),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum AliasTypeVisitKey {
     Source(SourceSymbolKey),
     Package(PackageSymbolKey),
 }
@@ -355,7 +364,7 @@ impl TypeResolutionModel {
         let mut package_public_to_internal = BTreeMap::new();
         if let Some(package_facts) = package_facts {
             for package in package_facts {
-                index_package_types(package, &mut package_types);
+                index_package_types(package, &mut package_types)?;
                 index_package_callables(package, &mut package_callables);
                 index_package_interfaces(package, &mut package_interfaces)?;
                 index_package_type_slots(package, &mut package_type_slots)?;
@@ -471,10 +480,240 @@ impl TypeResolutionModel {
         let expanded = self.expand_alias_text(raw, context)?;
         let expr = TypeExpr::parse(&expanded);
         let ir = self.resolve_type_expr(&expr, context)?;
+        let ir = self.expand_alias_type_ref(&ir, context)?;
         Ok(ResolvedTypeRef {
             ir,
             source_text: expanded,
         })
+    }
+
+    /// Produces the exact semantic type represented by `ty`, recursively
+    /// replacing every source or package alias with its RHS. Nominal
+    /// declarations (records, representations, actors, interfaces, and named
+    /// unions) remain named.
+    pub fn expand_alias_type_ref_for_module(
+        &self,
+        module_path: &str,
+        ty: &TypeRefIr,
+    ) -> Result<TypeRefIr, String> {
+        self.expand_alias_type_ref(ty, &TypeResolutionContext::source(module_path))
+    }
+
+    pub fn expand_alias_type_ref(
+        &self,
+        ty: &TypeRefIr,
+        context: &TypeResolutionContext<'_>,
+    ) -> Result<TypeRefIr, String> {
+        self.expand_alias_type_ref_inner(ty, context, &mut BTreeSet::new())
+    }
+
+    fn expand_alias_type_ref_inner(
+        &self,
+        ty: &TypeRefIr,
+        context: &TypeResolutionContext<'_>,
+        visiting: &mut BTreeSet<AliasTypeVisitKey>,
+    ) -> Result<TypeRefIr, String> {
+        match ty {
+            TypeRefIr::Builtin { name, args } => Ok(TypeRefIr::Builtin {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.expand_alias_type_ref_inner(arg, context, visiting))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            TypeRefIr::LocalType { type_index } => {
+                let Some(resolution) = self.local_type_resolution(context.module_path, *type_index)
+                else {
+                    return Err(format!(
+                        "alias expansion cannot resolve local type index {type_index} in {}",
+                        context.module_path
+                    ));
+                };
+                if !matches!(resolution.kind, SourceTypeKind::Alias { .. }) {
+                    return Ok(ty.clone());
+                }
+                self.expand_source_alias_resolution(resolution, context, visiting)
+            }
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => {
+                let Some(resolution) = self.local_type_resolution(module_path, *type_index) else {
+                    return Err(format!(
+                        "alias expansion cannot resolve publication type index {type_index} in {module_path}"
+                    ));
+                };
+                if !matches!(resolution.kind, SourceTypeKind::Alias { .. }) {
+                    return Ok(ty.clone());
+                }
+                self.expand_source_alias_resolution(resolution, context, visiting)
+            }
+            TypeRefIr::ServiceSymbol { symbol } => {
+                let module_path = symbol
+                    .module_path
+                    .strip_prefix("root.")
+                    .unwrap_or(&symbol.module_path);
+                let key = SourceSymbolKey::new(module_path, &symbol.symbol);
+                let Some(resolution) = self.source_types.get(&key) else {
+                    return Ok(ty.clone());
+                };
+                if !matches!(resolution.kind, SourceTypeKind::Alias { .. }) {
+                    return Ok(ty.clone());
+                }
+                self.expand_source_alias_resolution(resolution, context, visiting)
+            }
+            TypeRefIr::PackageSymbol { symbol } => {
+                let dependency_ref = match &symbol.package {
+                    PackageRefIr::Dependency { dependency_ref } => dependency_ref.as_str(),
+                    PackageRefIr::PackageId { package_id } => package_id.as_str(),
+                };
+                let canonical_package_id = self
+                    .package_dependencies
+                    .get(dependency_ref)
+                    .map(String::as_str)
+                    .unwrap_or(dependency_ref);
+                let canonical_symbol = ty.clone();
+                let Some(resolution) =
+                    self.package_type_resolution(dependency_ref, &symbol.symbol_path)
+                else {
+                    return Ok(canonical_symbol);
+                };
+                let SourceTypeKind::Alias {
+                    canonical_target, ..
+                } = &resolution.kind
+                else {
+                    return Ok(canonical_symbol);
+                };
+                let public_path = resolution
+                    .public_path
+                    .as_deref()
+                    .unwrap_or(&symbol.symbol_path);
+                let visit_key = AliasTypeVisitKey::Package(PackageSymbolKey {
+                    dependency_ref: canonical_package_id.to_string(),
+                    symbol_path: public_path.to_string(),
+                });
+                if !visiting.insert(visit_key.clone()) {
+                    return Err(format!(
+                        "alias cycle detected while expanding package type {canonical_package_id}/{public_path}"
+                    ));
+                }
+                let result = match canonical_target {
+                    Some(target) => self.expand_alias_type_ref_inner(target, context, visiting),
+                    None => Err(format!(
+                        "package alias {canonical_package_id}/{public_path} has no exact RHS type"
+                    )),
+                };
+                visiting.remove(&visit_key);
+                result
+            }
+            TypeRefIr::PackageSchema { .. }
+            | TypeRefIr::DbObjectSymbol { .. }
+            | TypeRefIr::Literal { .. }
+            | TypeRefIr::TypeParam { .. } => Ok(ty.clone()),
+            TypeRefIr::Record { fields } => Ok(TypeRefIr::Record {
+                fields: fields
+                    .iter()
+                    .map(|(name, field)| {
+                        Ok((
+                            name.clone(),
+                            self.expand_alias_type_ref_inner(field, context, visiting)?,
+                        ))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, String>>()?,
+            }),
+            TypeRefIr::Union { items } => Ok(union_type_ir(
+                items
+                    .iter()
+                    .map(|item| self.expand_alias_type_ref_inner(item, context, visiting))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+            TypeRefIr::Nullable { inner } => Ok(TypeRefIr::Nullable {
+                inner: Box::new(self.expand_alias_type_ref_inner(inner, context, visiting)?),
+            }),
+            TypeRefIr::AnyInterface { interface } => {
+                let identity: TypeRefIr = serde_json::from_str(&interface.interface_abi_id)
+                    .map_err(|error| {
+                        format!(
+                            "alias expansion found invalid interface ABI identity {}: {error}",
+                            interface.interface_abi_id
+                        )
+                    })?;
+                let identity = self.expand_alias_type_ref_inner(&identity, context, visiting)?;
+                let args = interface
+                    .canonical_type_args
+                    .iter()
+                    .map(|arg| self.expand_alias_type_ref_inner(arg, context, visiting))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(TypeRefIr::AnyInterface {
+                    interface: interface_instantiation_ref(identity, args),
+                })
+            }
+            TypeRefIr::Function {
+                params,
+                return_type,
+            } => Ok(TypeRefIr::Function {
+                params: params
+                    .iter()
+                    .map(|param| {
+                        Ok(FunctionTypeParamIr {
+                            name: param.name.clone(),
+                            ty: self.expand_alias_type_ref_inner(&param.ty, context, visiting)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
+                return_type: Box::new(self.expand_alias_type_ref_inner(
+                    return_type,
+                    context,
+                    visiting,
+                )?),
+            }),
+        }
+    }
+
+    fn expand_source_alias_resolution(
+        &self,
+        resolution: &SourceTypeResolution,
+        caller_context: &TypeResolutionContext<'_>,
+        visiting: &mut BTreeSet<AliasTypeVisitKey>,
+    ) -> Result<TypeRefIr, String> {
+        let SourceTypeKind::Alias {
+            target,
+            canonical_target,
+        } = &resolution.kind
+        else {
+            return Err(format!(
+                "internal alias expansion requested for non-alias {}.{}",
+                resolution.module_path, resolution.name
+            ));
+        };
+        let visit_key = AliasTypeVisitKey::Source(SourceSymbolKey::new(
+            &resolution.module_path,
+            &resolution.name,
+        ));
+        if !visiting.insert(visit_key.clone()) {
+            return Err(format!(
+                "alias cycle detected while expanding {}.{}",
+                resolution.module_path, resolution.name
+            ));
+        }
+        let result = if let Some(target) = canonical_target {
+            self.expand_alias_type_ref_inner(target, caller_context, visiting)
+        } else {
+            let alias_context = TypeResolutionContext::with_type_params(
+                &resolution.module_path,
+                caller_context.type_params.clone(),
+            );
+            let target_ir = self.resolve_type_expr(&TypeExpr::parse(target), &alias_context)?;
+            let expanded =
+                self.expand_alias_type_ref_inner(&target_ir, &alias_context, visiting)?;
+            Ok(if resolution.module_path == caller_context.module_path {
+                expanded
+            } else {
+                self.externalize_local_type_ir(&expanded, &resolution.module_path)
+            })
+        };
+        visiting.remove(&visit_key);
+        result
     }
 
     pub fn resolve_any_interface_type_ref(
@@ -683,14 +922,36 @@ impl TypeResolutionModel {
             .cloned()
             .zip(resolved_args.iter().map(|arg| arg.source_text.clone()))
             .collect::<BTreeMap<_, _>>();
+        let canonical_substitutions = shape
+            .type_params
+            .iter()
+            .cloned()
+            .zip(resolved_args.iter().map(|arg| arg.ir.clone()))
+            .collect::<BTreeMap<_, _>>();
         let field_context = TypeResolutionContext {
             module_path: shape.module_path.as_str(),
             type_params: context.type_params.clone(),
         };
         let mut fields = BTreeMap::new();
         for (name, field_ty) in shape.fields {
-            let substituted = substitute_type_params(&field_ty, &substitutions);
-            let resolved = self.resolve_type_text(&substituted, &field_context)?;
+            let resolved = if let Some(canonical_field) = shape
+                .canonical_fields
+                .as_ref()
+                .and_then(|fields| fields.get(&name))
+            {
+                let substituted = substitute_type_params_in_type_ref_ref(
+                    canonical_field,
+                    &canonical_substitutions,
+                );
+                let ir = self.expand_alias_type_ref(&substituted, &field_context)?;
+                ResolvedTypeRef {
+                    source_text: type_ref_debug_text(&ir),
+                    ir,
+                }
+            } else {
+                let substituted = substitute_type_params(&field_ty, &substitutions);
+                self.resolve_type_text(&substituted, &field_context)?
+            };
             let resolved = if shape.module_path == context.module_path {
                 resolved
             } else {
@@ -1047,17 +1308,50 @@ impl TypeResolutionModel {
             TypeResolutionContext::with_type_params(&named.source_module_path, type_params);
 
         let contains = match &named.resolution.kind {
-            SourceTypeKind::Record { fields } => fields.values().any(|field_ty| {
-                self.contains_interface_type_text_in_named_type(
-                    field_ty,
-                    named.package_root.as_deref(),
-                    &named.resolution.local_type_names,
-                    &substitutions,
-                    &source_context,
-                    visited,
-                )
-            }),
-            SourceTypeKind::Representation { target } | SourceTypeKind::Alias { target } => self
+            SourceTypeKind::Record {
+                fields,
+                canonical_fields,
+            } => {
+                if let Some(fields) = canonical_fields {
+                    fields.values().any(|field_ty| {
+                        self.contains_interface_type_ref_inner(
+                            field_ty,
+                            None,
+                            &source_context,
+                            visited,
+                        )
+                    })
+                } else {
+                    fields.values().any(|field_ty| {
+                        self.contains_interface_type_text_in_named_type(
+                            field_ty,
+                            named.package_root.as_deref(),
+                            &named.resolution.local_type_names,
+                            &substitutions,
+                            &source_context,
+                            visited,
+                        )
+                    })
+                }
+            }
+            SourceTypeKind::Alias {
+                target,
+                canonical_target,
+            } => {
+                if let Some(target) = canonical_target {
+                    self.contains_interface_type_ref_inner(target, None, &source_context, visited)
+                } else {
+                    self.contains_interface_type_text_in_named_type(
+                        target,
+                        named.package_root.as_deref(),
+                        &named.resolution.local_type_names,
+                        &substitutions,
+                        &source_context,
+                        visited,
+                    )
+                }
+            }
+            SourceTypeKind::Representation { target } => self
                 .contains_interface_type_text_in_named_type(
                     target,
                     named.package_root.as_deref(),
@@ -1267,6 +1561,12 @@ impl TypeResolutionModel {
                         Ok((field.clone(), self.contract_type_source_text(alias, ty)?))
                     })
                     .collect::<Result<_, String>>()?,
+                canonical_fields: Some(
+                    fields
+                        .iter()
+                        .map(|(field, ty)| Ok((field.clone(), contract_type_ref_ir(alias, ty)?)))
+                        .collect::<Result<_, String>>()?,
+                ),
             });
         }
         if let Some(key) = self.resolve_source_type_key(name, context) {
@@ -1310,7 +1610,10 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Result<ConstructorShape, String> {
         match &resolved.kind {
-            SourceTypeKind::Record { fields } => {
+            SourceTypeKind::Record {
+                fields,
+                canonical_fields,
+            } => {
                 let fields = resolved
                     .public_path
                     .as_deref()
@@ -1327,6 +1630,7 @@ impl TypeResolutionModel {
                     module_path: resolved.module_path.clone(),
                     type_params: resolved.type_params.clone(),
                     fields,
+                    canonical_fields: canonical_fields.clone(),
                 })
             }
             SourceTypeKind::Actor { .. } => Err(format!(
@@ -1335,7 +1639,7 @@ impl TypeResolutionModel {
             SourceTypeKind::Representation { .. } => Err(format!(
                 "constructor target `{type_name}` is not a nominal record"
             )),
-            SourceTypeKind::Alias { target } => {
+            SourceTypeKind::Alias { target, .. } => {
                 let target = resolved
                     .public_path
                     .as_deref()
@@ -1399,7 +1703,7 @@ impl TypeResolutionModel {
                 type_params: resolved.type_params.clone(),
                 payload: target.clone(),
             })),
-            SourceTypeKind::Alias { target } => {
+            SourceTypeKind::Alias { target, .. } => {
                 let alias_context = TypeResolutionContext::with_type_params(
                     &resolved.module_path,
                     context.type_params.clone(),
@@ -2590,6 +2894,7 @@ fn index_artifact_package_types(
     package_type_slots: &mut BTreeMap<(String, String, u32), String>,
 ) -> Result<(), String> {
     let symbolic_types = artifact_symbolic_type_index(artifact)?;
+    let type_symbols = artifact_package_type_symbol_index(artifact);
     for (public_path, export) in &artifact.implementation_links.types {
         let key = (
             artifact.package_id.clone(),
@@ -2615,6 +2920,7 @@ fn index_artifact_package_types(
         let PackageLocalAbiSymbol::Type {
             local_type_id,
             descriptor,
+            is_alias,
             is_interface,
             type_params,
             interface_methods,
@@ -2632,7 +2938,21 @@ fn index_artifact_package_types(
         let module_path = public_path
             .rsplit_once('.')
             .map_or("", |(module, _)| module);
-        let kind = artifact_type_kind(descriptor, &symbolic_types).map_err(|message| {
+        let export = artifact
+            .implementation_links
+            .types
+            .get(public_path)
+            .expect("symbolic type index validated the implementation link");
+        let kind = artifact_type_kind(
+            descriptor,
+            &symbolic_types,
+            &artifact.package_id,
+            &type_symbols,
+            &export.file.module_path,
+            public_path,
+            *is_alias,
+        )
+        .map_err(|message| {
             format!(
                 "package {} exported type {} has unusable descriptor: {message}",
                 artifact.package_id, public_path
@@ -2672,14 +2992,7 @@ fn index_artifact_package_types(
                 let fact = PackageInterfaceFact {
                     type_params: type_params.clone(),
                     methods,
-                    source_module: artifact
-                        .implementation_links
-                        .types
-                        .get(public_path)
-                        .expect("symbolic type index validated the implementation link")
-                        .file
-                        .module_path
-                        .clone(),
+                    source_module: export.file.module_path.clone(),
                 };
                 if package_interfaces.insert(key, fact).is_some() {
                     return Err(format!(
@@ -2784,6 +3097,23 @@ fn canonicalize_artifact_self_type(ty: &mut TypeRefIr) -> Result<(), String> {
 
 type ArtifactSymbolicTypeIndex = BTreeMap<(String, String), String>;
 
+fn artifact_package_type_symbol_index(artifact: &PackageArtifact) -> PackageTypeSymbolIndex {
+    let mut index = PackageTypeSymbolIndex::default();
+    for requirement in &artifact.package_requirements {
+        index.insert_dependency(&requirement.alias, &requirement.package_id);
+        index.insert_dependency(&requirement.package_id, &requirement.package_id);
+    }
+    for (public_path, export) in &artifact.implementation_links.types {
+        index.insert_type(
+            &export.file.module_path,
+            export.type_index,
+            &export.symbol,
+            public_path,
+        );
+    }
+    index
+}
+
 fn artifact_symbolic_type_index(
     artifact: &PackageArtifact,
 ) -> Result<ArtifactSymbolicTypeIndex, String> {
@@ -2792,6 +3122,7 @@ fn artifact_symbolic_type_index(
         let Some(PackageLocalAbiSymbol::Type {
             local_type_id,
             descriptor,
+            is_alias: _,
             is_interface,
             type_params,
             interface_methods,
@@ -2856,18 +3187,74 @@ fn artifact_symbolic_type_index(
 fn artifact_type_kind(
     descriptor: &TypeDescriptorIr,
     symbolic_types: &ArtifactSymbolicTypeIndex,
+    package_id: &str,
+    type_symbols: &PackageTypeSymbolIndex,
+    module_path: &str,
+    public_path: &str,
+    is_alias: bool,
 ) -> Result<SourceTypeKind, String> {
     match descriptor {
-        TypeDescriptorIr::Record { fields } => Ok(SourceTypeKind::Record {
-            fields: fields
-                .iter()
-                .map(|(name, ty)| Ok((name.clone(), artifact_type_text(ty, symbolic_types)?)))
-                .collect::<Result<_, String>>()?,
+        TypeDescriptorIr::Record { fields } => {
+            if is_alias {
+                return Err("transparent alias carries a record declaration descriptor".to_string());
+            }
+            Ok(SourceTypeKind::Record {
+                fields: fields
+                    .iter()
+                    .map(|(name, ty)| Ok((name.clone(), artifact_type_text(ty, symbolic_types)?)))
+                    .collect::<Result<_, String>>()?,
+                canonical_fields: Some(
+                    fields
+                        .iter()
+                        .map(|(name, ty)| {
+                            Ok((
+                                name.clone(),
+                                normalize_package_interface_type_ref(
+                                    package_id,
+                                    type_symbols,
+                                    module_path,
+                                    ty,
+                                    &format!("record {public_path}.{name}"),
+                                )?,
+                            ))
+                        })
+                        .collect::<Result<_, String>>()?,
+                ),
+            })
+        }
+        TypeDescriptorIr::Alias { target } if is_alias => Ok(SourceTypeKind::Alias {
+            target: artifact_type_text(target, symbolic_types)?,
+            canonical_target: Some(normalize_package_interface_type_ref(
+                package_id,
+                type_symbols,
+                module_path,
+                target,
+                &format!("alias {public_path}"),
+            )?),
         }),
-        TypeDescriptorIr::Alias { target } => Ok(SourceTypeKind::Alias {
+        TypeDescriptorIr::Alias { target } => Ok(SourceTypeKind::Representation {
             target: artifact_type_text(target, symbolic_types)?,
         }),
-        TypeDescriptorIr::Union { variants } => Ok(SourceTypeKind::Alias {
+        TypeDescriptorIr::Union { variants } if is_alias => {
+            let target = TypeRefIr::Union {
+                items: variants.clone(),
+            };
+            Ok(SourceTypeKind::Alias {
+                target: variants
+                    .iter()
+                    .map(|variant| artifact_type_text(variant, symbolic_types))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(" | "),
+                canonical_target: Some(normalize_package_interface_type_ref(
+                    package_id,
+                    type_symbols,
+                    module_path,
+                    &target,
+                    &format!("alias {public_path}"),
+                )?),
+            })
+        }
+        TypeDescriptorIr::Union { variants } => Ok(SourceTypeKind::Representation {
             target: variants
                 .iter()
                 .map(|variant| artifact_type_text(variant, symbolic_types))
@@ -2977,6 +3364,24 @@ fn artifact_type_text(
                 ))
             }
         }
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => Ok(format!(
+            "fn({}) -> {}",
+            params
+                .iter()
+                .map(|param| {
+                    Ok(format!(
+                        "{}: {}",
+                        param.name,
+                        artifact_type_text(&param.ty, symbolic_types)?
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()?
+                .join(", "),
+            artifact_type_text(return_type, symbolic_types)?
+        )),
         other => Err(format!("unsupported artifact type reference {other:?}")),
     }
 }
@@ -3029,6 +3434,7 @@ struct ConstructorShape {
     module_path: String,
     type_params: Vec<String>,
     fields: BTreeMap<String, String>,
+    canonical_fields: Option<BTreeMap<String, TypeRefIr>>,
 }
 
 struct RepresentationShape {
@@ -3059,6 +3465,7 @@ fn prelude_constructor_shape(type_name: &str) -> Option<ConstructorShape> {
             .iter()
             .map(|field| (field.name.clone(), field.ty.name.clone()))
             .collect(),
+        canonical_fields: None,
     })
 }
 
@@ -3158,9 +3565,10 @@ fn index_source_interfaces(
 fn index_package_types(
     package: &TypeResolutionPackageFacts<'_>,
     package_types: &mut BTreeMap<PackageSymbolKey, SourceTypeResolution>,
-) {
+) -> Result<(), String> {
+    let type_symbols = package_type_symbol_index(package)?;
     for binding in &package.schema_types {
-        let Some(resolution) = package_source_type_resolution(
+        let Some(mut resolution) = package_source_type_resolution(
             binding.source_ast,
             binding.source_module,
             binding.source_symbol,
@@ -3168,6 +3576,24 @@ fn index_package_types(
         ) else {
             continue;
         };
+        if binding.kind == PublicTypeKind::Alias {
+            let SourceTypeKind::Alias {
+                target,
+                canonical_target,
+            } = &mut resolution.kind
+            else {
+                return Err(format!(
+                    "package {} public alias {} does not resolve to a source alias declaration",
+                    package.package_id, binding.public_path
+                ));
+            };
+            *canonical_target = Some(package_fact_alias_target(
+                package,
+                binding,
+                &type_symbols,
+                target,
+            )?);
+        }
         for path in [
             binding.public_path.to_string(),
             source_path(binding.source_module, binding.source_symbol),
@@ -3181,6 +3607,205 @@ fn index_package_types(
                 resolution.clone(),
             );
         }
+    }
+    Ok(())
+}
+
+fn package_fact_alias_target(
+    package: &TypeResolutionPackageFacts<'_>,
+    binding: &TypeResolutionPackageSchemaTypeFact<'_>,
+    type_symbols: &PackageTypeSymbolIndex,
+    source_target: &str,
+) -> Result<TypeRefIr, String> {
+    if let Some(unit) = binding.file_ir_unit {
+        let declaration = unit
+            .declarations
+            .types
+            .get(binding.source_symbol)
+            .and_then(|declaration| unit.type_table.get(declaration.type_index as usize))
+            .ok_or_else(|| {
+                format!(
+                    "package {} public alias {} has no File IR declaration",
+                    package.package_id, binding.public_path
+                )
+            })?;
+        let target = match &declaration.descriptor {
+            TypeDescriptorIr::Alias { target } => target.clone(),
+            TypeDescriptorIr::Union { variants } => TypeRefIr::Union {
+                items: variants.clone(),
+            },
+            TypeDescriptorIr::Record { .. } => {
+                return Err(format!(
+                    "package {} public alias {} has a record descriptor",
+                    package.package_id, binding.public_path
+                ));
+            }
+        };
+        return normalize_package_interface_type_ref(
+            package.package_id,
+            type_symbols,
+            binding.source_module,
+            &target,
+            &format!("alias {}", binding.public_path),
+        );
+    }
+    resolve_package_fact_alias_expr(
+        package,
+        binding.source_module,
+        &TypeExpr::parse(source_target),
+    )
+}
+
+fn resolve_package_fact_alias_expr(
+    package: &TypeResolutionPackageFacts<'_>,
+    source_module: &str,
+    expr: &TypeExpr,
+) -> Result<TypeRefIr, String> {
+    match expr {
+        TypeExpr::EmptyRecord => Ok(TypeRefIr::Record {
+            fields: BTreeMap::new(),
+        }),
+        TypeExpr::StringLiteral(value) => Ok(TypeRefIr::Literal {
+            value: LiteralIr::String {
+                value: value.clone(),
+            },
+        }),
+        TypeExpr::Named { name, args } => {
+            let args = args
+                .iter()
+                .map(|arg| resolve_package_fact_alias_expr(package, source_module, arg))
+                .collect::<Result<Vec<_>, _>>()?;
+            if let Some(name) = builtin_type_name(name) {
+                return Ok(TypeRefIr::Builtin { name, args });
+            }
+            if !args.is_empty() {
+                return Err(format!(
+                    "package {} alias target {} uses unsupported nominal type arguments",
+                    package.package_id,
+                    expr.to_type_string()
+                ));
+            }
+            if let Some((dependency_alias, symbol_path)) = name.split_once('.') {
+                if let Some(dependency) = package
+                    .dependencies
+                    .iter()
+                    .find(|dependency| dependency.alias == dependency_alias)
+                {
+                    if symbol_path.is_empty() {
+                        return Err(format!(
+                            "package {} alias target {name} has no dependency symbol path",
+                            package.package_id
+                        ));
+                    }
+                    return Ok(TypeRefIr::PackageSymbol {
+                        symbol: PackageSymbolRef {
+                            package: PackageRefIr::PackageId {
+                                package_id: dependency.package_id.to_string(),
+                            },
+                            symbol_path: symbol_path.to_string(),
+                            abi_expectation: None,
+                        },
+                    });
+                }
+            }
+            let source_name = name.strip_prefix("root.").unwrap_or(name);
+            let mut matches = package.schema_types.iter().filter(|candidate| {
+                candidate.public_path == source_name
+                    || source_path(candidate.source_module, candidate.source_symbol) == source_name
+                    || (candidate.source_module == source_module
+                        && candidate.source_symbol == source_name)
+            });
+            let Some(candidate) = matches.next() else {
+                return Err(format!(
+                    "package {} alias target `{name}` is missing or unresolved",
+                    package.package_id
+                ));
+            };
+            if matches.next().is_some() {
+                return Err(format!(
+                    "package {} alias target `{name}` is ambiguous",
+                    package.package_id
+                ));
+            }
+            Ok(TypeRefIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::PackageId {
+                        package_id: package.package_id.to_string(),
+                    },
+                    symbol_path: candidate.public_path.to_string(),
+                    abi_expectation: None,
+                },
+            })
+        }
+        TypeExpr::Nullable(inner) => Ok(TypeRefIr::Nullable {
+            inner: Box::new(resolve_package_fact_alias_expr(
+                package,
+                source_module,
+                inner,
+            )?),
+        }),
+        TypeExpr::Union(items) => Ok(TypeRefIr::Union {
+            items: items
+                .iter()
+                .map(|item| resolve_package_fact_alias_expr(package, source_module, item))
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+        TypeExpr::AnyInterface { interface } => {
+            let (identity, args) = match interface.as_ref() {
+                TypeExpr::Named { name, args } => {
+                    let identity = resolve_package_fact_alias_expr(
+                        package,
+                        source_module,
+                        &TypeExpr::Named {
+                            name: name.clone(),
+                            args: Vec::new(),
+                        },
+                    )?;
+                    let args = args
+                        .iter()
+                        .map(|arg| resolve_package_fact_alias_expr(package, source_module, arg))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    (identity, args)
+                }
+                other => (
+                    resolve_package_fact_alias_expr(package, source_module, other)?,
+                    Vec::new(),
+                ),
+            };
+            Ok(TypeRefIr::AnyInterface {
+                interface: interface_instantiation_ref(identity, args),
+            })
+        }
+        TypeExpr::Record(fields) => Ok(TypeRefIr::Record {
+            fields: fields
+                .iter()
+                .map(|field| {
+                    Ok((
+                        field.name.clone(),
+                        resolve_package_fact_alias_expr(package, source_module, &field.ty)?,
+                    ))
+                })
+                .collect::<Result<BTreeMap<_, _>, String>>()?,
+        }),
+        TypeExpr::Function {
+            params,
+            return_type,
+        } => Ok(TypeRefIr::Function {
+            params: params
+                .iter()
+                .map(|param| {
+                    Ok(FunctionTypeParamIr {
+                        name: param.name.clone(),
+                        ty: resolve_package_fact_alias_expr(package, source_module, &param.ty)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+            return_type: Box::new(resolve_package_fact_alias_expr(
+                package,
+                source_module,
+                return_type,
+            )?),
+        }),
     }
 }
 
@@ -3434,6 +4059,7 @@ fn source_type_resolution(
                 .iter()
                 .map(|field| (field.name.clone(), field.ty.name.clone()))
                 .collect(),
+            canonical_fields: None,
         }
     };
     SourceTypeResolution {
@@ -3453,6 +4079,7 @@ fn alias_type_resolution(module_path: &str, alias: &AliasDecl) -> SourceTypeReso
         local_type_names: BTreeSet::new(),
         kind: SourceTypeKind::Alias {
             target: alias.target_type.name.clone(),
+            canonical_target: None,
         },
         module_path: module_path.to_string(),
         public_path: None,
@@ -5050,6 +5677,22 @@ mod tests {
         );
     }
 
+    fn test_artifact_type_kind(
+        descriptor: &TypeDescriptorIr,
+        symbolic_types: &ArtifactSymbolicTypeIndex,
+        is_alias: bool,
+    ) -> Result<SourceTypeKind, String> {
+        artifact_type_kind(
+            descriptor,
+            symbolic_types,
+            "example.pkg",
+            &PackageTypeSymbolIndex::default(),
+            "types",
+            "PublicType",
+            is_alias,
+        )
+    }
+
     #[test]
     fn artifact_descriptors_preserve_nested_records_arrays_aliases_and_literal_unions() {
         let descriptor = TypeDescriptorIr::Record {
@@ -5083,17 +5726,44 @@ mod tests {
                         ],
                     },
                 ),
+                (
+                    "format".to_string(),
+                    TypeRefIr::Nullable {
+                        inner: Box::new(TypeRefIr::Union {
+                            items: vec![
+                                TypeRefIr::Literal {
+                                    value: LiteralIr::String {
+                                        value: "chat".to_string(),
+                                    },
+                                },
+                                TypeRefIr::Literal {
+                                    value: LiteralIr::String {
+                                        value: "responses".to_string(),
+                                    },
+                                },
+                            ],
+                        }),
+                    },
+                ),
             ]),
         };
-        let SourceTypeKind::Record { fields } = artifact_type_kind(&descriptor, &BTreeMap::new())
+        let SourceTypeKind::Record {
+            fields,
+            canonical_fields: Some(canonical_fields),
+        } = test_artifact_type_kind(&descriptor, &BTreeMap::new(), false)
             .expect("descriptor should be self-contained")
         else {
             panic!("record descriptor should remain a record")
         };
         assert_eq!(fields["items"], "Array<{ label: string }>");
         assert_eq!(fields["state"], "\"ready\" | \"done\"");
+        assert!(matches!(
+            &canonical_fields["format"],
+            TypeRefIr::Nullable { inner }
+                if matches!(inner.as_ref(), TypeRefIr::Union { items } if items.len() == 2)
+        ));
 
-        let alias = artifact_type_kind(
+        let alias = test_artifact_type_kind(
             &TypeDescriptorIr::Alias {
                 target: TypeRefIr::Builtin {
                     name: "Array".to_string(),
@@ -5101,21 +5771,150 @@ mod tests {
                 },
             },
             &BTreeMap::new(),
+            true,
         )
         .expect("alias descriptor should be self-contained");
         assert!(matches!(
             alias,
-            SourceTypeKind::Alias { target } if target == "Array<string>"
+            SourceTypeKind::Alias { target, .. } if target == "Array<string>"
+        ));
+
+        let representation = test_artifact_type_kind(
+            &TypeDescriptorIr::Alias {
+                target: TypeRefIr::builtin("string"),
+            },
+            &BTreeMap::new(),
+            false,
+        )
+        .expect("a nominal representation may use an alias-shaped descriptor");
+        assert!(matches!(
+            representation,
+            SourceTypeKind::Representation { target } if target == "string"
+        ));
+
+        let callback = test_artifact_type_kind(
+            &TypeDescriptorIr::Alias {
+                target: TypeRefIr::Function {
+                    params: vec![FunctionTypeParamIr {
+                        name: "status".to_string(),
+                        ty: TypeRefIr::Union {
+                            items: vec![
+                                TypeRefIr::Literal {
+                                    value: LiteralIr::String {
+                                        value: "running".to_string(),
+                                    },
+                                },
+                                TypeRefIr::Literal {
+                                    value: LiteralIr::String {
+                                        value: "completed".to_string(),
+                                    },
+                                },
+                            ],
+                        },
+                    }],
+                    return_type: Box::new(TypeRefIr::Builtin {
+                        name: "Array".to_string(),
+                        args: vec![TypeRefIr::builtin("string")],
+                    }),
+                },
+            },
+            &BTreeMap::new(),
+            true,
+        )
+        .expect("callback alias descriptor should stay exact");
+        assert!(matches!(
+            callback,
+            SourceTypeKind::Alias {
+                canonical_target: Some(TypeRefIr::Function { params, return_type }),
+                ..
+            } if matches!(
+                params.as_slice(),
+                [FunctionTypeParamIr {
+                    ty: TypeRefIr::Union { items },
+                    ..
+                }] if items.len() == 2
+            ) && matches!(
+                return_type.as_ref(),
+                TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1
+            )
         ));
     }
 
     #[test]
+    fn aliases_expand_exactly_through_callbacks_and_nested_structural_types() {
+        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root should resolve");
+        crate::prelude_registry::initialize_prelude_registry(
+            &skiff_compiler_input::CompilerPlatformSources::new(&platform_root)
+                .expect("platform sources should load"),
+        )
+        .expect("prelude registry should initialize");
+
+        let (_parsed, model) = type_resolution(
+            r#"
+              type Payload {
+                value: string
+              }
+
+              alias Status = "running" | "completed"
+              alias Payloads = Array<Payload?>
+              alias Handler = fn(status: Status) -> Payloads
+            "#,
+        );
+
+        let handler = model
+            .resolve_type_text("Handler", &context())
+            .expect("callback alias should resolve to its exact RHS");
+        let TypeRefIr::Function {
+            params,
+            return_type,
+        } = handler.ir
+        else {
+            panic!("Handler must expand to a callback type");
+        };
+        assert!(matches!(
+            params.as_slice(),
+            [FunctionTypeParamIr {
+                name,
+                ty: TypeRefIr::Union { items },
+            }] if name == "status"
+                && items.len() == 2
+                && items.iter().all(|item| matches!(
+                    item,
+                    TypeRefIr::Literal {
+                        value: LiteralIr::String { .. }
+                    }
+                ))
+        ));
+        assert!(matches!(
+            return_type.as_ref(),
+            TypeRefIr::Builtin { name, args }
+                if name == "Array"
+                    && matches!(
+                        args.as_slice(),
+                        [TypeRefIr::Nullable { inner }]
+                            if matches!(inner.as_ref(), TypeRefIr::LocalType { .. })
+                    )
+        ));
+
+        let missing = type_resolution("alias MissingAlias = Missing");
+        let error = missing
+            .1
+            .resolve_type_text("MissingAlias", &context())
+            .expect_err("an alias with an unresolved RHS must fail closed");
+        assert!(error.contains("unresolved type `Missing`"));
+    }
+
+    #[test]
     fn artifact_descriptors_reject_non_self_describing_local_indices() {
-        let error = artifact_type_kind(
+        let error = test_artifact_type_kind(
             &TypeDescriptorIr::Alias {
                 target: TypeRefIr::LocalType { type_index: 7 },
             },
             &BTreeMap::new(),
+            true,
         )
         .expect_err("ambient FileIR lookup must not be used");
         assert!(error.contains("not self-describing"));
@@ -5142,22 +5941,24 @@ mod tests {
             (symbol.module_path.clone(), symbol.symbol.clone()),
             "LlmContentPart".to_string(),
         )]);
-        let SourceTypeKind::Record { fields } = artifact_type_kind(&descriptor, &symbolic_types)
-            .expect("public symbolic type should reconstruct")
+        let SourceTypeKind::Record { fields, .. } =
+            test_artifact_type_kind(&descriptor, &symbolic_types, false)
+                .expect("public symbolic type should reconstruct")
         else {
             panic!("record descriptor should remain a record")
         };
         assert_eq!(fields["content"], "Array<LlmContentPart>");
 
-        let error = artifact_type_kind(&descriptor, &BTreeMap::new())
+        let error = test_artifact_type_kind(&descriptor, &BTreeMap::new(), false)
             .expect_err("a private or missing symbolic type must fail closed");
         assert!(error.contains("identity-validated public artifact type"));
 
-        let db_error = artifact_type_kind(
+        let db_error = test_artifact_type_kind(
             &TypeDescriptorIr::Alias {
                 target: TypeRefIr::DbObjectSymbol { symbol },
             },
             &symbolic_types,
+            true,
         )
         .expect_err("db object symbols are not package-public type facts");
         assert!(db_error.contains("no public package artifact type semantics"));
@@ -5280,6 +6081,7 @@ mod tests {
                         PackageLocalAbiSymbol::Type {
                             local_type_id: "type:types.LlmClient".to_string(),
                             descriptor: descriptor.clone(),
+                            is_alias: false,
                             is_interface: true,
                             type_params: Vec::new(),
                             interface_methods: vec![method.clone()],
@@ -5290,6 +6092,7 @@ mod tests {
                         PackageLocalAbiSymbol::Type {
                             local_type_id: "type:tools.ToolDeclaration".to_string(),
                             descriptor: tool_descriptor.clone(),
+                            is_alias: false,
                             is_interface: false,
                             type_params: Vec::new(),
                             interface_methods: Vec::new(),
@@ -5300,6 +6103,7 @@ mod tests {
                         PackageLocalAbiSymbol::Type {
                             local_type_id: "type:LlmRole".to_string(),
                             descriptor: role_descriptor.clone(),
+                            is_alias: true,
                             is_interface: false,
                             type_params: Vec::new(),
                             interface_methods: Vec::new(),
@@ -5310,6 +6114,7 @@ mod tests {
                         PackageLocalAbiSymbol::Type {
                             local_type_id: "type:LlmMessage".to_string(),
                             descriptor: message_descriptor.clone(),
+                            is_alias: false,
                             is_interface: false,
                             type_params: Vec::new(),
                             interface_methods: Vec::new(),

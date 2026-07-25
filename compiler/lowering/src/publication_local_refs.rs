@@ -1,13 +1,14 @@
-use std::collections::BTreeMap;
+use std::{cell::RefCell, collections::BTreeMap};
 
 use crate::file_ir::{
     AssignTargetIr, BoxSourceIr, CallTargetIr, DbBodyIr, DbChangeIr, DbLeaseClaimIr, DbLeaseReadIr,
     DbOperationIr, DbPredicateIr, DbQueryIr, DbQueryValueIr, DbSelectorIr, DbTransactionIr, ExprIr,
-    FileIrServiceCallValidationError, FileIrUnit, InterfaceDeclIr, PackageRefIr, PatternIr, StmtIr,
-    TestEffectOutcomeIr, TypeDescriptorIr, TypeRefIr,
+    FileIrUnit, InterfaceDeclIr, PackageRefIr, PatternIr, StmtIr, TestEffectOutcomeIr,
+    TypeDescriptorIr, TypeRefIr,
 };
 use skiff_artifact_identity::{canonical_interface_method_abi_id, type_ref_abi_key};
 use skiff_artifact_model::InterfaceInstantiationRef;
+use skiff_compiler_source::TypeResolutionModel;
 
 use super::external_refs::rebuild_external_refs_for_file_ir_unit;
 
@@ -24,16 +25,24 @@ struct PublicationExecutableRefLocation {
 }
 
 #[derive(Debug, Default)]
-struct PublicationLocalRefIndex {
+struct PublicationLocalRefIndex<'a> {
     current_package_id: Option<String>,
     types_by_module_symbol: BTreeMap<(String, String), PublicationTypeRefLocation>,
     executables_by_module_symbol: BTreeMap<(String, String), PublicationExecutableRefLocation>,
+    type_resolution: Option<&'a TypeResolutionModel>,
+    alias_expansion_error: RefCell<Option<String>>,
 }
 
-impl PublicationLocalRefIndex {
-    fn build(units: &[FileIrUnit], current_package_id: Option<&str>) -> Self {
+impl<'a> PublicationLocalRefIndex<'a> {
+    fn build(
+        units: &[FileIrUnit],
+        current_package_id: Option<&str>,
+        type_resolution: Option<&'a TypeResolutionModel>,
+    ) -> Self {
         let mut index = Self {
             current_package_id: current_package_id.map(str::to_string),
+            type_resolution,
+            alias_expansion_error: RefCell::new(None),
             ..Self::default()
         };
         for unit in units {
@@ -97,12 +106,16 @@ impl PublicationLocalRefIndex {
 pub(super) fn rewrite_publication_local_refs(
     units: &mut [FileIrUnit],
     current_package_id: Option<&str>,
-) -> Result<(), FileIrServiceCallValidationError> {
-    let index = PublicationLocalRefIndex::build(units, current_package_id);
+    type_resolution: Option<&TypeResolutionModel>,
+) -> Result<(), String> {
+    let index = PublicationLocalRefIndex::build(units, current_package_id, type_resolution);
     for unit in units {
         let module_path = unit.module_path.clone();
         rewrite_unit(&index, &module_path, unit);
-        rebuild_external_refs_for_file_ir_unit(unit)?;
+        if let Some(error) = index.alias_expansion_error.borrow_mut().take() {
+            return Err(error);
+        }
+        rebuild_external_refs_for_file_ir_unit(unit).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -542,7 +555,28 @@ fn rewrite_type_ref(
     module_path: &str,
     ty: &mut TypeRefIr,
 ) -> bool {
-    match ty {
+    let mut changed = false;
+    if let Some(type_resolution) = index.type_resolution {
+        match type_resolution.expand_alias_type_ref_for_module(module_path, ty) {
+            Ok(expanded) => {
+                if expanded != *ty {
+                    *ty = expanded;
+                    changed = true;
+                }
+            }
+            Err(error) => {
+                let mut expansion_error = index.alias_expansion_error.borrow_mut();
+                if expansion_error.is_none() {
+                    *expansion_error = Some(format!(
+                        "alias expansion failed in module {module_path}: {error}"
+                    ));
+                }
+                return false;
+            }
+        }
+    }
+
+    let nested_changed = match ty {
         TypeRefIr::ServiceSymbol { symbol } => {
             if let Some(location) = index.type_location(&symbol.module_path, &symbol.symbol) {
                 rewrite_type_ref_to_publication_location(module_path, ty, location)
@@ -601,7 +635,8 @@ fn rewrite_type_ref(
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => false,
-    }
+    };
+    changed || nested_changed
 }
 
 fn rewrite_type_ref_to_publication_location(
@@ -655,6 +690,8 @@ mod tests {
                 },
             )]),
             executables_by_module_symbol: BTreeMap::new(),
+            type_resolution: None,
+            alias_expansion_error: RefCell::new(None),
         };
 
         let mut local = current_package_duration_ref("skiff.run/std");
@@ -712,7 +749,7 @@ mod tests {
             source_span: None,
         });
 
-        rewrite_publication_local_refs(std::slice::from_mut(&mut unit), None).unwrap();
+        rewrite_publication_local_refs(std::slice::from_mut(&mut unit), None, None).unwrap();
 
         assert_eq!(unit.external_refs.service_call_refs, vec![call_ref]);
         let ExprIr::Call { call } = &unit.constants[0].body.expressions[0] else {

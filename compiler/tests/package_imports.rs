@@ -441,6 +441,287 @@ packages:
 }
 
 #[test]
+fn public_aliases_expand_across_fresh_package_artifacts_without_nominal_schema() {
+    let temp = TestDir::new("skiff-compiler", "public-alias-expansion");
+    fs::write(
+        temp.path().join("package.yml"),
+        r#"id: example.com/alias-consumer
+version: 1.0.0
+packages:
+  - id: example.com/alias-facade
+    version: 1.0.0
+    alias: facade
+  - id: example.com/alias-base
+    version: 1.0.0
+    alias: base
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("main.skiff"),
+        r#"
+import facade
+
+function scalar(value: facade.Scalar) -> string {
+  return value
+}
+
+function status(value: facade.Status) -> string {
+  return value
+}
+
+function users(value: facade.Users) -> facade.Users {
+  return value
+}
+
+function remote(value: facade.RemoteUser) -> facade.RemoteUser {
+  return value
+}
+"#,
+    )
+    .unwrap();
+
+    let base = temp
+        .path()
+        .join(".skiff-packages/example~com~~alias-base/1.0.0");
+    fs::create_dir_all(&base).unwrap();
+    fs::write(
+        base.join("package.yml"),
+        "id: example.com/alias-base\nversion: 1.0.0\n",
+    )
+    .unwrap();
+    fs::write(base.join("api.yml"), "User: types.User\n").unwrap();
+    fs::write(base.join("types.skiff"), "type User { id: string }\n").unwrap();
+
+    let facade = temp
+        .path()
+        .join(".skiff-packages/example~com~~alias-facade/1.0.0");
+    fs::create_dir_all(&facade).unwrap();
+    fs::write(
+        facade.join("package.yml"),
+        r#"id: example.com/alias-facade
+version: 1.0.0
+packages:
+  - id: example.com/alias-base
+    version: 1.0.0
+    alias: base
+"#,
+    )
+    .unwrap();
+    fs::write(
+        facade.join("api.yml"),
+        r#"Scalar: aliases.Scalar
+Status: aliases.Status
+Users: aliases.Users
+RemoteUser: aliases.RemoteUser
+Envelope: aliases.Envelope
+echoScalar: aliases.echoScalar
+echoStatus: aliases.echoStatus
+echoUsers: aliases.echoUsers
+echoRemote: aliases.echoRemote
+"#,
+    )
+    .unwrap();
+    fs::write(
+        facade.join("aliases.skiff"),
+        r#"
+import base
+
+alias Scalar = string
+alias Status = "running" | "completed" | "failed"
+alias Users = Array<base.User?>
+alias RemoteUser = base.User
+
+type Envelope {
+  user: RemoteUser,
+  status: Status,
+  users: Users,
+}
+
+function echoScalar(value: Scalar) -> Scalar { return value }
+function echoStatus(value: Status) -> Status { return value }
+function echoUsers(value: Users) -> Users { return value }
+function echoRemote(value: RemoteUser) -> RemoteUser { return value }
+"#,
+    )
+    .unwrap();
+
+    let project = compile_package_project(temp.path())
+        .expect("fresh base, facade, and consumer artifacts should compile");
+    let base = project
+        .dependency("example.com/alias-base", "1.0.0")
+        .expect("base artifact");
+    assert!(
+        base.package_schema_index.types.contains_key("User"),
+        "the genuine nominal record must retain schema identity"
+    );
+
+    let facade = project
+        .dependency("example.com/alias-facade", "1.0.0")
+        .expect("facade artifact");
+    for public_path in ["Scalar", "Status", "Users", "RemoteUser"] {
+        assert!(
+            !facade.package_schema_index.types.contains_key(public_path),
+            "transparent alias {public_path} must not receive a PackageSchema identity"
+        );
+        assert!(matches!(
+            facade
+                .artifact
+                .package_local_abi
+                .public_symbols
+                .get(public_path),
+            Some(skiff_artifact_model::PackageLocalAbiSymbol::Type { is_alias: true, .. })
+        ));
+    }
+
+    let status = facade
+        .artifact
+        .package_local_abi
+        .public_symbols
+        .get("Status")
+        .expect("Status ABI metadata");
+    let skiff_artifact_model::PackageLocalAbiSymbol::Type {
+        descriptor:
+            skiff_artifact_model::TypeDescriptorIr::Alias {
+                target: skiff_artifact_model::TypeRefIr::Union { items },
+            },
+        ..
+    } = status
+    else {
+        panic!("Status alias must retain its exact literal-union RHS metadata")
+    };
+    assert_eq!(items.len(), 3);
+    assert!(items.iter().all(|item| matches!(
+        item,
+        skiff_artifact_model::TypeRefIr::Literal {
+            value: skiff_artifact_model::LiteralIr::String { .. }
+        }
+    )));
+
+    let remote = facade
+        .artifact
+        .package_local_abi
+        .public_symbols
+        .get("RemoteUser")
+        .expect("RemoteUser ABI metadata");
+    assert!(
+        matches!(
+            remote,
+            skiff_artifact_model::PackageLocalAbiSymbol::Type {
+                descriptor:
+                    skiff_artifact_model::TypeDescriptorIr::Alias {
+                        target:
+                            skiff_artifact_model::TypeRefIr::PackageSymbol {
+                                symbol:
+                                    skiff_artifact_model::PackageSymbolRef {
+                                        package:
+                                            skiff_artifact_model::PackageRefIr::Dependency {
+                                                dependency_ref
+                                            },
+                                        symbol_path,
+                                        ..
+                                    }
+                            }
+                    },
+                is_alias: true,
+                ..
+            } if dependency_ref == "base" && symbol_path == "User"
+        ),
+        "unexpected RemoteUser ABI metadata: {remote:#?}"
+    );
+
+    let consumer = module_artifact(&project.package, "main");
+    let status_function = consumer
+        .unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol == "main.status")
+        .expect("consumer status function");
+    assert!(matches!(
+        &status_function.params[0].ty,
+        skiff_artifact_model::TypeRefIr::Union { items }
+            if items.len() == 3
+                && items.iter().all(|item| matches!(
+                    item,
+                    skiff_artifact_model::TypeRefIr::Literal {
+                        value: skiff_artifact_model::LiteralIr::String { .. }
+                    }
+                ))
+    ));
+    assert_eq!(
+        status_function.return_type,
+        skiff_artifact_model::TypeRefIr::builtin("string")
+    );
+
+    let scalar_function = consumer
+        .unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol == "main.scalar")
+        .expect("consumer scalar function");
+    assert_eq!(
+        scalar_function.params[0].ty,
+        skiff_artifact_model::TypeRefIr::builtin("string")
+    );
+
+    let users_function = consumer
+        .unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol == "main.users")
+        .expect("consumer users function");
+    for ty in [&users_function.params[0].ty, &users_function.return_type] {
+        assert!(matches!(
+            ty,
+            skiff_artifact_model::TypeRefIr::Builtin { name, args }
+                if name == "Array"
+                    && matches!(
+                        args.as_slice(),
+                        [skiff_artifact_model::TypeRefIr::Nullable { inner }]
+                            if matches!(
+                                inner.as_ref(),
+                                skiff_artifact_model::TypeRefIr::PackageSymbol {
+                                    symbol:
+                                        skiff_artifact_model::PackageSymbolRef {
+                                            package:
+                                                skiff_artifact_model::PackageRefIr::PackageId {
+                                                    package_id
+                                                },
+                                            symbol_path,
+                                            ..
+                                        }
+                                } if package_id == "example.com/alias-base"
+                                    && symbol_path == "User"
+                            )
+                    )
+        ));
+    }
+
+    let remote_function = consumer
+        .unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol == "main.remote")
+        .expect("consumer remote function");
+    for ty in [&remote_function.params[0].ty, &remote_function.return_type] {
+        assert!(matches!(
+            ty,
+            skiff_artifact_model::TypeRefIr::PackageSymbol {
+                symbol:
+                    skiff_artifact_model::PackageSymbolRef {
+                        package:
+                            skiff_artifact_model::PackageRefIr::PackageId {
+                                package_id
+                            },
+                        symbol_path,
+                        ..
+                    }
+            } if package_id == "example.com/alias-base" && symbol_path == "User"
+        ));
+    }
+}
+
+#[test]
 fn dependency_alias_participates_in_package_build_identity() {
     let mut identities = Vec::new();
     for alias in ["left", "right"] {

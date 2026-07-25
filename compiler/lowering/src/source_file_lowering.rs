@@ -1646,7 +1646,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_package_any_interface_function_param_preserves_package_symbol_selector() {
+    fn exact_package_any_interface_function_param_preserves_package_owner() {
         let unit = lowered_unit_with_package_facts(package_any_interface_signature_source());
         let accept = executable(&unit, "accept_package");
         let TypeRefIr::AnyInterface { interface } = &accept.params[0].ty else {
@@ -1660,7 +1660,7 @@ mod tests {
         assert_eq!(symbol.symbol_path, "Reader");
         assert!(matches!(
             symbol.package,
-            PackageRefIr::Dependency { ref dependency_ref } if dependency_ref == "pkg"
+            PackageRefIr::PackageId { ref package_id } if package_id == PACKAGE_ID
         ));
         assert_eq!(
             interface.canonical_type_args,

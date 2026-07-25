@@ -46,6 +46,10 @@ pub enum PackageLocalAbiSymbol {
     Type {
         local_type_id: String,
         descriptor: TypeDescriptorIr,
+        /// True only for a transparent source `alias` declaration. Nominal
+        /// representation declarations also use an alias-shaped descriptor,
+        /// but remain real package types.
+        is_alias: bool,
         #[serde(default)]
         is_interface: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]

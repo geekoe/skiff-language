@@ -1,8 +1,7 @@
 use skiff_artifact_model::{ContractTypeRef, PackageTypeRef, TypeRefIr};
 
 use crate::{
-    shared::{ast::TypeRef, type_expr::TypeExpr},
-    SourceDependencyAnalysisInput, TypeResolutionContext, TypeResolutionModel,
+    shared::ast::TypeRef, SourceDependencyAnalysisInput, TypeResolutionContext, TypeResolutionModel,
 };
 
 pub(super) struct ContractAwareTypeResolver<'a> {
@@ -26,164 +25,167 @@ impl ContractAwareTypeResolver<'_> {
         ty: &TypeRef,
         context: &TypeResolutionContext<'_>,
     ) -> Result<PackageTypeRef, String> {
-        // Existing source alias expansion remains authoritative for local and
-        // package aliases. The expanded syntax is then resolved again here so
-        // a contract nominal can never disappear into TypeRefIr.
-        let expanded = self
+        let resolved = self
             .type_resolution
             .resolve_type_ref(ty, context)
-            .map_err(|error| format!("cannot resolve source type `{}`: {error}", ty.name))?
-            .source_text;
-        self.resolve_expanded_expr(&TypeExpr::parse(&expanded), context)
+            .map_err(|error| format!("cannot resolve source type `{}`: {error}", ty.name))?;
+        self.resolve_expanded_ir(&resolved.ir)
     }
 
-    fn resolve_expanded_expr(
-        &self,
-        expr: &TypeExpr,
-        context: &TypeResolutionContext<'_>,
-    ) -> Result<PackageTypeRef, String> {
-        match expr {
-            TypeExpr::Named { name, args } => {
-                if let Some((alias, stable_key)) = name.split_once('.') {
-                    if self.dependency_analysis.contract_requirement(alias).is_ok() {
-                        if stable_key.is_empty() {
-                            return Err(format!(
-                                "contract dependency type `{name}` has no stable type key"
-                            ));
-                        }
-                        let record = self
-                            .dependency_analysis
-                            .public_package_type_by_stable_key(alias, stable_key)
-                            .map_err(|error| error.to_string())?;
-                        return Ok(PackageTypeRef::PackageSchema {
-                            package_id: record.package_id.clone(),
-                            stable_schema_key: record.stable_schema_key.clone(),
-                            package_schema_type_id: record.package_schema_type_id.clone(),
-                        });
-                    }
-                }
-
-                let text = expr.to_type_string();
-                let resolved = self
-                    .type_resolution
-                    .resolve_type_text(&text, context)
-                    .map_err(|error| format!("cannot resolve source type `{text}`: {error}"))?;
-                if let TypeRefIr::PackageSymbol { symbol } = &resolved.ir {
-                    let record = match &symbol.package {
-                        skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } => self
-                            .dependency_analysis
-                            .direct_package_type(dependency_ref, &symbol.symbol_path),
-                        skiff_artifact_model::PackageRefIr::PackageId { package_id } => self
-                            .dependency_analysis
-                            .package_type_by_owner_and_stable_key(package_id, &symbol.symbol_path),
-                    };
-                    if let Some(record) = record {
-                        return Ok(PackageTypeRef::PackageSchema {
-                            package_id: record.package_id.clone(),
-                            stable_schema_key: record.stable_schema_key.clone(),
-                            package_schema_type_id: record.package_schema_type_id.clone(),
-                        });
-                    }
-                }
-                if let TypeRefIr::Builtin { name, .. } = resolved.ir {
-                    let arguments = args
-                        .iter()
-                        .map(|arg| self.resolve_expanded_expr(arg, context))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    return Ok(PackageTypeRef::Container { name, arguments });
-                }
-
-                let arguments = args
+    fn resolve_expanded_ir(&self, ty: &TypeRefIr) -> Result<PackageTypeRef, String> {
+        match ty {
+            TypeRefIr::Builtin { name, args } => Ok(PackageTypeRef::Container {
+                name: name.clone(),
+                arguments: args
                     .iter()
-                    .map(|arg| self.resolve_expanded_expr(arg, context))
-                    .collect::<Result<Vec<_>, _>>()?;
-                if arguments.iter().any(package_type_contains_contract) {
-                    return Err(format!(
-                        "source type `{text}` embeds a contract nominal in a non-container generic type with no exact PackageTypeRef representation"
-                    ));
-                }
-                Ok(PackageTypeRef::Local {
-                    local_type: resolved.ir,
-                })
-            }
-            TypeExpr::Nullable(inner) => Ok(PackageTypeRef::Nullable {
-                inner: Box::new(self.resolve_expanded_expr(inner, context)?),
+                    .map(|arg| self.resolve_expanded_ir(arg))
+                    .collect::<Result<Vec<_>, _>>()?,
             }),
-            TypeExpr::AnyInterface { interface } => {
-                let arguments = match interface.as_ref() {
-                    TypeExpr::Named { args, .. } => args
-                        .iter()
-                        .map(|arg| self.resolve_expanded_expr(arg, context))
-                        .collect::<Result<Vec<_>, _>>()?,
-                    _ => Vec::new(),
+            TypeRefIr::Nullable { inner } => Ok(PackageTypeRef::Nullable {
+                inner: Box::new(self.resolve_expanded_ir(inner)?),
+            }),
+            TypeRefIr::PackageSchema {
+                package_id,
+                stable_schema_key,
+                package_schema_type_id,
+            } => Ok(PackageTypeRef::PackageSchema {
+                package_id: package_id.clone(),
+                stable_schema_key: stable_schema_key.clone(),
+                package_schema_type_id: package_schema_type_id.clone(),
+            }),
+            TypeRefIr::PackageSymbol { symbol } => {
+                let record = match &symbol.package {
+                    skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } => self
+                        .dependency_analysis
+                        .direct_package_type(dependency_ref, &symbol.symbol_path),
+                    skiff_artifact_model::PackageRefIr::PackageId { package_id } => self
+                        .dependency_analysis
+                        .package_type_by_owner_and_stable_key(package_id, &symbol.symbol_path),
                 };
+                match record {
+                    Some(record) => Ok(PackageTypeRef::PackageSchema {
+                        package_id: record.package_id.clone(),
+                        stable_schema_key: record.stable_schema_key.clone(),
+                        package_schema_type_id: record.package_schema_type_id.clone(),
+                    }),
+                    None => Ok(PackageTypeRef::Local {
+                        local_type: ty.clone(),
+                    }),
+                }
+            }
+            TypeRefIr::AnyInterface { interface } => {
+                let identity: TypeRefIr = serde_json::from_str(&interface.interface_abi_id)
+                    .map_err(|error| {
+                        format!(
+                            "invalid interface ABI identity {}: {error}",
+                            interface.interface_abi_id
+                        )
+                    })?;
                 Ok(PackageTypeRef::AnyInterface {
-                    interface: Box::new(self.resolve_expanded_expr(interface, context)?),
-                    arguments,
+                    interface: Box::new(self.resolve_expanded_ir(&identity)?),
+                    arguments: interface
+                        .canonical_type_args
+                        .iter()
+                        .map(|arg| self.resolve_expanded_ir(arg))
+                        .collect::<Result<Vec<_>, _>>()?,
                 })
             }
-            TypeExpr::EmptyRecord
-            | TypeExpr::StringLiteral(_)
-            | TypeExpr::Union(_)
-            | TypeExpr::Record(_)
-            | TypeExpr::Function { .. } => {
-                if self.inline_expr_contains_contract(expr, context)? {
-                    return Err(format!(
-                        "inline source type `{}` embeds a contract nominal but has no exact PackageTypeRef representation",
-                        expr.to_type_string()
-                    ));
-                }
-                let text = expr.to_type_string();
-                let local_type = self
-                    .type_resolution
-                    .resolve_type_text(&text, context)
-                    .map_err(|error| format!("cannot resolve source type `{text}`: {error}"))?
-                    .ir;
-                Ok(PackageTypeRef::Local { local_type })
-            }
+            TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
+            | TypeRefIr::ServiceSymbol { .. }
+            | TypeRefIr::DbObjectSymbol { .. }
+            | TypeRefIr::Record { .. }
+            | TypeRefIr::Union { .. }
+            | TypeRefIr::Literal { .. }
+            | TypeRefIr::TypeParam { .. }
+            | TypeRefIr::Function { .. } => Ok(PackageTypeRef::Local {
+                local_type: self.normalize_local_ir(ty)?,
+            }),
         }
     }
 
-    fn inline_expr_contains_contract(
-        &self,
-        expr: &TypeExpr,
-        context: &TypeResolutionContext<'_>,
-    ) -> Result<bool, String> {
-        match expr {
-            TypeExpr::Named { .. } | TypeExpr::Nullable(_) => self
-                .resolve_expanded_expr(expr, context)
-                .map(|resolved| package_type_contains_contract(&resolved)),
-            TypeExpr::AnyInterface { interface } => {
-                self.inline_expr_contains_contract(interface, context)
+    fn normalize_local_ir(&self, ty: &TypeRefIr) -> Result<TypeRefIr, String> {
+        match ty {
+            TypeRefIr::Builtin { name, args } => Ok(TypeRefIr::Builtin {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.normalize_local_ir(arg))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            TypeRefIr::PackageSymbol { symbol } => {
+                let record = match &symbol.package {
+                    skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } => self
+                        .dependency_analysis
+                        .direct_package_type(dependency_ref, &symbol.symbol_path),
+                    skiff_artifact_model::PackageRefIr::PackageId { package_id } => self
+                        .dependency_analysis
+                        .package_type_by_owner_and_stable_key(package_id, &symbol.symbol_path),
+                };
+                Ok(match record {
+                    Some(record) => TypeRefIr::PackageSchema {
+                        package_id: record.package_id.clone(),
+                        stable_schema_key: record.stable_schema_key.clone(),
+                        package_schema_type_id: record.package_schema_type_id.clone(),
+                    },
+                    None => ty.clone(),
+                })
             }
-            TypeExpr::Union(items) => {
-                for item in items {
-                    if self.inline_expr_contains_contract(item, context)? {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
+            TypeRefIr::Record { fields } => Ok(TypeRefIr::Record {
+                fields: fields
+                    .iter()
+                    .map(|(name, field)| Ok((name.clone(), self.normalize_local_ir(field)?)))
+                    .collect::<Result<_, String>>()?,
+            }),
+            TypeRefIr::Union { items } => Ok(TypeRefIr::Union {
+                items: items
+                    .iter()
+                    .map(|item| self.normalize_local_ir(item))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            TypeRefIr::Nullable { inner } => Ok(TypeRefIr::Nullable {
+                inner: Box::new(self.normalize_local_ir(inner)?),
+            }),
+            TypeRefIr::AnyInterface { interface } => {
+                let identity: TypeRefIr = serde_json::from_str(&interface.interface_abi_id)
+                    .map_err(|error| {
+                        format!(
+                            "invalid interface ABI identity {}: {error}",
+                            interface.interface_abi_id
+                        )
+                    })?;
+                let identity = self.normalize_local_ir(&identity)?;
+                let args = interface
+                    .canonical_type_args
+                    .iter()
+                    .map(|arg| self.normalize_local_ir(arg))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(TypeRefIr::AnyInterface {
+                    interface: skiff_artifact_identity::interface_instantiation_ref(identity, args),
+                })
             }
-            TypeExpr::Record(fields) => {
-                for field in fields {
-                    if self.inline_expr_contains_contract(&field.ty, context)? {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
-            }
-            TypeExpr::Function {
+            TypeRefIr::Function {
                 params,
                 return_type,
-            } => {
-                for parameter in params {
-                    if self.inline_expr_contains_contract(&parameter.ty, context)? {
-                        return Ok(true);
-                    }
-                }
-                self.inline_expr_contains_contract(return_type, context)
-            }
-            TypeExpr::EmptyRecord | TypeExpr::StringLiteral(_) => Ok(false),
+            } => Ok(TypeRefIr::Function {
+                params: params
+                    .iter()
+                    .map(|param| {
+                        Ok(skiff_artifact_model::FunctionTypeParamIr {
+                            name: param.name.clone(),
+                            ty: self.normalize_local_ir(&param.ty)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
+                return_type: Box::new(self.normalize_local_ir(return_type)?),
+            }),
+            TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
+            | TypeRefIr::ServiceSymbol { .. }
+            | TypeRefIr::PackageSchema { .. }
+            | TypeRefIr::DbObjectSymbol { .. }
+            | TypeRefIr::Literal { .. }
+            | TypeRefIr::TypeParam { .. } => Ok(ty.clone()),
         }
     }
 }

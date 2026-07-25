@@ -57,7 +57,7 @@ pub(super) fn project_local_surface(
             });
         }
     }
-    let mut public_symbols = project_non_callable_symbols(&exports.exports)?;
+    let mut public_symbols = project_non_callable_symbols(exports)?;
     let mut callable_targets = signatures::package_callable_targets(package_id, exports);
     signatures::add_direct_impl_method_targets(
         package_id,
@@ -76,9 +76,10 @@ pub(super) fn project_local_surface(
 }
 
 fn project_non_callable_symbols(
-    exports: &PackageExportIndex,
+    projected: &ProjectedPackageExportLinks,
 ) -> Result<BTreeMap<String, PackageLocalAbiSymbol>, ProjectionError> {
     let mut symbols = BTreeMap::new();
+    let exports: &PackageExportIndex = &projected.exports;
     for (public_path, export) in &exports.types {
         let descriptor =
             export
@@ -93,6 +94,7 @@ fn project_non_callable_symbols(
             PackageLocalAbiSymbol::Type {
                 local_type_id: format!("type:{public_path}"),
                 descriptor,
+                is_alias: projected.alias_types.contains(public_path),
                 is_interface: export.is_interface,
                 type_params: export.type_params.clone(),
                 interface_methods: export.interface_methods.clone(),

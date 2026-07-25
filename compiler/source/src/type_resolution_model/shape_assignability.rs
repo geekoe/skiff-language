@@ -1070,26 +1070,59 @@ impl TypeResolutionModel {
             .zip(type_args.iter().cloned())
             .collect::<BTreeMap<_, _>>();
         let resolved = match &resolved.kind {
-            SourceTypeKind::Record { fields } => TypeRefIr::Record {
-                fields: fields
-                    .iter()
-                    .filter_map(|(name, ty)| {
-                        let ty = package_root
-                            .map(|package_root| {
-                                qualify_package_type_text(
-                                    ty,
-                                    package_root,
-                                    &resolved.local_type_names,
-                                )
-                            })
-                            .unwrap_or_else(|| ty.clone());
-                        self.resolve_type_text(&ty, &source_context)
-                            .ok()
-                            .map(|resolved| (name.clone(), resolved.ir))
-                    })
-                    .collect(),
+            SourceTypeKind::Record {
+                fields,
+                canonical_fields,
+            } => TypeRefIr::Record {
+                fields: if let Some(canonical_fields) = canonical_fields {
+                    canonical_fields
+                        .iter()
+                        .map(|(name, ty)| {
+                            self.expand_alias_type_ref(ty, &source_context)
+                                .ok()
+                                .map(|ty| (name.clone(), ty))
+                        })
+                        .collect::<Option<BTreeMap<_, _>>>()?
+                } else {
+                    fields
+                        .iter()
+                        .filter_map(|(name, ty)| {
+                            let ty = package_root
+                                .map(|package_root| {
+                                    qualify_package_type_text(
+                                        ty,
+                                        package_root,
+                                        &resolved.local_type_names,
+                                    )
+                                })
+                                .unwrap_or_else(|| ty.clone());
+                            self.resolve_type_text(&ty, &source_context)
+                                .ok()
+                                .map(|resolved| (name.clone(), resolved.ir))
+                        })
+                        .collect()
+                },
             },
-            SourceTypeKind::Alias { target } | SourceTypeKind::Representation { target } => {
+            SourceTypeKind::Alias {
+                target,
+                canonical_target,
+            } => {
+                if let Some(target) = canonical_target {
+                    self.expand_alias_type_ref(target, &source_context).ok()?
+                } else {
+                    let target = package_root
+                        .map(|package_root| {
+                            qualify_package_type_text(
+                                target,
+                                package_root,
+                                &resolved.local_type_names,
+                            )
+                        })
+                        .unwrap_or_else(|| target.clone());
+                    self.resolve_type_text(&target, &source_context).ok()?.ir
+                }
+            }
+            SourceTypeKind::Representation { target } => {
                 let target = package_root
                     .map(|package_root| {
                         qualify_package_type_text(target, package_root, &resolved.local_type_names)
@@ -1157,7 +1190,7 @@ impl TypeResolutionModel {
         ))
     }
 
-    fn externalize_local_type_ir(&self, ty: &TypeRefIr, module_path: &str) -> TypeRefIr {
+    pub(super) fn externalize_local_type_ir(&self, ty: &TypeRefIr, module_path: &str) -> TypeRefIr {
         match ty {
             TypeRefIr::LocalType { type_index } => self
                 .modules
@@ -1363,24 +1396,31 @@ impl TypeResolutionModel {
         package_root: Option<&str>,
         source_module_path: &str,
     ) -> Option<TypeRefIr> {
-        let target = match &resolved.kind {
-            SourceTypeKind::Alias { target } => target,
+        let (target, canonical_target) = match &resolved.kind {
+            SourceTypeKind::Alias {
+                target,
+                canonical_target,
+            } => (target, canonical_target.as_ref()),
             SourceTypeKind::Record { .. }
             | SourceTypeKind::Actor { .. }
             | SourceTypeKind::Representation { .. }
             | SourceTypeKind::External => return None,
         };
-        let target = package_root
-            .map(|package_root| {
-                qualify_package_type_text(target, package_root, &resolved.local_type_names)
-            })
-            .unwrap_or_else(|| target.clone());
         let source_context = TypeResolutionContext::with_type_params(
             source_module_path,
             caller_context.type_params.clone(),
         );
-        let resolved_target = self.resolve_type_text(&target, &source_context).ok()?;
-        let resolved_target = self.transparent_alias_ir(&resolved_target.ir, &source_context);
+        let resolved_target = if let Some(target) = canonical_target {
+            self.expand_alias_type_ref(target, &source_context).ok()?
+        } else {
+            let target = package_root
+                .map(|package_root| {
+                    qualify_package_type_text(target, package_root, &resolved.local_type_names)
+                })
+                .unwrap_or_else(|| target.clone());
+            let resolved_target = self.resolve_type_text(&target, &source_context).ok()?;
+            self.transparent_alias_ir(&resolved_target.ir, &source_context)
+        };
         Some(if source_module_path == caller_context.module_path {
             resolved_target
         } else {

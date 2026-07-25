@@ -152,6 +152,7 @@ pub(super) fn project_fixture_with_runtime_requirements(
         export_links: ProjectedPackageExportLinks {
             exports: export_index,
             public_instances: vec![public_instance(&file_ref)],
+            alias_types: BTreeSet::new(),
         },
         file_ir_units: vec![file],
         resources: Vec::new(),

@@ -215,13 +215,14 @@ fn lower_type_decl_descriptor(
         .map(|field| {
             Ok((
                 field.name.clone(),
-                crate::type_lowering::lower_type_ref_preserving_aliases(
+                lower_type_ref(
                     &field.ty,
                     type_indices,
                     local_db_objects,
                     publication_db_metadata,
                     package_aliases,
                     external_type_symbols,
+                    source_alias_targets,
                     TypeLoweringContext::value_with_type_params(type_param_scope),
                 )?,
             ))

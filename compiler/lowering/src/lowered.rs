@@ -131,10 +131,14 @@ impl LoweredPackage {
             Ok::<(), skiff_compiler_source::SourceCompileError>(())
         })?;
 
-        rewrite_publication_local_refs(&mut file_ir_units, Some(model.policy().package_id()))
-            .map_err(|error| PublicationError::ContractValidation {
-                message: format!("File IR external ref rebuild failed: {error}"),
-            })?;
+        rewrite_publication_local_refs(
+            &mut file_ir_units,
+            Some(model.policy().package_id()),
+            Some(model.type_resolution()),
+        )
+        .map_err(|error| PublicationError::ContractValidation {
+            message: format!("File IR type finalization failed: {error}"),
+        })?;
 
         // File IR `link_targets` (the set of names a package/service can link and
         // encode across its boundary) are no longer driven by the per-declaration

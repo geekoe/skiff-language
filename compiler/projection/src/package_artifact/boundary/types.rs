@@ -557,7 +557,8 @@ fn classify_native(name: &str, argument_count: usize) -> Result<(), BoundaryUnav
 fn project_literal(value: &LiteralIr) -> Result<ContractTypeRef, BoundaryUnavailableReason> {
     match value {
         LiteralIr::Null => Ok(ContractTypeRef::builtin("null")),
-        LiteralIr::Bool { .. } | LiteralIr::Number { .. } | LiteralIr::String { .. } => {
+        LiteralIr::String { value } => Ok(ContractTypeRef::string_literal(value)),
+        LiteralIr::Bool { .. } | LiteralIr::Number { .. } => {
             Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
         }
     }
@@ -855,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn local_nominal_normalization_does_not_relax_literal_or_callback_rules() {
+    fn string_literals_project_exactly_while_callbacks_still_require_an_adapter() {
         let (units, public_types, _) = public_literal_union_fixture();
         assert_eq!(
             project_local_type(
@@ -869,7 +870,7 @@ mod tests {
                 &public_types,
                 &[],
             ),
-            Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+            Ok(ContractTypeRef::string_literal("complete"))
         );
         assert_eq!(
             project_local_type(

@@ -46,6 +46,9 @@ pub(super) fn project_package_schema(
         .types
         .iter()
         .filter_map(|(qualified_path, symbol)| {
+            if exports.alias_types.contains(qualified_path) {
+                return None;
+            }
             let descriptor = symbol.descriptor.as_ref()?;
             let path = qualified_path
                 .strip_prefix(&format!("{package_id}/"))
@@ -448,6 +451,12 @@ mod tests {
         exports_with_descriptor(Some(descriptor))
     }
 
+    fn alias_exports(descriptor: TypeDescriptorIr) -> ProjectedPackageExportLinks {
+        let mut exports = exports(descriptor);
+        exports.alias_types.insert("example.pkg/User".to_string());
+        exports
+    }
+
     fn exports_with_descriptor(
         descriptor: Option<TypeDescriptorIr>,
     ) -> ProjectedPackageExportLinks {
@@ -468,6 +477,7 @@ mod tests {
                 ..PackageExportIndex::default()
             },
             public_instances: Vec::new(),
+            alias_types: BTreeSet::new(),
         }
     }
 
@@ -557,11 +567,11 @@ mod tests {
     }
 
     #[test]
-    fn external_public_ref_keeps_exact_owner_and_is_not_copied() {
-        let (dependency, external_id) = external_schema("types", "example.types", "User");
+    fn external_alias_emits_no_local_schema_identity() {
+        let (dependency, _external_id) = external_schema("types", "example.types", "User");
         let projected = project_package_schema(
             "example.pkg",
-            &exports(TypeDescriptorIr::Alias {
+            &alias_exports(TypeDescriptorIr::Alias {
                 target: TypeRefIr::PackageSymbol {
                     symbol: PackageSymbolRef {
                         package: PackageRefIr::Dependency {
@@ -576,20 +586,26 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(projected.records.len(), 1);
-        let local = projected.records.values().next().unwrap();
-        assert_eq!(local.package_id, "example.pkg");
-        assert_eq!(
-            local.canonical_descriptor.descriptor,
-            ContractTypeDescriptor::Alias {
-                target: ContractTypeRef::package_schema("example.types", "User", external_id)
-            }
-        );
+        assert!(projected.records.is_empty());
+        assert!(projected.index.types.is_empty());
+        assert!(projected.refs_by_source.is_empty());
     }
 
     #[test]
-    fn record_field_keeps_same_package_nominal_reference() {
+    fn record_field_contains_expanded_literal_alias_without_alias_schema() {
         let file = FileIrRef::new("file", "types");
+        let role_variants = vec![
+            TypeRefIr::Literal {
+                value: LiteralIr::String {
+                    value: "user".to_string(),
+                },
+            },
+            TypeRefIr::Literal {
+                value: LiteralIr::String {
+                    value: "assistant".to_string(),
+                },
+            },
+        ];
         let exports = ProjectedPackageExportLinks {
             exports: PackageExportIndex {
                 types: BTreeMap::from([
@@ -602,18 +618,7 @@ mod tests {
                             is_interface: false,
                             descriptor: Some(TypeDescriptorIr::Alias {
                                 target: TypeRefIr::Union {
-                                    items: vec![
-                                        TypeRefIr::Literal {
-                                            value: LiteralIr::String {
-                                                value: "user".to_string(),
-                                            },
-                                        },
-                                        TypeRefIr::Literal {
-                                            value: LiteralIr::String {
-                                                value: "assistant".to_string(),
-                                            },
-                                        },
-                                    ],
+                                    items: role_variants.clone(),
                                 },
                             }),
                             type_params: Vec::new(),
@@ -630,11 +635,8 @@ mod tests {
                             descriptor: Some(TypeDescriptorIr::Record {
                                 fields: BTreeMap::from([(
                                     "role".to_string(),
-                                    TypeRefIr::ServiceSymbol {
-                                        symbol: ServiceSymbolRef {
-                                            module_path: "types".to_string(),
-                                            symbol: "Role".to_string(),
-                                        },
+                                    TypeRefIr::Union {
+                                        items: role_variants,
                                     },
                                 )]),
                             }),
@@ -646,12 +648,10 @@ mod tests {
                 ..PackageExportIndex::default()
             },
             public_instances: Vec::new(),
+            alias_types: BTreeSet::from(["example.pkg/Role".to_string()]),
         };
         let projected = project_package_schema("example.pkg", &exports, &[]).unwrap();
-        let role = projected
-            .records
-            .get(&projected.index.types["Role"].package_schema_type_id)
-            .unwrap();
+        assert!(!projected.index.types.contains_key("Role"));
         let message = projected
             .records
             .get(&projected.index.types["Message"].package_schema_type_id)
@@ -662,11 +662,10 @@ mod tests {
         };
         assert_eq!(
             fields["role"],
-            ContractTypeRef::package_schema(
-                "example.pkg",
-                "Role",
-                role.package_schema_type_id.clone()
-            )
+            ContractTypeRef::structural_union(vec![
+                ContractTypeRef::string_literal("assistant"),
+                ContractTypeRef::string_literal("user"),
+            ])
         );
     }
 
@@ -755,6 +754,7 @@ mod tests {
                 ..PackageExportIndex::default()
             },
             public_instances: Vec::new(),
+            alias_types: BTreeSet::new(),
         };
         let containing_actor =
             project_package_schema("example.pkg", &record_with_actor_field, &[]).unwrap();

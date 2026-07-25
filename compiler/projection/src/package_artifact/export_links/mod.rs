@@ -3,7 +3,7 @@ mod public_instances;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     ConstExport, ConstIr, ExecutableExport, ExecutableIr, FileIrUnit, PackageExportIndex,
@@ -33,6 +33,7 @@ pub(super) use public_instances::PackagePublicInstanceMethodExecutionLink;
 pub(super) struct ProjectedPackageExportLinks {
     pub exports: PackageExportIndex,
     pub public_instances: Vec<PackagePublicInstanceExecutionLink>,
+    pub alias_types: BTreeSet<String>,
 }
 
 pub(super) fn project_package_export_links(
@@ -56,6 +57,7 @@ pub(super) fn project_package_export_links(
     );
     let type_symbols = package_type_symbol_index(package, &file_units_by_module, dependencies)?;
     let mut exports = PackageExportIndex::default();
+    let mut alias_types = BTreeSet::new();
 
     for (public_symbol, export) in &package.exports.symbols {
         let package_symbol = package_scoped_export_symbol(package, public_symbol);
@@ -77,6 +79,9 @@ pub(super) fn project_package_export_links(
         })?;
         if let Some(type_index) = type_link_target_index(file_unit, symbol) {
             let ty = type_export_decl(package, public_symbol, module, file_unit, type_index)?;
+            if type_declaration_is_alias(file_unit, ty) {
+                alias_types.insert(package_symbol.clone());
+            }
             let interface = file_unit.declarations.interfaces.get(&ty.name);
             let interface_methods = interface
                 .map(|interface| {
@@ -175,6 +180,21 @@ pub(super) fn project_package_export_links(
     Ok(ProjectedPackageExportLinks {
         exports,
         public_instances,
+        alias_types,
+    })
+}
+
+fn type_declaration_is_alias(
+    unit: &FileIrUnit,
+    declaration: &skiff_artifact_model::TypeDeclIr,
+) -> bool {
+    let Some(source_span) = declaration.source_span.as_ref() else {
+        return false;
+    };
+    unit.source_map.spans.iter().any(|span| {
+        span.kind == "alias"
+            && span.name.as_deref() == Some(declaration.name.as_str())
+            && span.span == *source_span
     })
 }
 
