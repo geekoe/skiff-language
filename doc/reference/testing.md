@@ -30,24 +30,55 @@ Skiff 只保留一种测试用例语义：`test` block。unit、integration 和 
 - 它不改变 runtime target ownership、network permission、config 注入或 live key policy。
 - 它只接受 literal bool，不接受表达式、config 或运行时条件。
 
-## 3. Package-Local Visibility
+## 3. Test Service And Visibility
 
-source file 不是当前 package / service 内的可见性边界。runner 构造测试编译时，选中的
-test-only source 与当前 publication 的全部 production sources 共享同一个 all-symbol
-`root.*` index；测试可以访问任意 production source file 的顶级 function、type、alias、
-interface、const 和 db object，无论它是否进入 public API。
+测试源码属于独立 test service，不再作为被测 package 的 source overlay 编译。test service
+使用普通 PackageArtifact、ServiceContract、Deployment 和 RuntimeAssembly 格式；不定义
+TestServiceArtifact。
 
-这不是 test-runner 额外授予的白名单，也不依赖测试文件名：
+`service.yml` 必须声明：
 
-- `foo.test.skiff`、`foo.live.test.skiff` 和其他 `*.test.skiff` 没有对应 production file。
-- 文件名中的 `live`、`fuzz`、`bench` 只是组织约定，不改变可见性。
-- production 编译使用同样的当前 publication all-symbol 规则，但它的 source set 不包含
-  test-only files，因此 production code 不能引用 test-only helper。
-- 外部 package 仍只通过 published public API / exports 可见；测试编译不会把 dependency
-  private symbol 加入当前 publication 的 `root.*` index。
+```yaml
+id: example.com/widget-tests
+kind: test
+```
 
-测试选择和符号可见性是两件独立的事。选择单个测试文件只决定运行哪些 test cases，不会
-缩小或扩大当前 publication 的 production symbol set。
+`kind: test` 是 authoring/workflow 约束：
+
+- 只允许 `skiff test` 构建和运行；
+- 普通 package publish、service publish/deploy 和 production watch 拒绝 test service；
+- artifact、linker、loader 和 Runtime 使用普通格式与执行路径；
+- test service 的 config 来自普通 `config.<profile>.yml`；
+- 同一个 test service 的 cases 共享配置和 dependency graph，但每个 case 仍有独立 state
+  namespace、heap、effect registry 和 execution nonce；
+- 需要不同配置时使用另一个 test service 或显式 profile，不提供 per-case config override。
+
+test service dependency 可以声明：
+
+```yaml
+packages:
+  - id: example.com/widget
+    version: 1.0.0
+    alias: widget
+    access: topLevel
+```
+
+`access` 是互斥解析模式：
+
+- 缺省 `public`：只按 dependency `api.yml` public paths 解析；
+- `topLevel`：只按精确 implementation artifact 的 source module/top-level symbol index 解析，
+  完全忽略该 dependency 的 `api.yml`；
+- 不允许 public-first、topLevel-fallback 或两套路径合并；
+- `topLevel` 仅允许出现在 `kind: test` service，且不传递到 dependency 的 dependencies。
+
+topLevel 语法为：
+
+```text
+<dependency-alias>/<source-module-path>.<top-level-name>
+```
+
+`root.*` 始终表示 test service 自己。测试访问被测 package 必须写成例如
+`widget/internal.codec.decodeForTest(...)`，避免与本 service 或其他 dependency 冲突。
 
 ## 4. Test Discovery
 
@@ -99,33 +130,52 @@ Live smoke：
 
 ## 6. Package Tests
 
-package 测试归 package 所有，不需要通过 sample service 承载。
+package 测试由归属该 package 仓库的 test service 承载。test service 把被测 package 声明为
+精确 dependency；需要内部顶层访问时使用 `access: topLevel`。
 
 规则：
 
-- package test helper 不进入 package production assembly。
-- package integration test 可以是普通 test-only source file。
-- 需要 runtime 的 package 测试由 runner 构造临时 service / activation。
-- 所有 package test-only 文件都可访问当前 package 的 production 顶级符号；跨 package
-  访问仍受 dependency public API / exports 限制。
-- package public API、`package.yml` 或 shared helper 变化，应运行受影响 package 的相关
-  test-only files 或目录。
+- test helper 只进入 test service artifact，不进入被测 package production artifact；
+- 测试通过普通 config、dependency、contract、deployment 和 assembly 机制运行；
+- package 内部测试使用 topLevel dependency call，不使用 overlay `root.*`；
+- Package 仍不是远程 service；本机 Package call 不得伪装成 service-to-service RPC；
+- public API、implementation top-level、manifest 或 shared helper 变化时运行对应 test
+  services。
 
-Package 不是远程 service。package 测试应验证本机 ABI、source wrapper、effect metadata 和
-runtime host boundary，不应伪装成 service-to-service 测试。
+## 7. Inline Test Effects
 
-## 7. Test Doubles
+effect doubles 写在所属 test block 中，不使用外部 `skiff.test-doubles.json`。
 
-测试替身按 stable target id 匹配。double 可以匹配 `std.*` host-backed API、普通 package
-wrapper 或 service operation target。
+规范形态：
+
+```skiff
+test "request succeeds" effects {
+  std.http.client.request {
+    expect: {
+      method: "POST",
+      url: "https://example.test",
+    },
+    respond: {
+      status: 200,
+      headers: [],
+      body: bytes.fromUtf8("ok"),
+    },
+  }
+} {
+  // assertions
+}
+```
+
+多次调用使用 `respondSequence`；stream effect 的 response/event 序列同样内联。
 
 规则：
 
-- double 可以声明 expected request subset。
-- double 必须返回 schema-closed payload，或抛标准 `ErrorPayload` leaf。
-- double 执行仍参与 effect summary。
-- mock 不能绕过 `concurrent` effect conflict 检查。
-- double registry 在每个 test case 结束后清理。
+- compiler 必须解析精确 effect target，并静态检查 expect/respond/typed error/stream event；
+- effect declaration 只属于当前 case，case 完成后 registry 销毁；
+- expected request subset 在真实 typed value materialization 后匹配；
+- sequence 不能为空，未消费或超量调用必须产生明确测试失败；
+- double 执行仍参与 effect conflict 和 capability policy；
+- 不提供 JSON manifest compatibility loader；旧文件和旧 schema 必须迁移或删除。
 
 ## 8. AI / CI Selection
 
@@ -155,4 +205,5 @@ production build 必须满足：
 - test-only `root.*` reference 不参与 production root reference validation。
 - `test defaultRun` directive 不进入 production artifact。
 
-Test assembly 不是 deployable assembly。
+test service 使用普通 artifact 格式，但 production publish/deploy workflow 必须根据
+`kind: test` 拒绝它。Runtime 格式无需测试特例；测试权限在 compiler 名称解析阶段已经关闭。
