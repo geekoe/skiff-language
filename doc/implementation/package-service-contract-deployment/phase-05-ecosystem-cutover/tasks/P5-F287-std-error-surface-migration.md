@@ -44,6 +44,7 @@
 - `compiler/input/src/package_sources/tests.rs`
 - `compiler/input/src/platform_sources/tests.rs`
 - `compiler/source/src/prelude_registry/tests.rs`
+- `compiler/source/src/prelude_registry/tests/p5_f18a.rs`
 - `compiler/source/src/contract_type_resolution/tests/interface_signatures.rs`
 - `compiler/tests/package_std_schema.rs`
 - `test-runner/src/canonical_package/tests.rs`
