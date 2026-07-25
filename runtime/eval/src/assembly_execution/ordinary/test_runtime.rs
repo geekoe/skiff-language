@@ -34,6 +34,7 @@ use skiff_runtime_model::{
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 
 use crate::{
+    assembly_execution::service_error_channel::RecordingRestrictedServiceDiagnosticSink,
     capabilities::{
         EffectDispatchApi, EffectDispatchContext, EvalRuntimeFactory, EvalRuntimeFactoryApi,
         HttpRuntimeOptions, OutboundServiceApi, OutboundServiceContext, TestEffectDouble,
@@ -812,6 +813,7 @@ struct TestEffects;
 impl EffectDispatchApi for TestEffects {
     fn telemetry_context(&self) -> TelemetryCapabilityContext {
         TelemetryCapabilityContext::new(TestTelemetry)
+            .with_restricted_service_diagnostic_sink(RecordingRestrictedServiceDiagnosticSink)
     }
 
     fn http_client_context(
