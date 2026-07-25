@@ -3664,7 +3664,7 @@ fn substitute_type_params(raw: &str, substitutions: &BTreeMap<String, String>) -
 
 fn package_root_from_type_name(type_name: &str) -> Option<&str> {
     strip_generic(type_name.trim())
-        .rsplit_once('.')
+        .split_once('.')
         .map(|(root, _)| root)
 }
 
@@ -5086,6 +5086,20 @@ mod tests {
         )
         .expect_err("db object symbols are not package-public type facts");
         assert!(db_error.contains("no public package artifact type semantics"));
+    }
+
+    #[test]
+    fn nested_package_public_record_fields_use_only_the_dependency_root() {
+        assert_eq!(
+            package_root_from_type_name("llmProviders.chatgptPlan.OauthSession"),
+            Some("llmProviders")
+        );
+        let fields = qualify_package_record_fields(
+            &BTreeMap::from([("error".to_string(), "chatgptPlan.OauthError?".to_string())]),
+            "llmProviders",
+            &BTreeSet::from(["chatgptPlan.OauthError".to_string()]),
+        );
+        assert_eq!(fields["error"], "llmProviders.chatgptPlan.OauthError?");
     }
 
     #[test]
