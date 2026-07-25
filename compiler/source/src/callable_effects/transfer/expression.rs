@@ -6,6 +6,7 @@ use crate::shared::ast::{
 };
 
 use super::{
+    super::analysis::ModuleConstantFact,
     super::provenance::{all_effects, join_effects, AbstractValue, EscapeLane},
     join_environments, Environment, Evaluator,
 };
@@ -17,10 +18,23 @@ impl Evaluator<'_, '_> {
         let reference = self.expression_may_be_reference(&key);
         let value = match expr {
             Expr::Literal(_) => AbstractValue::constant(reference),
-            Expr::Identifier(name) => env
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| AbstractValue::constant(reference)),
+            Expr::Identifier(name) => {
+                if let Some(value) = env.get(name) {
+                    value.clone()
+                } else {
+                    let key = crate::SourceSymbolKey::new(self.definition.module_path, name);
+                    match self.module_constants.get(&key) {
+                        Some(ModuleConstantFact::Exact) => AbstractValue::constant(reference),
+                        Some(ModuleConstantFact::Unsupported) => {
+                            self.state.mark_unknown(
+                                CallableProvenanceUnknownReason::UnsupportedControlFlow,
+                            );
+                            AbstractValue::unknown(reference)
+                        }
+                        None => AbstractValue::unknown(reference),
+                    }
+                }
+            }
             Expr::DependencySourceAddress(_) => {
                 self.state.effects.requires_same_heap_identity = true;
                 self.state.effects.invokes_unknown_target = true;

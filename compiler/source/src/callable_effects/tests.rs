@@ -85,6 +85,119 @@ fn simple_detached_wrapper_is_safe_and_direct_transitive_calls_resolve() {
 }
 
 #[test]
+fn module_constant_return_keeps_exact_constant_provenance_through_local_call() {
+    let model = analyze_sources(&[
+        (
+            "model",
+            r#"
+                const UPSTREAM_KIND_API_KEY: string = "apiKey"
+
+                function upstreamKindApiKey() -> string {
+                  return UPSTREAM_KIND_API_KEY
+                }
+            "#,
+        ),
+        (
+            "upstream_sources",
+            r#"
+                type Credential { kind: string }
+
+                function buildCredential() -> Credential {
+                  return Credential { kind: root.model.upstreamKindApiKey() }
+                }
+            "#,
+        ),
+    ]);
+
+    assert_eq!(
+        effects_in(&model, "model", "upstreamKindApiKey"),
+        no_effects()
+    );
+    let CallableProvenanceSummary::Analyzed { return_origins, .. } =
+        provenance_in(&model, "model", "upstreamKindApiKey")
+    else {
+        panic!("module constant wrapper must retain analyzed provenance");
+    };
+    assert_eq!(return_origins, &vec![ValueProvenance::Constant]);
+
+    assert_eq!(
+        effects_in(&model, "upstream_sources", "buildCredential"),
+        no_effects()
+    );
+    let CallableProvenanceSummary::Analyzed { return_origins, .. } =
+        provenance_in(&model, "upstream_sources", "buildCredential")
+    else {
+        panic!("fresh record caller must retain analyzed provenance");
+    };
+    assert_eq!(
+        return_origins,
+        &vec![ValueProvenance::Fresh, ValueProvenance::Constant]
+    );
+}
+
+#[test]
+fn unsupported_and_cyclic_module_constants_remain_fail_closed() {
+    let model = analyze(
+        r#"
+            function compute() -> string { return "computed" }
+
+            const UNSUPPORTED: string = compute()
+            const CYCLE_A: string = CYCLE_B
+            const CYCLE_B: string = CYCLE_A
+
+            function unsupportedValue() -> string { return UNSUPPORTED }
+            function cyclicValue() -> string { return CYCLE_A }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    for callable in ["unsupportedValue", "cyclicValue"] {
+        assert!(effects(&model, callable).returns_caller_alias, "{callable}");
+        assert_eq!(
+            provenance(&model, callable),
+            &CallableProvenanceSummary::Unknown {
+                reason: CallableProvenanceUnknownReason::UnsupportedControlFlow,
+            },
+            "{callable}"
+        );
+    }
+}
+
+#[test]
+fn unresolved_global_and_non_constant_zero_arg_return_are_not_constant_shortcuts() {
+    let unresolved = analyze_result(
+        "function unresolved() -> string { return MISSING_GLOBAL }",
+        SourceDependencyAnalysisInput::default(),
+    )
+    .expect("source analysis retains a fail-closed callable summary");
+    assert!(effects(&unresolved, "unresolved").returns_caller_alias);
+    assert_eq!(
+        provenance(&unresolved, "unresolved"),
+        &CallableProvenanceSummary::Unknown {
+            reason: CallableProvenanceUnknownReason::UnknownCallTarget,
+        }
+    );
+
+    let model = analyze(
+        r#"
+            type Boxed { value: string }
+            function freshValue() -> Boxed { return Boxed { value: "fresh" } }
+            function wrapper() -> Boxed { return freshValue() }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+    assert_eq!(effects(&model, "wrapper"), no_effects());
+    let CallableProvenanceSummary::Analyzed { return_origins, .. } = provenance(&model, "wrapper")
+    else {
+        panic!("non-constant zero-argument call must remain analyzed");
+    };
+    assert_eq!(
+        return_origins,
+        &vec![ValueProvenance::Fresh, ValueProvenance::Constant]
+    );
+}
+
+#[test]
 fn root_qualified_and_catch_wrapped_helpers_keep_exact_local_targets() {
     let model = analyze(
         r#"

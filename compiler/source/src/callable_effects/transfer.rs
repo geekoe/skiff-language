@@ -8,6 +8,7 @@ use crate::{
 };
 
 use super::{
+    analysis::ModuleConstantFact,
     provenance::{AbstractValue, CallableState, EscapeLane},
     CallableDefinition,
 };
@@ -21,6 +22,7 @@ type Environment = BTreeMap<String, AbstractValue>;
 pub(super) fn transfer_callable(
     definition: &CallableDefinition<'_>,
     definitions: &BTreeMap<SourceSymbolKey, CallableDefinition<'_>>,
+    module_constants: &BTreeMap<SourceSymbolKey, ModuleConstantFact>,
     summaries: &BTreeMap<SourceSymbolKey, CallableState>,
     resolved_call_targets: &ResolvedCallTargetFacts,
     dependency_analysis: &SourceDependencyAnalysisInput,
@@ -52,6 +54,7 @@ pub(super) fn transfer_callable(
     let mut evaluator = Evaluator {
         definition,
         definitions,
+        module_constants,
         summaries,
         resolved_call_targets,
         dependency_analysis,
@@ -69,6 +72,7 @@ pub(super) fn transfer_callable(
 struct Evaluator<'a, 'source> {
     definition: &'a CallableDefinition<'source>,
     definitions: &'a BTreeMap<SourceSymbolKey, CallableDefinition<'source>>,
+    module_constants: &'a BTreeMap<SourceSymbolKey, ModuleConstantFact>,
     summaries: &'a BTreeMap<SourceSymbolKey, CallableState>,
     resolved_call_targets: &'a ResolvedCallTargetFacts,
     dependency_analysis: &'a SourceDependencyAnalysisInput,

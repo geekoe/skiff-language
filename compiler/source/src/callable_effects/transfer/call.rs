@@ -24,10 +24,12 @@ impl Evaluator<'_, '_> {
         let callee_start = self.next_index;
         let callee_value = if matches!(
             target,
-            Some(ResolvedCallTarget::DependencyPackageFunction { .. })
+            Some(ResolvedCallTarget::LocalFunction { .. })
+                | Some(ResolvedCallTarget::NativeFunction { .. })
+                | Some(ResolvedCallTarget::DependencyPackageFunction { .. })
                 | Some(ResolvedCallTarget::ContractOperation { .. })
         ) {
-            self.eval_exact_dependency_callee(callee, env)
+            self.eval_exact_non_receiver_callee(callee, env)
         } else {
             self.eval_expr(callee, env)
         };
@@ -143,15 +145,23 @@ impl Evaluator<'_, '_> {
         }
     }
 
-    fn eval_exact_dependency_callee(
+    fn eval_exact_non_receiver_callee(
         &mut self,
         callee: &Expr,
         env: &mut Environment,
     ) -> AbstractValue {
-        // A dependency address is safe only as the syntactic callee of the
-        // exact target attached to this call key. Every other evaluation path
-        // still goes through `eval_expr` and retains its fail-closed transfer.
+        // A non-receiver callable address is safe only as the syntactic callee
+        // of the exact target attached to this call key. Every first-class
+        // evaluation path still goes through `eval_expr` and remains
+        // fail-closed.
         match callee {
+            Expr::Identifier(_) => {
+                let key = self.current_key();
+                self.next_index = self.next_index.saturating_add(1);
+                let value = AbstractValue::constant(self.expression_may_be_reference(&key));
+                self.values.insert(key.preorder_index(), value.clone());
+                value
+            }
             Expr::DependencySourceAddress(_) => {
                 let key = self.current_key();
                 self.next_index = self.next_index.saturating_add(1);
@@ -162,7 +172,7 @@ impl Evaluator<'_, '_> {
             Expr::Generic { callee, .. } => {
                 let key = self.current_key();
                 self.next_index = self.next_index.saturating_add(1);
-                let value = self.eval_exact_dependency_callee(callee, env);
+                let value = self.eval_exact_non_receiver_callee(callee, env);
                 self.values.insert(key.preorder_index(), value.clone());
                 value
             }
@@ -170,7 +180,7 @@ impl Evaluator<'_, '_> {
                 let key = self.current_key();
                 self.next_index = self.next_index.saturating_add(1);
                 let reference = self.expression_may_be_reference(&key);
-                let mut value = self.eval_exact_dependency_callee(object, env);
+                let mut value = self.eval_exact_non_receiver_callee(object, env);
                 value.reference = reference;
                 if !reference {
                     value.caller_references.clear();
