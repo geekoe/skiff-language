@@ -363,14 +363,9 @@ fn runtime_type_identity_plan(descriptor: &Value) -> RuntimeTypeIdentityPlan {
     };
     let identity = object.get("identity").and_then(Value::as_object);
     RuntimeTypeIdentityPlan {
-        nominal: identity_string(identity, "nominal")
-            .or_else(|| string_property(object, "nominalIdentity")),
+        catch_identity: None,
         interface: identity_string(identity, "interface")
             .or_else(|| string_property(object, "interfaceIdentity")),
-        union: identity_string(identity, "union")
-            .or_else(|| string_property(object, "unionIdentity")),
-        union_branch: identity_string(identity, "unionBranch")
-            .or_else(|| string_property(object, "unionBranchIdentity")),
         method_projection: identity_string(identity, "methodProjection")
             .or_else(|| string_property(object, "methodProjectionIdentity")),
     }
@@ -1207,7 +1202,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn type_descriptor_identity_fields_parse_when_present() {
+    fn legacy_display_identity_fields_do_not_reconstruct_catch_identity() {
         let descriptor = json!({
             "kind": "builtin",
             "name": "pkg.UserView",
@@ -1223,9 +1218,8 @@ mod tests {
         let plan =
             RuntimeTypePlan::from_descriptor(&descriptor).expect("descriptor plan should build");
 
-        assert_eq!(plan.nominal_identity(), Some("type:pkg.UserView@1"));
+        assert_eq!(plan.catch_identity(), None);
         assert_eq!(plan.interface_identity(), Some("iface:pkg.Viewable@1"));
-        assert_eq!(plan.union_identity(), Some("union:pkg.UserView@1"));
         assert_eq!(
             plan.method_projection_identity(),
             Some("methodProjection:pkg.UserView.render@1")
@@ -1256,7 +1250,7 @@ mod tests {
     }
 
     #[test]
-    fn type_descriptor_union_branch_identity_can_differ_from_branch_label() {
+    fn legacy_union_display_identity_does_not_create_branch_identity() {
         let descriptor = json!({
             "kind": "union",
             "identity": {
@@ -1285,11 +1279,8 @@ mod tests {
             panic!("expected union plan");
         };
 
-        assert_eq!(plan.union_identity(), Some("union:pkg.Result@1"));
-        assert_eq!(
-            branches[0].union_branch_identity(),
-            Some("branch:pkg.Result.success@1")
-        );
+        assert_eq!(plan.catch_identity(), None);
+        assert_eq!(branches[0].catch_identity(), None);
         assert!(matches!(
             branches[0].node(),
             RuntimeTypeNode::LiteralString(value) if value == "ok"

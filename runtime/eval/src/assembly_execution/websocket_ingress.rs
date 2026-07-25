@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
-use skiff_artifact_model::WebSocketIngressContext;
+use skiff_artifact_model::{
+    InstructionSourceSite, SyntheticInstructionSiteReason, WebSocketIngressContext,
+};
 use skiff_runtime_boundary::{
     payload::{PayloadBoundary, PayloadBoundaryKind},
     value as boundary_bytes,
@@ -77,6 +79,9 @@ pub async fn dispatch_websocket_ingress_via_in_process_boundary(
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
         actor_metadata: None,
+        site: InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::RuntimeBoundaryDispatch,
+        },
     };
     let value = {
         let mut eval_context = EvalContext::new(

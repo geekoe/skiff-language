@@ -1,9 +1,12 @@
 use std::fmt;
 
 use serde_json::json;
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
 use skiff_runtime_model::recoverable::{
     RuntimeRecoverableBoundaryContext, RuntimeRecoverableExpectedTypePlan,
+};
+use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,7 +283,7 @@ mod tests {
         assert_eq!(
             RuntimeError::decode_target("config.require", "missing config").catch_projection(),
             Some((
-                TypeIdentity::builtin("config.DecodeError"),
+                PlatformBuiltinErrorIdentity::ConfigDecode.catch_identity(),
                 serde_json::json!({
                     "target": "config.require",
                     "message": "missing config",
@@ -290,7 +293,7 @@ mod tests {
         assert_eq!(
             RuntimeError::bytes_decode("bytes.toUtf8String", "invalid utf8").catch_projection(),
             Some((
-                TypeIdentity::builtin("std.bytes.DecodeError"),
+                PlatformBuiltinErrorIdentity::BytesDecode.catch_identity(),
                 serde_json::json!({
                     "target": "bytes.toUtf8String",
                     "message": "invalid utf8",
@@ -300,7 +303,7 @@ mod tests {
         assert_eq!(
             RuntimeError::db_decode("std.db", "missing id").catch_projection(),
             Some((
-                TypeIdentity::builtin("std.db.DecodeError"),
+                PlatformBuiltinErrorIdentity::DbDecode.catch_identity(),
                 serde_json::json!({
                     "target": "std.db",
                     "message": "missing id",
@@ -310,7 +313,7 @@ mod tests {
         assert_eq!(
             RuntimeError::file_error("std.file not found").catch_projection(),
             Some((
-                TypeIdentity::builtin("std.file.FileError"),
+                PlatformBuiltinErrorIdentity::File.catch_identity(),
                 serde_json::json!({
                     "message": "std.file not found",
                 })
@@ -323,7 +326,7 @@ mod tests {
             )
             .catch_projection(),
             Some((
-                TypeIdentity::builtin("std.http.HttpError"),
+                PlatformBuiltinErrorIdentity::Http.catch_identity(),
                 serde_json::json!({
                     "message": "std.http failed",
                     "detail": { "status": 500 },
@@ -470,41 +473,42 @@ impl WirePayload for RuntimeError {
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
         match self {
             Self::DecodeTarget { target, message } => {
-                decode_target_error_code(target).map(|code| {
-                    (
-                        TypeIdentity::builtin(code),
+                decode_target_error_code(target).and_then(|code| {
+                    let identity = PlatformBuiltinErrorIdentity::from_symbol(code)?;
+                    Some((
+                        identity.catch_identity(),
                         json!({
                             "target": target,
                             "message": message,
                         }),
-                    )
+                    ))
                 })
             }
             Self::BytesDecode { target, message } => Some((
-                TypeIdentity::builtin("std.bytes.DecodeError"),
+                PlatformBuiltinErrorIdentity::BytesDecode.catch_identity(),
                 json!({
                     "target": target,
                     "message": message,
                 }),
             )),
             Self::DbDecode { target, message } => Some((
-                TypeIdentity::builtin("std.db.DecodeError"),
+                PlatformBuiltinErrorIdentity::DbDecode.catch_identity(),
                 json!({
                     "target": target,
                     "message": message,
                 }),
             )),
             Self::FileError { message } => Some((
-                TypeIdentity::builtin("std.file.FileError"),
+                PlatformBuiltinErrorIdentity::File.catch_identity(),
                 json!({
                     "message": message,
                 }),
             )),
             Self::HttpError { message, detail } => Some((
-                TypeIdentity::builtin("std.http.HttpError"),
+                PlatformBuiltinErrorIdentity::Http.catch_identity(),
                 json!({
                     "message": message,
                     "detail": detail,

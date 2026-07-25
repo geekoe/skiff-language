@@ -3,11 +3,18 @@ use serde_json::json;
 use crate::{
     error::RuntimeError,
     json::RuntimeBoundaryCodec,
+    json_convert::{decode_wire_plan_impl, BoundaryStreamHandlePolicy},
     plan::BoundaryUse,
     request_heap::RequestHeap,
     runtime_value::{HeapNode, RuntimeValue, RuntimeValueKey},
-    type_descriptor::{RuntimeTypePlan, RuntimeTypePlanDescriptorExt},
+    type_descriptor::{
+        RuntimeRecordFieldPlan, RuntimeTypeNode, RuntimeTypePlan, RuntimeTypePlanDescriptorExt,
+    },
     value::encode_base64,
+};
+use skiff_artifact_model::PackageSchemaTypeId;
+use skiff_runtime_model::service_error::{
+    CatchIdentity, NominalTypeIdentity, PackageSchemaTypeIdentity,
 };
 
 use super::{
@@ -17,6 +24,87 @@ use super::{
         websocket_connection_message_descriptor,
     },
 };
+
+fn package_catch_identity(key: &str, type_id: &str) -> CatchIdentity {
+    CatchIdentity::Nominal(NominalTypeIdentity::PackageSchema(
+        PackageSchemaTypeIdentity::new("example.identity", key, PackageSchemaTypeId::new(type_id))
+            .expect("test PackageSchema identity"),
+    ))
+}
+
+#[test]
+fn typed_wire_decode_preserves_nested_nominal_identity_sidecars() {
+    let item_identity = package_catch_identity("Item", "schema:item");
+    let mut item_plan =
+        RuntimeTypePlan::synthetic_request_record(vec![RuntimeRecordFieldPlan::new(
+            "name",
+            RuntimeTypePlan::synthetic_named_builtin("string", RuntimeTypeNode::String, Vec::new()),
+            true,
+        )]);
+    item_plan.identity.catch_identity = Some(item_identity.clone());
+    let outer_plan = RuntimeTypePlan::synthetic_request_record(vec![
+        RuntimeRecordFieldPlan::new(
+            "items",
+            RuntimeTypePlan::synthetic_array(item_plan.clone()),
+            true,
+        ),
+        RuntimeRecordFieldPlan::new(
+            "lookup",
+            RuntimeTypePlan::synthetic_map(
+                RuntimeTypePlan::synthetic_named_builtin(
+                    "string",
+                    RuntimeTypeNode::String,
+                    Vec::new(),
+                ),
+                item_plan,
+            ),
+            true,
+        ),
+    ]);
+    let mut heap = RequestHeap::default();
+
+    let decoded = decode_wire_plan_impl(
+        &json!({
+            "items": [{ "name": "Ada" }],
+            "lookup": { "primary": { "name": "Grace" } }
+        }),
+        &outer_plan,
+        &mut heap,
+        BoundaryStreamHandlePolicy::ExternalBoundary,
+    )
+    .expect("typed decode");
+    let RuntimeValue::Heap(outer_handle) = decoded else {
+        panic!("outer record");
+    };
+    let items = heap
+        .object_field_carrier(outer_handle, "items")
+        .expect("items field")
+        .expect("items carrier");
+    let RuntimeValue::Heap(items_handle) = items.value() else {
+        panic!("items array");
+    };
+    assert_eq!(
+        heap.array_item_carrier(*items_handle, 0)
+            .expect("items array")
+            .expect("first item")
+            .catch_identity(),
+        Some(&item_identity)
+    );
+    let lookup = heap
+        .object_field_carrier(outer_handle, "lookup")
+        .expect("lookup field")
+        .expect("lookup carrier");
+    let RuntimeValue::Heap(lookup_handle) = lookup.value() else {
+        panic!("lookup map");
+    };
+    assert_eq!(
+        heap.map_entry_carrier(*lookup_handle, &RuntimeValueKey::string("primary"),)
+            .expect("lookup map")
+            .expect("primary item")
+            .catch_identity(),
+        Some(&item_identity)
+    );
+}
 
 #[test]
 fn wire_roundtrip_supports_scalars_bytes_arrays_maps_and_representation_keys() {
@@ -405,6 +493,18 @@ fn union_decode_rejects_object_when_string_or_number_branches_fail() {
     let error = from_wire(&json!({ "value": true }), &expected, &mut heap).unwrap_err();
 
     assert!(matches!(error, RuntimeError::Decode(_)));
+    assert!(heap.is_empty());
+}
+
+#[test]
+fn union_decode_fails_closed_when_multiple_exact_branches_match() {
+    let expected = union(vec![named("string"), named("string")]);
+    let mut heap = RequestHeap::default();
+
+    let error = from_wire(&json!("ambiguous"), &expected, &mut heap)
+        .expect_err("an ambiguous branch must not acquire the first branch identity");
+
+    assert!(error.to_string().contains("ambiguously matched"));
     assert!(heap.is_empty());
 }
 

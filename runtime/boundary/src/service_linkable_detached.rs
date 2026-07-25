@@ -50,6 +50,7 @@ fn reject_detached_interface_graph_inner(
                 carrier: interface.carrier().kind_label(),
             },
         ),
+        HeapNode::Exception(_) => Err(ServiceLinkableMaterializationError::TypeMismatch),
     }
 }
 
@@ -111,13 +112,16 @@ impl DetachedGraphMaterializer {
                     },
                 );
             }
+            HeapNode::Exception(_) => {
+                return Err(ServiceLinkableMaterializationError::TypeMismatch);
+            }
         };
         let cloned = match cloned_node {
             HeapNode::Bytes(bytes) => destination.alloc_bytes(bytes),
             HeapNode::Array(items) => destination.alloc_array(items),
             HeapNode::Object(object) => destination.alloc_object(object),
             HeapNode::Map(map) => destination.alloc_map(map),
-            HeapNode::Interface(_) => unreachable!(),
+            HeapNode::Interface(_) | HeapNode::Exception(_) => unreachable!(),
         }
         .map_err(model_error)?;
         self.active.remove(handle);

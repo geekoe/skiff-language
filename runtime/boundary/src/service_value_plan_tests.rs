@@ -7,6 +7,9 @@ use skiff_artifact_model::{
     PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord,
     WEBSOCKET_CONNECT_RESULT_TYPE, WEBSOCKET_INGRESS_EVENT_TYPE,
 };
+use skiff_runtime_model::service_error::{
+    CatchIdentity, NominalTypeIdentity, PackageSchemaTypeIdentity,
+};
 use skiff_runtime_model::value::{
     CallbackCapabilityCarrier, HeapNode, InterfaceCarrier, InterfaceValue, RuntimeObject,
     RuntimeObjectFields, RuntimeValue, RuntimeValueKey,
@@ -759,10 +762,12 @@ fn service_value_plan_rejects_alias_callback_cycle_foreign_and_invalid_map_key()
     ));
     let exact_ref = package_ref(exact_id.clone());
     let exact_plan = ServiceValuePlan::compile(&exact_ref, &exact_schema).unwrap();
-    let expected_identity = format!("package-schema:{PACKAGE_ID}:Exact:{exact_id}");
     assert_eq!(
-        exact_plan.runtime_type_plan().identity.nominal.as_deref(),
-        Some(expected_identity.as_str()),
+        exact_plan.runtime_type_plan().catch_identity(),
+        Some(&CatchIdentity::Nominal(NominalTypeIdentity::PackageSchema(
+            PackageSchemaTypeIdentity::new(PACKAGE_ID, "Exact", exact_id.clone(),)
+                .expect("exact PackageSchema identity"),
+        ),)),
         "runtime nominal identity must retain Package owner, stable key and type id"
     );
 

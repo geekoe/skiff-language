@@ -556,6 +556,9 @@ impl PayloadEncoder<'_> {
                     expected_type,
                     self.boundary,
                 )),
+                HeapNode::Exception(_) => Err(RuntimeError::Decode(
+                    "request-local exception cannot be encoded in a runtime payload".to_string(),
+                )),
             },
         }
     }

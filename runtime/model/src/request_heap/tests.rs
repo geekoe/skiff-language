@@ -1,19 +1,48 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    addr::ExecutableAddr,
+    addr::{ExecutableAddr, FileAddr, TypeAddr, UnitAddr},
     error::RuntimeModelError,
+    service_error::{
+        CatchIdentity, ErrorCorrelation, ExceptionStackFrame, LocalExecutionTypeIdentity,
+        NominalTypeIdentity, RequestException,
+    },
     value::{
         CallbackCapabilityCarrier, HeapHandle, HeapNode, InterfaceCarrier, InterfaceMethodSlot,
         InterfaceMethodTable, InterfaceMethodTarget, InterfaceReceiverCallAbi, InterfaceValue,
-        RuntimeMap, RuntimeObject, RuntimeObjectFields, RuntimeValue, RuntimeValueKey,
+        RuntimeMap, RuntimeObject, RuntimeObjectFields, RuntimeValue, RuntimeValueCarrier,
+        RuntimeValueKey,
     },
 };
+use skiff_artifact_model::{InstructionSourceSite, SourcePosition, SourceSpanRef};
 
 use super::{
-    deep_clone_runtime_value, deep_clone_runtime_value_between_heaps, RequestHeap,
-    RequestHeapLimits,
+    deep_clone_runtime_value, deep_clone_runtime_value_between_heaps,
+    deep_clone_runtime_value_carrier_between_heaps, RequestHeap, RequestHeapLimits,
 };
+
+fn local_identity(type_index: usize) -> CatchIdentity {
+    CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+        LocalExecutionTypeIdentity {
+            addr: TypeAddr {
+                unit: UnitAddr::Service,
+                file: FileAddr::loaded_file(0),
+                type_index,
+            },
+            type_arguments: Vec::new(),
+        },
+    ))
+}
+
+fn source_site() -> InstructionSourceSite {
+    InstructionSourceSite::Source {
+        span: SourceSpanRef {
+            source_id: 1,
+            start: SourcePosition::new(1, 1),
+            end: SourcePosition::new(1, 2),
+        },
+    }
+}
 
 #[test]
 fn alloc_array_and_get_roundtrip() {
@@ -31,6 +60,151 @@ fn alloc_array_and_get_roundtrip() {
         heap.get(handle).expect("handle should resolve"),
         &HeapNode::Array(vec![RuntimeValue::Bool(true), RuntimeValue::from("item")])
     );
+}
+
+#[test]
+fn carrier_sidecars_survive_container_projection_mutation_and_cross_heap_clone() {
+    let first = local_identity(10);
+    let second = local_identity(11);
+    let first_value = RuntimeValueCarrier::identified(RuntimeValue::from("first"), first.clone());
+    let second_value = RuntimeValueCarrier::identified(RuntimeValue::Number(2.0), second.clone());
+    let mut heap = RequestHeap::default();
+
+    let object = heap
+        .alloc_object_carriers(BTreeMap::from([("field".to_string(), first_value.clone())]))
+        .unwrap();
+    let array = heap
+        .alloc_array_carriers(vec![first_value.clone()])
+        .unwrap();
+    let map = heap
+        .alloc_map_carriers(BTreeMap::from([(
+            RuntimeValueKey::string("key"),
+            second_value.clone(),
+        )]))
+        .unwrap();
+
+    assert_eq!(
+        heap.object_field_carrier(object, "field")
+            .unwrap()
+            .unwrap()
+            .catch_identity(),
+        Some(&first)
+    );
+    assert_eq!(
+        heap.array_item_carrier(array, 0)
+            .unwrap()
+            .unwrap()
+            .catch_identity(),
+        Some(&first)
+    );
+    assert_eq!(
+        heap.map_entry_carrier(map, &RuntimeValueKey::string("key"))
+            .unwrap()
+            .unwrap()
+            .catch_identity(),
+        Some(&second)
+    );
+
+    heap.set_array_item_carrier(array, 0, second_value.clone())
+        .unwrap();
+    heap.set_object_field_carrier(object, "field".to_string(), second_value.clone())
+        .unwrap();
+    heap.set_map_entry_carrier(map, RuntimeValueKey::string("key"), first_value.clone())
+        .unwrap();
+    assert_eq!(
+        heap.pop_array_item_carrier(array).unwrap().catch_identity(),
+        Some(&second)
+    );
+
+    let root = RuntimeValueCarrier::identified(RuntimeValue::Heap(object), first.clone());
+    let mut destination = RequestHeap::default();
+    let cloned =
+        deep_clone_runtime_value_carrier_between_heaps(&heap, &mut destination, &root).unwrap();
+    assert_eq!(cloned.catch_identity(), Some(&first));
+    let RuntimeValue::Heap(cloned_object) = cloned.value() else {
+        panic!("cloned object must remain a heap value");
+    };
+    assert_eq!(
+        destination
+            .object_field_carrier(*cloned_object, "field")
+            .unwrap()
+            .unwrap()
+            .catch_identity(),
+        Some(&second)
+    );
+}
+
+#[test]
+fn local_carrier_cell_survives_cross_heap_clone_without_becoming_an_array_projection() {
+    let identity = local_identity(12);
+    let mut source = RequestHeap::default();
+    let cell = source
+        .alloc_local_carrier_cell(RuntimeValueCarrier::identified(
+            RuntimeValue::from("stream-item"),
+            identity.clone(),
+        ))
+        .unwrap();
+    assert_eq!(
+        source
+            .local_carrier_cell(cell)
+            .unwrap()
+            .unwrap()
+            .catch_identity(),
+        Some(&identity)
+    );
+    assert!(source.array_item_carrier(cell, 0).unwrap().is_none());
+
+    let mut destination = RequestHeap::default();
+    let cloned = deep_clone_runtime_value_between_heaps(
+        &source,
+        &mut destination,
+        &RuntimeValue::Heap(cell),
+    )
+    .unwrap();
+    let RuntimeValue::Heap(cloned) = cloned else {
+        panic!("carrier cell clone must remain a heap handle");
+    };
+    assert_eq!(
+        destination
+            .local_carrier_cell(cloned)
+            .unwrap()
+            .unwrap()
+            .catch_identity(),
+        Some(&identity)
+    );
+}
+
+#[test]
+fn exception_heap_clone_preserves_exact_local_cause_and_metadata() {
+    let identity = local_identity(20);
+    let site = source_site();
+    let exception = RequestException::local(
+        RuntimeValueCarrier::identified(RuntimeValue::from("private"), identity.clone()),
+        site.clone(),
+        vec![ExceptionStackFrame::Local { site: site.clone() }],
+        ErrorCorrelation {
+            trace_id: "trace-1".to_string(),
+            error_id: "error-1".to_string(),
+        },
+    )
+    .unwrap();
+    let mut source = RequestHeap::default();
+    let handle = source.alloc_exception(exception.clone()).unwrap();
+    let mut destination = RequestHeap::default();
+    let cloned = deep_clone_runtime_value_between_heaps(
+        &source,
+        &mut destination,
+        &RuntimeValue::Heap(handle),
+    )
+    .unwrap();
+    let RuntimeValue::Heap(handle) = cloned else {
+        panic!("cloned exception must remain a heap value");
+    };
+    let HeapNode::Exception(cloned) = destination.get(handle).unwrap() else {
+        panic!("cloned node must remain an Exception");
+    };
+    assert_eq!(cloned, &exception);
+    assert_eq!(cloned.local_catch_identity(), Some(&identity));
 }
 
 #[test]

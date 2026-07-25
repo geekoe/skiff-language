@@ -11,7 +11,6 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_boundary::service_linkable::FailClosedServiceLinkableCapabilityHooks;
 use skiff_runtime_model::{
-    error::TypeIdentity,
     request_heap::RequestHeap,
     runtime_value::{HeapHandle, HeapNode, RuntimeValue},
 };
@@ -108,143 +107,6 @@ fn ordinary_in_process_uses_shared_planner_for_detached_parameters_and_return() 
         .err()
         .expect("owner mismatch must fail shared plan preflight");
     assert!(matches!(plan_error, RuntimeError::InvalidArtifact(_)));
-}
-
-#[test]
-fn service_error_boundary_classification_is_shared_across_lanes() {
-    let payload_type = ContractTypeRef::Record {
-        fields: BTreeMap::from([
-            ("message".to_string(), ContractTypeRef::builtin("string")),
-            (
-                "trace".to_string(),
-                ContractTypeRef::Builtin {
-                    name: "Array".to_string(),
-                    arguments: vec![ContractTypeRef::builtin("string")],
-                },
-            ),
-        ]),
-    };
-    let descriptor = operation(
-        Vec::new(),
-        ContractTypeRef::builtin("void"),
-        BoundaryErrorContract::Typed {
-            payload_type,
-            value_plan: detached_plan(BoundaryValueOwner::Provider),
-        },
-    );
-    let schema = BTreeMap::new();
-    let planner = CanonicalServiceBoundaryPlan::new(&descriptor, &schema, 0)
-        .expect("typed error plan should pass shared preflight");
-    let identity = TypeIdentity::builtin("ProviderProblem");
-    let mut provider_heap = planner.fresh_provider_heap(Default::default());
-    let mut caller_heap = RequestHeap::default();
-
-    let declared = typed_exception(
-        json!({ "message": "rejected", "trace": ["provider"] }),
-        identity.clone(),
-    );
-    let diagnostic_frame = json!({ "provider": "diagnostic-frame" });
-    let source_frame = json!({ "sourceId": 17, "module": "provider" });
-    let error = planner
-        .materialize_provider_result(
-            Err(RuntimeError::WithDiagnosticFrame {
-                frame: Box::new(diagnostic_frame.clone()),
-                error: Box::new(RuntimeError::WithSource {
-                    source_id: 17,
-                    frame: Box::new(source_frame.clone()),
-                    error: Box::new(RuntimeError::UserException(declared)),
-                }),
-            }),
-            &mut provider_heap,
-            &mut caller_heap,
-            &FailClosedServiceLinkableCapabilityHooks,
-        )
-        .err()
-        .expect("declared typed error should remain an error");
-    let RuntimeError::WithDiagnosticFrame {
-        frame,
-        error: source_error,
-    } = &error
-    else {
-        panic!("diagnostic wrapper should remain outermost")
-    };
-    assert_eq!(frame.as_ref(), &diagnostic_frame);
-    let RuntimeError::WithSource {
-        source_id,
-        frame,
-        error: user_error,
-    } = source_error.as_ref()
-    else {
-        panic!("source wrapper should remain nested inside diagnostic wrapper")
-    };
-    assert_eq!(*source_id, 17);
-    assert_eq!(frame.as_ref(), &source_frame);
-    assert!(matches!(
-        user_error.as_ref(),
-        RuntimeError::UserException(_)
-    ));
-    let caught = user_exception_for_catch(&error).expect("typed error should be caller-catchable");
-    assert_eq!(caught.actual_payload_type(), &identity);
-    assert_eq!(
-        caught.error_payload(),
-        json!({ "message": "rejected", "trace": ["provider"] }).as_object()
-    );
-    assert!(provider_heap.len() > 0 && caller_heap.len() > 0);
-
-    let runtime_error = planner
-        .materialize_provider_result(
-            Err(RuntimeError::Cancelled),
-            &mut provider_heap,
-            &mut caller_heap,
-            &FailClosedServiceLinkableCapabilityHooks,
-        )
-        .err()
-        .expect("runtime error should propagate");
-    assert!(matches!(runtime_error, RuntimeError::Cancelled));
-
-    let invalid_payload = typed_exception(
-        json!({ "message": "wrong shape", "trace": "not-an-array" }),
-        identity.clone(),
-    );
-    let shape_error = planner
-        .materialize_provider_result(
-            Err(RuntimeError::UserException(invalid_payload)),
-            &mut provider_heap,
-            &mut caller_heap,
-            &FailClosedServiceLinkableCapabilityHooks,
-        )
-        .err()
-        .expect("typed payload shape mismatch should be protocol error");
-    assert!(matches!(
-        shape_error,
-        RuntimeError::Protocol { ref target, .. }
-            if target == "operation:shared-boundary-test"
-    ));
-
-    let no_error_operation = operation(
-        Vec::new(),
-        ContractTypeRef::builtin("void"),
-        BoundaryErrorContract::None,
-    );
-    let no_error_planner = CanonicalServiceBoundaryPlan::new(&no_error_operation, &schema, 0)
-        .expect("no-error descriptor should pass shared preflight");
-    let undeclared = no_error_planner
-        .materialize_provider_result(
-            Err(RuntimeError::UserException(typed_exception(
-                json!({ "message": "undeclared" }),
-                identity,
-            ))),
-            &mut provider_heap,
-            &mut caller_heap,
-            &FailClosedServiceLinkableCapabilityHooks,
-        )
-        .err()
-        .expect("undeclared typed throw should be protocol error");
-    assert!(matches!(
-        undeclared,
-        RuntimeError::Protocol { ref target, .. }
-            if target == "operation:shared-boundary-test"
-    ));
 }
 
 #[test]
@@ -361,11 +223,6 @@ fn package_record(
             },
         },
     }
-}
-
-fn typed_exception(payload: serde_json::Value, identity: TypeIdentity) -> UserException {
-    UserException::from_typed_payload(payload, identity.clone(), Some(identity))
-        .expect("typed test exception should build")
 }
 
 fn assert_array_item(heap: &RequestHeap, handle: HeapHandle, value: &str) {

@@ -539,6 +539,10 @@ struct BoundaryStreamSink {
     provider_context: Arc<OwnedProgramExecutionContext>,
 }
 
+pub(crate) fn is_canonical_boundary_stream_sink(sink: &StreamSink) -> bool {
+    sink.downcast_ref::<BoundaryStreamSink>().is_some()
+}
+
 impl BoundaryStreamSink {
     fn materialize_item(&self, item: Value) -> StreamRuntimeResult<Value> {
         let mut source_heap = RequestHeap::default();

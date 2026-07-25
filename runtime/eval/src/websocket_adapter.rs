@@ -652,6 +652,9 @@ fn runtime_string_field(
                 "websocket field {name} cannot be {}",
                 value.diagnostic_label()
             ))),
+            HeapNode::Exception(_) => Err(RuntimeError::Decode(format!(
+                "websocket field {name} cannot be a request-local Exception"
+            ))),
         },
         _ => Err(RuntimeError::Decode(format!(
             "websocket field {name} must be string"

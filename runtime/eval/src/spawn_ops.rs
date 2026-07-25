@@ -6,8 +6,7 @@ use skiff_runtime_linked_program::{
     CallIr, ExecutableAddr, ExprRefIr, LinkedCallTarget, LinkedExprIr,
 };
 use skiff_runtime_model::{
-    recoverable::RuntimeRecoverableExpectedTypePlan,
-    runtime_value::{RuntimeObject, RuntimeObjectFields, RuntimeValue},
+    recoverable::RuntimeRecoverableExpectedTypePlan, runtime_value::RuntimeValue,
 };
 
 use crate::{
@@ -156,12 +155,12 @@ async fn encode_spawn_function_payload(
             &resolved.executable.symbol,
         )?,
     };
-    let mut fields = RuntimeObjectFields::new();
+    let mut fields = std::collections::BTreeMap::new();
     for (param, arg_ref) in resolved.executable.params.iter().zip(&call.args) {
         let value = context.eval_program_expr_ref(*arg_ref).await?;
         fields.insert(param.name.clone(), value);
     }
-    let args_handle = context.heap.alloc_object(RuntimeObject::unshaped(fields))?;
+    let args_handle = context.heap.alloc_object_carriers(fields)?;
     let recoverable_expected = executable_request_recoverable_expected_plan(
         projection.type_view(),
         &resolved.addr,

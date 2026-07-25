@@ -5,19 +5,23 @@ use std::{
 
 use serde_json::Value;
 use skiff_artifact_model::{
-    ContractOperationId, PackageBuildId, PackageCallableId, ServiceProtocolIdentity,
+    ContractOperationId, InstructionSourceSite, PackageBuildId, PackageCallableId,
+    ServiceProtocolIdentity,
 };
 use skiff_runtime_model::{
-    error::TypeIdentity, request_heap::RequestHeap, runtime_value::RuntimeValue,
+    request_heap::{deep_clone_runtime_value_carrier_between_heaps, RequestHeap},
+    runtime_value::RuntimeValueCarrier,
+    service_error::{ErrorCorrelation, ExceptionStackFrame, RequestException},
     type_plan::RuntimeTypePlan,
 };
 
 use crate::{
     capabilities::StreamRuntime,
     error::{Result, RuntimeError, UserException},
+    program_execution::ProgramExecutionContext,
     runtime_ops::{
-        runtime_from_wire_internal_handle_required_plan, runtime_from_wire_required_plan,
-        runtime_to_wire, runtime_to_wire_required_plan,
+        runtime_carrier_from_wire_required_plan, runtime_from_wire_internal_handle_required_plan,
+        runtime_to_wire,
     },
 };
 
@@ -84,9 +88,8 @@ pub(crate) enum RegisteredTestEffectOutcome {
         value_plan: RuntimeTypePlan,
     },
     Throw {
-        payload: Value,
-        payload_plan: RuntimeTypePlan,
-        identity: TypeIdentity,
+        payload: RuntimeValueCarrier,
+        setup_heap: RequestHeap,
     },
     Stream {
         values: Vec<Value>,
@@ -131,10 +134,23 @@ impl RuntimeTestEffectRegistry {
     pub(crate) fn dispatch(
         &self,
         target: &TestEffectTarget,
-        args: &[RuntimeValue],
+        args: &[RuntimeValueCarrier],
         stream_runtime: Option<&StreamRuntime>,
         heap: &mut RequestHeap,
-    ) -> Option<Result<RuntimeValue>> {
+        context: &ProgramExecutionContext<'_>,
+        site: &InstructionSourceSite,
+    ) -> Option<Result<RuntimeValueCarrier>> {
+        self.dispatch_internal(target, args, stream_runtime, heap, Some((context, site)))
+    }
+
+    fn dispatch_internal(
+        &self,
+        target: &TestEffectTarget,
+        args: &[RuntimeValueCarrier],
+        stream_runtime: Option<&StreamRuntime>,
+        heap: &mut RequestHeap,
+        exception_context: Option<(&ProgramExecutionContext<'_>, &InstructionSourceSite)>,
+    ) -> Option<Result<RuntimeValueCarrier>> {
         let effect = {
             let mut entries = self
                 .entries
@@ -149,16 +165,17 @@ impl RuntimeTestEffectRegistry {
                 target.diagnostic()
             ))));
         };
-        Some(self.materialize(effect, args, stream_runtime, heap))
+        Some(self.materialize(effect, args, stream_runtime, heap, exception_context))
     }
 
     fn materialize(
         &self,
         effect: RegisteredTestEffect,
-        args: &[RuntimeValue],
+        args: &[RuntimeValueCarrier],
         stream_runtime: Option<&StreamRuntime>,
         heap: &mut RequestHeap,
-    ) -> Result<RuntimeValue> {
+        exception_context: Option<(&ProgramExecutionContext<'_>, &InstructionSourceSite)>,
+    ) -> Result<RuntimeValueCarrier> {
         if let Some(expected) = effect.expect {
             Self::match_expected_request_subset("target", expected, args, heap)?;
         }
@@ -167,7 +184,7 @@ impl RuntimeTestEffectRegistry {
         }
         match effect.outcome {
             RegisteredTestEffectOutcome::Respond { value, value_plan } => {
-                runtime_from_wire_required_plan(
+                runtime_carrier_from_wire_required_plan(
                     &value,
                     Some(&value_plan),
                     "test effect response",
@@ -176,27 +193,21 @@ impl RuntimeTestEffectRegistry {
             }
             RegisteredTestEffectOutcome::Throw {
                 payload,
-                payload_plan,
-                identity,
+                setup_heap,
             } => {
-                // Rebuild in the dispatch heap before constructing the
-                // exception envelope. The registry snapshot must never retain
-                // or dereference a handle from the setup heap.
-                let payload_value = runtime_from_wire_required_plan(
-                    &payload,
-                    Some(&payload_plan),
-                    "test effect typed throw",
+                let Some((context, site)) = exception_context else {
+                    return Err(RuntimeError::InvalidArtifact(
+                        "test effect throw requires request exception context".to_string(),
+                    ));
+                };
+                materialize_local_test_throw(
+                    payload,
+                    &setup_heap,
                     heap,
-                )?;
-                let payload = runtime_to_wire_required_plan(
-                    &payload_value,
-                    Some(&payload_plan),
-                    "test effect typed throw",
-                    heap,
-                )?;
-                Err(RuntimeError::UserException(
-                    UserException::from_typed_payload(payload, identity.clone(), Some(identity))?,
-                ))
+                    site.clone(),
+                    context.exception_stack_for_site(site.clone()),
+                    context.next_exception_correlation()?,
+                )
             }
             RegisteredTestEffectOutcome::Stream { values, item_plan } => {
                 let stream_runtime = stream_runtime.ok_or_else(|| {
@@ -210,14 +221,26 @@ impl RuntimeTestEffectRegistry {
                     "test effect stream",
                     heap,
                 )
+                .map(Into::into)
             }
         }
+    }
+
+    #[cfg(test)]
+    fn dispatch_for_test(
+        &self,
+        target: &TestEffectTarget,
+        args: &[RuntimeValueCarrier],
+        stream_runtime: Option<&StreamRuntime>,
+        heap: &mut RequestHeap,
+    ) -> Option<Result<RuntimeValueCarrier>> {
+        self.dispatch_internal(target, args, stream_runtime, heap, None)
     }
 
     fn match_expected_request_subset(
         scope: &str,
         expected: Value,
-        args: &[RuntimeValue],
+        args: &[RuntimeValueCarrier],
         heap: &RequestHeap,
     ) -> Result<()> {
         let actual = match args {
@@ -268,6 +291,20 @@ impl RuntimeTestEffectRegistry {
     }
 }
 
+fn materialize_local_test_throw(
+    payload: RuntimeValueCarrier,
+    setup_heap: &RequestHeap,
+    heap: &mut RequestHeap,
+    source: InstructionSourceSite,
+    stack: Vec<ExceptionStackFrame>,
+    correlation: ErrorCorrelation,
+) -> Result<RuntimeValueCarrier> {
+    let payload = deep_clone_runtime_value_carrier_between_heaps(setup_heap, heap, &payload)?;
+    let exception = RequestException::local(payload, source, stack, correlation)
+        .map_err(RuntimeError::InvalidArtifact)?;
+    Err(RuntimeError::UserException(UserException::new(exception)))
+}
+
 fn json_contains(actual: &Value, expected: &Value) -> bool {
     match (actual, expected) {
         (Value::Object(actual), Value::Object(expected)) => expected.iter().all(|(key, value)| {
@@ -289,9 +326,11 @@ fn json_contains(actual: &Value, expected: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skiff_artifact_model::SyntheticInstructionSiteReason;
     use skiff_runtime_model::{
         addr::{FileAddr, TypeAddr, UnitAddr},
-        runtime_value::{HeapNode, RuntimeObject, RuntimeObjectFields},
+        runtime_value::{HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue},
+        service_error::{CatchIdentity, LocalExecutionTypeIdentity, NominalTypeIdentity},
         type_plan::{RuntimeRecordFieldPlan, RuntimeTypeNode},
     };
 
@@ -343,10 +382,10 @@ mod tests {
             PackageCallableId::new("callable:other"),
         );
         assert!(registry
-            .dispatch(&other, &[], None, &mut RequestHeap::default())
+            .dispatch_for_test(&other, &[], None, &mut RequestHeap::default())
             .is_none());
         assert!(registry
-            .dispatch(&target(), &[], None, &mut RequestHeap::default())
+            .dispatch_for_test(&target(), &[], None, &mut RequestHeap::default())
             .is_some());
     }
 
@@ -376,7 +415,7 @@ mod tests {
         );
 
         assert!(registry
-            .dispatch(&dispatched_call.2, &[], None, &mut RequestHeap::default())
+            .dispatch_for_test(&dispatched_call.2, &[], None, &mut RequestHeap::default(),)
             .is_some());
     }
 
@@ -397,10 +436,10 @@ mod tests {
                 },
             );
             assert!(registry
-                .dispatch(&wrong, &[], None, &mut RequestHeap::default())
+                .dispatch_for_test(&wrong, &[], None, &mut RequestHeap::default())
                 .is_none());
             assert!(registry
-                .dispatch(&exact, &[], None, &mut RequestHeap::default())
+                .dispatch_for_test(&exact, &[], None, &mut RequestHeap::default())
                 .is_some());
         }
     }
@@ -418,17 +457,20 @@ mod tests {
         );
         let mut heap = RequestHeap::default();
         let response = registry
-            .dispatch(
+            .dispatch_for_test(
                 &target(),
-                &[RuntimeValue::String("request".to_string())],
+                &[RuntimeValue::String("request".to_string()).into()],
                 None,
                 &mut heap,
             )
             .expect("registered")
             .expect("response");
-        assert_eq!(response, RuntimeValue::String("response".to_string()));
+        assert_eq!(
+            response.value(),
+            &RuntimeValue::String("response".to_string())
+        );
         assert!(registry
-            .dispatch(&target(), &[], None, &mut heap)
+            .dispatch_for_test(&target(), &[], None, &mut heap)
             .expect("the consumed target remains known")
             .unwrap_err()
             .to_string()
@@ -456,7 +498,7 @@ mod tests {
         let actual_step = object_value(&mut heap, "key", "step");
 
         let step_error = registry
-            .dispatch(&target(), &[actual_common], None, &mut heap)
+            .dispatch_for_test(&target(), &[actual_common.into()], None, &mut heap)
             .expect("registered")
             .expect_err("matching common expect must not bypass the conflicting step expect");
         assert!(step_error
@@ -464,7 +506,7 @@ mod tests {
             .contains("test effect sequence step expectation failed"));
 
         let common_error = registry
-            .dispatch(&target(), &[actual_step], None, &mut heap)
+            .dispatch_for_test(&target(), &[actual_step.into()], None, &mut heap)
             .expect("registered")
             .expect_err("matching step expect must not bypass the conflicting common expect");
         assert!(common_error
@@ -474,21 +516,86 @@ mod tests {
     }
 
     #[test]
-    fn sequence_consumes_mixed_throw_and_stream_outcomes_in_order() {
-        let registry = RuntimeTestEffectRegistry::default();
-        let string_plan = leaf_plan("string", RuntimeTypeNode::String);
-        registry.register(
-            target(),
-            RegisteredTestEffect {
-                expect: None,
-                step_expect: None,
-                outcome: RegisteredTestEffectOutcome::Throw {
-                    payload: Value::String("denied".to_string()),
-                    payload_plan: string_plan.clone(),
-                    identity: TypeIdentity::builtin("SequenceFailure"),
+    fn typed_throw_clones_the_exact_carrier_into_the_request_heap() {
+        let outer_identity = CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+            LocalExecutionTypeIdentity {
+                addr: TypeAddr {
+                    unit: UnitAddr::Package(3),
+                    file: FileAddr::loaded_file(4),
+                    type_index: 5,
                 },
+                type_arguments: Vec::new(),
             },
+        ));
+        let item_identity = CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+            LocalExecutionTypeIdentity {
+                addr: TypeAddr {
+                    unit: UnitAddr::Package(3),
+                    file: FileAddr::loaded_file(4),
+                    type_index: 6,
+                },
+                type_arguments: Vec::new(),
+            },
+        ));
+        let mut setup_heap = RequestHeap::default();
+        let payload_handle = setup_heap
+            .alloc_array_carriers(vec![RuntimeValueCarrier::identified(
+                RuntimeValue::from("denied"),
+                item_identity.clone(),
+            )])
+            .expect("setup payload");
+        let payload = RuntimeValueCarrier::identified(
+            RuntimeValue::Heap(payload_handle),
+            outer_identity.clone(),
         );
+        let source = InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+        };
+        let correlation = ErrorCorrelation {
+            trace_id: "trace-effect".to_string(),
+            error_id: "trace-effect:local-error:1".to_string(),
+        };
+        let mut request_heap = RequestHeap::default();
+
+        let error = materialize_local_test_throw(
+            payload,
+            &setup_heap,
+            &mut request_heap,
+            source.clone(),
+            vec![ExceptionStackFrame::Local {
+                site: source.clone(),
+            }],
+            correlation.clone(),
+        )
+        .expect_err("typed effect throw");
+        let RuntimeError::UserException(exception) = error else {
+            panic!("typed effect throw must remain a request-local exception");
+        };
+        assert_eq!(exception.actual_payload_type(), Some(&outer_identity));
+        assert_eq!(exception.request().source(), &source);
+        assert_eq!(exception.request().correlation(), &correlation);
+        let RuntimeValue::Heap(cloned_handle) = exception
+            .request()
+            .local_value()
+            .expect("local cause")
+            .value()
+        else {
+            panic!("cloned cause must remain an array");
+        };
+        assert_ne!(*cloned_handle, payload_handle);
+        assert_eq!(
+            request_heap
+                .array_item_carrier(*cloned_handle, 0)
+                .expect("cloned array")
+                .expect("cloned item")
+                .catch_identity(),
+            Some(&item_identity)
+        );
+    }
+
+    #[test]
+    fn stream_outcome_materializes_in_sequence_order() {
+        let registry = RuntimeTestEffectRegistry::default();
         registry.register(
             target(),
             RegisteredTestEffect {
@@ -499,7 +606,7 @@ mod tests {
                         Value::String("first".to_string()),
                         Value::String("second".to_string()),
                     ],
-                    item_plan: string_plan,
+                    item_plan: leaf_plan("string", RuntimeTypeNode::String),
                 },
             },
         );
@@ -508,18 +615,13 @@ mod tests {
                 .stream_runtime();
         let mut heap = RequestHeap::default();
 
-        let first = registry
-            .dispatch(&target(), &[], Some(&stream_runtime), &mut heap)
-            .expect("first outcome is registered")
-            .expect_err("the first outcome is the typed throw");
-        assert!(matches!(first, RuntimeError::UserException(_)));
-        let second = registry
-            .dispatch(&target(), &[], Some(&stream_runtime), &mut heap)
-            .expect("second outcome is registered")
-            .expect("the second outcome is the buffered stream");
-        assert!(matches!(second, RuntimeValue::Heap(_)));
+        let stream = registry
+            .dispatch_for_test(&target(), &[], Some(&stream_runtime), &mut heap)
+            .expect("stream outcome is registered")
+            .expect("stream outcome");
+        assert!(matches!(stream.value(), RuntimeValue::Heap(_)));
         assert!(registry
-            .dispatch(&target(), &[], Some(&stream_runtime), &mut heap)
+            .dispatch_for_test(&target(), &[], Some(&stream_runtime), &mut heap)
             .expect("the target tombstone remains after consumption")
             .unwrap_err()
             .to_string()
@@ -528,34 +630,28 @@ mod tests {
     }
 
     #[test]
-    fn typed_throw_preserves_exact_type_address() {
-        let identity = TypeIdentity::address(TypeAddr {
-            unit: UnitAddr::Package(3),
-            file: FileAddr::loaded_file(4),
-            type_index: 5,
-        });
-        let registry = RuntimeTestEffectRegistry::default();
-        registry.register(
-            target(),
-            RegisteredTestEffect {
-                expect: None,
-                step_expect: None,
-                outcome: RegisteredTestEffectOutcome::Throw {
-                    payload: Value::String("denied".to_string()),
-                    payload_plan: leaf_plan("string", RuntimeTypeNode::String),
-                    identity: identity.clone(),
-                },
-            },
-        );
-        let mut heap = RequestHeap::default();
-        let error = registry
-            .dispatch(&target(), &[], None, &mut heap)
-            .expect("registered")
-            .expect_err("throw");
-        let RuntimeError::UserException(exception) = error else {
-            panic!("expected user exception");
+    fn typed_throw_rejects_missing_runtime_identity() {
+        let mut setup_heap = RequestHeap::default();
+        let payload = RuntimeValueCarrier::unidentified(RuntimeValue::from("denied"));
+        let source = InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
         };
-        assert_eq!(exception.actual_payload_type(), &identity);
+        let mut request_heap = RequestHeap::default();
+        let error = materialize_local_test_throw(
+            payload,
+            &setup_heap,
+            &mut request_heap,
+            source.clone(),
+            vec![ExceptionStackFrame::Local { site: source }],
+            ErrorCorrelation {
+                trace_id: "trace-effect".to_string(),
+                error_id: "trace-effect:local-error:1".to_string(),
+            },
+        )
+        .expect_err("unidentified throw must fail closed");
+        assert!(matches!(error, RuntimeError::InvalidArtifact(_)));
+        assert_eq!(setup_heap.len(), 0);
+        assert_eq!(request_heap.len(), 0);
     }
 
     #[test]
@@ -603,14 +699,14 @@ mod tests {
         let mut dispatch_heap = RequestHeap::default();
         let request = composite_value(&mut dispatch_heap, "request", &[vec![1, 2], vec![3, 4]]);
         let response = registry
-            .dispatch(&target(), &[request], None, &mut dispatch_heap)
+            .dispatch_for_test(&target(), &[request.into()], None, &mut dispatch_heap)
             .expect("registered")
             .expect("snapshot should materialize in the dispatch heap");
 
-        let RuntimeValue::Heap(response_handle) = response else {
+        let RuntimeValue::Heap(response_handle) = response.value() else {
             panic!("response should be a dispatch-heap record");
         };
-        let HeapNode::Object(response) = dispatch_heap.get(response_handle).expect("response")
+        let HeapNode::Object(response) = dispatch_heap.get(*response_handle).expect("response")
         else {
             panic!("response should be an object");
         };

@@ -15,7 +15,7 @@ use skiff_runtime_linked_program::{ExecutableAddr, LinkedExecutable};
 use skiff_runtime_linked_type_plan::{PlanContext, ProgramTypeView, RuntimeTypePlanLinkedExt};
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
-    runtime_value::{HeapNode, RuntimeValue},
+    runtime_value::{HeapNode, RuntimeValue, RuntimeValueCarrier},
     type_plan::{RuntimeRecordFieldPlan, RuntimeTypeNode, RuntimeTypePlan},
 };
 
@@ -28,6 +28,7 @@ use super::{
     },
     capabilities::{ExecutionControl, StreamCancelSignal, StreamPoll, TypedStreamSink},
     env::{Env, Flow},
+    exceptions::annotate_runtime_type_plan,
     flow_completion::FlowCompletionPolicy,
     invocation::{
         BinaryHttpRequestPlan, EvalBoundaryProjection, EvalInvocation, EvalProgramProjection,
@@ -40,8 +41,8 @@ use super::{
         decode_spawn_args_payload, executable_request_recoverable_expected_plan,
     },
     runtime_ops::{
-        runtime_coerce_required_plan, runtime_empty_object, runtime_from_wire_required_plan,
-        runtime_to_wire_required_plan,
+        runtime_carrier_for_plan, runtime_coerce_required_plan, runtime_empty_object,
+        runtime_from_wire_required_plan, runtime_to_wire_required_plan,
     },
     stream_callback::{
         map_callback_error, map_eval_error, EvalStreamExecutionError, EvalStreamResult,
@@ -315,7 +316,7 @@ impl Interpreter {
                     let response_plan =
                         RuntimeTypePlan::from_linked(return_type_ref, &plan_context)?;
                     runtime_response_value_required_plan(
-                        value,
+                        value.into_value(),
                         Some(&response_plan),
                         &format!(
                             "response {}",
@@ -324,7 +325,7 @@ impl Interpreter {
                         &mut invocation.heap,
                     )
                 } else {
-                    runtime_to_wire(&value, &invocation.heap)
+                    runtime_to_wire(value.value(), &invocation.heap)
                 }
             }
             Ok(Flow::Continue | Flow::Parked) => Ok(Value::Null),
@@ -1190,7 +1191,7 @@ impl Interpreter {
 
         let mut env = invocation.env()?;
         let self_value = runtime_empty_object(&mut heap)?;
-        invocation.declare_self(&mut env, self_value)?;
+        invocation.declare_self(&mut env, self_value.into())?;
 
         Ok(PreparedProgramInvocation {
             executable_invocation: invocation,
@@ -1257,7 +1258,8 @@ pub fn executable_request_payload_plan<'p>(
         .iter()
         .skip(usize::from(explicit_self_param))
     {
-        let ty = RuntimeTypePlan::from_linked(&parameter.ty, &ctx)?;
+        let mut ty = RuntimeTypePlan::from_linked(&parameter.ty, &ctx)?;
+        annotate_runtime_type_plan(&mut ty, &parameter.ty, program)?;
         let required = !matches!(ty.node(), RuntimeTypeNode::Nullable(_));
         fields.push(RuntimeRecordFieldPlan {
             name: parameter.name.clone(),
@@ -1300,9 +1302,9 @@ fn declare_runtime_value_request_parameters(
         build_id: actor_context.request_build_id(),
     };
     let decoded = decode_request_args_payload(request, args_plan, heap, Some(spawn_decode))?;
-    let object = match &decoded {
+    let object_handle = match &decoded {
         RuntimeValue::Heap(handle) => match heap.get(*handle)? {
-            HeapNode::Object(object) => object.fields().clone(),
+            HeapNode::Object(_) => *handle,
             _ => {
                 return Err(RuntimeError::Decode(
                     "decoded request payload must be an args record".to_string(),
@@ -1316,9 +1318,8 @@ fn declare_runtime_value_request_parameters(
         }
     };
     for parameter in request_params {
-        let value = object
-            .get(&parameter.name)
-            .cloned()
+        let value = heap
+            .object_field_carrier(object_handle, &parameter.name)?
             .ok_or_else(|| RuntimeError::Protocol {
                 target: request.target().to_string(),
                 message: format!("missing required request parameter {}", parameter.name),
@@ -1343,16 +1344,11 @@ fn decode_request_args_payload(
     heap: &mut RequestHeap,
     spawn_decode: Option<RecoverableSpawnDecodeContext<'_>>,
 ) -> Result<RuntimeValue> {
-    match request.payload_encoding() {
+    let value = match request.payload_encoding() {
         RequestPayloadEncoding::RuntimeBinary => {
             let boundary =
                 PayloadBoundary::external_untrusted(PayloadBoundaryKind::InboundServiceCall);
-            Ok(decode_payload_plan(
-                request.payload_bytes(),
-                args_plan,
-                &boundary,
-                heap,
-            )?)
+            decode_payload_plan(request.payload_bytes(), args_plan, &boundary, heap)?
         }
         RequestPayloadEncoding::RecoverableSpawnPayload => {
             let spawn_decode = spawn_decode.ok_or_else(|| {
@@ -1372,15 +1368,17 @@ fn decode_request_args_payload(
                 spawn_decode.artifact_identity,
                 spawn_decode.build_id,
             )?;
-            Ok(decode_spawn_args_payload(
+            decode_spawn_args_payload(
                 request.payload_bytes(),
                 &expected,
                 &boundary,
                 heap,
                 &behavior_hooks,
-            )?)
+            )?
         }
-    }
+    };
+    runtime_carrier_for_plan(value, args_plan, "request payload", heap)
+        .map(RuntimeValueCarrier::into_value)
 }
 
 #[cfg(test)]

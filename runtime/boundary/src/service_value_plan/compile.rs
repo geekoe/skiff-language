@@ -7,8 +7,14 @@ use skiff_artifact_model::{
     ContractLiteral, ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeId,
     PackageSchemaTypeRecord,
 };
-use skiff_runtime_model::type_plan::{
-    RuntimeRecordFieldPlan, RuntimeTypeIdentityPlan, RuntimeTypeNode, RuntimeTypePlan,
+use skiff_runtime_model::{
+    service_error::{
+        CatchIdentity, LiteralIdentity, NamedUnionBranchIdentity, NamedUnionOwnerIdentity,
+        NominalTypeIdentity, PackageSchemaTypeIdentity,
+    },
+    type_plan::{
+        RuntimeRecordFieldPlan, RuntimeTypeIdentityPlan, RuntimeTypeNode, RuntimeTypePlan,
+    },
 };
 
 use super::codec_error;
@@ -307,14 +313,24 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
         schema_type: &PackageSchemaTypeRecord,
     ) -> Result<RuntimeTypePlan, ServiceLinkableMaterializationError> {
         let package_schema_type_id = &schema_type.package_schema_type_id;
+        let owner = package_schema_identity(schema_type)?;
+        let union_owner = NamedUnionOwnerIdentity::PackageSchema(owner.clone());
         let node = match &schema_type.canonical_descriptor.descriptor {
             ContractTypeDescriptor::Record { fields } => RuntimeTypeNode::Record {
                 fields: self.compile_record_fields(fields)?,
                 boundary_record_kind: Some(package_identity(schema_type)),
             },
             ContractTypeDescriptor::StructuralUnion { variants } => {
-                self.compile_structural_union(&schema_type.stable_schema_key, variants)?
-                    .node
+                let plan =
+                    self.compile_structural_union(&schema_type.stable_schema_key, variants)?;
+                let RuntimeTypeNode::Union(mut branches) = plan.node else {
+                    unreachable!("structural union compiler must return a union plan");
+                };
+                for branch in &mut branches {
+                    branch.identity.catch_identity =
+                        Some(named_union_branch_identity(&union_owner, branch)?);
+                }
+                RuntimeTypeNode::Union(branches)
             }
             ContractTypeDescriptor::DiscriminatedUnion {
                 discriminator_field,
@@ -343,8 +359,13 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
                             branch.tag
                         ));
                     }
-                    branch_plan.identity.union_branch =
-                        Some(format!("{}:{}", package_identity(schema_type), branch.tag));
+                    branch_plan.identity.catch_identity = Some(CatchIdentity::NamedUnionBranch {
+                        union: union_owner.clone(),
+                        branch: NamedUnionBranchIdentity::SyntheticDiscriminator {
+                            discriminator_field: discriminator_field.clone(),
+                            discriminator_value: branch.tag.clone(),
+                        },
+                    });
                     compiled.push(branch_plan);
                 }
                 RuntimeTypeNode::Union(compiled)
@@ -372,7 +393,14 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
                             "enumeration {package_schema_type_id} repeats variant {variant}"
                         ));
                     }
-                    compiled.push(literal_plan(variant));
+                    let mut branch = literal_plan(variant);
+                    branch.identity.catch_identity = Some(CatchIdentity::NamedUnionBranch {
+                        union: union_owner.clone(),
+                        branch: NamedUnionBranchIdentity::Literal {
+                            value: LiteralIdentity::String(variant.clone()),
+                        },
+                    });
+                    compiled.push(branch);
                 }
                 RuntimeTypeNode::Union(compiled)
             }
@@ -384,13 +412,12 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
                 )
             }
         };
-        let mut identity = RuntimeTypeIdentityPlan {
-            nominal: Some(package_identity(schema_type)),
+        let identity = RuntimeTypeIdentityPlan {
+            catch_identity: (!matches!(node, RuntimeTypeNode::Union(_))).then_some(
+                CatchIdentity::Nominal(NominalTypeIdentity::PackageSchema(owner)),
+            ),
             ..RuntimeTypeIdentityPlan::default()
         };
-        if matches!(node, RuntimeTypeNode::Union(_)) {
-            identity.union = Some(package_identity(schema_type));
-        }
         Ok(RuntimeTypePlan {
             label: format!(
                 "package type {}:{}",
@@ -584,6 +611,47 @@ fn package_identity(record: &PackageSchemaTypeRecord) -> String {
         "package-schema:{}:{}:{}",
         record.package_id, record.stable_schema_key, record.package_schema_type_id
     )
+}
+
+fn package_schema_identity(
+    record: &PackageSchemaTypeRecord,
+) -> Result<PackageSchemaTypeIdentity, ServiceLinkableMaterializationError> {
+    PackageSchemaTypeIdentity::new(
+        record.package_id.clone(),
+        record.stable_schema_key.clone(),
+        record.package_schema_type_id.clone(),
+    )
+    .map_err(|message| ServiceLinkableMaterializationError::InvalidContractPlan { message })
+}
+
+fn named_union_branch_identity(
+    owner: &NamedUnionOwnerIdentity,
+    plan: &RuntimeTypePlan,
+) -> Result<CatchIdentity, ServiceLinkableMaterializationError> {
+    let branch = match plan.catch_identity() {
+        Some(CatchIdentity::Nominal(identity)) => NamedUnionBranchIdentity::ConcreteNominal {
+            identity: identity.clone(),
+        },
+        Some(CatchIdentity::NamedUnionBranch { .. }) => {
+            return invalid_contract_plan(
+                "named union branch cannot use another selected union branch as nominal identity",
+            );
+        }
+        None => match plan.node() {
+            RuntimeTypeNode::LiteralString(value) => NamedUnionBranchIdentity::Literal {
+                value: LiteralIdentity::String(value.clone()),
+            },
+            _ => {
+                return invalid_contract_plan(
+                    "named structural union branch has no exact nominal or literal identity",
+                );
+            }
+        },
+    };
+    Ok(CatchIdentity::NamedUnionBranch {
+        union: owner.clone(),
+        branch,
+    })
 }
 
 fn literal_plan(value: &str) -> RuntimeTypePlan {

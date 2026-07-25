@@ -445,9 +445,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        error::TypeIdentity,
-        exceptions::{catch_type_leaves, throw_payload_actual_type},
-        recoverable_behavior::EvalRecoverableBehaviorHooks,
+        exceptions::catch_type_leaves, recoverable_behavior::EvalRecoverableBehaviorHooks,
         type_projection::EvalTypeProjection,
     };
     use skiff_artifact_model::{
@@ -458,6 +456,25 @@ mod tests {
         TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
         RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     };
+    use skiff_runtime_model::service_error::{
+        CatchIdentity, LocalExecutionTypeIdentity, NominalTypeIdentity,
+        PlatformBuiltinErrorIdentity,
+    };
+
+    fn local_identity(addr: TypeAddr) -> CatchIdentity {
+        CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+            LocalExecutionTypeIdentity {
+                addr,
+                type_arguments: Vec::new(),
+            },
+        ))
+    }
+
+    fn platform_identity(symbol: &str) -> CatchIdentity {
+        PlatformBuiltinErrorIdentity::from_symbol(symbol)
+            .expect("fixture symbol must be in the finite platform-error registry")
+            .catch_identity()
+    }
 
     #[test]
     fn assembly_execution_projection_resolves_image_owned_lookup_matrix() {
@@ -611,19 +628,21 @@ mod tests {
                 skiff_runtime_linked_program::LinkedTypeRef::Address { addr: addr.clone() };
             let leaves = catch_type_leaves(&catch_type, projection.type_view())
                 .unwrap_or_else(|error| panic!("{symbol} catch leaves must resolve: {error}"));
+            if symbol == "std.resource.ResourceError" {
+                assert_eq!(
+                    leaves,
+                    vec![local_identity(addr)],
+                    "ResourceError is Package-owned, not a platform builtin"
+                );
+                continue;
+            }
             assert!(
-                leaves.contains(&TypeIdentity::address(addr.clone())),
-                "{symbol} catch must retain its exact linked address"
-            );
-            assert!(
-                leaves.contains(&TypeIdentity::builtin(&symbol)),
+                leaves.contains(&platform_identity(&symbol)),
                 "{symbol} catch must include its registered native payload identity; got {leaves:?}"
             );
-            assert_eq!(
-                throw_payload_actual_type(&catch_type, projection.type_view())
-                    .unwrap_or_else(|error| panic!("{symbol} throw type must resolve: {error}")),
-                TypeIdentity::builtin(&symbol),
-                "canonical explicit {symbol} throws must use the native payload identity"
+            assert!(
+                !leaves.contains(&local_identity(addr)),
+                "{symbol} must use only the canonical platform identity"
             );
         }
     }
@@ -644,7 +663,7 @@ mod tests {
         )
         .expect("json catch leaves");
         assert_eq!(json_symbol, "std.json.DecodeError");
-        assert!(!leaves.contains(&TypeIdentity::builtin("std.bytes.DecodeError")));
+        assert!(!leaves.contains(&platform_identity("std.bytes.DecodeError")));
 
         let (image, errors) = std_error_projection_image("example.invalid/std-lookalike");
         let projection = RuntimeAssemblyExecutionProjection::from_image(image);
@@ -657,7 +676,7 @@ mod tests {
             projection.type_view(),
         )
         .expect("nominal package catch leaves");
-        assert_eq!(leaves, vec![TypeIdentity::address(addr)]);
+        assert_eq!(leaves, vec![local_identity(addr)]);
     }
 
     #[test]
@@ -672,7 +691,7 @@ mod tests {
             assert_eq!(
                 catch_type_leaves(&catch_type, projection.type_view())
                     .expect("registered builtin catch"),
-                vec![TypeIdentity::builtin(symbol)]
+                vec![platform_identity(symbol)]
             );
         }
     }
@@ -707,7 +726,6 @@ mod tests {
                         fields: BTreeMap::new(),
                     },
                     type_params: Vec::new(),
-                    discriminator: None,
                     implements: Vec::new(),
                     source_span: None,
                 });
@@ -803,7 +821,6 @@ mod tests {
                 fields: BTreeMap::new(),
             },
             type_params: Vec::new(),
-            discriminator: None,
             implements: Vec::new(),
             source_span: None,
         });

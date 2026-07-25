@@ -8,23 +8,25 @@ use skiff_runtime_capability_context::{
 };
 use skiff_runtime_linked_program::{FileAddr, LinkedActorMethodDispatchPlan, UnitAddr};
 use skiff_runtime_linked_type_plan::{PlanContext, RuntimeTypePlan, RuntimeTypePlanLinkedExt};
-use skiff_runtime_model::runtime_value::RuntimeValue;
+use skiff_runtime_model::runtime_value::{RuntimeValue, RuntimeValueCarrier};
 
 use crate::{
     actor_instance::resolve_actor_declaration,
     error::{Result, RuntimeError, RuntimeErrorPayload},
     eval_context::EvalContext,
+    exceptions::annotate_runtime_type_plan,
+    runtime_ops::runtime_carrier_for_plan,
 };
 
 pub(crate) async fn dispatch_actor_method(
     context: &mut EvalContext<'_>,
     plan: &LinkedActorMethodDispatchPlan,
-    values: Vec<RuntimeValue>,
-) -> Result<RuntimeValue> {
+    values: Vec<RuntimeValueCarrier>,
+) -> Result<RuntimeValueCarrier> {
     let (receiver, arguments) = values.split_first().ok_or_else(|| {
         RuntimeError::InvalidArtifact("Actor method call is missing its receiver".to_string())
     })?;
-    let RuntimeValue::ActorRef(actor_ref) = receiver else {
+    let RuntimeValue::ActorRef(actor_ref) = receiver.value() else {
         return Err(RuntimeError::InvalidArtifact(
             "Actor method receiver is not an Actor reference".to_string(),
         ));
@@ -70,7 +72,7 @@ pub(crate) async fn dispatch_actor_method(
                 BoundaryUse::NativeArg,
                 format!("Actor argument {index}"),
             )
-            .to_wire_json(value, context.heap)
+            .to_wire_json(value.value(), context.heap)
             .map_err(RuntimeError::from)
         })
         .collect::<Result<Vec<Value>>>()?;
@@ -115,14 +117,20 @@ pub(crate) async fn dispatch_actor_method(
                     target: "actor.method.return".to_string(),
                     message: error.to_string(),
                 })?;
-            let return_plan = RuntimeTypePlan::from_linked(&method.return_type, &type_context)?;
-            RuntimeBoundaryCodec::new(
+            let mut return_plan = RuntimeTypePlan::from_linked(&method.return_type, &type_context)?;
+            annotate_runtime_type_plan(
+                &mut return_plan,
+                &method.return_type,
+                projection.type_view(),
+            )?;
+            let value = RuntimeBoundaryCodec::new(
                 &return_plan,
                 BoundaryUse::NativeReturn,
                 format!("Actor method {} return", method.name),
             )
             .from_wire_json(&wire, context.heap)
-            .map_err(RuntimeError::from)
+            .map_err(RuntimeError::from)?;
+            runtime_carrier_for_plan(value, &return_plan, "Actor method return", context.heap)
         }
         ActorInvocationOutcome::Cancelled(ActorInvocationCancellation::Cancelled) => {
             Err(RuntimeError::Cancelled)
