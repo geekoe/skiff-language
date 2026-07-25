@@ -12,7 +12,9 @@ use skiff_artifact_model::{
 
 use crate::{
     dependency_analysis::SourceDependencyAnalysisInput,
-    expression_type_model::contract_call_typing::contract_source_assignability,
+    expression_type_model::contract_call_typing::{
+        contract_source_assignability, local_ir_json_compatible, package_type_target_assignable,
+    },
     runtime_type_projection::lower_prelude_type_decl,
     shared::ast::{Expr, TypeRef},
     shared::error::SourceSpan,
@@ -41,6 +43,7 @@ pub(super) struct ExpressionAssignability<'a, 'ctx> {
     type_resolution: &'a TypeResolutionModel,
     type_context: &'a TypeResolutionContext<'ctx>,
     dependency_analysis: Option<&'a SourceDependencyAnalysisInput>,
+    package_json_context: bool,
 }
 
 impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
@@ -57,7 +60,13 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             type_resolution,
             type_context,
             dependency_analysis,
+            package_json_context: false,
         }
+    }
+
+    pub(super) fn with_package_json_context(mut self) -> Self {
+        self.package_json_context = true;
+        self
     }
 
     pub(super) fn value_assignable_to_expected(
@@ -68,6 +77,49 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         expected: &ResolvedTypeRef,
         actual_projected: Option<&PackageTypeRef>,
     ) -> Result<bool, String> {
+        if self.package_json_context {
+            if let (Some(actual), Some(dependencies)) = (actual_projected, self.dependency_analysis)
+            {
+                if let TypeRefIr::Builtin { name, args } = &expected.ir {
+                    if args.is_empty()
+                        && matches!(name.as_str(), "Json" | "JsonObject")
+                        && package_type_target_assignable(
+                            actual,
+                            &PackageTypeRef::Container {
+                                name: name.clone(),
+                                arguments: Vec::new(),
+                            },
+                            dependencies,
+                        )
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        if self.package_json_context
+            && self.dependency_analysis.is_some_and(|dependencies| {
+                matches!(&expected.ir, TypeRefIr::Builtin { name, args }
+                    if args.is_empty() && matches!(name.as_str(), "Json" | "JsonObject"))
+                    && {
+                        let object_only = matches!(&expected.ir, TypeRefIr::Builtin { name, .. } if name == "JsonObject");
+                        local_ir_json_compatible(&actual.ir, dependencies, object_only)
+                            || matches!(&actual.ir, TypeRefIr::PackageSchema { .. })
+                                && self
+                                    .type_resolution
+                                    .type_shape_ir(actual, self.type_context)
+                                    .is_some_and(|shape| {
+                                        local_ir_json_compatible(
+                                            &shape,
+                                            dependencies,
+                                            object_only,
+                                        )
+                                    })
+                    }
+            })
+        {
+            return Ok(true);
+        }
         if let Some(assignable) = contract_source_assignability(
             actual,
             actual_projected,
@@ -208,6 +260,16 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         };
         self.type_resolution
             .assignable_in_context(&actual, expected, self.type_context)
+            || self.package_json_context
+                && self.dependency_analysis.is_some_and(|dependencies| {
+                    matches!(&expected.ir, TypeRefIr::Builtin { name, args }
+                        if args.is_empty() && matches!(name.as_str(), "Json" | "JsonObject"))
+                        && local_ir_json_compatible(
+                            actual_ty,
+                            dependencies,
+                            matches!(&expected.ir, TypeRefIr::Builtin { name, .. } if name == "JsonObject"),
+                        )
+                })
             || matches!(actual_ty, TypeRefIr::Record { .. })
                 && self.object_record_ir_assignable_to_resolved_expected(actual_ty, expected)
     }
@@ -689,6 +751,7 @@ fn substitute_std_type_params_in_ir(
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. } => ty.clone(),
     }

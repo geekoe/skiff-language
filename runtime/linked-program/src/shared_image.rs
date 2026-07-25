@@ -14,8 +14,9 @@ use skiff_artifact_model::{
     file_ir_package_call_sites, validate_file_ir_package_calls, validate_file_ir_service_calls,
     AssemblyIdentity, CanonicalPackageLinkPlan, ContractOperationId, FileIrRef, FileIrUnit,
     OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBuildId, PackageCallableId,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageRefIr, PackageRequirementKey, RuntimeAssembly,
-    ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity,
+    PackageLocalAbi, PackageLocalAbiIdentity, PackageRefIr, PackageRequirementKey,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, RuntimeAssembly, ServiceCallRef,
+    ServiceCallRefIndex, ServiceProtocolIdentity,
 };
 
 use crate::{ExecutableAddr, FileAddr, PublicationResourceTable, UnitAddr};
@@ -26,6 +27,7 @@ pub struct HydratedPackageCode {
     artifact: Arc<PackageArtifact>,
     files: Vec<Arc<FileIrUnit>>,
     static_resources: PublicationResourceTable,
+    schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
 }
 
 impl HydratedPackageCode {
@@ -38,7 +40,16 @@ impl HydratedPackageCode {
             artifact,
             files,
             static_resources,
+            schema_records: BTreeMap::new(),
         }
+    }
+
+    pub fn with_schema_records(
+        mut self,
+        schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    ) -> Self {
+        self.schema_records = schema_records;
+        self
     }
 
     pub fn artifact(&self) -> &Arc<PackageArtifact> {
@@ -69,6 +80,7 @@ pub struct SharedPackageCode {
     files: Vec<Arc<FileIrUnit>>,
     files_by_identity: BTreeMap<String, usize>,
     static_resources: PublicationResourceTable,
+    schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
 }
 
 impl SharedPackageCode {
@@ -108,6 +120,10 @@ impl SharedPackageCode {
 
     pub fn static_resources(&self) -> &PublicationResourceTable {
         &self.static_resources
+    }
+
+    pub fn schema_records(&self) -> &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>> {
+        &self.schema_records
     }
 
     pub fn callable_target(&self, callable_id: &PackageCallableId) -> Option<&OperationTargetRef> {
@@ -599,6 +615,7 @@ impl SharedPackageCode {
             files,
             files_by_identity,
             static_resources: hydrated.static_resources,
+            schema_records: hydrated.schema_records,
         };
         for (callable_id, fact) in &code.artifact.callable_links {
             if *callable_id != fact.callable_id {

@@ -54,6 +54,7 @@ fn collect_type_ref_type_params(type_ref: &LinkedTypeRef, names: &mut Vec<String
         | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
         | LinkedTypeRef::PackageSymbol { .. }
+        | LinkedTypeRef::PackageSchema { .. }
         | LinkedTypeRef::Address { .. }
         | LinkedTypeRef::Literal { .. }
         | LinkedTypeRef::DbObjectSymbol { .. } => {}

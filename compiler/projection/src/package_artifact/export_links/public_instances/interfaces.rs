@@ -225,6 +225,7 @@ fn nominal_service_symbol(
         }
         TypeRefIr::Builtin { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Record { .. }
         | TypeRefIr::Union { .. }

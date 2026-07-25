@@ -317,6 +317,7 @@ impl TypeClosurePolicy for BoundaryProjectionTypePolicy<'_> {
                 project_package_symbol(symbol, self.resolved_package_schemas)?;
                 Ok(TypeClosureControl::Prune)
             }
+            TypeRefIr::PackageSchema { .. } => Ok(TypeClosureControl::Prune),
             TypeRefIr::LocalType { type_index } => {
                 project_public_local_type(
                     visit.module_path,
@@ -413,6 +414,15 @@ fn project_local_type(
         TypeRefIr::PackageSymbol { symbol } => {
             project_package_symbol(symbol, resolved_package_schemas)
         }
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => Ok(ContractTypeRef::package_schema(
+            package_id.clone(),
+            stable_schema_key.clone(),
+            package_schema_type_id.clone(),
+        )),
         TypeRefIr::LocalType { type_index } => {
             project_public_local_type(owner_module, *type_index, file_ir_units, public_type_ids)
         }

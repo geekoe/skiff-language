@@ -24,6 +24,7 @@ pub fn program_type_ref_kind(type_ref: &LinkedTypeRef) -> &'static str {
         LinkedTypeRef::PublicationType { .. } => "publicationType",
         LinkedTypeRef::ServiceSymbol { .. } => "serviceSymbol",
         LinkedTypeRef::PackageSymbol { .. } => "packageSymbol",
+        LinkedTypeRef::PackageSchema { .. } => "packageSchema",
         LinkedTypeRef::Address { .. } => "address",
         LinkedTypeRef::Native { .. } => "builtin",
         LinkedTypeRef::Record { .. } => "record",
@@ -65,6 +66,7 @@ impl Interpreter {
             | LinkedTypeRef::Literal { .. }
             | LinkedTypeRef::TypeParam { .. }
             | LinkedTypeRef::Function { .. }
+            | LinkedTypeRef::PackageSchema { .. }
             | LinkedTypeRef::AnyInterface { .. } => Ok(Some(type_ref_to_value(type_ref))),
             LinkedTypeRef::LocalType { .. }
             | LinkedTypeRef::PublicationType { .. }
@@ -196,6 +198,7 @@ fn normalize_call_type_arg_binding_inner(
         LinkedTypeRef::PackageSymbol { symbol } => program_package_type_addr(program, symbol)
             .map(|addr| LinkedTypeRef::Address { addr })
             .unwrap_or_else(|| type_ref.clone()),
+        LinkedTypeRef::PackageSchema { .. } => type_ref.clone(),
         LinkedTypeRef::Native { name, args } => LinkedTypeRef::Native {
             name: name.clone(),
             args: args
@@ -377,6 +380,9 @@ pub fn program_type_name(type_ref: &LinkedTypeRef) -> Option<String> {
         } => Some(format!("publicationType[{module_path}:{type_index}]")),
         LinkedTypeRef::ServiceSymbol { symbol } => Some(symbol.symbol_path()),
         LinkedTypeRef::PackageSymbol { symbol } => Some(symbol.symbol_path.clone()),
+        LinkedTypeRef::PackageSchema {
+            stable_schema_key, ..
+        } => Some(stable_schema_key.clone()),
         LinkedTypeRef::Nullable { inner } => program_type_name(inner),
         LinkedTypeRef::AnyInterface { interface } => {
             Some(format!("any {}", interface.interface_abi_id))

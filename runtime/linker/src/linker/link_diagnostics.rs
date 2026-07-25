@@ -486,6 +486,7 @@ pub(super) fn substitute_interface_method_type(
         | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
         | LinkedTypeRef::PackageSymbol { .. }
+        | LinkedTypeRef::PackageSchema { .. }
         | LinkedTypeRef::Address { .. }
         | LinkedTypeRef::Literal { .. }
         | LinkedTypeRef::DbObjectSymbol { .. }
@@ -636,6 +637,7 @@ pub(super) fn unresolved_type_param_name<'a>(
         | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
         | LinkedTypeRef::PackageSymbol { .. }
+        | LinkedTypeRef::PackageSchema { .. }
         | LinkedTypeRef::Address { .. }
         | LinkedTypeRef::Literal { .. }
         | LinkedTypeRef::DbObjectSymbol { .. } => None,

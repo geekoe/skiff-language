@@ -954,6 +954,7 @@ fn linked_type_ref_contains_type_param(type_ref: &LinkedTypeRef) -> bool {
         | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
         | LinkedTypeRef::PackageSymbol { .. }
+        | LinkedTypeRef::PackageSchema { .. }
         | LinkedTypeRef::DbObjectSymbol { .. }
         | LinkedTypeRef::Address { .. } => false,
     }

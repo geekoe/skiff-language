@@ -141,8 +141,7 @@ mod tests {
         )
         .expect("a second decode should succeed");
 
-        let (RuntimeValue::Heap(first_handle), RuntimeValue::Heap(second_handle)) =
-            (first, second)
+        let (RuntimeValue::Heap(first_handle), RuntimeValue::Heap(second_handle)) = (first, second)
         else {
             panic!("Base64 decoder should return heap-backed bytes");
         };

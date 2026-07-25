@@ -185,6 +185,7 @@ impl<'a> ArtifactNominalTypeSource<'a> {
             }
             TypeRefIr::PackageSymbol { symbol } => self.resolve_package_symbol_parts(symbol),
             TypeRefIr::Builtin { .. }
+            | TypeRefIr::PackageSchema { .. }
             | TypeRefIr::Record { .. }
             | TypeRefIr::Union { .. }
             | TypeRefIr::Nullable { .. }

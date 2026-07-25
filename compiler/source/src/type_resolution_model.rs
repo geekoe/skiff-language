@@ -1013,6 +1013,7 @@ impl TypeResolutionModel {
             | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::PackageSymbol { .. }
+            | TypeRefIr::PackageSchema { .. }
             | TypeRefIr::DbObjectSymbol { .. }
             | TypeRefIr::Literal { .. }
             | TypeRefIr::TypeParam { .. } => false,
@@ -3851,6 +3852,11 @@ fn type_ref_debug_text(ty: &TypeRefIr) -> String {
             symbol.symbol_path()
         }
         TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => format!("{package_id}::{stable_schema_key}"),
         TypeRefIr::AnyInterface { interface } => {
             let interface_name = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
                 .map_or_else(
@@ -4122,6 +4128,7 @@ fn type_ref_contains_self(ty: &TypeRefIr) -> bool {
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => false,
@@ -4148,6 +4155,7 @@ fn type_ref_contains_any_interface(ty: &TypeRefIr) -> bool {
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => false,

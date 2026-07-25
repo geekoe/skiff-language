@@ -7510,9 +7510,7 @@ fn http_stream_start_helper_in_http_handler_executable() -> LinkedExecutable {
             slot: 0,
             ty: std_http_type_ref(STD_HTTP_REQUEST_TYPE_INDEX),
         }],
-        return_type: Some(std_http_type_ref(
-            STD_HTTP_RESPONSE_STREAM_EVENT_TYPE_INDEX,
-        )),
+        return_type: Some(std_http_type_ref(STD_HTTP_RESPONSE_STREAM_EVENT_TYPE_INDEX)),
         self_type: None,
         slots: SlotLayoutIr {
             slots: vec![SlotIr {

@@ -3478,8 +3478,14 @@ impl<'a> OwnerChecker<'a> {
             self.expression_sources,
             self.type_resolution,
             &self.type_context,
-            None,
+            self.dependency_analysis,
         );
+        let package_json_context = context.starts_with("call `std.json.encode` argument ");
+        let assignability = if package_json_context {
+            assignability.with_package_json_context()
+        } else {
+            assignability
+        };
         let expected_projected = match self.dependency_analysis {
             Some(dependency_analysis) => Some(match exact_expected {
                 Some(expected) => Ok(expected.clone()),
@@ -3531,10 +3537,15 @@ impl<'a> OwnerChecker<'a> {
             }
         };
         let assignable = match contract_assignable {
-            Some(assignable) => assignable,
-            None => match assignability
-                .value_assignable_to_expected(annotation, value, actual, expected, None)
-            {
+            Some(true) => true,
+            Some(false) if !package_json_context => false,
+            Some(false) | None => match assignability.value_assignable_to_expected(
+                annotation,
+                value,
+                actual,
+                expected,
+                self.contract_projection.expression_type(value_key),
+            ) {
                 Ok(assignable) => assignable,
                 Err(error) => {
                     self.diagnostics.push(format!(
@@ -3584,14 +3595,19 @@ impl<'a> OwnerChecker<'a> {
         self.object_materialization
             .targeted
             .insert(value_key.clone());
-        let plan = match ExpressionAssignability::new(
+        let assignability = ExpressionAssignability::new(
             self.module_path,
             self.expression_sources,
             self.type_resolution,
             &self.type_context,
-            None,
-        )
-        .object_literal_materialization_plan(
+            self.dependency_analysis,
+        );
+        let assignability = if context.starts_with("call `std.json.encode` argument ") {
+            assignability.with_package_json_context()
+        } else {
+            assignability
+        };
+        let plan = match assignability.object_literal_materialization_plan(
             annotation, value, value_key, actual, expected, context,
         ) {
             Ok(plan) => plan,
@@ -3954,7 +3970,8 @@ fn type_contains_type_param(ty: &TypeRefIr) -> bool {
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
-        | TypeRefIr::PackageSymbol { .. } => false,
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. } => false,
     }
 }
 
@@ -4435,6 +4452,11 @@ fn type_ref_debug_text(ty: &TypeRefIr) -> String {
             symbol.symbol_path()
         }
         TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => format!("{package_id}::{stable_schema_key}"),
         TypeRefIr::AnyInterface { interface } => {
             let interface_name = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
                 .map_or_else(

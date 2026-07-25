@@ -663,6 +663,9 @@ fn interface_method_type_from_linked(ty: &LinkedTypeRef) -> InterfaceMethodType 
         LinkedTypeRef::PackageSymbol { .. } => {
             InterfaceMethodType::Unresolved(InterfaceMethodUnresolvedType::PackageSymbol)
         }
+        LinkedTypeRef::PackageSchema { .. } => {
+            InterfaceMethodType::Unresolved(InterfaceMethodUnresolvedType::PackageSymbol)
+        }
         LinkedTypeRef::DbObjectSymbol { .. } => {
             InterfaceMethodType::Unresolved(InterfaceMethodUnresolvedType::DbObjectSymbol)
         }

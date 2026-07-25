@@ -205,6 +205,7 @@ fn reject_actor_ref(ty: &TypeRefIr) -> Result<(), String> {
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => Ok(()),

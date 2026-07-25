@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use skiff_artifact_model::PackageBuildId;
+use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_linked_program::{
     AssemblyExecutionImage, ConstAddr, ConstIr, ExecutableAddr, FileAddr, LinkOverlay,
     LinkedExecutable, LinkedFileUnit, PackageUnit, PublicationResourceTable,
@@ -99,6 +100,17 @@ impl RuntimeAssemblyExecutionProjection {
             .code_slots()
             .get(slot)
             .map(|code| code.artifact().package_id.as_str())
+    }
+
+    pub(crate) fn package_schema_records(&self, unit: &UnitAddr) -> Option<&PackageSchemaRecords> {
+        let UnitAddr::Package(slot) = unit else {
+            return None;
+        };
+        self.image
+            .shared_packages()
+            .code_slots()
+            .get(*slot)
+            .map(|code| code.schema_records())
     }
 
     pub(crate) fn resolve_file(
@@ -266,6 +278,10 @@ impl<'a> RuntimeExecutionProjection<'a> {
             Self::Legacy(_) => None,
             Self::Assembly(projection) => Some(projection),
         }
+    }
+
+    pub(crate) fn package_schema_records(&self, unit: &UnitAddr) -> Option<&PackageSchemaRecords> {
+        self.assembly()?.package_schema_records(unit)
     }
 
     pub(crate) fn resolve_executable(

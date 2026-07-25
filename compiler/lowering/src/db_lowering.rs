@@ -590,6 +590,7 @@ fn expand_db_storage_type_ref(
             )?),
         }),
         TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }

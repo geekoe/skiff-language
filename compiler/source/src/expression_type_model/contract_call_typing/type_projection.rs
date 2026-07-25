@@ -373,6 +373,7 @@ fn resolved_ir_contains_contract_symbol(
         TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => false,
@@ -448,7 +449,7 @@ pub(super) fn package_type_assignable(actual: &PackageTypeRef, expected: &Packag
     }
 }
 
-pub(super) fn package_type_target_assignable(
+pub(crate) fn package_type_target_assignable(
     actual: &PackageTypeRef,
     expected: &PackageTypeRef,
     dependency_analysis: &SourceDependencyAnalysisInput,
@@ -572,12 +573,24 @@ fn package_type_json_compatible(
             package_id,
             stable_schema_key,
             package_schema_type_id,
-        } => dependency_analysis
-            .exact_package_type(package_id, stable_schema_key, package_schema_type_id)
-            .and_then(package_schema_representation)
-            .is_some_and(|representation| {
-                package_type_json_compatible(&representation, dependency_analysis, object_only)
-            }),
+        } => {
+            let record = dependency_analysis.exact_package_type(
+                package_id,
+                stable_schema_key,
+                package_schema_type_id,
+            );
+            let compatible =
+                record
+                    .and_then(package_schema_representation)
+                    .is_some_and(|representation| {
+                        package_type_json_compatible(
+                            &representation,
+                            dependency_analysis,
+                            object_only,
+                        )
+                    });
+            compatible
+        }
         PackageTypeRef::Container { name, arguments } => match name.as_str() {
             "JsonObject" if arguments.is_empty() => true,
             "Json" if arguments.is_empty() => !object_only,
@@ -609,7 +622,7 @@ fn package_type_json_compatible(
     }
 }
 
-fn local_ir_json_compatible(
+pub(crate) fn local_ir_json_compatible(
     ty: &TypeRefIr,
     dependency_analysis: &SourceDependencyAnalysisInput,
     object_only: bool,
@@ -622,18 +635,20 @@ fn local_ir_json_compatible(
                 | skiff_artifact_model::LiteralIr::Number { .. }
                 | skiff_artifact_model::LiteralIr::Null,
         } => !object_only,
-        TypeRefIr::Builtin { name, args } => package_type_json_compatible(
-            &PackageTypeRef::Container {
-                name: name.clone(),
-                arguments: args
-                    .iter()
-                    .cloned()
-                    .map(|local_type| PackageTypeRef::Local { local_type })
-                    .collect(),
-            },
-            dependency_analysis,
-            object_only,
-        ),
+        TypeRefIr::Builtin { name, args } => match name.as_str() {
+            "JsonObject" if args.is_empty() => true,
+            "Json" if args.is_empty() => !object_only,
+            "string" | "integer" | "number" | "bool" | "null" if args.is_empty() => !object_only,
+            "Array" if args.len() == 1 => {
+                !object_only && local_ir_json_compatible(&args[0], dependency_analysis, false)
+            }
+            "Map" if args.len() == 2 => {
+                matches!(&args[0], TypeRefIr::Builtin { name, args }
+                    if name == "string" && args.is_empty())
+                    && local_ir_json_compatible(&args[1], dependency_analysis, false)
+            }
+            _ => false,
+        },
         TypeRefIr::Nullable { inner } => {
             !object_only && local_ir_json_compatible(inner, dependency_analysis, false)
         }
@@ -647,17 +662,34 @@ fn local_ir_json_compatible(
         TypeRefIr::Record { fields } => fields
             .values()
             .all(|field| local_ir_json_compatible(field, dependency_analysis, false)),
-        TypeRefIr::PackageSymbol { symbol } => match &symbol.package {
-            PackageRefIr::PackageId { package_id } => dependency_analysis
-                .package_type_by_owner_and_stable_key(package_id, &symbol.symbol_path),
-            PackageRefIr::Dependency { dependency_ref } => {
-                dependency_analysis.direct_package_type(dependency_ref, &symbol.symbol_path)
+        TypeRefIr::PackageSymbol { symbol } => {
+            let compatible = match &symbol.package {
+                PackageRefIr::PackageId { package_id } => dependency_analysis
+                    .package_type_by_owner_and_stable_key(package_id, &symbol.symbol_path),
+                PackageRefIr::Dependency { dependency_ref } => {
+                    dependency_analysis.direct_package_type(dependency_ref, &symbol.symbol_path)
+                }
             }
+            .and_then(package_schema_representation)
+            .is_some_and(|representation| {
+                package_type_json_compatible(&representation, dependency_analysis, object_only)
+            });
+            compatible
         }
-        .and_then(package_schema_representation)
-        .is_some_and(|representation| {
-            package_type_json_compatible(&representation, dependency_analysis, object_only)
-        }),
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => {
+            let compatible = dependency_analysis
+                .package_type_by_owner_and_stable_key(package_id, stable_schema_key)
+                .filter(|record| &record.package_schema_type_id == package_schema_type_id)
+                .and_then(package_schema_representation)
+                .is_some_and(|representation| {
+                    package_type_json_compatible(&representation, dependency_analysis, object_only)
+                });
+            compatible
+        }
         TypeRefIr::ServiceSymbol { symbol } => dependency_analysis
             .public_package_type_by_stable_key(&symbol.module_path, &symbol.symbol)
             .ok()

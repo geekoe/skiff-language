@@ -277,7 +277,9 @@ impl<'a> AssemblyCodeLinker<'a> {
                 self.link_type_ref(code_slot, file_index, return_type)?;
                 None
             }
-            LinkedTypeRef::Literal { .. } | LinkedTypeRef::TypeParam { .. } => None,
+            LinkedTypeRef::Literal { .. }
+            | LinkedTypeRef::TypeParam { .. }
+            | LinkedTypeRef::PackageSchema { .. } => None,
         };
         if let Some(addr) = replacement {
             *type_ref = LinkedTypeRef::Address { addr };

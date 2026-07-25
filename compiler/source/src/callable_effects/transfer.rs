@@ -262,6 +262,7 @@ fn type_ir_is_definitely_scalar(ty: &TypeRefIr) -> bool {
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Record { .. }
         | TypeRefIr::TypeParam { .. }

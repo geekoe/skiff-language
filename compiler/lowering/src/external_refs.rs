@@ -455,7 +455,10 @@ fn collect_type_ref_external_refs(ty: &TypeRefIr, refs: &mut ExternalRefTable) {
             }
             collect_type_ref_external_refs(return_type, refs);
         }
-        TypeRefIr::LocalType { .. } | TypeRefIr::Literal { .. } | TypeRefIr::TypeParam { .. } => {}
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => {}
         TypeRefIr::PublicationType { .. } => {}
     }
 }

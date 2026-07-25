@@ -167,7 +167,10 @@ fn deployment_identity_is_order_independent_and_excludes_diagnostics() {
 fn absent_and_null_timeout_normalize_to_the_same_policy_and_identity() {
     let deployment = service_deployment_fixture().expect("deployment fixture");
     let mut absent = serde_json::to_value(&deployment).unwrap();
-    absent["policy"].as_object_mut().unwrap().remove("timeoutMs");
+    absent["policy"]
+        .as_object_mut()
+        .unwrap()
+        .remove("timeoutMs");
     let mut null = absent.clone();
     null["policy"]
         .as_object_mut()

@@ -8,8 +8,8 @@ use skiff_artifact_model::{
     package_schema_descriptor_refs, AbiAliasId, AbiInterfaceId, AbiTypeId, ActorMetadataIr,
     CallableSemanticFacts, ContractTypeNameability, DbMetadataIr, FileIrUnit, PackageArtifact,
     PackageBuildId, PackageLocalAbiIdentity, PackageRequirement, PackageSchemaIndex,
-    PackageSchemaTypeId, PackageSchemaTypeRecord, PackageStateRequirement, TypeRefIr,
-    PackageSchemaIndexRef,
+    PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord, PackageStateRequirement,
+    TypeRefIr,
 };
 use skiff_compiler_core::source_role::PublicationSourceRole;
 

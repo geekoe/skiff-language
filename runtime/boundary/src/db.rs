@@ -528,6 +528,7 @@ fn schema_projectable_db_type_ref(type_ref: &TypeRefIr) -> bool {
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::TypeParam { .. }
         | TypeRefIr::Function { .. } => false,
@@ -583,6 +584,7 @@ fn runtime_type_node_from_artifact_type_ref(type_ref: &TypeRefIr) -> RuntimeType
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::TypeParam { .. }
         | TypeRefIr::Function { .. } => RuntimeTypeNode::Unknown,
@@ -627,6 +629,7 @@ fn artifact_type_ref_label(type_ref: &TypeRefIr) -> &'static str {
         TypeRefIr::PublicationType { .. } => "publicationType",
         TypeRefIr::ServiceSymbol { .. } => "serviceSymbol",
         TypeRefIr::PackageSymbol { .. } => "packageSymbol",
+        TypeRefIr::PackageSchema { .. } => "packageSchema",
         TypeRefIr::DbObjectSymbol { .. } => "dbObjectSymbol",
         TypeRefIr::Record { .. } => "record",
         TypeRefIr::Union { .. } => "union",

@@ -123,6 +123,16 @@ pub fn type_ref_to_value(type_ref: &LinkedTypeRef) -> Value {
             "kind": "packageSymbol",
             "symbol": symbol,
         }),
+        LinkedTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => json!({
+            "kind": "packageSchema",
+            "packageId": package_id,
+            "stableSchemaKey": stable_schema_key,
+            "packageSchemaTypeId": package_schema_type_id,
+        }),
         LinkedTypeRef::Record { fields } => json!({
             "kind": "record",
             "fields": fields

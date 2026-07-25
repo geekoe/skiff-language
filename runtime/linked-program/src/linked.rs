@@ -490,6 +490,11 @@ pub enum LinkedTypeRef {
     PackageSymbol {
         symbol: PackageSymbolRef,
     },
+    PackageSchema {
+        package_id: String,
+        stable_schema_key: String,
+        package_schema_type_id: skiff_artifact_model::PackageSchemaTypeId,
+    },
     Record {
         fields: BTreeMap<String, LinkedTypeRef>,
     },

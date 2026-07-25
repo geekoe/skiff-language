@@ -1248,7 +1248,8 @@ impl TypeResolutionModel {
             | TypeRefIr::TypeParam { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
-            | TypeRefIr::PackageSymbol { .. } => ty.clone(),
+            | TypeRefIr::PackageSymbol { .. }
+            | TypeRefIr::PackageSchema { .. } => ty.clone(),
         }
     }
 
@@ -1349,7 +1350,9 @@ impl TypeResolutionModel {
                     .collect(),
                 return_type: Box::new(self.transparent_alias_ir(return_type, context)),
             },
-            TypeRefIr::Literal { .. } | TypeRefIr::TypeParam { .. } => ty.clone(),
+            TypeRefIr::Literal { .. }
+            | TypeRefIr::TypeParam { .. }
+            | TypeRefIr::PackageSchema { .. } => ty.clone(),
         }
     }
 
@@ -1449,6 +1452,7 @@ fn replace_self_type_ref(ty: TypeRefIr, concrete_self: &TypeRefIr) -> TypeRefIr 
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. } => ty,
     }
 }

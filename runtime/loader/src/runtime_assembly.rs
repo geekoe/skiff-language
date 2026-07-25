@@ -190,6 +190,7 @@ pub struct HydratedPackageCodeSlot {
     file_slots: BTreeMap<String, usize>,
     resources: Vec<HydratedStaticResource>,
     resource_slots: BTreeMap<String, usize>,
+    schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
 }
 
 impl HydratedPackageCodeSlot {
@@ -219,6 +220,10 @@ impl HydratedPackageCodeSlot {
         self.resource_slots
             .get(logical_path)
             .and_then(|slot| self.resources.get(*slot))
+    }
+
+    pub fn schema_records(&self) -> &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>> {
+        &self.schema_records
     }
 }
 
@@ -313,8 +318,10 @@ where
         let assembly = assembly.into();
         validate_assembly(&assembly, "before hydration")?;
 
-        let contracts = self.load_contracts(&assembly)?;
-        let (code_slots, code_slots_by_build) = self.load_packages(&assembly)?;
+        let mut shared_schema_records = BTreeMap::new();
+        let (code_slots, code_slots_by_build) =
+            self.load_packages(&assembly, &mut shared_schema_records)?;
+        let contracts = self.load_contracts(&assembly, &shared_schema_records)?;
         let deployments = self.load_deployments(&assembly)?;
 
         validate_hydrated_graph(&assembly, &deployments, &contracts, &code_slots)?;
@@ -329,7 +336,11 @@ where
         })
     }
 
-    fn load_contracts(&self, assembly: &RuntimeAssembly) -> anyhow::Result<ServiceContractStore> {
+    fn load_contracts(
+        &self,
+        assembly: &RuntimeAssembly,
+        package_schema_records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    ) -> anyhow::Result<ServiceContractStore> {
         let mut contracts = BTreeMap::new();
         let mut schemas = BTreeMap::new();
         let mut shared_schema_records = BTreeMap::new();
@@ -339,8 +350,12 @@ where
                 .resolve_contract(reference)
                 .with_context(|| format!("failed to resolve contract {reference:?}"))?;
             validate_contract_ref(reference, &contract)?;
-            let schema =
-                self.load_contract_schema(reference, &contract, &mut shared_schema_records)?;
+            let schema = self.load_contract_schema(
+                reference,
+                &contract,
+                package_schema_records,
+                &mut shared_schema_records,
+            )?;
             if contracts.insert(reference.clone(), contract).is_some() {
                 anyhow::bail!("duplicate resolved contract {reference:?}");
             }
@@ -357,12 +372,16 @@ where
         &self,
         reference: &ServiceContractRef,
         contract: &ServiceContract,
+        package_schema_records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
         shared_records: &mut BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
     ) -> anyhow::Result<ResolvedServiceSchema> {
         let mut records = BTreeMap::new();
         for requirement in &contract.package_type_requirements {
             for type_id in &requirement.required_type_ids {
                 let record = if let Some(record) = shared_records.get(type_id) {
+                    Arc::clone(record)
+                } else if let Some(record) = package_schema_records.get(type_id) {
+                    shared_records.insert(type_id.clone(), Arc::clone(record));
                     Arc::clone(record)
                 } else {
                     let record_ref = PackageSchemaTypeRecordRef {
@@ -426,6 +445,7 @@ where
     fn load_packages(
         &self,
         assembly: &RuntimeAssembly,
+        shared_schema_records: &mut BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
     ) -> anyhow::Result<(
         Vec<HydratedPackageCodeSlot>,
         BTreeMap<PackageBuildId, usize>,
@@ -456,6 +476,47 @@ where
             let (files, file_slots) = self.load_files(&reference, &artifact, &mut shared_files)?;
             validate_package_file_targets(&reference, &artifact, &files, &file_slots)?;
             let (resources, resource_slots) = self.load_resources(&reference, &artifact)?;
+            let mut schema_records = BTreeMap::new();
+            for (type_id, record_ref) in &artifact.package_schema_type_records {
+                if record_ref.package_id != artifact.package_id
+                    || record_ref.package_schema_type_id != *type_id
+                {
+                    anyhow::bail!(
+                        "package {} schema record reference {type_id} has mismatched owner or identity",
+                        artifact.package_id
+                    );
+                }
+                let record = if let Some(record) = shared_schema_records.get(type_id) {
+                    Arc::clone(record)
+                } else {
+                    let record = self
+                        .resolver
+                        .resolve_package_schema_type(record_ref)
+                        .with_context(|| {
+                            format!(
+                                "failed to resolve package schema type {type_id} for package {}",
+                                artifact.package_id
+                            )
+                        })?;
+                    shared_schema_records.insert(type_id.clone(), Arc::clone(&record));
+                    record
+                };
+                if record.package_id != artifact.package_id
+                    || record.package_schema_type_id != *type_id
+                {
+                    anyhow::bail!(
+                        "package schema type {type_id} does not match package {} and exact identity",
+                        artifact.package_id
+                    );
+                }
+                schema_records.insert(type_id.clone(), record);
+            }
+            let owned_schema_records = schema_records
+                .iter()
+                .map(|(id, record)| (id.clone(), record.as_ref().clone()))
+                .collect::<BTreeMap<_, _>>();
+            skiff_artifact_identity::validate_package_schema_records(&owned_schema_records)
+                .context("invalid Package-owned schema closure")?;
 
             let slot = code_slots.len();
             code_slots_by_build.insert(reference.package_build_id.clone(), slot);
@@ -466,6 +527,7 @@ where
                 file_slots,
                 resources,
                 resource_slots,
+                schema_records,
             });
         }
         Ok((code_slots, code_slots_by_build))

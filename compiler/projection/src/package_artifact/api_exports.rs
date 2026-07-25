@@ -895,7 +895,9 @@ fn collect_package_type_ref_abi_violations(
                 violations,
             );
         }
-        TypeRefIr::Literal { .. } | TypeRefIr::TypeParam { .. } => {}
+        TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. }
+        | TypeRefIr::PackageSchema { .. } => {}
     }
 }
 

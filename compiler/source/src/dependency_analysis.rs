@@ -199,8 +199,7 @@ impl SourceDependencyAnalysisInput {
                     .values()
                     .flat_map(|facts| facts.schema_records.values())
                     .find(|record| {
-                        record.package_id == package_id
-                            && record.stable_schema_key == stable_key
+                        record.package_id == package_id && record.stable_schema_key == stable_key
                     })
             })
     }

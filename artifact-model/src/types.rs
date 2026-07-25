@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    compile_identity::PackageSchemaTypeId,
     publication_abi::InterfaceInstantiationRef,
     refs::SourceSpanRef,
     symbols::{PackageSymbolRef, ServiceSymbolRef},
@@ -54,6 +55,14 @@ pub enum TypeRefIr {
     },
     PackageSymbol {
         symbol: PackageSymbolRef,
+    },
+    /// Exact Package-owned nominal schema identity. This is used at explicit
+    /// serialization boundaries; ordinary cross-package source references
+    /// remain `PackageSymbol`.
+    PackageSchema {
+        package_id: String,
+        stable_schema_key: String,
+        package_schema_type_id: PackageSchemaTypeId,
     },
     DbObjectSymbol {
         symbol: ServiceSymbolRef,
@@ -145,4 +154,44 @@ pub enum TypeDescriptorIr {
     Record { fields: BTreeMap<String, TypeRefIr> },
     Alias { target: TypeRefIr },
     Union { variants: Vec<TypeRefIr> },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn package_schema_type_ref_round_trips_exact_identity() {
+        let expected = TypeRefIr::PackageSchema {
+            package_id: "skiff.run/llm-api".to_string(),
+            stable_schema_key: "LlmRequest".to_string(),
+            package_schema_type_id: PackageSchemaTypeId::new("schema:request"),
+        };
+        let wire = serde_json::to_value(&expected).unwrap();
+        assert_eq!(wire["kind"], "packageSchema");
+        assert_eq!(wire["packageId"], "skiff.run/llm-api");
+        assert_eq!(wire["stableSchemaKey"], "LlmRequest");
+        assert_eq!(wire["packageSchemaTypeId"], "schema:request");
+        assert_eq!(serde_json::from_value::<TypeRefIr>(wire).unwrap(), expected);
+    }
+
+    #[test]
+    fn package_schema_type_ref_rejects_missing_or_unknown_identity_fields() {
+        for wire in [
+            serde_json::json!({
+                "kind": "packageSchema",
+                "packageId": "skiff.run/llm-api",
+                "stableSchemaKey": "LlmRequest"
+            }),
+            serde_json::json!({
+                "kind": "packageSchema",
+                "packageId": "skiff.run/llm-api",
+                "stableSchemaKey": "LlmRequest",
+                "packageSchemaTypeId": "schema:request",
+                "abiTypeId": "wrong-domain"
+            }),
+        ] {
+            assert!(serde_json::from_value::<TypeRefIr>(wire).is_err());
+        }
+    }
 }

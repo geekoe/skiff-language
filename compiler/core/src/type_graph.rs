@@ -106,6 +106,7 @@ impl TypeGraphAnalyzer {
             TypeRefIr::PublicationType { .. } => TypeGraphNodeKind::PublicationType,
             TypeRefIr::ServiceSymbol { .. } => TypeGraphNodeKind::ServiceSymbol,
             TypeRefIr::PackageSymbol { .. } => TypeGraphNodeKind::PackageSymbol,
+            TypeRefIr::PackageSchema { .. } => TypeGraphNodeKind::PackageSymbol,
             TypeRefIr::DbObjectSymbol { .. } => TypeGraphNodeKind::DbObjectSymbol,
             TypeRefIr::Record { .. } => TypeGraphNodeKind::Record,
             TypeRefIr::Union { .. } => TypeGraphNodeKind::Union,
@@ -137,7 +138,7 @@ impl TypeGraphAnalyzer {
                 facts.contains_service_symbol = true;
                 facts.schema_projectable_plain_data = false;
             }
-            TypeRefIr::PackageSymbol { .. } => {
+            TypeRefIr::PackageSymbol { .. } | TypeRefIr::PackageSchema { .. } => {
                 facts.contains_package_symbol = true;
                 facts.schema_projectable_plain_data = false;
             }

@@ -7,7 +7,8 @@ use skiff_artifact_model::{
 };
 
 use super::type_projection::{
-    package_type_assignable, package_type_target_assignable, resolved_contract_type,
+    local_ir_json_compatible, package_type_assignable, package_type_target_assignable,
+    resolved_contract_type,
 };
 use crate::{PackageDependencyAnalysisFacts, SourceDependencyAnalysisInput};
 
@@ -143,11 +144,7 @@ fn json_target_accepts_only_json_compatible_package_nominal_representations() {
         arguments: Vec::new(),
     };
     for (stable_key, type_id, target) in [
-        (
-            "Scalar",
-            "type:scalar",
-            ContractTypeRef::builtin("string"),
-        ),
+        ("Scalar", "type:scalar", ContractTypeRef::builtin("string")),
         (
             "Union",
             "type:union",
@@ -162,10 +159,7 @@ fn json_target_accepts_only_json_compatible_package_nominal_representations() {
             "Record",
             "type:record",
             ContractTypeRef::Record {
-                fields: BTreeMap::from([(
-                    "enabled".to_string(),
-                    ContractTypeRef::builtin("bool"),
-                )]),
+                fields: BTreeMap::from([("enabled".to_string(), ContractTypeRef::builtin("bool"))]),
             },
         ),
         (
@@ -217,6 +211,15 @@ fn json_target_accepts_only_json_compatible_package_nominal_representations() {
         &exact_scalar,
         &package_type("other.types", "Scalar", "type:scalar"),
         &scalar,
+    ));
+
+    assert!(local_ir_json_compatible(
+        &TypeRefIr::Builtin {
+            name: "Map".to_string(),
+            args: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("Json"),],
+        },
+        &scalar,
+        false,
     ));
 }
 

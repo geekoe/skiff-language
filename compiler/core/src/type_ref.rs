@@ -34,6 +34,15 @@ pub fn map_type_ref(ty: TypeRefIr, map: &mut impl FnMut(TypeRefIr) -> TypeRefIr)
         },
         TypeRefIr::ServiceSymbol { symbol } => TypeRefIr::ServiceSymbol { symbol },
         TypeRefIr::PackageSymbol { symbol } => TypeRefIr::PackageSymbol { symbol },
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        },
         TypeRefIr::DbObjectSymbol { symbol } => TypeRefIr::DbObjectSymbol { symbol },
         TypeRefIr::Record { fields } => TypeRefIr::Record {
             fields: fields
@@ -99,6 +108,15 @@ pub fn substitute_type_params_in_type_ref(
         },
         TypeRefIr::ServiceSymbol { symbol } => TypeRefIr::ServiceSymbol { symbol },
         TypeRefIr::PackageSymbol { symbol } => TypeRefIr::PackageSymbol { symbol },
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        },
         TypeRefIr::DbObjectSymbol { symbol } => TypeRefIr::DbObjectSymbol { symbol },
         TypeRefIr::Record { fields } => TypeRefIr::Record { fields },
         TypeRefIr::Union { items } => TypeRefIr::Union { items },
@@ -210,6 +228,7 @@ pub fn type_ref_children(ty: &TypeRefIr) -> Vec<TypeRefChild<'_>> {
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => Vec::new(),

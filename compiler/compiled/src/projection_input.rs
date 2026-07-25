@@ -801,6 +801,7 @@ fn projection_visible_type_ref(
         TypeRefIr::LocalType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => ty.clone(),
@@ -849,6 +850,11 @@ fn type_ref_ir_source_text_with_named_types(
             named_type(&name)
         }
         TypeRefIr::PackageSymbol { symbol } => named_type(&symbol.symbol_path),
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => named_type(&format!("{package_id}::{stable_schema_key}")),
         TypeRefIr::Record { fields } => format!(
             "{{ {} }}",
             fields

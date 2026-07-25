@@ -41,8 +41,7 @@ impl<'contract> ServiceValuePlan<'contract> {
         self.contract_type
     }
 
-    #[cfg(test)]
-    pub(crate) fn runtime_type_plan(&self) -> &RuntimeTypePlan {
+    pub fn runtime_type_plan(&self) -> &RuntimeTypePlan {
         &self.runtime_type
     }
 

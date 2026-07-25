@@ -492,6 +492,7 @@ fn projection_visible_type_ref(
         TypeRefIr::LocalType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => ty.clone(),
@@ -928,7 +929,9 @@ fn collect_type_ref_named_locations(
             }
             collect_type_ref_named_locations(index, module_path, return_type, out);
         }
-        TypeRefIr::Literal { .. } | TypeRefIr::TypeParam { .. } => {}
+        TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => {}
     }
 }
 

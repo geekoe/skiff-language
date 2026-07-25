@@ -206,6 +206,11 @@ pub(super) fn type_ref_ir_type_text(ty: &TypeRefIr) -> String {
             symbol.symbol_path()
         }
         TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => format!("{package_id}::{stable_schema_key}"),
     }
 }
 

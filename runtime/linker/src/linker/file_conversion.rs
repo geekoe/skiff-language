@@ -1165,6 +1165,15 @@ fn linked_type_ref(ty: &artifact::TypeRefIr) -> LinkedTypeRef {
         artifact::TypeRefIr::PackageSymbol { symbol } => LinkedTypeRef::PackageSymbol {
             symbol: symbol.clone(),
         },
+        artifact::TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => LinkedTypeRef::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
+        },
         artifact::TypeRefIr::DbObjectSymbol { symbol } => LinkedTypeRef::DbObjectSymbol {
             symbol: symbol.clone(),
         },

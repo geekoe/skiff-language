@@ -591,6 +591,10 @@ mod tests {
                 name: "unknown".to_string(),
                 args: Vec::new(),
             },
+            ContractTypeRef::AnyInterface { .. } => LinkedTypeRef::Native {
+                name: "unknown".to_string(),
+                args: Vec::new(),
+            },
             ContractTypeRef::TypeParam { name } => {
                 panic!("unresolved contract type parameter {name} has no execution projection")
             }

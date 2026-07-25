@@ -1008,6 +1008,7 @@ fn contains_external_nominal(ty: &TypeRefIr, index: &InterfaceIndex) -> bool {
             .canonical_type_args
             .iter()
             .any(|arg| contains_external_nominal(arg, index)),
+        TypeRefIr::PackageSchema { .. } => true,
         TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::PackageSymbol { .. }
@@ -1162,6 +1163,7 @@ fn substitute_requirement_type(
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. } => ty.clone(),
     })
@@ -1200,6 +1202,7 @@ fn contains_self_type(ty: &TypeRefIr) -> bool {
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => false,
@@ -1685,6 +1688,11 @@ fn type_ref_display(ty: &TypeRefIr) -> String {
             symbol.symbol_path()
         }
         TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => format!("{package_id}::{stable_schema_key}"),
         TypeRefIr::Record { fields } => format!(
             "{{ {} }}",
             fields

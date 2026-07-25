@@ -1,5 +1,9 @@
 use std::collections::BTreeMap;
 
+use skiff_artifact_model::ContractTypeRef;
+use skiff_runtime_boundary::{
+    package_schema_records::PackageSchemaRecords, service_value_plan::ServiceValuePlan,
+};
 use skiff_runtime_linked_program::{
     type_ref_to_value, CallIr, ExecutableAddr, FileAddr, LinkedActorDeclaration,
     LinkedActorDeclarationOwner, LinkedInterfaceInstantiationRef, LinkedTypeRef, NativeTarget,
@@ -42,6 +46,7 @@ pub fn resolve_runtime_native_invocation(
         env,
         call,
         target,
+        None,
     )
 }
 
@@ -60,6 +65,7 @@ pub(crate) fn resolve_runtime_execution_native_invocation(
         env,
         call,
         target,
+        projection.package_schema_records(&current_addr.unit),
     )
 }
 
@@ -70,6 +76,7 @@ fn resolve_runtime_native_invocation_in_type_view(
     env: &Env,
     call: &CallIr,
     target: &NativeTarget,
+    package_schema_records: Option<&PackageSchemaRecords>,
 ) -> Result<RuntimeNativeInvocation> {
     let (target_name, binding_key) =
         match NativeSignatureRegistry::builtins().validate_native_dispatch_target(target) {
@@ -120,7 +127,7 @@ fn resolve_runtime_native_invocation_in_type_view(
         plan_call
     });
     let plan_call = actor_plan_call.as_ref().unwrap_or(resolved_call);
-    let plan = match resolve_runtime_native_call_plan(
+    let mut plan = match resolve_runtime_native_call_plan(
         program,
         current_addr,
         env,
@@ -136,6 +143,41 @@ fn resolve_runtime_native_invocation_in_type_view(
         }
         Err(error) => return Err(error),
     };
+    if matches!(binding_key, "std.json.encode" | "std.json.decode") {
+        if let Some(LinkedTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        }) = plan_call.type_args.get("T0")
+        {
+            let records = package_schema_records.ok_or_else(|| {
+                RuntimeError::InvalidArtifact(format!(
+                    "{target_name} Package schema type argument has no admitted Package schema closure"
+                ))
+            })?;
+            let contract_type = ContractTypeRef::package_schema(
+                package_id.clone(),
+                stable_schema_key.clone(),
+                package_schema_type_id.clone(),
+            );
+            let exact_plan = ServiceValuePlan::compile(&contract_type, records)
+                .map_err(|error| {
+                    RuntimeError::InvalidArtifact(format!(
+                        "{target_name} Package schema type argument is invalid: {error}"
+                    ))
+                })?
+                .runtime_type_plan()
+                .clone();
+            let native_plan = plan.as_mut().ok_or_else(|| {
+                RuntimeError::InvalidArtifact(format!("{target_name} call is missing native plan"))
+            })?;
+            if binding_key == "std.json.encode" {
+                native_plan.arg_plans[0] = exact_plan;
+            } else {
+                native_plan.return_plan = exact_plan;
+            }
+        }
+    }
     Ok(RuntimeNativeInvocation::new(
         target_name,
         binding_key,
@@ -506,6 +548,7 @@ fn normalize_native_signature_type_arg<'p>(
         | LinkedTypeRef::Function { .. }
         | LinkedTypeRef::Literal { .. }
         | LinkedTypeRef::TypeParam { .. }
+        | LinkedTypeRef::PackageSchema { .. }
         | LinkedTypeRef::DbObjectSymbol { .. }
         | LinkedTypeRef::Address { .. } => type_ref.clone(),
     }

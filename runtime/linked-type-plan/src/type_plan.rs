@@ -302,6 +302,7 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
             | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::PackageSymbol { .. }
+            | TypeRefIr::PackageSchema { .. }
             | TypeRefIr::DbObjectSymbol { .. }
             | TypeRefIr::TypeParam { .. }
             | TypeRefIr::Function { .. } => RuntimeTypeNode::Unknown,
@@ -378,6 +379,7 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
                 };
                 return Self::from_linked_nested_ref(&linked, ctx);
             }
+            TypeRefIr::PackageSchema { .. } => RuntimeTypeNode::Unknown,
             TypeRefIr::Literal { .. }
             | TypeRefIr::AnyInterface { .. }
             | TypeRefIr::LocalType { .. }
@@ -569,6 +571,23 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
                     Some(addr) => return Self::resolve_addr_or_bridge(type_ref, addr, ctx),
                     None => return Ok(unknown_plan_for_type_ref(type_ref)),
                 }
+            }
+            LinkedTypeRef::PackageSchema {
+                package_id,
+                stable_schema_key,
+                package_schema_type_id,
+            } => {
+                return Ok(RuntimeTypePlan {
+                    label: format!("{package_id}.{stable_schema_key}"),
+                    named_type_name: Some(stable_schema_key.clone()),
+                    identity: RuntimeTypeIdentityPlan {
+                        nominal: Some(format!(
+                            "package-schema:{package_id}:{stable_schema_key}:{package_schema_type_id}"
+                        )),
+                        ..RuntimeTypeIdentityPlan::default()
+                    },
+                    node: RuntimeTypeNode::Unknown,
+                });
             }
             // A bound type parameter expands to the plan its JSON replacement
             // Value would yield; an unbound one falls through to Unknown via the
@@ -1124,7 +1143,8 @@ fn recoverable_expected_node_from_linked(
         | LinkedTypeRef::LocalType { .. }
         | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
-        | LinkedTypeRef::PackageSymbol { .. } => {
+        | LinkedTypeRef::PackageSymbol { .. }
+        | LinkedTypeRef::PackageSchema { .. } => {
             let runtime_plan = RuntimeTypePlan::from_linked(type_ref, ctx)?;
             return Ok(
                 RuntimeRecoverableExpectedTypePlan::from_runtime_type_plan_shape_only_for_diagnostics(
@@ -1220,6 +1240,7 @@ fn linked_type_ref_kind(type_ref: &LinkedTypeRef) -> &'static str {
         LinkedTypeRef::PublicationType { .. } => "publicationType",
         LinkedTypeRef::ServiceSymbol { .. } => "serviceSymbol",
         LinkedTypeRef::PackageSymbol { .. } => "packageSymbol",
+        LinkedTypeRef::PackageSchema { .. } => "packageSchema",
         LinkedTypeRef::Address { .. } => "address",
         LinkedTypeRef::Native { .. } => "builtin",
         LinkedTypeRef::Record { .. } => "record",
@@ -1240,6 +1261,7 @@ fn linked_type_ref_label(type_ref: &LinkedTypeRef) -> &'static str {
         LinkedTypeRef::PublicationType { .. } => "publicationType",
         LinkedTypeRef::ServiceSymbol { .. } => "serviceSymbol",
         LinkedTypeRef::PackageSymbol { .. } => "packageSymbol",
+        LinkedTypeRef::PackageSchema { .. } => "packageSchema",
         LinkedTypeRef::Address { .. } => "address",
         LinkedTypeRef::Record { .. } => "record",
         LinkedTypeRef::Union { .. } => "union",
@@ -1275,6 +1297,7 @@ fn artifact_type_ref_label(type_ref: &skiff_artifact_model::TypeRefIr) -> &'stat
         TypeRefIr::PublicationType { .. } => "publicationType",
         TypeRefIr::ServiceSymbol { .. } => "serviceSymbol",
         TypeRefIr::PackageSymbol { .. } => "packageSymbol",
+        TypeRefIr::PackageSchema { .. } => "packageSchema",
         TypeRefIr::DbObjectSymbol { .. } => "dbObjectSymbol",
         TypeRefIr::Record { .. } => "record",
         TypeRefIr::Union { .. } => "union",

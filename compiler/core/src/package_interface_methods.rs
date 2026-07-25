@@ -339,7 +339,8 @@ fn package_interface_type_ref(
                 },
             })
         }
-        TypeRefIr::DbObjectSymbol { .. }
+        TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => Ok(ty.clone()),
         TypeRefIr::Record { fields } => Ok(TypeRefIr::Record {

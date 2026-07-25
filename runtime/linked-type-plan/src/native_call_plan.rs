@@ -420,6 +420,7 @@ fn substitute_type_params(
         | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
         | LinkedTypeRef::PackageSymbol { .. }
+        | LinkedTypeRef::PackageSchema { .. }
         | LinkedTypeRef::Address { .. }
         | LinkedTypeRef::Literal { .. }
         | LinkedTypeRef::DbObjectSymbol { .. } => type_ref.clone(),
@@ -466,6 +467,7 @@ fn unresolved_type_param_name<'a>(
         | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
         | LinkedTypeRef::PackageSymbol { .. }
+        | LinkedTypeRef::PackageSchema { .. }
         | LinkedTypeRef::Address { .. }
         | LinkedTypeRef::Literal { .. }
         | LinkedTypeRef::DbObjectSymbol { .. } => None,

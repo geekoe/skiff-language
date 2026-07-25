@@ -89,7 +89,8 @@ fn hydrated_package_code(
         Arc::clone(slot.artifact()),
         slot.files().to_vec(),
         resources,
-    ))
+    )
+    .with_schema_records(slot.schema_records().clone()))
 }
 
 fn validate_contract_store(

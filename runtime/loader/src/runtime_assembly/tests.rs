@@ -624,13 +624,14 @@ fn schema_record_payload_is_shared_while_each_contract_closure_is_validated() {
     let resolver = fixture.resolver();
     let loader = RuntimeAssemblyLoader::new(&resolver);
     let reference = contract_ref(&fixture.contract);
+    let package_records = BTreeMap::new();
     let mut shared = BTreeMap::new();
 
     let first = loader
-        .load_contract_schema(&reference, &fixture.contract, &mut shared)
+        .load_contract_schema(&reference, &fixture.contract, &package_records, &mut shared)
         .unwrap();
     let second = loader
-        .load_contract_schema(&reference, &fixture.contract, &mut shared)
+        .load_contract_schema(&reference, &fixture.contract, &package_records, &mut shared)
         .unwrap();
 
     assert_eq!(resolver.schema_loads.get(), 1);

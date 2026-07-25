@@ -10,8 +10,7 @@ use skiff_artifact_identity::package_artifact_ref;
 use skiff_artifact_model::MetadataValue;
 
 use crate::{
-    canonical_fixture::CanonicalFixtureError,
-    canonical_package::CanonicalPackageProject,
+    canonical_fixture::CanonicalFixtureError, canonical_package::CanonicalPackageProject,
     package_test_assembly::PackageTestConfigLiteral,
 };
 
@@ -111,7 +110,9 @@ pub(crate) fn load_config_literals(
             }
         }
         for (package_id, value) in manifest.configs {
-            let Some(package) = project.artifacts().find(|package| package.package_id == package_id)
+            let Some(package) = project
+                .artifacts()
+                .find(|package| package.package_id == package_id)
             else {
                 continue;
             };
@@ -160,7 +161,10 @@ fn insert_config_literal(
         })?,
     };
     if supplied
-        .insert((package.package_build_id.to_string(), key.to_string()), literal)
+        .insert(
+            (package.package_build_id.to_string(), key.to_string()),
+            literal,
+        )
         .is_some()
     {
         return Err(CanonicalFixtureError::InvalidInput(format!(

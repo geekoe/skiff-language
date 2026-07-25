@@ -217,7 +217,8 @@ fn is_package_schema_ref(
             value: LiteralIr::String { .. } | LiteralIr::Null,
         }
         | TypeRefIr::TypeParam { .. }
-        | TypeRefIr::PackageSymbol { .. } => true,
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. } => true,
         TypeRefIr::Literal { .. }
         | TypeRefIr::AnyInterface { .. }
         | TypeRefIr::Function { .. }

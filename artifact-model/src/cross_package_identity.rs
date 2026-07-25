@@ -197,6 +197,7 @@ fn canonicalize_inner(
         TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => ty.clone(),

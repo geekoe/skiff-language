@@ -153,7 +153,8 @@ fn collect_catch_type_leaves(
         LinkedTypeRef::LocalType { .. }
         | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
-        | LinkedTypeRef::PackageSymbol { .. } => {
+        | LinkedTypeRef::PackageSymbol { .. }
+        | LinkedTypeRef::PackageSchema { .. } => {
             return Err(RuntimeError::InvalidArtifact(format!(
                 "RuntimeProgram type ref {} was not linked before execution",
                 program_types::program_type_ref_kind(catch_type)

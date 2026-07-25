@@ -573,6 +573,7 @@ fn rewrite_type_ref(
         }
         TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => false,
