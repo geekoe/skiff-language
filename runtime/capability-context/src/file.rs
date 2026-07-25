@@ -4,7 +4,10 @@ use bytes::Bytes;
 use serde_json::json;
 use serde_json::Value;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+};
 
 use crate::{
     DbCapabilityContext, ExecutionControl, ExecutionControlError, StreamRuntime, StreamRuntimeError,
@@ -149,17 +152,17 @@ impl WirePayload for FileCapabilityError {
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
         match self {
             Self::File(message) => Some((
-                TypeIdentity::builtin("std.file.FileError"),
+                PlatformBuiltinErrorIdentity::File.catch_identity(),
                 json!({
                     "message": message,
                 }),
             )),
             Self::Opaque(error) => error.catch_projection(),
             Self::ProviderUnavailable { target, reason } => Some((
-                TypeIdentity::builtin("std.service.ProviderUnavailableError"),
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
                 json!({
                     "target": target,
                     "reason": reason,

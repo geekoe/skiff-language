@@ -1,7 +1,10 @@
 use std::{error::Error, fmt};
 
 use skiff_runtime_boundary::http::{HttpBoundaryNameValue, HttpBoundaryRequestParts};
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+};
 
 const MISSING_BINARY_HTTP_MESSAGE: &str = "binary HTTP request metadata is missing";
 
@@ -99,10 +102,10 @@ impl WirePayload for RequestPayloadContextError {
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
         match self {
             Self::MissingBinaryHttp { target } => Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 serde_json::json!({
                     "target": target,
                     "message": MISSING_BINARY_HTTP_MESSAGE,

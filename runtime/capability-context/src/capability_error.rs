@@ -1,7 +1,10 @@
 use std::{error::Error, fmt, future::Future, pin::Pin};
 
 use serde_json::{json, Value};
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+};
 
 #[derive(Debug)]
 pub enum CapabilityError {
@@ -98,17 +101,17 @@ impl WirePayload for CapabilityError {
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
         match self {
             Self::ProviderUnavailable { target, reason } => Some((
-                TypeIdentity::builtin("std.service.ProviderUnavailableError"),
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
                 json!({
                     "target": target,
                     "reason": reason,
                 }),
             )),
             Self::Protocol { target, message } => Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 json!({
                     "target": target,
                     "message": message,
