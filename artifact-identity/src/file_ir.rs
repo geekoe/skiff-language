@@ -3,7 +3,8 @@ use serde_json::Value;
 use skiff_artifact_model::{
     validate_file_ir_package_calls, validate_file_ir_service_calls, ActorDeclarationIr, ConstIr,
     ExecutableIr, ExternalRefTable, FileDeclarations, FileIrUnit, FileLinkTargets, SourceMapSource,
-    SourceMapSpan, TypeDeclIr,
+    SourceMapSpan, TypeDeclIr, FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION,
+    FILE_IR_SCHEMA_VERSION,
 };
 
 use crate::framing::{framed_identity, sha256_hex};
@@ -35,6 +36,7 @@ pub fn canonical_file_ir_identity_bytes(unit: &FileIrUnit) -> Result<Vec<u8>> {
 }
 
 pub fn validate_file_ir_identity(unit: &FileIrUnit) -> Result<()> {
+    validate_file_ir_generation(unit)?;
     let computed = file_ir_identity(unit)?;
     if unit.file_ir_identity != computed {
         return Err(ArtifactIdentityError::FileIrIdentityMismatch {
@@ -45,7 +47,37 @@ pub fn validate_file_ir_identity(unit: &FileIrUnit) -> Result<()> {
     Ok(())
 }
 
+fn validate_file_ir_generation(unit: &FileIrUnit) -> Result<()> {
+    for (field, expected, actual) in [
+        (
+            "schemaVersion",
+            FILE_IR_SCHEMA_VERSION,
+            unit.schema_version.as_str(),
+        ),
+        (
+            "irFormatVersion",
+            FILE_IR_FORMAT_VERSION,
+            unit.ir_format_version.as_str(),
+        ),
+        (
+            "opcodeTableVersion",
+            FILE_IR_OPCODE_TABLE_VERSION,
+            unit.opcode_table_version.as_str(),
+        ),
+    ] {
+        if actual != expected {
+            return Err(ArtifactIdentityError::FileIrGenerationMismatch {
+                field,
+                expected,
+                actual: actual.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub fn assign_file_ir_identity(unit: &mut FileIrUnit) -> Result<String> {
+    validate_file_ir_generation(unit)?;
     let computed = file_ir_identity(unit)?;
     unit.file_ir_identity = computed.clone();
     Ok(computed)

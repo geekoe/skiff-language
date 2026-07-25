@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
-    BoundaryCallableProjection, BoundaryCallbackContract, BoundaryErrorContract,
-    BoundaryStreamContract, BoundaryUnavailableReason, ContractTypeDescriptor, ContractTypeRef,
-    PackageArtifact, PackageCallableId, PackageLocalAbiSymbol, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, PackageTypeRequirement, ServiceContract,
+    BoundaryCallableProjection, BoundaryCallbackContract, BoundaryStreamContract,
+    BoundaryUnavailableReason, ContractTypeDescriptor, ContractTypeRef, PackageArtifact,
+    PackageCallableId, PackageLocalAbiSymbol, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    PackageTypeRequirement, ServiceContract,
 };
 
 use crate::{
@@ -170,9 +170,6 @@ fn collect_operation_refs(
         collect_type_refs(&parameter.ty, out);
     }
     collect_type_refs(&operation.return_value.ty, out);
-    if let BoundaryErrorContract::Typed { payload_type, .. } = &operation.errors {
-        collect_type_refs(payload_type, out);
-    }
     if let BoundaryStreamContract::ServerStream { item_type, .. } = &operation.stream {
         collect_type_refs(item_type, out);
     }
@@ -308,4 +305,79 @@ fn public_callable_paths(package: &PackageArtifact) -> Result<BTreeMap<PackageCa
         }
     }
     Ok(paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use skiff_artifact_model::{
+        BoundaryCallbackExpirationError, BoundaryCallbackLifetime, BoundaryCancellationContract,
+        BoundaryEffectGuarantee, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
+        BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+        BoundaryValuePlan, PackageSchemaTypeRef,
+    };
+
+    use super::*;
+
+    #[test]
+    fn operation_schema_roots_are_only_parameter_return_stream_and_callback_types() {
+        let ids = ["parameter", "return", "stream", "callback"]
+            .map(|key| PackageSchemaTypeId::new(format!("type:{key}")));
+        let reference = |key: &str, id: PackageSchemaTypeId| {
+            ContractTypeRef::package_schema("example.types", key, id)
+        };
+        let operation = BoundaryOperationContract {
+            parameters: vec![BoundaryParameter {
+                name: "input".to_string(),
+                ty: reference("parameter", ids[0].clone()),
+                value_plan: value_plan(BoundaryValueOwner::Caller),
+            }],
+            return_value: BoundaryReturn {
+                ty: reference("return", ids[1].clone()),
+                value_plan: value_plan(BoundaryValueOwner::Provider),
+            },
+            stream: BoundaryStreamContract::ServerStream {
+                item_type: reference("stream", ids[2].clone()),
+                item_value_plan: value_plan(BoundaryValueOwner::Provider),
+            },
+            cancellation: BoundaryCancellationContract::Cooperative,
+            callbacks: BoundaryCallbackContract::RequestScoped {
+                interface_types: vec![PackageSchemaTypeRef {
+                    package_id: "example.types".to_string(),
+                    stable_schema_key: "callback".to_string(),
+                    package_schema_type_id: ids[3].clone(),
+                }],
+                lifetime: BoundaryCallbackLifetime::Stream,
+                expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
+            },
+            may_suspend: true,
+            effect_guarantee: BoundaryEffectGuarantee {
+                detached_parameters: true,
+                detached_return: true,
+                detached_error: true,
+                no_caller_reachable_mutation: true,
+                no_caller_value_escape: true,
+                no_same_heap_identity: true,
+            },
+        };
+
+        let mut roots = Vec::new();
+        collect_operation_refs(&operation, &mut roots);
+        assert_eq!(
+            roots.into_iter().collect::<BTreeSet<_>>(),
+            ["parameter", "return", "stream", "callback"]
+                .into_iter()
+                .zip(ids)
+                .map(|(key, id)| ("example.types".to_string(), key.to_string(), id))
+                .collect()
+        );
+    }
+
+    fn value_plan(owner: BoundaryValueOwner) -> BoundaryValuePlan {
+        BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::DetachedValueGraph,
+            encoding: BoundaryValueEncoding::CanonicalValue,
+            owner,
+            lifetime: BoundaryValueLifetime::Call,
+        }
+    }
 }

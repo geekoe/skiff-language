@@ -1,9 +1,9 @@
 use skiff_artifact_model::{
-    BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryErrorContract,
-    BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
-    BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef, LiteralIr, PackageCallableSignature,
-    PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
+    BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryUnavailableReason,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, ContractTypeRef, LiteralIr, PackageCallableSignature, PackageRefIr,
+    PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_closure::{
     ArtifactNominalTypeSource, NoTypeClosureGuards, TypeClosureControl, TypeClosurePolicy,
@@ -51,41 +51,10 @@ pub(super) fn project_operation_contract(
     )
     .map_err(|reason| push_reason(reasons, reason))
     .ok();
-    let throw_types = signature
-        .throw_types
-        .iter()
-        .filter_map(|ty| {
-            project_package_type(
-                owner_module,
-                ty,
-                file_ir_units,
-                public_type_ids,
-                resolved_package_schemas,
-            )
-            .map_err(|reason| push_reason(reasons, reason))
-            .ok()
-        })
-        .collect::<Vec<_>>();
-    if parameters.len() != signature.parameters.len()
-        || return_projection.is_none()
-        || throw_types.len() != signature.throw_types.len()
-    {
+    if parameters.len() != signature.parameters.len() || return_projection.is_none() {
         return None;
     }
 
-    let errors = match throw_types.as_slice() {
-        [] => BoundaryErrorContract::None,
-        [payload_type] => BoundaryErrorContract::Typed {
-            payload_type: payload_type.clone(),
-            value_plan: linkable_plan(BoundaryValueOwner::Provider),
-        },
-        many => BoundaryErrorContract::Typed {
-            payload_type: ContractTypeRef::StructuralUnion {
-                variants: many.to_vec(),
-            },
-            value_plan: linkable_plan(BoundaryValueOwner::Provider),
-        },
-    };
     let (return_value, stream) = return_projection.expect("checked complete return projection");
     let websocket_ingress = matches!(
         parameters.as_slice(),
@@ -100,7 +69,6 @@ pub(super) fn project_operation_contract(
     Some(BoundaryOperationContract {
         parameters,
         return_value,
-        errors,
         stream,
         cancellation: if signature.may_suspend && !websocket_ingress {
             BoundaryCancellationContract::Cooperative

@@ -4,9 +4,9 @@ use skiff_artifact_identity::{
     validate_package_schema_records, validate_service_contract_identities,
 };
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryErrorContract, BoundaryOperationDescriptor,
-    BoundaryStreamContract, ContractRequirement, ContractTypeDescriptor, ContractTypeRef,
-    PackageSchemaTypeId, PackageSchemaTypeRecord, ServiceContract,
+    BoundaryCallbackContract, BoundaryOperationDescriptor, BoundaryStreamContract,
+    ContractRequirement, ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeId,
+    PackageSchemaTypeRecord, ServiceContract,
 };
 use skiff_compiler_input_model::{is_reserved_source_import_alias, is_valid_source_import_alias};
 use skiff_compiler_projection_input::ResolvedPackageSchema;
@@ -252,9 +252,6 @@ fn collect_operation_type_ids(
         collect_type_ids(&parameter.ty, out);
     }
     collect_type_ids(&operation.contract.return_value.ty, out);
-    if let BoundaryErrorContract::Typed { payload_type, .. } = &operation.contract.errors {
-        collect_type_ids(payload_type, out);
-    }
     if let BoundaryStreamContract::ServerStream { item_type, .. } = &operation.contract.stream {
         collect_type_ids(item_type, out);
     }
@@ -338,9 +335,6 @@ fn validate_operation_refs(
         validate_type_refs(alias, &parameter.ty, records)?;
     }
     validate_type_refs(alias, &operation.contract.return_value.ty, records)?;
-    if let BoundaryErrorContract::Typed { payload_type, .. } = &operation.contract.errors {
-        validate_type_refs(alias, payload_type, records)?;
-    }
     if let BoundaryStreamContract::ServerStream { item_type, .. } = &operation.contract.stream {
         validate_type_refs(alias, item_type, records)?;
     }

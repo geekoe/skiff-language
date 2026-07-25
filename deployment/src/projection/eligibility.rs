@@ -1,9 +1,9 @@
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryErrorContract,
-    BoundaryImplementationRequirements, BoundaryOperationContract, BoundaryStreamContract,
-    BoundaryUnavailableReason, BoundaryValuePlan, BoundaryValuePlanUnavailableReason,
-    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
-    CallableTargetFact, PackageCallableId, ValueEscapeLane, ValueProvenance,
+    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryImplementationRequirements,
+    BoundaryOperationContract, BoundaryStreamContract, BoundaryUnavailableReason,
+    BoundaryValuePlan, BoundaryValuePlanUnavailableReason, CallableEffectSummary,
+    CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, CallableTargetFact,
+    PackageCallableId, ValueEscapeLane, ValueProvenance,
 };
 
 use super::{ProjectionError, ProjectionResult};
@@ -289,13 +289,6 @@ fn validate_contract_features(
         validate_value_plan(&parameter.value_plan, reasons);
     }
     validate_value_plan(&contract.return_value.value_plan, reasons);
-    match &contract.errors {
-        BoundaryErrorContract::None => {}
-        BoundaryErrorContract::Typed { value_plan, .. } => validate_value_plan(value_plan, reasons),
-        BoundaryErrorContract::Unsupported { .. } => {
-            push_reason(reasons, BoundaryUnavailableReason::UnsupportedBoundaryType);
-        }
-    }
     match &contract.stream {
         BoundaryStreamContract::Unary => {}
         BoundaryStreamContract::ServerStream {

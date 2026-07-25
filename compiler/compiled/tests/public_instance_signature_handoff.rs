@@ -2,10 +2,10 @@ use std::{collections::BTreeMap, path::Path, path::PathBuf};
 
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryReturn, BoundaryStreamContract,
-    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, ContractRequirement, ContractTypeDescriptor, ContractTypeNameability,
-    ContractTypeRef, PackageBuildId, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    BoundaryOperationContract, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    ContractRequirement, ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef,
+    PackageBuildId, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
     PackageSchemaCanonicalDescriptor, PackageSchemaIndex, PackageSchemaIndexEntry,
     PackageSchemaTypeRecord, PackageTypeRef, PackageTypeRequirement, TypeRefIr,
 };
@@ -224,7 +224,6 @@ fn contract_dependency() -> ResolvedContractDependency {
                     ty: user,
                     value_plan: linkable(BoundaryValueOwner::Provider),
                 },
-                errors: BoundaryErrorContract::None,
                 stream: BoundaryStreamContract::Unary,
                 cancellation: BoundaryCancellationContract::NotCancellable,
                 callbacks: BoundaryCallbackContract::None,

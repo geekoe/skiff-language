@@ -213,7 +213,6 @@ fn project_implementation_symbols(
                         )
                     })?,
                 },
-                throw_types: Vec::new(),
                 may_suspend: executable.may_suspend,
             };
             if symbols

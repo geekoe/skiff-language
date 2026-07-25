@@ -1,7 +1,7 @@
 use skiff_artifact_model::{
-    websocket_ingress::canonical_websocket_shape_spec, BoundaryErrorContract,
-    BoundaryOperationContract, BoundaryStreamContract, ContractDiscriminatedUnionBranch,
-    ContractTypeDescriptor, ContractTypeRef, ContractTypeShape,
+    websocket_ingress::canonical_websocket_shape_spec, BoundaryOperationContract,
+    BoundaryStreamContract, ContractDiscriminatedUnionBranch, ContractTypeDescriptor,
+    ContractTypeRef, ContractTypeShape,
 };
 
 use crate::{ArtifactIdentityError, Result};
@@ -22,12 +22,6 @@ pub fn normalize_contract_operation_contract(
     }
     operation.return_value.ty =
         normalize_contract_type_ref(operation.return_value.ty, &format!("{path}.returnValue.ty"))?;
-    if let BoundaryErrorContract::Typed { payload_type, .. } = &mut operation.errors {
-        *payload_type = normalize_contract_type_ref(
-            payload_type.clone(),
-            &format!("{path}.errors.payloadType"),
-        )?;
-    }
     if let BoundaryStreamContract::ServerStream { item_type, .. } = &mut operation.stream {
         *item_type =
             normalize_contract_type_ref(item_type.clone(), &format!("{path}.stream.itemType"))?;

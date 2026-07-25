@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryErrorContract, BoundaryOperationContract,
-    BoundaryStreamContract, ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, PackageTypeRequirement,
+    BoundaryCallbackContract, BoundaryOperationContract, BoundaryStreamContract,
+    ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    PackageTypeRequirement,
 };
 
 pub(crate) fn schema_closure(
@@ -65,9 +65,6 @@ fn collect_operation_refs(
         .iter()
         .for_each(|parameter| collect_type_refs(&parameter.ty, out));
     collect_type_refs(&operation.return_value.ty, out);
-    if let BoundaryErrorContract::Typed { payload_type, .. } = &operation.errors {
-        collect_type_refs(payload_type, out);
-    }
     if let BoundaryStreamContract::ServerStream { item_type, .. } = &operation.stream {
         collect_type_refs(item_type, out);
     }

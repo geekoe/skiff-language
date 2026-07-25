@@ -678,6 +678,9 @@ mod tests {
                     .map(|executable_index| ExprIr::Call {
                         call: CallIr {
                             target: CallTargetIr::LocalExecutable { executable_index },
+                            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
+                            },
                             args: Vec::new(),
                             type_args: BTreeMap::new(),
                             metadata: BTreeMap::new(),
@@ -747,7 +750,6 @@ mod tests {
                     fields: BTreeMap::from([("value".to_string(), TypeRefIr::builtin("string"))]),
                 },
                 type_params: Vec::new(),
-                discriminator: None,
                 implements: Vec::new(),
                 source_span: None,
             },
@@ -757,7 +759,6 @@ mod tests {
                     target: TypeRefIr::builtin("string"),
                 },
                 type_params: Vec::new(),
-                discriminator: None,
                 implements: Vec::new(),
                 source_span: None,
             },

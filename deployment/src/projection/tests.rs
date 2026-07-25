@@ -131,7 +131,6 @@ impl ProjectionFixture {
                                 stable_schema_key: "payload".to_string(),
                                 package_schema_type_id: payload_id.clone(),
                             },
-                            throw_types: Vec::new(),
                             may_suspend: true,
                         },
                     },
@@ -369,41 +368,23 @@ fn websocket_ingress_contract_validation_accepts_only_the_unified_abi() {
     )
     .is_err());
 
-    let mut invalid = baseline.clone();
-    invalid.may_suspend = true;
+    let mut suspending = baseline.clone();
+    suspending.may_suspend = true;
     fixture
         .contract
         .operations
         .get_mut(&operation_id)
         .unwrap()
-        .contract = invalid;
-    assert!(validate_ingress_contracts(
+        .contract = suspending;
+    validate_ingress_contracts(
         &fixture.input,
         &fixture.contract,
-        &fixture.package_schema_records
+        &fixture.package_schema_records,
     )
-    .is_err());
+    .expect("maySuspend does not change the canonical WebSocket ingress ABI");
 
     let mut invalid = baseline.clone();
     invalid.parameters.push(invalid.parameters[0].clone());
-    fixture
-        .contract
-        .operations
-        .get_mut(&operation_id)
-        .unwrap()
-        .contract = invalid;
-    assert!(validate_ingress_contracts(
-        &fixture.input,
-        &fixture.contract,
-        &fixture.package_schema_records
-    )
-    .is_err());
-
-    let mut invalid = baseline.clone();
-    invalid.errors = BoundaryErrorContract::Typed {
-        payload_type: ContractTypeRef::builtin("string"),
-        value_plan: linkable_plan(BoundaryValueOwner::Provider),
-    };
     fixture
         .contract
         .operations
@@ -1101,7 +1082,6 @@ fn websocket_ingress_operation(context: ContractTypeRef) -> BoundaryOperationCon
             },
             value_plan: linkable_plan(BoundaryValueOwner::Provider),
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::Unary,
         cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,
@@ -1128,7 +1108,6 @@ fn operation_contract(payload_type: ContractTypeRef) -> BoundaryOperationContrac
             ty: payload_type,
             value_plan: linkable_plan(BoundaryValueOwner::Provider),
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::Unary,
         cancellation: BoundaryCancellationContract::Cooperative,
         callbacks: BoundaryCallbackContract::None,

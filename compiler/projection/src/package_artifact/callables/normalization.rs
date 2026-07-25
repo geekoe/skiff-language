@@ -45,11 +45,6 @@ pub(super) fn normalize_public_signature(
         file_ir_units,
         public_type_ids,
     );
-    signature.throw_types = signature
-        .throw_types
-        .iter()
-        .map(|ty| normalize_package_type(owner_module, ty, file_ir_units, public_type_ids))
-        .collect();
 }
 
 pub(super) fn normalize_implementation_type(
@@ -499,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn public_nominals_are_exact_through_parameters_return_and_throws() {
+    fn public_nominals_are_exact_through_parameters_and_return() {
         let (units, refs) = fixture();
         let nested = PackageTypeRef::Local {
             local_type: TypeRefIr::Builtin {
@@ -520,9 +515,6 @@ mod tests {
                     type_index: 0,
                 },
             },
-            throw_types: vec![PackageTypeRef::Local {
-                local_type: TypeRefIr::LocalType { type_index: 0 },
-            }],
             may_suspend: false,
         };
 
@@ -534,7 +526,6 @@ mod tests {
             package_schema_type_id: PackageSchemaTypeId::new("schema:public-error"),
         };
         assert_eq!(signature.return_type, exact);
-        assert_eq!(signature.throw_types, vec![exact.clone()]);
         assert_eq!(
             signature.parameters[0].ty,
             PackageTypeRef::Container {
