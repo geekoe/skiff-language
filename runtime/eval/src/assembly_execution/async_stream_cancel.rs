@@ -13,7 +13,7 @@ use serde_json::Value;
 use skiff_artifact_model::{
     BoundaryCancellationContract, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
-    InstructionSourceSite, PackageBuildId,
+    InstructionSourceSite, PackageBuildId, SyntheticInstructionSiteReason,
 };
 use skiff_runtime_activation::RequestStreamLease;
 use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
@@ -36,7 +36,10 @@ use skiff_runtime_model::{
 use super::{
     boundary_materialization::CanonicalServiceBoundaryPlan,
     callback_native::CallbackNativeCapabilityHooks,
-    service_error_channel::{CanonicalServiceErrorChannel, ServiceErrorExportContext},
+    service_error_channel::{
+        CanonicalServiceErrorChannel, RestrictedServiceDiagnosticExportContext,
+        ServiceErrorExportContext,
+    },
     AssemblyExecutionHandoffError, AssemblyExecutionLaneKind, RuntimeExecutionProjection,
 };
 use crate::{
@@ -573,7 +576,12 @@ fn export_provider_failure(
 ) -> Result<OpaqueServiceError> {
     let target = provider_context.runtime_assembly_target()?;
     let projection = RuntimeExecutionProjection::for_context(interpreter, provider_context)?;
-    CanonicalServiceErrorChannel::export_provider_failure(
+    let telemetry = provider_context.telemetry_context();
+    let fallback_source = InstructionSourceSite::Synthetic {
+        reason: SyntheticInstructionSiteReason::RuntimeBoundaryDispatch,
+    };
+    let fallback_stack = provider_context.exception_stack_for_site(fallback_source.clone());
+    CanonicalServiceErrorChannel::export_provider_failure_with_diagnostic(
         error,
         ServiceErrorExportContext {
             execution_image: target.execution_image().as_ref(),
@@ -583,6 +591,13 @@ fn export_provider_failure(
             caller_package_build_id: Some(caller_package_build_id),
             provider_service_id,
             operation_id,
+        },
+        RestrictedServiceDiagnosticExportContext {
+            telemetry: &telemetry,
+            provider_activation_id: target.activation_context().activation_id().as_str(),
+            request_generation: target.request_activation().generation(),
+            fallback_source: &fallback_source,
+            fallback_stack: &fallback_stack,
         },
         || provider_context.next_exception_correlation(),
     )
@@ -859,13 +874,30 @@ mod tests {
         ActivationContext, ActivationIdentity, ActivationOwnedBindings, RequestActivationContext,
     };
     use skiff_runtime_boundary::service_linkable::FailClosedServiceLinkableCapabilityHooks;
-    use skiff_runtime_capability_context::StreamCancelSignalApi;
+    use skiff_runtime_capability_context::{StreamCancelSignalApi, StreamRuntime};
+    use skiff_runtime_linked_program::{LinkedCallTarget, LinkedExprIr};
     use skiff_runtime_model::{
         runtime_value::{HeapNode, RuntimeObject, RuntimeObjectFields},
         type_plan::RuntimeTypeNode,
     };
 
-    use crate::runtime_ops::runtime_to_wire_required_plan;
+    use crate::{
+        assembly_execution::{
+            ordinary::tests::{
+                service_error_consumer::{
+                    ConsumerTopology, ProviderFailureKind, ServiceErrorConsumerFixture,
+                },
+                test_runtime,
+            },
+            service_error_channel::{
+                start_restricted_service_diagnostic_probe_for_test,
+                take_restricted_service_diagnostics_for_test,
+            },
+            RuntimeAssemblyExecutionProjection,
+        },
+        runtime_ops::runtime_to_wire_required_plan,
+        Interpreter,
+    };
 
     use super::*;
 
@@ -975,6 +1007,8 @@ mod tests {
 
     #[tokio::test]
     async fn provider_stream_normal_completion_remains_provider_terminal() {
+        let diagnostic_generation = u64::MAX - 1;
+        start_restricted_service_diagnostic_probe_for_test(diagnostic_generation);
         let (_consumer_cancel, stream_cancel) = test_stream_cancel();
         let request_cancel = CancellationToken::new();
         let terminal = await_provider_stream_terminal(
@@ -989,6 +1023,10 @@ mod tests {
             terminal,
             ProviderTerminal::Provider(Ok(RuntimeValue::Bool(true)))
         ));
+        assert!(
+            take_restricted_service_diagnostics_for_test(diagnostic_generation).is_empty(),
+            "successful provider completion must not submit a failure diagnostic"
+        );
     }
 
     #[tokio::test]
@@ -1057,6 +1095,139 @@ mod tests {
         )
         .await;
         assert!(matches!(terminal, ProviderTerminal::RequestCancelled));
+    }
+
+    #[tokio::test]
+    async fn restricted_service_diagnostic_server_stream_failure_submits_once() {
+        let (task, generation, stream_runtime, stream_value, _) =
+            provider_stream_failure_task(BoundaryCancellationContract::NotCancellable);
+
+        start_restricted_service_diagnostic_probe_for_test(generation);
+        run_provider_stream(task).await;
+
+        let terminal = stream_runtime
+            .next(&stream_value)
+            .await
+            .expect_err("provider stream should publish the fixed failure");
+        let (fixed, _) = terminal
+            .fixed_service_failure_parts()
+            .expect("stream terminal retains typed fixed failure");
+        let diagnostics = take_restricted_service_diagnostics_for_test(generation);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].correlation.trace_id,
+            fixed.envelope().trace_id()
+        );
+        assert_eq!(
+            diagnostics[0].correlation.error_id,
+            fixed.envelope().error_id()
+        );
+    }
+
+    #[tokio::test]
+    async fn restricted_service_diagnostic_server_stream_request_cancel_submits_zero() {
+        let (task, generation, _, _, cancellation) =
+            provider_stream_failure_task(BoundaryCancellationContract::Cooperative);
+        cancellation.cancel();
+        start_restricted_service_diagnostic_probe_for_test(generation);
+
+        run_provider_stream(task).await;
+
+        assert!(
+            take_restricted_service_diagnostics_for_test(generation).is_empty(),
+            "request cancellation must bypass provider failure export"
+        );
+    }
+
+    fn provider_stream_failure_task(
+        cancellation_contract: BoundaryCancellationContract,
+    ) -> (
+        ProviderStreamTask,
+        u64,
+        StreamRuntime,
+        Value,
+        CancellationToken,
+    ) {
+        let fixture = ServiceErrorConsumerFixture::new(
+            ProviderFailureKind::PublicRecord,
+            ConsumerTopology::OneHop,
+            true,
+            false,
+        );
+        let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+        let receiver_target = fixture.caller_eval_target();
+        let generation = receiver_target.request_activation().generation();
+        let projection = RuntimeAssemblyExecutionProjection::from_image(Arc::clone(
+            receiver_target.execution_image(),
+        ));
+        let caller = projection
+            .resolve_executable(fixture.caller_addr())
+            .expect("linked caller executable");
+        let call = caller
+            .executable
+            .body
+            .expressions
+            .iter()
+            .find_map(|expression| match expression {
+                LinkedExprIr::Call { call }
+                    if matches!(
+                        call.target,
+                        LinkedCallTarget::ActivationRelativeService { .. }
+                    ) =>
+                {
+                    Some(call.clone())
+                }
+                _ => None,
+            })
+            .expect("linked service call");
+        let instruction = match &call.target {
+            LinkedCallTarget::ActivationRelativeService { instruction } => instruction,
+            _ => unreachable!("selected call is activation-relative"),
+        };
+        let target = receiver_target
+            .resolve_service_call(instruction)
+            .expect("resolved provider target");
+        let receiver_context = fixture.execution_context(&interpreter, receiver_target);
+        let mut provider_context =
+            provider_execution_context(&receiver_context, &target).expect("provider context");
+        let provider_stream_owner = provider_context.take_stream_runtime_owner();
+        let stream_runtime = provider_context.stream_runtime();
+        let (stream_value, sink) = stream_runtime.channel_stream();
+        let stream_cancel = sink.cancel_signal();
+        let caller_stack_at_site = receiver_context.exception_stack_for_site(call.site.clone());
+        let cancellation = receiver_context.execution().cancellation_token();
+        let task = ProviderStreamTask {
+            interpreter: interpreter.clone_for_stream_producer(),
+            provider_context: Arc::new(OwnedProgramExecutionContext::capture(&provider_context)),
+            provider_heap: RequestHeap::default(),
+            provider_env: Env::new(),
+            caller_addr: fixture.caller_addr().clone(),
+            caller_package_build_id: fixture.caller_build().clone(),
+            call_site: call.site.clone(),
+            caller_stack_at_site,
+            provider_addr: target.executable_addr().clone(),
+            provider_package_build_id: target
+                .provider_activation()
+                .implementation_package_build_id()
+                .clone(),
+            provider_service_id: target
+                .provider_activation()
+                .identity()
+                .deployment
+                .service_id
+                .clone(),
+            operation_id: target.descriptor().operation_id.as_str().to_string(),
+            type_args: call.type_args.clone(),
+            args: Vec::new(),
+            stream_value: stream_value.clone(),
+            sink,
+            stream_cancel,
+            cancellation: cancellation.clone(),
+            cancellation_contract,
+            request: target.provider_request().clone(),
+            _stream_runtime_owner: provider_stream_owner,
+        };
+        (task, generation, stream_runtime, stream_value, cancellation)
     }
 
     #[test]

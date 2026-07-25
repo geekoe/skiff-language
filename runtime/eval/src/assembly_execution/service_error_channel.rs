@@ -7,13 +7,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 use skiff_artifact_model::{
-    ContractTypeNameability, ContractTypeRef, InstructionSourceSite, PackageBuildId,
+    ContractTypeNameability, ContractTypeRef, InstructionSourceSite, PackageBuildId, SourceSpanRef,
 };
 use skiff_canonical_json::canonical_json_bytes;
 use skiff_runtime_boundary::{
     payload::{PayloadBoundary, PayloadBoundaryKind},
     service_value_plan::ServiceValuePlan,
     ServiceValueSelection,
+};
+use skiff_runtime_capability_context::{
+    RestrictedServiceDiagnostic, RestrictedServiceDiagnosticCauseKind,
+    RestrictedServiceDiagnosticOwner, TelemetryCapabilityContext,
 };
 use skiff_runtime_linked_program::{
     AssemblyExecutionImage, ExecutableAddr, PackageCodeSlotIndex, ServiceErrorDeclarationKind,
@@ -80,7 +84,82 @@ pub(crate) struct ServiceErrorImportContext<'a> {
     pub(crate) remote_operation_id: &'a str,
 }
 
+/// Provider-local facts used only for the restricted diagnostic sidecar.
+pub(crate) struct RestrictedServiceDiagnosticExportContext<'a> {
+    pub(crate) telemetry: &'a TelemetryCapabilityContext,
+    pub(crate) provider_activation_id: &'a str,
+    pub(crate) request_generation: u64,
+    pub(crate) fallback_source: &'a InstructionSourceSite,
+    pub(crate) fallback_stack: &'a [ExceptionStackFrame],
+}
+
 impl CanonicalServiceErrorChannel {
+    /// Fixes one provider failure and submits its provider-local diagnostic.
+    ///
+    /// Diagnostic submission is best-effort and cannot change the fixed result.
+    /// The provider heap remains borrowed through both export and submission.
+    pub(crate) fn export_provider_failure_with_diagnostic(
+        actual_error: &RuntimeError,
+        context: ServiceErrorExportContext<'_>,
+        diagnostic_context: RestrictedServiceDiagnosticExportContext<'_>,
+        next_correlation: impl FnOnce() -> Result<ErrorCorrelation>,
+    ) -> Result<OpaqueServiceError> {
+        let provider_service_id = context.provider_service_id.to_string();
+        let operation_id = context.operation_id.to_string();
+        let fixed = Self::export_provider_failure(actual_error, context, next_correlation)?;
+        let (source, stack) = user_exception_for_catch(actual_error)
+            .map(|exception| {
+                (
+                    exception.request().source().clone(),
+                    exception.request().stack().to_vec(),
+                )
+            })
+            .or_else(|| {
+                let stack = diagnostic_instruction_stack(actual_error);
+                let source = stack.last().and_then(|frame| match frame {
+                    ExceptionStackFrame::Local { site } => Some(site.clone()),
+                    ExceptionStackFrame::RemoteBoundary { .. } => None,
+                })?;
+                Some((source, stack))
+            })
+            .unwrap_or_else(|| {
+                (
+                    diagnostic_context.fallback_source.clone(),
+                    diagnostic_context.fallback_stack.to_vec(),
+                )
+            });
+        let cause_kind = match fixed.envelope() {
+            ServiceErrorEnvelope::PublicTypedError { .. } => {
+                RestrictedServiceDiagnosticCauseKind::PublicTypedError
+            }
+            ServiceErrorEnvelope::InternalError { .. } => {
+                RestrictedServiceDiagnosticCauseKind::InternalError
+            }
+            ServiceErrorEnvelope::PlatformError { .. } => {
+                RestrictedServiceDiagnosticCauseKind::PlatformError
+            }
+        };
+        let diagnostic = RestrictedServiceDiagnostic {
+            owner: RestrictedServiceDiagnosticOwner {
+                provider_service_id,
+                operation_id,
+                provider_activation_id: diagnostic_context.provider_activation_id.to_string(),
+                request_generation: diagnostic_context.request_generation,
+            },
+            correlation: ErrorCorrelation {
+                trace_id: fixed.envelope().trace_id().to_string(),
+                error_id: fixed.envelope().error_id().to_string(),
+            },
+            source,
+            stack,
+            cause_kind,
+        };
+        let _ = diagnostic_context
+            .telemetry
+            .submit_restricted_service_diagnostic(&diagnostic);
+        Ok(fixed)
+    }
+
     /// Fixes one actual provider failure before its heap can be dropped.
     ///
     /// `next_correlation` is invoked only for a newly-created platform or
@@ -171,6 +250,76 @@ impl CanonicalServiceErrorChannel {
                 .map_err(RuntimeError::InvalidArtifact)?;
         Ok(UserException::new(request))
     }
+}
+
+fn diagnostic_instruction_stack(error: &RuntimeError) -> Vec<ExceptionStackFrame> {
+    fn collect(error: &RuntimeError, stack: &mut Vec<ExceptionStackFrame>) {
+        match error {
+            RuntimeError::WithSource { frame, error, .. } => {
+                // Keep only the typed span reference. Diagnostic frame paths,
+                // functions, messages, and other open-ended values stay out.
+                if let Some(span) = frame
+                    .get("span")
+                    .and_then(|span| span.get("span"))
+                    .and_then(|span| serde_json::from_value::<SourceSpanRef>(span.clone()).ok())
+                {
+                    stack.push(ExceptionStackFrame::Local {
+                        site: InstructionSourceSite::Source { span },
+                    });
+                }
+                collect(error, stack);
+            }
+            RuntimeError::WithDiagnosticFrame { error, .. } => collect(error, stack),
+            _ => {}
+        }
+    }
+
+    let mut stack = Vec::new();
+    collect(error, &mut stack);
+    stack
+}
+
+#[cfg(test)]
+pub(crate) struct RecordingRestrictedServiceDiagnosticSink;
+
+#[cfg(test)]
+static RESTRICTED_SERVICE_DIAGNOSTIC_PROBES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<u64, Vec<RestrictedServiceDiagnostic>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+
+#[cfg(test)]
+impl skiff_runtime_capability_context::RestrictedServiceDiagnosticSink
+    for RecordingRestrictedServiceDiagnosticSink
+{
+    fn submit(
+        &self,
+        diagnostic: &RestrictedServiceDiagnostic,
+    ) -> skiff_runtime_capability_context::CapabilityResult<()> {
+        if let Ok(mut probes) = RESTRICTED_SERVICE_DIAGNOSTIC_PROBES.lock() {
+            if let Some(records) = probes.get_mut(&diagnostic.owner.request_generation) {
+                records.push(diagnostic.clone());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn start_restricted_service_diagnostic_probe_for_test(request_generation: u64) {
+    if let Ok(mut probes) = RESTRICTED_SERVICE_DIAGNOSTIC_PROBES.lock() {
+        probes.insert(request_generation, Vec::new());
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn take_restricted_service_diagnostics_for_test(
+    request_generation: u64,
+) -> Vec<RestrictedServiceDiagnostic> {
+    RESTRICTED_SERVICE_DIAGNOSTIC_PROBES
+        .lock()
+        .ok()
+        .and_then(|mut probes| probes.remove(&request_generation))
+        .unwrap_or_default()
 }
 
 fn export_local_exception(

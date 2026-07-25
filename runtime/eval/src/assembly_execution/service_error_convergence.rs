@@ -20,8 +20,11 @@ use super::{
         },
         test_runtime,
     },
-    service_error_channel::ServiceErrorExportContext,
-    service_error_channel::{CanonicalServiceErrorChannel, ServiceErrorImportContext},
+    service_error_channel::{
+        start_restricted_service_diagnostic_probe_for_test,
+        take_restricted_service_diagnostics_for_test, CanonicalServiceErrorChannel,
+        ServiceErrorExportContext, ServiceErrorImportContext,
+    },
     RuntimeAssemblyExecutionProjection,
 };
 use crate::{
@@ -38,7 +41,7 @@ use crate::{
 };
 
 #[tokio::test]
-async fn service_error_channel_contract_operation_converges_real_lane_carriers() {
+async fn service_error_channel_contract_operation_restricted_service_diagnostic_real_lanes() {
     let fixture = ServiceErrorConsumerFixture::new(
         ProviderFailureKind::PublicRecord,
         ConsumerTopology::OneHop,
@@ -47,7 +50,19 @@ async fn service_error_channel_contract_operation_converges_real_lane_carriers()
     );
     let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
 
-    let (ordinary_result, ordinary_heap, _) = fixture.execute_internal(&interpreter).await;
+    let ordinary_target = fixture.caller_eval_target();
+    let ordinary_generation = ordinary_target.request_activation().generation();
+    start_restricted_service_diagnostic_probe_for_test(ordinary_generation);
+    let ordinary_context = fixture.execution_context(&interpreter, ordinary_target);
+    let mut ordinary_heap = RequestHeap::default();
+    let ordinary_result = interpreter
+        .execute_runtime_assembly_addr(
+            ordinary_context,
+            &mut ordinary_heap,
+            fixture.caller_addr(),
+            Vec::new(),
+        )
+        .await;
     let ordinary_error = ordinary_result.expect_err("ordinary provider must throw");
     let ordinary_exception = user_exception_for_catch(&ordinary_error)
         .expect("ordinary central dispatcher must import the fixed failure")
@@ -58,8 +73,16 @@ async fn service_error_channel_contract_operation_converges_real_lane_carriers()
         .clone();
     assert!(ordinary_exception.local_value().is_some());
     assert!(!ordinary_heap.is_empty());
+    let ordinary_diagnostics = take_restricted_service_diagnostics_for_test(ordinary_generation);
+    assert_eq!(ordinary_diagnostics.len(), 1);
+    assert_eq!(
+        ordinary_diagnostics[0].correlation.error_id,
+        ordinary_fixed.envelope().error_id()
+    );
 
     let caller_target = fixture.caller_eval_target();
+    let async_generation = caller_target.request_activation().generation();
+    start_restricted_service_diagnostic_probe_for_test(async_generation);
     let image = Arc::clone(caller_target.execution_image());
     let projection = RuntimeAssemblyExecutionProjection::from_image(Arc::clone(&image));
     let caller = projection
@@ -120,6 +143,17 @@ async fn service_error_channel_contract_operation_converges_real_lane_carriers()
         other => panic!("async unary must export the same fixed carrier, got {other:?}"),
     };
     assert_eq!(async_fixed.encoded_bytes(), ordinary_fixed.encoded_bytes());
+    let async_diagnostics = take_restricted_service_diagnostics_for_test(async_generation);
+    assert_eq!(
+        async_diagnostics.len(),
+        1,
+        "async unary must submit exactly one provider-local diagnostic"
+    );
+    assert_eq!(
+        async_diagnostics[0].correlation.error_id,
+        async_fixed.envelope().error_id()
+    );
+    assert_eq!(async_diagnostics[0].source, ordinary_diagnostics[0].source);
 
     let async_import = CanonicalServiceErrorChannel::import_caller_failure(
         async_fixed.clone(),
@@ -147,6 +181,8 @@ async fn service_error_channel_contract_operation_converges_real_lane_carriers()
     );
 
     let ingress_target = fixture.terminal_eval_target();
+    let ingress_generation = ingress_target.request_activation().generation();
+    start_restricted_service_diagnostic_probe_for_test(ingress_generation);
     let target = fixture.ingress_target(&ingress_target);
     let ingress_context = fixture.execution_context(&interpreter, ingress_target);
     let mut ingress_heap = RequestHeap::default();
@@ -168,6 +204,12 @@ async fn service_error_channel_contract_operation_converges_real_lane_carriers()
         ordinary_fixed.encoded_bytes()
     );
     assert!(ingress_heap.is_empty());
+    let ingress_diagnostics = take_restricted_service_diagnostics_for_test(ingress_generation);
+    assert_eq!(ingress_diagnostics.len(), 1);
+    assert_eq!(
+        ingress_diagnostics[0].correlation.error_id,
+        ingress_fixed.envelope().error_id()
+    );
 
     let stream_terminal = StreamRuntimeError::fixed_service_failure_with_import(
         async_fixed.clone(),
@@ -311,7 +353,8 @@ async fn service_error_channel_contract_operation_restores_after_an_unlinked_mid
 }
 
 #[test]
-fn service_error_channel_contract_operation_keeps_effect_targets_exact() {
+fn service_error_channel_contract_operation_restricted_service_diagnostic_keeps_effect_targets_exact(
+) {
     let fixed = skiff_runtime_model::service_error::OpaqueServiceError::decode(
         skiff_canonical_json::canonical_json_bytes(&ServiceErrorEnvelope::PublicTypedError {
             package_id: "unlinked.example/errors".to_string(),

@@ -21,14 +21,13 @@ use skiff_runtime_model::{
     },
 };
 
-use super::super::{
-    start_ordinary_provider_failure_probe_for_test, take_ordinary_provider_failure_records_for_test,
-};
 use super::{execution_context_with_trace, test_runtime};
 use crate::{
     assembly_execution::{
         service_error_channel::{
-            CanonicalServiceErrorChannel, ServiceErrorExportContext, ServiceErrorImportContext,
+            start_restricted_service_diagnostic_probe_for_test,
+            take_restricted_service_diagnostics_for_test, CanonicalServiceErrorChannel,
+            ServiceErrorExportContext, ServiceErrorImportContext,
         },
         start_in_process_boundary_failure_import_probe_for_test,
         take_in_process_boundary_failure_import_records_for_test,
@@ -362,7 +361,7 @@ enum ContractFlavor {
 }
 
 #[tokio::test]
-async fn ordinary_public_record_exports_before_provider_heap_drop_and_imports_caller_local() {
+async fn restricted_service_diagnostic_ordinary_exports_before_provider_heap_drop() {
     let fixture = ServiceErrorConsumerFixture::new(
         ProviderFailureKind::PublicRecord,
         ConsumerTopology::OneHop,
@@ -370,7 +369,14 @@ async fn ordinary_public_record_exports_before_provider_heap_drop_and_imports_ca
         false,
     );
     let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
-    let (result, heap, _) = fixture.execute_internal(&interpreter).await;
+    let target = fixture.caller_eval_target();
+    let generation = target.request_activation().generation();
+    start_restricted_service_diagnostic_probe_for_test(generation);
+    let context = fixture.execution_context(&interpreter, target);
+    let mut heap = RequestHeap::default();
+    let result = interpreter
+        .execute_runtime_assembly_addr(context, &mut heap, fixture.caller_addr(), Vec::new())
+        .await;
     let error = result.expect_err("provider throw must cross the ordinary boundary");
     let exception = user_exception(&error);
     let request = exception.request();
@@ -422,6 +428,23 @@ async fn ordinary_public_record_exports_before_provider_heap_drop_and_imports_ca
             && operation_id == fixture.operation_id().as_str()
             && error_id == fixed.envelope().error_id()
     ));
+    let diagnostics = take_restricted_service_diagnostics_for_test(generation);
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].source, provider_throw_site());
+    assert_eq!(
+        diagnostics[0].stack,
+        vec![ExceptionStackFrame::Local {
+            site: provider_throw_site(),
+        }]
+    );
+    assert_eq!(
+        diagnostics[0].correlation.trace_id,
+        fixed.envelope().trace_id()
+    );
+    assert_eq!(
+        diagnostics[0].correlation.error_id,
+        fixed.envelope().error_id()
+    );
 }
 
 #[tokio::test]
@@ -572,7 +595,7 @@ async fn ordinary_representation_private_platform_and_resource_share_one_channel
 }
 
 #[test]
-fn ordinary_three_hop_preserves_fixed_bytes_and_rebuilds_each_local_stack() {
+fn restricted_service_diagnostic_ordinary_three_hop_preserves_bytes_and_local_stacks() {
     std::thread::Builder::new()
         .name("ordinary-three-hop".to_string())
         .stack_size(16 * 1024 * 1024)
@@ -597,7 +620,7 @@ fn ordinary_three_hop_preserves_fixed_bytes_and_rebuilds_each_local_stack() {
                         let target = fixture.caller_eval_target();
                         let generation = target.request_activation().generation();
                         start_in_process_boundary_failure_import_probe_for_test(generation);
-                        start_ordinary_provider_failure_probe_for_test(generation);
+                        start_restricted_service_diagnostic_probe_for_test(generation);
                         let context =
                             execution_context_with_trace(&interpreter, target, ERROR_TRACE_ID);
                         let mut heap = RequestHeap::default();
@@ -615,20 +638,16 @@ fn ordinary_three_hop_preserves_fixed_bytes_and_rebuilds_each_local_stack() {
                         let records =
                             take_in_process_boundary_failure_import_records_for_test(generation);
                         let provider_records =
-                            take_ordinary_provider_failure_records_for_test(generation);
+                            take_restricted_service_diagnostics_for_test(generation);
                         assert_eq!(
                             provider_records.len(),
                             2,
                             "terminal C and relay B must each reach provider export once"
                         );
                         assert_ne!(
-                            provider_records[0].activation_id,
-                            provider_records[1].activation_id,
+                            provider_records[0].owner.provider_activation_id,
+                            provider_records[1].owner.provider_activation_id,
                             "B and C provider failures must belong to distinct activations"
-                        );
-                        assert!(
-                            !provider_records[0].fixed_before_export,
-                            "C starts with a local provider exception"
                         );
                         assert_eq!(
                             provider_records[0].source,
@@ -641,10 +660,6 @@ fn ordinary_three_hop_preserves_fixed_bytes_and_rebuilds_each_local_stack() {
                             }],
                             "C provider scope must not inherit A or B frames"
                         );
-                        assert!(
-                            provider_records[1].fixed_before_export,
-                            "B must forward the already-imported fixed cause"
-                        );
                         assert_eq!(provider_records[1].source, fixture.relay_site().clone());
                         assert_eq!(
                             provider_records[1].stack.len(),
@@ -652,6 +667,23 @@ fn ordinary_three_hop_preserves_fixed_bytes_and_rebuilds_each_local_stack() {
                             "B keeps only its local call site and C remote boundary"
                         );
                         assert_eq!(records.len(), 2, "B and A must each import exactly once");
+                        let original =
+                            OpaqueServiceError::decode(records[0].encoded_error.clone())
+                                .expect("recorded fixed bytes remain strict");
+                        for diagnostic in &provider_records {
+                            assert_eq!(
+                                diagnostic.correlation.trace_id,
+                                original.envelope().trace_id()
+                            );
+                            assert_eq!(
+                                diagnostic.correlation.error_id,
+                                original.envelope().error_id()
+                            );
+                            assert!(
+                                !format!("{diagnostic:?}").contains("provider-private-secret"),
+                                "restricted safe fields must not contain the provider payload"
+                            );
+                        }
                         assert_ne!(
                             records[0].caller_activation_id,
                             records[1].caller_activation_id,

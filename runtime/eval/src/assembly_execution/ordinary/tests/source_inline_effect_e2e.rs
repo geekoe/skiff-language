@@ -18,6 +18,7 @@ use skiff_compiler::{
 };
 use skiff_deployment::storage::{CanonicalArtifactStore, ServiceContractPointer};
 use skiff_runtime_activation::RequestActivationContext;
+use skiff_runtime_capability_context::RestrictedServiceDiagnostic;
 use skiff_runtime_linked_program::{
     ExecutableAddr, FileAddr, HydratedPackageCode, PublicationResourceTable, UnitAddr,
 };
@@ -40,6 +41,10 @@ use skiff_test_runner::{
 };
 
 use crate::{
+    assembly_execution::service_error_channel::{
+        start_restricted_service_diagnostic_probe_for_test,
+        take_restricted_service_diagnostics_for_test,
+    },
     error::{RuntimeError, UserException},
     test_effect_registry::{
         RegisteredTestEffect, RegisteredTestEffectFailure, RegisteredTestEffectOutcome,
@@ -68,10 +73,11 @@ struct LinkedEffectExecution {
     interpreter: Interpreter,
     result: crate::error::Result<RuntimeValue>,
     heap: RequestHeap,
+    diagnostics: Vec<RestrictedServiceDiagnostic>,
 }
 
 #[tokio::test]
-async fn linked_service_effect_public_throw_imports_and_consumes_sequence() {
+async fn service_error_channel_contract_operation_restricted_service_diagnostic_effect_throw() {
     let run = execute_linked_effect(0, None).await;
     let result = run.result.as_ref().expect("public throw must be caught");
     let exception = caught_exception(result, &run.heap);
@@ -116,6 +122,7 @@ async fn linked_service_effect_public_throw_imports_and_consumes_sequence() {
         result.fields().get("response"),
         Some(&RuntimeValue::String("accepted".to_string()))
     );
+    assert_service_diagnostic(&run, exception);
     run.interpreter.finalize_test_case().unwrap();
 }
 
@@ -125,6 +132,10 @@ async fn linked_service_effect_internalization_matrix_is_fixed_once() {
     assert_internal(
         caught_exception(private.result.as_ref().unwrap(), &private.heap),
         "private-detail",
+    );
+    assert_service_diagnostic(
+        &private,
+        caught_exception(private.result.as_ref().unwrap(), &private.heap),
     );
     private.interpreter.finalize_test_case().unwrap();
 
@@ -171,6 +182,7 @@ async fn linked_service_effect_internalization_matrix_is_fixed_once() {
         let exception = caught_exception(run.result.as_ref().unwrap(), &run.heap);
         assert_eq!(exception.correlation(), &correlation);
         assert_internal(exception, &leaked);
+        assert_service_diagnostic(&run, exception);
         run.interpreter.finalize_test_case().unwrap();
     }
 }
@@ -205,6 +217,7 @@ async fn linked_service_effect_opaque_failure_forwards_exact_bytes_and_new_stack
     );
     assert!(exception.local_value().is_none());
     assert_boundary_stack(exception);
+    assert_service_diagnostic(&run, exception);
     run.interpreter.finalize_test_case().unwrap();
 }
 
@@ -236,6 +249,7 @@ async fn linked_service_effect_platform_failure_uses_the_same_r0_channel() {
         Some(&PlatformBuiltinErrorIdentity::File.catch_identity())
     );
     assert_boundary_stack(exception);
+    assert_service_diagnostic(&run, exception);
     run.interpreter.finalize_test_case().unwrap();
 }
 
@@ -244,6 +258,8 @@ async fn execute_linked_effect(
     injected: Option<(RegisteredTestEffectFailure, RequestHeap)>,
 ) -> LinkedEffectExecution {
     let (target, addr) = linked_service_effect_fixture(executable_index);
+    let generation = target.request_activation().generation();
+    start_restricted_service_diagnostic_probe_for_test(generation);
     let interpreter = Interpreter::for_runtime_assembly_with_test_effect_double_sequences(
         Default::default(),
         test_runtime::runtime_factory(),
@@ -268,11 +284,36 @@ async fn execute_linked_effect(
     let result = interpreter
         .execute_runtime_assembly_addr(context, &mut heap, &addr, Vec::new())
         .await;
+    let diagnostics = take_restricted_service_diagnostics_for_test(generation);
     LinkedEffectExecution {
         interpreter,
         result,
         heap,
+        diagnostics,
     }
+}
+
+fn assert_service_diagnostic(run: &LinkedEffectExecution, exception: &RequestException) {
+    let fixed = exception
+        .fixed_service_error()
+        .expect("service effect keeps fixed carrier");
+    assert_eq!(
+        run.diagnostics.len(),
+        1,
+        "ContractOperation effect submits exactly one restricted diagnostic"
+    );
+    assert_eq!(
+        run.diagnostics[0].correlation.trace_id,
+        fixed.envelope().trace_id()
+    );
+    assert_eq!(
+        run.diagnostics[0].correlation.error_id,
+        fixed.envelope().error_id()
+    );
+    assert!(
+        !format!("{:?}", run.diagnostics[0]).contains("private-detail"),
+        "diagnostic safe fields do not contain the provider payload"
+    );
 }
 
 fn caught_exception<'a>(caught: &RuntimeValue, heap: &'a RequestHeap) -> &'a RequestException {

@@ -15,9 +15,10 @@ use skiff_artifact_model::{
     PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageRequirement,
     PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaCanonicalDescriptor,
     PackageSchemaIndex, PackageSchemaIndexEntry, PackageSchemaIndexRef, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, RuntimeAssembly,
-    SyntheticInstructionSiteReason, TypeDeclIr as ArtifactTypeDecl, TypeDescriptorIr, TypeExport,
-    TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, RuntimeAssembly, SourcePosition,
+    SourceSpanRef, SyntheticInstructionSiteReason, TypeDeclIr as ArtifactTypeDecl,
+    TypeDescriptorIr, TypeExport, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_program::{
     AssemblyExecutionImage, ExecutableAddr, FileAddr, HydratedPackageCode,
@@ -432,6 +433,192 @@ fn private_generic_encode_failure_and_runtime_fault_create_one_sanitized_interna
     let wire = String::from_utf8_lossy(fixed_fault.encoded_bytes());
     assert!(!wire.contains("PRIVATE_TYPE"));
     assert!(!wire.contains("encoder"));
+}
+
+struct TestTelemetry;
+
+impl skiff_runtime_capability_context::TelemetryCapabilityApi for TestTelemetry {
+    fn emit_native(
+        &self,
+        _target: &str,
+        _args: &[serde_json::Value],
+    ) -> skiff_runtime_capability_context::CapabilityResult<serde_json::Value> {
+        Ok(serde_json::Value::Null)
+    }
+}
+
+struct FailingRestrictedServiceDiagnosticSink;
+
+impl skiff_runtime_capability_context::RestrictedServiceDiagnosticSink
+    for FailingRestrictedServiceDiagnosticSink
+{
+    fn submit(
+        &self,
+        _diagnostic: &RestrictedServiceDiagnostic,
+    ) -> skiff_runtime_capability_context::CapabilityResult<()> {
+        Err(
+            skiff_runtime_capability_context::CapabilityError::provider_unavailable(
+                "restricted-service-diagnostic",
+                "test sink unavailable",
+            ),
+        )
+    }
+}
+
+#[test]
+fn restricted_service_diagnostic_private_sink_failure_preserves_fixed_bytes_and_safe_fields() {
+    let fixture = CoreFixture::new();
+    let projection = RuntimeAssemblyExecutionProjection::from_image(Arc::clone(&fixture.image));
+    let provider_heap = RequestHeap::default();
+    let private = local_error(
+        RuntimeValue::String("provider-private-secret".to_string()),
+        local_identity(fixture.addr(PROVIDER, "PrivateFault")),
+        "restricted",
+    );
+    let baseline = CanonicalServiceErrorChannel::export_provider_failure(
+        &private,
+        fixture.export_context(&projection, &provider_heap, PROVIDER, Some(CALLER)),
+        || panic!("local private failure retains its original correlation"),
+    )
+    .expect("baseline private export");
+    let source = call_site();
+    let fallback_stack = [ExceptionStackFrame::Local {
+        site: source.clone(),
+    }];
+    let telemetry = TelemetryCapabilityContext::new(TestTelemetry)
+        .with_restricted_service_diagnostic_sink(RecordingRestrictedServiceDiagnosticSink);
+    let generation = 9_334;
+    start_restricted_service_diagnostic_probe_for_test(generation);
+    let fixed = CanonicalServiceErrorChannel::export_provider_failure_with_diagnostic(
+        &private,
+        fixture.export_context(&projection, &provider_heap, PROVIDER, Some(CALLER)),
+        RestrictedServiceDiagnosticExportContext {
+            telemetry: &telemetry,
+            provider_activation_id: "activation:provider",
+            request_generation: generation,
+            fallback_source: &source,
+            fallback_stack: &fallback_stack,
+        },
+        || panic!("local private failure retains its original correlation"),
+    )
+    .expect("restricted private export");
+    assert_eq!(fixed.encoded_bytes(), baseline.encoded_bytes());
+
+    let diagnostics = take_restricted_service_diagnostics_for_test(generation);
+    assert_eq!(diagnostics.len(), 1);
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic.correlation.trace_id, fixed.envelope().trace_id());
+    assert_eq!(diagnostic.correlation.error_id, fixed.envelope().error_id());
+    assert_eq!(
+        diagnostic.cause_kind,
+        RestrictedServiceDiagnosticCauseKind::InternalError
+    );
+    assert_eq!(diagnostic.source, source);
+    assert_eq!(diagnostic.stack, fallback_stack);
+    assert!(!format!("{diagnostic:?}").contains("provider-private-secret"));
+
+    let failing = TelemetryCapabilityContext::new(TestTelemetry)
+        .with_restricted_service_diagnostic_sink(FailingRestrictedServiceDiagnosticSink);
+    let fixed_with_failed_sink =
+        CanonicalServiceErrorChannel::export_provider_failure_with_diagnostic(
+            &private,
+            fixture.export_context(&projection, &provider_heap, PROVIDER, Some(CALLER)),
+            RestrictedServiceDiagnosticExportContext {
+                telemetry: &failing,
+                provider_activation_id: "activation:provider",
+                request_generation: generation + 1,
+                fallback_source: &source,
+                fallback_stack: &fallback_stack,
+            },
+            || panic!("local private failure retains its original correlation"),
+        )
+        .expect("sink failure cannot replace the service error");
+    assert_eq!(
+        fixed_with_failed_sink.encoded_bytes(),
+        baseline.encoded_bytes()
+    );
+}
+
+#[test]
+fn restricted_service_diagnostic_platform_uses_typed_source_and_final_correlation() {
+    let fixture = CoreFixture::new();
+    let projection = RuntimeAssemblyExecutionProjection::from_image(Arc::clone(&fixture.image));
+    let provider_heap = RequestHeap::default();
+    let span = SourceSpanRef {
+        source_id: 7,
+        start: SourcePosition::new(11, 3),
+        end: SourcePosition::new(11, 12),
+    };
+    let actual = RuntimeError::FileError {
+        message: "provider-private-file-message".to_string(),
+    }
+    .with_source(
+        42,
+        json!({
+            "span": {
+                "id": 42,
+                "source": 7,
+                "kind": "CallExpression",
+                "span": span.clone(),
+            },
+            "source": {
+                "id": 7,
+                "path": "/provider/private/source.skiff",
+                "modulePath": "provider.private",
+            },
+        }),
+    );
+    let fallback_source = call_site();
+    let fallback_stack = [ExceptionStackFrame::Local {
+        site: fallback_source.clone(),
+    }];
+    let telemetry = TelemetryCapabilityContext::new(TestTelemetry)
+        .with_restricted_service_diagnostic_sink(RecordingRestrictedServiceDiagnosticSink);
+    let generation = 9_335;
+    start_restricted_service_diagnostic_probe_for_test(generation);
+    let fixed = CanonicalServiceErrorChannel::export_provider_failure_with_diagnostic(
+        &actual,
+        fixture.export_context(&projection, &provider_heap, PROVIDER, Some(CALLER)),
+        RestrictedServiceDiagnosticExportContext {
+            telemetry: &telemetry,
+            provider_activation_id: "activation:provider",
+            request_generation: generation,
+            fallback_source: &fallback_source,
+            fallback_stack: &fallback_stack,
+        },
+        || Ok(correlation("platform-restricted")),
+    )
+    .expect("platform failure should be fixed and diagnosed");
+
+    let diagnostics = take_restricted_service_diagnostics_for_test(generation);
+    assert_eq!(diagnostics.len(), 1);
+    let expected_source = InstructionSourceSite::Source { span };
+    assert_eq!(diagnostics[0].source, expected_source);
+    assert_eq!(
+        diagnostics[0].stack,
+        vec![ExceptionStackFrame::Local {
+            site: expected_source,
+        }]
+    );
+    assert_eq!(
+        diagnostics[0].cause_kind,
+        RestrictedServiceDiagnosticCauseKind::PlatformError
+    );
+    assert_eq!(
+        diagnostics[0].correlation.trace_id,
+        fixed.envelope().trace_id()
+    );
+    assert_eq!(
+        diagnostics[0].correlation.error_id,
+        fixed.envelope().error_id()
+    );
+    let safe = format!("{:?}", diagnostics[0]);
+    assert!(!safe.contains("provider-private-file-message"));
+    assert!(!safe.contains("/provider/private/source.skiff"));
+    assert!(!fixed
+        .encoded_bytes()
+        .windows(b"/provider/private/source.skiff".len())
+        .any(|window| window == b"/provider/private/source.skiff"));
 }
 
 #[test]

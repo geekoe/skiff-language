@@ -21,6 +21,10 @@ use skiff_runtime_model::{
 };
 
 use crate::{
+    assembly_execution::service_error_channel::{
+        start_restricted_service_diagnostic_probe_for_test,
+        take_restricted_service_diagnostics_for_test,
+    },
     capabilities::TimeCapabilityContext,
     program_execution::{ProgramExecutionContext, ProgramExecutionInput},
     Interpreter, RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget,
@@ -147,12 +151,14 @@ async fn inline_effect_request_finalization_reports_and_clears_unused_setup() {
 }
 
 #[tokio::test]
-async fn inline_effect_typed_throw_is_caught_by_exact_linked_nominal_type() {
+async fn restricted_service_diagnostic_package_callable_typed_throw_submits_zero() {
     let fixture = package_direct_fixture_with_caller(CallerFixtureKind::EffectThrowCatch);
     let interpreter = Interpreter::for_runtime_assembly_with_test_effect_double_sequences(
         Default::default(),
         test_runtime::runtime_factory(),
     );
+    let generation = fixture.eval_target.request_activation().generation();
+    start_restricted_service_diagnostic_probe_for_test(generation);
     let context = execution_context_with_trace(
         &interpreter,
         fixture.eval_target,
@@ -242,6 +248,10 @@ async fn inline_effect_typed_throw_is_caught_by_exact_linked_nominal_type() {
     assert_eq!(
         payload.fields().get("message"),
         Some(&RuntimeValue::String("denied".to_string()))
+    );
+    assert!(
+        take_restricted_service_diagnostics_for_test(generation).is_empty(),
+        "PackageCallable test effects must not submit service diagnostics"
     );
     interpreter
         .finalize_test_case()

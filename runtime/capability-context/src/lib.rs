@@ -94,7 +94,11 @@ pub use stream_cleanup::{
     StreamConsumerCleanup, StreamConsumerEndMarker, StreamConsumptionStatus,
     StreamConsumptionTerminal, SupervisedStreamConsumptionChild, SupervisedStreamConsumptionLease,
 };
-pub use telemetry::{TelemetryCapabilityApi, TelemetryCapabilityContext};
+pub use telemetry::{
+    RestrictedServiceDiagnostic, RestrictedServiceDiagnosticCauseKind,
+    RestrictedServiceDiagnosticOwner, RestrictedServiceDiagnosticSink, TelemetryCapabilityApi,
+    TelemetryCapabilityContext,
+};
 pub use time::TimeCapabilityContext;
 pub use websocket::{
     OwnedWebsocketCapabilityContext, WebsocketCapabilityApi, WebsocketCapabilityContext,

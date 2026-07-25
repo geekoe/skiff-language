@@ -23,7 +23,8 @@ use skiff_runtime_model::{
 use super::{
     assembly_execution::{
         service_error_channel::{
-            CanonicalServiceErrorChannel, ServiceErrorExportContext, ServiceErrorImportContext,
+            CanonicalServiceErrorChannel, RestrictedServiceDiagnosticExportContext,
+            ServiceErrorExportContext, ServiceErrorImportContext,
         },
         RuntimeExecutionProjection,
     },
@@ -151,7 +152,7 @@ impl<'a> EvalContext<'a> {
                     payload,
                     provider_source.clone(),
                     vec![ExceptionStackFrame::Local {
-                        site: provider_source,
+                        site: provider_source.clone(),
                     }],
                     self.context.next_exception_correlation()?,
                 )
@@ -175,7 +176,17 @@ impl<'a> EvalContext<'a> {
             instruction.expected_protocol_identity().as_str()
         );
         let operation_id = instruction.operation_id().as_str();
-        let fixed = CanonicalServiceErrorChannel::export_provider_failure(
+        let telemetry = self.context.telemetry_context();
+        let fallback_stack = vec![ExceptionStackFrame::Local {
+            site: provider_source.clone(),
+        }];
+        let provider_activation_id = format!("test-effect-activation:{synthetic_service_id}");
+        let request_generation = self
+            .context
+            .runtime_assembly_target()?
+            .request_activation()
+            .generation();
+        let fixed = CanonicalServiceErrorChannel::export_provider_failure_with_diagnostic(
             &provider_error,
             ServiceErrorExportContext {
                 execution_image: &execution_image,
@@ -185,6 +196,13 @@ impl<'a> EvalContext<'a> {
                 caller_package_build_id: Some(instruction.caller_package_build_id()),
                 provider_service_id: &synthetic_service_id,
                 operation_id,
+            },
+            RestrictedServiceDiagnosticExportContext {
+                telemetry: &telemetry,
+                provider_activation_id: &provider_activation_id,
+                request_generation,
+                fallback_source: &provider_source,
+                fallback_stack: &fallback_stack,
             },
             || self.context.next_exception_correlation(),
         )?;

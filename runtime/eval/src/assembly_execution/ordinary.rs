@@ -1,6 +1,7 @@
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCallbackLifetime, BoundaryCancellationContract,
-    BoundaryOperationDescriptor, BoundaryStreamContract, PackageBuildId,
+    BoundaryOperationDescriptor, BoundaryStreamContract, InstructionSourceSite, PackageBuildId,
+    SyntheticInstructionSiteReason,
 };
 use skiff_runtime_linked_program::{CallIr, LinkedPackageDirectCall};
 use skiff_runtime_model::runtime_value::{RuntimeValue, RuntimeValueCarrier};
@@ -8,7 +9,10 @@ use skiff_runtime_model::runtime_value::{RuntimeValue, RuntimeValueCarrier};
 use super::{
     boundary_materialization::CanonicalServiceBoundaryPlan,
     callback_native::CallbackNativeCapabilityHooks,
-    service_error_channel::{CanonicalServiceErrorChannel, ServiceErrorExportContext},
+    service_error_channel::{
+        CanonicalServiceErrorChannel, RestrictedServiceDiagnosticExportContext,
+        ServiceErrorExportContext,
+    },
 };
 use crate::{
     env::Env,
@@ -88,12 +92,12 @@ pub(crate) async fn execute_service_call(
         }
         Err(error) => {
             let provider_target = provider_context.runtime_assembly_target()?;
-            record_ordinary_provider_failure(
-                provider_target.request_activation().generation(),
-                target.provider_activation().activation_id().as_str(),
-                &error,
-            );
-            let fixed = CanonicalServiceErrorChannel::export_provider_failure(
+            let telemetry = provider_context.telemetry_context();
+            let fallback_source = InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::RuntimeBoundaryDispatch,
+            };
+            let fallback_stack = provider_context.exception_stack_for_site(fallback_source.clone());
+            let fixed = CanonicalServiceErrorChannel::export_provider_failure_with_diagnostic(
                 &error,
                 ServiceErrorExportContext {
                     execution_image: provider_target.execution_image().as_ref(),
@@ -105,6 +109,13 @@ pub(crate) async fn execute_service_call(
                     caller_package_build_id,
                     provider_service_id: target.contract().service_id.as_str(),
                     operation_id: target.descriptor().operation_id.as_str(),
+                },
+                RestrictedServiceDiagnosticExportContext {
+                    telemetry: &telemetry,
+                    provider_activation_id: target.provider_activation().activation_id().as_str(),
+                    request_generation: provider_target.request_activation().generation(),
+                    fallback_source: &fallback_source,
+                    fallback_stack: &fallback_stack,
                 },
                 || provider_context.next_exception_correlation(),
             )?;
@@ -153,60 +164,6 @@ fn validate_ordinary_operation(
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OrdinaryProviderFailureRecord {
-    pub activation_id: String,
-    pub fixed_before_export: bool,
-    pub source: skiff_artifact_model::InstructionSourceSite,
-    pub stack: Vec<skiff_runtime_model::service_error::ExceptionStackFrame>,
-}
-
-#[cfg(test)]
-static ORDINARY_PROVIDER_FAILURE_SPY: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::BTreeMap<u64, Vec<OrdinaryProviderFailureRecord>>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
-
-fn record_ordinary_provider_failure(
-    request_generation: u64,
-    activation_id: &str,
-    error: &RuntimeError,
-) {
-    #[cfg(test)]
-    if let Ok(mut probes) = ORDINARY_PROVIDER_FAILURE_SPY.lock() {
-        if let Some(records) = probes.get_mut(&request_generation) {
-            if let Some(exception) = crate::exceptions::user_exception_for_catch(error) {
-                records.push(OrdinaryProviderFailureRecord {
-                    activation_id: activation_id.to_string(),
-                    fixed_before_export: exception.request().fixed_service_error().is_some(),
-                    source: exception.request().source().clone(),
-                    stack: exception.request().stack().to_vec(),
-                });
-            }
-        }
-    }
-    #[cfg(not(test))]
-    let _ = (request_generation, activation_id, error);
-}
-
-#[cfg(test)]
-pub(crate) fn start_ordinary_provider_failure_probe_for_test(request_generation: u64) {
-    if let Ok(mut probes) = ORDINARY_PROVIDER_FAILURE_SPY.lock() {
-        probes.insert(request_generation, Vec::new());
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn take_ordinary_provider_failure_records_for_test(
-    request_generation: u64,
-) -> Vec<OrdinaryProviderFailureRecord> {
-    ORDINARY_PROVIDER_FAILURE_SPY
-        .lock()
-        .ok()
-        .and_then(|mut probes| probes.remove(&request_generation))
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
