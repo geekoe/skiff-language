@@ -1,6 +1,7 @@
 # P5-F296 Applied nominal compiler consumer
 
-状态：Ready。
+状态：Implemented checkpoint。结果见
+`P5-F296-applied-nominal-compiler-consumer-result.md`。
 
 ## 直接父节点与权威链
 
@@ -131,4 +132,3 @@ git diff --check
 - 启动到第一次production修改不超过5分钟；不可执行时立即返回
   `TASK_NOT_EXECUTABLE`、精确缺口与最小前置。
 - 提交后返回commit、反向搜索、自验收、遮挡与设计/owner缺口；不得自行承接S2/runtime/gate。
-
