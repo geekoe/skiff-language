@@ -128,6 +128,11 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
       files: [{ fileIrIdentity: fileIdentity }],
     });
     await writeJson(root, `${packageRoot}/file-ir/${identityHash(fileIdentity)}.json`, {
+      numberLiterals: {
+        fraction: 0.1,
+        negative: -2,
+        exponent: 1e-7,
+      },
       actorDeclarations: [{
         actorAbiIdentity: `skiff-actor-abi-v1:sha256:${'d'.repeat(64)}`,
         actorImplementationIdentity:

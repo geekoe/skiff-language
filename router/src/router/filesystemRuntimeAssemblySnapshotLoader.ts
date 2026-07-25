@@ -2,7 +2,7 @@ import { readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import type { RuntimeAssemblyRef } from '../protocol/assemblyActivationProtocol.js';
-import { parseStrictActivationJson } from '../protocol/strictActivationJson.js';
+import { parseStrictJson } from '../protocol/strictJson.js';
 import { sha256Hex, stableStringify } from '../manifest/identity.js';
 import {
   decodeRouterSnapshot,
@@ -184,7 +184,7 @@ implements RuntimeAssemblySnapshotLoader {
       throw new Error(`${label} record has an invalid bounded size`);
     }
     try {
-      return parseStrictActivationJson(bytes);
+      return parseStrictJson(bytes);
     } catch (error) {
       throw new Error(`${label} record is not strict JSON`, { cause: error });
     }
