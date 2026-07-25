@@ -1,9 +1,10 @@
 use async_recursion::async_recursion;
 use skiff_runtime_linked_program::{
-    AssignTargetIr, CallIr, ExecutableAddr, ExprRefIr, LinkedBoxSourceIr, LinkedCallTarget,
-    LinkedExecutable, LinkedExprIr, LinkedFileUnit, LinkedInterfaceInstantiationRef,
-    LinkedRemoteOperationSlotPlanIr, LinkedRemoteOperationTablePlanIr, LinkedStmtIr,
-    LinkedTestEffectOutcomeIr, LinkedTypeRef, NativeTarget, ReceiverCallAbi, UnaryOpIr,
+    ActivationRelativeServiceCall, AssignTargetIr, CallIr, ExecutableAddr, ExprRefIr,
+    LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutable, LinkedExprIr, LinkedFileUnit,
+    LinkedInterfaceInstantiationRef, LinkedRemoteOperationSlotPlanIr,
+    LinkedRemoteOperationTablePlanIr, LinkedStmtIr, LinkedTestEffectOutcomeIr, LinkedTypeRef,
+    NativeTarget, ReceiverCallAbi, UnaryOpIr,
 };
 use skiff_runtime_linked_type_plan::{
     linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
@@ -15,12 +16,17 @@ use skiff_runtime_model::{
         InterfaceValue, RemoteOperationSlot, RemoteOperationTable, RuntimeValue,
         RuntimeValueCarrier, RuntimeValueKey,
     },
-    service_error::RequestException,
+    service_error::{ExceptionStackFrame, RequestException},
     type_plan::{RuntimeTypeNode, RuntimeTypePlan},
 };
 
 use super::{
-    assembly_execution::RuntimeExecutionProjection,
+    assembly_execution::{
+        service_error_channel::{
+            CanonicalServiceErrorChannel, ServiceErrorExportContext, ServiceErrorImportContext,
+        },
+        RuntimeExecutionProjection,
+    },
     capabilities::{ExecutionControl, RuntimeNativeConfigCapabilityContext},
     env::{check_cancelled, Env, Flow},
     exceptions::{
@@ -52,13 +58,20 @@ use super::{
         runtime_to_wire_required_plan,
     },
     spawn_ops,
-    test_effect_registry::{RegisteredTestEffect, RegisteredTestEffectOutcome, TestEffectTarget},
+    test_effect_registry::{
+        RegisteredTestEffect, RegisteredTestEffectFailure, RegisteredTestEffectOutcome,
+        RegisteredTestEffectThrow, ServiceTestEffectDispatch, TestEffectTarget,
+    },
     type_projection::EvalTypeProjection,
     *,
 };
-use crate::error::{materialize_request_heap_owned_runtime_error, RuntimeError, WirePayload};
+use crate::error::{
+    materialize_request_heap_owned_runtime_error, RuntimeError, UserException, WirePayload,
+};
 use promoted_runtime::dispatch::NativeDispatch;
-use skiff_artifact_model::{InstructionSourceSite, STD_NATIVE_CALLABLE_SEMANTICS};
+use skiff_artifact_model::{
+    InstructionSourceSite, SyntheticInstructionSiteReason, STD_NATIVE_CALLABLE_SEMANTICS,
+};
 use skiff_runtime_boundary::stream::is_stream_value;
 use skiff_runtime_capability_context::StreamInternalItem;
 use skiff_runtime_native as promoted_runtime;
@@ -121,6 +134,77 @@ impl<'a> EvalContext<'a> {
 
     fn type_projection(&self) -> EvalTypeProjection<'a> {
         EvalTypeProjection::from_execution_projection(self.projection.clone())
+    }
+
+    fn materialize_service_test_throw(
+        &mut self,
+        call: &CallIr,
+        instruction: &ActivationRelativeServiceCall,
+        throw: RegisteredTestEffectThrow,
+    ) -> Result<RuntimeValueCarrier> {
+        let provider_source = InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+        };
+        let provider_error = match throw.failure {
+            RegisteredTestEffectFailure::LocalPayload(payload) => {
+                let provider_exception = RequestException::local(
+                    payload,
+                    provider_source.clone(),
+                    vec![ExceptionStackFrame::Local {
+                        site: provider_source,
+                    }],
+                    self.context.next_exception_correlation()?,
+                )
+                .map_err(RuntimeError::InvalidArtifact)?;
+                RuntimeError::UserException(UserException::new(provider_exception))
+            }
+            RegisteredTestEffectFailure::FixedService(error) => {
+                RuntimeError::FixedServiceFailure(error)
+            }
+            RegisteredTestEffectFailure::ProviderFailure(error) => error,
+        };
+
+        let execution_image = self
+            .context
+            .runtime_assembly_target()?
+            .execution_image()
+            .clone();
+        let projection = self.projection.clone();
+        let synthetic_service_id = format!(
+            "test-effect:{}",
+            instruction.expected_protocol_identity().as_str()
+        );
+        let operation_id = instruction.operation_id().as_str();
+        let fixed = CanonicalServiceErrorChannel::export_provider_failure(
+            &provider_error,
+            ServiceErrorExportContext {
+                execution_image: &execution_image,
+                type_view: projection.type_view(),
+                provider_heap: &throw.setup_heap,
+                provider_package_build_id: &throw.setup_package_build_id,
+                caller_package_build_id: Some(instruction.caller_package_build_id()),
+                provider_service_id: &synthetic_service_id,
+                operation_id,
+            },
+            || self.context.next_exception_correlation(),
+        )?;
+
+        let caller_stack = self.context.exception_stack_for_site(call.site.clone());
+        let imported = CanonicalServiceErrorChannel::import_caller_failure(
+            fixed,
+            ServiceErrorImportContext {
+                execution_image: &execution_image,
+                type_view: projection.type_view(),
+                caller_heap: self.heap,
+                caller_package_build_id: instruction.caller_package_build_id(),
+                caller_executable_addr: self.addr,
+                call_site: &call.site,
+                caller_stack_at_site: &caller_stack,
+                remote_service_id: &synthetic_service_id,
+                remote_operation_id: operation_id,
+            },
+        )?;
+        Err(RuntimeError::UserException(imported))
     }
 
     fn suspend_actor_segment(
@@ -360,19 +444,21 @@ impl<'a> EvalContext<'a> {
                         "test effect setup cannot run outside test execution".to_string(),
                     ));
                 }
-                let effect_target = match target {
-                    LinkedCallTarget::PackageDirect { call: target } => {
+                let (effect_target, setup_package_build_id) = match target {
+                    LinkedCallTarget::PackageDirect { call: target } => (
                         TestEffectTarget::package_callable(
                             target.dependency_package_build_id().clone(),
                             target.package_callable_id().clone(),
-                        )
-                    }
-                    LinkedCallTarget::ActivationRelativeService { instruction } => {
+                        ),
+                        target.caller_package_build_id().clone(),
+                    ),
+                    LinkedCallTarget::ActivationRelativeService { instruction } => (
                         TestEffectTarget::contract_operation(
                             instruction.operation_id().clone(),
                             instruction.expected_protocol_identity().clone(),
-                        )
-                    }
+                        ),
+                        instruction.caller_package_build_id().clone(),
+                    ),
                     _ => {
                         return Err(RuntimeError::InvalidArtifact(
                             "test effect target did not link to a package callable or contract operation"
@@ -426,10 +512,11 @@ impl<'a> EvalContext<'a> {
                             "test effect typed throw",
                             self.heap,
                         )?;
-                        RegisteredTestEffectOutcome::Throw {
-                            payload,
+                        RegisteredTestEffectOutcome::Throw(RegisteredTestEffectThrow {
+                            failure: RegisteredTestEffectFailure::LocalPayload(payload),
                             setup_heap: self.heap.clone(),
-                        }
+                            setup_package_build_id: setup_package_build_id.clone(),
+                        })
                     }
                     LinkedTestEffectOutcomeIr::Stream { values, item_type } => {
                         let item_plan = self
@@ -1265,7 +1352,7 @@ impl<'a> EvalContext<'a> {
                         target.dependency_package_build_id().clone(),
                         target.package_callable_id().clone(),
                     );
-                    if let Some(result) = self.interpreter.runtime_test_effects.dispatch(
+                    if let Some(result) = self.interpreter.runtime_test_effects.dispatch_package(
                         &effect_target,
                         &values,
                         Some(&self.interpreter.stream_runtime),
@@ -1284,15 +1371,18 @@ impl<'a> EvalContext<'a> {
                         instruction.operation_id().clone(),
                         instruction.expected_protocol_identity().clone(),
                     );
-                    if let Some(result) = self.interpreter.runtime_test_effects.dispatch(
+                    if let Some(result) = self.interpreter.runtime_test_effects.dispatch_service(
                         &effect_target,
                         &values,
                         Some(&self.interpreter.stream_runtime),
                         self.heap,
-                        &self.context,
-                        &call.site,
                     ) {
-                        return result;
+                        return match result? {
+                            ServiceTestEffectDispatch::Complete(value) => Ok(value),
+                            ServiceTestEffectDispatch::Throw(throw) => {
+                                self.materialize_service_test_throw(call, instruction, throw)
+                            }
+                        };
                     }
                 }
                 let frame = self.suspend_actor_segment()?;
