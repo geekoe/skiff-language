@@ -1036,7 +1036,7 @@ fn nested_heap_store_remains_fail_closed_and_direct_reference_store_is_precise()
 }
 
 #[test]
-fn mutated_fresh_root_cannot_enter_container_or_database_storage() {
+fn mutated_fresh_root_can_reenter_owning_map_but_other_escapes_remain_fail_closed() {
     let model = analyze(
         r#"
             type State { value: string }
@@ -1079,9 +1079,80 @@ fn mutated_fresh_root_cannot_enter_container_or_database_storage() {
         SourceDependencyAnalysisInput::default(),
     );
 
-    for callable in ["intoMap", "intoArray", "intoDatabase", "ambiguousAlias"] {
+    for callable in ["intoMap", "ambiguousAlias"] {
+        assert_eq!(effects(&model, callable), no_effects(), "{callable}");
+        assert!(matches!(
+            provenance(&model, callable),
+            CallableProvenanceSummary::Analyzed { .. }
+        ));
+    }
+    for callable in ["intoArray", "intoDatabase"] {
         assert_heap_store_fail_closed(&model, callable);
     }
+}
+
+#[test]
+fn conditional_map_lookup_tracks_distinct_fresh_and_formal_candidates() {
+    let model = analyze(
+        r#"
+            type State { value: string }
+
+            function formal(
+              states: Map<string, State>,
+              key: string
+            ) -> State {
+              let state: State? = states.get(key)
+              if state == null {
+                state = State { value: "" }
+              }
+              state.value = "changed"
+              return state
+            }
+
+            function local(key: string) -> State {
+              const states = Map.empty<string, State>()
+              let state: State? = states.get(key)
+              if state == null {
+                state = State { value: "" }
+              }
+              state.value = "changed"
+              states.set(key, state)
+              return state
+            }
+
+            function throughFresh(key: string) -> State {
+              const states = Map.empty<string, State>()
+              return formal(states, key)
+            }
+
+            type Node { child: Node? }
+
+            function cycle() -> Node {
+              const node = Node { child: null }
+              node.child = node
+              return node
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(
+        effects(&model, "formal"),
+        CallableMayEffects {
+            writes_caller_reachable: true,
+            returns_caller_alias: true,
+            requires_same_heap_identity: true,
+            ..no_effects()
+        }
+    );
+    for callable in ["local", "throughFresh"] {
+        assert_eq!(effects(&model, callable), no_effects(), "{callable}");
+        assert!(matches!(
+            provenance(&model, callable),
+            CallableProvenanceSummary::Analyzed { .. }
+        ));
+    }
+    assert_heap_store_fail_closed(&model, "cycle");
 }
 
 #[test]

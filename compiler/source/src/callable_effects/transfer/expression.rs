@@ -93,6 +93,18 @@ impl Evaluator<'_, '_> {
                     if !reference {
                         value.caller_references.clear();
                     }
+                    if reference
+                        && value
+                            .origins
+                            .contains(&super::super::provenance::Origin::Fresh)
+                        && value.fresh_roots.is_empty()
+                    {
+                        let local_candidate = self.allocate_fresh_container(
+                            key.preorder_index(),
+                            AbstractValue::default(),
+                        );
+                        value.join(&local_candidate);
+                    }
                     value
                 }
             }

@@ -85,6 +85,7 @@ impl Evaluator<'_, '_> {
                     );
                 };
                 self.apply_exact_receiver_call(
+                    call_key,
                     op,
                     &callee_value,
                     receiver,
@@ -224,18 +225,34 @@ impl Evaluator<'_, '_> {
 
     fn apply_exact_receiver_call(
         &mut self,
+        call_key: &ExpressionKey,
         op: BuiltinReceiverOp,
         callee_value: &AbstractValue,
         receiver: AbstractValue,
         args: &[AbstractValue],
         return_reference: bool,
     ) -> AbstractValue {
-        if matches!(
-            op.canonical_key,
-            "receiver:Array.push@1" | "receiver:Array.set@1" | "receiver:Map.set@1"
-        ) && args
-            .iter()
-            .any(|value| self.contains_mutated_fresh_root(value))
+        let is_map_set = op.canonical_key == "receiver:Map.set@1";
+        if !is_map_set
+            && matches!(
+                op.canonical_key,
+                "receiver:Array.push@1" | "receiver:Array.set@1" | "receiver:Map.set@1"
+            )
+            && args
+                .iter()
+                .any(|value| self.contains_mutated_fresh_root(value))
+        {
+            self.state.join(&CallableState::fail_closed(
+                CallableProvenanceUnknownReason::UnsupportedHeapStore,
+            ));
+            return AbstractValue::unknown(return_reference);
+        }
+        if is_map_set
+            && (receiver.unknown
+                || args.iter().any(|value| value.unknown)
+                || args
+                    .iter()
+                    .any(|value| self.store_would_create_cycle(&receiver.fresh_roots, value)))
         {
             self.state.join(&CallableState::fail_closed(
                 CallableProvenanceUnknownReason::UnsupportedHeapStore,
@@ -243,7 +260,7 @@ impl Evaluator<'_, '_> {
             return AbstractValue::unknown(return_reference);
         }
         let mut actuals = Vec::with_capacity(args.len().saturating_add(1));
-        actuals.push(receiver);
+        actuals.push(receiver.clone());
         actuals.extend_from_slice(args);
         let Some(mut callee) = receiver_callable_callee(op) else {
             return self.apply_unknown_call_with_callee(
@@ -262,7 +279,28 @@ impl Evaluator<'_, '_> {
             callee.effects.requires_same_heap_identity = false;
             callee.same_heap_identity_parameters.clear();
         }
-        self.apply_callee(&callee, &actuals, return_reference, None)
+        let mut result = self.apply_callee(&callee, &actuals, return_reference, None);
+        if is_map_set && !receiver.fresh_roots.is_empty() {
+            // Map entries are heap edges owned by the Map allocation, not
+            // aliases to the Map object itself. Reinserting a mutated local
+            // record is safe so long as the edge does not close a cycle.
+            if let Some(value) = args.get(1) {
+                self.store_into_fresh_roots(&receiver.fresh_roots, value);
+            }
+        }
+        if op.canonical_key == "receiver:Map.get@1" && !receiver.fresh_roots.is_empty() {
+            // A lookup may return an entry stored in the receiver, but the
+            // entry is a distinct object. Keep caller-owned candidates mapped
+            // through the receiver while assigning local candidates their own
+            // allocation site.
+            for root in &receiver.fresh_roots {
+                result.fresh_roots.remove(root);
+            }
+            let local_candidate =
+                self.allocate_fresh_container(call_key.preorder_index(), AbstractValue::default());
+            result.join(&local_candidate);
+        }
+        result
     }
 
     fn apply_unknown_call_with_callee(
@@ -327,32 +365,42 @@ impl Evaluator<'_, '_> {
                 continue;
             };
             let mapped = map_value(stored, actuals, true);
-            if actual.unknown || mapped.unknown || actual.fresh_roots.len() > 1 {
+            if actual.unknown
+                || mapped.unknown
+                || self.store_would_create_cycle(&actual.fresh_roots, &mapped)
+            {
                 self.state.join(&CallableState::fail_closed(
                     CallableProvenanceUnknownReason::UnsupportedHeapStore,
                 ));
-            } else if !actual.fresh_roots.is_empty() && !actual.contains_caller_reference() {
-                self.store_into_fresh_roots(&actual.fresh_roots, &mapped);
-            } else if actual.contains_caller_reference() && actual.fresh_roots.is_empty() {
-                self.state.effects.writes_caller_reachable = true;
-                self.state.effects.requires_same_heap_identity = true;
-                self.state
-                    .write_parameters
-                    .extend(actual.caller_references.iter().copied());
-                self.state
-                    .same_heap_identity_parameters
-                    .extend(actual.caller_references.iter().copied());
-                for parameter in &actual.caller_references {
-                    self.state
-                        .parameter_stores
-                        .entry(*parameter)
-                        .and_modify(|value| value.join(&mapped))
-                        .or_insert_with(|| mapped.clone());
-                }
             } else {
-                self.state.join(&CallableState::fail_closed(
-                    CallableProvenanceUnknownReason::UnsupportedHeapStore,
-                ));
+                let mut transferred = false;
+                if !actual.fresh_roots.is_empty() {
+                    self.store_into_fresh_roots(&actual.fresh_roots, &mapped);
+                    transferred = true;
+                }
+                if actual.contains_caller_reference() {
+                    self.state.effects.writes_caller_reachable = true;
+                    self.state.effects.requires_same_heap_identity = true;
+                    self.state
+                        .write_parameters
+                        .extend(actual.caller_references.iter().copied());
+                    self.state
+                        .same_heap_identity_parameters
+                        .extend(actual.caller_references.iter().copied());
+                    for parameter in &actual.caller_references {
+                        self.state
+                            .parameter_stores
+                            .entry(*parameter)
+                            .and_modify(|value| value.join(&mapped))
+                            .or_insert_with(|| mapped.clone());
+                    }
+                    transferred = true;
+                }
+                if !transferred && (!actual.origins.is_empty() || !actual.fresh_roots.is_empty()) {
+                    self.state.join(&CallableState::fail_closed(
+                        CallableProvenanceUnknownReason::UnsupportedHeapStore,
+                    ));
+                }
             }
         }
         if callee.effects.requires_same_heap_identity {

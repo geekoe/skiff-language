@@ -114,6 +114,27 @@ impl Evaluator<'_, '_> {
         }
     }
 
+    fn fresh_graph_reaches_any(&self, value: &AbstractValue, targets: &BTreeSet<u32>) -> bool {
+        let mut pending = value.fresh_roots.iter().copied().collect::<Vec<_>>();
+        let mut visited = BTreeSet::new();
+        while let Some(root) = pending.pop() {
+            if targets.contains(&root) {
+                return true;
+            }
+            if !visited.insert(root) {
+                continue;
+            }
+            if let Some(payload) = self.heap.get(&root) {
+                pending.extend(payload.fresh_roots.iter().copied());
+            }
+        }
+        false
+    }
+
+    fn store_would_create_cycle(&self, roots: &BTreeSet<u32>, value: &AbstractValue) -> bool {
+        self.fresh_graph_reaches_any(value, roots)
+    }
+
     fn contains_mutated_fresh_root(&self, value: &AbstractValue) -> bool {
         value
             .fresh_roots

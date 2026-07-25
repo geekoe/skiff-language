@@ -170,15 +170,19 @@ impl Evaluator<'_, '_> {
     }
 
     fn transfer_field_store(&mut self, base: &AbstractValue, assigned: &AbstractValue) {
-        if base.unknown || assigned.unknown || base.fresh_roots.len() > 1 {
+        if base.unknown
+            || assigned.unknown
+            || self.store_would_create_cycle(&base.fresh_roots, assigned)
+        {
             self.mark_unsupported_heap_store();
             return;
         }
-        if !base.fresh_roots.is_empty() && !base.contains_caller_reference() {
+        let mut transferred = false;
+        if !base.fresh_roots.is_empty() {
             self.store_into_fresh_roots(&base.fresh_roots, assigned);
-            return;
+            transferred = true;
         }
-        if base.contains_caller_reference() && base.fresh_roots.is_empty() {
+        if base.contains_caller_reference() {
             self.state.effects.writes_caller_reachable = true;
             self.state.effects.requires_same_heap_identity = true;
             self.state
@@ -194,6 +198,9 @@ impl Evaluator<'_, '_> {
                     .and_modify(|value| value.join(assigned))
                     .or_insert_with(|| assigned.clone());
             }
+            transferred = true;
+        }
+        if transferred {
             return;
         }
         // Local SCC seeding uses lattice bottom for a not-yet-transferred
