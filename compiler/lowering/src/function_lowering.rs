@@ -2143,6 +2143,7 @@ fn package_call_resolution_error(
 fn resolved_call_target_kind(target: &ResolvedCallTarget) -> &'static str {
     match target {
         ResolvedCallTarget::LocalFunction { .. } => "LocalFunction",
+        ResolvedCallTarget::ConfigIntrinsic { .. } => "ConfigIntrinsic",
         ResolvedCallTarget::LocalImplMethod { .. } => "LocalImplMethod",
         ResolvedCallTarget::ActorMethod { .. } => "ActorMethod",
         ResolvedCallTarget::NativeFunction { .. } => "NativeFunction",

@@ -23,7 +23,7 @@ use super::{
         contract_member_error, dependency_member_error, dotted_dependency_call_error,
         unknown_dependency_alias_error,
     },
-    ResolvedCallTarget, ResolvedCallTargetFacts, UnknownCallTargetReason,
+    ConfigIntrinsic, ResolvedCallTarget, ResolvedCallTargetFacts, UnknownCallTargetReason,
 };
 
 #[derive(Clone)]
@@ -198,6 +198,9 @@ impl TargetCollector<'_> {
                 .unwrap_or_else(|| path.split('.').next().unwrap_or(&path));
             let path_root_is_local = self.local_value_names.contains(path_root);
             if !path_root_is_local {
+                if let Some(intrinsic) = exact_config_intrinsic(callee) {
+                    return ResolvedCallTarget::ConfigIntrinsic { intrinsic };
+                }
                 let local_target = self.local_targets.resolve_path(self.module_path, &path);
                 if let Some(binding_key) = exact_native_binding_key(&path) {
                     return ResolvedCallTarget::NativeFunction {
@@ -331,6 +334,28 @@ impl TargetCollector<'_> {
         } else {
             UnknownCallTargetReason::UnsupportedDynamicDispatch
         })
+    }
+}
+
+fn exact_config_intrinsic(callee: &Expr) -> Option<ConfigIntrinsic> {
+    match callee {
+        Expr::Generic { callee, .. } => match callee.as_ref() {
+            Expr::Field { object, field } if matches!(object.as_ref(), Expr::Identifier(root) if root == "config") => {
+                match field.as_str() {
+                    "require" => Some(ConfigIntrinsic::Require),
+                    "optional" => Some(ConfigIntrinsic::Optional),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        Expr::Field { object, field }
+            if matches!(object.as_ref(), Expr::Identifier(root) if root == "config")
+                && field == "has" =>
+        {
+            Some(ConfigIntrinsic::Has)
+        }
+        _ => None,
     }
 }
 

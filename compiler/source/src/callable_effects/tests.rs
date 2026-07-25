@@ -2163,11 +2163,12 @@ fn json_object_set_effects_are_contextual_to_caller_reachable_values() {
 fn config_intrinsics_are_exact_detached_sources() {
     let model = analyze(
         r#"
-            type Config { name: string, optional: string? }
+            type Config { name: string, optional: string?, present: bool }
             function load() -> Config {
               return Config {
                 name: config.require<string>("name"),
                 optional: config.optional<string>("optional"),
+                present: config.has("present"),
               }
             }
         "#,
@@ -2178,6 +2179,26 @@ fn config_intrinsics_are_exact_detached_sources() {
         provenance(&model, "load"),
         CallableProvenanceSummary::Analyzed { .. }
     ));
+    let targets = model
+        .resolved_call_targets()
+        .iter()
+        .filter_map(|(_, target)| match target {
+            ResolvedCallTarget::ConfigIntrinsic { intrinsic } => Some(*intrinsic),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        targets,
+        vec![
+            crate::ConfigIntrinsic::Require,
+            crate::ConfigIntrinsic::Optional,
+            crate::ConfigIntrinsic::Has,
+        ]
+    );
+    assert!(model
+        .resolved_call_targets()
+        .iter()
+        .all(|(_, target)| !matches!(target, ResolvedCallTarget::Unknown { .. })));
 }
 
 #[test]

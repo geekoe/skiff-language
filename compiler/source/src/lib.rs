@@ -96,7 +96,7 @@ pub use linked_publication::CompileParsedPackageSourcesInput;
 pub use name_resolution_model::{validate_source_name_resolution_from_model, NameResolutionModel};
 pub use package_dependency_facts::{SourceCompilePackageDependencyFact, SourceCompilePackageFacts};
 pub use resolved_call_targets::{
-    ResolvedCallTarget, ResolvedCallTargetFacts, UnknownCallTargetReason,
+    ConfigIntrinsic, ResolvedCallTarget, ResolvedCallTargetFacts, UnknownCallTargetReason,
 };
 pub use semantics::PackageCompilePlan;
 pub use shared::publication_error::PublicationError as SourceCompileError;

@@ -20,11 +20,11 @@ impl Evaluator<'_, '_> {
         env: &mut Environment,
     ) -> AbstractValue {
         let target = self.resolved_call_targets.target(call_key).cloned();
-        let config_intrinsic = direct_config_intrinsic(callee);
         let callee_start = self.next_index;
         let callee_value = if matches!(
             target,
             Some(ResolvedCallTarget::LocalFunction { .. })
+                | Some(ResolvedCallTarget::ConfigIntrinsic { .. })
                 | Some(ResolvedCallTarget::NativeFunction { .. })
                 | Some(ResolvedCallTarget::DependencyPackageFunction { .. })
                 | Some(ResolvedCallTarget::ContractOperation { .. })
@@ -40,10 +40,10 @@ impl Evaluator<'_, '_> {
             .map(|arg| self.eval_expr(arg, env))
             .collect::<Vec<_>>();
         let return_reference = self.expression_may_be_reference(call_key);
-        if config_intrinsic {
-            return AbstractValue::fresh(return_reference);
-        }
         match target {
+            Some(ResolvedCallTarget::ConfigIntrinsic { .. }) => {
+                AbstractValue::fresh(return_reference)
+            }
             Some(ResolvedCallTarget::LocalFunction { .. })
             | Some(ResolvedCallTarget::LocalImplMethod { .. })
             | Some(ResolvedCallTarget::ActorMethod { .. }) => {
@@ -388,18 +388,6 @@ impl Evaluator<'_, '_> {
         }
         returned
     }
-}
-
-fn direct_config_intrinsic(mut callee: &Expr) -> bool {
-    while let Expr::Generic { callee: inner, .. } = callee {
-        callee = inner;
-    }
-    matches!(
-        callee,
-        Expr::Field { object, field }
-            if matches!(object.as_ref(), Expr::Identifier(root) if root == "config")
-                && matches!(field.as_str(), "require" | "optional" | "has")
-    )
 }
 
 fn native_callable_callee(binding_key: &str) -> Option<CallableState> {

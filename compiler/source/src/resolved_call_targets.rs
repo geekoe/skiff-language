@@ -21,6 +21,9 @@ mod dependency_diagnostics;
     deny_unknown_fields
 )]
 pub enum ResolvedCallTarget {
+    ConfigIntrinsic {
+        intrinsic: ConfigIntrinsic,
+    },
     LocalFunction {
         source_callable: SourceSymbolKey,
     },
@@ -63,13 +66,22 @@ impl ResolvedCallTarget {
             | Self::ActorMethod {
                 source_callable, ..
             } => Some(source_callable.clone()),
-            Self::NativeFunction { .. }
+            Self::ConfigIntrinsic { .. }
+            | Self::NativeFunction { .. }
             | Self::ReceiverBuiltin { .. }
             | Self::DependencyPackageFunction { .. }
             | Self::ContractOperation { .. }
             | Self::Unknown { .. } => None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConfigIntrinsic {
+    Require,
+    Optional,
+    Has,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +148,17 @@ mod tests {
 
     #[test]
     fn all_target_kinds_are_explicit_strict_tagged_facts() {
+        let config_intrinsic = ResolvedCallTarget::ConfigIntrinsic {
+            intrinsic: ConfigIntrinsic::Optional,
+        };
+        assert_target_wire(
+            config_intrinsic,
+            json!({
+                "kind": "configIntrinsic",
+                "intrinsic": "optional"
+            }),
+        );
+
         let local_function = ResolvedCallTarget::LocalFunction {
             source_callable: SourceSymbolKey::new("api", "run"),
         };
@@ -303,6 +326,8 @@ mod tests {
             json!({ "kind": "nativeFunction" }),
             json!({ "kind": "receiverBuiltin" }),
             json!({ "kind": "contractOperation", "contractOperationId": "op" }),
+            json!({ "kind": "configIntrinsic" }),
+            json!({ "kind": "configIntrinsic", "intrinsic": "get" }),
             json!({ "kind": "unknown" }),
             json!({
                 "kind": "contractOperation",
@@ -358,6 +383,11 @@ mod tests {
             expected_local_abi: PackageLocalAbiIdentity::new("abi:util"),
         };
         assert_eq!(dependency.source_callable_key(), None);
+
+        let config = ResolvedCallTarget::ConfigIntrinsic {
+            intrinsic: ConfigIntrinsic::Has,
+        };
+        assert_eq!(config.source_callable_key(), None);
 
         let native = ResolvedCallTarget::NativeFunction {
             binding_key: "std.string.truncateUtf8Bytes".to_string(),

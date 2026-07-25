@@ -616,6 +616,7 @@ impl SuspendContext<'_, '_> {
                     .map(|semantics| semantics.effects.may_suspend)
                     .unwrap_or(true);
             }
+            Some(ResolvedCallTarget::ConfigIntrinsic { .. }) => return false,
             Some(
                 ResolvedCallTarget::DependencyPackageFunction { .. }
                 | ResolvedCallTarget::ContractOperation { .. }

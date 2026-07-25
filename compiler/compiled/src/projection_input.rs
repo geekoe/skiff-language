@@ -162,7 +162,8 @@ fn callable_target_fact(target: &ResolvedCallTarget) -> Option<CallableTargetFac
             operation_id: contract_operation_id.clone(),
         }),
         ResolvedCallTarget::Unknown { .. } => Some(CallableTargetFact::Unknown),
-        ResolvedCallTarget::LocalFunction { .. }
+        ResolvedCallTarget::ConfigIntrinsic { .. }
+        | ResolvedCallTarget::LocalFunction { .. }
         | ResolvedCallTarget::LocalImplMethod { .. }
         | ResolvedCallTarget::ActorMethod { .. }
         | ResolvedCallTarget::NativeFunction { .. }
