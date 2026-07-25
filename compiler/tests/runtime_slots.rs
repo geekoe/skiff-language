@@ -280,12 +280,7 @@ fn bytes_from_base64_lowers_to_exact_native_binding() {
     let calls = call_exprs(callable);
 
     assert!(
-        has_native_call(
-            &calls,
-            "std.bytes",
-            "fromBase64",
-            "core.bytes.fromBase64"
-        ),
+        has_native_call(&calls, "std.bytes", "fromBase64", "core.bytes.fromBase64"),
         "bytes.fromBase64 should lower through the exact canonical native binding"
     );
 
@@ -744,6 +739,83 @@ fn json_object_has_enforces_exact_receiver_and_arity() {
             format!("internal.json_object_has_{name}"),
         )
         .expect_err("invalid JsonObject.has call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
+fn json_object_delete_enforces_exact_receiver_key_and_return() {
+    let artifact = compile_package_file_ir(
+        r#"
+            function removeField(value: JsonObject, field: string) -> bool {
+                return value.delete(field)
+            }
+        "#,
+        "internal/json_object_delete.skiff",
+        "internal.json_object_delete",
+    )
+    .expect("JsonObject.delete with one string argument should compile");
+    let artifact_value = artifact.value();
+    let function = executable_entry(&artifact_value, "removeField");
+    assert!(
+        receiver_builtin_call(function, "JsonObject", "delete").is_some(),
+        "JsonObject.delete should lower to its exact receiver builtin target"
+    );
+
+    for (name, source, expected) in [
+        (
+            "wrong_receiver",
+            r#"
+                function run(value: string) -> bool {
+                    return value.delete("field")
+                }
+            "#,
+            "receiver method `delete`",
+        ),
+        (
+            "missing_argument",
+            r#"
+                function run(value: JsonObject) -> bool {
+                    return value.delete()
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run(value: JsonObject) -> bool {
+                    return value.delete("field", "other")
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "wrong_key",
+            r#"
+                function run(value: JsonObject) -> bool {
+                    return value.delete(1)
+                }
+            "#,
+            "call `JsonObject.delete` argument 1",
+        ),
+        (
+            "wrong_return",
+            r#"
+                function run(value: JsonObject) -> string {
+                    return value.delete("field")
+                }
+            "#,
+            "return type mismatch",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/json_object_delete_{name}.skiff"),
+            format!("internal.json_object_delete_{name}"),
+        )
+        .expect_err("invalid JsonObject.delete call must fail closed")
         .to_string();
         assert!(error.contains(expected), "unexpected {name} error: {error}");
     }

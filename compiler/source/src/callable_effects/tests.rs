@@ -2234,6 +2234,75 @@ fn exact_json_object_has_target_is_read_only_detached_and_non_suspending() {
 }
 
 #[test]
+fn exact_json_object_delete_mutates_caller_receiver_but_discharges_fresh_receiver() {
+    let model = analyze_named(
+        r#"
+            function deleteCallerField(value: JsonObject, field: string) -> bool {
+              return value.delete(field)
+            }
+
+            function sanitize() -> bool {
+              const value: JsonObject = { instructions: "drop", keep: true }
+              return value.delete("instructions")
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "responses_projection",
+        "skiff.run/codex-relay",
+    );
+
+    assert_eq!(
+        effects_in(&model, "responses_projection", "deleteCallerField"),
+        CallableMayEffects {
+            writes_caller_reachable: true,
+            requires_same_heap_identity: true,
+            ..no_effects()
+        }
+    );
+    assert_eq!(
+        effects_in(&model, "responses_projection", "sanitize"),
+        no_effects()
+    );
+    for callable in ["deleteCallerField", "sanitize"] {
+        assert!(matches!(
+            provenance_in(&model, "responses_projection", callable),
+            CallableProvenanceSummary::Analyzed { return_origins, .. }
+                if return_origins == &vec![ValueProvenance::Constant]
+        ));
+    }
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::ReceiverBuiltin { op }
+                if op.canonical_key == "receiver:JsonObject.delete@1"
+        )
+    }));
+}
+
+#[test]
+fn json_object_delete_semantics_do_not_generalize_to_map_delete() {
+    let model = analyze_named(
+        r#"
+            function remove(value: Map<string, string>, key: string) -> bool {
+              return value.delete(key)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "map_delete",
+        "skiff.run/map-delete",
+    );
+
+    assert_eq!(effects_in(&model, "map_delete", "remove"), all_effects());
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::ReceiverBuiltin { op }
+                if op.canonical_key == "receiver:Map.delete@1"
+        )
+    }));
+}
+
+#[test]
 fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detached() {
     let model = analyze_named(
         r#"

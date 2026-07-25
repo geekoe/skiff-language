@@ -302,7 +302,13 @@ impl JsonObjectReceiverMethods {
                 MapReceiverMethods::dispatch(BuiltinReceiverMethod::Set, receiver, args, heap)
             }
             BuiltinReceiverMethod::Delete => {
-                MapReceiverMethods::dispatch(BuiltinReceiverMethod::Delete, receiver, args, heap)
+                let field = args.first().and_then(runtime_string).ok_or_else(|| {
+                    RuntimeError::Decode("JsonObject.delete field must be a string".to_string())
+                })?;
+                let handle = program_mutable_receiver_handle(receiver, heap, "JsonObject.delete")?;
+                Ok(Some(RuntimeValue::Bool(
+                    heap.delete_object_field(handle, field)?,
+                )))
             }
             BuiltinReceiverMethod::Clone => runtime_deep_clone(receiver, heap).map(Some),
             _ => Ok(None),
@@ -724,6 +730,68 @@ mod json_object_receiver_tests {
             heap.get(nested_object).is_ok() && heap.get(nested_array).is_ok(),
             "returned handles must still resolve to the receiver's original nested values"
         );
+    }
+
+    #[test]
+    fn json_object_delete_mutates_the_same_object_and_reports_presence() {
+        let mut heap = RequestHeap::default();
+        let handle = heap
+            .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([
+                (
+                    "instructions".to_string(),
+                    RuntimeValue::String("drop".to_string()),
+                ),
+                ("keep".to_string(), RuntimeValue::Bool(true)),
+            ])))
+            .unwrap();
+        let receiver = RuntimeValue::Heap(handle);
+
+        assert_eq!(
+            ReceiverMethodDispatch::new(&mut heap)
+                .dispatch_op(
+                    &receiver_op("JsonObject", "delete"),
+                    receiver.clone(),
+                    vec![RuntimeValue::String("instructions".to_string())],
+                )
+                .expect("present JsonObject field should be deleted"),
+            RuntimeValue::Bool(true)
+        );
+        assert_eq!(
+            ReceiverMethodDispatch::new(&mut heap)
+                .dispatch_op(
+                    &receiver_op("JsonObject", "delete"),
+                    receiver,
+                    vec![RuntimeValue::String("instructions".to_string())],
+                )
+                .expect("missing JsonObject field should be reported"),
+            RuntimeValue::Bool(false)
+        );
+
+        let HeapNode::Object(object) = heap.get(handle).unwrap() else {
+            panic!("delete must preserve the receiver object heap node");
+        };
+        assert!(!object.fields().contains_key("instructions"));
+        assert_eq!(object.fields().get("keep"), Some(&RuntimeValue::Bool(true)));
+    }
+
+    #[test]
+    fn json_object_delete_rejects_a_non_string_field() {
+        let mut heap = RequestHeap::default();
+        let receiver = RuntimeValue::Heap(
+            heap.alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::new()))
+                .unwrap(),
+        );
+
+        let error = ReceiverMethodDispatch::new(&mut heap)
+            .dispatch_op(
+                &receiver_op("JsonObject", "delete"),
+                receiver,
+                vec![RuntimeValue::Number(1.0)],
+            )
+            .expect_err("JsonObject.delete must enforce its string field signature");
+        assert!(error
+            .to_string()
+            .contains("JsonObject.delete field must be a string"));
     }
 }
 

@@ -320,6 +320,31 @@ const fn mutating_json_object_set() -> BuiltinReceiverCallableSemantics {
     }
 }
 
+const fn mutating_json_object_delete() -> BuiltinReceiverCallableSemantics {
+    BuiltinReceiverCallableSemantics {
+        op: BuiltinReceiverOp {
+            receiver: BuiltinReceiverRoot::JsonObject,
+            method: BuiltinReceiverMethod::Delete,
+            signature_version: 1,
+            canonical_key: canonical_key(
+                BuiltinReceiverRoot::JsonObject,
+                BuiltinReceiverMethod::Delete,
+                1,
+            ),
+        },
+        effects: CallableMayEffects {
+            writes_caller_reachable: true,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: true,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        },
+        return_provenance: ValueProvenance::Constant,
+    }
+}
+
 const fn json_object_get() -> BuiltinReceiverCallableSemantics {
     BuiltinReceiverCallableSemantics {
         op: BuiltinReceiverOp {
@@ -389,6 +414,7 @@ pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantic
         BuiltinReceiverMethod::ToMilliseconds,
     ),
     mutating_json_object_set(),
+    mutating_json_object_delete(),
 ];
 
 pub fn builtin_receiver_callable_semantics(
@@ -1020,6 +1046,7 @@ mod tests {
             "receiver:Date.isBefore@1",
             "receiver:Date.toEpochMilliseconds@1",
             "receiver:Duration.toMilliseconds@1",
+            "receiver:JsonObject.delete@1",
             "receiver:JsonObject.get@1",
             "receiver:JsonObject.has@1",
             "receiver:JsonObject.set@1",
@@ -1049,7 +1076,9 @@ mod tests {
             assert_eq!(builtin_receiver_callable_semantics(op), Some(semantics));
             let mutates_receiver = matches!(
                 semantics.op.canonical_key,
-                "receiver:Array.push@1" | "receiver:JsonObject.set@1"
+                "receiver:Array.push@1"
+                    | "receiver:JsonObject.set@1"
+                    | "receiver:JsonObject.delete@1"
             );
             let aliases_receiver = semantics.op.canonical_key == "receiver:JsonObject.get@1";
             assert_eq!(
@@ -1082,11 +1111,11 @@ mod tests {
         let mutable_json_object = builtin_receiver_op_by_name("JsonObject", "set")
             .expect("JsonObject.set must remain a supported runtime receiver op");
         assert!(builtin_receiver_callable_semantics(mutable_json_object).is_some());
+        let deleting_json_object = builtin_receiver_op_by_name("JsonObject", "delete")
+            .expect("JsonObject.delete must remain a supported runtime receiver op");
+        assert!(builtin_receiver_callable_semantics(deleting_json_object).is_some());
 
-        for missing in [
-            builtin_receiver_op_by_name("JsonObject", "delete").unwrap(),
-            builtin_receiver_op_by_name("string", "replaceAll").unwrap(),
-        ] {
+        for missing in [builtin_receiver_op_by_name("string", "replaceAll").unwrap()] {
             assert_eq!(
                 builtin_receiver_callable_semantics(missing),
                 None,
