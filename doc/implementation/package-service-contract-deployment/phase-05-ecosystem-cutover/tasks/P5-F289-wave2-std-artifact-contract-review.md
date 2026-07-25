@@ -23,7 +23,7 @@
   crate自身无法编译的production文件；
 - F288对File IR、Package build、Local ABI、ServiceProtocol marker/prefix的owner是否精确；不变identity domain
   是否正确；
-- 两任务及F285/F286/F278/F281之间是否存在未声明的同文件写入；
+- 两任务及F285、未来F285-result之后才建档的W2 language叶子、F278/F281之间是否存在未声明的同文件写入；
 - 测试命令是否匹配真实crate/非零测试，临时compiler/runtime断编译是否被合理限制而非用作越界借口；
 - 是否存在新增用户设计决策。
 

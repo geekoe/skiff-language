@@ -48,6 +48,8 @@
 - `compiler/tests/package_std_schema.rs`
 - `test-runner/src/canonical_package/tests.rs`
 - `test-runner/src/canonical_package/tests/combined.rs`
+- `runtime/eval/src/assembly_execution/ordinary/tests/source_inline_effect_e2e.rs`，仅删除
+  `write_error_package` fixture的marker
 
 禁止修改compiler throw/catch checker/lowering、artifact model/identity/projection、runtime error registry/channel、
 router、telemetry、internals或skiff-packages。
@@ -81,6 +83,13 @@ router、telemetry、internals或skiff-packages。
    - TypeScript业务DTO名称如`ChatErrorPayload`；
    - generic Rust trait/type名`WirePayload`或函数局部命名，不是语言marker。
 9. 不修改internals的十个marker声明；它们由独立跨仓consumer在语言consumer合流后迁移。
+10. 本任务按当前source与registry更新其授权test中的prelude/std identity expected。F288随后切换
+    PackageArtifact/File IR/Protocol identity generation时会使其中一部分build golden再次失效；未来W2
+    combined integration owner只允许在以下现有授权test文件中机械刷新最终identity expected hunk，不得重新
+    修改marker、prelude registry、std surface或fixture语义：
+    - `compiler/source/src/prelude_registry/tests.rs`
+    - `compiler/driver/authoring/package_publication/tests.rs`
+    - `test-runner/src/canonical_package/tests/combined.rs`
 
 ## 验证owner
 
@@ -89,7 +98,9 @@ router、telemetry、internals或skiff-packages。
 ```bash
 cargo test -p skiff-compiler-core prelude_registry
 cargo test -p skiff-compiler-source semantic::interface
+cargo test -p skiff-compiler-source prelude_registry --no-fail-fast
 cargo test -p skiff-compiler --test package_std_schema
+cargo test -p skiff-compiler authoring::package_publication
 node scripts/check-skiff-source-layout.mjs
 node vscode/scripts/test-grammar.mjs
 git diff --check
@@ -110,4 +121,3 @@ git diff --check
 - 不push，不操作stable。
 - 从启动到第一次production修改不超过5分钟；不可执行时返回`TASK_NOT_EXECUTABLE`。
 - 完成后提交并返回commit、反向搜索、测试矩阵与设计缺口；不得自行承接runtime或internals节点。
-
