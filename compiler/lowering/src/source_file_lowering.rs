@@ -889,6 +889,10 @@ mod tests {
 
     fn package_reader_source() -> &'static str {
         r#"
+              type Model {
+                value: string,
+              }
+
 	          interface Reader<T> {
 	            function read(self: Self, fallback: T) -> T
 	          }
@@ -932,6 +936,10 @@ mod tests {
     }
 
     fn lowered_unit(source_text: &str) -> FileIrUnit {
+        lowered_unit_result(source_text).expect("publication should lower")
+    }
+
+    fn lowered_unit_result(source_text: &str) -> std::result::Result<FileIrUnit, String> {
         initialize_test_prelude();
         let root = PathBuf::from("/test");
         let source = CompilerSourceFile::parse(
@@ -942,10 +950,10 @@ mod tests {
             source_text.to_string(),
             "internal/any_lowering.skiff",
         )
-        .expect("test source should parse");
+        .map_err(|error| error.to_string())?;
         let production_sources = vec![source];
         let parsed_sources = parse_publication_sources(&root, &production_sources)
-            .expect("test source facts should build");
+            .map_err(|error| error.to_string())?;
         let package_aliases = BTreeMap::new();
         let package_dependencies = Vec::<PackageDependency>::new();
         let model = build_package_from_parsed_sources(CompileParsedPackageSourcesInput {
@@ -959,13 +967,13 @@ mod tests {
             package_artifacts: None,
             policy: PackageCompilePolicy::new("example.com/any-lowering"),
         })
-        .expect("source model should build");
-        let lowered = crate::lower(&model).expect("publication should lower");
+        .map_err(|error| error.to_string())?;
+        let lowered = crate::lower(&model).map_err(|error| error.to_string())?;
         lowered
             .file_ir_units()
             .first()
-            .expect("one file IR unit should be emitted")
-            .clone()
+            .cloned()
+            .ok_or_else(|| "one File IR unit should be emitted".to_string())
     }
 
     #[test]
@@ -1129,8 +1137,8 @@ mod tests {
               }
             "#,
         );
-        assert_eq!(unit.schema_version, "skiff-file-ir-v7");
-        assert_eq!(unit.ir_format_version, "skiff-file-ir-format-v5");
+        assert_eq!(unit.schema_version, "skiff-file-ir-v8");
+        assert_eq!(unit.ir_format_version, "skiff-file-ir-format-v6");
 
         let declaration = |name: &str| {
             unit.type_table
@@ -1277,6 +1285,265 @@ mod tests {
         let wire = serde_json::to_string(&unit).expect("File IR serializes");
         assert!(wire.contains("\"kind\":\"appliedNominal\""));
         assert!(!wire.contains("\"typeArguments\""));
+    }
+
+    #[test]
+    fn explicit_representation_constructors_preserve_wraps_order_and_throw_site() {
+        let unit = lowered_unit(
+            r#"
+              type Plain = string
+              type Generic<A, B> = string
+              type Inner = string
+              type Outer = Inner
+
+              function payload(value: string) -> string {
+                return value
+              }
+
+              function plain() -> Plain {
+                return Plain("plain")
+              }
+
+              function generic() -> Generic<number, string> {
+                return Generic<number, string>("generic")
+              }
+
+              function passthrough(value: Plain) -> Plain {
+                return value
+              }
+
+              function nested() -> Outer {
+                return Outer(Inner(payload("nested")))
+              }
+
+              function fail() -> void {
+                throw Plain(payload("failure"))
+              }
+            "#,
+        );
+        let type_index = |name: &str| {
+            unit.type_table
+                .iter()
+                .position(|declaration| declaration.name == name)
+                .unwrap_or_else(|| panic!("missing representation `{name}`")) as u32
+        };
+        let plain_type = TypeRefIr::LocalType {
+            type_index: type_index("Plain"),
+        };
+        let generic_type = TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::LocalType {
+                type_index: type_index("Generic"),
+            },
+            arguments: vec![TypeRefIr::builtin("number"), TypeRefIr::builtin("string")],
+        };
+        let inner_type = TypeRefIr::LocalType {
+            type_index: type_index("Inner"),
+        };
+        let outer_type = TypeRefIr::LocalType {
+            type_index: type_index("Outer"),
+        };
+
+        let only_wrap = |name: &str| {
+            executable(&unit, name)
+                .body
+                .expressions
+                .iter()
+                .filter_map(|expression| match expression {
+                    ExprIr::RepresentationWrap { value, type_ref } => {
+                        Some((*value, type_ref.clone()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(only_wrap("plain").len(), 1);
+        assert_eq!(only_wrap("plain")[0].1, plain_type);
+        assert_eq!(only_wrap("generic").len(), 1);
+        assert_eq!(only_wrap("generic")[0].1, generic_type);
+        assert!(
+            only_wrap("passthrough").is_empty(),
+            "assignability must not synthesize an implicit representation wrap"
+        );
+
+        let nested = executable(&unit, "nested");
+        let nested_wraps = only_wrap("nested");
+        assert_eq!(
+            nested_wraps
+                .iter()
+                .map(|(_, type_ref)| type_ref)
+                .collect::<Vec<_>>(),
+            vec![&inner_type, &outer_type]
+        );
+        let inner_wrap_index = nested
+            .body
+            .expressions
+            .iter()
+            .position(|expression| {
+                matches!(
+                    expression,
+                    ExprIr::RepresentationWrap { type_ref, .. } if type_ref == &inner_type
+                )
+            })
+            .expect("inner representation wrap");
+        let outer_wrap_index = nested
+            .body
+            .expressions
+            .iter()
+            .position(|expression| {
+                matches!(
+                    expression,
+                    ExprIr::RepresentationWrap { type_ref, .. } if type_ref == &outer_type
+                )
+            })
+            .expect("outer representation wrap");
+        let nested_call_index = nested
+            .body
+            .expressions
+            .iter()
+            .position(|expression| matches!(expression, ExprIr::Call { .. }))
+            .expect("nested payload call");
+        assert!(nested_call_index < inner_wrap_index);
+        assert_eq!(
+            nested_wraps[0].0.expression as usize, nested_call_index,
+            "the inner wrap must reference the once-lowered payload call"
+        );
+        assert!(inner_wrap_index < outer_wrap_index);
+        assert_eq!(
+            nested_wraps[1].0.expression as usize, inner_wrap_index,
+            "the outer wrap must reference the explicit inner wrap"
+        );
+        assert_eq!(
+            nested
+                .body
+                .expressions
+                .iter()
+                .filter(|expression| matches!(expression, ExprIr::Call { .. }))
+                .count(),
+            1,
+            "the payload side effect must lower exactly once"
+        );
+
+        let fail = executable(&unit, "fail");
+        assert_eq!(
+            fail.body
+                .expressions
+                .iter()
+                .filter(|expression| matches!(expression, ExprIr::Call { .. }))
+                .count(),
+            1,
+            "the thrown payload side effect must lower exactly once"
+        );
+        let fail_call_index = fail
+            .body
+            .expressions
+            .iter()
+            .position(|expression| matches!(expression, ExprIr::Call { .. }))
+            .expect("throw payload call");
+        let (fail_wrap_index, fail_wrap_value) = fail
+            .body
+            .expressions
+            .iter()
+            .enumerate()
+            .find_map(|(index, expression)| match expression {
+                ExprIr::RepresentationWrap { value, type_ref } if type_ref == &plain_type => {
+                    Some((index, *value))
+                }
+                _ => None,
+            })
+            .expect("direct throw representation wrap");
+        assert!(fail_call_index < fail_wrap_index);
+        assert_eq!(fail_wrap_value.expression as usize, fail_call_index);
+        assert!(fail.body.statements.iter().any(|statement| {
+            matches!(
+                statement,
+                skiff_artifact_model::StmtIr::Throw {
+                    value,
+                    payload_type,
+                    site: InstructionSourceSite::Source { span },
+                } if value.expression as usize == fail_wrap_index
+                    && payload_type == &plain_type
+                    && span.source_id == 0
+                    && span.start.line > 0
+            )
+        }));
+    }
+
+    #[test]
+    fn representation_wrap_preserves_external_package_owner_in_ordered_arguments() {
+        let unit = lowered_unit_with_package_facts(
+            r#"
+              type Generic<A, B> = string
+
+              function make() -> Generic<pkg.Model, number> {
+                return Generic<pkg.Model, number>("value")
+              }
+            "#,
+        );
+        let make = executable(&unit, "make");
+        let type_ref = make
+            .body
+            .expressions
+            .iter()
+            .find_map(|expression| match expression {
+                ExprIr::RepresentationWrap { type_ref, .. } => Some(type_ref),
+                _ => None,
+            })
+            .expect("external package argument representation wrap");
+
+        assert!(
+            matches!(
+                type_ref,
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                arguments,
+            } if matches!(
+                arguments.as_slice(),
+                [
+                    TypeRefIr::PackageSymbol { symbol },
+                    TypeRefIr::Builtin {
+                        name,
+                        args,
+                    },
+                ] if matches!(
+                    &symbol.package,
+                    PackageRefIr::Dependency { dependency_ref } if dependency_ref == "pkg"
+                )
+                    && symbol.symbol_path == "Model"
+                    && symbol.abi_expectation.is_none()
+                    && name == "number"
+                    && args.is_empty()
+            )
+            ),
+            "{type_ref:#?}"
+        );
+        assert!(unit.external_refs.package_symbols.iter().any(|symbol| {
+            matches!(
+                &symbol.package,
+                PackageRefIr::Dependency { dependency_ref } if dependency_ref == "pkg"
+            ) && symbol.symbol_path == "Model"
+        }));
+    }
+
+    #[test]
+    fn non_representation_constructor_target_remains_a_source_error() {
+        let error = lowered_unit_result(
+            r#"
+              type Record { value: string }
+
+              function invalid() -> void {
+                Record("not a record constructor")
+              }
+            "#,
+        )
+        .expect_err("a record call must not become a representation wrap");
+
+        assert!(error.contains("Record"), "{error}");
+        assert!(
+            error.contains("unresolved")
+                || error.contains("not resolved")
+                || error.contains("unsupported"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1505,11 +1772,10 @@ mod tests {
             "pkg/reader.skiff",
         )
         .expect("package source should parse");
-        let package_api = PublicationApiSpec::from_entries(vec![PublicationApiEntry::for_source(
-            "Reader",
-            PACKAGE_MODULE,
-            "Reader",
-        )]);
+        let package_api = PublicationApiSpec::from_entries(vec![
+            PublicationApiEntry::for_source("Reader", PACKAGE_MODULE, "Reader"),
+            PublicationApiEntry::for_source("Model", PACKAGE_MODULE, "Model"),
+        ]);
         let package_production_sources = vec![package_source];
         let package_parsed_sources =
             parse_publication_sources(&package_root, &package_production_sources)
@@ -2377,7 +2643,7 @@ mod tests {
         assert!(!wire.contains("operationAbiId"));
         assert!(unit
             .file_ir_identity
-            .starts_with("skiff-file-ir-v7:sha256:"));
+            .starts_with("skiff-file-ir-v8:sha256:"));
     }
 
     #[test]

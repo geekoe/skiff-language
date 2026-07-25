@@ -300,7 +300,7 @@ fn rewrite_pattern(index: &PublicationLocalRefIndex, module_path: &str, pattern:
 
 fn rewrite_expr(index: &PublicationLocalRefIndex, module_path: &str, expr: &mut ExprIr) {
     match expr {
-        ExprIr::Construct { type_ref, .. } => {
+        ExprIr::Construct { type_ref, .. } | ExprIr::RepresentationWrap { type_ref, .. } => {
             rewrite_type_ref(index, module_path, type_ref);
         }
         ExprIr::InterfaceBox {
@@ -760,11 +760,11 @@ fn rewrite_type_ref_to_publication_location(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skiff_artifact_model::PackageSymbolRef;
     use skiff_artifact_model::{
         CallIr, ContractOperationId, ExecutableBody, ServiceCallRef, ServiceCallRefIndex,
         ServiceProtocolIdentity,
     };
+    use skiff_artifact_model::{LiteralIr, PackageSymbolRef, TypeDeclIr, TypeDeclarationIr};
 
     fn current_package_duration_ref(package_id: &str) -> TypeRefIr {
         TypeRefIr::PackageSymbol {
@@ -877,5 +877,131 @@ mod tests {
                 reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             }
         ));
+    }
+
+    #[test]
+    fn representation_wrap_targets_and_nested_child_become_publication_local() {
+        let package_id = "example.com/model";
+        let package_symbol = |symbol_path: &str| TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.to_string(),
+                },
+                symbol_path: symbol_path.to_string(),
+                abi_expectation: None,
+            },
+        };
+        let mut model = FileIrUnit::empty("model.types", "source");
+        model.type_table.push(TypeDeclIr {
+            name: "Payload".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::new(),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
+        model.declarations.types.insert(
+            "Payload".to_string(),
+            TypeDeclarationIr {
+                type_index: 0,
+                symbol: "Payload".to_string(),
+                source_span: None,
+            },
+        );
+
+        let mut consumer = FileIrUnit::empty("consumer.main", "source");
+        consumer.type_table = vec![
+            TypeDeclIr {
+                name: "Inner".to_string(),
+                descriptor: TypeDescriptorIr::Representation {
+                    representation: TypeRefIr::TypeParam {
+                        name: "T".to_string(),
+                    },
+                },
+                type_params: vec!["T".to_string()],
+                implements: Vec::new(),
+                source_span: None,
+            },
+            TypeDeclIr {
+                name: "Outer".to_string(),
+                descriptor: TypeDescriptorIr::Representation {
+                    representation: TypeRefIr::TypeParam {
+                        name: "T".to_string(),
+                    },
+                },
+                type_params: vec!["T".to_string()],
+                implements: Vec::new(),
+                source_span: None,
+            },
+        ];
+        consumer.constants.push(skiff_artifact_model::ConstIr {
+            name: "nested".to_string(),
+            ty: TypeRefIr::builtin("void"),
+            body: ExecutableBody {
+                expressions: vec![
+                    ExprIr::Literal {
+                        value: LiteralIr::String {
+                            value: "payload".to_string(),
+                        },
+                    },
+                    ExprIr::RepresentationWrap {
+                        value: skiff_artifact_model::ExprRefIr { expression: 0 },
+                        type_ref: TypeRefIr::AppliedNominal {
+                            base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                            arguments: vec![package_symbol("model.types.Payload")],
+                        },
+                    },
+                    ExprIr::RepresentationWrap {
+                        value: skiff_artifact_model::ExprRefIr { expression: 1 },
+                        type_ref: TypeRefIr::AppliedNominal {
+                            base: NominalTypeRefBaseIr::LocalType { type_index: 1 },
+                            arguments: vec![package_symbol("model.types.Payload")],
+                        },
+                    },
+                ],
+                ..ExecutableBody::default()
+            },
+            source_span: None,
+        });
+        let mut units = vec![model, consumer];
+
+        rewrite_publication_local_refs(&mut units, Some(package_id), None, &BTreeMap::new())
+            .unwrap();
+
+        let expressions = &units[1].constants[0].body.expressions;
+        assert!(matches!(
+            &expressions[1],
+            ExprIr::RepresentationWrap {
+                value,
+                type_ref:
+                    TypeRefIr::AppliedNominal {
+                        base:
+                            NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                        arguments,
+                    },
+            } if value.expression == 0
+                && arguments == &vec![TypeRefIr::PublicationType {
+                    module_path: "model.types".to_string(),
+                    type_index: 0,
+                }]
+        ));
+        assert!(matches!(
+            &expressions[2],
+            ExprIr::RepresentationWrap {
+                value,
+                type_ref:
+                    TypeRefIr::AppliedNominal {
+                        base:
+                            NominalTypeRefBaseIr::LocalType { type_index: 1 },
+                        arguments,
+                    },
+            } if value.expression == 1
+                && arguments == &vec![TypeRefIr::PublicationType {
+                    module_path: "model.types".to_string(),
+                    type_index: 0,
+                }]
+        ));
+        assert!(units[1].external_refs.package_symbols.is_empty());
     }
 }

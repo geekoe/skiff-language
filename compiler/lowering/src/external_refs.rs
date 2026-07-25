@@ -227,7 +227,9 @@ fn collect_assign_target_external_refs(target: &AssignTargetIr, refs: &mut Exter
 
 fn collect_expr_external_refs(expr: &ExprIr, refs: &mut ExternalRefTable) {
     match expr {
-        ExprIr::Construct { type_ref, .. } => collect_type_ref_external_refs(type_ref, refs),
+        ExprIr::Construct { type_ref, .. } | ExprIr::RepresentationWrap { type_ref, .. } => {
+            collect_type_ref_external_refs(type_ref, refs)
+        }
         ExprIr::InterfaceBox {
             interface, source, ..
         } => {
@@ -350,7 +352,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use skiff_artifact_model::{
-        validate_file_ir_service_calls, ContractOperationId, ServiceProtocolIdentity,
+        validate_file_ir_service_calls, ContractOperationId, PackageRefIr, PackageSymbolRef,
+        ServiceProtocolIdentity, TypeDeclIr,
     };
 
     use super::*;
@@ -402,6 +405,66 @@ mod tests {
             rebuild_external_refs_for_file_ir_unit(&mut unit),
             Err(FileIrServiceCallValidationError::OrphanRef { .. })
         ));
+    }
+
+    #[test]
+    fn rebuild_collects_representation_wrap_target_and_child_external_refs() {
+        let package_symbol = |symbol_path: &str| PackageSymbolRef {
+            package: PackageRefIr::Dependency {
+                dependency_ref: "model".to_string(),
+            },
+            symbol_path: symbol_path.to_string(),
+            abi_expectation: Some("local-abi:model".to_string()),
+        };
+        let payload = package_symbol("payload");
+        let first_argument = package_symbol("First");
+        let second_argument = package_symbol("Second");
+        let mut unit = FileIrUnit::empty("consumer.main", "source");
+        unit.type_table.push(TypeDeclIr {
+            name: "Generic".to_string(),
+            descriptor: TypeDescriptorIr::Representation {
+                representation: TypeRefIr::TypeParam {
+                    name: "T".to_string(),
+                },
+            },
+            type_params: vec!["T".to_string(), "U".to_string()],
+            implements: Vec::new(),
+            source_span: None,
+        });
+        unit.constants.push(skiff_artifact_model::ConstIr {
+            name: "wrapped".to_string(),
+            ty: TypeRefIr::builtin("void"),
+            body: ExecutableBody {
+                expressions: vec![
+                    ExprIr::LoadPackageConst {
+                        symbol: payload.clone(),
+                    },
+                    ExprIr::RepresentationWrap {
+                        value: skiff_artifact_model::ExprRefIr { expression: 0 },
+                        type_ref: TypeRefIr::AppliedNominal {
+                            base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                            arguments: vec![
+                                TypeRefIr::PackageSymbol {
+                                    symbol: first_argument.clone(),
+                                },
+                                TypeRefIr::PackageSymbol {
+                                    symbol: second_argument.clone(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+                ..ExecutableBody::default()
+            },
+            source_span: None,
+        });
+
+        rebuild_external_refs_for_file_ir_unit(&mut unit).unwrap();
+
+        assert_eq!(
+            unit.external_refs.package_symbols,
+            vec![payload, first_argument, second_argument]
+        );
     }
 
     fn service_call(index: u32) -> ExprIr {

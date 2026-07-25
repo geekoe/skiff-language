@@ -1769,7 +1769,7 @@ impl<'a> FunctionLowerer<'a> {
             .cloned();
         if let Some(validation) = representation_validation {
             let payload_expression = validation.payload;
-            let _erased_wrapper_type = validation.target;
+            let wrapper_type = validation.target.ir;
             let callee = match callee {
                 Expr::Generic { callee, .. } => {
                     self.next_expression_key();
@@ -1796,7 +1796,10 @@ impl<'a> FunctionLowerer<'a> {
                 )));
             }
             let payload = self.lower_expr(payload)?;
-            return Ok(Some(payload));
+            return Ok(Some(self.push_expr(ExprIr::RepresentationWrap {
+                value: payload,
+                type_ref: wrapper_type,
+            })));
         }
         Ok(None)
     }
