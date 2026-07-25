@@ -530,6 +530,107 @@ fn date_compare_receiver_semantics_rejects_noncanonical_lookalike() {
     );
 }
 
+fn date_add_milliseconds_receiver_semantics() -> BuiltinReceiverCallableSemantics {
+    BUILTIN_RECEIVER_CALLABLE_SEMANTICS
+        .iter()
+        .find(|entry| entry.op.canonical_key == "receiver:Date.addMilliseconds@1")
+        .cloned()
+        .expect("Date.addMilliseconds callable semantics should be registered")
+}
+
+#[test]
+fn date_add_milliseconds_receiver_semantics_matches_exact_native_signature() {
+    let semantics = date_add_milliseconds_receiver_semantics();
+    validate_receiver_callable_semantics_registry(
+        std::slice::from_ref(&semantics),
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect("Date.addMilliseconds semantics should match the canonical native signature");
+    assert_eq!(
+        semantics.return_provenance,
+        skiff_artifact_model::ValueProvenance::Fresh
+    );
+    assert_eq!(
+        semantics.effects,
+        skiff_artifact_model::CallableMayEffects {
+            writes_caller_reachable: false,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        }
+    );
+}
+
+#[test]
+fn date_add_milliseconds_receiver_semantics_rejects_malformed_native_signatures() {
+    let semantics = date_add_milliseconds_receiver_semantics();
+    let canonical = *STD_NATIVE_SIGNATURES
+        .iter()
+        .find(|signature| signature.binding_key == "core.date.addMilliseconds")
+        .expect("Date.addMilliseconds native signature should exist");
+
+    let cases = [
+        {
+            let mut signature = canonical;
+            signature.target = "Duration.addMilliseconds";
+            ("receiver", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.params = &[NativeSignatureTypeExpr::Builtin("Date")];
+            ("arity", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.params = &[
+                NativeSignatureTypeExpr::Builtin("Date"),
+                NativeSignatureTypeExpr::Builtin("string"),
+            ];
+            ("argument", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.return_type = NativeSignatureTypeExpr::Builtin("integer");
+            ("return", signature)
+        },
+    ];
+
+    for (case, signature) in cases {
+        let error = validate_receiver_callable_semantics_registry(
+            std::slice::from_ref(&semantics),
+            &[signature],
+            NATIVE_BINDINGS,
+        )
+        .expect_err("malformed Date.addMilliseconds native signature should fail closed");
+        assert!(
+            error.contains("receiver:Date.addMilliseconds@1")
+                && error.contains("does not match the exact shared native signature"),
+            "{case}: unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
+fn date_add_milliseconds_receiver_semantics_rejects_noncanonical_lookalike() {
+    let mut descriptor = date_add_milliseconds_receiver_semantics();
+    descriptor.op.canonical_key = "receiver:std.time.Date.addMilliseconds@1";
+    let error = validate_receiver_callable_semantics_registry(
+        &[descriptor],
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect_err("non-canonical Date.addMilliseconds lookalike should fail closed");
+    assert!(
+        error.contains("receiver:std.time.Date.addMilliseconds@1")
+            && error.contains("not an exact supported runtime operation"),
+        "unexpected error: {error}"
+    );
+}
+
 fn date_diff_milliseconds_receiver_semantics() -> BuiltinReceiverCallableSemantics {
     BUILTIN_RECEIVER_CALLABLE_SEMANTICS
         .iter()

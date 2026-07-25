@@ -604,6 +604,7 @@ fn date_arg(value: Option<&RuntimeValue>, target: &str) -> Result<i64> {
 }
 
 fn integer_arg_i64(value: Option<&RuntimeValue>, target: &str) -> Result<i64> {
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
     let value = match value {
         Some(RuntimeValue::Number(value)) if value.is_finite() && value.fract() == 0.0 => *value,
         _ => {
@@ -615,6 +616,11 @@ fn integer_arg_i64(value: Option<&RuntimeValue>, target: &str) -> Result<i64> {
     if value < i64::MIN as f64 || value > i64::MAX as f64 {
         return Err(RuntimeError::Decode(format!(
             "{target} integer argument is outside i64 range"
+        )));
+    }
+    if value.abs() > MAX_SAFE_INTEGER {
+        return Err(RuntimeError::Decode(format!(
+            "{target} requires a safe integer"
         )));
     }
     Ok(value as i64)
@@ -969,6 +975,68 @@ mod tests {
                 .expect("isAfter should dispatch"),
             RuntimeValue::Bool(true)
         );
+    }
+
+    #[test]
+    fn date_add_milliseconds_preserves_range_and_typed_errors() {
+        let mut heap = RequestHeap::default();
+        let op = receiver_op("Date", "addMilliseconds");
+
+        for (receiver, delta, expected) in [
+            (1_000, 500.0, 1_500),
+            (1_000, -500.0, 500),
+            (
+                date_value::MIN_EPOCH_MILLIS,
+                0.0,
+                date_value::MIN_EPOCH_MILLIS,
+            ),
+            (
+                date_value::MAX_EPOCH_MILLIS,
+                0.0,
+                date_value::MAX_EPOCH_MILLIS,
+            ),
+        ] {
+            assert_eq!(
+                ReceiverMethodDispatch::new(&mut heap)
+                    .dispatch_op(
+                        &op,
+                        RuntimeValue::Date(receiver),
+                        vec![RuntimeValue::Number(delta)],
+                    )
+                    .expect("canonical Date.addMilliseconds should dispatch"),
+                RuntimeValue::Date(expected)
+            );
+        }
+
+        for (receiver, delta) in [
+            (date_value::MAX_EPOCH_MILLIS, 1.0),
+            (date_value::MIN_EPOCH_MILLIS, -1.0),
+        ] {
+            let error = ReceiverMethodDispatch::new(&mut heap)
+                .dispatch_op(
+                    &op,
+                    RuntimeValue::Date(receiver),
+                    vec![RuntimeValue::Number(delta)],
+                )
+                .expect_err("Date.addMilliseconds must reject an out-of-range Date");
+            assert!(matches!(
+                error,
+                RuntimeError::DecodeTarget { ref target, .. }
+                    if target == "Date.addMilliseconds"
+            ));
+        }
+
+        for argument in [
+            RuntimeValue::Number(0.5),
+            RuntimeValue::Number(f64::INFINITY),
+            RuntimeValue::Number(9_007_199_254_740_992.0),
+            RuntimeValue::String("1".to_string()),
+        ] {
+            let error = ReceiverMethodDispatch::new(&mut heap)
+                .dispatch_op(&op, RuntimeValue::Date(0), vec![argument])
+                .expect_err("Date.addMilliseconds must require an integer argument");
+            assert!(matches!(error, RuntimeError::Decode(_)));
+        }
     }
 
     #[test]

@@ -396,6 +396,10 @@ pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantic
     receiver_reachable_get(BuiltinReceiverRoot::Map),
     receiver_reachable_get(BuiltinReceiverRoot::JsonObject),
     detached_scalar_receiver(BuiltinReceiverRoot::JsonObject, BuiltinReceiverMethod::Has),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::Date,
+        BuiltinReceiverMethod::AddMilliseconds,
+    ),
     detached_scalar_receiver(BuiltinReceiverRoot::Date, BuiltinReceiverMethod::Compare),
     detached_scalar_receiver(
         BuiltinReceiverRoot::Date,
@@ -1038,6 +1042,7 @@ mod tests {
         let expected = BTreeSet::from([
             "receiver:Array.length@1",
             "receiver:Array.push@1",
+            "receiver:Date.addMilliseconds@1",
             "receiver:Date.compare@1",
             "receiver:Date.diffMilliseconds@1",
             "receiver:Date.isBefore@1",

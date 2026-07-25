@@ -2170,6 +2170,10 @@ fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
               return left.compare(right)
             }
 
+            function addMilliseconds(value: Date, delta: integer) -> Date {
+              return value.addMilliseconds(delta)
+            }
+
             function diffMilliseconds(left: Date, right: Date) -> integer {
               return left.diffMilliseconds(right)
             }
@@ -2190,6 +2194,7 @@ fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
     for callable in [
         "isBefore",
         "compare",
+        "addMilliseconds",
         "diffMilliseconds",
         "epochMilliseconds",
         "durationMilliseconds",
@@ -2211,6 +2216,7 @@ fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
     assert_eq!(
         receiver_targets,
         std::collections::BTreeSet::from([
+            "receiver:Date.addMilliseconds@1",
             "receiver:Date.compare@1",
             "receiver:Date.diffMilliseconds@1",
             "receiver:Date.isBefore@1",
@@ -2218,6 +2224,44 @@ fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
             "receiver:Duration.toMilliseconds@1",
         ])
     );
+}
+
+#[test]
+fn date_add_milliseconds_keeps_v1_proxy_expiry_detached() {
+    let model = analyze_named(
+        r#"
+            function upstreamRecoverAt(now: Date, delayMs: integer) -> Date {
+              return now.addMilliseconds(delayMs)
+            }
+
+            function v1Proxy(now: Date, delayMs: integer) -> Date {
+              return upstreamRecoverAt(now, delayMs)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "upstream_health",
+        "skiff.run/codex-relay",
+    );
+
+    for callable in ["upstreamRecoverAt", "v1Proxy"] {
+        assert_eq!(
+            effects_in(&model, "upstream_health", callable),
+            no_effects(),
+            "{callable}"
+        );
+        assert!(matches!(
+            provenance_in(&model, "upstream_health", callable),
+            CallableProvenanceSummary::Analyzed { return_origins, .. }
+                if return_origins == &vec![ValueProvenance::Fresh]
+        ));
+    }
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::ReceiverBuiltin { op }
+                if op.canonical_key == "receiver:Date.addMilliseconds@1"
+        )
+    }));
 }
 
 #[test]
