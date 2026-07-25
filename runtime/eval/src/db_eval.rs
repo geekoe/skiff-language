@@ -25,7 +25,10 @@ use super::{
     runtime_ops::{runtime_from_wire, runtime_numeric, runtime_to_wire, runtime_truthy},
     Interpreter,
 };
-use crate::error::{Result, RuntimeError};
+use crate::{
+    assembly_execution::RuntimeExecutionProjection,
+    error::{Result, RuntimeError},
+};
 use skiff_runtime_linked_program::{
     DbBodyIr, DbChangeIr, DbChangeOpIr, DbIndexDirectionIr, DbOpKindIr, DbOperationIr, DbOrderIr,
     DbPredicateCompareOpIr, DbPredicateIr, DbProjectionIr, DbQueryIr, DbSelectorIr, DbTargetIr,
@@ -308,7 +311,7 @@ impl<'a> DbIrEvaluator<'a> {
 
     fn result_plan(&self, ty: &LinkedTypeRef) -> Result<RuntimeTypePlan> {
         self.interpreter
-            .type_projection()?
+            .type_projection_for_context(&self.program_context)?
             .plan_from_linked_nested_ref(ty, self.addr)
     }
 
@@ -316,7 +319,8 @@ impl<'a> DbIrEvaluator<'a> {
         &self,
         target: &DbTargetIr,
     ) -> Result<DbRecoverableRuntimeExpectedPlans> {
-        let program = self.interpreter.program_projection()?;
+        let program =
+            RuntimeExecutionProjection::for_context(self.interpreter, &self.program_context)?;
         let ctx = PlanContext::from_type_view(program.type_view(), self.addr);
         db_recoverable_expected_plans_from_declaration(self.file, target, &ctx)
     }

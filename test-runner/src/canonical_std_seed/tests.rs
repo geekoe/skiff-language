@@ -9,6 +9,7 @@ use std::{
 use skiff_artifact_identity::{
     assign_package_artifact_identities, package_artifact_ref, PackageArtifactPointerPath,
 };
+use skiff_artifact_model::PackageRuntimeCapabilityRequirement;
 use skiff_compiler::authoring::{author_official_std_package, publish_package_artifact_records};
 use skiff_deployment::storage::{CanonicalArtifactStore, PackageArtifactPointer};
 
@@ -186,10 +187,12 @@ fn malformed_dangling_and_different_existing_pointers_fail_before_store_writes()
     let mut alternative = expected;
     alternative
         .artifact
-        .package_local_abi
-        .public_symbols
-        .pop_first()
-        .expect("official std has a public symbol");
+        .runtime_requirements
+        .runtime_capabilities
+        .push(PackageRuntimeCapabilityRequirement {
+            capability: "canonical-std-seed-test".to_string(),
+            required_version: "1".to_string(),
+        });
     assign_package_artifact_identities(&mut alternative.artifact).unwrap();
     let alternative_receipt =
         publish_package_artifact_records(&different_store, &alternative).unwrap();

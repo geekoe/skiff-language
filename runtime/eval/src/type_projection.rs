@@ -11,6 +11,7 @@ use super::type_descriptor::TypeSubstitutions;
 use super::{
     exceptions::{catch_type_leaves, throw_payload_actual_type},
     invocation::{EvalProgramProjection, ResolvedEvalExecutable},
+    program_execution::ProgramExecutionContext,
     program_types::{call_type_substitutions, normalize_program_type_ref, program_type_ref_kind},
     Interpreter,
 };
@@ -22,6 +23,15 @@ pub struct EvalTypeProjection<'a> {
 impl Interpreter {
     pub fn type_projection(&self) -> Result<EvalTypeProjection<'_>> {
         Ok(EvalTypeProjection::new(self.program_projection()?))
+    }
+
+    pub(crate) fn type_projection_for_context(
+        &self,
+        context: &ProgramExecutionContext<'_>,
+    ) -> Result<EvalTypeProjection<'_>> {
+        Ok(EvalTypeProjection::from_execution_projection(
+            RuntimeExecutionProjection::for_context(self, context)?,
+        ))
     }
 }
 

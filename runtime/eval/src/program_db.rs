@@ -24,7 +24,7 @@ use super::{
     db_command::{DbCommand, DbCommandChange, DbCommandValue, DbOneCommandSelector},
     db_eval::DbIrEvaluator,
     env::{Env, Flow},
-    invocation::EvalProgramProjection,
+    assembly_execution::RuntimeExecutionProjection,
     program_execution::ProgramExecutionContext,
     recoverable_behavior::EvalRecoverableBehaviorHooks,
     runtime_ops::{runtime_from_wire, runtime_from_wire_required_plan_with_use, runtime_to_wire},
@@ -125,7 +125,7 @@ impl Interpreter {
         };
         execute_db_command(
             &store,
-            self.program_projection()?,
+            RuntimeExecutionProjection::for_context(self, &program_context)?,
             &program_context,
             heap,
             command,
@@ -487,7 +487,7 @@ mod tests {
 
 async fn execute_db_command(
     store: &DbCapabilityStore,
-    program: EvalProgramProjection<'_>,
+    program: RuntimeExecutionProjection<'_>,
     program_context: &ProgramExecutionContext<'_>,
     heap: &mut RequestHeap,
     command: DbCommand,
@@ -496,7 +496,7 @@ async fn execute_db_command(
         DbCommand::FindMany(command) => {
             if let Some(recoverable_runtime) = command.recoverable_runtime {
                 let context =
-                    db_recoverable_runtime_context(program, program_context, recoverable_runtime)?;
+                    db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
                 let values = store
                     .find_many_page_runtime(
                         &command.type_name,
@@ -534,7 +534,7 @@ async fn execute_db_command(
             let projection = command.projection;
             if let Some(recoverable_runtime) = command.recoverable_runtime {
                 let context =
-                    db_recoverable_runtime_context(program, program_context, recoverable_runtime)?;
+                    db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
                 let found = match command.selector {
                     DbOneCommandSelector::Key { key } => {
                         store
@@ -595,7 +595,7 @@ async fn execute_db_command(
                 recoverable_runtime,
             } => {
                 let context =
-                    db_recoverable_runtime_context(program, program_context, recoverable_runtime)?;
+                    db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
                 Ok(store
                     .create_runtime(&command.type_name, &value, heap, context)
                     .await?)
@@ -638,7 +638,7 @@ async fn execute_db_command(
                 recoverable_runtime,
             } => {
                 let context =
-                    db_recoverable_runtime_context(program, program_context, recoverable_runtime)?;
+                    db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
                 Ok(store
                     .update_one_runtime(
                         &command.type_name,
@@ -704,7 +704,7 @@ async fn execute_db_command(
                 recoverable_runtime,
             } => {
                 let context =
-                    db_recoverable_runtime_context(program, program_context, recoverable_runtime)?;
+                    db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
                 Ok(store
                     .replace_one_runtime(
                         &command.type_name,
@@ -756,7 +756,7 @@ fn decode_db_result(
 }
 
 fn db_recoverable_runtime_context(
-    program: EvalProgramProjection<'_>,
+    program: &RuntimeExecutionProjection<'_>,
     program_context: &ProgramExecutionContext<'_>,
     expected_plans: DbRecoverableRuntimeExpectedPlans,
 ) -> Result<DbRecoverableRuntimeContext> {
@@ -767,7 +767,7 @@ fn db_recoverable_runtime_context(
     let build_id = actor_context.request_build_id().to_string();
     Ok(DbRecoverableRuntimeContext {
         behavior_hooks: Arc::new(EvalRecoverableBehaviorHooks::new(
-            program,
+            program.legacy("recoverable DB behavior")?,
             &artifact_identity,
             &build_id,
         )?),

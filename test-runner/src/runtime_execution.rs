@@ -53,12 +53,14 @@ pub fn run_package_cases(
         &project,
         &cases,
     )?;
+    let mut test_config_literals = test_doubles::load_config_literals(package_root, &project)?;
+    test_config_literals.extend(options.test_config_literals.iter().cloned());
     let run_scope = package_test_run_scope()?;
     let fixture = assemble_package_test_fixture_for_run_with_config(
         &project,
         overlay,
         base,
-        &options.test_config_literals,
+        &test_config_literals,
         &run_scope,
     )?;
     fixture
