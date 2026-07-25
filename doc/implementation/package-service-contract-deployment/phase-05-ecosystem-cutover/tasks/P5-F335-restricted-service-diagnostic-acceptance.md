@@ -1,6 +1,7 @@
 # P5-F335 Restricted service diagnostic acceptance
 
-状态：Ready（独立只读验收）。
+状态：Completed。结果见
+`P5-F335-restricted-service-diagnostic-acceptance-result.md`。
 
 ## 验收输入
 
