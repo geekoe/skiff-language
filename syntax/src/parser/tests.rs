@@ -1,4 +1,6 @@
-use crate::ast::{DbIndexDirection, DbRetentionUnit, DbStorageCodec, ForBinding, Stmt};
+use crate::ast::{
+    DbIndexDirection, DbRetentionUnit, DbStorageCodec, ForBinding, Stmt, TestEffectOutcome,
+};
 
 use super::{
     parse_source, parse_source_metadata, parse_source_with_bodies_tolerant, BuiltinPackage,
@@ -1222,6 +1224,122 @@ fn parses_source_file_tests() {
             message: _
         }
     ));
+}
+
+#[test]
+fn parses_inline_test_effects_and_sequences() {
+    let ast = parse_source(
+        r#"
+        test "calls dependency" effects {
+          std.http.client.request {
+            expect: { method: "POST" },
+            respondSequence: [
+              { status: 200 },
+              { status: 202 },
+            ],
+          },
+          subject/internal.stream {
+            stream: [{ value: 1 }, { value: 2 }],
+          },
+          subject/internal.failure {
+            throw: Failure { message: "no" },
+          },
+        } {
+          assert true
+        }
+        "#,
+    )
+    .unwrap();
+
+    let effects = &ast.tests[0].effects;
+    assert_eq!(effects.len(), 3);
+    assert_eq!(effects[0].target, "std.http.client.request");
+    assert!(effects[0].expect.is_some());
+    assert_eq!(effects[0].outcomes.len(), 2);
+    assert!(effects[0]
+        .outcomes
+        .iter()
+        .all(|outcome| matches!(outcome, TestEffectOutcome::Respond { .. })));
+    assert_eq!(effects[1].target, "subject/internal.stream");
+    assert!(matches!(
+        &effects[1].outcomes[0],
+        TestEffectOutcome::Stream { events } if events.len() == 2
+    ));
+    assert!(matches!(
+        effects[2].outcomes[0],
+        TestEffectOutcome::Throw { .. }
+    ));
+}
+
+#[test]
+fn rejects_invalid_inline_test_effect_shapes() {
+    let cases = [
+        (
+            r#"test "x" effects { std.http.get { respondSequence: [] } } {}"#,
+            "cannot be empty",
+        ),
+        (
+            r#"test "x" effects {
+                std.http.get { respond: { ok: true } },
+                std.http.get { respond: { ok: false } }
+            } {}"#,
+            "duplicate test effect target",
+        ),
+        (
+            r#"test "x" effects {
+                std.http.get { respond: { ok: true }, throw: Failure {} }
+            } {}"#,
+            "exactly one outcome",
+        ),
+        (
+            r#"test "x" effects { std.http.get { expect: {} } } {}"#,
+            "requires an outcome",
+        ),
+        (
+            r#"test "x" effects { std.http.get { response: {} } } {}"#,
+            "unknown test effect field",
+        ),
+    ];
+
+    for (source, expected) in cases {
+        let error = parse_source(source).unwrap_err();
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?}, got {error}"
+        );
+    }
+}
+
+#[test]
+fn rejects_effect_declarations_outside_test_header() {
+    let error = parse_source(r#"effects { std.http.get { respond: {} } }"#).unwrap_err();
+    assert!(
+        error.to_string().contains("expected top-level declaration"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn inline_effect_changes_do_not_change_production_source_text() {
+    let first = r#"
+        function production() -> number { return 1 }
+        test "x" effects {
+          std.http.get { respond: { status: 200 } }
+        } { assert true }
+    "#;
+    let second = r#"
+        function production() -> number { return 1 }
+        test "renamed" effects {
+          std.http.get { respondSequence: [{ status: 201 }, { status: 202 }] }
+        } { assert false }
+    "#;
+    let first_ast = parse_source(first).unwrap();
+    let second_ast = parse_source(second).unwrap();
+
+    assert_eq!(
+        crate::ast::source_text_without_test_declarations(first, &first_ast).trim(),
+        crate::ast::source_text_without_test_declarations(second, &second_ast).trim()
+    );
 }
 
 #[test]

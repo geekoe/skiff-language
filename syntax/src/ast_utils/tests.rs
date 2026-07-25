@@ -1,7 +1,7 @@
 use super::*;
 use crate::ast::{
     BinaryOp, Block, Expr, Literal, MatchArm, ObjectLiteralEntry, ObjectLiteralKey, Pattern,
-    PatternField, Stmt, TypeRef,
+    PatternField, Stmt, TestEffectDeclaration, TestEffectOutcome, TypeRef,
 };
 
 #[test]
@@ -240,4 +240,41 @@ fn read_only_walker_can_override_match_arm_pattern_traversal() {
 
     assert!(!visitor.saw_pattern);
     assert!(visitor.saw_body_expr);
+}
+
+#[test]
+fn test_effect_walkers_visit_every_embedded_expression() {
+    #[derive(Default)]
+    struct Names(Vec<String>);
+
+    impl AstVisitor for Names {
+        fn visit_expr(&mut self, expr: &Expr) {
+            if let Expr::Identifier(name) = expr {
+                self.0.push(name.clone());
+            }
+            walk_expr(self, expr);
+        }
+    }
+
+    let effect = TestEffectDeclaration {
+        target: "std.http.request".to_string(),
+        expect: Some(Expr::Identifier("expect".to_string())),
+        outcomes: vec![
+            TestEffectOutcome::Respond {
+                value: Expr::Identifier("respond".to_string()),
+            },
+            TestEffectOutcome::Throw {
+                value: Expr::Identifier("throw".to_string()),
+            },
+            TestEffectOutcome::Stream {
+                events: vec![Expr::Identifier("event".to_string())],
+            },
+        ],
+        span: crate::error::SourceSpan::synthetic(),
+    };
+    let mut names = Names::default();
+
+    walk_test_effect(&mut names, &effect);
+
+    assert_eq!(names.0, ["expect", "respond", "throw", "event"]);
 }

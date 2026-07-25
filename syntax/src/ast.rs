@@ -56,7 +56,21 @@ impl SourceSpanTable {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutableSourceSpans {
+    pub effects: Vec<TestEffectSourceSpans>,
     pub body: BlockSourceSpans,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestEffectSourceSpans {
+    pub expect: Option<ExprSourceSpans>,
+    pub outcomes: Vec<TestEffectOutcomeSourceSpans>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TestEffectOutcomeSourceSpans {
+    Respond(ExprSourceSpans),
+    Throw(ExprSourceSpans),
+    Stream(Vec<ExprSourceSpans>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -565,8 +579,27 @@ pub enum DbChangeOp {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TestDeclaration {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<TestEffectDeclaration>,
     pub body: Block,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TestEffectDeclaration {
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect: Option<Expr>,
+    pub outcomes: Vec<TestEffectOutcome>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TestEffectOutcome {
+    Respond { value: Expr },
+    Throw { value: Expr },
+    Stream { events: Vec<Expr> },
 }
 
 pub fn source_text_without_test_declarations(source: &str, ast: &SourceFile) -> String {

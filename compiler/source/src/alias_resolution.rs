@@ -4,7 +4,7 @@ use crate::{
     shared::ast::{
         AliasDecl, Expr, InterfaceDecl, InterfaceOperation, Pattern, SourceFile, TypeDecl, TypeRef,
     },
-    shared::ast_utils::{walk_expr_mut, walk_pattern_mut, AstVisitorMut},
+    shared::ast_utils::{walk_expr_mut, walk_pattern_mut, walk_test_effect_mut, AstVisitorMut},
     shared::type_expr::{FunctionTypeParam, RecordTypeField, TypeExpr},
     shared::type_syntax::{generic_parts, split_top_level, string_literal},
 };
@@ -200,6 +200,9 @@ impl<'a, 'b> AliasResolver<'a, 'b> {
             self.expand_expr(&mut constant.value);
         }
         for test in &mut ast.tests {
+            for effect in &mut test.effects {
+                walk_test_effect_mut(self, effect);
+            }
             self.expand_block(&mut test.body);
         }
     }

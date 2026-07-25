@@ -325,7 +325,14 @@ fn package_test_ast_for_cases<'a>(
                 .get(test_index)
                 .expect("discovered package test case belongs to this AST");
             (
-                ast.source_spans.tests.get(test_index).cloned(),
+                ast.source_spans
+                    .tests
+                    .get(test_index)
+                    .cloned()
+                    .map(|mut spans| {
+                        spans.effects.clear();
+                        spans
+                    }),
                 FunctionDecl {
                     exported: false,
                     name: function_name.to_string(),

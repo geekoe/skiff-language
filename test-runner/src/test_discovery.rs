@@ -3,12 +3,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use skiff_syntax::{ast::SourceFile, parser::parse_source};
+use skiff_syntax::{
+    ast::{SourceFile, TestEffectDeclaration},
+    parser::parse_source,
+};
 
 use crate::canonical_fixture::CanonicalFixtureError;
 
 #[derive(Debug, Clone)]
 pub struct PackageTestCase {
+    /// Stable compiler/runner join key. It deliberately does not contain the
+    /// user-facing test name, so renaming a case cannot orphan its effect plan.
+    pub case_identity: String,
     pub relative_path: PathBuf,
     pub module_path: String,
     pub name: String,
@@ -16,6 +22,13 @@ pub struct PackageTestCase {
     pub test_index: usize,
     pub source_text: String,
     pub source_ast: SourceFile,
+    pub effect_plan: ParsedInlineTestEffectPlan,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedInlineTestEffectPlan {
+    pub case_identity: String,
+    pub effects: Vec<TestEffectDeclaration>,
 }
 
 pub fn discover_package_test_cases(
@@ -52,7 +65,9 @@ pub fn discover_package_test_cases(
         let default_run = source_ast.test_default_run.unwrap_or(true);
         for (test_index, test) in source_ast.tests.iter().enumerate() {
             if input_is_file || default_run {
+                let case_identity = canonical_case_identity(&module_path, test_index);
                 cases.push(PackageTestCase {
+                    case_identity: case_identity.clone(),
                     relative_path: relative_path.clone(),
                     module_path: module_path.clone(),
                     name: test.name.clone(),
@@ -60,11 +75,19 @@ pub fn discover_package_test_cases(
                     test_index,
                     source_text: source_text.clone(),
                     source_ast: source_ast.clone(),
+                    effect_plan: ParsedInlineTestEffectPlan {
+                        case_identity,
+                        effects: test.effects.clone(),
+                    },
                 });
             }
         }
     }
     Ok(cases)
+}
+
+fn canonical_case_identity(module_path: &str, test_index: usize) -> String {
+    format!("{module_path}::test[{test_index}]")
 }
 
 fn collect_test_files(root: &Path, output: &mut Vec<PathBuf>) -> Result<(), CanonicalFixtureError> {
@@ -124,4 +147,17 @@ fn test_module_path(path: &Path) -> Result<String, CanonicalFixtureError> {
         .chain(std::iter::once("__test"))
         .collect::<Vec<_>>()
         .join("."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_case_identity;
+
+    #[test]
+    fn canonical_identity_does_not_duplicate_the_display_name() {
+        assert_eq!(
+            canonical_case_identity("internal.http.__test", 2),
+            "internal.http.__test::test[2]"
+        );
+    }
 }

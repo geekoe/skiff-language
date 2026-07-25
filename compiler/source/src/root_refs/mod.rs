@@ -11,7 +11,8 @@ use crate::{
             TypeRef,
         },
         ast_utils::{
-            walk_expr, walk_expr_mut, walk_pattern, walk_pattern_mut, AstVisitor, AstVisitorMut,
+            walk_expr, walk_expr_mut, walk_pattern, walk_pattern_mut, walk_test_effect,
+            walk_test_effect_mut, AstVisitor, AstVisitorMut,
         },
         publication_error::PublicationError,
     },
@@ -380,6 +381,9 @@ impl RootRefResolver<'_> {
             self.visit_interface_operation(signature);
         }
         for test in &mut ast.tests {
+            for effect in &mut test.effects {
+                walk_test_effect_mut(self, effect);
+            }
             self.visit_block(&mut test.body);
         }
     }
@@ -581,6 +585,9 @@ impl RootRefCollector<'_> {
             self.visit_interface_operation(signature);
         }
         for test in &ast.tests {
+            for effect in &test.effects {
+                walk_test_effect(self, effect);
+            }
             self.visit_block(&test.body);
         }
     }

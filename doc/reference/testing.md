@@ -150,14 +150,14 @@ effect doubles 写在所属 test block 中，不使用外部 `skiff.test-doubles
 
 ```skiff
 test "request succeeds" effects {
-  std.http.client.request {
+  std.http.request {
     expect: {
       method: "POST",
       url: "https://example.test",
     },
     respond: {
       status: 200,
-      headers: [],
+      headers: Array.empty<std.http.HttpHeader>(),
       body: bytes.fromUtf8("ok"),
     },
   }
@@ -166,7 +166,28 @@ test "request succeeds" effects {
 }
 ```
 
-多次调用使用 `respondSequence`；stream effect 的 response/event 序列同样内联。
+多次调用使用 `respondSequence`。声明的 typed error 使用 `throw`，多次调用全部返回
+typed error 时使用 `throwSequence`。stream effect 使用 `stream` 声明非空 event 序列：
+
+```skiff
+test "sequence and stream" effects {
+  dependency.retry {
+    respondSequence: [{ status: 503 }, { status: 200 }],
+  },
+  dependency.events {
+    stream: [{ value: "first" }, { value: "second" }],
+  },
+  dependency.failure {
+    throw: RequestFailure { code: "denied" },
+  },
+} {
+  // assertions
+}
+```
+
+`respond`、`respondSequence`、`throw`、`throwSequence` 与 `stream` 互斥；一个 target
+必须且只能声明其中一个结果字段。序列使用 effect DSL 的 `[expr, ...]`，不是 Skiff
+通用 array literal。
 
 规则：
 

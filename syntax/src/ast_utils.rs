@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use crate::ast::{
     Block, DbBody, DbChangeOp, DbDecl, DbOperation, DbSelector, DbWhereClause, Expr, ForBinding,
-    FunctionDecl, InterfaceOperation, MatchArm, Pattern, SourceFile, Stmt, TypeRef,
+    FunctionDecl, InterfaceOperation, MatchArm, Pattern, SourceFile, Stmt, TestEffectDeclaration,
+    TestEffectOutcome, TypeRef,
 };
 use crate::type_syntax::{generic_parts, split_top_level, string_literal};
 
@@ -229,6 +230,24 @@ pub fn walk_expr(visitor: &mut (impl AstVisitor + ?Sized), expr: &Expr) {
     }
 }
 
+pub fn walk_test_effect(visitor: &mut (impl AstVisitor + ?Sized), effect: &TestEffectDeclaration) {
+    if let Some(expect) = &effect.expect {
+        visitor.visit_expr(expect);
+    }
+    for outcome in &effect.outcomes {
+        match outcome {
+            TestEffectOutcome::Respond { value } | TestEffectOutcome::Throw { value } => {
+                visitor.visit_expr(value);
+            }
+            TestEffectOutcome::Stream { events } => {
+                for event in events {
+                    visitor.visit_expr(event);
+                }
+            }
+        }
+    }
+}
+
 fn walk_db_operation(visitor: &mut (impl AstVisitor + ?Sized), operation: &DbOperation) {
     visitor.visit_type_ref(&operation.target);
     if let Some(selector) = &operation.selector {
@@ -405,6 +424,27 @@ pub trait AstVisitorMut {
 pub fn walk_block_mut(visitor: &mut (impl AstVisitorMut + ?Sized), block: &mut Block) {
     for stmt in &mut block.statements {
         visitor.visit_stmt(stmt);
+    }
+}
+
+pub fn walk_test_effect_mut(
+    visitor: &mut (impl AstVisitorMut + ?Sized),
+    effect: &mut TestEffectDeclaration,
+) {
+    if let Some(expect) = &mut effect.expect {
+        visitor.visit_expr(expect);
+    }
+    for outcome in &mut effect.outcomes {
+        match outcome {
+            TestEffectOutcome::Respond { value } | TestEffectOutcome::Throw { value } => {
+                visitor.visit_expr(value);
+            }
+            TestEffectOutcome::Stream { events } => {
+                for event in events {
+                    visitor.visit_expr(event);
+                }
+            }
+        }
     }
 }
 
@@ -876,6 +916,23 @@ fn collect_source_expression_dotted_root_imports(
         }
     }
     for test in &source.tests {
+        for effect in &test.effects {
+            if let Some(expect) = &effect.expect {
+                collect_expr_dotted_root_imports(expect, root, imports);
+            }
+            for outcome in &effect.outcomes {
+                match outcome {
+                    TestEffectOutcome::Respond { value } | TestEffectOutcome::Throw { value } => {
+                        collect_expr_dotted_root_imports(value, root, imports);
+                    }
+                    TestEffectOutcome::Stream { events } => {
+                        for event in events {
+                            collect_expr_dotted_root_imports(event, root, imports);
+                        }
+                    }
+                }
+            }
+        }
         collect_block_dotted_root_imports(&test.body, root, imports);
     }
 }
