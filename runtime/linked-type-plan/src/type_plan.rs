@@ -2420,8 +2420,12 @@ mod applied_nominal_type_plan_tests {
     }
 
     fn addr(type_index: usize) -> TypeAddr {
+        addr_in(0, type_index)
+    }
+
+    fn addr_in(package_slot: usize, type_index: usize) -> TypeAddr {
         TypeAddr {
-            unit: UnitAddr::Package(0),
+            unit: UnitAddr::Package(package_slot),
             file: FileAddr::LoadedFileIndex(0),
             type_index,
         }
@@ -2525,6 +2529,16 @@ mod applied_nominal_type_plan_tests {
         types.descriptors.insert(
             addr(5),
             declaration("NotAValue", &["T"], LinkedTypeDescriptor::Interface),
+        );
+        types.descriptors.insert(
+            addr_in(1, 0),
+            declaration(
+                "Wrapped",
+                &["T"],
+                LinkedTypeDescriptor::Representation {
+                    representation: type_param("T"),
+                },
+            ),
         );
         types
     }
@@ -2632,6 +2646,43 @@ mod applied_nominal_type_plan_tests {
                 .label
                 .contains("syntheticDiscriminator:kind=value"));
             assert!(string_branches[2].label.contains("literal"));
+        });
+    }
+
+    #[test]
+    fn representation_targets_produce_plans_from_exact_owner_and_argument_keys() {
+        let types = type_context();
+        with_context(&types, |ctx| {
+            let local_string = applied(2, vec![builtin("string")]);
+            let local_number = applied(2, vec![builtin("number")]);
+            let external_string = LinkedTypeRef::AppliedNominal {
+                base: LinkedNominalTypeRefBase::Address {
+                    addr: addr_in(1, 0),
+                },
+                arguments: vec![builtin("string")],
+            };
+
+            let local_string_key = linked_type_ref_runtime_key(&local_string);
+            let local_number_key = linked_type_ref_runtime_key(&local_number);
+            let external_string_key = linked_type_ref_runtime_key(&external_string);
+            assert_ne!(local_string_key, local_number_key);
+            assert_ne!(local_string_key, external_string_key);
+
+            let local_string_plan = RuntimeTypePlan::from_linked(&local_string, ctx).unwrap();
+            let local_number_plan = RuntimeTypePlan::from_linked(&local_number, ctx).unwrap();
+            let external_string_plan = RuntimeTypePlan::from_linked(&external_string, ctx).unwrap();
+            for plan in [
+                &local_string_plan,
+                &local_number_plan,
+                &external_string_plan,
+            ] {
+                assert!(matches!(plan.node, RuntimeTypeNode::Representation { .. }));
+            }
+            assert_ne!(local_string_plan.label, local_number_plan.label);
+            assert_ne!(local_string_plan.label, external_string_plan.label);
+            assert!(local_string_plan.label.contains(&local_string_key));
+            assert!(local_number_plan.label.contains(&local_number_key));
+            assert!(external_string_plan.label.contains(&external_string_key));
         });
     }
 

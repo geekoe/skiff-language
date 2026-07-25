@@ -10,6 +10,7 @@ use skiff_runtime_loader::{RuntimeAssemblyContentResolver, RuntimeAssemblyLoader
 use super::*;
 
 mod fixtures;
+mod representation_wrap;
 
 use fixtures::CycleFixture;
 

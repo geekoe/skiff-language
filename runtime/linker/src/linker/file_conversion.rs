@@ -869,6 +869,12 @@ fn linked_expr(
             type_ref: linked_type_ref(type_ref),
             fields: linked_expr_ref_map(fields),
         },
+        artifact::ExprIr::RepresentationWrap { value, type_ref } => {
+            LinkedExprIr::RepresentationWrap {
+                value: linked_expr_ref(value),
+                type_ref: linked_type_ref(type_ref),
+            }
+        }
         artifact::ExprIr::InterfaceBox {
             value,
             interface,
@@ -1657,6 +1663,77 @@ mod tests {
                 args: Vec::new(),
             }]
         ));
+    }
+
+    #[test]
+    fn linked_representation_wrap_preserves_child_and_plain_target() {
+        let linked = linked_expr(
+            &artifact::ExprIr::RepresentationWrap {
+                value: artifact::ExprRefIr { expression: 11 },
+                type_ref: artifact::TypeRefIr::LocalType { type_index: 3 },
+            },
+            &|_| unreachable!(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            linked,
+            LinkedExprIr::RepresentationWrap {
+                value: ExprRefIr { expression: 11 },
+                type_ref: LinkedTypeRef::LocalType { type_index: 3 },
+            }
+        );
+    }
+
+    #[test]
+    fn linked_representation_wrap_preserves_external_owner_and_nested_arguments() {
+        let linked = linked_expr(
+            &artifact::ExprIr::RepresentationWrap {
+                value: artifact::ExprRefIr { expression: 19 },
+                type_ref: artifact::TypeRefIr::AppliedNominal {
+                    base: artifact::NominalTypeRefBaseIr::PackageSymbol {
+                        symbol: artifact::PackageSymbolRef {
+                            package: artifact::PackageRefIr::Dependency {
+                                dependency_ref: "models".to_string(),
+                            },
+                            symbol_path: "api.OuterRepresentation".to_string(),
+                            abi_expectation: Some("local-abi:models".to_string()),
+                        },
+                    },
+                    arguments: vec![artifact::TypeRefIr::AppliedNominal {
+                        base: artifact::NominalTypeRefBaseIr::LocalType { type_index: 5 },
+                        arguments: vec![artifact::TypeRefIr::builtin("string")],
+                    }],
+                },
+            },
+            &|_| unreachable!(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            linked,
+            LinkedExprIr::RepresentationWrap {
+                value: ExprRefIr { expression: 19 },
+                type_ref: LinkedTypeRef::AppliedNominal {
+                    base: LinkedNominalTypeRefBase::PackageSymbol {
+                        symbol: PackageSymbolRef {
+                            package: PackageRefIr::Dependency {
+                                dependency_ref: "models".to_string(),
+                            },
+                            symbol_path: "api.OuterRepresentation".to_string(),
+                            abi_expectation: Some("local-abi:models".to_string()),
+                        },
+                    },
+                    arguments: vec![LinkedTypeRef::AppliedNominal {
+                        base: LinkedNominalTypeRefBase::LocalType { type_index: 5 },
+                        arguments: vec![LinkedTypeRef::Native {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                        }],
+                    }],
+                },
+            }
+        );
     }
 
     fn generic_type_file() -> artifact::FileIrUnit {
