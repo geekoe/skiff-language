@@ -1,6 +1,7 @@
 # P5-F323 Eval fixture schema and heap closure
 
-状态：Ready。
+状态：Completed with one new blocker。结果见
+`P5-F323-eval-fixture-schema-and-heap-closure-result.md`。
 
 ## 直接父节点
 
@@ -73,4 +74,3 @@ git diff --check
 - 风险：低至中，test-only机械closure；
 - 新的一次性Agent，5分钟内先修共享helper和单一断言；提交并返回19+1矩阵及完整eval剩余失败；
 - 不push、不承接WebSocket或acceptance。
-
