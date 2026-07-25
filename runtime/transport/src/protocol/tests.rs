@@ -5,8 +5,8 @@ use serde_json::{json, Value};
 
 use crate::protocol::decode_router_bootstrap_frame_header;
 use crate::protocol::{
-    decode_binary_frame, decode_typed_binary_frame, encode_binary_frame,
-    ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
+    decode_binary_frame, decode_response_error_frame, decode_typed_binary_frame,
+    encode_binary_frame, ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
     ActorGetOrCreateRequestFrameHeader, ActorRemoveRequestFrameHeader,
     ActorReplaceRequestFrameHeader, ConnectionSendEnvelope, ConnectionSendFrameHeader,
     PackageTestStartFrameHeader, RequestCancelFrameHeader, RequestStartFrameHeader,
@@ -21,8 +21,10 @@ use crate::protocol::{
     RuntimeRegisterFrameHeader, RuntimeTraceContextFrameHeader, SpawnClaimDescriptorFrameMetadata,
     SpawnClaimRequestFrameHeader, SpawnClaimResponseFrameHeader, SpawnCompleteRequestFrameHeader,
     SpawnFailRequestFrameHeader, SpawnRenewRequestFrameHeader, SpawnSubmitRequestFrameHeader,
-    TelemetryProtocol, TelemetryTopic, RUNTIME_FRAME_SCHEMA_VERSION,
+    TelemetryBatchEnvelope, TelemetryProtocol, TelemetryTopic, TelemetryVisibility,
+    ValidatedResponseErrorFrame, RESPONSE_ERROR_FRAME_SCHEMA_VERSION, RUNTIME_FRAME_SCHEMA_VERSION,
 };
+use skiff_runtime_model::service_error::ServiceErrorEnvelope;
 
 const SERVICE_PROTOCOL_A: &str =
     "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -937,6 +939,51 @@ fn router_control_envelope_deserializes_telemetry_fixture() {
 }
 
 #[test]
+fn telemetry_shared_fixture_requires_visibility_and_restricted_correlation() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../doc/architecture/fixtures/observability-minimal.json"
+    ))
+    .expect("observability fixture should parse");
+    let batch: TelemetryBatchEnvelope = serde_json::from_value(fixture["valid"]["batch"].clone())
+        .expect("shared telemetry batch must decode");
+    assert_eq!(batch.events.len(), 4);
+    assert!(batch.events[..3]
+        .iter()
+        .all(|event| event.visibility == TelemetryVisibility::Operational));
+    let restricted = &batch.events[3];
+    assert_eq!(restricted.visibility, TelemetryVisibility::Restricted);
+    assert_eq!(restricted.trace_id.as_deref(), Some("trace-fixture-1"));
+    assert_eq!(restricted.error_id.as_deref(), Some("error-fixture-1"));
+
+    let invalid_cases = fixture["invalidCases"]
+        .as_array()
+        .expect("invalidCases must be an array")
+        .iter()
+        .filter(|test_case| {
+            matches!(
+                test_case["name"].as_str(),
+                Some(
+                    "telemetry-batch-missing-visibility"
+                        | "telemetry-batch-unknown-visibility"
+                        | "telemetry-batch-restricted-missing-trace-id"
+                        | "telemetry-batch-restricted-missing-error-id"
+                        | "telemetry-batch-event-unknown-field"
+                        | "telemetry-batch-empty-operational-error-id"
+                )
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(invalid_cases.len(), 6);
+    for test_case in invalid_cases {
+        assert!(
+            serde_json::from_value::<TelemetryBatchEnvelope>(test_case["payload"].clone()).is_err(),
+            "{} must fail closed",
+            test_case["name"]
+        );
+    }
+}
+
+#[test]
 fn router_control_envelope_deserializes_file_backend() {
     let value: RouterControlEnvelope = serde_json::from_value(json!({
         "artifactRoots": ["/tmp/skiff-artifacts"],
@@ -1148,17 +1195,15 @@ fn runtime_binary_frame_allows_header_only_control_and_error_frames() {
     assert_eq!(typed_header, start_header);
     assert!(payload.is_empty());
 
-    let error_header = ResponseErrorFrameHeader {
-        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-        envelope_type: "response.error".to_string(),
-        request_id: "request-1".to_string(),
-        error: RuntimeErrorFramePayload {
+    let error_header = ResponseErrorFrameHeader::control(
+        "request-1".to_string(),
+        RuntimeErrorFramePayload {
             code: "FixtureError".to_string(),
             message: "fixture runtime error".to_string(),
             status: None,
             details: None,
         },
-    };
+    );
 
     let frame = encode_binary_frame(&error_header, &[]).expect("error frame should encode");
     let (typed_header, payload): (ResponseErrorFrameHeader, Vec<u8>) =
@@ -1166,6 +1211,145 @@ fn runtime_binary_frame_allows_header_only_control_and_error_frames() {
 
     assert_eq!(typed_header, error_header);
     assert!(payload.is_empty());
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ServiceErrorResponseV2Corpus {
+    schema_version: u32,
+    valid_cases: Vec<ServiceErrorResponseV2Case>,
+    invalid_cases: Vec<ServiceErrorResponseV2InvalidCase>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ServiceErrorResponseV2Case {
+    name: String,
+    header: Value,
+    payload_utf8: String,
+    expected: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ServiceErrorResponseV2InvalidCase {
+    name: String,
+    header: Value,
+    payload_utf8: String,
+}
+
+#[test]
+fn service_error_response_v2_shared_corpus_is_strict_and_byte_preserving() {
+    let corpus: ServiceErrorResponseV2Corpus = serde_json::from_str(include_str!(
+        "../../testdata/service-error-response-v2.json"
+    ))
+    .expect("service error response v2 corpus must decode");
+    assert_eq!(corpus.schema_version, 1);
+    assert_eq!(corpus.valid_cases.len(), 4);
+    assert!(corpus.invalid_cases.len() >= 20);
+
+    for test_case in &corpus.valid_cases {
+        let payload = test_case.payload_utf8.as_bytes().to_vec();
+        let frame = encode_binary_frame(&test_case.header, &payload)
+            .unwrap_or_else(|error| panic!("{} must encode: {error}", test_case.name));
+        let (header, body) = decode_response_error_frame(&frame)
+            .unwrap_or_else(|error| panic!("{} must decode: {error}", test_case.name));
+        assert_eq!(
+            header.request_id(),
+            test_case.header["requestId"].as_str().unwrap(),
+            "{} request id",
+            test_case.name
+        );
+        match body {
+            ValidatedResponseErrorFrame::FixedService(error) => {
+                assert_eq!(
+                    error.encoded_bytes(),
+                    payload,
+                    "{} must retain exact payload bytes",
+                    test_case.name
+                );
+                assert_eq!(
+                    error.envelope().trace_id(),
+                    test_case.expected["traceId"].as_str().unwrap(),
+                    "{} trace id",
+                    test_case.name
+                );
+                assert_eq!(
+                    error.envelope().error_id(),
+                    test_case.expected["errorId"].as_str().unwrap(),
+                    "{} error id",
+                    test_case.name
+                );
+                match (
+                    test_case.expected["kind"].as_str().unwrap(),
+                    error.envelope(),
+                ) {
+                    (
+                        "publicTypedError",
+                        ServiceErrorEnvelope::PublicTypedError {
+                            package_id,
+                            stable_schema_key,
+                            package_schema_type_id,
+                            ..
+                        },
+                    ) => {
+                        assert_eq!(
+                            package_id,
+                            test_case.expected["packageId"].as_str().unwrap()
+                        );
+                        assert_eq!(
+                            stable_schema_key,
+                            test_case.expected["stableSchemaKey"].as_str().unwrap()
+                        );
+                        assert_eq!(
+                            package_schema_type_id.as_str(),
+                            test_case.expected["packageSchemaTypeId"].as_str().unwrap()
+                        );
+                    }
+                    ("internalError", ServiceErrorEnvelope::InternalError { .. }) => {}
+                    (
+                        "platformError",
+                        ServiceErrorEnvelope::PlatformError {
+                            builtin_error_identity,
+                            ..
+                        },
+                    ) => assert_eq!(
+                        builtin_error_identity.symbol(),
+                        test_case.expected["builtinErrorIdentity"].as_str().unwrap()
+                    ),
+                    (expected, actual) => {
+                        panic!("{} expected {expected}, got {actual:?}", test_case.name)
+                    }
+                }
+            }
+            ValidatedResponseErrorFrame::Control(error) => {
+                assert_eq!(test_case.expected["kind"], "control");
+                assert_eq!(
+                    error.code,
+                    test_case.expected["code"].as_str().unwrap(),
+                    "{} control code",
+                    test_case.name
+                );
+                assert!(payload.is_empty(), "{} control payload", test_case.name);
+            }
+        }
+    }
+
+    for test_case in &corpus.invalid_cases {
+        let frame = encode_binary_frame(&test_case.header, test_case.payload_utf8.as_bytes())
+            .unwrap_or_else(|error| panic!("{} binary frame must encode: {error}", test_case.name));
+        assert!(
+            decode_response_error_frame(&frame).is_err(),
+            "{} must fail closed",
+            test_case.name
+        );
+    }
+
+    assert_eq!(
+        RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+        "skiff-runtime-frame-v2"
+    );
+    assert_eq!(RUNTIME_FRAME_SCHEMA_VERSION, "skiff-runtime-frame-v1");
 }
 
 #[test]

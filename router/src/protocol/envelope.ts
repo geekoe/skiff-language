@@ -26,17 +26,20 @@ export interface TraceContext {
 export const TELEMETRY_PROTOCOL = 'skiff-telemetry-v1' as const;
 
 export const TELEMETRY_TOPICS = ['log', 'trace', 'metric', 'health', 'debug'] as const;
+export const TELEMETRY_VISIBILITIES = ['operational', 'restricted'] as const;
 
 export type TelemetryTopic = (typeof TELEMETRY_TOPICS)[number];
 
 export type TelemetrySource = 'gateway' | 'router' | 'runtime' | 'provider' | 'test';
 
 export type TelemetryLevel = 'debug' | 'info' | 'warn' | 'error';
+export type TelemetryVisibility = (typeof TELEMETRY_VISIBILITIES)[number];
 
 export const SKIFF_BINARY_FRAME_MAGIC = Buffer.from([0x53, 0x4b, 0x42, 0x46]) as Buffer;
 export const SKIFF_BINARY_FRAME_VERSION = 1;
 export const SKIFF_BINARY_FRAME_HEADER_ENCODING_JSON = 1;
 export const RUNTIME_FRAME_SCHEMA_VERSION = 'skiff-runtime-frame-v1' as const;
+export const RESPONSE_ERROR_FRAME_SCHEMA_VERSION = 'skiff-runtime-frame-v2' as const;
 
 const BINARY_FRAME_FIXED_HEADER_BYTES = 14;
 const UINT32_MAX = 0xffffffff;
@@ -149,6 +152,7 @@ export interface TelemetryEvent {
   topic: TelemetryTopic;
   ts: string;
   source: TelemetrySource;
+  visibility: TelemetryVisibility;
   serviceId?: string;
   revisionId?: string;
   buildId?: string;
@@ -161,6 +165,7 @@ export interface TelemetryEvent {
   requestId?: string;
   clientRequestId?: string;
   traceId?: string;
+  errorId?: string;
   spanId?: string;
   parentSpanId?: string;
   target?: string;
@@ -544,10 +549,24 @@ export interface ResponseEndFrameHeader extends RuntimeFrameHeaderBase<'response
   websocketConnect?: WebSocketConnectResponseFrameMetadata;
 }
 
-export interface ResponseErrorFrameHeader extends RuntimeFrameHeaderBase<'response.error'> {
+export interface FixedServiceResponseErrorFrameHeader {
+  schemaVersion: typeof RESPONSE_ERROR_FRAME_SCHEMA_VERSION;
+  type: 'response.error';
   requestId: string;
+  errorKind: 'fixedService';
+}
+
+export interface ControlResponseErrorFrameHeader {
+  schemaVersion: typeof RESPONSE_ERROR_FRAME_SCHEMA_VERSION;
+  type: 'response.error';
+  requestId: string;
+  errorKind: 'control';
   error: RuntimeErrorPayload;
 }
+
+export type ResponseErrorFrameHeader =
+  | FixedServiceResponseErrorFrameHeader
+  | ControlResponseErrorFrameHeader;
 
 export interface RequestCancelEnvelope {
   type: 'request.cancel';
@@ -949,13 +968,17 @@ export function encodeRuntimeFrame<THeader extends RuntimeFrameHeader>(
 
 export function decodeRuntimeFrame(data: Buffer | ArrayBuffer | Buffer[] | Uint8Array | string): RuntimeBinaryFrame {
   const frame = decodeBinaryFrame(data);
-  if (frame.header.schemaVersion !== RUNTIME_FRAME_SCHEMA_VERSION) {
-    throw new BinaryFrameDecodeError(
-      `invalid skiff runtime frame: schemaVersion must be ${RUNTIME_FRAME_SCHEMA_VERSION}`
-    );
-  }
   if (typeof frame.header.type !== 'string') {
     throw new BinaryFrameDecodeError('invalid skiff runtime frame: type must be a string');
+  }
+  const expectedSchemaVersion =
+    frame.header.type === 'response.error'
+      ? RESPONSE_ERROR_FRAME_SCHEMA_VERSION
+      : RUNTIME_FRAME_SCHEMA_VERSION;
+  if (frame.header.schemaVersion !== expectedSchemaVersion) {
+    throw new BinaryFrameDecodeError(
+      `invalid skiff runtime frame: schemaVersion must be ${expectedSchemaVersion}`
+    );
   }
   return frame as RuntimeBinaryFrame;
 }

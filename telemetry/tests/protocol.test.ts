@@ -29,6 +29,19 @@ describe('telemetry protocol validation', () => {
       ok: true,
       value: fixture.valid.batch
     });
+    const batch = fixture.valid.batch as {
+      events: Array<Record<string, unknown>>;
+    };
+    expect(batch.events.slice(0, 3).map((event) => event.visibility)).toEqual([
+      'operational',
+      'operational',
+      'operational'
+    ]);
+    expect(batch.events[3]).toMatchObject({
+      visibility: 'restricted',
+      traceId: 'trace-fixture-1',
+      errorId: 'error-fixture-1'
+    });
   });
 
   it('accepts router telemetry producers', () => {
@@ -47,7 +60,7 @@ describe('telemetry protocol validation', () => {
     const invalidBatchCases = fixture.invalidCases.filter((item) =>
       item.name.startsWith('telemetry-batch-')
     );
-    expect(invalidBatchCases).toHaveLength(2);
+    expect(invalidBatchCases).toHaveLength(8);
     for (const item of invalidBatchCases) {
       expect(validateTelemetryBatch(item.payload).ok).toBe(false);
     }

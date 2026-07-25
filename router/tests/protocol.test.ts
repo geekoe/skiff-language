@@ -13,7 +13,9 @@ import { decodeRuntimePayload, encodeRuntimePayload } from './helpers/runtimePay
 import {
   runtimeFrameHeaderFixtures,
   runtimeFrameHeaderSchemas,
+  validateResponseErrorFrame,
   validateRouterToRuntimeFrameHeader,
+  validateTelemetryEvent,
   validateRuntimeToRouterFrameHeader,
   type RouterToRuntimeFrameHeaderName,
   type RuntimeProtocolFrameHeaderName,
@@ -138,7 +140,127 @@ const actorControlActivationIdentityCorpus = JSON.parse(
   invalid: Array<{ label: string; value: unknown }>;
 };
 
+const serviceErrorResponseV2Corpus = JSON.parse(
+  readFileSync(
+    new URL(
+      '../../runtime/transport/testdata/service-error-response-v2.json',
+      import.meta.url
+    ),
+    'utf8'
+  )
+) as {
+  validCases: Array<{
+    name: string;
+    header: Record<string, unknown>;
+    payloadUtf8: string;
+    expected: Record<string, unknown>;
+  }>;
+  invalidCases: Array<{
+    name: string;
+    header: Record<string, unknown>;
+    payloadUtf8: string;
+  }>;
+};
+
+const observabilityFixture = JSON.parse(
+  readFileSync(
+    new URL('../../doc/architecture/fixtures/observability-minimal.json', import.meta.url),
+    'utf8'
+  )
+) as {
+  valid: {
+    batch: {
+      events: Array<Record<string, unknown>>;
+    };
+  };
+  invalidCases: Array<{
+    name: string;
+    payload: {
+      events?: Array<Record<string, unknown>>;
+    };
+  }>;
+};
+
 describe('runtime protocol fixtures and schemas', () => {
+  it('validates the shared service_error_response_v2 corpus without changing payload bytes', () => {
+    expect(serviceErrorResponseV2Corpus.validCases).toHaveLength(4);
+    expect(serviceErrorResponseV2Corpus.invalidCases.length).toBeGreaterThanOrEqual(20);
+
+    for (const testCase of serviceErrorResponseV2Corpus.validCases) {
+      const payloadBytes = Buffer.from(testCase.payloadUtf8, 'utf8');
+      const result = validateResponseErrorFrame(testCase.header, payloadBytes);
+      expect(result.ok, testCase.name).toBe(true);
+      if (!result.ok) {
+        continue;
+      }
+      expect(result.envelope.payloadBytes, testCase.name).toBe(payloadBytes);
+      expect(result.envelope.header.errorKind, testCase.name).toBe(
+        testCase.header.errorKind
+      );
+      if ('serviceError' in result.envelope) {
+        expect(result.envelope.serviceError.kind, testCase.name).toBe(testCase.expected.kind);
+        if (result.envelope.serviceError.kind === 'internalError') {
+          expect(result.envelope.serviceError.payload.traceId, testCase.name).toBe(
+            testCase.expected.traceId
+          );
+          expect(result.envelope.serviceError.payload.errorId, testCase.name).toBe(
+            testCase.expected.errorId
+          );
+        } else {
+          expect(result.envelope.serviceError.traceId, testCase.name).toBe(
+            testCase.expected.traceId
+          );
+          expect(result.envelope.serviceError.errorId, testCase.name).toBe(
+            testCase.expected.errorId
+          );
+          if (result.envelope.serviceError.kind === 'publicTypedError') {
+            expect(result.envelope.serviceError.packageId, testCase.name).toBe(
+              testCase.expected.packageId
+            );
+            expect(result.envelope.serviceError.stableSchemaKey, testCase.name).toBe(
+              testCase.expected.stableSchemaKey
+            );
+            expect(result.envelope.serviceError.packageSchemaTypeId, testCase.name).toBe(
+              testCase.expected.packageSchemaTypeId
+            );
+          } else {
+            expect(result.envelope.serviceError.builtinErrorIdentity, testCase.name).toBe(
+              testCase.expected.builtinErrorIdentity
+            );
+          }
+        }
+      } else {
+        expect(result.envelope.header.errorKind, testCase.name).toBe('control');
+      }
+    }
+
+    for (const testCase of serviceErrorResponseV2Corpus.invalidCases) {
+      expect(
+        validateResponseErrorFrame(
+          testCase.header,
+          Buffer.from(testCase.payloadUtf8, 'utf8')
+        ).ok,
+        testCase.name
+      ).toBe(false);
+    }
+    expect(
+      runtimeFrameHeaderSchemas['response.error'].properties.error.additionalProperties
+    ).toBe(false);
+  });
+
+  it('validates telemetry visibility and correlation against the shared fixture', () => {
+    for (const event of observabilityFixture.valid.batch.events) {
+      expect(validateTelemetryEvent(event)).toEqual({ ok: true, envelope: event });
+    }
+    const invalidEvents = observabilityFixture.invalidCases
+      .filter((testCase) => testCase.name.startsWith('telemetry-batch-'))
+      .flatMap((testCase) => testCase.payload.events ?? []);
+    expect(invalidEvents).toHaveLength(8);
+    for (const event of invalidEvents) {
+      expect(validateTelemetryEvent(event).ok).toBe(false);
+    }
+  });
+
   it('maps Contract H cancel situations to stable request.cancel reasons', () => {
     const expected = {
       caller_abort: 'caller_cancel',
@@ -201,9 +323,10 @@ describe('runtime protocol fixtures and schemas', () => {
     });
     expect(
       validateRuntimeToRouterFrameHeader({
-        schemaVersion: 'skiff-runtime-frame-v1',
+        schemaVersion: 'skiff-runtime-frame-v2',
         type: 'response.error',
         requestId: 'request-1',
+        errorKind: 'control',
         error: {
           code: 'Broken'
         }

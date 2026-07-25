@@ -83,7 +83,9 @@ pub use request_payload::{
     BinaryHttpRequestContext, HttpNameValueContext, InvocationContext, RequestPayloadContext,
     RequestPayloadContextError, RequestPayloadEncoding,
 };
-pub use response::{HttpNameValue, HttpResponseMetadata, ResponseError};
+pub use response::{
+    FixedServiceResponseFailure, HttpNameValue, HttpResponseMetadata, ResponseError,
+};
 pub use stream::{
     HttpResponseStreamCapabilityContext, StreamCancelSignal, StreamCancelSignalApi,
     StreamCapabilityContext, StreamInternalItem, StreamLifetimeGuard, StreamLifetimeGuardApi,

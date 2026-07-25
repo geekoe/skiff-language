@@ -2,17 +2,20 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{
-    response_end_to_outbound, response_event_into_frame, validate_response_end_frame,
-    ResponseEndPhase,
+    response_end_to_outbound, response_error_to_outbound, response_event_into_frame,
+    validate_response_end_frame, ResponseEndPhase,
 };
 use crate::protocol::{
-    decode_typed_binary_frame, encode_binary_frame, ResponseEndFrameHeader,
-    ResponseEndFrameMetadata, RuntimeWebSocketConnectContextFrameHeader,
-    RuntimeWebSocketResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+    decode_binary_frame, decode_response_error_frame, decode_typed_binary_frame,
+    encode_binary_frame, ResponseEndFrameHeader, ResponseEndFrameMetadata,
+    ResponseErrorFrameHeader, RuntimeWebSocketConnectContextFrameHeader,
+    RuntimeWebSocketResponseFrameHeader, ValidatedResponseErrorFrame, RUNTIME_FRAME_SCHEMA_VERSION,
 };
+use skiff_runtime_model::service_error::OpaqueServiceError;
 use skiff_runtime_request_contract::{
-    HttpResponseMetadata, OutboundResponse, ResponseEnd, ResponseEvent, WebSocketConnectAccept,
-    WebSocketConnectContext, WebSocketConnectReject, WebSocketContextCodec, WebSocketResponse,
+    FixedServiceResponseFailure, HttpResponseMetadata, OutboundResponse, ResponseEnd,
+    ResponseError, ResponseEvent, WebSocketConnectAccept, WebSocketConnectContext,
+    WebSocketConnectReject, WebSocketContextCodec, WebSocketResponse,
 };
 
 #[test]
@@ -141,6 +144,87 @@ fn websocket_response_boundary_rejects_http_and_payload_phase_confusion() {
     assert!(matches!(
         inbound,
         OutboundResponse::Error(error) if error.code == "RuntimeProtocolViolation"
+    ));
+}
+
+#[test]
+fn service_error_response_v2_mapper_round_trip_preserves_fixed_payload_bytes() {
+    let corpus: Value = serde_json::from_str(include_str!(
+        "../../testdata/service-error-response-v2.json"
+    ))
+    .expect("service error response v2 corpus must decode");
+    for test_case in corpus["validCases"]
+        .as_array()
+        .expect("validCases must be an array")
+        .iter()
+        .take(3)
+    {
+        let payload = test_case["payloadUtf8"]
+            .as_str()
+            .expect("fixture payload")
+            .as_bytes()
+            .to_vec();
+        let error = OpaqueServiceError::decode(payload.clone()).expect("fixture fixed error");
+        let request_id = test_case["header"]["requestId"]
+            .as_str()
+            .expect("fixture request id");
+
+        let encoded = response_event_into_frame(
+            request_id.to_string(),
+            ResponseEvent::FixedServiceFailure(FixedServiceResponseFailure::new(error)),
+        )
+        .expect("fixed service response must encode");
+        let (header, decoded_body) =
+            decode_response_error_frame(&encoded).expect("fixed service response must decode");
+        assert!(matches!(
+            decoded_body,
+            ValidatedResponseErrorFrame::FixedService(ref decoded)
+                if decoded.encoded_bytes() == payload
+        ));
+
+        let raw = decode_binary_frame(&encoded).expect("fixed service binary frame");
+        assert_eq!(raw.payload_bytes, payload);
+        let typed_header: ResponseErrorFrameHeader =
+            serde_json::from_value(raw.header).expect("fixed service header");
+        let outbound = response_error_to_outbound(&typed_header, raw.payload_bytes);
+        assert!(matches!(
+            outbound,
+            OutboundResponse::FixedServiceFailure(failure)
+                if failure.error().encoded_bytes() == payload
+        ));
+        assert!(matches!(
+            header,
+            ResponseErrorFrameHeader::FixedService { .. }
+        ));
+    }
+}
+
+#[test]
+fn service_error_response_v2_mapper_keeps_matching_generic_control_untyped() {
+    let encoded = response_event_into_frame(
+        "request-control-1".to_string(),
+        ResponseEvent::Error(ResponseError {
+            code: "InternalError".to_string(),
+            message: "The service could not complete the request.".to_string(),
+            status: Some(500),
+            details: Some(json!({ "traceId": "trace-control-only" })),
+        }),
+    )
+    .expect("control response must encode");
+    let (header, decoded_body) =
+        decode_response_error_frame(&encoded).expect("control response must decode");
+    assert!(matches!(
+        decoded_body,
+        ValidatedResponseErrorFrame::Control(ref error)
+            if error.code == "InternalError"
+    ));
+
+    let outbound = response_error_to_outbound(&header, Vec::new());
+    assert!(matches!(
+        outbound,
+        OutboundResponse::Error(error)
+            if error.code == "InternalError"
+                && error.message == "The service could not complete the request."
     ));
 }
 

@@ -1,7 +1,8 @@
 use crate::envelope::WebSocketContextCodec;
 
 pub use skiff_runtime_capability_context::{
-    HttpResponseMetadata, ResponseError, WebSocketConnectionPolicyControl,
+    FixedServiceResponseFailure, HttpResponseMetadata, ResponseError,
+    WebSocketConnectionPolicyControl,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,6 +28,7 @@ impl BoundaryResponse {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResponseEvent {
     End(ResponseEnd),
+    FixedServiceFailure(FixedServiceResponseFailure),
     Error(ResponseError),
 }
 
