@@ -7,7 +7,7 @@ use crate::shared::ast::{
 
 use super::{
     super::analysis::ModuleConstantFact,
-    super::provenance::{AbstractValue, EscapeLane},
+    super::provenance::{AbstractValue, CallableState, EscapeLane},
     join_environments, Environment, Evaluator,
 };
 
@@ -81,9 +81,14 @@ impl Evaluator<'_, '_> {
             }
             Expr::Field { object, field } => {
                 let mut value = self.eval_expr(object, env);
+                let object_roots = value.fresh_roots.clone();
                 if let Some(field_value) = value.catch_field(field, reference) {
                     field_value
                 } else {
+                    value = self.materialize_heap_value(&value);
+                    for root in object_roots {
+                        value.fresh_roots.remove(&root);
+                    }
                     value.reference = reference;
                     if !reference {
                         value.caller_references.clear();
@@ -96,14 +101,14 @@ impl Evaluator<'_, '_> {
                 for (_, field) in fields {
                     value.join(&self.eval_expr(field, env));
                 }
-                value.with_fresh_container(true)
+                self.allocate_fresh_container(key.preorder_index(), value)
             }
             Expr::ObjectLiteral { entries } => {
                 let mut value = AbstractValue::default();
                 for entry in entries {
                     value.join(&self.eval_expr(&entry.value, env));
                 }
-                value.with_fresh_container(true)
+                self.allocate_fresh_container(key.preorder_index(), value)
             }
             Expr::Patch { operations, .. } => {
                 let mut value = AbstractValue::default();
@@ -115,7 +120,7 @@ impl Evaluator<'_, '_> {
                     };
                     value.join(&self.eval_expr(expression, env));
                 }
-                value.with_fresh_container(true)
+                self.allocate_fresh_container(key.preorder_index(), value)
             }
             Expr::Throw { value } => {
                 let value = self.eval_expr(value, env);
@@ -243,6 +248,12 @@ impl Evaluator<'_, '_> {
 
     fn eval_db_write_value(&mut self, expression: &Expr, env: &mut Environment) -> AbstractValue {
         let mut value = self.eval_expr(expression, env);
+        if self.contains_mutated_fresh_root(&value) {
+            self.state.join(&CallableState::fail_closed(
+                CallableProvenanceUnknownReason::UnsupportedHeapStore,
+            ));
+            value.unknown = true;
+        }
         // A statically resolved field projection is encoded into the database
         // write payload, so the stored value is detached from the source
         // object's heap graph. Keep direct caller-owned values conservative:

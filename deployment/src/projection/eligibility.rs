@@ -120,6 +120,9 @@ fn validate_provenance(
             skiff_artifact_model::CallableProvenanceUnknownReason::UnsupportedControlFlow => {
                 push_reason(reasons, BoundaryUnavailableReason::UnknownEffect);
             }
+            skiff_artifact_model::CallableProvenanceUnknownReason::UnsupportedHeapStore => {
+                push_reason(reasons, BoundaryUnavailableReason::UnknownEffect);
+            }
             skiff_artifact_model::CallableProvenanceUnknownReason::UnknownCallTarget => {
                 push_reason(reasons, BoundaryUnavailableReason::UnknownCallTarget);
             }

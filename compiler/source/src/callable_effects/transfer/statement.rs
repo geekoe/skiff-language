@@ -26,17 +26,13 @@ impl Evaluator<'_, '_> {
                 env.insert(name.clone(), value);
             }
             Stmt::Assign { target, value } => {
-                let target_value = self.eval_expr(target, env);
+                let _target_value = self.eval_expr(target, env);
                 let assigned = self.eval_expr(value, env);
                 if let crate::shared::ast::Expr::Identifier(name) = target {
                     env.insert(name.clone(), assigned);
-                } else if self.is_direct_scalar_parameter_field_store(
-                    target,
-                    &target_value,
-                    &assigned,
-                    env,
-                ) {
-                    self.state.effects.writes_caller_reachable = true;
+                } else if let crate::shared::ast::Expr::Field { object, .. } = target {
+                    let base = self.eval_store_base(object, env);
+                    self.transfer_field_store(&base, &assigned);
                 } else {
                     // The current abstract environment has no heap/points-to
                     // store transfer. Updating only the syntactic owner would
@@ -108,14 +104,17 @@ impl Evaluator<'_, '_> {
             }
             Stmt::Throw { value } => {
                 let value = self.eval_expr(value, env);
+                let value = self.materialize_heap_value(&value);
                 self.state.record_wire_detached_throw(&value);
             }
             Stmt::Rethrow { exception } => {
                 let exception = self.eval_expr(exception, env);
+                let exception = self.materialize_heap_value(&exception);
                 self.state.record_wire_detached_throw(&exception);
             }
             Stmt::Emit(value) => {
                 let value = self.eval_expr(value, env);
+                let value = self.materialize_heap_value(&value);
                 self.state.record_escape(&value, EscapeLane::Stream);
                 self.state.effects.may_suspend = true;
             }
@@ -129,6 +128,7 @@ impl Evaluator<'_, '_> {
             Stmt::Return(value) => {
                 if let Some(value) = value {
                     let value = self.eval_expr(value, env);
+                    let value = self.materialize_heap_value(&value);
                     self.state.record_return(&value);
                 }
             }
@@ -151,37 +151,55 @@ impl Evaluator<'_, '_> {
 
     fn mark_unsupported_heap_store(&mut self) {
         self.state.join(&CallableState::fail_closed(
-            CallableProvenanceUnknownReason::UnsupportedControlFlow,
+            CallableProvenanceUnknownReason::UnsupportedHeapStore,
         ));
     }
 
-    fn is_direct_scalar_parameter_field_store(
+    fn eval_store_base(
         &self,
-        target: &crate::shared::ast::Expr,
-        target_value: &AbstractValue,
-        assigned: &AbstractValue,
+        object: &crate::shared::ast::Expr,
         env: &Environment,
-    ) -> bool {
-        let crate::shared::ast::Expr::Field { object, .. } = target else {
-            return false;
-        };
-        let crate::shared::ast::Expr::Identifier(name) = object.as_ref() else {
-            return false;
-        };
-        let direct_parameter = self
-            .definition
-            .function
-            .params
-            .iter()
-            .any(|parameter| parameter.name == name.as_str())
-            || (name == "self" && self.definition.function.implicit_self.is_some());
-        direct_parameter
-            && env
+    ) -> AbstractValue {
+        match object {
+            crate::shared::ast::Expr::Identifier(name) => env
                 .get(name)
-                .is_some_and(|value| value.contains_caller_reference() && !value.unknown)
-            && !target_value.reference
-            && !target_value.unknown
-            && !assigned.reference
-            && !assigned.unknown
+                .cloned()
+                .unwrap_or_else(|| AbstractValue::unknown(true)),
+            _ => AbstractValue::unknown(true),
+        }
+    }
+
+    fn transfer_field_store(&mut self, base: &AbstractValue, assigned: &AbstractValue) {
+        if base.unknown || assigned.unknown || base.fresh_roots.len() > 1 {
+            self.mark_unsupported_heap_store();
+            return;
+        }
+        if !base.fresh_roots.is_empty() && !base.contains_caller_reference() {
+            self.store_into_fresh_roots(&base.fresh_roots, assigned);
+            return;
+        }
+        if base.contains_caller_reference() && base.fresh_roots.is_empty() {
+            self.state.effects.writes_caller_reachable = true;
+            self.state.effects.requires_same_heap_identity = true;
+            self.state
+                .same_heap_identity_parameters
+                .extend(base.caller_references.iter().copied());
+            for parameter in &base.caller_references {
+                self.state
+                    .parameter_stores
+                    .entry(*parameter)
+                    .and_modify(|value| value.join(assigned))
+                    .or_insert_with(|| assigned.clone());
+            }
+            return;
+        }
+        // Local SCC seeding uses lattice bottom for a not-yet-transferred
+        // callee. Do not turn that temporary absence into a sticky
+        // fail-closed fact; the next fixed-point iteration will supply the
+        // Fresh return root or a real unknown value.
+        if base.origins.is_empty() && base.fresh_roots.is_empty() {
+            return;
+        }
+        self.mark_unsupported_heap_store();
     }
 }

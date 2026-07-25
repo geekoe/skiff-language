@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
@@ -31,6 +31,8 @@ pub(super) struct AbstractValue {
     pub caller_references: BTreeSet<u32>,
     pub unknown: bool,
     pub reference: bool,
+    /// Evaluator-local allocation sites. Never serialized into an artifact.
+    pub fresh_roots: BTreeSet<u32>,
     /// Field-sensitive payloads owned by a typed `catch`.  A catch result is
     /// an owner-local container, but reading its success value after tag
     /// narrowing must recover the try expression's exact provenance instead
@@ -54,6 +56,8 @@ pub(super) struct CallableState {
     /// operation observable. An empty set with the public effect set means the
     /// dependency could not be attributed and must remain conservative.
     pub same_heap_identity_parameters: BTreeSet<u32>,
+    /// Compiler-internal formal-root store transfer.
+    pub parameter_stores: BTreeMap<u32, AbstractValue>,
     pub unknown: Option<CallableProvenanceUnknownReason>,
 }
 
@@ -64,6 +68,7 @@ impl AbstractValue {
             caller_references: BTreeSet::new(),
             unknown: false,
             reference,
+            fresh_roots: BTreeSet::new(),
             catch_result: None,
         }
     }
@@ -74,6 +79,7 @@ impl AbstractValue {
             caller_references: BTreeSet::new(),
             unknown: false,
             reference,
+            fresh_roots: BTreeSet::new(),
             catch_result: None,
         }
     }
@@ -86,6 +92,7 @@ impl AbstractValue {
                 .unwrap_or_default(),
             unknown: false,
             reference,
+            fresh_roots: BTreeSet::new(),
             catch_result: None,
         }
     }
@@ -96,6 +103,7 @@ impl AbstractValue {
             caller_references: BTreeSet::new(),
             unknown: true,
             reference,
+            fresh_roots: BTreeSet::new(),
             catch_result: None,
         }
     }
@@ -106,6 +114,7 @@ impl AbstractValue {
             .extend(other.caller_references.iter().copied());
         self.unknown |= other.unknown;
         self.reference |= other.reference;
+        self.fresh_roots.extend(other.fresh_roots.iter().copied());
         match (&mut self.catch_result, &other.catch_result) {
             (Some(current), Some(other)) => {
                 current.success.join(&other.success);
@@ -168,6 +177,7 @@ impl CallableState {
             throw_origins: BTreeSet::new(),
             escape_lanes: BTreeSet::new(),
             same_heap_identity_parameters: BTreeSet::new(),
+            parameter_stores: BTreeMap::new(),
             unknown: None,
         }
     }
@@ -179,6 +189,7 @@ impl CallableState {
             throw_origins: BTreeSet::new(),
             escape_lanes: BTreeSet::from([EscapeLane::External]),
             same_heap_identity_parameters: BTreeSet::new(),
+            parameter_stores: BTreeMap::new(),
             unknown: Some(reason),
         }
     }
@@ -193,6 +204,12 @@ impl CallableState {
         self.escape_lanes.extend(other.escape_lanes.iter().copied());
         self.same_heap_identity_parameters
             .extend(other.same_heap_identity_parameters.iter().copied());
+        for (parameter, value) in &other.parameter_stores {
+            self.parameter_stores
+                .entry(*parameter)
+                .and_modify(|current| current.join(value))
+                .or_insert_with(|| value.clone());
+        }
         self.unknown = join_unknown(self.unknown, other.unknown);
         *self != before
     }
@@ -372,6 +389,7 @@ fn unknown_rank(reason: CallableProvenanceUnknownReason) -> u8 {
     match reason {
         CallableProvenanceUnknownReason::AnalysisPending => 0,
         CallableProvenanceUnknownReason::UnsupportedControlFlow => 1,
+        CallableProvenanceUnknownReason::UnsupportedHeapStore => 1,
         CallableProvenanceUnknownReason::UnknownCallTarget => 2,
     }
 }

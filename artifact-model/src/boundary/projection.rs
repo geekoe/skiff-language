@@ -54,6 +54,7 @@ pub enum CallableProvenanceSummary {
 pub enum CallableProvenanceUnknownReason {
     AnalysisPending,
     UnsupportedControlFlow,
+    UnsupportedHeapStore,
     UnknownCallTarget,
 }
 

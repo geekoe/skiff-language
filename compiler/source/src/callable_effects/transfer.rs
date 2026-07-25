@@ -62,6 +62,8 @@ pub(super) fn transfer_callable(
         type_resolution,
         next_index: 0,
         values: BTreeMap::new(),
+        heap: BTreeMap::new(),
+        mutated_fresh_roots: BTreeSet::new(),
         state: CallableState::bottom(),
     };
     let mut env = evaluator.parameter_environment();
@@ -80,10 +82,53 @@ struct Evaluator<'a, 'source> {
     type_resolution: &'a TypeResolutionModel,
     next_index: u32,
     values: BTreeMap<u32, AbstractValue>,
+    heap: BTreeMap<u32, AbstractValue>,
+    mutated_fresh_roots: BTreeSet<u32>,
     state: CallableState,
 }
 
 impl Evaluator<'_, '_> {
+    fn materialize_heap_value(&self, value: &AbstractValue) -> AbstractValue {
+        let mut materialized = value.clone();
+        let mut pending = value.fresh_roots.iter().copied().collect::<Vec<_>>();
+        let mut visited = BTreeSet::new();
+        while let Some(root) = pending.pop() {
+            if !visited.insert(root) {
+                continue;
+            }
+            if let Some(payload) = self.heap.get(&root) {
+                materialized.join(payload);
+                pending.extend(payload.fresh_roots.iter().copied());
+            }
+        }
+        materialized
+    }
+
+    fn store_into_fresh_roots(&mut self, roots: &BTreeSet<u32>, value: &AbstractValue) {
+        for root in roots {
+            self.mutated_fresh_roots.insert(*root);
+            self.heap
+                .entry(*root)
+                .and_modify(|payload| payload.join(value))
+                .or_insert_with(|| value.clone());
+        }
+    }
+
+    fn contains_mutated_fresh_root(&self, value: &AbstractValue) -> bool {
+        value
+            .fresh_roots
+            .iter()
+            .any(|root| self.mutated_fresh_roots.contains(root))
+    }
+
+    fn allocate_fresh_container(&mut self, root: u32, payload: AbstractValue) -> AbstractValue {
+        self.heap.insert(root, payload.clone());
+        let mut container = payload.with_fresh_container(true);
+        container.fresh_roots.clear();
+        container.fresh_roots.insert(root);
+        container
+    }
+
     fn parameter_environment(&self) -> Environment {
         let mut env = Environment::new();
         let mut next_parameter = 0u32;

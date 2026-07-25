@@ -37,6 +37,9 @@ pub(super) fn semantic_unavailable_reasons(
             skiff_artifact_model::CallableProvenanceUnknownReason::UnsupportedControlFlow => {
                 push_reason(&mut reasons, BoundaryUnavailableReason::UnknownEffect);
             }
+            skiff_artifact_model::CallableProvenanceUnknownReason::UnsupportedHeapStore => {
+                push_reason(&mut reasons, BoundaryUnavailableReason::UnknownEffect);
+            }
             skiff_artifact_model::CallableProvenanceUnknownReason::UnknownCallTarget => {
                 push_reason(&mut reasons, BoundaryUnavailableReason::UnknownCallTarget);
             }

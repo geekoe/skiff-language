@@ -586,7 +586,7 @@ fn ordinary_receiver_call_does_not_use_actor_method_target() {
 }
 
 #[test]
-fn post_construction_store_of_caller_value_then_return_fails_closed() {
+fn post_construction_store_taints_fresh_return() {
     let model = analyze(
         r#"
             type Child { value: string }
@@ -601,7 +601,13 @@ fn post_construction_store_of_caller_value_then_return_fails_closed() {
         SourceDependencyAnalysisInput::default(),
     );
 
-    assert_heap_store_fail_closed(&model, "storeAndReturn");
+    assert_eq!(
+        effects(&model, "storeAndReturn"),
+        CallableMayEffects {
+            returns_caller_alias: true,
+            ..no_effects()
+        }
+    );
 }
 
 #[test]
@@ -625,7 +631,7 @@ fn post_construction_store_then_nested_mutation_fails_closed() {
 }
 
 #[test]
-fn aliased_fresh_holder_store_then_original_return_fails_closed() {
+fn aliased_fresh_holder_store_taints_original_return() {
     let model = analyze(
         r#"
             type Child { value: string }
@@ -641,11 +647,15 @@ fn aliased_fresh_holder_store_then_original_return_fails_closed() {
         SourceDependencyAnalysisInput::default(),
     );
 
-    assert_heap_store_fail_closed(&model, "aliasStore");
+    assert!(effects(&model, "aliasStore").returns_caller_alias);
+    assert!(matches!(
+        provenance(&model, "aliasStore"),
+        CallableProvenanceSummary::Analyzed { .. }
+    ));
 }
 
 #[test]
-fn unsupported_heap_store_fail_closed_state_propagates_through_callers_and_scc() {
+fn fresh_store_taint_propagates_through_callers_and_scc() {
     let model = analyze(
         r#"
             type Child { value: string }
@@ -674,12 +684,16 @@ fn unsupported_heap_store_fail_closed_state_propagates_through_callers_and_scc()
     );
 
     for callable in ["storeLeaf", "caller", "first", "second"] {
-        assert_heap_store_fail_closed(&model, callable);
+        assert!(effects(&model, callable).returns_caller_alias, "{callable}");
+        assert!(matches!(
+            provenance(&model, callable),
+            CallableProvenanceSummary::Analyzed { .. }
+        ));
     }
 }
 
 #[test]
-fn direct_scalar_parameter_field_store_has_only_write_effect() {
+fn direct_parameter_field_store_has_write_and_same_heap_effects() {
     let model = analyze(
         r#"
             type Boxed { value: string }
@@ -708,7 +722,11 @@ fn direct_scalar_parameter_field_store_has_only_write_effect() {
     for callable in ["mutate", "wrapper", "Boxed.clear", "methodWrapper"] {
         assert_eq!(
             effects(&model, callable),
-            write_only_effects(),
+            CallableMayEffects {
+                writes_caller_reachable: true,
+                requires_same_heap_identity: true,
+                ..no_effects()
+            },
             "{callable}"
         );
         assert!(matches!(
@@ -719,7 +737,63 @@ fn direct_scalar_parameter_field_store_has_only_write_effect() {
 }
 
 #[test]
-fn nested_or_reference_heap_store_remains_fail_closed() {
+fn fresh_alias_helper_loop_and_suspend_keep_relay_shaped_state_local() {
+    let model = analyze(
+        r#"
+            type RelayState {
+              f01: string, f02: string, f03: string, f04: string,
+              f05: string, f06: string, f07: string, f08: string,
+              f09: string, f10: string, f11: string, f12: string,
+              f13: string, f14: string, f15: string, f16: string,
+              f17: string, f18: string, f19: string, f20: string,
+              f21: string, f22: string, f23: string, f24: string
+            }
+
+            function update(state: RelayState, value: string) -> void {
+              state.f01 = value
+              state.f12 = "helper"
+              state.f24 = value
+            }
+
+            function v1Proxy(events: Array<string>) -> string {
+              const state = RelayState {
+                f01: "", f02: "", f03: "", f04: "",
+                f05: "", f06: "", f07: "", f08: "",
+                f09: "", f10: "", f11: "", f12: "",
+                f13: "", f14: "", f15: "", f16: "",
+                f17: "", f18: "", f19: "", f20: "",
+                f21: "", f22: "", f23: "", f24: ""
+              }
+              const alias = state
+              alias.f02 = "local"
+              for event in events {
+                update(state, event)
+                std.time.sleep(Duration.milliseconds(1))
+                state.f23 = "after-suspend"
+              }
+              return state.f12
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(
+        effects(&model, "update"),
+        CallableMayEffects {
+            writes_caller_reachable: true,
+            requires_same_heap_identity: true,
+            ..no_effects()
+        }
+    );
+    assert_eq!(effects(&model, "v1Proxy"), suspend_only_effects());
+    assert!(matches!(
+        provenance(&model, "v1Proxy"),
+        CallableProvenanceSummary::Analyzed { .. }
+    ));
+}
+
+#[test]
+fn nested_heap_store_remains_fail_closed_and_direct_reference_store_is_precise() {
     let model = analyze(
         r#"
             interface Provider {
@@ -744,9 +818,15 @@ fn nested_or_reference_heap_store_remains_fail_closed() {
         SourceDependencyAnalysisInput::default(),
     );
 
-    for callable in ["nested", "reference"] {
-        assert_heap_store_fail_closed(&model, callable);
-    }
+    assert_heap_store_fail_closed(&model, "nested");
+    assert_eq!(
+        effects(&model, "reference"),
+        CallableMayEffects {
+            writes_caller_reachable: true,
+            requires_same_heap_identity: true,
+            ..no_effects()
+        }
+    );
     assert_eq!(effects(&model, "unknownRhs"), all_effects());
     assert!(matches!(
         provenance(&model, "unknownRhs"),
@@ -754,6 +834,55 @@ fn nested_or_reference_heap_store_remains_fail_closed() {
             reason: CallableProvenanceUnknownReason::UnknownCallTarget
         }
     ));
+}
+
+#[test]
+fn mutated_fresh_root_cannot_enter_container_or_database_storage() {
+    let model = analyze(
+        r#"
+            type State { value: string }
+            type Stored { id: string, state: State }
+
+            db object Stored {
+              primary key(id)
+            }
+
+            function intoMap() -> void {
+              const state = State { value: "" }
+              state.value = "changed"
+              const container = Map.empty<string, State>()
+              container.set("state", state)
+            }
+
+            function intoArray() -> void {
+              const state = State { value: "" }
+              state.value = "changed"
+              const container = Array.empty<State>()
+              container.push(state)
+            }
+
+            function intoDatabase() -> void {
+              const state = State { value: "" }
+              state.value = "changed"
+              db insert Stored { id = "state" state = state }
+            }
+
+            function ambiguousAlias(useSecond: bool) -> void {
+              const first = State { value: "" }
+              const second = State { value: "" }
+              let alias = first
+              if useSecond {
+                alias = second
+              }
+              alias.value = "ambiguous"
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    for callable in ["intoMap", "intoArray", "intoDatabase", "ambiguousAlias"] {
+        assert_heap_store_fail_closed(&model, callable);
+    }
 }
 
 #[test]
@@ -863,8 +992,9 @@ fn throw_and_rethrow_preserve_operand_effects_but_detach_emitted_provenance() {
     ] {
         let effects = effects(&model, callable);
         assert!(!effects.throws_caller_alias, "{callable}: {effects:?}");
-        assert!(
-            !effects.requires_same_heap_identity,
+        assert_eq!(
+            effects.requires_same_heap_identity,
+            matches!(callable, "throwStatement" | "throwExpression"),
             "{callable}: {effects:?}"
         );
         assert!(!effects.invokes_unknown_target, "{callable}: {effects:?}");
@@ -3414,7 +3544,7 @@ fn assert_heap_store_fail_closed(model: &PackageSourceModel, symbol: &str) {
     assert_eq!(
         provenance(model, symbol),
         &CallableProvenanceSummary::Unknown {
-            reason: CallableProvenanceUnknownReason::UnsupportedControlFlow,
+            reason: CallableProvenanceUnknownReason::UnsupportedHeapStore,
         },
         "{symbol}"
     );
@@ -3429,13 +3559,6 @@ fn no_effects() -> CallableMayEffects {
         requires_same_heap_identity: false,
         invokes_unknown_target: false,
         may_suspend: false,
-    }
-}
-
-fn write_only_effects() -> CallableMayEffects {
-    CallableMayEffects {
-        writes_caller_reachable: true,
-        ..no_effects()
     }
 }
 

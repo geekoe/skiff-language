@@ -40,7 +40,7 @@ impl Evaluator<'_, '_> {
             .map(|arg| self.eval_expr(arg, env))
             .collect::<Vec<_>>();
         let return_reference = self.expression_may_be_reference(call_key);
-        match target {
+        let result = match target {
             Some(ResolvedCallTarget::ConfigIntrinsic { .. }) => {
                 AbstractValue::fresh(return_reference)
             }
@@ -142,6 +142,16 @@ impl Evaluator<'_, '_> {
                 return_reference,
                 EscapeLane::External,
             ),
+        };
+        if return_reference
+            && !result.unknown
+            && !result.contains_caller_reference()
+            && result.origins.contains(&Origin::Fresh)
+            && result.fresh_roots.is_empty()
+        {
+            self.allocate_fresh_container(call_key.preorder_index(), result)
+        } else {
+            result
         }
     }
 
@@ -218,6 +228,18 @@ impl Evaluator<'_, '_> {
         args: &[AbstractValue],
         return_reference: bool,
     ) -> AbstractValue {
+        if matches!(
+            op.canonical_key,
+            "receiver:Array.push@1" | "receiver:Array.set@1" | "receiver:Map.set@1"
+        ) && args
+            .iter()
+            .any(|value| self.contains_mutated_fresh_root(value))
+        {
+            self.state.join(&CallableState::fail_closed(
+                CallableProvenanceUnknownReason::UnsupportedHeapStore,
+            ));
+            return AbstractValue::unknown(return_reference);
+        }
         let mut actuals = Vec::with_capacity(args.len().saturating_add(1));
         actuals.push(receiver);
         actuals.extend_from_slice(args);
@@ -282,8 +304,46 @@ impl Evaluator<'_, '_> {
         let any_caller_value = actuals
             .iter()
             .any(|value| value.contains_caller_value() || value.unknown);
-        self.state.effects.writes_caller_reachable |=
-            callee.effects.writes_caller_reachable && any_caller_reference;
+        if callee.parameter_stores.is_empty() {
+            self.state.effects.writes_caller_reachable |=
+                callee.effects.writes_caller_reachable && any_caller_reference;
+        }
+        for (formal, stored) in &callee.parameter_stores {
+            let Some(actual) = usize::try_from(*formal)
+                .ok()
+                .and_then(|index| actuals.get(index))
+            else {
+                self.state.join(&CallableState::fail_closed(
+                    CallableProvenanceUnknownReason::UnsupportedHeapStore,
+                ));
+                continue;
+            };
+            let mapped = map_value(stored, actuals, true);
+            if actual.unknown || mapped.unknown || actual.fresh_roots.len() > 1 {
+                self.state.join(&CallableState::fail_closed(
+                    CallableProvenanceUnknownReason::UnsupportedHeapStore,
+                ));
+            } else if !actual.fresh_roots.is_empty() && !actual.contains_caller_reference() {
+                self.store_into_fresh_roots(&actual.fresh_roots, &mapped);
+            } else if actual.contains_caller_reference() && actual.fresh_roots.is_empty() {
+                self.state.effects.writes_caller_reachable = true;
+                self.state.effects.requires_same_heap_identity = true;
+                self.state
+                    .same_heap_identity_parameters
+                    .extend(actual.caller_references.iter().copied());
+                for parameter in &actual.caller_references {
+                    self.state
+                        .parameter_stores
+                        .entry(*parameter)
+                        .and_modify(|value| value.join(&mapped))
+                        .or_insert_with(|| mapped.clone());
+                }
+            } else {
+                self.state.join(&CallableState::fail_closed(
+                    CallableProvenanceUnknownReason::UnsupportedHeapStore,
+                ));
+            }
+        }
         if callee.effects.requires_same_heap_identity {
             let identity_actuals = indexed_actuals(&callee.same_heap_identity_parameters, actuals);
             let identity_is_observable = if callee.same_heap_identity_parameters.is_empty() {
@@ -490,6 +550,21 @@ fn map_origins(
         }
     }
     mapped.reference = reference;
+    mapped
+}
+
+fn map_value(
+    value: &AbstractValue,
+    actuals: &[AbstractValue],
+    preserve_caller_references: bool,
+) -> AbstractValue {
+    let mut mapped = map_origins(
+        &value.origins,
+        actuals,
+        value.reference,
+        preserve_caller_references,
+    );
+    mapped.unknown |= value.unknown;
     mapped
 }
 
