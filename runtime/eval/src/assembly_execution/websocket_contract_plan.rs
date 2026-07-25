@@ -306,11 +306,11 @@ pub(crate) mod test_support {
 
     use skiff_artifact_model::{
         BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-        BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
-        BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-        BoundaryValueOwner, BoundaryValuePlan, ContractDiagnosticText, ContractTypeDescriptor,
-        ContractTypeRef, PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord,
-        PackageSchemaTypeRef, PackageTypeRequirement, ServiceContract, ServiceProtocolIdentity,
+        BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
+        BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+        BoundaryValuePlan, ContractDiagnosticText, ContractTypeDescriptor, ContractTypeRef,
+        PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord, PackageSchemaTypeRef,
+        PackageTypeRequirement, ServiceContract, ServiceProtocolIdentity,
         SERVICE_CONTRACT_SCHEMA_VERSION, WEBSOCKET_CONNECT_RESULT_TYPE,
         WEBSOCKET_INGRESS_EVENT_TYPE,
     };
@@ -436,7 +436,6 @@ pub(crate) mod test_support {
                 },
                 value_plan: linkable(BoundaryValueOwner::Provider),
             },
-            errors: BoundaryErrorContract::None,
             stream: BoundaryStreamContract::Unary,
             cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,
