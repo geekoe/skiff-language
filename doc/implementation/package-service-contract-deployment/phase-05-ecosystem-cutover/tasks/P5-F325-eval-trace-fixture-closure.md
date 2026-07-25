@@ -1,6 +1,7 @@
 # P5-F325 Eval request trace fixture closure
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F325-eval-trace-fixture-closure-result.md`。
 
 ## 直接父节点
 
@@ -44,4 +45,3 @@ git diff --check
 - 风险：低；新的一次性Agent，5分钟内修改；
 - 提交并返回trace输入/断言、targeted与完整eval剩余失败；
 - 不push、不承接WebSocket或acceptance。
-
