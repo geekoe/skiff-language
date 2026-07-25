@@ -1,5 +1,8 @@
 use serde_json::json;
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+};
 
 use crate::mongo::is_mongo_db_conflict_error;
 
@@ -106,10 +109,10 @@ impl WirePayload for ServiceDbError {
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
         match self {
             ServiceDbError::Mongo(error) if is_mongo_db_conflict_error(error) => Some((
-                TypeIdentity::builtin("std.db.ConflictError"),
+                PlatformBuiltinErrorIdentity::DbConflict.catch_identity(),
                 db_conflict_details(),
             )),
             ServiceDbError::Opaque(error) => error.catch_projection(),
