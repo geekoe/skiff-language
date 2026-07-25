@@ -124,7 +124,6 @@ impl RuntimeAssemblyContentResolver for FixtureResolver {
         self.schema_loads.set(self.schema_loads.get() + 1);
         self.schema_records
             .get(&reference.package_schema_type_id)
-            .filter(|record| record.package_id == reference.package_id)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("missing package schema type"))
     }
@@ -243,6 +242,7 @@ impl Fixture {
         let effects = no_effects();
         let provenance = CallableProvenanceSummary::Analyzed {
             return_origins: Vec::new(),
+            direct_return_origins: Vec::new(),
             throw_origins: Vec::new(),
             escape_lanes: Vec::new(),
         };
@@ -460,6 +460,35 @@ impl Fixture {
         self.refresh_package_chain();
     }
 
+    fn add_schema_dependency_record(&mut self, record: PackageSchemaTypeRecord) {
+        let type_id = record.package_schema_type_id.clone();
+        if let Some(requirement) = self
+            .contract
+            .package_type_requirements
+            .iter_mut()
+            .find(|requirement| requirement.package_id == record.package_id)
+        {
+            requirement.required_type_ids.push(type_id.clone());
+            requirement.required_type_ids.sort();
+        } else {
+            self.contract
+                .package_type_requirements
+                .push(PackageTypeRequirement {
+                    package_id: record.package_id.clone(),
+                    required_type_ids: vec![type_id.clone()],
+                });
+            self.contract
+                .package_type_requirements
+                .sort_by(|left, right| left.package_id.cmp(&right.package_id));
+        }
+        self.schema_records.insert(type_id, Arc::new(record));
+        skiff_artifact_identity::assign_service_contract_identities(&mut self.contract).unwrap();
+        let contract_ref = contract_ref(&self.contract);
+        self.deployment.contract = contract_ref.clone();
+        self.assembly.resolved_contracts = vec![contract_ref];
+        self.refresh_deployment_chain();
+    }
+
     fn refresh_deployment_chain(&mut self) {
         skiff_artifact_identity::assign_service_deployment_identity(&mut self.deployment).unwrap();
         let reference = skiff_artifact_identity::service_deployment_ref(&self.deployment);
@@ -609,6 +638,198 @@ fn loader_hydrates_and_pins_exact_package_schema_records() {
             .shared_schema_record(&type_id)
             .unwrap()
     ));
+}
+
+#[test]
+fn loader_hydrates_cross_package_schema_children_without_a_foreign_code_slot() {
+    let mut fixture = Fixture::new();
+    let child = schema_record(
+        "skiff.run/std",
+        "std.http.HttpHeader",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([
+                ("name".to_string(), ContractTypeRef::builtin("string")),
+                ("value".to_string(), ContractTypeRef::builtin("string")),
+            ]),
+        },
+    );
+    let child_id = child.package_schema_type_id.clone();
+    let root = schema_record(
+        "example.health-provider",
+        "api.Request",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([(
+                "headers".to_string(),
+                ContractTypeRef::Builtin {
+                    name: "Array".to_string(),
+                    arguments: vec![ContractTypeRef::package_schema(
+                        child.package_id.clone(),
+                        child.stable_schema_key.clone(),
+                        child_id.clone(),
+                    )],
+                },
+            )]),
+        },
+    );
+    let root_id = root.package_schema_type_id.clone();
+    fixture.add_schema_return(root);
+    fixture.add_schema_dependency_record(child);
+    let resolver = fixture.resolver();
+
+    let hydrated = RuntimeAssemblyLoader::new(&resolver)
+        .load(fixture.assembly.clone())
+        .unwrap();
+    let slot_records = hydrated.code_slots()[0].schema_records();
+    let contract_schema = hydrated
+        .contract_store()
+        .resolved_schema(&contract_ref(&fixture.contract))
+        .unwrap();
+
+    assert_eq!(resolver.schema_loads.get(), 2);
+    assert_eq!(slot_records.len(), 2);
+    assert!(slot_records.contains_key(&root_id));
+    assert!(slot_records.contains_key(&child_id));
+    assert!(Arc::ptr_eq(
+        &slot_records[&child_id],
+        contract_schema.record(&child_id).unwrap()
+    ));
+    assert_eq!(hydrated.code_slots().len(), 1);
+    assert_eq!(
+        hydrated.code_slots()[0].artifact().package_id,
+        "example.health-provider"
+    );
+}
+
+#[test]
+fn loader_rejects_missing_or_mismatched_cross_package_schema_children() {
+    let mut fixture = Fixture::new();
+    let child = schema_record(
+        "skiff.run/std",
+        "std.http.HttpHeader",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([("name".to_string(), ContractTypeRef::builtin("string"))]),
+        },
+    );
+    let child_id = child.package_schema_type_id.clone();
+    let root = schema_record(
+        "example.health-provider",
+        "api.Request",
+        ContractTypeDescriptor::Alias {
+            target: ContractTypeRef::package_schema(
+                child.package_id.clone(),
+                child.stable_schema_key.clone(),
+                child_id.clone(),
+            ),
+        },
+    );
+    fixture.add_schema_return(root);
+    fixture.add_schema_dependency_record(child);
+
+    let mut missing = fixture.resolver();
+    missing.schema_records.remove(&child_id);
+    let error = RuntimeAssemblyLoader::new(&missing)
+        .load(fixture.assembly.clone())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("failed to resolve package schema type")
+            && error.contains("for package example.health-provider closure"),
+        "unexpected error: {error}"
+    );
+
+    for (mutate, expected_error) in [
+        (
+            (|record: &mut PackageSchemaTypeRecord| record.package_id.push_str(".wrong"))
+                as fn(&mut PackageSchemaTypeRecord),
+            "does not match exact owner",
+        ),
+        (
+            |record: &mut PackageSchemaTypeRecord| record.stable_schema_key.push_str(".wrong"),
+            "does not match exact stable key",
+        ),
+        (
+            |record: &mut PackageSchemaTypeRecord| {
+                record.package_schema_type_id = PackageSchemaTypeId::new("wrong")
+            },
+            "does not match exact owner",
+        ),
+        (
+            |record: &mut PackageSchemaTypeRecord| {
+                record.canonical_descriptor = PackageSchemaCanonicalDescriptor {
+                    type_params: Vec::new(),
+                    descriptor: ContractTypeDescriptor::Enumeration {
+                        variants: vec!["tampered".to_string()],
+                    },
+                }
+            },
+            "invalid resolved Package schema closure",
+        ),
+    ] {
+        let mut resolver = fixture.resolver();
+        mutate(Arc::make_mut(
+            resolver.schema_records.get_mut(&child_id).unwrap(),
+        ));
+        let error = RuntimeAssemblyLoader::new(&resolver)
+            .load(fixture.assembly.clone())
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains(expected_error),
+            "expected `{expected_error}`, got: {error:#}"
+        );
+    }
+}
+
+#[test]
+fn loader_rejects_a_cross_package_schema_cycle_after_finite_hydration() {
+    let root_id = PackageSchemaTypeId::new("cycle:root");
+    let child_id = PackageSchemaTypeId::new("cycle:child");
+    let root = PackageSchemaTypeRecord {
+        package_id: "example.health-provider".to_string(),
+        stable_schema_key: "api.Root".to_string(),
+        package_schema_type_id: root_id.clone(),
+        canonical_descriptor: PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::Alias {
+                target: ContractTypeRef::package_schema(
+                    "skiff.run/std",
+                    "std.http.Child",
+                    child_id.clone(),
+                ),
+            },
+        },
+    };
+    let child = PackageSchemaTypeRecord {
+        package_id: "skiff.run/std".to_string(),
+        stable_schema_key: "std.http.Child".to_string(),
+        package_schema_type_id: child_id,
+        canonical_descriptor: PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::Alias {
+                target: ContractTypeRef::package_schema(
+                    root.package_id.clone(),
+                    root.stable_schema_key.clone(),
+                    root_id,
+                ),
+            },
+        },
+    };
+    let mut fixture = Fixture::new();
+    fixture.add_schema_return(root);
+    fixture.add_schema_dependency_record(child);
+    let resolver = fixture.resolver();
+
+    let error = RuntimeAssemblyLoader::new(&resolver)
+        .load(fixture.assembly.clone())
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("recursive type cycle"),
+        "unexpected error: {error:#}"
+    );
+    assert_eq!(
+        resolver.schema_loads.get(),
+        2,
+        "the visited-set must terminate hydration before validation rejects the cycle"
+    );
 }
 
 #[test]

@@ -129,6 +129,55 @@ fn package_nominal_target_typing_accepts_only_its_exact_representation() {
 }
 
 #[test]
+fn package_nominal_target_typing_projects_local_cross_package_symbols() {
+    let exact = package_type("example.types", "Role", "type:role");
+    let dependency_analysis = dependency_analysis_with_alias(
+        "example.types",
+        "Role",
+        "type:role",
+        ContractTypeRef::StructuralUnion {
+            variants: vec![ContractTypeRef::Literal {
+                value: ContractLiteral::String {
+                    value: "user".to_string(),
+                },
+            }],
+        },
+    );
+    let local_symbol = PackageTypeRef::Local {
+        local_type: TypeRefIr::PackageSymbol {
+            symbol: skiff_artifact_model::PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: "example.types".to_string(),
+                },
+                symbol_path: "Role".to_string(),
+                abi_expectation: None,
+            },
+        },
+    };
+    assert!(package_type_target_assignable(
+        &exact,
+        &local_symbol,
+        &dependency_analysis
+    ));
+    assert!(package_type_target_assignable(
+        &PackageTypeRef::Container {
+            name: "Array".to_string(),
+            arguments: vec![exact],
+        },
+        &PackageTypeRef::Local {
+            local_type: TypeRefIr::Builtin {
+                name: "Array".to_string(),
+                args: vec![match local_symbol {
+                    PackageTypeRef::Local { local_type } => local_type,
+                    _ => unreachable!(),
+                }],
+            },
+        },
+        &dependency_analysis,
+    ));
+}
+
+#[test]
 fn package_nominal_target_typing_recurses_through_records_and_iterables() {
     let expected = package_type("example.types", "Payload", "type:payload");
     let dependency_analysis = dependency_analysis_with_alias(

@@ -5,6 +5,7 @@ use skiff_artifact_model::{
     InterfaceInstantiationRef, PackageArtifact, PackageCallableSignature, PackageLocalAbiSymbol,
     PackageRefIr, PackageTypeRef, TypeRefIr,
 };
+use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_input::{PackageDependencyAccess, ResolvedContractDependency};
 use skiff_compiler_projection_input::ResolvedPackageSchema;
 use skiff_compiler_source::{
@@ -76,6 +77,57 @@ fn package_analysis(
         })
         .collect::<BTreeMap<_, _>>();
     let mut facts = Vec::new();
+    if input.package_id != SKIFF_STD_PUBLICATION_ID {
+        let std_artifacts = input
+            .available_packages
+            .iter()
+            .filter(|artifact| artifact.package_id == SKIFF_STD_PUBLICATION_ID)
+            .collect::<Vec<_>>();
+        if std_artifacts.len() > 1 {
+            return Err(validation_error(format!(
+                "compiler-owned package {SKIFF_STD_PUBLICATION_ID} has duplicate exact canonical artifacts"
+            )));
+        }
+        if let Some(artifact) = std_artifacts.first() {
+            validate_package_artifact_identities(artifact).map_err(|error| {
+                validation_error(format!(
+                    "compiler-owned package {}@{} identity validation failed: {error}",
+                    artifact.package_id, artifact.package_version
+                ))
+            })?;
+            let callables = package_callable_analysis_from_symbols(
+                "compiler-owned std",
+                &artifact.package_local_abi.public_symbols,
+                artifact,
+                std_dependency_member_path,
+            )?;
+            let mut analysis = PackageDependencyAnalysisFacts::new(
+                artifact.package_build_id.clone(),
+                artifact.package_local_abi.local_abi_identity.clone(),
+                callables,
+            )
+            .compiler_owned();
+            if let Some(schema) = resolved_package_schemas.iter().find(|schema| {
+                schema.alias() == "std"
+                    && schema.package_id() == artifact.package_id
+                    && schema.exact_version() == artifact.package_version
+            }) {
+                analysis = analysis.with_schema_bindings(schema.index().types.iter().filter_map(
+                    |(stable_key, entry)| {
+                        let record = schema.records().get(&entry.package_schema_type_id)?;
+                        Some((
+                            entry
+                                .public_path
+                                .clone()
+                                .unwrap_or_else(|| stable_key.clone()),
+                            record.clone(),
+                        ))
+                    },
+                ));
+            }
+            facts.push(("std".to_string(), analysis));
+        }
+    }
     for dependency in input.package_dependencies {
         let Some(artifact) = artifacts.get(&(dependency.id.as_str(), dependency.version.as_str()))
         else {
@@ -146,7 +198,21 @@ fn package_callable_analysis(
     dependency: &PackageDependency,
     artifact: &PackageArtifact,
 ) -> Result<BTreeMap<String, PackageDependencyCallableAnalysis>, PackageCompileError> {
-    selected_package_symbols(dependency, artifact)
+    package_callable_analysis_from_symbols(
+        dependency.effective_alias(),
+        selected_package_symbols(dependency, artifact),
+        artifact,
+        |path| dependency_member_path(dependency, path),
+    )
+}
+
+fn package_callable_analysis_from_symbols(
+    dependency_label: &str,
+    symbols: &BTreeMap<String, PackageLocalAbiSymbol>,
+    artifact: &PackageArtifact,
+    member_path: impl Fn(&str) -> String,
+) -> Result<BTreeMap<String, PackageDependencyCallableAnalysis>, PackageCompileError> {
+    symbols
         .iter()
         .filter_map(|(selected_path, symbol)| {
             let PackageLocalAbiSymbol::Callable {
@@ -163,12 +229,12 @@ fn package_callable_analysis(
                 .ok_or_else(|| {
                     validation_error(format!(
                         "package dependency {} callable {} has no semantic facts",
-                        dependency.id, callable_id
+                        dependency_label, callable_id
                     ))
                 })
                 .map(|semantic_facts| {
                     (
-                        dependency_member_path(dependency, selected_path),
+                        member_path(selected_path),
                         PackageDependencyCallableAnalysis::new(callable_id.clone(), semantic_facts)
                             .with_signature(bind_callable_signature_identity(signature, artifact)),
                     )
@@ -312,13 +378,17 @@ fn selected_package_symbols<'a>(
 
 fn dependency_member_path(dependency: &PackageDependency, public_path: &str) -> String {
     if dependency.id == skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID {
-        public_path
-            .strip_prefix("std.")
-            .unwrap_or(public_path)
-            .to_string()
+        std_dependency_member_path(public_path)
     } else {
         public_path.to_string()
     }
+}
+
+fn std_dependency_member_path(public_path: &str) -> String {
+    public_path
+        .strip_prefix("std.")
+        .unwrap_or(public_path)
+        .to_string()
 }
 
 fn contract_error(error: impl std::fmt::Display) -> PackageCompileError {

@@ -865,6 +865,30 @@ impl TypeResolutionModel {
         }
     }
 
+    pub(crate) fn bind_package_type_refs_to_dependency(
+        &self,
+        ty: &ResolvedTypeRef,
+        dependency_ref: &str,
+    ) -> ResolvedTypeRef {
+        let Some(package_id) = self.package_dependencies.get(dependency_ref) else {
+            return ty.clone();
+        };
+        let Some((expected_local_abi, _)) = self.package_artifact_identities.get(dependency_ref)
+        else {
+            return ty.clone();
+        };
+        let ir = bind_package_type_ir_to_dependency(
+            &ty.ir,
+            dependency_ref,
+            package_id,
+            expected_local_abi.as_str(),
+        );
+        ResolvedTypeRef {
+            source_text: type_ref_debug_text(&ir),
+            ir,
+        }
+    }
+
     pub fn record_field_type(
         &self,
         ty: &ResolvedTypeRef,
@@ -1446,6 +1470,87 @@ impl TypeResolutionModel {
         } else {
             self.externalize_local_type_ir(&resolved_target, source_module_path)
         })
+    }
+}
+
+fn bind_package_type_ir_to_dependency(
+    ty: &TypeRefIr,
+    dependency_ref: &str,
+    package_id: &str,
+    expected_local_abi: &str,
+) -> TypeRefIr {
+    let bind = |ty: &TypeRefIr| {
+        bind_package_type_ir_to_dependency(ty, dependency_ref, package_id, expected_local_abi)
+    };
+    match ty {
+        TypeRefIr::PackageSymbol { symbol }
+            if matches!(
+                &symbol.package,
+                PackageRefIr::PackageId { package_id: owner } if owner == package_id
+            ) || matches!(
+                &symbol.package,
+                PackageRefIr::Dependency { dependency_ref: owner } if owner == dependency_ref
+            ) =>
+        {
+            TypeRefIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::Dependency {
+                        dependency_ref: dependency_ref.to_string(),
+                    },
+                    symbol_path: symbol.symbol_path.clone(),
+                    abi_expectation: Some(expected_local_abi.to_string()),
+                },
+            }
+        }
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
+            name: name.clone(),
+            args: args.iter().map(bind).collect(),
+        },
+        TypeRefIr::Record { fields } => TypeRefIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), bind(ty)))
+                .collect(),
+        },
+        TypeRefIr::Union { items } => TypeRefIr::Union {
+            items: items.iter().map(bind).collect(),
+        },
+        TypeRefIr::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(bind(inner)),
+        },
+        TypeRefIr::AnyInterface { interface } => {
+            let interface_abi_id = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+                .map(|identity| bind(&identity))
+                .and_then(|identity| serde_json::to_string(&identity))
+                .unwrap_or_else(|_| interface.interface_abi_id.clone());
+            TypeRefIr::AnyInterface {
+                interface: InterfaceInstantiationRef {
+                    interface_abi_id,
+                    canonical_type_args: interface.canonical_type_args.iter().map(bind).collect(),
+                },
+            }
+        }
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => TypeRefIr::Function {
+            params: params
+                .iter()
+                .map(|param| FunctionTypeParamIr {
+                    name: param.name.clone(),
+                    ty: bind(&param.ty),
+                })
+                .collect(),
+            return_type: Box::new(bind(return_type)),
+        },
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => ty.clone(),
     }
 }
 

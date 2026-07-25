@@ -5,12 +5,12 @@ use std::{
 
 use anyhow::Context;
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryErrorContract, BoundaryOperationDescriptor,
-    BoundaryStreamContract, ContractOperationId, ContractTypeDescriptor, ContractTypeRef,
-    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBuildId,
-    PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSchemaTypeRecordRef,
-    PublicationResourceRef, RuntimeAssembly, RuntimeAssemblyRef, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    package_schema_descriptor_refs, BoundaryCallbackContract, BoundaryErrorContract,
+    BoundaryOperationDescriptor, BoundaryStreamContract, ContractOperationId,
+    ContractTypeDescriptor, ContractTypeRef, FileIrRef, FileIrUnit, PackageArtifact,
+    PackageArtifactRef, PackageBuildId, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssembly, RuntimeAssemblyRef,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 
 mod content_validation;
@@ -375,7 +375,7 @@ where
         package_schema_records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
         shared_records: &mut BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
     ) -> anyhow::Result<ResolvedServiceSchema> {
-        let mut records = BTreeMap::new();
+        let mut records = BTreeMap::<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>::new();
         for requirement in &contract.package_type_requirements {
             for type_id in &requirement.required_type_ids {
                 let record = if let Some(record) = shared_records.get(type_id) {
@@ -476,7 +476,6 @@ where
             let (files, file_slots) = self.load_files(&reference, &artifact, &mut shared_files)?;
             validate_package_file_targets(&reference, &artifact, &files, &file_slots)?;
             let (resources, resource_slots) = self.load_resources(&reference, &artifact)?;
-            let mut schema_records = BTreeMap::new();
             for (type_id, record_ref) in &artifact.package_schema_type_records {
                 if record_ref.package_id != artifact.package_id
                     || record_ref.package_schema_type_id != *type_id
@@ -486,37 +485,15 @@ where
                         artifact.package_id
                     );
                 }
-                let record = if let Some(record) = shared_schema_records.get(type_id) {
-                    Arc::clone(record)
-                } else {
-                    let record = self
-                        .resolver
-                        .resolve_package_schema_type(record_ref)
-                        .with_context(|| {
-                            format!(
-                                "failed to resolve package schema type {type_id} for package {}",
-                                artifact.package_id
-                            )
-                        })?;
-                    shared_schema_records.insert(type_id.clone(), Arc::clone(&record));
-                    record
-                };
-                if record.package_id != artifact.package_id
-                    || record.package_schema_type_id != *type_id
-                {
-                    anyhow::bail!(
-                        "package schema type {type_id} does not match package {} and exact identity",
-                        artifact.package_id
-                    );
-                }
-                schema_records.insert(type_id.clone(), record);
             }
-            let owned_schema_records = schema_records
+            let schema_records =
+                self.load_package_schema_closure(&artifact, shared_schema_records)?;
+            let resolved_schema_records = schema_records
                 .iter()
                 .map(|(id, record)| (id.clone(), record.as_ref().clone()))
                 .collect::<BTreeMap<_, _>>();
-            skiff_artifact_identity::validate_package_schema_records(&owned_schema_records)
-                .context("invalid Package-owned schema closure")?;
+            skiff_artifact_identity::validate_package_schema_records(&resolved_schema_records)
+                .context("invalid resolved Package schema closure")?;
 
             let slot = code_slots.len();
             code_slots_by_build.insert(reference.package_build_id.clone(), slot);
@@ -531,6 +508,66 @@ where
             });
         }
         Ok((code_slots, code_slots_by_build))
+    }
+
+    fn load_package_schema_closure(
+        &self,
+        artifact: &PackageArtifact,
+        shared_schema_records: &mut BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    ) -> anyhow::Result<BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>> {
+        let mut pending = artifact
+            .package_schema_type_records
+            .values()
+            .cloned()
+            .map(|reference| (reference, None))
+            .collect::<Vec<(PackageSchemaTypeRecordRef, Option<String>)>>();
+        let mut records = BTreeMap::<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>::new();
+
+        while let Some((record_ref, expected_stable_key)) = pending.pop() {
+            let type_id = &record_ref.package_schema_type_id;
+            if let Some(record) = records.get(type_id) {
+                validate_package_schema_record_ref(
+                    &record_ref,
+                    expected_stable_key.as_deref(),
+                    record,
+                )?;
+                continue;
+            }
+
+            let record = if let Some(record) = shared_schema_records.get(type_id) {
+                Arc::clone(record)
+            } else {
+                self.resolver
+                    .resolve_package_schema_type(&record_ref)
+                    .with_context(|| {
+                        format!(
+                            "failed to resolve package schema type {type_id} for package {} closure",
+                            artifact.package_id
+                        )
+                    })?
+            };
+            validate_package_schema_record_ref(
+                &record_ref,
+                expected_stable_key.as_deref(),
+                &record,
+            )?;
+
+            for child in package_schema_descriptor_refs(&record.canonical_descriptor.descriptor) {
+                pending.push((
+                    PackageSchemaTypeRecordRef {
+                        package_id: child.package_id,
+                        package_schema_type_id: child.package_schema_type_id,
+                    },
+                    Some(child.stable_schema_key),
+                ));
+            }
+            shared_schema_records
+                .entry(type_id.clone())
+                .or_insert_with(|| Arc::clone(&record));
+            records.insert(type_id.clone(), record);
+        }
+
+        Ok(records)
     }
 
     fn load_files(
@@ -620,6 +657,30 @@ where
         }
         Ok((resources, resource_slots))
     }
+}
+
+fn validate_package_schema_record_ref(
+    reference: &PackageSchemaTypeRecordRef,
+    expected_stable_key: Option<&str>,
+    record: &PackageSchemaTypeRecord,
+) -> anyhow::Result<()> {
+    if record.package_id != reference.package_id
+        || record.package_schema_type_id != reference.package_schema_type_id
+    {
+        anyhow::bail!(
+            "package schema type {} does not match exact owner {} and identity",
+            reference.package_schema_type_id,
+            reference.package_id
+        );
+    }
+    if expected_stable_key.is_some_and(|expected| record.stable_schema_key != expected) {
+        anyhow::bail!(
+            "package schema type {} does not match exact stable key {}",
+            reference.package_schema_type_id,
+            expected_stable_key.expect("checked as present")
+        );
+    }
+    Ok(())
 }
 
 fn validate_resolved_service_schema(

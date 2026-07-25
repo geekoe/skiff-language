@@ -457,6 +457,20 @@ pub(crate) fn package_type_target_assignable(
     if package_type_assignable(actual, expected) {
         return true;
     }
+    if let PackageTypeRef::Local { local_type } = actual {
+        if let Ok(projected) = package_type_ref_from_resolved_ir(local_type, dependency_analysis) {
+            if &projected != actual {
+                return package_type_target_assignable(&projected, expected, dependency_analysis);
+            }
+        }
+    }
+    if let PackageTypeRef::Local { local_type } = expected {
+        if let Ok(projected) = package_type_ref_from_resolved_ir(local_type, dependency_analysis) {
+            if &projected != expected {
+                return package_type_target_assignable(actual, &projected, dependency_analysis);
+            }
+        }
+    }
     if package_type_is_json_target(expected) {
         return package_type_json_compatible(
             actual,

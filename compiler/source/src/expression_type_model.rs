@@ -14,7 +14,7 @@ use crate::{
         BinaryOp, Block, DbBlockMode, DbBody, DbChangeOp, DbQueryBlock, DbSelector, DbWhereClause,
         Expr, ForBinding, FunctionDecl, Literal, SourceFile, Stmt, TypeRef, UnaryOp,
     },
-    shared::ast_utils::expr_path,
+    shared::ast_utils::{dependency_source_address_parts, expr_path},
     shared::error::SourceSpan,
     shared::prelude_registry::prelude_registry,
     shared::type_expr::TypeExpr,
@@ -2803,24 +2803,64 @@ impl<'a> OwnerChecker<'a> {
             }
         }
         if type_args.is_empty() {
-            if let Some(dependency_analysis) = self.dependency_analysis {
-                if let Some(signature) = dependency_analysis
+            let signature = self.dependency_analysis.and_then(|dependency_analysis| {
+                let (dependency_ref, _) =
+                    dependency_source_address_parts(&path).or_else(|| path.split_once('.'))?;
+                let signature = dependency_analysis
                     .package_callable_by_source_path(&path)
                     .and_then(|callable| callable.signature())
-                    .filter(|signature| !package_type_contains_local_slot(&signature.return_type))
-                {
-                    let resolved_return = resolved_package_type_ref(&signature.return_type);
-                    let exact_projection = contract_call_typing::project_resolved_package_type(
-                        &resolved_return,
-                        self.type_resolution,
-                        dependency_analysis,
-                        &self.type_context,
-                    )
-                    .unwrap_or_else(|_| signature.return_type.clone());
-                    self.contract_projection
-                        .record_expression_type(key.clone(), exact_projection);
-                    return Some(resolved_return);
-                }
+                    .filter(|signature| {
+                        !package_type_contains_local_slot(&signature.return_type)
+                            && signature
+                                .parameters
+                                .iter()
+                                .all(|parameter| !package_type_contains_local_slot(&parameter.ty))
+                    })?
+                    .clone();
+                Some((dependency_ref.to_string(), signature))
+            });
+            if let Some((dependency_ref, signature)) = signature {
+                let expected = signature
+                    .parameters
+                    .iter()
+                    .map(|parameter| {
+                        (
+                            parameter.name.clone(),
+                            self.type_resolution.bind_package_type_refs_to_dependency(
+                                &resolved_package_type_ref(&parameter.ty),
+                                &dependency_ref,
+                            ),
+                        )
+                    })
+                    .collect();
+                let exact_expected = signature
+                    .parameters
+                    .iter()
+                    .map(|parameter| Some(parameter.ty.clone()))
+                    .collect::<Vec<_>>();
+                self.validate_resolved_call_params_with_projections(
+                    &path,
+                    expected,
+                    &exact_expected,
+                    args,
+                    arg_types,
+                );
+
+                let resolved_return = self.type_resolution.bind_package_type_refs_to_dependency(
+                    &resolved_package_type_ref(&signature.return_type),
+                    &dependency_ref,
+                );
+                let exact_projection = contract_call_typing::project_resolved_package_type(
+                    &resolved_return,
+                    self.type_resolution,
+                    self.dependency_analysis
+                        .expect("exact package signature requires dependency analysis"),
+                    &self.type_context,
+                )
+                .unwrap_or_else(|_| signature.return_type.clone());
+                self.contract_projection
+                    .record_expression_type(key.clone(), exact_projection);
+                return Some(resolved_return);
             }
         }
         if let Some(return_type) = self.config_intrinsic_call_type(&path, type_args) {

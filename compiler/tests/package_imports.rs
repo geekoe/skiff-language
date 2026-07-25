@@ -234,7 +234,8 @@ import widget
 function run() -> string {
   const seed: widget/internal.codec.PrivateValue = widget/internal.codec.PRIVATE_VALUE
   const revealed: widget/internal.codec.PrivateValue = widget/internal.codec.reveal(seed)
-  return revealed.value
+  const contextual: widget/internal.codec.PrivateValue = widget/internal.codec.reveal({ value: "contextual" })
+  return revealed.value + contextual.value
 }
 
 function construct() -> widget/internal.codec.PrivateValue {
@@ -341,6 +342,34 @@ function privateOnly() -> string {
             )
         })
     }));
+    let run = file
+        .unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol.ends_with(".run"))
+        .expect("run executable should be lowered");
+    assert!(run.body.expressions.iter().any(|expression| {
+        matches!(
+            expression,
+            skiff_artifact_model::ExprIr::Construct {
+                type_ref: skiff_artifact_model::TypeRefIr::PackageSymbol { symbol },
+                ..
+            } if matches!(
+                &symbol.package,
+                skiff_artifact_model::PackageRefIr::Dependency { dependency_ref }
+                    if dependency_ref == "widget"
+            )
+                && symbol.symbol_path == "internal.codec.PrivateValue"
+                && symbol.abi_expectation.as_deref()
+                    == Some(
+                        dependency_artifact
+                            .artifact
+                            .package_local_abi
+                            .local_abi_identity
+                            .as_str()
+                    )
+        )
+    }));
     let construct = file
         .unit
         .executables
@@ -443,6 +472,10 @@ function automatic() -> tools.ToolChoice {
 function named(name: string) -> tools.ToolChoice {
   return { tag: "tool", name: name, options: { note: null } }
 }
+
+function throughCall() -> tools.ToolChoice {
+  return tools/accept({ tag: "auto" })
+}
 "#,
     )
     .unwrap();
@@ -458,7 +491,7 @@ function named(name: string) -> tools.ToolChoice {
     .unwrap();
     fs::write(
         dependency.join("api.yml"),
-        "ToolChoice: types.ToolChoice\nToolOptions: types.ToolOptions\n",
+        "ToolChoice: types.ToolChoice\nToolOptions: types.ToolOptions\naccept: types.accept\n",
     )
     .unwrap();
     fs::write(
@@ -468,12 +501,19 @@ type ToolOptions { note: string? }
 type ToolChoice discriminator "tag" =
   { tag: "auto" }
   | { tag: "tool", name: string, options: ToolOptions? }
+
+function accept(choice: ToolChoice) -> ToolChoice {
+  return choice
+}
 "#,
     )
     .unwrap();
 
     let project =
         compile_package_project(temp.path()).expect("Package nominal constructors should lower");
+    let dependency_artifact = project
+        .dependency("example.com/tool-types", "0.1.0")
+        .expect("exact tool type dependency artifact should be retained");
     let file = module_artifact(&project.package, "main");
     let targets = file
         .unit
@@ -499,9 +539,62 @@ type ToolChoice discriminator "tag" =
                 } if dependency_ref == "tools" && symbol_path == "ToolChoice"
             ))
             .count()
-            >= 2,
-        "both tagged variants must retain the exact Package nominal target: {}",
+            >= 3,
+        "return and public-call literals must retain the exact Package nominal target: {}",
         file.value()
+    );
+    let through_call = file
+        .unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol.ends_with(".throughCall"))
+        .expect("public package call executable should be lowered");
+    assert!(through_call
+        .body
+        .expressions
+        .iter()
+        .any(|expression| matches!(
+            expression,
+            skiff_artifact_model::ExprIr::Construct {
+                type_ref: skiff_artifact_model::TypeRefIr::PackageSymbol {
+                    symbol: skiff_artifact_model::PackageSymbolRef {
+                        package:
+                            skiff_artifact_model::PackageRefIr::Dependency { dependency_ref },
+                        symbol_path,
+                        abi_expectation,
+                    },
+                },
+                ..
+            } if dependency_ref == "tools"
+                && symbol_path == "ToolChoice"
+                && abi_expectation.as_deref()
+                    == Some(
+                        dependency_artifact
+                            .artifact
+                            .package_local_abi
+                            .local_abi_identity
+                            .as_str()
+                    )
+        )));
+
+    fs::write(
+        temp.path().join("main.skiff"),
+        r#"
+import tools
+
+function invalid() -> tools.ToolChoice {
+  return tools/accept({ tag: "tool", name: 42 })
+}
+"#,
+    )
+    .unwrap();
+    let error = compile_package_project(temp.path())
+        .expect_err("public package callable arguments must retain their exact target shape")
+        .to_string();
+    assert!(
+        error.contains("call `tools/accept` argument 1 object literal field `name`")
+            && error.contains("expected string, found integer"),
+        "unexpected public package parameter error: {error}"
     );
 }
 

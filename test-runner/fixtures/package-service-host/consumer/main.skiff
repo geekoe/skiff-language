@@ -1,7 +1,5 @@
 import helper
 
-type Box { value: string }
-
 function owner(input: string) -> string { return "owner" }
 
 function configured() -> string {
@@ -9,7 +7,7 @@ function configured() -> string {
 }
 
 function run() -> string {
-  const box = Box { value: "consumer" }
+  const box = helper.Box { value: "consumer" }
   helper/tools.mutate(box)
   return payments/echo(box.value)
 }

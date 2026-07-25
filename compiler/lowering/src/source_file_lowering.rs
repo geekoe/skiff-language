@@ -1892,6 +1892,7 @@ mod tests {
                 expression,
                 skiff_compiler_source::ResolvedCallTarget::DependencyPackageFunction {
                     package_requirement_alias: "utils".to_string(),
+                    compiler_owned: false,
                     package_callable_id: package_callable_id.clone(),
                     expected_local_abi: expected_local_abi.clone(),
                     exact_signature: None,
@@ -1972,6 +1973,7 @@ mod tests {
                 package_call_expression(),
                 skiff_compiler_source::ResolvedCallTarget::DependencyPackageFunction {
                     package_requirement_alias: "other".to_string(),
+                    compiler_owned: false,
                     package_callable_id: PackageCallableId::new("callable:other.format"),
                     expected_local_abi: PackageLocalAbiIdentity::new("local-abi:other"),
                     exact_signature: None,

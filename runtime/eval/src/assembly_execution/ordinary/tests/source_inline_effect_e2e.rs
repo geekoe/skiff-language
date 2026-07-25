@@ -15,9 +15,9 @@ use skiff_artifact_model::{
     BoundaryEffectGuarantee, BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter,
     BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding,
     BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CanonicalPackageLinkPlan,
-    ContractTypeRef, PackageArtifact, PackageBinding, PackageCodeSlot, PackageRefIr,
-    PackageRequirementKey, PackageTypeRequirement, RuntimeAssembly, TestEffectOutcomeIr, TypeRefIr,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    ContractTypeRef, PackageArtifact, PackageBinding, PackageCallableId, PackageCodeSlot,
+    PackageRefIr, PackageRequirementKey, PackageTypeRequirement, RuntimeAssembly,
+    TestEffectOutcomeIr, TypeRefIr, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -102,9 +102,91 @@ async fn source_inline_service_effect_sequence_typed_throw_is_caught_then_respon
         compile_package_test_overlay(&platform_sources, &consumer, &artifacts, &project, &cases)
             .expect("source test overlay compile and lower");
     assert_throw_lowered_to_exact_package_symbol(&overlay);
+    execute_overlay_case(&store, &overlay, &project.dependency_packages).await;
+}
 
+#[tokio::test]
+async fn source_inline_compiler_owned_std_effect_replaces_the_exact_package_callable() {
+    let fixture = TempFixture::new("source-inline-compiler-owned-std");
+    let platform_sources = repository_platform_sources();
+    let artifacts = fixture.child("artifacts");
+    seed_canonical_std(&platform_sources, &artifacts).expect("canonical std seed");
+
+    let consumer = fixture.child("consumer");
+    write_std_effect_consumer_package(&consumer);
+    let project = compile_package_project(&platform_sources, &consumer, &artifacts)
+        .expect("std effect consumer source package compile");
+    let cases = discover_package_test_cases(&consumer, &consumer, false).expect("test discovery");
+    assert_eq!(cases.len(), 1);
+    let overlay =
+        compile_package_test_overlay(&platform_sources, &consumer, &artifacts, &project, &cases)
+            .expect("compiler-owned std effect overlay compile and lower");
+
+    let request_callable = PackageCallableId::new("pkg-callable:skiff.run/std:std.http.request");
+    let std_calls = overlay
+        .overlay
+        .file_ir_units
+        .iter()
+        .flat_map(|file| &file.unit.executables)
+        .flat_map(|executable| &executable.body.expressions)
+        .filter(|expression| {
+            matches!(
+                expression,
+                skiff_artifact_model::ExprIr::Call {
+                    call:
+                        skiff_artifact_model::CallIr {
+                            target:
+                                skiff_artifact_model::CallTargetIr::PackageCallable {
+                                    package_ref:
+                                        PackageRefIr::Dependency { dependency_ref },
+                                    package_callable_id,
+                                },
+                            ..
+                        },
+                } if dependency_ref == "std" && package_callable_id == &request_callable
+            )
+        })
+        .count();
+    assert_eq!(
+        std_calls, 1,
+        "the production call must use the exact std package callable"
+    );
+    let registrations = overlay
+        .overlay
+        .file_ir_units
+        .iter()
+        .flat_map(|file| &file.unit.executables)
+        .flat_map(|executable| &executable.body.statements)
+        .filter(|statement| {
+            matches!(
+                statement,
+                skiff_artifact_model::StmtIr::TestEffectRegister {
+                    target:
+                        skiff_artifact_model::TestEffectRegisterTargetIr::PackageCallable {
+                            package_ref: PackageRefIr::Dependency { dependency_ref },
+                            callable_id,
+                        },
+                    ..
+                } if dependency_ref == "std" && callable_id == &request_callable
+            )
+        })
+        .count();
+    assert_eq!(
+        registrations, 1,
+        "the setup must register the same exact std package callable"
+    );
+
+    let store = CanonicalArtifactStore::open(&artifacts).expect("canonical store");
+    execute_overlay_case(&store, &overlay, &project.dependency_packages).await;
+}
+
+async fn execute_overlay_case(
+    store: &CanonicalArtifactStore,
+    overlay: &PublishedPackageTestOverlay,
+    dependencies: &[PackageArtifact],
+) {
     let mut packages = vec![overlay.overlay.artifact.clone()];
-    packages.extend(project.dependency_packages.iter().cloned());
+    packages.extend(dependencies.iter().cloned());
     let assembly = package_link_fixture(&packages);
     let overlay_ref =
         package_artifact_ref(&overlay.overlay.artifact).expect("overlay package reference");
@@ -115,7 +197,7 @@ async fn source_inline_service_effect_sequence_typed_throw_is_caught_then_respon
         .callable_links
         .get(&binding.callable_id)
         .expect("test callable link");
-    let hydrated = hydrate_packages(&store, &overlay, &project.dependency_packages);
+    let hydrated = hydrate_packages(store, overlay, dependencies);
     let image = crate::test_support::link_package_fixture(assembly.clone(), hydrated);
     let caller_addr = image
         .shared_packages()
@@ -421,6 +503,55 @@ test "typed service throw is caught before sequence response" effects {
 "#,
     )
     .expect("consumer test source");
+}
+
+fn write_std_effect_consumer_package(root: &Path) {
+    fs::create_dir_all(root).expect("std effect consumer directory");
+    fs::write(
+        root.join("package.yml"),
+        "id: example.com/std-effect-consumer\nversion: 1.0.0\n",
+    )
+    .expect("std effect consumer manifest");
+    fs::write(root.join("api.yml"), "").expect("std effect consumer API");
+    fs::write(
+        root.join("main.skiff"),
+        r#"import std
+
+function fetchStatus() -> integer {
+  const response = std.http.request(std.http.HttpClientRequest {
+    method: "GET",
+    url: "https://must-not-run.invalid/resource",
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: null,
+    timeoutMs: null,
+  })
+  return response.status
+}
+"#,
+    )
+    .expect("std effect consumer source");
+    fs::write(
+        root.join("main.test.skiff"),
+        r#"import std
+
+test "compiler-owned std request is replaced by exact package identity" effects {
+  std/http.request {
+    expect: {
+      method: "GET",
+      url: "https://must-not-run.invalid/resource",
+    },
+    respond: std.http.HttpClientResponse {
+      status: 204,
+      headers: Array.empty<std.http.HttpHeader>(),
+      body: bytes.fromUtf8(""),
+    },
+  }
+} {
+  assert root.main.fetchStatus() == 204
+}
+"#,
+    )
+    .expect("std effect consumer test source");
 }
 
 fn repository_platform_sources() -> CompilerPlatformSources {

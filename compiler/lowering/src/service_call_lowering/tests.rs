@@ -200,6 +200,7 @@ fn direct_package_call_target_is_not_rewritten_as_a_service_call() {
     let expression = key("api", "run", 0);
     let package_target = ResolvedCallTarget::DependencyPackageFunction {
         package_requirement_alias: "utils".to_string(),
+        compiler_owned: false,
         package_callable_id: PackageCallableId::new("callable:format"),
         expected_local_abi: PackageLocalAbiIdentity::new("local-abi:utils"),
         exact_signature: None,

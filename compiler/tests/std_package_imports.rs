@@ -7,8 +7,8 @@ use common::{
 };
 use skiff_artifact_model::{
     BoundaryCallableProjection, CallIr, CallTargetIr, CallableEffectSummary, CallableMayEffects,
-    CallableProvenanceSummary, ExprIr, PackageCallableId, PackageLocalAbiSymbol, PackageRefIr,
-    TypeDescriptorIr, TypeRefIr, ValueProvenance,
+    CallableProvenanceSummary, CallableTargetFact, ExprIr, PackageCallableId,
+    PackageLocalAbiSymbol, PackageRefIr, TypeDescriptorIr, TypeRefIr, ValueProvenance,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_emission::PublishedFileIrArtifact;
@@ -56,6 +56,10 @@ function truncate(value: string, maxBytes: number) -> string {
     );
 
     let project = compile_package_project(temp.path()).expect("truncate wrapper should compile");
+    let std = project
+        .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
+        .expect("std should be in the canonical dependency closure");
+    let truncate_callable_id = public_callable_id(std, "std.string.truncateUtf8Bytes");
     let callable_id = public_callable_id(&project.package, "truncate");
     let facts = &project.package.artifact.callable_semantic_facts[&callable_id];
     assert_eq!(
@@ -75,15 +79,25 @@ function truncate(value: string, maxBytes: number) -> string {
     assert_eq!(
         facts.provenance,
         CallableProvenanceSummary::Analyzed {
-            return_origins: vec![ValueProvenance::Fresh],
+            return_origins: vec![
+                ValueProvenance::Fresh,
+                ValueProvenance::DependencyReturn {
+                    callable_id: truncate_callable_id.as_str().to_string(),
+                },
+            ],
             throw_origins: Vec::new(),
             escape_lanes: Vec::new(),
         }
     );
-    assert!(
-        facts.resolved_call_targets.is_empty(),
-        "native target must not add an artifact callable-target variant"
-    );
+    assert_eq!(facts.resolved_call_targets.len(), 1);
+    assert!(facts.resolved_call_targets.values().any(|target| {
+        matches!(
+            target,
+            CallableTargetFact::PackageDirect {
+                package_callable_id,
+            } if package_callable_id == truncate_callable_id.as_str()
+        )
+    }));
     assert!(matches!(
         project.package.artifact.boundary_projections[&callable_id],
         BoundaryCallableProjection::Available { .. }
@@ -93,11 +107,10 @@ function truncate(value: string, maxBytes: number) -> string {
     assert!(file_contains_call(main, &|target| {
         matches!(
             target,
-            CallTargetIr::Native { target }
-                if target.namespace == "std.string"
-                    && target.symbol == "truncateUtf8Bytes"
-                    && target.binding_key.as_deref()
-                        == Some("std.string.truncateUtf8Bytes")
+            CallTargetIr::PackageCallable {
+                package_ref: PackageRefIr::Dependency { dependency_ref },
+                package_callable_id,
+            } if dependency_ref == "std" && package_callable_id == &truncate_callable_id
         )
     }));
 }
@@ -136,6 +149,9 @@ function handler(request: std.http.HttpRequest) -> std.http.HttpResponse {
 
     let project =
         compile_package_project(temp.path()).expect("HTTP request native handler should compile");
+    let std = project
+        .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
+        .expect("std should be in the canonical dependency closure");
     let callable_id = public_callable_id(&project.package, "handler");
     let facts = &project.package.artifact.callable_semantic_facts[&callable_id];
     assert_eq!(
@@ -166,17 +182,15 @@ function handler(request: std.http.HttpRequest) -> std.http.HttpResponse {
     ));
 
     let main = module_artifact(&project.package, "main");
-    for (symbol, binding_key) in [
-        ("headers", "std.http.request.headers"),
-        ("cookie", "std.http.request.cookie"),
-    ] {
+    for public_path in ["std.http.headers", "std.http.cookie"] {
+        let package_callable_id = public_callable_id(std, public_path);
         assert!(file_contains_call(main, &|target| {
             matches!(
                 target,
-                CallTargetIr::Native { target }
-                    if target.namespace == "std.http"
-                        && target.symbol == symbol
-                        && target.binding_key.as_deref() == Some(binding_key)
+                CallTargetIr::PackageCallable {
+                    package_ref: PackageRefIr::Dependency { dependency_ref },
+                    package_callable_id: actual_callable_id,
+                } if dependency_ref == "std" && actual_callable_id == &package_callable_id
             )
         }));
     }
@@ -222,14 +236,22 @@ type Marker { request: std.http.HttpRequest }
     assert!(main
         .unit
         .external_refs
-        .service_symbols
+        .package_callables
         .iter()
-        .any(|symbol| { symbol.module_path == "std.log" && symbol.symbol == "info" }));
+        .any(|reference| {
+            reference.package_ref
+                == (PackageRefIr::Dependency {
+                    dependency_ref: "std".to_string(),
+                })
+                && reference.package_callable_id == log_callable_id
+        }));
     assert!(file_contains_call(main, &|target| {
         matches!(
             target,
-            CallTargetIr::ExternalServiceSymbol { symbol }
-                if symbol.module_path == "std.log" && symbol.symbol == "info"
+            CallTargetIr::PackageCallable {
+                package_ref: PackageRefIr::Dependency { dependency_ref },
+                package_callable_id,
+            } if dependency_ref == "std" && package_callable_id == &log_callable_id
         )
     }));
 
@@ -307,15 +329,23 @@ fn standard_error_catch_types_are_public_package_symbols() {
 function check() -> bool {
   const jsonResult = catch<std.json.DecodeError>(std.json.decode<string>("{}"))
   const numberResult = catch<std.number.DecodeError>(number.assertSafeInteger(1.5))
+  const exactNumber = std.number.assertSafeInteger(1)
   const timeResult = catch<std.time.DecodeError>(null)
   const dbResult = catch<std.db.ConflictError>(null)
-  return true
+  return exactNumber == 1
 }
 "#,
     );
 
     let project = compile_package_project(temp.path()).expect("std catch types should compile");
     let main = module_artifact(&project.package, "main");
+    assert!(file_contains_call(main, &|target| {
+        matches!(
+            target,
+            CallTargetIr::Native { target }
+                if target.binding_key.as_deref() == Some("core.number.assertSafeInteger")
+        )
+    }));
     for symbol_path in [
         "std.json.DecodeError",
         "std.number.DecodeError",

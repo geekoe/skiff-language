@@ -1501,6 +1501,7 @@ impl<'a> FunctionLowerer<'a> {
 
         if let Some(ResolvedCallTarget::DependencyPackageFunction {
             package_requirement_alias,
+            compiler_owned,
             package_callable_id,
             expected_local_abi: _,
             ..
@@ -1525,7 +1526,7 @@ impl<'a> FunctionLowerer<'a> {
                     ),
                 ));
             }
-            if !self.package_aliases.contains_key(package_requirement_alias) {
+            if !compiler_owned && !self.package_aliases.contains_key(package_requirement_alias) {
                 return Err(package_call_resolution_error(
                     expression_key,
                     path,
@@ -1549,6 +1550,9 @@ impl<'a> FunctionLowerer<'a> {
                 },
                 package_callable_id: package_callable_id.clone(),
             }));
+        }
+        if matches!(target, Some(ResolvedCallTarget::NativeFunction { .. })) {
+            return Ok(None);
         }
 
         let Some(path) = path.as_deref() else {

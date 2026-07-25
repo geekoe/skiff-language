@@ -218,15 +218,11 @@ impl TargetCollector<'_> {
                     return ResolvedCallTarget::ConfigIntrinsic { intrinsic };
                 }
                 let local_target = self.local_targets.resolve_path(self.module_path, &path);
-                if let Some(binding_key) = exact_native_binding_key(&path) {
-                    return ResolvedCallTarget::NativeFunction {
-                        binding_key: binding_key.to_string(),
-                    };
-                }
                 match self.dependencies.resolve_path(&path) {
                     ResolvedDependencyAnalysisTarget::Package {
                         alias,
                         expected_local_abi,
+                        compiler_owned,
                         callable,
                         ..
                     } => {
@@ -235,6 +231,7 @@ impl TargetCollector<'_> {
                         }
                         return ResolvedCallTarget::DependencyPackageFunction {
                             package_requirement_alias: alias,
+                            compiler_owned,
                             package_callable_id: callable.callable_id().clone(),
                             expected_local_abi: expected_local_abi.clone(),
                             exact_signature: callable.signature().cloned(),
@@ -266,6 +263,11 @@ impl TargetCollector<'_> {
                         return unknown(UnknownCallTargetReason::UnresolvedName);
                     }
                     ResolvedDependencyAnalysisTarget::MissingMember => {
+                        if let Some(binding_key) = exact_native_binding_key(&path) {
+                            return ResolvedCallTarget::NativeFunction {
+                                binding_key: binding_key.to_string(),
+                            };
+                        }
                         if let Some((alias, public_path)) = dependency_source_address_parts(&path) {
                             self.errors.push(dependency_member_error(
                                 self.diagnostic_path,
@@ -307,6 +309,11 @@ impl TargetCollector<'_> {
                     }
                 }
 
+                if let Some(binding_key) = exact_native_binding_key(&path) {
+                    return ResolvedCallTarget::NativeFunction {
+                        binding_key: binding_key.to_string(),
+                    };
+                }
                 if let Some(target) = local_target {
                     return target;
                 }

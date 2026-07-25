@@ -117,6 +117,7 @@ fn pre_source_contract_package_schemas(
                 .iter()
                 .map(|dependency| dependency.id.as_str()),
         )
+        .chain((input.package_id != SKIFF_STD_PUBLICATION_ID).then_some(SKIFF_STD_PUBLICATION_ID))
         .collect::<std::collections::BTreeSet<_>>();
 
     for owner in owners.iter().copied() {

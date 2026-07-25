@@ -44,6 +44,10 @@ pub enum ResolvedCallTarget {
     },
     DependencyPackageFunction {
         package_requirement_alias: String,
+        /// True only when the source namespace and eventual requirement are
+        /// supplied by the compiler-owned package graph rather than package.yml.
+        #[serde(default, skip_serializing_if = "is_false")]
+        compiler_owned: bool,
         package_callable_id: PackageCallableId,
         expected_local_abi: PackageLocalAbiIdentity,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -56,6 +60,10 @@ pub enum ResolvedCallTarget {
     Unknown {
         reason: UnknownCallTargetReason,
     },
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 impl ResolvedCallTarget {
@@ -265,6 +273,7 @@ mod tests {
 
         let package = ResolvedCallTarget::DependencyPackageFunction {
             package_requirement_alias: "util".to_string(),
+            compiler_owned: false,
             package_callable_id: PackageCallableId::new("callable:format"),
             expected_local_abi: PackageLocalAbiIdentity::new("abi:util"),
             exact_signature: None,
@@ -403,6 +412,7 @@ mod tests {
 
         let dependency = ResolvedCallTarget::DependencyPackageFunction {
             package_requirement_alias: "util".to_string(),
+            compiler_owned: false,
             package_callable_id: PackageCallableId::new("callable:format"),
             expected_local_abi: PackageLocalAbiIdentity::new("abi:util"),
             exact_signature: None,

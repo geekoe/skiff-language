@@ -3543,6 +3543,11 @@ fn artifact_type_text(
             PackageRefIr::PackageId { package_id: owner } if owner == package_id => {
                 Ok(symbol.symbol_path.clone())
             }
+            PackageRefIr::PackageId { package_id }
+                if package_id == SKIFF_STD_PUBLICATION_ID =>
+            {
+                Ok(symbol.symbol_path.clone())
+            }
             PackageRefIr::Dependency { dependency_ref } => {
                 Ok(format!("{dependency_ref}.{}", symbol.symbol_path))
             }
@@ -6026,6 +6031,18 @@ mod tests {
                         }),
                     },
                 ),
+                (
+                    "header".to_string(),
+                    TypeRefIr::PackageSymbol {
+                        symbol: PackageSymbolRef {
+                            package: PackageRefIr::PackageId {
+                                package_id: SKIFF_STD_PUBLICATION_ID.to_string(),
+                            },
+                            symbol_path: "std.http.HttpHeader".to_string(),
+                            abi_expectation: None,
+                        },
+                    },
+                ),
             ]),
         };
         let SourceTypeKind::Record {
@@ -6043,6 +6060,7 @@ mod tests {
             TypeRefIr::Nullable { inner }
                 if matches!(inner.as_ref(), TypeRefIr::Union { items } if items.len() == 2)
         ));
+        assert_eq!(fields["header"], "std.http.HttpHeader");
 
         let alias = test_artifact_type_kind(
             &TypeDescriptorIr::Alias {

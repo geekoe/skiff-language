@@ -37,6 +37,7 @@ pub struct SourceDependencyAnalysisInput {
 pub struct PackageDependencyAnalysisFacts {
     package_build_id: PackageBuildId,
     expected_local_abi: PackageLocalAbiIdentity,
+    compiler_owned: bool,
     callables: BTreeMap<String, PackageDependencyCallableAnalysis>,
     constants: BTreeMap<String, PackageDependencyConstantAnalysis>,
     schema_records: BTreeMap<String, skiff_artifact_model::PackageSchemaTypeRecord>,
@@ -60,6 +61,7 @@ pub(crate) enum ResolvedDependencyAnalysisTarget<'a> {
         alias: String,
         package_build_id: &'a PackageBuildId,
         expected_local_abi: &'a PackageLocalAbiIdentity,
+        compiler_owned: bool,
         callable: &'a PackageDependencyCallableAnalysis,
     },
     Contract {
@@ -113,7 +115,14 @@ impl SourceDependencyAnalysisInput {
 
     /// Resolves both dependency kinds through the namespace frozen by `new`.
     pub(crate) fn resolve_path(&self, path: &str) -> ResolvedDependencyAnalysisTarget<'_> {
-        let Some((alias, callable_path)) = dependency_source_address_parts(path) else {
+        let address = dependency_source_address_parts(path).or_else(|| {
+            let (alias, callable_path) = path.split_once('.')?;
+            self.packages
+                .get(alias)
+                .is_some_and(|facts| facts.compiler_owned)
+                .then_some((alias, callable_path))
+        });
+        let Some((alias, callable_path)) = address else {
             return if self.packages.contains_key(path) {
                 ResolvedDependencyAnalysisTarget::MissingMember
             } else if self.contracts.requirement(path).is_ok() {
@@ -131,6 +140,7 @@ impl SourceDependencyAnalysisInput {
                     alias: alias.to_string(),
                     package_build_id: &facts.package_build_id,
                     expected_local_abi: &facts.expected_local_abi,
+                    compiler_owned: facts.compiler_owned,
                     callable,
                 },
                 None => ResolvedDependencyAnalysisTarget::MissingMember,
@@ -308,10 +318,20 @@ impl PackageDependencyAnalysisFacts {
         Self {
             package_build_id,
             expected_local_abi,
+            compiler_owned: false,
             callables,
             constants: BTreeMap::new(),
             schema_records: BTreeMap::new(),
         }
+    }
+
+    /// Marks facts selected from a compiler-owned package graph entry rather
+    /// than from a manifest dependency. The package still lowers through the
+    /// ordinary requirement/link path; this bit only authorizes its reserved
+    /// source namespace without fabricating a manifest declaration.
+    pub fn compiler_owned(mut self) -> Self {
+        self.compiler_owned = true;
+        self
     }
 
     pub fn with_constants(
@@ -540,6 +560,37 @@ mod tests {
             ),
             Err(SourceDependencyAnalysisError::AliasKindConflict { alias }) if alias == "same"
         ));
+    }
+
+    #[test]
+    fn compiler_owned_package_accepts_reserved_dotted_and_slash_source_addresses() {
+        let std = PackageDependencyAnalysisFacts::new(
+            PackageBuildId::new("build:std"),
+            PackageLocalAbiIdentity::new("abi:std"),
+            BTreeMap::from([(
+                "http.request".to_string(),
+                package_callable("callable:std-http-request"),
+            )]),
+        )
+        .compiler_owned();
+        let input =
+            SourceDependencyAnalysisInput::new([("std".to_string(), std)], Vec::new()).unwrap();
+
+        for path in ["std.http.request", "std/http.request"] {
+            assert!(matches!(
+                input.resolve_path(path),
+                ResolvedDependencyAnalysisTarget::Package {
+                    alias,
+                    package_build_id,
+                    expected_local_abi,
+                    compiler_owned: true,
+                    callable,
+                } if alias == "std"
+                    && package_build_id.as_str() == "build:std"
+                    && expected_local_abi.as_str() == "abi:std"
+                    && callable.callable_id().as_str() == "callable:std-http-request"
+            ));
+        }
     }
 
     #[test]
