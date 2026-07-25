@@ -184,7 +184,11 @@ pub(super) fn native_route_matches_required_context(
 ) -> bool {
     if matches!(
         binding_key,
-        "std.http.request.headers" | "std.http.request.cookie"
+        "std.http.request.headers"
+            | "std.http.request.cookie"
+            | "std.http.stream.start"
+            | "std.http.stream.chunk"
+            | "std.http.stream.end"
     ) {
         return required_context == NativeRequiredContext::None
             && route == RuntimeNativeRoute::Http;

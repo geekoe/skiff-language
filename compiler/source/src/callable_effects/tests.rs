@@ -1375,31 +1375,92 @@ fn exact_http_client_stream_is_fresh_detached_and_suspending_through_raw_request
 }
 
 #[test]
-fn http_client_stream_semantics_do_not_generalize_to_response_stream_events() {
+fn exact_http_response_stream_event_constructors_are_fresh_and_effect_free() {
     let model = analyze(
         r#"
-            function responseStart(
+            function start(
               status: integer,
               headers: Array<std.http.HttpHeader>
             ) -> std.http.HttpResponseStreamEvent {
               return std.http.streamStart(status, headers)
             }
+
+            function chunk(value: bytes) -> std.http.HttpResponseStreamEvent {
+              return std.http.streamChunk(value)
+            }
+
+            function end() -> std.http.HttpResponseStreamEvent {
+              return std.http.streamEnd()
+            }
+
+            function safeResponses(
+              status: integer,
+              headers: Array<std.http.HttpHeader>,
+              value: bytes
+            ) -> std.http.HttpResponseStreamEvent {
+              const started = std.http.streamStart(status, headers)
+              const chunked = std.http.streamChunk(value)
+              return std.http.streamEnd()
+            }
         "#,
         SourceDependencyAnalysisInput::default(),
     );
 
-    assert!(effects(&model, "responseStart").invokes_unknown_target);
+    for callable in ["start", "chunk", "end", "safeResponses"] {
+        assert_eq!(effects(&model, callable), no_effects(), "{callable}");
+        assert!(matches!(
+            provenance(&model, callable),
+            CallableProvenanceSummary::Analyzed {
+                return_origins,
+                throw_origins,
+                escape_lanes,
+            } if return_origins == &vec![ValueProvenance::Fresh]
+                && throw_origins.is_empty()
+                && escape_lanes.is_empty()
+        ));
+    }
+
+    let native_keys = model
+        .resolved_call_targets()
+        .iter()
+        .filter_map(|(_, target)| match target {
+            ResolvedCallTarget::NativeFunction { binding_key } => Some(binding_key.as_str()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        native_keys,
+        std::collections::BTreeSet::from([
+            "std.http.stream.chunk",
+            "std.http.stream.end",
+            "std.http.stream.start",
+        ])
+    );
+}
+
+#[test]
+fn http_stream_event_constructor_semantics_do_not_generalize_to_emit_response() {
+    let model = analyze(
+        r#"
+            function emit(event: std.http.HttpResponseStreamEvent) -> void {
+              std.http.emitResponseStream(event)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert!(effects(&model, "emit").invokes_unknown_target);
     assert!(matches!(
-        provenance(&model, "responseStart"),
+        provenance(&model, "emit"),
         CallableProvenanceSummary::Unknown {
-            reason: CallableProvenanceUnknownReason::UnknownCallTarget
+            reason: CallableProvenanceUnknownReason::UnknownCallTarget,
         }
     ));
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
             target,
             ResolvedCallTarget::NativeFunction { binding_key }
-                if binding_key == "std.http.stream.start"
+                if binding_key == "std.http.stream.emitResponse"
         )
     }));
 }

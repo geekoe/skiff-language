@@ -1774,6 +1774,33 @@ async fn runtime_program_http_stream_event_helper_uses_native_signature_inside_h
     );
 }
 
+#[tokio::test]
+async fn runtime_program_http_stream_chunk_and_end_construct_canonical_wire_events() {
+    for (executable, expected) in [
+        (
+            http_stream_chunk_helper_in_http_handler_executable(),
+            json!({
+                "tag": "chunk",
+                "value": { "__skiffBytesBase64": "aGVsbG8gd29ybGQ=" }
+            }),
+        ),
+        (
+            http_stream_end_helper_in_http_handler_executable(),
+            json!({ "tag": "end" }),
+        ),
+    ] {
+        let program = Arc::new(program_with_executable_and_std_http_types(executable));
+        let interpreter = Interpreter::with_program(program, runtime_factory());
+        let mut frame = test_invocation("svc.main.run");
+        set_request_http_arg(&mut frame, "request");
+
+        let value = execute_test_program_route(&interpreter, &frame)
+            .await
+            .expect("HTTP stream event constructor should use its exact native signature");
+        assert_eq!(value, expected);
+    }
+}
+
 #[test]
 fn test_host_operation_double_matches_bytes_request_without_materializing_actual_input() {
     let program = Arc::new(program_with_executable(run_executable()));
@@ -7450,6 +7477,82 @@ fn http_stream_start_helper_in_http_handler_executable() -> LinkedExecutable {
                     }
                 }
             ]
+        })),
+    }
+}
+
+fn http_stream_chunk_helper_in_http_handler_executable() -> LinkedExecutable {
+    http_stream_event_helper_executable(
+        "streamChunk",
+        "std.http.stream.chunk",
+        vec![json!({
+            "kind": "field",
+            "object": { "expression": 0 },
+            "field": "body"
+        })],
+        vec![json!({ "expression": 1 })],
+    )
+}
+
+fn http_stream_end_helper_in_http_handler_executable() -> LinkedExecutable {
+    http_stream_event_helper_executable("streamEnd", "std.http.stream.end", vec![], vec![])
+}
+
+fn http_stream_event_helper_executable(
+    symbol: &str,
+    binding_key: &str,
+    extra_expressions: Vec<Value>,
+    args: Vec<Value>,
+) -> LinkedExecutable {
+    let mut expressions = vec![json!({ "kind": "loadSlot", "slot": 0 })];
+    expressions.extend(extra_expressions);
+    let call_index = expressions.len();
+    expressions.push(json!({
+        "kind": "call",
+        "call": {
+            "target": {
+                "kind": "native",
+                "target": {
+                    "namespace": "std.http",
+                    "symbol": symbol,
+                    "bindingKey": binding_key
+                }
+            },
+            "args": args
+        }
+    }));
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "run".to_string(),
+        type_params: Vec::new(),
+        params: vec![ParamIr {
+            name: "request".to_string(),
+            slot: 0,
+            ty: std_http_type_ref(STD_HTTP_REQUEST_TYPE_INDEX),
+        }],
+        return_type: Some(std_http_type_ref(
+            STD_HTTP_RESPONSE_STREAM_EVENT_TYPE_INDEX,
+        )),
+        self_type: None,
+        slots: SlotLayoutIr {
+            slots: vec![SlotIr {
+                index: 0,
+                name: "request".to_string(),
+                kind: "param".to_string(),
+            }],
+            frame_size: 1,
+        },
+        may_suspend: false,
+        body: executable_body(json!({
+            "blocks": [{
+                "label": "entry",
+                "statements": [{ "statement": 0 }]
+            }],
+            "statements": [{
+                "kind": "return",
+                "value": { "expression": call_index }
+            }],
+            "expressions": expressions
         })),
     }
 }

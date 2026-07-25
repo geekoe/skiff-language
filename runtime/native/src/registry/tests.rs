@@ -602,7 +602,13 @@ fn native_callable_semantics_registry_accepts_http_suspend_detachment_routes() {
 
 #[test]
 fn native_callable_semantics_registry_accepts_only_exact_context_free_http_request_helpers() {
-    for binding_key in ["std.http.request.headers", "std.http.request.cookie"] {
+    for binding_key in [
+        "std.http.request.headers",
+        "std.http.request.cookie",
+        "std.http.stream.start",
+        "std.http.stream.chunk",
+        "std.http.stream.end",
+    ] {
         assert!(native_route_matches_required_context(
             binding_key,
             NativeRequiredContext::None,
@@ -616,6 +622,11 @@ fn native_callable_semantics_registry_accepts_only_exact_context_free_http_reque
         "std.http.request.decodeJson",
         "std.http.request.headers.extra",
         "std.http.request.cookie.extra",
+        "std.http.stream.starts",
+        "std.http.stream.start.extra",
+        "std.http.stream.chunked",
+        "std.http.stream.end.extra",
+        "std.http.stream.emitResponse",
     ] {
         assert!(
             !native_route_matches_required_context(
@@ -630,7 +641,13 @@ fn native_callable_semantics_registry_accepts_only_exact_context_free_http_reque
 
 #[test]
 fn native_callable_semantics_registry_rejects_forged_http_helper_context_or_route() {
-    for binding_key in ["std.http.request.headers", "std.http.request.cookie"] {
+    for binding_key in [
+        "std.http.request.headers",
+        "std.http.request.cookie",
+        "std.http.stream.start",
+        "std.http.stream.chunk",
+        "std.http.stream.end",
+    ] {
         assert!(!native_route_matches_required_context(
             binding_key,
             NativeRequiredContext::HttpClient,
@@ -752,6 +769,87 @@ fn http_client_stream_semantics_reject_malformed_signature_and_noncanonical_look
             && error.contains("not in the exact audited registry"),
         "unexpected error: {error}"
     );
+}
+
+#[test]
+fn http_stream_event_constructor_semantics_require_exact_runtime_contracts() {
+    for binding_key in [
+        "std.http.stream.start",
+        "std.http.stream.chunk",
+        "std.http.stream.end",
+    ] {
+        let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+            .iter()
+            .find(|semantics| semantics.binding_key == binding_key)
+            .cloned()
+            .unwrap_or_else(|| panic!("{binding_key} must have exact callable semantics"));
+        let canonical = *STD_NATIVE_SIGNATURES
+            .iter()
+            .find(|signature| signature.binding_key == binding_key)
+            .unwrap_or_else(|| panic!("{binding_key} must have an exact signature"));
+
+        assert_eq!(
+            NativeRequiredContext::for_binding_key(binding_key),
+            Some(NativeRequiredContext::None)
+        );
+        assert_eq!(
+            runtime_shared_native_route_for_validation(binding_key, false),
+            Some(RuntimeNativeRoute::Http)
+        );
+        validate_native_callable_semantics_registry(
+            std::slice::from_ref(&semantics),
+            STD_NATIVE_SIGNATURES,
+            NATIVE_BINDINGS,
+        )
+        .unwrap_or_else(|error| panic!("{binding_key} should validate: {error}"));
+
+        for (case, signature) in [
+            {
+                let mut signature = canonical;
+                signature.params = &[];
+                ("arity", signature)
+            },
+            {
+                let mut signature = canonical;
+                signature.return_type =
+                    NativeSignatureTypeExpr::Builtin("string");
+                ("return", signature)
+            },
+        ] {
+            if signature == canonical {
+                continue;
+            }
+            let error = validate_native_callable_semantics_registry(
+                std::slice::from_ref(&semantics),
+                &[signature],
+                NATIVE_BINDINGS,
+            )
+            .expect_err("malformed constructor signature must fail closed");
+            assert!(
+                error.contains(binding_key)
+                    && error.contains("does not match the exact shared native signature"),
+                "{case}: unexpected error: {error}"
+            );
+        }
+    }
+
+    for lookalike in [
+        "std.http.stream.start.extra",
+        "std.http.stream.chunked",
+        "std.http.stream.end.extra",
+        "std.http.stream.emitResponse",
+    ] {
+        let error = validate_native_callable_semantics_registry(
+            &[detached_native_semantics(lookalike)],
+            STD_NATIVE_SIGNATURES,
+            NATIVE_BINDINGS,
+        )
+        .expect_err("non-canonical constructor lookalike must fail closed");
+        assert!(
+            error.contains(lookalike) && error.contains("not in the exact audited registry"),
+            "unexpected error: {error}"
+        );
+    }
 }
 
 #[test]

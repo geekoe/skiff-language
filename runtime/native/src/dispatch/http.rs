@@ -36,9 +36,9 @@ const HTTP_RESPONSE_NO_CONTENT_KEY: &str = "std.http.response.noContent";
 const HTTP_RESPONSE_METHOD_NOT_ALLOWED_KEY: &str = "std.http.response.methodNotAllowed";
 const HTTP_HEADERS_FORWARDABLE_KEY: &str = "std.http.headers.forwardable";
 const HTTP_HEADERS_SSE_KEY: &str = "std.http.headers.sse";
-const HTTP_STREAM_START_KEY: &str = "std.http.stream.start";
-const HTTP_STREAM_CHUNK_KEY: &str = "std.http.stream.chunk";
-const HTTP_STREAM_END_KEY: &str = "std.http.stream.end";
+pub(super) const HTTP_STREAM_START_KEY: &str = "std.http.stream.start";
+pub(super) const HTTP_STREAM_CHUNK_KEY: &str = "std.http.stream.chunk";
+pub(super) const HTTP_STREAM_END_KEY: &str = "std.http.stream.end";
 const HTTP_STREAM_EMIT_RESPONSE_KEY: &str = "std.http.stream.emitResponse";
 
 pub(super) struct HttpNativeDispatch;
@@ -607,7 +607,7 @@ fn http_stream_body_item_plan<'a>(
     }
 }
 
-fn http_status_arg(value: Option<&RuntimeValue>, target: &str) -> Result<u16> {
+pub(super) fn http_status_arg(value: Option<&RuntimeValue>, target: &str) -> Result<u16> {
     let value = value.ok_or_else(|| RuntimeError::Decode(format!("{target} requires status")))?;
     let RuntimeValue::Number(value) = value else {
         return Err(RuntimeError::Decode(format!(

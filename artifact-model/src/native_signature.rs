@@ -97,6 +97,9 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_native("std.http.client.stream", true),
     detached_scalar_native("std.http.request.cookie"),
     detached_scalar_native("std.http.request.headers"),
+    detached_scalar_native("std.http.stream.start"),
+    detached_scalar_native("std.http.stream.chunk"),
+    detached_scalar_native("std.http.stream.end"),
     detached_native("std.time.sleep", true),
     detached_scalar_native("std.websocket.sendTextToConnection"),
     detached_scalar_native("std.websocket.sendBinaryToConnection"),
@@ -903,6 +906,9 @@ mod tests {
             "std.http.client.stream",
             "std.http.request.cookie",
             "std.http.request.headers",
+            "std.http.stream.chunk",
+            "std.http.stream.end",
+            "std.http.stream.start",
             "std.json.encode",
             "std.string.join",
             "std.string.split",
@@ -962,6 +968,10 @@ mod tests {
             "std.http.request.header",
             "std.http.request.query",
             "std.http.response.json",
+            "std.http.stream.start.extra",
+            "std.http.stream.chunked",
+            "std.http.stream.ending",
+            "std.http.stream.emitResponse",
             "custom.native",
         ] {
             assert_eq!(native_callable_semantics(missing), None, "{missing}");
@@ -1183,13 +1193,74 @@ mod tests {
             "std.http.stream",
             "std.http.client.stream.extra",
             "std.http.client.sse",
-            "std.http.stream.start",
             "std.http.stream.emitResponse",
         ] {
             assert_eq!(
                 native_callable_semantics(near_miss),
                 None,
                 "{near_miss} must not inherit HTTP client stream semantics"
+            );
+        }
+    }
+
+    #[test]
+    fn http_response_stream_event_constructor_semantics_match_exact_signatures() {
+        let cases = [
+            (
+                "std.http.stream.start",
+                "std.http.streamStart",
+                &[super::INTEGER, super::HTTP_HEADER_ARRAY][..],
+            ),
+            (
+                "std.http.stream.chunk",
+                "std.http.streamChunk",
+                &[super::BYTES][..],
+            ),
+            ("std.http.stream.end", "std.http.streamEnd", &[][..]),
+        ];
+
+        for (binding_key, target, params) in cases {
+            let semantics = native_callable_semantics(binding_key)
+                .expect("audited HTTP stream event constructor should have exact semantics");
+            assert_eq!(
+                semantics.effects,
+                CallableMayEffects {
+                    writes_caller_reachable: false,
+                    returns_caller_alias: false,
+                    throws_caller_alias: false,
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: false,
+                    invokes_unknown_target: false,
+                    may_suspend: false,
+                }
+            );
+            assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+            let matching = STD_NATIVE_SIGNATURES
+                .iter()
+                .filter(|signature| signature.binding_key == binding_key)
+                .collect::<Vec<_>>();
+            assert_eq!(matching.len(), 1, "{binding_key} signature must be unique");
+            let signature = matching[0];
+            assert_eq!(signature.target, target);
+            assert!(signature.aliases.is_empty());
+            assert_eq!(signature.type_param_count, 0);
+            assert_eq!(signature.params, params);
+            assert_eq!(signature.return_type, super::HTTP_RESPONSE_STREAM_EVENT);
+        }
+
+        for lookalike in [
+            "std.http.stream",
+            "std.http.stream.starts",
+            "std.http.stream.start.extra",
+            "std.http.stream.chunked",
+            "std.http.stream.end.extra",
+            "std.http.stream.emitResponse",
+        ] {
+            assert_eq!(
+                native_callable_semantics(lookalike),
+                None,
+                "{lookalike} must not inherit constructor semantics"
             );
         }
     }

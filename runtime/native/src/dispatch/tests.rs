@@ -7,7 +7,10 @@ use skiff_runtime_capability_context::NativeCapabilityContexts;
 use crate::{error::RuntimeError, runtime_value_facade::RuntimeValue};
 
 use super::{
-    http::{ensure_http_helper_none_capability_context, HTTP_REQUEST_HEADER_KEY},
+    http::{
+        ensure_http_helper_none_capability_context, http_status_arg, HTTP_REQUEST_HEADER_KEY,
+        HTTP_STREAM_CHUNK_KEY, HTTP_STREAM_END_KEY, HTTP_STREAM_START_KEY,
+    },
     http_helpers::{cookie_value, forwardable_headers, name_values, sse_headers, NameMatch},
     json::json_codec_decode_error,
     runtime_shared_native_route,
@@ -184,4 +187,66 @@ fn http_helper_none_capability_assertion_rejects_other_capabilities() {
             && message.contains("None"),
         "unexpected error: {message}"
     );
+}
+
+#[test]
+fn http_stream_event_constructors_require_none_capability_context() {
+    let no_capability = NativeCapabilityContexts::<(), (), (), (), (), (), (), ()>::None;
+    let response_stream_capability =
+        NativeCapabilityContexts::<(), (), (), (), (), (), (), ()>::HttpResponseStream(());
+
+    for binding_key in [
+        HTTP_STREAM_START_KEY,
+        HTTP_STREAM_CHUNK_KEY,
+        HTTP_STREAM_END_KEY,
+    ] {
+        ensure_http_helper_none_capability_context(binding_key, &no_capability)
+            .unwrap_or_else(|error| panic!("{binding_key} should accept None context: {error}"));
+        let error =
+            ensure_http_helper_none_capability_context(binding_key, &response_stream_capability)
+                .expect_err("constructor should reject response-stream capability context");
+        let message = error.to_string();
+        assert!(
+            message.contains(binding_key)
+                && message.contains("HttpResponseStream")
+                && message.contains("None"),
+            "unexpected error: {message}"
+        );
+    }
+}
+
+#[test]
+fn http_stream_start_status_accepts_only_integer_100_through_599() {
+    for (value, expected) in [(100.0, 100), (200.0, 200), (599.0, 599)] {
+        assert_eq!(
+            http_status_arg(
+                Some(&RuntimeValue::Number(value)),
+                HTTP_STREAM_START_KEY
+            )
+            .expect("status should be valid"),
+            expected
+        );
+    }
+
+    for value in [99.0, 600.0, 200.5, f64::NAN] {
+        let error = http_status_arg(
+            Some(&RuntimeValue::Number(value)),
+            HTTP_STREAM_START_KEY,
+        )
+        .expect_err("invalid status must fail");
+        assert!(
+            error.to_string().contains("integer between 100 and 599"),
+            "unexpected error: {error}"
+        );
+    }
+
+    let missing = http_status_arg(None, HTTP_STREAM_START_KEY)
+        .expect_err("missing status must fail");
+    assert!(missing.to_string().contains("requires status"));
+    let wrong = http_status_arg(
+        Some(&RuntimeValue::String("200".to_string())),
+        HTTP_STREAM_START_KEY,
+    )
+    .expect_err("non-number status must fail");
+    assert!(wrong.to_string().contains("status must be an integer"));
 }
