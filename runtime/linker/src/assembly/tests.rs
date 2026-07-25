@@ -853,7 +853,6 @@ fn assembly_execution_call_validation_rejects_identity_valid_interface_tamper() 
                 fields: BTreeMap::new(),
             },
             type_params: Vec::new(),
-            discriminator: None,
             implements: Vec::new(),
             source_span: None,
         });
@@ -962,7 +961,6 @@ fn assembly_execution_call_validation_accepts_builtin_native_and_interface_calls
                 fields: BTreeMap::new(),
             },
             type_params: Vec::new(),
-            discriminator: None,
             implements: Vec::new(),
             source_span: None,
         });

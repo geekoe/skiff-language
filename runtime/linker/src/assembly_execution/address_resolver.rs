@@ -275,6 +275,27 @@ impl<'a> AssemblyAddressResolver<'a> {
         Ok(())
     }
 
+    pub(super) fn type_declaration(
+        &self,
+        addr: &TypeAddr,
+    ) -> anyhow::Result<&skiff_runtime_linked_program::TypeDeclIr> {
+        let UnitAddr::Package(code_slot) = addr.unit else {
+            anyhow::bail!("assembly type address cannot use a service unit");
+        };
+        let file_index = self.file_index(code_slot, &addr.file)?;
+        let file = self
+            .package_files(code_slot)?
+            .get(file_index)
+            .expect("validated type declaration file");
+        file.types.get(addr.type_index).ok_or_else(|| {
+            anyhow::anyhow!(
+                "type index {} is out of bounds for {}",
+                addr.type_index,
+                file.file_ir_identity
+            )
+        })
+    }
+
     pub(super) fn validate_const_addr(
         &self,
         addr: &skiff_runtime_linked_program::ConstAddr,

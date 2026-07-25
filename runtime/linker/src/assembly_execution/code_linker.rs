@@ -5,8 +5,8 @@ use skiff_runtime_linked_program::{
     executable_type_param_names, LinkedActorDeclaration, LinkedActorDeclarationOwner,
     LinkedActorMethodDispatchPlan, LinkedActorMethodImplementation, LinkedActorNativeMetadata,
     LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
-    LinkedInterfaceInstantiationRef, LinkedInterfaceMethodTablePlanIr, LinkedStmtIr,
-    LinkedTypeDescriptor, LinkedTypeRef, PatternIr,
+    LinkedInterfaceInstantiationRef, LinkedInterfaceMethodTablePlanIr, LinkedNamedUnionBranch,
+    LinkedNominalTypeRefBase, LinkedStmtIr, LinkedTypeDescriptor, LinkedTypeRef, PatternIr,
 };
 
 use super::{
@@ -26,6 +26,16 @@ fn actor_registry_target_name(target: &LinkedCallTarget) -> Option<String> {
         "std.actor.getOrCreate" | "std.actor.replace" | "std.actor.find" | "std.actor.remove"
     )
     .then_some(name)
+}
+
+fn linked_type_descriptor_kind(descriptor: &LinkedTypeDescriptor) -> &'static str {
+    match descriptor {
+        LinkedTypeDescriptor::Record { .. } => "record",
+        LinkedTypeDescriptor::Representation { .. } => "representation",
+        LinkedTypeDescriptor::Union { .. } => "union",
+        LinkedTypeDescriptor::Alias { .. } => "alias",
+        LinkedTypeDescriptor::Interface => "interface",
+    }
 }
 use crate::linker::call_semantic_validation::validate_call_semantics;
 
@@ -189,14 +199,26 @@ impl<'a> AssemblyCodeLinker<'a> {
                     self.link_type_ref(code_slot, file_index, field)?;
                 }
             }
+            LinkedTypeDescriptor::Representation { representation } => {
+                self.link_type_ref(code_slot, file_index, representation)?;
+            }
             LinkedTypeDescriptor::Alias { target } => {
                 self.link_type_ref(code_slot, file_index, target)?;
             }
-            LinkedTypeDescriptor::Union { variants } => {
-                for variant in variants {
-                    self.link_type_ref(code_slot, file_index, variant)?;
+            LinkedTypeDescriptor::Union { branches } => {
+                for branch in branches {
+                    match branch {
+                        LinkedNamedUnionBranch::ConcreteNominal { nominal_type } => {
+                            self.link_type_ref(code_slot, file_index, nominal_type)?;
+                        }
+                        LinkedNamedUnionBranch::SyntheticDiscriminator { payload_type, .. } => {
+                            self.link_type_ref(code_slot, file_index, payload_type)?;
+                        }
+                        LinkedNamedUnionBranch::Literal { .. } => {}
+                    }
                 }
             }
+            LinkedTypeDescriptor::Interface => {}
         }
         Ok(())
     }
@@ -208,18 +230,23 @@ impl<'a> AssemblyCodeLinker<'a> {
         type_ref: &mut LinkedTypeRef,
     ) -> anyhow::Result<()> {
         let replacement = match type_ref {
-            LinkedTypeRef::LocalType { type_index } => Some(self.addresses.type_addr(
-                code_slot,
-                file_index,
-                *type_index,
-            )?),
+            LinkedTypeRef::LocalType { type_index } => {
+                let addr = self
+                    .addresses
+                    .type_addr(code_slot, file_index, *type_index)?;
+                self.validate_plain_nominal_addr(&addr)?;
+                Some(addr)
+            }
             LinkedTypeRef::PublicationType {
                 module_path,
                 type_index,
-            } => Some(
-                self.addresses
-                    .publication_type_addr(code_slot, module_path, *type_index)?,
-            ),
+            } => {
+                let addr =
+                    self.addresses
+                        .publication_type_addr(code_slot, module_path, *type_index)?;
+                self.validate_plain_nominal_addr(&addr)?;
+                Some(addr)
+            }
             LinkedTypeRef::ServiceSymbol { symbol } => {
                 // An Actor declaration is its nominal handle type, but deliberately
                 // owns no TypeDescriptor/TypeAddr. Keep that exact symbol for Actor
@@ -228,17 +255,81 @@ impl<'a> AssemblyCodeLinker<'a> {
                 if self.actor_declaration_for_symbol(code_slot, symbol).is_ok() {
                     None
                 } else {
-                    Some(self.addresses.local_symbol_type_addr(code_slot, symbol)?)
+                    let addr = self.addresses.local_symbol_type_addr(code_slot, symbol)?;
+                    self.validate_plain_nominal_addr(&addr)?;
+                    Some(addr)
                 }
             }
             LinkedTypeRef::DbObjectSymbol { symbol } => {
                 Some(self.addresses.local_symbol_type_addr(code_slot, symbol)?)
             }
             LinkedTypeRef::PackageSymbol { symbol } => {
-                Some(self.addresses.package_symbol_type_addr(code_slot, symbol)?)
+                let addr = self.addresses.package_symbol_type_addr(code_slot, symbol)?;
+                self.validate_plain_nominal_addr(&addr)?;
+                Some(addr)
+            }
+            LinkedTypeRef::AppliedNominal { base, arguments } => {
+                if arguments.is_empty() {
+                    anyhow::bail!("applied nominal type ref arguments must be non-empty");
+                }
+                for argument in arguments.iter_mut() {
+                    self.link_type_ref(code_slot, file_index, argument)?;
+                }
+                let addr = match base {
+                    LinkedNominalTypeRefBase::LocalType { type_index } => self
+                        .addresses
+                        .type_addr(code_slot, file_index, *type_index)?,
+                    LinkedNominalTypeRefBase::PublicationType {
+                        module_path,
+                        type_index,
+                    } => {
+                        self.addresses
+                            .publication_type_addr(code_slot, module_path, *type_index)?
+                    }
+                    LinkedNominalTypeRefBase::ServiceSymbol { symbol } => {
+                        self.addresses.local_symbol_type_addr(code_slot, symbol)?
+                    }
+                    LinkedNominalTypeRefBase::PackageSymbol { symbol } => {
+                        self.addresses.package_symbol_type_addr(code_slot, symbol)?
+                    }
+                    LinkedNominalTypeRefBase::PackageSchema { .. } => {
+                        anyhow::bail!(
+                            "applied PackageSchema is not admitted in linked executable types"
+                        );
+                    }
+                    LinkedNominalTypeRefBase::Address { addr } => {
+                        self.addresses.validate_type_addr(addr)?;
+                        addr.clone()
+                    }
+                };
+                let declaration = self.addresses.type_declaration(&addr)?;
+                if !matches!(
+                    declaration.descriptor,
+                    LinkedTypeDescriptor::Record { .. }
+                        | LinkedTypeDescriptor::Representation { .. }
+                        | LinkedTypeDescriptor::Union { .. }
+                ) {
+                    anyhow::bail!(
+                        "applied nominal type {} targets {} instead of record, representation, or named union",
+                        declaration.name,
+                        linked_type_descriptor_kind(&declaration.descriptor)
+                    );
+                }
+                let expected = declaration.type_params.len();
+                if expected == 0 || arguments.len() != expected {
+                    anyhow::bail!(
+                        "applied nominal type {} has arity {}, expected {}",
+                        declaration.name,
+                        arguments.len(),
+                        expected
+                    );
+                }
+                *base = LinkedNominalTypeRefBase::Address { addr };
+                None
             }
             LinkedTypeRef::Address { addr } => {
                 self.addresses.validate_type_addr(addr)?;
+                self.validate_plain_nominal_addr(addr)?;
                 None
             }
             LinkedTypeRef::Native { args, .. } => {
@@ -283,6 +374,27 @@ impl<'a> AssemblyCodeLinker<'a> {
         };
         if let Some(addr) = replacement {
             *type_ref = LinkedTypeRef::Address { addr };
+        }
+        Ok(())
+    }
+
+    fn validate_plain_nominal_addr(
+        &self,
+        addr: &skiff_runtime_linked_program::TypeAddr,
+    ) -> anyhow::Result<()> {
+        let declaration = self.addresses.type_declaration(addr)?;
+        if !declaration.type_params.is_empty() {
+            anyhow::bail!(
+                "plain nominal type {} requires {} type arguments",
+                declaration.name,
+                declaration.type_params.len()
+            );
+        }
+        if matches!(declaration.descriptor, LinkedTypeDescriptor::Interface) {
+            anyhow::bail!(
+                "plain nominal type {} targets interface instead of a value declaration",
+                declaration.name
+            );
         }
         Ok(())
     }

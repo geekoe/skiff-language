@@ -12,6 +12,14 @@ pub(crate) fn linked_file_unit_from_assembly_artifact(
     unit: &skiff_artifact_model::FileIrUnit,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
 ) -> anyhow::Result<LinkedFileUnit> {
+    artifact::validate_file_ir_type_refs(unit).map_err(|error| {
+        anyhow::anyhow!(
+            "File IR {} has invalid type ref at {}: {}",
+            unit.file_ir_identity,
+            error.location,
+            error.message
+        )
+    })?;
     if unit.required_receiver_builtin_capability_version > RECEIVER_BUILTIN_CAPABILITY_VERSION {
         anyhow::bail!(
             "File IR {} requires receiver builtin capability version {}, but runtime supports {}",
@@ -516,17 +524,44 @@ fn linked_type_decl(declaration: &artifact::TypeDeclIr) -> TypeDeclIr {
                     .map(|(name, ty)| (name.clone(), linked_type_ref(ty)))
                     .collect(),
             },
+            artifact::TypeDescriptorIr::Representation { representation } => {
+                LinkedTypeDescriptor::Representation {
+                    representation: linked_type_ref(representation),
+                }
+            }
             artifact::TypeDescriptorIr::Alias { target } => LinkedTypeDescriptor::Alias {
                 target: linked_type_ref(target),
             },
-            artifact::TypeDescriptorIr::Union { variants } => LinkedTypeDescriptor::Union {
-                variants: variants.iter().map(linked_type_ref).collect(),
+            artifact::TypeDescriptorIr::Union { branches } => LinkedTypeDescriptor::Union {
+                branches: branches.iter().map(linked_named_union_branch).collect(),
             },
+            artifact::TypeDescriptorIr::Interface => LinkedTypeDescriptor::Interface,
         },
         type_params: declaration.type_params.clone(),
-        discriminator: declaration.discriminator.clone(),
         implements: declaration.implements.iter().map(linked_type_ref).collect(),
         source_span: declaration.source_span.clone(),
+    }
+}
+
+fn linked_named_union_branch(branch: &artifact::NamedUnionBranchIr) -> LinkedNamedUnionBranch {
+    match branch {
+        artifact::NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+            LinkedNamedUnionBranch::ConcreteNominal {
+                nominal_type: linked_type_ref(nominal_type),
+            }
+        }
+        artifact::NamedUnionBranchIr::SyntheticDiscriminator {
+            payload_type,
+            discriminator_field,
+            discriminator_value,
+        } => LinkedNamedUnionBranch::SyntheticDiscriminator {
+            payload_type: linked_type_ref(payload_type),
+            discriminator_field: discriminator_field.clone(),
+            discriminator_value: discriminator_value.clone(),
+        },
+        artifact::NamedUnionBranchIr::Literal { value } => LinkedNamedUnionBranch::Literal {
+            value: value.clone(),
+        },
     }
 }
 
@@ -1239,6 +1274,10 @@ fn linked_type_ref(ty: &artifact::TypeRefIr) -> LinkedTypeRef {
             stable_schema_key: stable_schema_key.clone(),
             package_schema_type_id: package_schema_type_id.clone(),
         },
+        artifact::TypeRefIr::AppliedNominal { base, arguments } => LinkedTypeRef::AppliedNominal {
+            base: linked_nominal_type_ref_base(base),
+            arguments: arguments.iter().map(linked_type_ref).collect(),
+        },
         artifact::TypeRefIr::DbObjectSymbol { symbol } => LinkedTypeRef::DbObjectSymbol {
             symbol: symbol.clone(),
         },
@@ -1273,6 +1312,42 @@ fn linked_type_ref(ty: &artifact::TypeRefIr) -> LinkedTypeRef {
                 })
                 .collect(),
             return_type: Box::new(linked_type_ref(return_type)),
+        },
+    }
+}
+
+fn linked_nominal_type_ref_base(base: &artifact::NominalTypeRefBaseIr) -> LinkedNominalTypeRefBase {
+    match base {
+        artifact::NominalTypeRefBaseIr::LocalType { type_index } => {
+            LinkedNominalTypeRefBase::LocalType {
+                type_index: *type_index as TypeIndex,
+            }
+        }
+        artifact::NominalTypeRefBaseIr::PublicationType {
+            module_path,
+            type_index,
+        } => LinkedNominalTypeRefBase::PublicationType {
+            module_path: module_path.clone(),
+            type_index: *type_index as TypeIndex,
+        },
+        artifact::NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+            LinkedNominalTypeRefBase::ServiceSymbol {
+                symbol: symbol.clone(),
+            }
+        }
+        artifact::NominalTypeRefBaseIr::PackageSymbol { symbol } => {
+            LinkedNominalTypeRefBase::PackageSymbol {
+                symbol: symbol.clone(),
+            }
+        }
+        artifact::NominalTypeRefBaseIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => LinkedNominalTypeRefBase::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
         },
     }
 }
@@ -1391,6 +1466,79 @@ fn linked_interface_method_slot_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn generic_type_file() -> artifact::FileIrUnit {
+        let mut file = artifact::FileIrUnit::empty("models", "source");
+        file.type_table.push(artifact::TypeDeclIr {
+            name: "Box".to_string(),
+            descriptor: artifact::TypeDescriptorIr::Record {
+                fields: BTreeMap::from([(
+                    "value".to_string(),
+                    artifact::TypeRefIr::TypeParam {
+                        name: "T".to_string(),
+                    },
+                )]),
+            },
+            type_params: vec!["T".to_string()],
+            implements: Vec::new(),
+            source_span: None,
+        });
+        file.type_table.push(artifact::TypeDeclIr {
+            name: "Holder".to_string(),
+            descriptor: artifact::TypeDescriptorIr::Record {
+                fields: BTreeMap::from([(
+                    "boxed".to_string(),
+                    artifact::TypeRefIr::AppliedNominal {
+                        base: artifact::NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                        arguments: vec![artifact::TypeRefIr::builtin("string")],
+                    },
+                )]),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
+        file
+    }
+
+    #[test]
+    fn linked_file_conversion_preserves_applied_nominal_wrapper_and_arguments() {
+        let linked =
+            linked_file_unit_from_assembly_artifact(&generic_type_file(), &|_| unreachable!())
+                .unwrap();
+        let LinkedTypeDescriptor::Record { fields } = &linked.types[1].descriptor else {
+            panic!("holder must remain a record")
+        };
+        assert!(matches!(
+            &fields["boxed"],
+            LinkedTypeRef::AppliedNominal {
+                base: LinkedNominalTypeRefBase::LocalType { type_index: 0 },
+                arguments
+            } if arguments == &vec![LinkedTypeRef::Native {
+                name: "string".to_string(),
+                args: Vec::new(),
+            }]
+        ));
+    }
+
+    #[test]
+    fn linked_file_conversion_rejects_applied_nominal_wrong_arity_before_linking() {
+        let mut file = generic_type_file();
+        let artifact::TypeDescriptorIr::Record { fields } = &mut file.type_table[1].descriptor
+        else {
+            unreachable!()
+        };
+        let artifact::TypeRefIr::AppliedNominal { arguments, .. } =
+            fields.get_mut("boxed").unwrap()
+        else {
+            unreachable!()
+        };
+        arguments.push(artifact::TypeRefIr::builtin("number"));
+
+        let error =
+            linked_file_unit_from_assembly_artifact(&file, &|_| unreachable!()).unwrap_err();
+        assert!(error.to_string().contains("has arity 2, expected 1"));
+    }
 
     #[test]
     fn linked_file_conversion_preserves_encrypted_db_field_storage() {

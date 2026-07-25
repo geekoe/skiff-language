@@ -372,26 +372,53 @@ fn substitute_type_params(
     type_ref: &LinkedTypeRef,
     substitutions: &BTreeMap<String, LinkedTypeRef>,
 ) -> LinkedTypeRef {
+    substitute_type_params_inner(type_ref, substitutions, &mut Vec::new())
+}
+
+fn substitute_type_params_inner(
+    type_ref: &LinkedTypeRef,
+    substitutions: &BTreeMap<String, LinkedTypeRef>,
+    resolving: &mut Vec<String>,
+) -> LinkedTypeRef {
     match type_ref {
-        LinkedTypeRef::TypeParam { name } => substitutions
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| type_ref.clone()),
+        LinkedTypeRef::TypeParam { name } => {
+            let Some(bound) = substitutions.get(name) else {
+                return type_ref.clone();
+            };
+            if resolving.iter().any(|active| active == name) {
+                return type_ref.clone();
+            }
+            resolving.push(name.clone());
+            let substituted = substitute_type_params_inner(bound, substitutions, resolving);
+            resolving.pop();
+            substituted
+        }
         LinkedTypeRef::Native { name, args } => LinkedTypeRef::Native {
             name: name.clone(),
             args: args
                 .iter()
-                .map(|arg| substitute_type_params(arg, substitutions))
+                .map(|arg| substitute_type_params_inner(arg, substitutions, resolving))
+                .collect(),
+        },
+        LinkedTypeRef::AppliedNominal { base, arguments } => LinkedTypeRef::AppliedNominal {
+            base: base.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| substitute_type_params_inner(argument, substitutions, resolving))
                 .collect(),
         },
         LinkedTypeRef::Union { items } => LinkedTypeRef::Union {
             items: items
                 .iter()
-                .map(|item| substitute_type_params(item, substitutions))
+                .map(|item| substitute_type_params_inner(item, substitutions, resolving))
                 .collect(),
         },
         LinkedTypeRef::Nullable { inner } => LinkedTypeRef::Nullable {
-            inner: Box::new(substitute_type_params(inner, substitutions)),
+            inner: Box::new(substitute_type_params_inner(
+                inner,
+                substitutions,
+                resolving,
+            )),
         },
         LinkedTypeRef::AnyInterface { interface } => LinkedTypeRef::AnyInterface {
             interface: LinkedInterfaceInstantiationRef {
@@ -399,22 +426,39 @@ fn substitute_type_params(
                 canonical_type_args: interface
                     .canonical_type_args
                     .iter()
-                    .map(|arg| substitute_type_params(arg, substitutions))
+                    .map(|arg| substitute_type_params_inner(arg, substitutions, resolving))
                     .collect(),
             },
         },
         LinkedTypeRef::Record { fields } => LinkedTypeRef::Record {
             fields: fields
                 .iter()
-                .map(|(name, ty)| (name.clone(), ty.clone()))
+                .map(|(name, ty)| {
+                    (
+                        name.clone(),
+                        substitute_type_params_inner(ty, substitutions, resolving),
+                    )
+                })
                 .collect(),
         },
         LinkedTypeRef::Function {
             params,
             return_type,
         } => LinkedTypeRef::Function {
-            params: params.clone(),
-            return_type: return_type.clone(),
+            params: params
+                .iter()
+                .map(
+                    |parameter| skiff_runtime_linked_program::FunctionTypeParamIr {
+                        name: parameter.name.clone(),
+                        ty: substitute_type_params_inner(&parameter.ty, substitutions, resolving),
+                    },
+                )
+                .collect(),
+            return_type: Box::new(substitute_type_params_inner(
+                return_type,
+                substitutions,
+                resolving,
+            )),
         },
         LinkedTypeRef::LocalType { .. }
         | LinkedTypeRef::PublicationType { .. }
@@ -442,6 +486,9 @@ fn unresolved_type_param_name<'a>(
         LinkedTypeRef::Native { args, .. } => args
             .iter()
             .find_map(|arg| unresolved_type_param_name(arg, allowed_unresolved)),
+        LinkedTypeRef::AppliedNominal { arguments, .. } => arguments
+            .iter()
+            .find_map(|argument| unresolved_type_param_name(argument, allowed_unresolved)),
         LinkedTypeRef::Union { items } => items
             .iter()
             .find_map(|item| unresolved_type_param_name(item, allowed_unresolved)),

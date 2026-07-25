@@ -315,8 +315,6 @@ pub struct TypeDeclIr {
     pub descriptor: LinkedTypeDescriptor,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_params: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discriminator: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub implements: Vec<LinkedTypeRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -327,17 +325,43 @@ pub struct TypeDeclIr {
 #[serde(
     rename_all = "camelCase",
     rename_all_fields = "camelCase",
-    tag = "kind"
+    tag = "kind",
+    deny_unknown_fields
 )]
 pub enum LinkedTypeDescriptor {
     Record {
         fields: BTreeMap<String, LinkedTypeRef>,
     },
+    Representation {
+        representation: LinkedTypeRef,
+    },
     Alias {
         target: LinkedTypeRef,
     },
     Union {
-        variants: Vec<LinkedTypeRef>,
+        branches: Vec<LinkedNamedUnionBranch>,
+    },
+    Interface,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind",
+    deny_unknown_fields
+)]
+pub enum LinkedNamedUnionBranch {
+    ConcreteNominal {
+        nominal_type: LinkedTypeRef,
+    },
+    SyntheticDiscriminator {
+        payload_type: LinkedTypeRef,
+        discriminator_field: String,
+        discriminator_value: String,
+    },
+    Literal {
+        value: LiteralIr,
     },
 }
 
@@ -455,6 +479,37 @@ pub struct InterfaceOperationIr {
     pub implicit_self: Option<LinkedTypeRef>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum LinkedNominalTypeRefBase {
+    LocalType {
+        type_index: TypeIndex,
+    },
+    PublicationType {
+        module_path: String,
+        type_index: TypeIndex,
+    },
+    ServiceSymbol {
+        symbol: ServiceSymbolRef,
+    },
+    PackageSymbol {
+        symbol: PackageSymbolRef,
+    },
+    PackageSchema {
+        package_id: String,
+        stable_schema_key: String,
+        package_schema_type_id: skiff_artifact_model::PackageSchemaTypeId,
+    },
+    Address {
+        addr: TypeAddr,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(
     tag = "kind",
@@ -494,6 +549,10 @@ pub enum LinkedTypeRef {
         package_id: String,
         stable_schema_key: String,
         package_schema_type_id: skiff_artifact_model::PackageSchemaTypeId,
+    },
+    AppliedNominal {
+        base: LinkedNominalTypeRefBase,
+        arguments: Vec<LinkedTypeRef>,
     },
     Record {
         fields: BTreeMap<String, LinkedTypeRef>,
@@ -1309,6 +1368,45 @@ impl<'de> Deserialize<'de> for LinkedTypeRef {
                     symbol: fields.symbol,
                 })
             }
+            "packageSchema" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct PackageSchemaFields {
+                    package_id: String,
+                    stable_schema_key: String,
+                    package_schema_type_id: skiff_artifact_model::PackageSchemaTypeId,
+                }
+
+                let fields = serde_json::from_value::<PackageSchemaFields>(value)
+                    .map_err(D::Error::custom)?;
+                Ok(Self::PackageSchema {
+                    package_id: fields.package_id,
+                    stable_schema_key: fields.stable_schema_key,
+                    package_schema_type_id: fields.package_schema_type_id,
+                })
+            }
+            "appliedNominal" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct AppliedNominalFields {
+                    kind: String,
+                    base: LinkedNominalTypeRefBase,
+                    arguments: Vec<LinkedTypeRef>,
+                }
+
+                let fields = serde_json::from_value::<AppliedNominalFields>(value)
+                    .map_err(D::Error::custom)?;
+                if fields.arguments.is_empty() {
+                    return Err(D::Error::custom(
+                        "applied nominal type ref arguments must be non-empty",
+                    ));
+                }
+                debug_assert_eq!(fields.kind, "appliedNominal");
+                Ok(Self::AppliedNominal {
+                    base: fields.base,
+                    arguments: fields.arguments,
+                })
+            }
             "record" => {
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase")]
@@ -1506,5 +1604,202 @@ mod db_storage_tests {
             serde_json::from_value::<DbObjectFieldIr>(value).unwrap(),
             field
         );
+    }
+}
+
+#[cfg(test)]
+mod applied_nominal_tests {
+    use super::*;
+
+    fn builtin(name: &str) -> LinkedTypeRef {
+        LinkedTypeRef::Native {
+            name: name.to_string(),
+            args: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn applied_nominal_round_trips_exact_base_and_ordered_arguments() {
+        let expected = LinkedTypeRef::AppliedNominal {
+            base: LinkedNominalTypeRefBase::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::Dependency {
+                        dependency_ref: "models".to_string(),
+                    },
+                    symbol_path: "api.Pair".to_string(),
+                    abi_expectation: Some("local-abi:pair".to_string()),
+                },
+            },
+            arguments: vec![
+                builtin("string"),
+                LinkedTypeRef::AppliedNominal {
+                    base: LinkedNominalTypeRefBase::LocalType { type_index: 3 },
+                    arguments: vec![builtin("number")],
+                },
+            ],
+        };
+
+        let value = serde_json::to_value(&expected).unwrap();
+        assert_eq!(value["kind"], "appliedNominal");
+        assert_eq!(value["base"]["kind"], "packageSymbol");
+        assert_eq!(value["arguments"][1]["kind"], "appliedNominal");
+        assert_eq!(
+            serde_json::from_value::<LinkedTypeRef>(value).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn applied_nominal_package_owner_and_abi_are_structural_facts() {
+        let applied = |dependency_ref: &str, abi_expectation: &str| LinkedTypeRef::AppliedNominal {
+            base: LinkedNominalTypeRefBase::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::Dependency {
+                        dependency_ref: dependency_ref.to_string(),
+                    },
+                    symbol_path: "api.Box".to_string(),
+                    abi_expectation: Some(abi_expectation.to_string()),
+                },
+            },
+            arguments: vec![builtin("string")],
+        };
+
+        let first_owner = applied("models-a", "local-abi:a");
+        let second_owner = applied("models-b", "local-abi:b");
+        assert_ne!(first_owner, second_owner);
+        assert_ne!(
+            serde_json::to_value(first_owner).unwrap(),
+            serde_json::to_value(second_owner).unwrap()
+        );
+    }
+
+    #[test]
+    fn applied_nominal_rejects_empty_arguments() {
+        let error = serde_json::from_value::<LinkedTypeRef>(serde_json::json!({
+            "kind": "appliedNominal",
+            "base": {
+                "kind": "localType",
+                "typeIndex": 0
+            },
+            "arguments": []
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("arguments must be non-empty"));
+    }
+
+    #[test]
+    fn applied_nominal_rejects_display_or_shape_side_channels() {
+        for extra in [
+            serde_json::json!({ "display": "Box<string>" }),
+            serde_json::json!({ "shape": { "value": "string" } }),
+        ] {
+            let mut value = serde_json::json!({
+                "kind": "appliedNominal",
+                "base": {
+                    "kind": "localType",
+                    "typeIndex": 0
+                },
+                "arguments": [{
+                    "kind": "builtin",
+                    "name": "string"
+                }]
+            });
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            assert!(serde_json::from_value::<LinkedTypeRef>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn resolved_applied_nominal_keeps_wrapper_and_distinguishes_arguments() {
+        let addr = TypeAddr {
+            unit: UnitAddr::Package(2),
+            file: FileAddr::LoadedFileIndex(4),
+            type_index: 1,
+        };
+        let string_box = LinkedTypeRef::AppliedNominal {
+            base: LinkedNominalTypeRefBase::Address { addr: addr.clone() },
+            arguments: vec![builtin("string")],
+        };
+        let number_box = LinkedTypeRef::AppliedNominal {
+            base: LinkedNominalTypeRefBase::Address { addr },
+            arguments: vec![builtin("number")],
+        };
+
+        assert_ne!(string_box, number_box);
+        assert!(matches!(
+            string_box,
+            LinkedTypeRef::AppliedNominal {
+                base: LinkedNominalTypeRefBase::Address { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn linked_descriptors_preserve_all_nominal_kinds_and_union_branch_categories() {
+        let descriptors = [
+            LinkedTypeDescriptor::Record {
+                fields: BTreeMap::new(),
+            },
+            LinkedTypeDescriptor::Representation {
+                representation: builtin("string"),
+            },
+            LinkedTypeDescriptor::Union {
+                branches: vec![
+                    LinkedNamedUnionBranch::ConcreteNominal {
+                        nominal_type: LinkedTypeRef::LocalType { type_index: 0 },
+                    },
+                    LinkedNamedUnionBranch::SyntheticDiscriminator {
+                        payload_type: builtin("number"),
+                        discriminator_field: "kind".to_string(),
+                        discriminator_value: "count".to_string(),
+                    },
+                    LinkedNamedUnionBranch::Literal {
+                        value: LiteralIr::String {
+                            value: "none".to_string(),
+                        },
+                    },
+                ],
+            },
+            LinkedTypeDescriptor::Alias {
+                target: builtin("string"),
+            },
+            LinkedTypeDescriptor::Interface,
+        ];
+
+        let kinds = descriptors
+            .iter()
+            .map(|descriptor| serde_json::to_value(descriptor).unwrap()["kind"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec!["record", "representation", "union", "alias", "interface"]
+        );
+        let union = serde_json::to_value(&descriptors[2]).unwrap();
+        assert_eq!(union["branches"][0]["kind"], "concreteNominal");
+        assert_eq!(union["branches"][1]["kind"], "syntheticDiscriminator");
+        assert_eq!(union["branches"][2]["kind"], "literal");
+
+        let legacy_branch_map = serde_json::json!({
+            "kind": "union",
+            "branches": [{
+                "kind": "concreteNominal",
+                "nominalType": {
+                    "kind": "localType",
+                    "typeIndex": 0
+                },
+                "typeArguments": {
+                    "T": {
+                        "kind": "builtin",
+                        "name": "string"
+                    }
+                }
+            }]
+        });
+        assert!(serde_json::from_value::<LinkedTypeDescriptor>(legacy_branch_map).is_err());
     }
 }

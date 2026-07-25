@@ -6,13 +6,13 @@ use std::{
 use skiff_artifact_model::{
     AssemblyIdentity, CallIr, CallTargetIr, CanonicalPackageLinkPlan, ContractOperationId,
     ContractRequirement, ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, FileIrRef,
-    FileIrUnit, OperationCallableKind, PackageArtifact, PackageArtifactRef, PackageBinding,
-    PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableRef,
+    FileIrUnit, InstructionSourceSite, OperationCallableKind, PackageArtifact, PackageArtifactRef,
+    PackageBinding, PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableRef,
     PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageRefIr, PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
     PackageSchemaIndexRef, PublicationResourceRef, RuntimeAssembly, ServiceCallRef,
-    ServiceProtocolIdentity, ServiceRequirement, SlotLayout, TypeRefIr,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    ServiceProtocolIdentity, ServiceRequirement, SlotLayout, SyntheticInstructionSiteReason,
+    TypeRefIr, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_model::resource::LoadedPublicationResource;
 
@@ -723,6 +723,9 @@ fn add_package_call(file: &mut FileIrUnit, alias: &str, callable: PackageCallabl
                 package_ref,
                 package_callable_id: callable,
             },
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            },
             args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
@@ -737,6 +740,9 @@ fn add_service_call(file: &mut FileIrUnit, service_call: ServiceCallRef) {
         call: CallIr {
             target: CallTargetIr::ServiceCall {
                 service_call_ref_index: index,
+            },
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
             type_args: BTreeMap::new(),
