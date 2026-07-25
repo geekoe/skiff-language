@@ -191,6 +191,16 @@ impl ServiceDbRuntime {
         runtime_program_db: &[DbMetadataIr],
     ) -> Result<Self> {
         let database_name = service_id_storage_database_name(&service_id)?;
+        Self::new_with_config_and_namespace(service_id, database_name, config, runtime_program_db)
+    }
+
+    pub fn new_with_config_and_namespace(
+        service_id: String,
+        state_namespace: String,
+        config: ServiceDbConfig,
+        runtime_program_db: &[DbMetadataIr],
+    ) -> Result<Self> {
+        let database_name = state_namespace;
         validate_service_database_name(&database_name)?;
         let mongo_url = config.mongo_url;
         let client = service_db_client_cell(&mongo_url);

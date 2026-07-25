@@ -1,5 +1,7 @@
 use std::{
     path::Path,
+    sync::atomic::{AtomicU64, Ordering},
+    time::SystemTime,
     time::{Duration, Instant},
 };
 
@@ -10,7 +12,7 @@ use crate::{
     canonical_package::CanonicalPackageProject,
     canonical_store::CanonicalBaseAssembly,
     package_test_assembly::{
-        assemble_package_test_fixture_with_config, CanonicalPackageTestEntrypoint,
+        assemble_package_test_fixture_for_run_with_config, CanonicalPackageTestEntrypoint,
     },
     test_discovery::PackageTestCase,
     test_overlay::compile_package_test_overlay,
@@ -25,6 +27,7 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
 const HEALTH_PATH: &str = "/__router/health";
+static PACKAGE_TEST_RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub fn run_package_cases(
     package_root: &Path,
@@ -48,11 +51,13 @@ pub fn run_package_cases(
         &project,
         &cases,
     )?;
-    let fixture = assemble_package_test_fixture_with_config(
+    let run_scope = package_test_run_scope()?;
+    let fixture = assemble_package_test_fixture_for_run_with_config(
         &project,
         overlay,
         base,
         &options.test_config_literals,
+        &run_scope,
     )?;
     fixture
         .records
@@ -116,6 +121,19 @@ pub fn run_package_cases(
         )
     })?;
     Ok(execute_entrypoints(fixture.entrypoints, ingress_url))
+}
+
+fn package_test_run_scope() -> Result<String, CanonicalFixtureError> {
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|error| {
+            CanonicalFixtureError::InvalidInput(format!(
+                "package-test clock is before the Unix epoch: {error}"
+            ))
+        })?
+        .as_nanos();
+    let sequence = PACKAGE_TEST_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    Ok(format!("{}-{timestamp}-{sequence}", std::process::id()))
 }
 
 fn execute_entrypoints(

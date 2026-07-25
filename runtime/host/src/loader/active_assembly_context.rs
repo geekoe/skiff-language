@@ -74,9 +74,13 @@ impl ActiveAssemblyContextSet {
                 .iter()
                 .filter(|binding| binding.kind == StateBindingKind::Database)
                 .collect::<Vec<_>>();
-            if database_bindings.len() > 1 {
+            let database_namespaces = database_bindings
+                .iter()
+                .map(|binding| binding.namespace.as_str())
+                .collect::<BTreeSet<_>>();
+            if database_namespaces.len() > 1 {
                 anyhow::bail!(
-                    "activation {:?} has duplicate database state bindings",
+                    "activation {:?} has database state bindings for multiple namespaces",
                     deployment
                 );
             }
@@ -92,7 +96,7 @@ impl ActiveAssemblyContextSet {
                     "activation {:?} has a database state binding without DB metadata",
                     deployment
                 ),
-                (Some(_), false) => {
+                (Some(binding), false) => {
                     let provider = service_db.ok_or_else(|| {
                         anyhow::anyhow!(
                             "activation {:?} requires Router-supplied serviceDb",
@@ -102,6 +106,7 @@ impl ActiveAssemblyContextSet {
                     db_provider
                         .build(DbProviderBuildInput {
                             service_id: deployment.service_id.clone(),
+                            state_namespace: binding.namespace.clone(),
                             config: DbProviderConfig::opaque(json!({
                                 "mongoUrl": provider.mongo_url,
                             })),

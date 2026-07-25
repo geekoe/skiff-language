@@ -10,7 +10,7 @@ use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryCancellationContract, BoundaryUnavailableReason,
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, IngressProtocol,
     MetadataValue, PackageArtifactRef, PackageConfigRequirement, PackageLocalAbiSymbol,
-    RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
+    RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef, StateBindingKind,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -29,7 +29,10 @@ use skiff_test_runner::{
     package_service_host_fixture::{
         prepare_package_service_host_fixture, PACKAGE_SERVICE_HOST_FIXTURE_SCHEMA_VERSION,
     },
-    package_test_assembly::{assemble_package_test_fixture_with_config, PackageTestConfigLiteral},
+    package_test_assembly::{
+        assemble_package_test_fixture_for_run_with_config,
+        assemble_package_test_fixture_with_config, PackageTestConfigLiteral,
+    },
     run_skiff_tests_with_options,
     test_overlay::compile_package_test_overlay,
     SkiffTestError, SkiffTestOptions,
@@ -755,6 +758,76 @@ fn overlay_is_a_separate_build_and_external_store_remains_read_only() {
         "external store must be read-only"
     );
     assert!(read_tree(&runtime).contains("runtime-assemblies"));
+}
+
+#[test]
+fn package_test_generates_typed_state_bindings_in_run_isolated_namespaces() {
+    let root = TestRoot::new("package-test-state-bindings");
+    let artifacts = root.child("artifacts");
+    let package = root.child("package");
+    create_store(&artifacts);
+    write_package(
+        &package,
+        r#"id: example.com/stateful-package
+version: 1.0.0
+state:
+  app-db:
+    kind: database
+  jobs:
+    kind: queue
+"#,
+        None,
+        Some(
+            "type Stored { id: string }\n\
+             db object Stored { primary key(id) }\n",
+        ),
+    );
+    fs::write(
+        package.join("main.test.skiff"),
+        "test \"state binding\" { assert true }\n",
+    )
+    .unwrap();
+    let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
+    let cases = discover_package_test_cases(&package, &package, false).unwrap();
+
+    let assemble = |run_scope: &str| {
+        let overlay = compile_package_test_overlay(
+            &platform_sources(),
+            &package,
+            &artifacts,
+            &project,
+            &cases,
+        )
+        .unwrap();
+        assemble_package_test_fixture_for_run_with_config(
+            &project,
+            overlay,
+            CanonicalBaseAssembly::default(),
+            &[],
+            run_scope,
+        )
+        .unwrap()
+    };
+    let run_a = assemble("run-a");
+    let run_a_repeat = assemble("run-a");
+    let run_b = assemble("run-b");
+    let bindings_a = &run_a.records.deployments[0].state_bindings;
+    let bindings_b = &run_b.records.deployments[0].state_bindings;
+
+    assert_eq!(bindings_a.len(), 2);
+    assert_eq!(bindings_a[0].requirement_key, "app-db");
+    assert_eq!(bindings_a[0].kind, StateBindingKind::Database);
+    assert_eq!(bindings_a[1].requirement_key, "jobs");
+    assert_eq!(bindings_a[1].kind, StateBindingKind::Queue);
+    assert_eq!(
+        bindings_a, &run_a_repeat.records.deployments[0].state_bindings,
+        "one explicit run scope must project reproducibly"
+    );
+    assert_ne!(bindings_a[0].namespace, bindings_b[0].namespace);
+    assert_ne!(bindings_a[1].namespace, bindings_b[1].namespace);
+    assert!(bindings_a
+        .iter()
+        .all(|binding| binding.namespace.starts_with("skiff_pt_")));
 }
 
 #[test]

@@ -385,6 +385,7 @@ fn mongo_provider_rejects_invalid_opaque_config() {
 fn provider_input(config: Value) -> DbProviderBuildInput {
     DbProviderBuildInput {
         service_id: service_id("provider"),
+        state_namespace: service_id("provider"),
         config: DbProviderConfig::opaque(config),
         runtime_program_db: Vec::new(),
     }
@@ -480,6 +481,38 @@ fn service_db_runtime_projects_service_id_to_database_name() {
 
         assert_eq!(runtime.database_name, case.runtime_target_component);
     }
+}
+
+#[test]
+fn service_db_runtime_uses_typed_state_namespace_as_database_name() {
+    let config = ServiceDbConfig {
+        mongo_url: inert_mongo_url("state_namespace"),
+        encryption_cipher: None,
+    };
+    let first = ServiceDbRuntime::new_with_config_and_namespace(
+        service_id("stateful"),
+        "skiff_pt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        config.clone(),
+        &[],
+    )
+    .expect("first test-owned state namespace");
+    let second = ServiceDbRuntime::new_with_config_and_namespace(
+        service_id("stateful"),
+        "skiff_pt_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        config,
+        &[],
+    )
+    .expect("second test-owned state namespace");
+
+    assert_eq!(
+        first.database_name,
+        "skiff_pt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(
+        second.database_name,
+        "skiff_pt_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    );
+    assert_ne!(first.database_name, second.database_name);
 }
 
 #[test]
@@ -2990,6 +3023,7 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
 
     let error = match MongoServiceDbProviderFactory::default().build(DbProviderBuildInput {
         service_id: "example.com/credential".to_string(),
+        state_namespace: "example~com~~credential".to_string(),
         config: DbProviderConfig::opaque(json!({ "mongoUrl": inert_mongo_url("encrypted") })),
         runtime_program_db: valid.clone(),
     }) {
@@ -3002,6 +3036,7 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
     MongoServiceDbProviderFactory::new(Some(test_encryption_keyring()))
         .build(DbProviderBuildInput {
             service_id: "example.com/credential".to_string(),
+            state_namespace: "example~com~~credential".to_string(),
             config: DbProviderConfig::opaque(
                 json!({ "mongoUrl": inert_mongo_url("encrypted-ok") }),
             ),
@@ -3093,6 +3128,7 @@ fn forged_encrypted_primary_key_field_fails_activation_even_with_keyring() {
     let provider_error = match MongoServiceDbProviderFactory::new(Some(test_encryption_keyring()))
         .build(DbProviderBuildInput {
             service_id: "example.com/credential".to_string(),
+            state_namespace: "example~com~~credential".to_string(),
             config: DbProviderConfig::opaque(
                 json!({ "mongoUrl": inert_mongo_url("forged-encrypted-key") }),
             ),

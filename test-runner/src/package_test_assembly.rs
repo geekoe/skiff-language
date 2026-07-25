@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{package_artifact_ref, service_contract_ref, service_deployment_ref};
 use skiff_artifact_model::{
     ActivationPolicy, BoundaryCallableProjection, ConfigLiteralBinding, DeploymentDiagnosticText,
@@ -8,7 +9,8 @@ use skiff_artifact_model::{
     IngressSelector, MetadataValue, PackageArtifact, PackageArtifactRef, PackageBinding,
     PackageRequirementKey, ResourcePolicy, ServiceContract, ServiceContractRef, ServiceDeployment,
     ServiceDeploymentInput, ServiceDeploymentOperationInput, ServiceRequirementKey,
-    ServiceSelectorBinding, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    ServiceSelectorBinding, StateBinding, StateBindingKind,
+    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     compile_contract, ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
@@ -65,6 +67,23 @@ pub fn assemble_package_test_fixture_with_config(
     base: CanonicalBaseAssembly,
     test_config_literals: &[PackageTestConfigLiteral],
 ) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
+    let scope = format!("fixture:{}", overlay.overlay.artifact.package_build_id);
+    assemble_package_test_fixture_for_run_with_config(
+        project,
+        overlay,
+        base,
+        test_config_literals,
+        &scope,
+    )
+}
+
+pub fn assemble_package_test_fixture_for_run_with_config(
+    project: &CanonicalPackageProject,
+    overlay: PublishedPackageTestOverlay,
+    base: CanonicalBaseAssembly,
+    test_config_literals: &[PackageTestConfigLiteral],
+    run_scope: &str,
+) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
     let (contract, package_schema_records) = compile_package_test_contract(&overlay)?;
     let contract_ref = service_contract_ref(&contract)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
@@ -86,6 +105,7 @@ pub fn assemble_package_test_fixture_with_config(
         owner,
         test_config_literals,
     )?;
+    let state_bindings = package_test_state_bindings(&deployment_packages, run_scope)?;
     let deployment = project_service_deployment(
         package_test_deployment_input(
             &overlay,
@@ -97,6 +117,7 @@ pub fn assemble_package_test_fixture_with_config(
             ingress.clone(),
             owner,
             config_literals,
+            state_bindings,
         ),
         &contract,
         &deployment_packages,
@@ -375,6 +396,7 @@ fn package_test_deployment_input(
     ingress: Vec<DeploymentIngressBinding>,
     owner: Option<&ServiceDeployment>,
     config_literals: Vec<ConfigLiteralBinding>,
+    state_bindings: Vec<StateBinding>,
 ) -> ServiceDeploymentInput {
     let revision = implementation
         .package_build_id
@@ -395,9 +417,7 @@ fn package_test_deployment_input(
         secret_refs: owner
             .map(|value| value.secret_refs.clone())
             .unwrap_or_default(),
-        state_bindings: owner
-            .map(|value| value.state_bindings.clone())
-            .unwrap_or_default(),
+        state_bindings,
         resource_bindings: owner
             .map(|value| value.resource_bindings.clone())
             .unwrap_or_default(),
@@ -425,6 +445,60 @@ fn package_test_deployment_input(
             ]),
         },
     }
+}
+
+fn package_test_state_bindings(
+    packages: &[PackageArtifact],
+    run_scope: &str,
+) -> Result<Vec<StateBinding>, CanonicalFixtureError> {
+    if run_scope.is_empty() {
+        return Err(CanonicalFixtureError::InvalidInput(
+            "package-test state run scope must be non-empty".to_string(),
+        ));
+    }
+    let mut requirements = BTreeMap::<String, StateBindingKind>::new();
+    for package in packages {
+        for requirement in &package.runtime_requirements.state {
+            match requirements.get(&requirement.key) {
+                Some(kind) if kind != &requirement.kind => {
+                    return Err(CanonicalFixtureError::InvalidInput(format!(
+                        "package-test state requirement {} has conflicting kinds {:?} and {:?}",
+                        requirement.key, kind, requirement.kind
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    requirements.insert(requirement.key.clone(), requirement.kind);
+                }
+            }
+        }
+    }
+    Ok(requirements
+        .into_iter()
+        .map(|(requirement_key, kind)| StateBinding {
+            namespace: package_test_state_namespace(run_scope, &requirement_key, kind),
+            requirement_key,
+            kind,
+        })
+        .collect())
+}
+
+fn package_test_state_namespace(
+    run_scope: &str,
+    requirement_key: &str,
+    kind: StateBindingKind,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"skiff-package-test-state-v1\0");
+    digest.update(run_scope.as_bytes());
+    digest.update(b"\0");
+    if kind != StateBindingKind::Database {
+        digest.update(requirement_key.as_bytes());
+    }
+    digest.update(b"\0");
+    digest.update(format!("{kind:?}").as_bytes());
+    let hash = format!("{:x}", digest.finalize());
+    format!("skiff_pt_{}", &hash[..40])
 }
 
 fn package_test_config_literals(
