@@ -1,11 +1,11 @@
 # P5-F299 Runtime local value and exception carrier
 
-状态：Blocked。
+状态：Ready after prerequisite。
 
-阻塞于：`P5-F300-linked-exception-sites.md`。第一次执行发现required instruction site与
-required catch type在linked IR转换时被丢弃；精确事实记录在
-`P5-F299-runtime-local-exception-carrier-result.md`。F300形成检查点后必须从新HEAD创建
-新的开发Agent恢复本任务，不复用第一次会话。
+第一次执行发现required instruction site与required catch type在linked IR转换时被丢弃；精确事实记录在
+`P5-F299-runtime-local-exception-carrier-result.md`。前置
+`P5-F300-linked-exception-sites-result.md`已经完成。必须从包含F300集成提交
+`91e0e48f3d6458b9e2967f12d9bf82a83f01a81b`的新HEAD创建全新开发Agent恢复本任务，不复用第一次会话。
 
 ## 直接父节点与权威链
 

@@ -1,6 +1,7 @@
 # P5-F300 Linked exception instruction facts
 
-状态：Ready。
+状态：Implemented checkpoint。结果见
+`P5-F300-linked-exception-sites-result.md`。
 
 ## 直接父节点与权威链
 
