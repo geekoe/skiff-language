@@ -67,6 +67,18 @@ F268 需要新增且必须接入上述最终模型：
 - 只允许修改三个被取入提交触及的 Skiff 文件及本任务 result。
 - 可以为冲突组合补最小回归测试；不得顺手修父 result 已列出的九类历史 fixture。
 
+### 已确认的基线编译闭合
+
+F271 新增必填 `direct_return_origins` 后，当前集成基线还有两个未被 F268 触及的 Host
+测试 fixture 漏初始化。为使本任务拥有的 `cargo check --workspace --all-targets` 可执行，
+额外授权且只授权：
+
+- `runtime/host/src/host/router_session/tests/runtime_assembly_request/fixture.rs`
+- `runtime/host/src/loader/assembly_admission/tests/full_chain.rs`
+
+两处都必须补 `direct_return_origins: Vec::new()`；fixture 的既有 provenance 为空，不得同时
+改变其它 effect、origin、artifact 或断言。
+
 ## 非目标与禁止事项
 
 - 不修改 `skiff-packages` 或 Internals。
@@ -106,4 +118,3 @@ git diff --check
 
 若 5 分钟内无法确定某个冲突的语义 owner，返回 `TASK_NOT_EXECUTABLE` 和该文件的两侧事实，
 不得自行选择公共语义。
-
