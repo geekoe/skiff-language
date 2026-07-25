@@ -27,6 +27,8 @@ Router dispatcher/gateway或 telemetry storage/query consumer。
 
 允许 production 写入：
 
+- `runtime/capability-context/src/lib.rs`仅可 additive re-export现有
+  `response::FixedServiceResponseFailure`；不得修改该类型、response模块或F334 diagnostic seam；
 - `runtime/request-contract/src/{response_event.rs,lib.rs}`；
 - `runtime/transport/Cargo.toml`仅可增加 strict fixed decode所需的现有低层 model依赖；
 - `runtime/transport/src/{protocol.rs,response_mapper.rs,lib.rs}`；
