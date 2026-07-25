@@ -203,7 +203,7 @@ export class AssemblyHttpGateway {
     }
     response.statusCode = error.statusCode;
     response.setHeader('content-type', 'application/json; charset=utf-8');
-    response.end(JSON.stringify({ error: error.toPayload() }));
+    response.end(JSON.stringify({ error: error.toHttpPayload() }));
   }
 }
 

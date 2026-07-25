@@ -7,6 +7,7 @@ import {
   decodeRuntimeFrame,
   encodeRuntimeFrame,
   type DispatchMode,
+  RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
   RUNTIME_FRAME_SCHEMA_VERSION,
   type RequestCancelFrameHeader,
   type RequestStartFrameHeader,
@@ -931,9 +932,10 @@ describe('router runtime registry dispatch', () => {
         )
       );
       await expect(response).resolves.toEqual({
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
         type: 'response.error',
         requestId,
+        errorKind: 'control',
         error: expectedError
       });
     }
@@ -1127,9 +1129,10 @@ describe('router runtime registry dispatch', () => {
     );
     runtimeB.send(
       encodeRuntimeFrame({
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
         type: 'response.error',
         requestId: ownerRequest.header.requestId,
+        errorKind: 'control',
         error: {
           code: 'SpoofedError',
           message: 'runtime B tried to reject runtime A request'
@@ -2245,6 +2248,11 @@ function waitForRuntimeResponseError(
         return;
       }
       if (frame.header.type === 'response.error') {
+        if (frame.payloadBytes.byteLength !== 0) {
+          cleanup();
+          reject(new Error(`received non-empty response.error payload for ${label}`));
+          return;
+        }
         cleanup();
         resolve(frame.header);
         return;

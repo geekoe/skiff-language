@@ -10,6 +10,7 @@ import {
   decodeRuntimeFrame,
   encodeBinaryFrame,
   encodeRuntimeFrame,
+  RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
   RUNTIME_FRAME_SCHEMA_VERSION,
   type RuntimeBinaryFrame
 } from '../src/protocol/envelope.js';
@@ -462,12 +463,14 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
         target: runtimeFrameHeaderFixtures['request.start'].caller.target
       }
     }));
-    await expect(serviceRequestResponse).resolves.toMatchObject({
-      header: {
-        type: 'response.error',
-        error: { code: 'InProcessServiceCallRequired' }
-      }
+    const serviceRequestError = await serviceRequestResponse;
+    expect(serviceRequestError.header).toMatchObject({
+      schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+      type: 'response.error',
+      errorKind: 'control',
+      error: { code: 'InProcessServiceCallRequired' }
     });
+    expect(serviceRequestError.payloadBytes).toHaveLength(0);
 
     ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['runtime.health']));
     await until(() => fixture.runtimeRegistry.loopRiskRuntimeHealthSnapshot().length === 1);
@@ -556,6 +559,91 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     });
     await until(() => fixture.runtimeRegistry.capabilityConnectionsSnapshot().length === 0);
     expect(fixture.runtimeRegistry.capabilityConnectionsSnapshot()).toEqual([]);
+    expect(fixture.assemblyRegistry.snapshot()).toEqual([]);
+  });
+
+  it('admits response.error only through the strict v2 header and payload seam', async () => {
+    const fixture = await createFixture();
+    const validFixedPayload = Buffer.from(JSON.stringify({
+      kind: 'internalError',
+      payload: {
+        message: 'Internal service error',
+        traceId: 'trace-endpoint-fixed',
+        errorId: 'error-endpoint-fixed'
+      }
+    }), 'utf8');
+    const invalidFrames: Array<{
+      name: string;
+      header: Record<string, unknown>;
+      payloadBytes: Uint8Array;
+    }> = [
+      {
+        name: 'legacy v1 control',
+        header: {
+          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+          type: 'response.error',
+          requestId: 'legacy-v1',
+          error: { code: 'LegacyError', message: 'legacy response.error' }
+        },
+        payloadBytes: new Uint8Array()
+      },
+      {
+        name: 'mixed fixed and generic fields',
+        header: {
+          schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+          type: 'response.error',
+          requestId: 'mixed-fixed',
+          errorKind: 'fixedService',
+          error: { code: 'MixedError', message: 'must not be admitted' }
+        },
+        payloadBytes: validFixedPayload
+      },
+      {
+        name: 'fixed with empty payload',
+        header: {
+          schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+          type: 'response.error',
+          requestId: 'fixed-empty',
+          errorKind: 'fixedService'
+        },
+        payloadBytes: new Uint8Array()
+      },
+      {
+        name: 'control with non-empty payload',
+        header: {
+          schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+          type: 'response.error',
+          requestId: 'control-non-empty',
+          errorKind: 'control',
+          error: { code: 'ControlError', message: 'control payload must be empty' }
+        },
+        payloadBytes: new Uint8Array([1])
+      },
+      {
+        name: 'fixed with malformed envelope',
+        header: {
+          schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+          type: 'response.error',
+          requestId: 'fixed-malformed',
+          errorKind: 'fixedService'
+        },
+        payloadBytes: Buffer.from('{', 'utf8')
+      }
+    ];
+
+    for (const invalid of invalidFrames) {
+      await expectPolicyClose(
+        fixture.url,
+        (ws) => {
+          sendCapabilities(ws, RUNTIME_ID);
+          ws.send(encodeBinaryFrame(invalid.header, invalid.payloadBytes));
+        },
+        invalid.name
+      );
+      await until(
+        () => fixture.runtimeRegistry.capabilityConnectionsSnapshot().length === 0
+      );
+    }
     expect(fixture.assemblyRegistry.snapshot()).toEqual([]);
   });
 });
@@ -798,12 +886,16 @@ async function nextBinaryMessage(ws: WebSocket): Promise<Buffer> {
   });
 }
 
-async function expectPolicyClose(url: string, send: (ws: WebSocket) => void): Promise<void> {
+async function expectPolicyClose(
+  url: string,
+  send: (ws: WebSocket) => void,
+  label?: string
+): Promise<void> {
   const ws = await openSocket(url);
   const closed = waitForClose(ws);
   send(ws);
   const [code] = await closed;
-  expect(code).toBe(1008);
+  expect(code, label).toBe(1008);
 }
 
 async function waitForClose(ws: WebSocket): Promise<[number, Buffer]> {

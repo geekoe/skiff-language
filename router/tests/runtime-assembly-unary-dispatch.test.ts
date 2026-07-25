@@ -8,6 +8,7 @@ import {
   decodeBinaryFrame,
   decodeRuntimeFrame,
   encodeRuntimeFrame,
+  RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
   RUNTIME_FRAME_SCHEMA_VERSION
 } from '../src/protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeAssemblyRequest.js';
@@ -20,6 +21,10 @@ import {
   AssemblyHttpGateway
 } from '../src/router/assemblyHttpGateway.js';
 import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
+import {
+  FixedServiceResponseError,
+  RuntimeResponseError
+} from '../src/router/errors.js';
 import { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
 import { RuntimeEndpoint } from '../src/router/runtimeEndpoint.js';
 import type { RuntimeUnaryDispatchFrameHeader } from '../src/router/runtimeRegistry.js';
@@ -36,6 +41,13 @@ const OPERATION = `skiff-contract-operation-v1:sha256:${'b'.repeat(64)}`;
 const RUNTIME_ID = 'runtime-unary-a';
 const HOST = 'api.localhost';
 const PATH = '/v1/invoke';
+const PRIVATE_SENTINELS = [
+  'provider-private-secret',
+  '/callee/private/source.skiff',
+  'calleePrivateFunction',
+  'sourceFrames',
+  'stack'
+] as const;
 const fixtures: UnaryFixture[] = [];
 
 describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
@@ -155,6 +167,177 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     expect(JSON.parse(completed.body.toString())).toMatchObject({
       error: { code: 'ResponseTooLarge' }
     });
+  });
+
+  it('forwards fixed and control unaryFrame errors with exact v2 headers and bytes', async () => {
+    const fixture = await createFixture();
+    for (const [index, kind] of (
+      ['publicTypedError', 'internalError', 'platformError'] as const
+    ).entries()) {
+      const requestId = `unary-frame-fixed-${kind}`;
+      const dispatch = fixture.dispatcher.dispatchBinaryFrame(
+        {
+          header: canonicalHeader(fixture.snapshot, requestId),
+          payloadBytes: new Uint8Array([index, 255 - index])
+        },
+        1_000
+      );
+      const request = decodeBinaryFrame(await nextBinaryMessage(fixture.runtime));
+      expect(request.header.requestId).toBe(requestId);
+      const header = {
+        schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+        type: 'response.error',
+        requestId,
+        errorKind: 'fixedService'
+      } as const;
+      const payloadBytes = fixedServicePayload(
+        kind,
+        `trace-frame-${index}`,
+        `error-frame-${index}`
+      );
+      fixture.runtime.send(encodeRuntimeFrame(header, payloadBytes));
+
+      const result = await dispatch;
+      expect(result.header).toEqual(header);
+      expect(Buffer.from(result.payloadBytes)).toEqual(Buffer.from(payloadBytes));
+    }
+
+    const requestId = 'unary-frame-control';
+    const dispatch = fixture.dispatcher.dispatchBinaryFrame(
+      {
+        header: canonicalHeader(fixture.snapshot, requestId),
+        payloadBytes: new Uint8Array()
+      },
+      1_000
+    );
+    await nextBinaryMessage(fixture.runtime);
+    const header = {
+      schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+      type: 'response.error',
+      requestId,
+      errorKind: 'control',
+      error: {
+        code: 'InternalError',
+        message: 'The service could not complete the request.',
+        status: 500,
+        details: { traceId: 'control-only-trace' }
+      }
+    } as const;
+    fixture.runtime.send(encodeRuntimeFrame(header));
+
+    const result = await dispatch;
+    expect(result.header).toEqual(header);
+    expect(result.payloadBytes).toHaveLength(0);
+  });
+
+  it('uses mutually exclusive fixed and control errors for ordinary pending requests', async () => {
+    const fixture = await createFixture();
+    const fixedHeader = canonicalHeader(fixture.snapshot, 'ordinary-fixed');
+    const fixedDispatch = fixture.dispatcher
+      .dispatchBinary(
+        { header: fixedHeader, payloadBytes: new Uint8Array() },
+        1_000
+      )
+      .catch((error: unknown) => error);
+    await nextBinaryMessage(fixture.runtime);
+    fixture.runtime.send(encodeRuntimeFrame(
+      {
+        schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+        type: 'response.error',
+        requestId: fixedHeader.requestId,
+        errorKind: 'fixedService'
+      },
+      fixedServicePayload('internalError', 'trace-ordinary-fixed', 'error-ordinary-fixed')
+    ));
+    const fixedError = await fixedDispatch;
+    expect(fixedError).toBeInstanceOf(FixedServiceResponseError);
+    expect(fixedError).not.toBeInstanceOf(RuntimeResponseError);
+    expect(fixedError).toMatchObject({
+      serviceErrorKind: 'internalError',
+      traceId: 'trace-ordinary-fixed',
+      errorId: 'error-ordinary-fixed'
+    });
+
+    const controlHeader = canonicalHeader(fixture.snapshot, 'ordinary-control');
+    const controlDispatch = fixture.dispatcher
+      .dispatchBinary(
+        { header: controlHeader, payloadBytes: new Uint8Array() },
+        1_000
+      )
+      .catch((error: unknown) => error);
+    await nextBinaryMessage(fixture.runtime);
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+      type: 'response.error',
+      requestId: controlHeader.requestId,
+      errorKind: 'control',
+      error: {
+        code: 'InternalError',
+        message: 'The service could not complete the request.',
+        status: 500
+      }
+    }));
+    const controlError = await controlDispatch;
+    expect(controlError).toBeInstanceOf(RuntimeResponseError);
+    expect(controlError).not.toBeInstanceOf(FixedServiceResponseError);
+  });
+
+  it('maps every fixed kind to one redacted HTTP 5xx fact and redacts generic 5xx details', async () => {
+    const fixture = await createFixture();
+    for (const [index, kind] of (
+      ['publicTypedError', 'internalError', 'platformError'] as const
+    ).entries()) {
+      const traceId = `trace-http-${index}`;
+      const errorId = `error-http-${index}`;
+      const response = sendHttp(fixture.httpUrl, new Uint8Array());
+      const request = decodeBinaryFrame(await nextBinaryMessage(fixture.runtime));
+      fixture.runtime.send(encodeRuntimeFrame(
+        {
+          schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+          type: 'response.error',
+          requestId: String(request.header.requestId),
+          errorKind: 'fixedService'
+        },
+        fixedServicePayload(kind, traceId, errorId)
+      ));
+
+      const completed = await response;
+      expect(completed.status).toBe(500);
+      expect(JSON.parse(completed.body.toString())).toEqual({
+        error: {
+          code: 'FixedServiceError',
+          message: 'Service request failed',
+          details: { traceId, errorId }
+        }
+      });
+      assertNoPrivateSentinels(completed.body.toString());
+    }
+
+    const controlResponse = sendHttp(fixture.httpUrl, new Uint8Array());
+    const controlRequest = decodeBinaryFrame(await nextBinaryMessage(fixture.runtime));
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+      type: 'response.error',
+      requestId: String(controlRequest.header.requestId),
+      errorKind: 'control',
+      error: {
+        code: 'std.service.ProtocolError',
+        message: 'runtime protocol failure',
+        status: 502,
+        details: {
+          private: PRIVATE_SENTINELS.join('|')
+        }
+      }
+    }));
+    const completedControl = await controlResponse;
+    expect(completedControl.status).toBe(502);
+    expect(JSON.parse(completedControl.body.toString())).toEqual({
+      error: {
+        code: 'std.service.ProtocolError',
+        message: 'runtime protocol failure'
+      }
+    });
+    assertNoPrivateSentinels(completedControl.body.toString());
   });
 
   it('fails closed before the socket for legacy, flat, unknown, stream, adapter, and HTTP mismatches', async () => {
@@ -327,9 +510,10 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     };
     fixture.runtime.on('message', countOutbound);
     fixture.runtime.send(encodeRuntimeFrame({
-      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
       type: 'response.error',
       requestId: errorHeader.requestId,
+      errorKind: 'control',
       error: { code: 'Rejected', message: 'runtime rejected unary request' }
     }));
     await expect(errorDispatch).rejects.toThrow(/runtime rejected unary request/);
@@ -540,4 +724,46 @@ async function until(predicate: () => boolean): Promise<void> {
 
 async function nextTurn(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+function fixedServicePayload(
+  kind: 'publicTypedError' | 'internalError' | 'platformError',
+  traceId: string,
+  errorId: string
+): Uint8Array {
+  const privateBytes = Array.from(Buffer.from(PRIVATE_SENTINELS.join('|'), 'utf8'));
+  const envelope =
+    kind === 'publicTypedError'
+      ? {
+          kind,
+          packageId: 'example.com/errors',
+          stableSchemaKey: 'private-failure',
+          packageSchemaTypeId: 'type:private-failure',
+          encodedPayload: privateBytes,
+          traceId,
+          errorId
+        }
+      : kind === 'internalError'
+        ? {
+            kind,
+            payload: {
+              message: PRIVATE_SENTINELS.join('|'),
+              traceId,
+              errorId
+            }
+          }
+        : {
+            kind,
+            builtinErrorIdentity: 'std.db.ConflictError',
+            encodedPayload: privateBytes,
+            traceId,
+            errorId
+          };
+  return Buffer.from(JSON.stringify(envelope), 'utf8');
+}
+
+function assertNoPrivateSentinels(value: string): void {
+  for (const sentinel of PRIVATE_SENTINELS) {
+    expect(value).not.toContain(sentinel);
+  }
 }

@@ -11,6 +11,7 @@ import { encodeAssemblyActivationFrame } from '../src/protocol/assemblyActivatio
 import {
   decodeBinaryFrame,
   encodeRuntimeFrame,
+  RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
   RUNTIME_FRAME_SCHEMA_VERSION
 } from '../src/protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeAssemblyRequest.js';
@@ -44,6 +45,15 @@ const PATH = '/socket';
 const SERVICE = 'test.skiff/component-websocket';
 const MARKER = 'P5-F23D-PRODUCTION-COMPONENT';
 const CONTEXT_TYPE = `skiff-contract-type-v1:sha256:${'d'.repeat(64)}`;
+const FIXED_TRACE_ID = 'trace-ws-fixed';
+const FIXED_ERROR_ID = 'error-ws-fixed';
+const FIXED_PRIVATE_SENTINELS = [
+  'provider-private-secret',
+  '/callee/private/source.skiff',
+  'calleePrivateFunction',
+  'sourceFrames',
+  'stack'
+] as const;
 
 const binding: RuntimeAssemblyIngressBinding = {
   selector: { protocol: 'webSocket', host: HOST, method: null, path: PATH },
@@ -240,6 +250,55 @@ describe('AssemblyWebSocketGateway production component', () => {
     expect(runtime.socket.readyState).toBe(WebSocket.OPEN);
   });
 
+  it('uses the fixed safe fact for a failed WebSocket upgrade', async () => {
+    const harness = await createHarness({ fixedFailurePhase: 'connect' });
+    await harness.addRuntime('runtime-fixed-connect');
+
+    const response = await rawUpgradeResponse(harness.port, PATH);
+    expect(response.status).toBe(500);
+    expect(response.body).toBe(
+      `Service request failed; traceId=${FIXED_TRACE_ID}; errorId=${FIXED_ERROR_ID}`
+    );
+    assertNoFixedPrivateSentinels(response.raw);
+  });
+
+  it('uses the same fixed safe fact for a receive close reason within 123 bytes', async () => {
+    const harness = await createHarness({ fixedFailurePhase: 'receive' });
+    await harness.addRuntime('runtime-fixed-receive');
+    const client = await harness.openClient(PATH);
+    const closed = waitForWebSocketClose(client);
+
+    client.send('trigger fixed failure');
+
+    const [code, reason] = await closed;
+    expect(code).toBe(1011);
+    expect(reason).toBe(
+      `Service request failed; traceId=${FIXED_TRACE_ID}; errorId=${FIXED_ERROR_ID}`
+    );
+    expect(Buffer.byteLength(reason)).toBeLessThanOrEqual(123);
+    assertNoFixedPrivateSentinels(reason);
+  });
+
+  it('truncates long fixed correlation at a UTF-8 boundary within 123 bytes', async () => {
+    const harness = await createHarness({
+      fixedFailurePhase: 'receive',
+      fixedErrorId: `error-${'界'.repeat(80)}`
+    });
+    await harness.addRuntime('runtime-fixed-receive-long');
+    const client = await harness.openClient(PATH);
+    const closed = waitForWebSocketClose(client);
+
+    client.send('trigger long fixed failure');
+
+    const [code, reason] = await closed;
+    expect(code).toBe(1011);
+    expect(reason).toContain('Service request failed');
+    expect(reason).toContain(`traceId=${FIXED_TRACE_ID}`);
+    expect(reason).not.toContain('\uFFFD');
+    expect(Buffer.byteLength(reason)).toBeLessThanOrEqual(123);
+    assertNoFixedPrivateSentinels(reason);
+  });
+
   it('keeps an old-generation connection pinned while new connects select the committed generation', async () => {
     const harness = await createHarness();
     const runtimeA = await harness.addRuntime('runtime-generation-a');
@@ -315,7 +374,15 @@ interface ProductionHarness {
   close(): Promise<void>;
 }
 
-async function createHarness(): Promise<ProductionHarness> {
+interface ProductionHarnessOptions {
+  fixedFailurePhase?: 'connect' | 'receive';
+  fixedTraceId?: string;
+  fixedErrorId?: string;
+}
+
+async function createHarness(
+  options: ProductionHarnessOptions = {}
+): Promise<ProductionHarness> {
   const snapshots = new RouterActiveAssemblySnapshotStore();
   snapshots.replace({
     environment: 'component-test',
@@ -407,6 +474,10 @@ async function createHarness(): Promise<ProductionHarness> {
         const request = frame.header as unknown as RuntimeAssemblyRequestStartFrameHeader;
         requests.push(request);
         if (request.websocketAdapter?.kind === 'connect') {
+          if (options.fixedFailurePhase === 'connect') {
+            socket.send(fixedServiceResponseErrorFrame(request.requestId, options));
+            return;
+          }
           socket.send(encodeWebSocketGenerationLifecycleFrame({
             schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
             type: WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
@@ -439,6 +510,10 @@ async function createHarness(): Promise<ProductionHarness> {
               }
             }
           }, new Uint8Array()));
+          return;
+        }
+        if (options.fixedFailurePhase === 'receive') {
+          socket.send(fixedServiceResponseErrorFrame(request.requestId, options));
           return;
         }
         const connectionId = request.websocketAdapter!.receiveEvent!.connectionId;
@@ -545,6 +620,13 @@ function nextMessage(socket: WebSocket): Promise<string> {
 }
 
 async function rawUpgradeStatus(port: number, target: string): Promise<number> {
+  return (await rawUpgradeResponse(port, target)).status;
+}
+
+async function rawUpgradeResponse(
+  port: number,
+  target: string
+): Promise<{ status: number; raw: string; body: string }> {
   return await new Promise((resolve, reject) => {
     const socket = connectTcp(port, '127.0.0.1');
     let response = '';
@@ -566,10 +648,55 @@ async function rawUpgradeStatus(port: number, target: string): Promise<number> {
     });
     socket.once('end', () => {
       const match = /^HTTP\/1\.1 (\d{3})/.exec(response);
-      resolve(Number(match?.[1] ?? 0));
+      resolve({
+        status: Number(match?.[1] ?? 0),
+        raw: response,
+        body: response.split('\r\n\r\n', 2)[1] ?? ''
+      });
     });
     socket.once('error', reject);
   });
+}
+
+function fixedServiceResponseErrorFrame(
+  requestId: string,
+  options: ProductionHarnessOptions
+): Buffer {
+  return encodeRuntimeFrame(
+    {
+      schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+      type: 'response.error',
+      requestId,
+      errorKind: 'fixedService'
+    },
+    Buffer.from(JSON.stringify({
+      kind: 'internalError',
+      payload: {
+        message: FIXED_PRIVATE_SENTINELS.join('|'),
+        traceId: options.fixedTraceId ?? FIXED_TRACE_ID,
+        errorId: options.fixedErrorId ?? FIXED_ERROR_ID
+      }
+    }), 'utf8')
+  );
+}
+
+function waitForWebSocketClose(socket: WebSocket): Promise<[number, string]> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error('timed out waiting for client close')),
+      1_000
+    );
+    socket.once('close', (code, reason) => {
+      clearTimeout(timeout);
+      resolve([code, reason.toString('utf8')]);
+    });
+  });
+}
+
+function assertNoFixedPrivateSentinels(value: string): void {
+  for (const sentinel of FIXED_PRIVATE_SENTINELS) {
+    expect(value).not.toContain(sentinel);
+  }
 }
 
 async function until(predicate: () => boolean): Promise<void> {
