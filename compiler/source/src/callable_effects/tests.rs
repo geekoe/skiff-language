@@ -1664,23 +1664,45 @@ fn exact_http_response_stream_event_constructors_are_fresh_and_effect_free() {
 }
 
 #[test]
-fn http_stream_event_constructor_semantics_do_not_generalize_to_emit_response() {
+fn exact_http_response_stream_emit_escapes_and_suspends_only_for_caller_event() {
     let model = analyze(
         r#"
             function emit(event: std.http.HttpResponseStreamEvent) -> void {
               std.http.emitResponseStream(event)
             }
+
+            function emitFresh(value: bytes) -> void {
+              std.http.emitResponseStream(std.http.streamChunk(value))
+            }
         "#,
         SourceDependencyAnalysisInput::default(),
     );
 
-    assert!(effects(&model, "emit").invokes_unknown_target);
+    assert_eq!(
+        effects(&model, "emit"),
+        CallableMayEffects {
+            escapes_caller_value: true,
+            may_suspend: true,
+            ..no_effects()
+        }
+    );
     assert!(matches!(
         provenance(&model, "emit"),
-        CallableProvenanceSummary::Unknown {
-            reason: CallableProvenanceUnknownReason::UnknownCallTarget,
-        }
+        CallableProvenanceSummary::Analyzed {
+            return_origins,
+            throw_origins,
+            escape_lanes,
+        } if return_origins.is_empty()
+            && throw_origins.is_empty()
+            && escape_lanes == &vec![ValueEscapeLane::External]
     ));
+    assert_eq!(
+        effects(&model, "emitFresh"),
+        CallableMayEffects {
+            may_suspend: true,
+            ..no_effects()
+        }
+    );
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
             target,

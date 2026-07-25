@@ -920,6 +920,42 @@ fn native_callable_semantics_registry_accepts_http_suspend_detachment_routes() {
 }
 
 #[test]
+fn native_callable_semantics_registry_accepts_exact_response_stream_emit_route() {
+    let binding_key = "std.http.stream.emitResponse";
+    let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|semantics| semantics.binding_key == binding_key)
+        .cloned()
+        .expect("response stream emitter must have exact callable semantics");
+    assert_eq!(
+        semantics.effects,
+        skiff_artifact_model::CallableMayEffects {
+            writes_caller_reachable: false,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: true,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: true,
+        }
+    );
+    assert_eq!(
+        NativeRequiredContext::for_binding_key(binding_key),
+        Some(NativeRequiredContext::HttpResponseStream)
+    );
+    assert_eq!(
+        runtime_shared_native_route_for_validation(binding_key, false),
+        Some(RuntimeNativeRoute::Http)
+    );
+    validate_native_callable_semantics_registry(
+        &[semantics],
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect("response stream emitter semantics must match its route and context");
+}
+
+#[test]
 fn file_create_semantics_match_exact_signatures_and_file_routes() {
     for binding_key in ["std.file.create", "std.file.createFromStream"] {
         let semantics = STD_NATIVE_CALLABLE_SEMANTICS
@@ -1334,7 +1370,6 @@ fn http_stream_event_constructor_semantics_require_exact_runtime_contracts() {
         "std.http.stream.start.extra",
         "std.http.stream.chunked",
         "std.http.stream.end.extra",
-        "std.http.stream.emitResponse",
     ] {
         let error = validate_native_callable_semantics_registry(
             &[detached_native_semantics(lookalike)],
@@ -1342,6 +1377,69 @@ fn http_stream_event_constructor_semantics_require_exact_runtime_contracts() {
             NATIVE_BINDINGS,
         )
         .expect_err("non-canonical constructor lookalike must fail closed");
+        assert!(
+            error.contains(lookalike) && error.contains("not in the exact audited registry"),
+            "unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
+fn response_stream_emit_semantics_reject_malformed_signature_and_lookalikes() {
+    let binding_key = "std.http.stream.emitResponse";
+    let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|semantics| semantics.binding_key == binding_key)
+        .cloned()
+        .expect("response stream emitter must have exact callable semantics");
+    let canonical = *STD_NATIVE_SIGNATURES
+        .iter()
+        .find(|signature| signature.binding_key == binding_key)
+        .expect("response stream emitter must have an exact signature");
+
+    for signature in [
+        {
+            let mut signature = canonical;
+            signature.params = &[];
+            signature
+        },
+        {
+            let mut signature = canonical;
+            signature.params = &[NativeSignatureTypeExpr::Builtin("Json")];
+            signature
+        },
+        {
+            let mut signature = canonical;
+            signature.return_type = NativeSignatureTypeExpr::Builtin("string");
+            signature
+        },
+    ] {
+        let error = validate_native_callable_semantics_registry(
+            std::slice::from_ref(&semantics),
+            &[signature],
+            NATIVE_BINDINGS,
+        )
+        .expect_err("malformed response stream emitter signature must fail closed");
+        assert!(
+            error.contains(binding_key)
+                && error.contains("does not match the exact shared native signature"),
+            "unexpected error: {error}"
+        );
+    }
+
+    for lookalike in [
+        "std.http.emitResponseStream",
+        "std.http.stream.emitResponses",
+        "std.http.stream.emitResponse.extra",
+    ] {
+        let mut lookalike_semantics = semantics.clone();
+        lookalike_semantics.binding_key = lookalike;
+        let error = validate_native_callable_semantics_registry(
+            &[lookalike_semantics],
+            STD_NATIVE_SIGNATURES,
+            NATIVE_BINDINGS,
+        )
+        .expect_err("non-canonical response stream emitter lookalike must fail closed");
         assert!(
             error.contains(lookalike) && error.contains("not in the exact audited registry"),
             "unexpected error: {error}"

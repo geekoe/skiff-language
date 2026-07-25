@@ -65,6 +65,22 @@ const fn detached_native(binding_key: &'static str, may_suspend: bool) -> Native
     }
 }
 
+const fn escaping_suspending_native(binding_key: &'static str) -> NativeCallableSemantics {
+    NativeCallableSemantics {
+        binding_key,
+        effects: CallableMayEffects {
+            writes_caller_reachable: false,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: true,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: true,
+        },
+        return_provenance: ValueProvenance::Fresh,
+    }
+}
+
 pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_native("std.actor.getOrCreate", true),
     detached_native("std.actor.replace", true),
@@ -103,6 +119,7 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_scalar_native("std.http.stream.start"),
     detached_scalar_native("std.http.stream.chunk"),
     detached_scalar_native("std.http.stream.end"),
+    escaping_suspending_native("std.http.stream.emitResponse"),
     detached_native("std.file.create", true),
     detached_native("std.file.createFromStream", true),
     detached_native("std.time.sleep", true),
@@ -917,6 +934,7 @@ mod tests {
             "std.http.request.headers",
             "std.http.stream.chunk",
             "std.http.stream.end",
+            "std.http.stream.emitResponse",
             "std.http.stream.start",
             "std.json.encode",
             "std.json.decode",
@@ -943,16 +961,17 @@ mod tests {
             assert!(STD_NATIVE_SIGNATURES
                 .iter()
                 .any(|signature| signature.binding_key == semantics.binding_key));
+            let is_emit_response = semantics.binding_key == "std.http.stream.emitResponse";
+            assert_eq!(semantics.effects.writes_caller_reachable, false);
+            assert_eq!(semantics.effects.returns_caller_alias, false);
+            assert_eq!(semantics.effects.throws_caller_alias, false);
+            assert_eq!(semantics.effects.escapes_caller_value, is_emit_response);
+            assert_eq!(semantics.effects.requires_same_heap_identity, false);
+            assert_eq!(semantics.effects.invokes_unknown_target, false);
             assert_eq!(
-                semantics.effects,
-                CallableMayEffects {
-                    writes_caller_reachable: false,
-                    returns_caller_alias: false,
-                    throws_caller_alias: false,
-                    escapes_caller_value: false,
-                    requires_same_heap_identity: false,
-                    invokes_unknown_target: false,
-                    may_suspend: matches!(
+                semantics.effects.may_suspend,
+                is_emit_response
+                    || matches!(
                         semantics.binding_key,
                         "std.actor.getOrCreate"
                             | "std.actor.replace"
@@ -964,8 +983,7 @@ mod tests {
                             | "std.http.client.sse"
                             | "std.http.client.stream"
                             | "std.time.sleep"
-                    ),
-                }
+                    )
             );
             assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
             assert_eq!(
@@ -984,7 +1002,6 @@ mod tests {
             "std.http.stream.start.extra",
             "std.http.stream.chunked",
             "std.http.stream.ending",
-            "std.http.stream.emitResponse",
             "custom.native",
         ] {
             assert_eq!(native_callable_semantics(missing), None, "{missing}");
@@ -1251,7 +1268,6 @@ mod tests {
             "std.http.stream",
             "std.http.client.stream.extra",
             "std.http.client.streams",
-            "std.http.stream.emitResponse",
         ] {
             assert_eq!(
                 native_callable_semantics(near_miss),
@@ -1293,7 +1309,6 @@ mod tests {
             "std.http.sse",
             "std.http.client.sse.extra",
             "std.http.client.sses",
-            "std.http.stream.emitResponse",
         ] {
             assert_eq!(
                 native_callable_semantics(near_miss),
@@ -1355,12 +1370,55 @@ mod tests {
             "std.http.stream.start.extra",
             "std.http.stream.chunked",
             "std.http.stream.end.extra",
-            "std.http.stream.emitResponse",
         ] {
             assert_eq!(
                 native_callable_semantics(lookalike),
                 None,
                 "{lookalike} must not inherit constructor semantics"
+            );
+        }
+    }
+
+    #[test]
+    fn http_response_stream_emit_semantics_match_exact_signature() {
+        let semantics = native_callable_semantics("std.http.stream.emitResponse")
+            .expect("audited HTTP response stream emitter should have exact semantics");
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: true,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: true,
+            }
+        );
+        assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+        let matching = STD_NATIVE_SIGNATURES
+            .iter()
+            .filter(|signature| signature.binding_key == semantics.binding_key)
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "emitResponse signature must be unique");
+        let signature = matching[0];
+        assert_eq!(signature.target, "std.http.emitResponseStream");
+        assert!(signature.aliases.is_empty());
+        assert_eq!(signature.type_param_count, 0);
+        assert_eq!(signature.params, &[super::HTTP_RESPONSE_STREAM_EVENT]);
+        assert_eq!(signature.return_type, super::VOID);
+
+        for lookalike in [
+            "std.http.emitResponseStream",
+            "std.http.stream.emitResponses",
+            "std.http.stream.emitResponse.extra",
+            "std.http.stream.start",
+        ] {
+            assert_ne!(
+                native_callable_semantics(lookalike),
+                Some(semantics),
+                "{lookalike} must not inherit response emitter semantics"
             );
         }
     }
