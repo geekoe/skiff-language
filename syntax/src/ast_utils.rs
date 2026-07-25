@@ -137,7 +137,6 @@ pub fn walk_stmt(visitor: &mut (impl AstVisitor + ?Sized), stmt: &Stmt) {
 
 pub fn compiler_test_effect_expressions(stmt: &Stmt) -> Option<Vec<&Expr>> {
     let Stmt::CompilerTestEffectRegister {
-        target_probe,
         expect,
         step_expect,
         outcome,
@@ -146,7 +145,7 @@ pub fn compiler_test_effect_expressions(stmt: &Stmt) -> Option<Vec<&Expr>> {
     else {
         return None;
     };
-    let mut expressions = vec![target_probe];
+    let mut expressions = Vec::new();
     if let Some(expect) = expect {
         expressions.push(expect);
     }

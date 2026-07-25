@@ -297,6 +297,7 @@ impl OwnerCollector<'_> {
             Stmt::CompilerTestEffectRegister {
                 target_probe,
                 expect,
+                step_expect,
                 outcome,
                 ..
             } => {
@@ -310,13 +311,20 @@ impl OwnerCollector<'_> {
                         next_stmt_expr(&mut expressions, "test effect expectation")?,
                     )?;
                 }
+                if let Some(step_expect) = step_expect {
+                    self.visit_expr(
+                        step_expect,
+                        next_stmt_expr(&mut expressions, "test effect sequence step expectation")?,
+                    )?;
+                }
                 match outcome {
-                    crate::shared::ast::TestEffectOutcome::Respond { value }
-                    | crate::shared::ast::TestEffectOutcome::Throw { value } => self.visit_expr(
-                        value,
-                        next_stmt_expr(&mut expressions, "test effect outcome")?,
-                    )?,
-                    crate::shared::ast::TestEffectOutcome::Stream { events } => {
+                    crate::shared::ast::TestEffectStepOutcome::Respond { value }
+                    | crate::shared::ast::TestEffectStepOutcome::Throw { value } => self
+                        .visit_expr(
+                            value,
+                            next_stmt_expr(&mut expressions, "test effect outcome")?,
+                        )?,
+                    crate::shared::ast::TestEffectStepOutcome::Stream { events } => {
                         for value in events {
                             self.visit_expr(
                                 value,

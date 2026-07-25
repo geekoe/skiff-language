@@ -31,5 +31,8 @@ tokio = { version = "1.44", features = ["rt", "sync", "time"] }
 uuid = { version = "1.16", features = ["v4"] }
 
 [dev-dependencies]
+skiff-compiler = { path = "../../compiler" }
+skiff-deployment = { path = "../../deployment" }
 skiff-runtime-boundary = { path = "../boundary", features = ["test-support"] }
 skiff-runtime-linker = { path = "../linker", features = ["test-support"] }
+skiff-test-runner = { path = "../../test-runner" }

@@ -385,6 +385,7 @@ impl SuspendContext<'_, '_> {
             Stmt::CompilerTestEffectRegister {
                 target_probe,
                 expect,
+                step_expect,
                 outcome,
                 ..
             } => {
@@ -394,16 +395,19 @@ impl SuspendContext<'_, '_> {
                 let expect_suspend = expect
                     .as_ref()
                     .is_some_and(|value| self.expr_may_suspend(value));
+                let step_expect_suspend = step_expect
+                    .as_ref()
+                    .is_some_and(|value| self.expr_may_suspend(value));
                 let outcome_suspend = match outcome {
-                    skiff_syntax::ast::TestEffectOutcome::Respond { value }
-                    | skiff_syntax::ast::TestEffectOutcome::Throw { value } => {
+                    skiff_syntax::ast::TestEffectStepOutcome::Respond { value }
+                    | skiff_syntax::ast::TestEffectStepOutcome::Throw { value } => {
                         self.expr_may_suspend(value)
                     }
-                    skiff_syntax::ast::TestEffectOutcome::Stream { events } => {
+                    skiff_syntax::ast::TestEffectStepOutcome::Stream { events } => {
                         events.iter().any(|value| self.expr_may_suspend(value))
                     }
                 };
-                expect_suspend || outcome_suspend
+                expect_suspend || step_expect_suspend || outcome_suspend
             }
             Stmt::Assert { condition, .. } => self.expr_may_suspend(condition),
             Stmt::Let {

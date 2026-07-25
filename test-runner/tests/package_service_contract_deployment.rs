@@ -39,13 +39,13 @@ use skiff_test_runner::{
     SkiffTestError, SkiffTestOptions,
 };
 
-// Explicit identity regressions refreshed when c277e45 added the canonical
-// std.websocket.WebSocketIngressEvent surface. Production code derives these
-// identities from the F27A authoring receipt rather than these test pins.
+// Explicit identity regressions refreshed with the current canonical std
+// source. Production code derives these identities from the F27A authoring
+// receipt rather than these test pins.
 const EXPECTED_PRELUDE_IDENTITY: &str =
     "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699";
 const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
-    "skiff-package-build-v4:sha256:4cf082e69e7b95f16494319f1a74bd0c1d6499f75ee45092bcabcb12241be24e";
+    "skiff-package-build-v4:sha256:0f8896f1b33024fab18961732bb274fc47ece8f02a443b44f2958ca0b0bd4ec0";
 
 #[test]
 fn platform_source_context_contract() {
@@ -566,18 +566,260 @@ fn base_assembly_supplies_provider_selectors_and_real_owner_bindings() {
                 && binding.contract == payments_contract
                 && binding.provider == provider_deployment
         }));
+    assert!(
+        fixture
+            .records
+            .assembly
+            .resolved_deployments
+            .contains(&provider_deployment),
+        "the selected dependency provider remains reachable from the test roots"
+    );
+    assert!(
+        !fixture
+            .records
+            .assembly
+            .resolved_deployments
+            .contains(&consumer_deployment),
+        "the production subject is a binding/config source, not a second test root"
+    );
+    assert!(
+        fixture
+            .records
+            .assembly
+            .resolved_packages
+            .iter()
+            .all(|package| package != &fixture.production),
+        "the test overlay replaces the production subject in the execution closure"
+    );
     fixture.records.publish(&artifacts, &runtime).unwrap();
     assert_eq!(read_tree(&artifacts), source_before_publish);
     let runtime_store = CanonicalArtifactStore::open(&runtime).unwrap();
     runtime_store
         .read_service_deployment(&provider_deployment)
         .expect("provider closure copied to runtime root");
-    runtime_store
+    let helper = runtime_store
         .read_package_artifact(&helper_package)
         .expect("exact helper closure copied to runtime root");
+    let helper_schema = runtime_store
+        .resolve_package_artifact_schema(&helper)
+        .expect("helper schema index and exact type-record closure copied to runtime root");
+    assert_eq!(
+        helper_schema.records.len(),
+        helper.package_schema_type_records.len()
+    );
     runtime_store
         .read_runtime_assembly(&base_assembly_ref)
         .expect("base assembly copied to runtime root");
+}
+
+#[test]
+fn inline_effect_sequence_rejects_common_step_and_outcome_type_mismatches() {
+    let scenario = create_base_assembly_scenario();
+    let project =
+        compile_package_project(&platform_sources(), &scenario.consumer, &scenario.artifacts)
+            .unwrap();
+    let cases = [
+        (
+            r#"
+test "invalid common expect" effects {
+  helper/tools.lookup {
+    expect: { method: 7 },
+    respond: helper.EffectResponse { value: "ok" },
+  }
+} { assert true }
+"#,
+            "test effect expect subset",
+        ),
+        (
+            r#"
+test "unknown common expect field" effects {
+  helper/tools.lookup {
+    expect: { missing: "not-a-request-field" },
+    respond: helper.EffectResponse { value: "ok" },
+  }
+} { assert true }
+"#,
+            "unknown request field `missing`",
+        ),
+        (
+            r#"
+test "invalid step expect" effects {
+  helper/tools.lookup {
+    sequence: [{
+      expect: { url: 7 },
+      respond: helper.EffectResponse { value: "ok" },
+    }],
+  }
+} { assert true }
+"#,
+            "test effect expect subset",
+        ),
+        (
+            r#"
+test "invalid response" effects {
+  helper/tools.lookup {
+    respond: { value: 7 },
+  }
+} { assert true }
+"#,
+            "test effect respond",
+        ),
+        (
+            r#"
+test "invalid stream event" effects {
+  helper/tools.events {
+    sequence: [{
+      stream: [{ value: 7 }],
+    }],
+  }
+} { assert true }
+"#,
+            "test effect stream event",
+        ),
+        (
+            r#"
+test "unary target cannot use stream outcome" effects {
+  helper/tools.lookup {
+    sequence: [{
+      stream: [helper.EffectResponse { value: "event" }],
+    }],
+  }
+} { assert true }
+"#,
+            "stream requires Stream<T> return",
+        ),
+        (
+            r#"
+test "stream target cannot use unary response outcome" effects {
+  helper/tools.events {
+    sequence: [{
+      respond: helper/tools.events(helper.EffectRequest {
+        method: "GET",
+        url: "https://example.test/not-a-response",
+        detail: "type-correct-stream-value",
+      }),
+    }],
+  }
+} { assert true }
+"#,
+            "cannot use respond for a direct Stream<T> target",
+        ),
+        (
+            r#"
+test "undeclared throw" effects {
+  helper/tools.events {
+    sequence: [{
+      throw: helper.EffectResponse { value: "not-an-error" },
+    }],
+  }
+} { assert true }
+"#,
+            "must match exactly one declared payload type",
+        ),
+    ];
+
+    for (index, (source, expected)) in cases.into_iter().enumerate() {
+        let package = scenario
+            ._root
+            .child(&format!("invalid-inline-effect-{index}"));
+        copy_tree(&scenario.consumer, &package);
+        fs::write(package.join("main.test.skiff"), source).unwrap();
+        let discovered = discover_package_test_cases(&package, &package, false).unwrap();
+        let error = compile_package_test_overlay(
+            &platform_sources(),
+            &package,
+            &scenario.artifacts,
+            &project,
+            &discovered,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains(expected),
+            "expected {expected:?} for case {index}, got {error}"
+        );
+    }
+}
+
+#[test]
+fn inline_effects_reject_aliases_that_resolve_to_the_same_exact_target() {
+    let scenario = create_base_assembly_scenario();
+    let duplicate_package = scenario._root.child("duplicate-package-aliases");
+    copy_tree(&scenario.consumer, &duplicate_package);
+    fs::write(
+        duplicate_package.join("package.yml"),
+        r#"id: example.com/consumer
+version: 1.0.0
+packages:
+  - id: example.com/helper
+    version: 1.0.0
+    alias: helper
+  - id: example.com/helper
+    version: 1.0.0
+    alias: helperTwin
+services:
+  - id: example.com/payments
+    version: 1.0.0
+    alias: payments
+"#,
+    )
+    .unwrap();
+    let package_error =
+        compile_package_project(&platform_sources(), &duplicate_package, &scenario.artifacts)
+            .unwrap_err()
+            .to_string();
+    assert!(
+        package_error.contains("duplicate direct dependency declarations"),
+        "{package_error}"
+    );
+
+    let package = scenario._root.child("duplicate-service-effect-aliases");
+    copy_tree(&scenario.consumer, &package);
+    fs::write(
+        package.join("package.yml"),
+        r#"id: example.com/consumer
+version: 1.0.0
+packages:
+  - id: example.com/helper
+    version: 1.0.0
+    alias: helper
+services:
+  - id: example.com/payments
+    version: 1.0.0
+    alias: payments
+  - id: example.com/payments
+    version: 1.0.0
+    alias: paymentsTwin
+"#,
+    )
+    .unwrap();
+    fs::write(
+        package.join("main.test.skiff"),
+        r#"
+test "duplicate service target through aliases" effects {
+  payments/echo { respond: "first" },
+  paymentsTwin/echo { respond: "second" },
+} { assert true }
+"#,
+    )
+    .unwrap();
+
+    let project = compile_package_project(&platform_sources(), &package, &scenario.artifacts)
+        .expect("both aliases resolve through canonical dependencies");
+    let discovered = discover_package_test_cases(&package, &package, false).unwrap();
+    let error = compile_package_test_overlay(
+        &platform_sources(),
+        &package,
+        &scenario.artifacts,
+        &project,
+        &discovered,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("payments/echo"), "{error}");
+    assert!(error.contains("paymentsTwin/echo"), "{error}");
+    assert!(error.contains("use one explicit sequence"), "{error}");
 }
 
 #[test]
@@ -1101,7 +1343,7 @@ fn assert_helper_mutation_semantics(
                 returns_caller_alias: false,
                 throws_caller_alias: false,
                 escapes_caller_value: false,
-                requires_same_heap_identity: false,
+                requires_same_heap_identity: true,
                 invokes_unknown_target: false,
                 may_suspend: false,
             }
@@ -1119,7 +1361,7 @@ fn assert_helper_mutation_semantics(
     assert!(reasons.contains(&BoundaryUnavailableReason::WritesCallerReachable));
     assert!(!reasons.contains(&BoundaryUnavailableReason::UnknownEffect));
     assert!(!reasons.contains(&BoundaryUnavailableReason::UnknownCallTarget));
-    assert!(!reasons.contains(&BoundaryUnavailableReason::RequiresSameHeapIdentity));
+    assert!(reasons.contains(&BoundaryUnavailableReason::RequiresSameHeapIdentity));
 }
 
 #[test]
@@ -1162,7 +1404,7 @@ fn fresh_helper_mutation_then_detached_service_call_projects_and_assembles() {
     );
 
     let cases = discover_package_test_cases(&consumer, &consumer, false).unwrap();
-    assert_eq!(cases.len(), 5);
+    assert_eq!(cases.len(), 4);
     let overlay =
         compile_package_test_overlay(&platform_sources(), &consumer, &artifacts, &project, &cases)
             .unwrap();

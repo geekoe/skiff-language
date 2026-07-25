@@ -259,7 +259,7 @@ fn operation_shape_diagnostics(
     operation: &skiff_artifact_model::BoundaryOperationContract,
 ) -> Vec<String> {
     let mut diagnostics = Vec::new();
-    if !matches!(operation.errors, BoundaryErrorContract::None) {
+    if matches!(operation.errors, BoundaryErrorContract::Unsupported { .. }) {
         diagnostics.push(format!(
             "contract call `{path}` uses an error contract unsupported by source calls"
         ));

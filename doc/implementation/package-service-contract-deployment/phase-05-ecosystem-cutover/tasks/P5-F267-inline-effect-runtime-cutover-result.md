@@ -22,13 +22,27 @@
   including nested parameter, return and throw positions, to exact
   `PackageSchema` identities at artifact projection time. Private/local-only
   types remain local.
-- `respond` retains the compiler-produced runtime value in the request heap.
-  `throw` constructs a `UserException` with the exact linked nominal payload
-  identity. `stream` creates a request-owned buffered stream from typed values.
+- The registry never retains a `RuntimeValue` or a setup-heap handle.
+  Registration immediately snapshots common and step request subsets as wire
+  values, responses as wire values plus exact return plans, typed throws as
+  wire payloads plus exact payload plans and identities, and stream items as
+  wire values plus the item plan. The common snapshot is inherited by all
+  later steps without re-evaluating its source expression. Dispatch validates
+  and reconstructs values in its current heap. This remains safe when setup,
+  package dispatch, service dispatch or a stream producer uses a different
+  heap.
+- `throw` constructs a `UserException` with the exact linked nominal payload
+  identity. `stream` creates a request-owned buffered stream from the item
+  snapshots.
 - Outcomes are consumed in declaration order. Request-subset mismatches and
-  unused outcomes fail the case; runtime finalization clears the per-request
-  registry on both body success and body error, while preserving the body error
-  when both body and finalization fail.
+  unused outcomes fail the case. An exhausted target keeps a tombstone and
+  reports sequence exhaustion instead of falling through to the real target.
+  A registered package stream target also suppresses the normal deferred
+  producer optimization until effect dispatch consumes the outcome; otherwise
+  an `emit`-based production body could run before the registry is consulted.
+  Runtime finalization clears the per-request registry on both body success and
+  body error, while preserving the body error when both body and finalization
+  fail.
 - `skiff.test-doubles.json` parsing and config injection were deleted. Presence
   of the old file is rejected with a migration diagnostic. Test config now
   comes only from the ordinary resolved test-service/profile input.
@@ -38,10 +52,19 @@
 - `cargo check -p skiff-compiler-source -p skiff-compiler-lowering
   -p skiff-test-runner -p skiff-runtime-eval -p skiff-runtime-request
   -p skiff-runtime-host`
-- `cargo test -p skiff-runtime-eval test_effect_registry --lib`
-- `cargo test -p skiff-runtime-eval inline_effect_` (`4 passed`: linked setup
-  mismatch, unused finalization, exact nominal throw/catch and buffered stream
-  consumption)
+- `cargo test -p skiff-runtime-eval test_effect_registry --lib` (`8 passed`,
+  including independent setup/dispatch heaps with record, array and bytes
+  values, and conflicting common/step subsets)
+- `cargo test -p skiff-runtime-eval --lib` (`146 passed`, including a spawned
+  stream producer with an independent heap and a source-to-runtime service
+  sequence whose first exact `PackageSchema` payload is caught and whose second
+  response is then consumed)
+- `cargo test -p skiff-test-runner --lib` (`34 passed`, `2 ignored`)
+- `cargo test -p skiff-test-runner --test
+  package_service_contract_deployment` (`19 passed`, `1 ignored`)
+- Focused isolated Host fixture: `4 passed`, including the real package unary
+  sequence, the real `emit`-based package stream sequence, and exact service
+  operation replacement.
 - `cargo test -p skiff-runtime-request --lib`
 - `cargo test -p skiff-test-runner --lib` (`33 passed`, `2 ignored`)
 - `cargo test -p skiff-compiler-projection` (`33 passed`)

@@ -627,7 +627,8 @@ fn type_ref_contains(ty: &TypeRefIr, predicate: &impl Fn(&TypeRefIr) -> bool) ->
                 .any(|param| type_ref_contains(&param.ty, predicate))
                 || type_ref_contains(return_type, predicate)
         }
-        TypeRefIr::PackageSymbol { .. }
+        TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }

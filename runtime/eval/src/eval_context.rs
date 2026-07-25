@@ -41,7 +41,10 @@ use super::{
     program_mutation::assign_program_index_target,
     receiver_methods::ReceiverMethodDispatch,
     recoverable_behavior::interface_method_table_from_linked,
-    runtime_ops::{runtime_from_wire, runtime_object_from_fields, runtime_to_wire_required_plan},
+    runtime_ops::{
+        runtime_from_wire, runtime_object_from_fields, runtime_to_wire,
+        runtime_to_wire_required_plan,
+    },
     spawn_ops,
     test_effect_registry::{RegisteredTestEffect, RegisteredTestEffectOutcome, TestEffectTarget},
     type_projection::EvalTypeProjection,
@@ -321,6 +324,7 @@ impl<'a> EvalContext<'a> {
             LinkedStmtIr::TestEffectRegister {
                 target,
                 expect,
+                step_expect,
                 outcome,
             } => {
                 if !self.interpreter.test_effects_enabled {
@@ -351,14 +355,32 @@ impl<'a> EvalContext<'a> {
                     }
                 };
                 let expect = match expect {
-                    Some(expected) => Some(self.eval_program_expr_ref(expected.value).await?),
+                    Some(expected) => {
+                        let value = self.eval_program_expr_ref(expected.value).await?;
+                        Some(runtime_to_wire(&value, self.heap)?)
+                    }
+                    None => None,
+                };
+                let step_expect = match step_expect {
+                    Some(expected) => {
+                        let value = self.eval_program_expr_ref(expected.value).await?;
+                        Some(runtime_to_wire(&value, self.heap)?)
+                    }
                     None => None,
                 };
                 let outcome = match outcome {
-                    LinkedTestEffectOutcomeIr::Respond { value, .. } => {
-                        RegisteredTestEffectOutcome::Respond(
-                            self.eval_program_expr_ref(*value).await?,
-                        )
+                    LinkedTestEffectOutcomeIr::Respond { value, value_type } => {
+                        let value = self.eval_program_expr_ref(*value).await?;
+                        let value_plan = self
+                            .type_projection()
+                            .plan_from_linked_nested_ref(value_type, self.addr)?;
+                        let value = runtime_to_wire_required_plan(
+                            &value,
+                            Some(&value_plan),
+                            "test effect response",
+                            self.heap,
+                        )?;
+                        RegisteredTestEffectOutcome::Respond { value, value_plan }
                     }
                     LinkedTestEffectOutcomeIr::Throw {
                         value,
@@ -366,29 +388,48 @@ impl<'a> EvalContext<'a> {
                     } => {
                         let payload = self.eval_program_expr_ref(*value).await?;
                         let projection = self.type_projection();
+                        let payload_plan =
+                            projection.plan_from_linked_nested_ref(payload_type, self.addr)?;
+                        let payload = runtime_to_wire_required_plan(
+                            &payload,
+                            Some(&payload_plan),
+                            "test effect typed throw",
+                            self.heap,
+                        )?;
                         RegisteredTestEffectOutcome::Throw {
                             payload,
-                            payload_plan: projection
-                                .plan_from_linked_nested_ref(payload_type, self.addr)?,
+                            payload_plan,
                             identity: projection.throw_payload_actual_type(payload_type)?,
                         }
                     }
                     LinkedTestEffectOutcomeIr::Stream { values, item_type } => {
+                        let item_plan = self
+                            .type_projection()
+                            .plan_from_linked_nested_ref(item_type, self.addr)?;
                         let mut runtime_values = Vec::with_capacity(values.len());
                         for value in values {
-                            runtime_values.push(self.eval_program_expr_ref(*value).await?);
+                            let value = self.eval_program_expr_ref(*value).await?;
+                            runtime_values.push(runtime_to_wire_required_plan(
+                                &value,
+                                Some(&item_plan),
+                                "test effect stream item",
+                                self.heap,
+                            )?);
                         }
                         RegisteredTestEffectOutcome::Stream {
                             values: runtime_values,
-                            item_plan: self
-                                .type_projection()
-                                .plan_from_linked_nested_ref(item_type, self.addr)?,
+                            item_plan,
                         }
                     }
                 };
-                self.interpreter
-                    .runtime_test_effects
-                    .register(effect_target, RegisteredTestEffect { expect, outcome });
+                self.interpreter.runtime_test_effects.register(
+                    effect_target,
+                    RegisteredTestEffect {
+                        expect,
+                        step_expect,
+                        outcome,
+                    },
+                );
                 Ok(Flow::Continue)
             }
             LinkedStmtIr::Throw {

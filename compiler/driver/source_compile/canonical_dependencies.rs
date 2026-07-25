@@ -90,6 +90,7 @@ fn package_analysis(
         let alias = dependency.effective_alias().to_string();
         let callables = package_callable_analysis(dependency, artifact)?;
         let mut analysis = PackageDependencyAnalysisFacts::new(
+            artifact.package_build_id.clone(),
             artifact.package_local_abi.local_abi_identity.clone(),
             callables,
         );

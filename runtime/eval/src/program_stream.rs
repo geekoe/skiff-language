@@ -32,6 +32,7 @@ use crate::{
     assembly_execution::RuntimeExecutionProjection,
     capabilities::StreamConsumerCleanup,
     error::{Result, RuntimeError},
+    test_effect_registry::TestEffectTarget,
     type_projection::EvalTypeProjection,
 };
 
@@ -588,6 +589,22 @@ impl Interpreter {
         let (addr, receiver_const, producer_self, call) = match &call.target {
             LinkedCallTarget::Executable { addr } => (addr.clone(), None, None, call.clone()),
             LinkedCallTarget::PackageDirect { call: target } => {
+                if self.test_effects_enabled {
+                    let effect_target = TestEffectTarget::package_callable(
+                        target.dependency_package_build_id().clone(),
+                        target.package_callable_id().clone(),
+                    );
+                    if self.runtime_test_effects.contains_target(&effect_target) {
+                        // Inline effects replace the package callable itself.
+                        // Do not turn a real `emit` body into a deferred
+                        // producer before ordinary call dispatch gets a chance
+                        // to consume the registered stream outcome. Keeping an
+                        // exhausted target in the registry also preserves the
+                        // required sequence-exhaustion error instead of
+                        // falling through to production code.
+                        return Ok(None);
+                    }
+                }
                 (target.executable_addr().clone(), None, None, call.clone())
             }
             LinkedCallTarget::LocalExecutable { .. }

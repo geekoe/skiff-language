@@ -1,7 +1,8 @@
 type Box { value: string }
 
 type EffectRequest {
-  id: string,
+  method: string,
+  url: string,
   detail: string,
 }
 
@@ -12,9 +13,9 @@ function mutate(input: Box) -> void {
 }
 
 function lookup(input: EffectRequest) -> EffectResponse {
-  return EffectResponse { value: input.id.concat(":real") }
+  return EffectResponse { value: input.url.concat(":real") }
 }
 
 function events(input: EffectRequest) -> Stream<EffectResponse> {
-  emit(EffectResponse { value: input.id.concat(":real") })
+  emit(EffectResponse { value: input.url.concat(":real") })
 }

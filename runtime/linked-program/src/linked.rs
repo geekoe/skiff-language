@@ -727,6 +727,7 @@ pub enum LinkedStmtIr {
     TestEffectRegister {
         target: LinkedCallTarget,
         expect: Option<LinkedTestEffectExpectedIr>,
+        step_expect: Option<LinkedTestEffectExpectedIr>,
         outcome: LinkedTestEffectOutcomeIr,
     },
     Expr {

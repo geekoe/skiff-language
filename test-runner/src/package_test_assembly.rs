@@ -163,12 +163,14 @@ pub fn assemble_package_test_fixture_for_run_with_config(
     all_contracts.extend(contracts.iter().cloned());
     let mut all_deployments = base.deployments.clone();
     all_deployments.extend(deployments.iter().cloned());
-    let mut roots = base
-        .assembly
-        .as_ref()
-        .map(|assembly| assembly.roots.clone())
-        .unwrap_or_default();
-    roots.extend(deployments.iter().map(service_deployment_ref));
+    // The base assembly supplies immutable provider/binding candidates, not
+    // additional roots. Keeping its production subject root would load both
+    // the production Package and the test overlay for the same Package ID,
+    // which is neither isolated nor a valid execution image.
+    let roots = deployments
+        .iter()
+        .map(service_deployment_ref)
+        .collect::<Vec<_>>();
     let assembly =
         resolve_runtime_assembly(&roots, &all_deployments, &all_contracts, &all_packages)
             .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;

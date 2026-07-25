@@ -1,16 +1,48 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    ContractLiteral, ContractTypeDescriptor, ContractTypeRef, PackageLocalAbiIdentity,
-    PackageRefIr, PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord, PackageTypeRef,
-    TypeRefIr,
+    BoundaryErrorContract, BoundaryFeatureUnavailableReason, ContractLiteral,
+    ContractTypeDescriptor, ContractTypeRef, PackageLocalAbiIdentity, PackageRefIr,
+    PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord, PackageTypeRef, TypeRefIr,
 };
 
+use super::operation_shape_diagnostics;
 use super::type_projection::{
     local_ir_json_compatible, package_type_assignable, package_type_target_assignable,
     resolved_contract_type,
 };
 use crate::{PackageDependencyAnalysisFacts, SourceDependencyAnalysisInput};
+
+#[test]
+fn typed_error_contract_is_supported_by_source_calls() {
+    let (mut contract, _) = crate::contract_dependency_test_fixture::contract_and_schema(
+        "example.echo",
+        "1.0.0",
+        "echo",
+        "Failure",
+        "Response",
+    );
+    let operation = contract.operations.values_mut().next().unwrap();
+    operation.contract.errors = BoundaryErrorContract::Typed {
+        payload_type: operation.contract.parameters[0].ty.clone(),
+        value_plan: operation.contract.parameters[0].value_plan.clone(),
+    };
+
+    assert!(
+        operation_shape_diagnostics("echo/echo", &operation.contract).is_empty(),
+        "a declared typed error is source-callable and can be handled by catch"
+    );
+
+    operation.contract.errors = BoundaryErrorContract::Unsupported {
+        reason: BoundaryFeatureUnavailableReason::LanguageUnsupported,
+    };
+    assert!(
+        operation_shape_diagnostics("echo/echo", &operation.contract)
+            .iter()
+            .any(|diagnostic| diagnostic.contains("error contract unsupported by source calls")),
+        "an explicitly unsupported error contract must remain rejected"
+    );
+}
 
 #[test]
 fn package_schema_assignability_requires_exact_owner_key_and_identity() {
@@ -242,6 +274,7 @@ fn dependency_analysis_with_alias(
         [(
             "types".to_string(),
             PackageDependencyAnalysisFacts::new(
+                skiff_artifact_model::PackageBuildId::new("build:types"),
                 PackageLocalAbiIdentity::new("abi"),
                 BTreeMap::new(),
             )

@@ -154,6 +154,7 @@ fn copy_package(
     written: &mut Vec<PathBuf>,
 ) -> Result<(), CanonicalFixtureError> {
     let artifact = source.read_package_artifact(reference)?;
+    let schema = source.resolve_package_artifact_schema(&artifact)?;
     for file in &artifact.files {
         let unit = source.read_file_ir(reference, file)?;
         written.push(target.write_file_ir(reference, file, &unit)?);
@@ -162,6 +163,10 @@ fn copy_package(
         let bytes = source.read_static_resource(reference, resource)?;
         written.push(target.write_static_resource(reference, resource, &bytes)?);
     }
+    for record in schema.records.values() {
+        written.push(target.write_package_schema_type_record(record)?);
+    }
+    written.push(target.write_package_schema_index(&schema.index)?);
     written.push(target.write_package_artifact(&artifact)?);
     Ok(())
 }

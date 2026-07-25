@@ -1,3 +1,4 @@
+mod source_inline_effect_e2e;
 #[path = "test_runtime.rs"]
 pub(crate) mod test_runtime;
 
@@ -217,6 +218,38 @@ async fn inline_effect_stream_is_consumed_in_buffered_event_order() {
 }
 
 #[tokio::test]
+async fn inline_effect_response_is_materialized_in_spawned_stream_producer_heap() {
+    let fixture = package_direct_fixture_with_caller(CallerFixtureKind::EffectProducerHeap);
+    let interpreter = Interpreter::for_runtime_assembly_with_test_effect_double_sequences(
+        Default::default(),
+        test_runtime::runtime_factory(),
+    );
+    let context = execution_context(&interpreter, fixture.eval_target);
+    let mut heap = RequestHeap::default();
+    let input = heap
+        .alloc_array(vec![RuntimeValue::String("request".to_string())])
+        .expect("request array should allocate");
+
+    let result = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.caller_addr,
+            vec![RuntimeValue::Heap(input)],
+        )
+        .await
+        .expect("spawned producer should materialize and emit the registered response");
+
+    let RuntimeValue::Heap(response) = result else {
+        panic!("stream consumer should return the response array");
+    };
+    assert_array_item(&heap, response, "response");
+    interpreter
+        .finalize_test_case()
+        .expect("producer-dispatched response should be consumed");
+}
+
+#[tokio::test]
 async fn object_materialization_interpreter_heap_shape_distinguishes_construct_and_map_literal() {
     let (object, object_heap) = execute_materialization_expression(ExprIr::Construct {
         type_ref: TypeRefIr::Record {
@@ -384,6 +417,7 @@ enum CallerFixtureKind {
     EffectUnused,
     EffectThrowCatch,
     EffectStream,
+    EffectProducerHeap,
 }
 
 fn package_direct_fixture_with_caller(caller_kind: CallerFixtureKind) -> PackageDirectFixture {
@@ -429,6 +463,7 @@ fn package_direct_fixture_with_caller(caller_kind: CallerFixtureKind) -> Package
             source_span: None,
         });
     }
+    let producer_array_type = array_type.clone();
     caller_file.executables.push(match caller_kind {
         CallerFixtureKind::Mutation => {
             caller_executable(array_type, dependency_ref.clone(), callable_id.clone())
@@ -453,7 +488,21 @@ fn package_direct_fixture_with_caller(caller_kind: CallerFixtureKind) -> Package
         CallerFixtureKind::EffectStream => {
             inline_effect_stream_executable(array_type, dependency_ref.clone(), callable_id.clone())
         }
+        CallerFixtureKind::EffectProducerHeap => inline_effect_producer_heap_caller_executable(
+            array_type.clone(),
+            dependency_ref.clone(),
+            callable_id.clone(),
+        ),
     });
+    if matches!(caller_kind, CallerFixtureKind::EffectProducerHeap) {
+        caller_file
+            .executables
+            .push(inline_effect_dispatching_stream_producer(
+                producer_array_type,
+                dependency_ref,
+                callable_id,
+            ));
+    }
     skiff_artifact_identity::assign_file_ir_identity(&mut caller_file)
         .expect("caller File IR should receive a canonical identity");
     let mut caller_package = private_package("example.package-direct-caller", &caller_file);
@@ -524,6 +573,189 @@ fn package_direct_fixture_with_caller(caller_kind: CallerFixtureKind) -> Package
     }
 }
 
+fn inline_effect_producer_heap_caller_executable(
+    array_type: TypeRefIr,
+    package_ref: PackageRefIr,
+    package_callable_id: PackageCallableId,
+) -> ExecutableIr {
+    ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: "inlineEffectProducerHeapCase".to_string(),
+        type_params: Vec::new(),
+        params: vec![ParamIr {
+            name: "value".to_string(),
+            slot: 0,
+            ty: array_type.clone(),
+        }],
+        return_type: array_type.clone(),
+        self_type: None,
+        slots: SlotLayout {
+            slots: vec![
+                SlotIr {
+                    index: 0,
+                    name: "value".to_string(),
+                    kind: SlotKind::Param,
+                },
+                SlotIr {
+                    index: 1,
+                    name: "item".to_string(),
+                    kind: SlotKind::Temp,
+                },
+                SlotIr {
+                    index: 2,
+                    name: "last".to_string(),
+                    kind: SlotKind::Temp,
+                },
+            ],
+            frame_size: 3,
+        },
+        may_suspend: true,
+        body: ExecutableBody {
+            blocks: vec![
+                BlockIr {
+                    label: "entry".to_string(),
+                    statements: vec![
+                        StmtRefIr { statement: 0 },
+                        StmtRefIr { statement: 1 },
+                        StmtRefIr { statement: 2 },
+                        StmtRefIr { statement: 4 },
+                    ],
+                },
+                BlockIr {
+                    label: "consume".to_string(),
+                    statements: vec![StmtRefIr { statement: 3 }],
+                },
+            ],
+            statements: vec![
+                StmtIr::TestEffectRegister {
+                    target: TestEffectRegisterTargetIr::PackageCallable {
+                        package_ref,
+                        callable_id: package_callable_id,
+                    },
+                    expect: None,
+                    step_expect: None,
+                    outcome: TestEffectOutcomeIr::Respond {
+                        value: ExprRefIr { expression: 2 },
+                        value_type: array_type.clone(),
+                    },
+                },
+                StmtIr::Let {
+                    slot: 2,
+                    value: ExprRefIr { expression: 0 },
+                },
+                StmtIr::ForIn {
+                    item_slot: 1,
+                    item_type: Some(array_type.clone()),
+                    value_slot: None,
+                    iterable: ExprRefIr { expression: 3 },
+                    body: "consume".to_string(),
+                },
+                StmtIr::Assign {
+                    target: AssignTargetIr::Slot { slot: 2 },
+                    value: ExprRefIr { expression: 4 },
+                },
+                StmtIr::Return {
+                    value: Some(ExprRefIr { expression: 5 }),
+                },
+            ],
+            expressions: vec![
+                ExprIr::LoadSlot { slot: 0 },
+                ExprIr::Literal {
+                    value: LiteralIr::String {
+                        value: "response".to_string(),
+                    },
+                },
+                ExprIr::ArrayLiteral {
+                    items: vec![ExprRefIr { expression: 1 }],
+                },
+                ExprIr::Call {
+                    call: skiff_artifact_model::CallIr {
+                        target: CallTargetIr::LocalExecutable {
+                            executable_index: 1,
+                        },
+                        args: vec![ExprRefIr { expression: 0 }],
+                        type_args: BTreeMap::new(),
+                        metadata: BTreeMap::new(),
+                    },
+                },
+                ExprIr::LoadSlot { slot: 1 },
+                ExprIr::LoadSlot { slot: 2 },
+            ],
+        },
+        source_span: None,
+    }
+}
+
+fn inline_effect_dispatching_stream_producer(
+    array_type: TypeRefIr,
+    package_ref: PackageRefIr,
+    package_callable_id: PackageCallableId,
+) -> ExecutableIr {
+    ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: "dispatchEffectInProducerHeap".to_string(),
+        type_params: Vec::new(),
+        params: vec![ParamIr {
+            name: "value".to_string(),
+            slot: 0,
+            ty: array_type.clone(),
+        }],
+        return_type: TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![array_type],
+        },
+        self_type: None,
+        slots: SlotLayout {
+            slots: vec![
+                SlotIr {
+                    index: 0,
+                    name: "value".to_string(),
+                    kind: SlotKind::Param,
+                },
+                SlotIr {
+                    index: 1,
+                    name: "response".to_string(),
+                    kind: SlotKind::Temp,
+                },
+            ],
+            frame_size: 2,
+        },
+        may_suspend: true,
+        body: ExecutableBody {
+            blocks: vec![BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }, StmtRefIr { statement: 1 }],
+            }],
+            statements: vec![
+                StmtIr::Let {
+                    slot: 1,
+                    value: ExprRefIr { expression: 1 },
+                },
+                StmtIr::Emit {
+                    operation: "provide".to_string(),
+                    value: ExprRefIr { expression: 2 },
+                },
+            ],
+            expressions: vec![
+                ExprIr::LoadSlot { slot: 0 },
+                ExprIr::Call {
+                    call: skiff_artifact_model::CallIr {
+                        target: CallTargetIr::PackageCallable {
+                            package_ref,
+                            package_callable_id,
+                        },
+                        args: vec![ExprRefIr { expression: 0 }],
+                        type_args: BTreeMap::new(),
+                        metadata: BTreeMap::new(),
+                    },
+                },
+                ExprIr::LoadSlot { slot: 1 },
+            ],
+        },
+        source_span: None,
+    }
+}
+
 fn inline_effect_stream_executable(
     array_type: TypeRefIr,
     package_ref: PackageRefIr,
@@ -584,6 +816,7 @@ fn inline_effect_stream_executable(
                         callable_id: package_callable_id.clone(),
                     },
                     expect: None,
+                    step_expect: None,
                     outcome: TestEffectOutcomeIr::Stream {
                         values: vec![ExprRefIr { expression: 1 }, ExprRefIr { expression: 2 }],
                         item_type: TypeRefIr::builtin("string"),
@@ -687,6 +920,7 @@ fn inline_effect_throw_catch_executable(
                         callable_id: package_callable_id.clone(),
                     },
                     expect: None,
+                    step_expect: None,
                     outcome: TestEffectOutcomeIr::Throw {
                         value: ExprRefIr { expression: 2 },
                         payload_type: error_type.clone(),
@@ -751,6 +985,7 @@ fn inline_effect_caller_executable(
             value: ExprRefIr { expression: 1 },
             request_type: array_type.clone(),
         }),
+        step_expect: None,
         outcome: TestEffectOutcomeIr::Respond {
             value: ExprRefIr { expression: 0 },
             value_type: array_type.clone(),

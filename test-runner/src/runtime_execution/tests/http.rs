@@ -198,6 +198,11 @@ where
                 Err(error) => panic!("test server accept failed: {error}"),
             }
         };
+        // macOS may inherit O_NONBLOCK from the listener onto the accepted
+        // socket. The test handler intentionally uses blocking Read/Write with
+        // bounded timeouts, so normalize the accepted side before the client
+        // has necessarily finished sending its headers.
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();

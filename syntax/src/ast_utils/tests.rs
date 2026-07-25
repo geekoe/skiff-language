@@ -378,6 +378,7 @@ fn compiler_test_effect_walkers_keep_probe_and_expectation_order() {
     let mut stmt = Stmt::CompilerTestEffectRegister {
         target: "std.http.request".to_string(),
         target_probe: Expr::Identifier("target_probe".to_string()),
+        declaration_start: true,
         expect: Some(Expr::Identifier("common_expect".to_string())),
         step_expect: Some(Expr::Identifier("step_expect".to_string())),
         outcome: TestEffectStepOutcome::Respond {
@@ -401,7 +402,7 @@ fn compiler_test_effect_walkers_keep_probe_and_expectation_order() {
         .collect::<Vec<_>>();
     assert_eq!(
         expression_names,
-        ["target_probe", "common_expect", "step_expect", "outcome"]
+        ["common_expect", "step_expect", "outcome"]
     );
 
     struct PrefixIdentifiers;

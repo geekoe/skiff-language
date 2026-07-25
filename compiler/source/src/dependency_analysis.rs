@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     BoundaryOperationDescriptor, CallableSemanticFacts, ContractOperationId, ContractRequirement,
-    PackageCallableId, PackageCallableSignature, PackageLocalAbiIdentity, PackageSchemaTypeRecord,
-    ServiceContract,
+    PackageBuildId, PackageCallableId, PackageCallableSignature, PackageLocalAbiIdentity,
+    PackageSchemaTypeRecord, ServiceContract,
 };
 use skiff_compiler_input::{
     ContractDependencyError, ContractDependencyIndex, ResolvedContractDependency,
@@ -35,6 +35,7 @@ pub struct SourceDependencyAnalysisInput {
 
 #[derive(Debug, Clone)]
 pub struct PackageDependencyAnalysisFacts {
+    package_build_id: PackageBuildId,
     expected_local_abi: PackageLocalAbiIdentity,
     callables: BTreeMap<String, PackageDependencyCallableAnalysis>,
     schema_records: BTreeMap<String, skiff_artifact_model::PackageSchemaTypeRecord>,
@@ -50,6 +51,7 @@ pub struct PackageDependencyCallableAnalysis {
 pub(crate) enum ResolvedDependencyAnalysisTarget<'a> {
     Package {
         alias: String,
+        package_build_id: &'a PackageBuildId,
         expected_local_abi: &'a PackageLocalAbiIdentity,
         callable: &'a PackageDependencyCallableAnalysis,
     },
@@ -120,6 +122,7 @@ impl SourceDependencyAnalysisInput {
             return match facts.callables.get(callable_path) {
                 Some(callable) => ResolvedDependencyAnalysisTarget::Package {
                     alias: alias.to_string(),
+                    package_build_id: &facts.package_build_id,
                     expected_local_abi: &facts.expected_local_abi,
                     callable,
                 },
@@ -274,10 +277,12 @@ impl SourceDependencyAnalysisInput {
 
 impl PackageDependencyAnalysisFacts {
     pub fn new(
+        package_build_id: PackageBuildId,
         expected_local_abi: PackageLocalAbiIdentity,
         callables: BTreeMap<String, PackageDependencyCallableAnalysis>,
     ) -> Self {
         Self {
+            package_build_id,
             expected_local_abi,
             callables,
             schema_records: BTreeMap::new(),
@@ -365,6 +370,7 @@ mod tests {
             [(
                 "pkg".to_string(),
                 PackageDependencyAnalysisFacts::new(
+                    PackageBuildId::new("build:pkg"),
                     PackageLocalAbiIdentity::new("abi:pkg"),
                     BTreeMap::from([
                         ("run".to_string(), package_callable("callable:run")),
@@ -492,6 +498,7 @@ mod tests {
             BTreeMap::from([(
                 "pkg".to_string(),
                 PackageDependencyAnalysisFacts::new(
+                    PackageBuildId::new("build:pkg"),
                     PackageLocalAbiIdentity::new("abi:pkg"),
                     BTreeMap::from([("run".to_string(), package_callable("callable:run"))]),
                 ),
@@ -529,6 +536,7 @@ mod tests {
             [(
                 "pkg".to_string(),
                 PackageDependencyAnalysisFacts::new(
+                    PackageBuildId::new("build:pkg"),
                     PackageLocalAbiIdentity::new("abi"),
                     BTreeMap::new(),
                 )
@@ -577,6 +585,7 @@ mod tests {
             BTreeMap::from([(
                 "pkg".to_string(),
                 PackageDependencyAnalysisFacts::new(
+                    PackageBuildId::new("build:pkg"),
                     PackageLocalAbiIdentity::new("abi:pkg"),
                     BTreeMap::from([
                         ("first".to_string(), package_callable("callable:duplicate")),
@@ -598,6 +607,7 @@ mod tests {
 
     fn package_facts(abi: &str, callable: &str) -> PackageDependencyAnalysisFacts {
         PackageDependencyAnalysisFacts::new(
+            PackageBuildId::new(format!("build:{abi}")),
             PackageLocalAbiIdentity::new(abi),
             BTreeMap::from([("run".to_string(), package_callable(callable))]),
         )

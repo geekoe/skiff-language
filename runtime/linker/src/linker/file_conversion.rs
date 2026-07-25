@@ -701,6 +701,7 @@ fn linked_stmt(
         artifact::StmtIr::TestEffectRegister {
             target,
             expect,
+            step_expect,
             outcome,
         } => {
             let target = match target {
@@ -723,6 +724,12 @@ fn linked_stmt(
                     value: linked_expr_ref(&expected.value),
                     request_type: linked_type_ref(&expected.request_type),
                 }),
+                step_expect: step_expect
+                    .as_ref()
+                    .map(|expected| LinkedTestEffectExpectedIr {
+                        value: linked_expr_ref(&expected.value),
+                        request_type: linked_type_ref(&expected.request_type),
+                    }),
                 outcome: match outcome {
                     artifact::TestEffectOutcomeIr::Respond { value, value_type } => {
                         LinkedTestEffectOutcomeIr::Respond {

@@ -27,7 +27,8 @@ use skiff_compiler_source::{
 use skiff_deployment::storage::{CanonicalArtifactStore, EcosystemStorageError};
 use skiff_syntax::ast::{
     Block, BlockSourceSpans, DependencySourceAddress, ExecutableSourceSpans, Expr, ExprSourceSpans,
-    FunctionDecl, SourceFile, Stmt, StmtSourceSpans, TestEffectOutcomeSourceSpans, TypeRef,
+    FunctionDecl, SourceFile, Stmt, StmtSourceSpans, TestEffectOutcome,
+    TestEffectOutcomeSourceSpans, TestEffectStepOutcome, TestEffectStepOutcomeSourceSpans, TypeRef,
 };
 use thiserror::Error;
 
@@ -335,7 +336,11 @@ fn package_test_ast_for_cases<'a>(
                 let effect_spans = source_spans
                     .as_ref()
                     .and_then(|spans| spans.effects.get(effect_index));
-                for (outcome_index, outcome) in effect.outcomes.iter().enumerate() {
+                let steps = flattened_test_effect_steps(&effect.outcome);
+                let step_spans = effect_spans
+                    .map(|spans| flattened_test_effect_step_spans(&spans.outcome))
+                    .unwrap_or_default();
+                for (step_index, (step_expect, outcome)) in steps.into_iter().enumerate() {
                     let target_probe = Expr::Call {
                         callee: Box::new(match effect.target.split_once('/') {
                             Some((dependency_ref, public_path)) => {
@@ -351,8 +356,14 @@ fn package_test_ast_for_cases<'a>(
                     setup_statements.push(Stmt::CompilerTestEffectRegister {
                         target: effect.target.clone(),
                         target_probe,
-                        expect: effect.expect.clone(),
-                        outcome: outcome.clone(),
+                        declaration_start: step_index == 0,
+                        // The target-level expression is evaluated once. The
+                        // runtime registry snapshots it on the first
+                        // registration and applies that snapshot to every
+                        // later step in the same sequence.
+                        expect: (step_index == 0).then(|| effect.expect.clone()).flatten(),
+                        step_expect,
+                        outcome,
                     });
                     if let Some(effect_spans) = effect_spans {
                         let mut expressions = Vec::new();
@@ -367,18 +378,25 @@ fn package_test_ast_for_cases<'a>(
                             blocks: Vec::new(),
                             record_fields: Vec::new(),
                         });
-                        if let Some(expect) = &effect_spans.expect {
-                            expressions.push(expect.clone());
+                        if step_index == 0 {
+                            if let Some(expect) = &effect_spans.expect {
+                                expressions.push(expect.clone());
+                            }
                         }
-                        match effect_spans.outcomes.get(outcome_index) {
-                            Some(TestEffectOutcomeSourceSpans::Respond(span))
-                            | Some(TestEffectOutcomeSourceSpans::Throw(span)) => {
+                        let step_spans = step_spans
+                            .get(step_index)
+                            .expect("effect AST and source span steps stay aligned");
+                        if let Some(step_expect) = &step_spans.0 {
+                            expressions.push(step_expect.clone());
+                        }
+                        match &step_spans.1 {
+                            TestEffectStepOutcomeSourceSpans::Respond(span)
+                            | TestEffectStepOutcomeSourceSpans::Throw(span) => {
                                 expressions.push(span.clone())
                             }
-                            Some(TestEffectOutcomeSourceSpans::Stream(spans)) => {
+                            TestEffectStepOutcomeSourceSpans::Stream(spans) => {
                                 expressions.extend(spans.iter().cloned())
                             }
-                            None => {}
                         }
                         setup_statement_spans.push(StmtSourceSpans {
                             span: effect.span,
@@ -483,9 +501,60 @@ fn package_test_ast_for_cases<'a>(
     overlay
 }
 
+fn flattened_test_effect_steps(
+    outcome: &TestEffectOutcome,
+) -> Vec<(Option<Expr>, TestEffectStepOutcome)> {
+    match outcome {
+        TestEffectOutcome::Respond { value } => vec![(
+            None,
+            TestEffectStepOutcome::Respond {
+                value: value.clone(),
+            },
+        )],
+        TestEffectOutcome::Throw { value } => vec![(
+            None,
+            TestEffectStepOutcome::Throw {
+                value: value.clone(),
+            },
+        )],
+        TestEffectOutcome::Stream { events } => vec![(
+            None,
+            TestEffectStepOutcome::Stream {
+                events: events.clone(),
+            },
+        )],
+        TestEffectOutcome::Sequence { steps } => steps
+            .iter()
+            .map(|step| (step.expect.clone(), step.outcome.clone()))
+            .collect(),
+    }
+}
+
+fn flattened_test_effect_step_spans(
+    outcome: &TestEffectOutcomeSourceSpans,
+) -> Vec<(Option<ExprSourceSpans>, TestEffectStepOutcomeSourceSpans)> {
+    match outcome {
+        TestEffectOutcomeSourceSpans::Respond(value) => vec![(
+            None,
+            TestEffectStepOutcomeSourceSpans::Respond(value.clone()),
+        )],
+        TestEffectOutcomeSourceSpans::Throw(value) => {
+            vec![(None, TestEffectStepOutcomeSourceSpans::Throw(value.clone()))]
+        }
+        TestEffectOutcomeSourceSpans::Stream(events) => vec![(
+            None,
+            TestEffectStepOutcomeSourceSpans::Stream(events.clone()),
+        )],
+        TestEffectOutcomeSourceSpans::Sequence { steps } => steps
+            .iter()
+            .map(|step| (step.expect.clone(), step.outcome.clone()))
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use skiff_syntax::{ast::TestEffectOutcome, parser::parse_source};
+    use skiff_syntax::{ast::TestEffectStepOutcome, parser::parse_source};
 
     use super::*;
 
@@ -510,7 +579,7 @@ test "uses dependency" effects {
         assert_eq!(overlay.functions[0].name, "skiffTestCase0Setup");
         let [Stmt::CompilerTestEffectRegister {
             target,
-            outcome: TestEffectOutcome::Respond { .. },
+            outcome: TestEffectStepOutcome::Respond { .. },
             ..
         }] = overlay.functions[0].body.statements.as_slice()
         else {
@@ -527,5 +596,56 @@ test "uses dependency" effects {
             &Expr::Identifier("skiffTestCase0Setup".into())
         );
         assert_eq!(overlay.source_spans.functions.len(), 2);
+    }
+
+    #[test]
+    fn sequence_steps_become_ordered_registrations_with_separate_expectations() {
+        let ast = parse_source(
+            r#"
+test "uses sequence" effects {
+  dep/run {
+    expect: { method: "POST" },
+    sequence: [
+      {
+        expect: { url: "/first" },
+        respond: { value: "first" },
+      },
+      {
+        expect: { url: "/second" },
+        throw: Failure { message: "second" },
+      },
+    ],
+  }
+} {
+  assert true;
+}
+"#,
+        )
+        .expect("test source parses");
+        let overlay = package_test_ast_for_cases(&ast, [(0, "skiffTestCase0")]);
+        let [Stmt::CompilerTestEffectRegister {
+            expect: Some(_),
+            step_expect: Some(_),
+            outcome: TestEffectStepOutcome::Respond { .. },
+            ..
+        }, Stmt::CompilerTestEffectRegister {
+            expect: None,
+            step_expect: Some(_),
+            outcome: TestEffectStepOutcome::Throw { .. },
+            ..
+        }] = overlay.functions[0].body.statements.as_slice()
+        else {
+            panic!("sequence must flatten to two ordered compiler-owned registrations");
+        };
+        assert_eq!(
+            overlay.source_spans.functions[0]
+                .body
+                .statements
+                .iter()
+                .map(|statement| statement.expressions.len())
+                .collect::<Vec<_>>(),
+            [4, 3],
+            "the common expect is evaluated once; each step keeps its own expect and outcome spans"
+        );
     }
 }

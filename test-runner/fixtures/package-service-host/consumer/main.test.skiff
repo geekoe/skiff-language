@@ -4,27 +4,50 @@ test "provider observes helper mutation" {
 
 test "inline package effect sequence uses typed setup and request subset" effects {
   helper/tools.lookup {
-    expect: helper.EffectRequest { id: "sequence", detail: "detail-is-not-in-subset" },
-    respondSequence: [
-      helper.EffectResponse { value: "first" },
-      helper.EffectResponse { value: "second" },
+    expect: { method: "POST" },
+    sequence: [
+      {
+        expect: { url: "https://example.test/usercode" },
+        respond: helper.EffectResponse { value: "first" },
+      },
+      {
+        expect: { url: "https://example.test/deviceauth/token" },
+        respond: helper.EffectResponse { value: "second" },
+      },
+      {
+        expect: { url: "https://example.test/oauth/token" },
+        respond: helper.EffectResponse { value: "third" },
+      },
     ],
   }
 } {
-  assert root.main.effectLookup("sequence", "detail-is-not-in-subset") == "first"
-  assert root.main.effectLookup("sequence", "different-extra-detail") == "second"
+  assert root.main.effectLookup("https://example.test/usercode", "first-extra-detail") == "first"
+  assert root.main.effectLookup("https://example.test/deviceauth/token", "second-extra-detail") == "second"
+  assert root.main.effectLookup("https://example.test/oauth/token", "third-extra-detail") == "third"
 }
 
-test "inline package effect materializes stream events" effects {
+test "inline package effect sequence materializes stream outcomes" effects {
   helper/tools.events {
-    expect: helper.EffectRequest { id: "events", detail: "stream" },
-    stream: [
-      helper.EffectResponse { value: "first" },
-      helper.EffectResponse { value: ":second" },
+    expect: { method: "GET" },
+    sequence: [
+      {
+        expect: { url: "https://example.test/events/first" },
+        stream: [
+          helper.EffectResponse { value: "first" },
+          helper.EffectResponse { value: ":second" },
+        ],
+      },
+      {
+        expect: { url: "https://example.test/events/third" },
+        stream: [
+          helper.EffectResponse { value: "third" },
+        ],
+      },
     ],
   }
 } {
-  assert root.main.effectEvents("events") == "first:second"
+  assert root.main.effectEvents("https://example.test/events/first") == "first:second", "first stream sequence outcome mismatch"
+  assert root.main.effectEvents("https://example.test/events/third") == "third", "second stream sequence outcome mismatch"
 }
 
 test "inline service effect bypasses the bound provider by exact contract operation" effects {

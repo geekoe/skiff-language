@@ -106,8 +106,12 @@ fn contract_interface_model() -> (PackageSourceModel, PackageSchemaTypeId) {
     let dependency_analysis = SourceDependencyAnalysisInput::new(
         [(
             "types".to_string(),
-            PackageDependencyAnalysisFacts::new(package_local_abi, BTreeMap::new())
-                .with_schema_records([package_type_record]),
+            PackageDependencyAnalysisFacts::new(
+                skiff_artifact_model::PackageBuildId::new("build:types"),
+                package_local_abi,
+                BTreeMap::new(),
+            )
+            .with_schema_records([package_type_record]),
         )],
         [dependency],
     )

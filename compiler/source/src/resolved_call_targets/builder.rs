@@ -228,6 +228,7 @@ impl TargetCollector<'_> {
                         alias,
                         expected_local_abi,
                         callable,
+                        ..
                     } => {
                         if local_target.is_some() {
                             return unknown(UnknownCallTargetReason::UnsupportedDynamicDispatch);

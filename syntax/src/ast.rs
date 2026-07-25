@@ -395,6 +395,7 @@ pub enum Stmt {
     CompilerTestEffectRegister {
         target: String,
         target_probe: Expr,
+        declaration_start: bool,
         expect: Option<Expr>,
         step_expect: Option<Expr>,
         outcome: TestEffectStepOutcome,

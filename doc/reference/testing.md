@@ -170,8 +170,8 @@ test "request succeeds" effects {
 声明自己的 request subset 和一种结果：
 
 ```skiff
-test "sequence and stream" effects {
-  dependency.retry {
+test "unary and stream sequences" effects {
+  dependency.request {
     expect: {
       method: "POST",
     },
@@ -185,13 +185,22 @@ test "sequence and stream" effects {
         throw: RequestFailure { code: "denied" },
       },
       {
-        expect: { url: "https://example.test/events" },
-        stream: [{ value: "first" }, { value: "second" }],
+        expect: { url: "https://example.test/third" },
+        respond: { status: 200 },
       },
     ],
   },
   dependency.events {
-    stream: [{ value: "first" }, { value: "second" }],
+    sequence: [
+      {
+        expect: { url: "https://example.test/events/first" },
+        stream: [{ value: "first" }, { value: "second" }],
+      },
+      {
+        expect: { url: "https://example.test/events/second" },
+        throw: RequestFailure { code: "disconnected" },
+      },
+    ],
   },
   dependency.failure {
     throw: RequestFailure { code: "denied" },
@@ -203,10 +212,15 @@ test "sequence and stream" effects {
 
 `respond`、`throw`、`stream` 与 `sequence` 互斥；一个 target 必须且只能声明其中一个
 结果字段。`sequence` 必须非空，每一步可以声明一个可选 `expect`，并且必须且只能声明
-`respond`、`throw` 或 `stream` 之一。target 顶层 `expect` 是每一步都必须满足的公共
-request subset；step `expect` 是该次调用额外必须满足的 subset。两者分别匹配并取逻辑
-AND，不做 object merge 或覆盖。序列和 stream event 表使用 effect DSL 的
-`[item, ...]`，不是 Skiff 通用 array literal。
+`respond`、`throw` 或 `stream` 之一，但只能使用该 target 签名允许的结果。普通 unary
+target 的步骤只能是 `respond` 或签名声明的 typed `throw`；直接返回 `Stream<T>` 的
+target 只能是 `stream` 或签名声明的 typed `throw`。不把 unary response 隐式解释成
+stream，也不把 `respond` 隐式解释成 `Stream<T>` 的单个 event 或完整 stream。target
+顶层 `expect` 是每一步都必须满足的公共 request subset；step `expect` 是该次调用额外
+必须满足的 subset。两者分别匹配并取逻辑 AND，不做 object merge 或覆盖。序列和 stream
+event 表使用 effect DSL 的 `[item, ...]`，不是 Skiff 通用 array literal。顶层
+`expect` 表达式在 setup 中只求值一次；Runtime 保存其 wire 快照，并对 sequence 的每一步
+复用同一快照。
 
 规则：
 
@@ -223,6 +237,8 @@ AND，不做 object merge 或覆盖。序列和 stream event 表使用 effect DS
   body 之后、runtime finalization 之前的独立 phase，不改变现有 `effects` surface；
 - effect declaration 只属于当前 case，case 完成后 registry 销毁；
 - expected request subset 在真实 typed value materialization 后匹配；
+- 同一个精确 linked target 在一个 case 中只能声明一次；不同 alias 如果解析到同一个
+  Package callable 或 service operation，也必须拒绝并要求写成一个显式 `sequence`；
 - sequence 不能为空，未消费或超量调用必须产生明确测试失败；
 - double 执行仍参与 effect conflict 和 capability policy；
 - 不提供 JSON manifest compatibility loader；旧文件和旧 schema 必须迁移或删除。

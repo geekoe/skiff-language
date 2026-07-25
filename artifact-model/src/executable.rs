@@ -176,6 +176,8 @@ pub enum StmtIr {
         target: TestEffectRegisterTargetIr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expect: Option<TestEffectExpectedIr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_expect: Option<TestEffectExpectedIr>,
         outcome: TestEffectOutcomeIr,
     },
     Expr {

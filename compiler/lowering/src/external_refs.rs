@@ -161,6 +161,7 @@ fn collect_stmt_external_refs(stmt: &StmtIr, refs: &mut ExternalRefTable) {
         StmtIr::TestEffectRegister {
             target,
             expect,
+            step_expect,
             outcome,
         } => {
             if let TestEffectRegisterTargetIr::PackageCallable {
@@ -178,6 +179,9 @@ fn collect_stmt_external_refs(stmt: &StmtIr, refs: &mut ExternalRefTable) {
             }
             if let Some(expect) = expect {
                 collect_type_ref_external_refs(&expect.request_type, refs);
+            }
+            if let Some(step_expect) = step_expect {
+                collect_type_ref_external_refs(&step_expect.request_type, refs);
             }
             match outcome {
                 TestEffectOutcomeIr::Respond { value_type, .. } => {

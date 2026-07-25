@@ -21,9 +21,9 @@ use skiff_runtime_capability_context::{
     HttpClientCapabilityContext, OwnedActorCapabilityContext, OwnedConfigCapabilityContext,
     OwnedExecutionControl, OwnedExecutionControlApi, OwnedWebsocketCapabilityContext,
     SpawnSubmitControlRequest, StreamCancelSignal, StreamLifetimeGuard, StreamPoll,
-    StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeResult, StreamSink,
-    TelemetryCapabilityApi, TelemetryCapabilityContext, WebsocketCapabilityApi,
-    WebsocketCapabilityContext,
+    StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError, StreamRuntimeResult,
+    StreamSink, StreamSinkApi, TelemetryCapabilityApi, TelemetryCapabilityContext,
+    WebsocketCapabilityApi, WebsocketCapabilityContext,
 };
 use skiff_runtime_model::{
     addr::ExecutableAddr,
@@ -31,6 +31,7 @@ use skiff_runtime_model::{
     runtime_value::{ActorRef, RuntimeValue},
     type_plan::RuntimeTypePlan,
 };
+use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 
 use crate::{
     capabilities::{
@@ -112,6 +113,7 @@ impl EvalRuntimeFactoryApi for TestRuntimeFactory {
 struct TestStreamRuntime {
     next_id: AtomicU64,
     buffered: Mutex<HashMap<u64, VecDeque<Value>>>,
+    channels: Mutex<HashMap<u64, Arc<TestStreamChannel>>>,
 }
 
 impl TestStreamRuntime {
@@ -125,29 +127,218 @@ impl TestStreamRuntime {
             })
     }
 
-    fn poll(&self, value: &Value) -> StreamRuntimeResult<StreamPoll> {
+    async fn poll(&self, value: &Value) -> StreamRuntimeResult<StreamPoll> {
         let id = Self::stream_id(value)?;
-        let mut buffered = self.buffered.lock().expect("test stream mutex poisoned");
-        let Some(items) = buffered.get_mut(&id) else {
-            return Ok(StreamPoll::End);
-        };
-        match items.pop_front() {
-            Some(item) => Ok(StreamPoll::Item(item)),
-            None => {
-                buffered.remove(&id);
-                Ok(StreamPoll::End)
+        {
+            let mut buffered = self.buffered.lock().expect("test stream mutex poisoned");
+            if let Some(items) = buffered.get_mut(&id) {
+                return match items.pop_front() {
+                    Some(item) => Ok(StreamPoll::Item(item)),
+                    None => {
+                        buffered.remove(&id);
+                        Ok(StreamPoll::End)
+                    }
+                };
             }
         }
+        let channel = self
+            .channels
+            .lock()
+            .expect("test stream mutex poisoned")
+            .get(&id)
+            .cloned();
+        let Some(channel) = channel else {
+            return Ok(StreamPoll::End);
+        };
+        let event = channel.receiver.lock().await.recv().await;
+        match event {
+            Some(TestStreamEvent::Item(item)) => Ok(StreamPoll::Item(item)),
+            Some(TestStreamEvent::End) | None => {
+                self.channels
+                    .lock()
+                    .expect("test stream mutex poisoned")
+                    .remove(&id);
+                Ok(StreamPoll::End)
+            }
+            Some(TestStreamEvent::Fail(error)) => {
+                self.channels
+                    .lock()
+                    .expect("test stream mutex poisoned")
+                    .remove(&id);
+                Err(error)
+            }
+        }
+    }
+
+    fn create_channel(&self) -> (Value, StreamSink) {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (sender, receiver) = mpsc::channel(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_notify = Arc::new(Notify::new());
+        self.channels
+            .lock()
+            .expect("test stream mutex poisoned")
+            .insert(
+                id,
+                Arc::new(TestStreamChannel {
+                    receiver: AsyncMutex::new(receiver),
+                    cancelled: Arc::clone(&cancelled),
+                    cancel_notify: Arc::clone(&cancel_notify),
+                }),
+            );
+        (
+            stream_value(&id.to_string()),
+            StreamSink::new(TestStreamSink {
+                id,
+                sender,
+                cancelled,
+                cancel_notify,
+            }),
+        )
+    }
+}
+
+#[derive(Debug)]
+struct TestStreamChannel {
+    receiver: AsyncMutex<mpsc::Receiver<TestStreamEvent>>,
+    cancelled: Arc<AtomicBool>,
+    cancel_notify: Arc<Notify>,
+}
+
+#[derive(Debug)]
+enum TestStreamEvent {
+    Item(Value),
+    End,
+    Fail(StreamRuntimeError),
+}
+
+#[derive(Clone, Debug)]
+struct TestStreamSink {
+    id: u64,
+    sender: mpsc::Sender<TestStreamEvent>,
+    cancelled: Arc<AtomicBool>,
+    cancel_notify: Arc<Notify>,
+}
+
+impl TestStreamSink {
+    async fn send_event(&self, event: TestStreamEvent) -> StreamRuntimeResult<()> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(StreamRuntimeError::cancelled());
+        }
+        self.sender
+            .send(event)
+            .await
+            .map_err(|_| StreamRuntimeError::decode("ordinary test stream receiver was dropped"))
+    }
+}
+
+impl StreamSinkApi for TestStreamSink {
+    fn send<'a>(
+        &'a self,
+        item: Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = StreamRuntimeResult<()>> + Send + 'a>>
+    {
+        Box::pin(async move { self.send_event(TestStreamEvent::Item(item)).await })
+    }
+
+    fn send_with_cancel<'a>(
+        &'a self,
+        item: Value,
+        cancel_flags: &'a [Arc<AtomicBool>],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = StreamRuntimeResult<()>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            if cancel_flags.iter().any(|flag| flag.load(Ordering::Acquire)) {
+                return Err(StreamRuntimeError::cancelled());
+            }
+            self.send_event(TestStreamEvent::Item(item)).await
+        })
+    }
+
+    fn send_with_cancellation<'a>(
+        &'a self,
+        item: Value,
+        _signals: &'a [StreamCancelSignal],
+        cancel_tokens: Vec<CancellationToken>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = StreamRuntimeResult<()>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            if cancel_tokens.iter().any(CancellationToken::is_cancelled) {
+                return Err(StreamRuntimeError::cancelled());
+            }
+            self.send_event(TestStreamEvent::Item(item)).await
+        })
+    }
+
+    fn end<'a>(&'a self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let _ = self.send_event(TestStreamEvent::End).await;
+        })
+    }
+
+    fn fail<'a>(
+        &'a self,
+        error: StreamRuntimeError,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let _ = self.send_event(TestStreamEvent::Fail(error)).await;
+        })
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn is_same_stream(&self, other: &StreamSink) -> bool {
+        other
+            .downcast_ref::<Self>()
+            .is_some_and(|other| self.id == other.id)
+    }
+
+    fn cancel_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancelled)
+    }
+
+    fn cancel_signal(&self) -> StreamCancelSignal {
+        StreamCancelSignal::new(TestStreamCancelSignal {
+            cancelled: Arc::clone(&self.cancelled),
+            cancel_notify: Arc::clone(&self.cancel_notify),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct TestStreamCancelSignal {
+    cancelled: Arc<AtomicBool>,
+    cancel_notify: Arc<Notify>,
+}
+
+impl skiff_runtime_capability_context::StreamCancelSignalApi for TestStreamCancelSignal {
+    fn wait_cancelled<'a>(
+        &'a self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            loop {
+                if self.cancelled.load(Ordering::Acquire) {
+                    return;
+                }
+                let notified = self.cancel_notify.notified();
+                if self.cancelled.load(Ordering::Acquire) {
+                    return;
+                }
+                notified.await;
+            }
+        })
     }
 }
 
 impl StreamRuntimeApi for TestStreamRuntime {
     fn channel_stream(&self) -> (Value, StreamSink) {
-        panic!("ordinary package-direct test does not create streams")
+        self.create_channel()
     }
 
     fn channel_stream_with_lifetime(&self, _lifetime: StreamLifetimeGuard) -> (Value, StreamSink) {
-        panic!("ordinary package-direct test does not create streams")
+        self.create_channel()
     }
 
     fn pull_stream_with_cancellation(
@@ -175,7 +366,7 @@ impl StreamRuntimeApi for TestStreamRuntime {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = StreamRuntimeResult<StreamPoll>> + Send + 'a>,
     > {
-        Box::pin(async move { self.poll(value) })
+        Box::pin(async move { self.poll(value).await })
     }
 
     fn next_with_cancellation<'a>(
@@ -186,7 +377,7 @@ impl StreamRuntimeApi for TestStreamRuntime {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = StreamRuntimeResult<StreamPoll>> + Send + 'a>,
     > {
-        Box::pin(async move { self.poll(value) })
+        Box::pin(async move { self.poll(value).await })
     }
 
     fn next<'a>(
@@ -195,10 +386,23 @@ impl StreamRuntimeApi for TestStreamRuntime {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = StreamRuntimeResult<StreamPoll>> + Send + 'a>,
     > {
-        Box::pin(async move { self.poll(value) })
+        Box::pin(async move { self.poll(value).await })
     }
 
-    fn cancel(&self, _value: &Value) {}
+    fn cancel(&self, value: &Value) {
+        let Ok(id) = Self::stream_id(value) else {
+            return;
+        };
+        if let Some(channel) = self
+            .channels
+            .lock()
+            .expect("test stream mutex poisoned")
+            .get(&id)
+        {
+            channel.cancelled.store(true, Ordering::Release);
+            channel.cancel_notify.notify_waiters();
+        }
+    }
 }
 
 #[derive(Clone)]

@@ -3646,6 +3646,7 @@ fn exact_dependency_callee_does_not_poison_known_target() {
         BTreeMap::from([(
             "dep".to_string(),
             PackageDependencyAnalysisFacts::new(
+                skiff_artifact_model::PackageBuildId::new("build:dep"),
                 PackageLocalAbiIdentity::new("pkg-local-abi:dep"),
                 BTreeMap::from([("tools.run".to_string(), dependency)]),
             ),
@@ -3950,6 +3951,7 @@ fn exact_field_package_dependency() -> SourceDependencyAnalysisInput {
         BTreeMap::from([(
             "dep".to_string(),
             PackageDependencyAnalysisFacts::new(
+                skiff_artifact_model::PackageBuildId::new("build:dep"),
                 PackageLocalAbiIdentity::new("pkg-local-abi:dep"),
                 BTreeMap::from([("tools.run".to_string(), callable)]),
             ),

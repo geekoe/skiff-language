@@ -212,10 +212,16 @@ fn rewrite_stmt(index: &PublicationLocalRefIndex, module_path: &str, stmt: &mut 
             rewrite_type_ref(index, module_path, payload_type);
         }
         StmtIr::TestEffectRegister {
-            expect, outcome, ..
+            expect,
+            step_expect,
+            outcome,
+            ..
         } => {
             if let Some(expect) = expect {
                 rewrite_type_ref(index, module_path, &mut expect.request_type);
+            }
+            if let Some(step_expect) = step_expect {
+                rewrite_type_ref(index, module_path, &mut step_expect.request_type);
             }
             match outcome {
                 TestEffectOutcomeIr::Respond { value_type, .. } => {

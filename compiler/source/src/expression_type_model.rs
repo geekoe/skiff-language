@@ -197,6 +197,18 @@ struct ConditionNarrowings {
     when_false: TypeNarrowing,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ExactTestEffectTarget {
+    Package {
+        package_build_id: skiff_artifact_model::PackageBuildId,
+        callable_id: skiff_artifact_model::PackageCallableId,
+    },
+    Service {
+        protocol_identity: skiff_artifact_model::ServiceProtocolIdentity,
+        operation_id: skiff_artifact_model::ContractOperationId,
+    },
+}
+
 #[derive(Clone, Debug, Default)]
 struct TypeNarrowing {
     env: BTreeMap<String, ResolvedTypeRef>,
@@ -226,6 +238,7 @@ struct OwnerChecker<'a> {
     env: BTreeMap<String, ResolvedTypeRef>,
     contract_projection: ContractProjectionState,
     path_refinements: BTreeMap<String, ResolvedTypeRef>,
+    test_effect_declarations: BTreeMap<ExactTestEffectTarget, String>,
     facts: &'a mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
     constructor_validations: &'a mut BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations:
@@ -496,6 +509,17 @@ fn check_source(
     }
 }
 
+fn direct_stream_item_type(ty: &PackageTypeRef) -> Option<&PackageTypeRef> {
+    match ty {
+        PackageTypeRef::Container { name, arguments }
+            if name == "Stream" && arguments.len() == 1 =>
+        {
+            arguments.first()
+        }
+        _ => None,
+    }
+}
+
 fn const_type_env(
     ast: &SourceFile,
     type_resolution: &TypeResolutionModel,
@@ -676,6 +700,7 @@ impl<'a> OwnerChecker<'a> {
             env,
             contract_projection,
             path_refinements: BTreeMap::new(),
+            test_effect_declarations: BTreeMap::new(),
             facts,
             constructor_validations,
             representation_constructor_validations,
@@ -710,7 +735,9 @@ impl<'a> OwnerChecker<'a> {
             Stmt::CompilerTestEffectRegister {
                 target,
                 target_probe: _,
+                declaration_start,
                 expect,
+                step_expect,
                 outcome,
             } => {
                 // The synthetic target probe exists solely to obtain the same
@@ -726,8 +753,9 @@ impl<'a> OwnerChecker<'a> {
                     ));
                     return false;
                 };
-                let signature = match dependencies.resolve_path(target) {
+                let (signature, exact_target) = match dependencies.resolve_path(target) {
                     crate::dependency_analysis::ResolvedDependencyAnalysisTarget::Package {
+                        package_build_id,
                         callable,
                         ..
                     } => {
@@ -738,11 +766,17 @@ impl<'a> OwnerChecker<'a> {
                             ));
                             return false;
                         };
-                        signature
+                        (
+                            signature,
+                            ExactTestEffectTarget::Package {
+                                package_build_id: package_build_id.clone(),
+                                callable_id: callable.callable_id().clone(),
+                            },
+                        )
                     }
                     crate::dependency_analysis::ResolvedDependencyAnalysisTarget::Contract {
+                        requirement,
                         operation,
-                        ..
                     } => {
                         let contract = &operation.contract;
                         let return_type = match &contract.stream {
@@ -780,19 +814,27 @@ impl<'a> OwnerChecker<'a> {
                                 return false;
                             }
                         };
-                        skiff_artifact_model::PackageCallableSignature {
-                            parameters: contract
-                                .parameters
-                                .iter()
-                                .map(|parameter| skiff_artifact_model::PackageCallableParameter {
-                                    name: parameter.name.clone(),
-                                    ty: package_type_ref_from_contract_type(&parameter.ty),
-                                })
-                                .collect(),
-                            return_type,
-                            throw_types,
-                            may_suspend: contract.may_suspend,
-                        }
+                        (
+                            skiff_artifact_model::PackageCallableSignature {
+                                parameters: contract
+                                    .parameters
+                                    .iter()
+                                    .map(|parameter| {
+                                        skiff_artifact_model::PackageCallableParameter {
+                                            name: parameter.name.clone(),
+                                            ty: package_type_ref_from_contract_type(&parameter.ty),
+                                        }
+                                    })
+                                    .collect(),
+                                return_type,
+                                throw_types,
+                                may_suspend: contract.may_suspend,
+                            },
+                            ExactTestEffectTarget::Service {
+                                protocol_identity: requirement.expected_protocol_identity.clone(),
+                                operation_id: operation.operation_id.clone(),
+                            },
+                        )
                     }
                     _ => {
                         self.diagnostics.push(format!(
@@ -802,6 +844,17 @@ impl<'a> OwnerChecker<'a> {
                         return false;
                     }
                 };
+                if *declaration_start {
+                    if let Some(previous) = self
+                        .test_effect_declarations
+                        .insert(exact_target.clone(), target.clone())
+                    {
+                        self.diagnostics.push(format!(
+                            "{}: test effect targets `{previous}` and `{target}` resolve to the same exact target {exact_target:?}; use one explicit sequence",
+                            self.module_path
+                        ));
+                    }
+                }
                 if let Some(expect) = expect {
                     let [parameter] = signature.parameters.as_slice() else {
                         self.diagnostics.push(format!(
@@ -812,27 +865,36 @@ impl<'a> OwnerChecker<'a> {
                     };
                     self.check_test_effect_request_subset(expect, &parameter.ty);
                 }
+                if let Some(step_expect) = step_expect {
+                    let [parameter] = signature.parameters.as_slice() else {
+                        self.diagnostics.push(format!(
+                            "{}: test effect `{target}` sequence step expect requires exactly one parameter",
+                            self.module_path
+                        ));
+                        return false;
+                    };
+                    self.check_test_effect_request_subset(step_expect, &parameter.ty);
+                }
                 match outcome {
-                    crate::shared::ast::TestEffectOutcome::Respond { value } => {
+                    crate::shared::ast::TestEffectStepOutcome::Respond { value } => {
                         self.check_test_effect_value(value, &signature.return_type, "respond");
+                        if direct_stream_item_type(&signature.return_type).is_some() {
+                            self.diagnostics.push(format!(
+                                "{}: test effect `{target}` cannot use respond for a direct Stream<T> target; use stream",
+                                self.module_path
+                            ));
+                        }
                     }
-                    crate::shared::ast::TestEffectOutcome::Throw { value } => {
+                    crate::shared::ast::TestEffectStepOutcome::Throw { value } => {
                         self.check_test_effect_throw(value, &signature.throw_types, target);
                     }
-                    crate::shared::ast::TestEffectOutcome::Stream { events } => {
-                        let item = match &signature.return_type {
-                            PackageTypeRef::Container { name, arguments }
-                                if name == "Stream" && arguments.len() == 1 =>
-                            {
-                                &arguments[0]
-                            }
-                            _ => {
-                                self.diagnostics.push(format!(
-                                    "{}: test effect `{target}` stream requires Stream<T> return",
-                                    self.module_path
-                                ));
-                                return false;
-                            }
+                    crate::shared::ast::TestEffectStepOutcome::Stream { events } => {
+                        let Some(item) = direct_stream_item_type(&signature.return_type) else {
+                            self.diagnostics.push(format!(
+                                "{}: test effect `{target}` stream requires Stream<T> return",
+                                self.module_path
+                            ));
+                            return false;
                         };
                         for value in events {
                             self.check_test_effect_value(value, item, "stream event");
@@ -1130,13 +1192,24 @@ impl<'a> OwnerChecker<'a> {
             self.check_test_effect_value(value, expected, "expect");
             return;
         };
-        let selected = entries
-            .iter()
-            .filter_map(|entry| {
-                let name = object_literal_key_text(&entry.key)?;
-                fields.get(&name).cloned().map(|ty| (name, ty))
-            })
-            .collect::<BTreeMap<_, _>>();
+        let mut selected = BTreeMap::new();
+        for entry in entries {
+            let Some(name) = object_literal_key_text(&entry.key) else {
+                self.diagnostics.push(format!(
+                    "{}: test effect expect subset keys must name static request fields",
+                    self.module_path
+                ));
+                continue;
+            };
+            let Some(ty) = fields.get(&name) else {
+                self.diagnostics.push(format!(
+                    "{}: test effect expect subset contains unknown request field `{name}`",
+                    self.module_path
+                ));
+                continue;
+            };
+            selected.insert(name, ty.clone());
+        }
         let partial = ResolvedTypeRef {
             ir: TypeRefIr::Record { fields: selected },
             source_text: format!("subset<{}>", resolved.source_text),

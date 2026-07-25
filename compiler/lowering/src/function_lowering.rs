@@ -17,7 +17,7 @@ use skiff_compiler_source::{
 use skiff_syntax::{
     ast::{
         BinaryOp, DbBlockMode, DbOperationKind, Expr, ForBinding, Literal, ObjectLiteralKey,
-        PatchOperation, Stmt, TestEffectOutcome, TypeRef, UnaryOp,
+        PatchOperation, Stmt, TestEffectStepOutcome, TypeRef, UnaryOp,
     },
     ast_utils::{compiler_test_effect_expressions, dependency_source_address_parts, expr_path},
     error::{CompileError, Result},
@@ -307,7 +307,9 @@ impl<'a> FunctionLowerer<'a> {
                 target,
                 target_probe,
                 expect,
+                step_expect,
                 outcome,
+                ..
             } => {
                 let target_key = self.next_expression_key().ok_or_else(|| {
                     CompileError::Semantic(
@@ -432,12 +434,26 @@ impl<'a> FunctionLowerer<'a> {
                         })
                     })
                     .transpose()?;
+                let step_expected = step_expect
+                    .as_ref()
+                    .map(|value| {
+                        let [parameter] = parameters.as_slice() else {
+                            return Err(CompileError::Semantic(format!(
+                                "test effect `{target}` sequence step expect requires one parameter"
+                            )));
+                        };
+                        Ok(TestEffectExpectedIr {
+                            value: self.lower_expr_with_expected(value, None)?,
+                            request_type: parameter.clone(),
+                        })
+                    })
+                    .transpose()?;
                 let outcome = match outcome {
-                    TestEffectOutcome::Respond { value } => TestEffectOutcomeIr::Respond {
+                    TestEffectStepOutcome::Respond { value } => TestEffectOutcomeIr::Respond {
                         value: self.lower_expr_with_expected(value, Some(&return_type))?,
                         value_type: return_type.clone(),
                     },
-                    TestEffectOutcome::Throw { value } => {
+                    TestEffectStepOutcome::Throw { value } => {
                         let key = self.peek_expression_key().ok_or_else(|| {
                             CompileError::Semantic(
                                 "compiler test setup has no expression owner".to_string(),
@@ -457,7 +473,7 @@ impl<'a> FunctionLowerer<'a> {
                             payload_type,
                         }
                     }
-                    TestEffectOutcome::Stream { events } => {
+                    TestEffectStepOutcome::Stream { events } => {
                         let Some(item_type) = stream_item.clone() else {
                             return Err(CompileError::Semantic(format!(
                                 "test effect `{target}` stream target is not Stream<T>"
@@ -475,6 +491,7 @@ impl<'a> FunctionLowerer<'a> {
                 StmtIr::TestEffectRegister {
                     target: register_target,
                     expect: expected,
+                    step_expect: step_expected,
                     outcome,
                 }
             }
