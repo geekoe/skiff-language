@@ -1145,6 +1145,9 @@ mod tests {
                         },
                     },
                 },
+                site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                    reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                },
                 args: Vec::new(),
                 type_args: BTreeMap::new(),
                 metadata: BTreeMap::new(),
@@ -1191,6 +1194,9 @@ mod tests {
         let call = CallIr {
             target: LinkedCallTarget::Executable {
                 addr: callee_addr.clone(),
+            },
+            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
             type_args: BTreeMap::from([("T".to_string(), builtin("string"))]),
@@ -1264,6 +1270,9 @@ mod tests {
         let call = CallIr {
             target: LinkedCallTarget::Executable {
                 addr: callee_addr.clone(),
+            },
+            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
             type_args: BTreeMap::new(),

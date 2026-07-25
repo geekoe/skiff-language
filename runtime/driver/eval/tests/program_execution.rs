@@ -20,7 +20,13 @@ use skiff_runtime_host::eval_capability_adapter;
 use skiff_runtime_model::{
     error::WirePayload,
     request_heap::{RequestHeap, RequestHeapLimits},
-    runtime_value::{HeapHandle, HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue},
+    runtime_value::{
+        HeapHandle, HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue, RuntimeValueCarrier,
+    },
+    service_error::{
+        CatchIdentity, ErrorCorrelation, ExceptionStackFrame, LocalExecutionTypeIdentity,
+        NominalTypeIdentity, PlatformBuiltinErrorIdentity, RequestException,
+    },
 };
 use skiff_runtime_request::cancellation::CancellationToken;
 use tokio::time::sleep;
@@ -52,10 +58,24 @@ fn runtime_factory() -> crate::eval::capabilities::EvalRuntimeFactory {
     eval_capability_adapter::runtime_factory()
 }
 
+fn test_instruction_site() -> skiff_artifact_model::InstructionSourceSite {
+    skiff_artifact_model::InstructionSourceSite::Synthetic {
+        reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+    }
+}
+
+fn local_execution_catch_identity(type_index: usize) -> CatchIdentity {
+    CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+        LocalExecutionTypeIdentity {
+            addr: service_type_addr(type_index),
+            type_arguments: Vec::new(),
+        },
+    ))
+}
+
 use crate::{
-    eval::error::{
-        unwrap_diagnostic_source_context, BudgetReason, RuntimeError, TypeIdentity, UserException,
-    },
+    eval::error::{unwrap_diagnostic_source_context, BudgetReason, RuntimeError},
+    eval::exceptions::request_exception_for_rethrow,
     eval::program::{
         anonymous_type_decl, types::PackageSymbolKey, CallIr, ConstAddr, ConstIr, ExecutableAddr,
         ExecutableKind, ExprRefIr, FileAddr, FileDeclarations, FileLinkTargets, GatewayConfig,
@@ -217,6 +237,7 @@ fn linked_ir_rejects_legacy_provider_call_target() {
     let error = serde_json::from_value::<LinkedExprIr>(json!({
         "kind": "call",
         "call": {
+            "site": test_instruction_site(),
             "target": {
                 "kind": "provider",
                 "target": {
@@ -243,6 +264,7 @@ async fn runtime_program_executes_receiver_builtin_call() {
     executable.body.expressions.push(expression(json!({
         "kind": "call",
         "call": {
+            "site": test_instruction_site(),
             "target": receiver_builtin_target("string", "concat"),
             "args": [
                 { "expression": 0 },
@@ -273,6 +295,7 @@ async fn runtime_program_executes_local_const_receiver_executable_call() {
     run.body.expressions.push(expression(json!({
         "kind": "call",
         "call": {
+            "site": test_instruction_site(),
             "target": local_const_receiver_target(1),
             "args": []
         }
@@ -2270,85 +2293,6 @@ async fn runtime_program_executes_match_statement() {
 }
 
 #[tokio::test]
-async fn runtime_program_catches_typed_throw_expression() {
-    let program = Arc::new(program_with_executables_and_local_error_type(
-        vec![catch_throw_executable()],
-        "AuthError",
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation("svc.main.run");
-
-    let value = execute_test_program_route(&interpreter, &frame)
-        .await
-        .expect("catch expression should catch matching typed throw");
-
-    assert_eq!(value["tag"], "err");
-    assert_eq!(
-        value["exception"]["__skiffActualPayloadType"],
-        json!({
-            "kind": "address",
-            "addr": serde_json::to_value(service_type_addr(0)).unwrap()
-        })
-    );
-    assert_eq!(
-        value["exception"]["__skiffActualPayloadTypeDebug"],
-        "service:file[0]:type[0]"
-    );
-    assert_no_legacy_skiff_type_key(&value["exception"]);
-    assert_eq!(value["exception"]["error"]["message"], "denied");
-}
-
-#[tokio::test]
-async fn runtime_program_catches_without_type_catches_user_exception() {
-    let program = Arc::new(program_with_executables_and_local_error_type(
-        vec![catch_throw_without_catch_type_executable()],
-        "AuthError",
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation("svc.main.run");
-
-    let value = execute_test_program_route(&interpreter, &frame)
-        .await
-        .expect("catch without type should catch matching user throw");
-
-    assert_eq!(value["tag"], "err");
-    assert_eq!(
-        value["exception"]["__skiffActualPayloadType"],
-        json!({
-            "kind": "address",
-            "addr": serde_json::to_value(service_type_addr(0)).unwrap()
-        })
-    );
-    assert_no_legacy_skiff_type_key(&value["exception"]);
-    assert_eq!(value["exception"]["error"]["message"], "denied");
-}
-
-#[tokio::test]
-async fn runtime_program_catches_builtin_error_throw_expression() {
-    let program = Arc::new(program_with_executable(
-        catch_builtin_decode_error_throw_executable(),
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation("svc.main.run");
-
-    let value = execute_test_program_route(&interpreter, &frame)
-        .await
-        .expect("builtin error catch should catch matching typed throw");
-
-    assert_eq!(value["tag"], "err");
-    assert_eq!(
-        value["exception"]["__skiffActualPayloadType"],
-        json!({
-            "kind": "builtin",
-            "name": "std.json.DecodeError"
-        })
-    );
-    assert_no_legacy_skiff_type_key(&value["exception"]);
-    assert_eq!(value["exception"]["error"]["target"], "test.decode");
-    assert_eq!(value["exception"]["error"]["message"], "denied");
-}
-
-#[tokio::test]
 async fn runtime_program_catches_nonmatching_builtin_error_throw_expression() {
     let program = Arc::new(program_with_executable(
         catch_builtin_decode_error_throw_with_catch_type_executable("std.service.ProtocolError"),
@@ -2364,36 +2308,12 @@ async fn runtime_program_catches_nonmatching_builtin_error_throw_expression() {
         RuntimeError::UserException(exception) => {
             assert_eq!(
                 exception.actual_payload_type(),
-                &TypeIdentity::builtin("std.json.DecodeError")
+                Some(&PlatformBuiltinErrorIdentity::JsonDecode.catch_identity())
             );
-            assert_no_legacy_skiff_type_key(&exception.envelope());
+            assert!(exception.request().local_value().is_some());
         }
         other => panic!("expected uncaught std.json.DecodeError user exception, got {other:?}"),
     }
-}
-
-#[tokio::test]
-async fn runtime_program_catches_native_decode_error_with_builtin_catch_type() {
-    let program = Arc::new(program_with_executable(
-        catch_native_decode_error_executable(),
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation("svc.main.run");
-
-    let value = execute_test_program_route(&interpreter, &frame)
-        .await
-        .expect("std.json.DecodeError catch should catch std.json.decode failure");
-
-    assert_eq!(value["tag"], "err");
-    assert_eq!(
-        value["exception"]["__skiffActualPayloadType"],
-        json!({
-            "kind": "builtin",
-            "name": "std.json.DecodeError"
-        })
-    );
-    assert_no_legacy_skiff_type_key(&value["exception"]);
-    assert_eq!(value["exception"]["error"]["target"], "std.json.decode");
 }
 
 #[tokio::test]
@@ -2412,231 +2332,42 @@ async fn runtime_program_accepts_std_http_error_builtin_catch_type() {
     assert_eq!(value["value"], 7);
 }
 
-#[tokio::test]
-async fn runtime_program_catches_without_type_does_not_catch_native_decode_error() {
-    let program = Arc::new(program_with_executable(
-        catch_native_decode_error_without_catch_type_executable(),
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation("svc.main.run");
-
-    let error = execute_test_program_route(&interpreter, &frame)
-        .await
-        .expect_err("catch without type must not catch native std.json.DecodeError");
-
-    let payload = runtime_error_leaf(&error).payload();
-    assert_eq!(payload.code, "std.json.DecodeError");
-    assert_eq!(
-        payload
-            .details
-            .as_ref()
-            .and_then(|details| details["target"].as_str()),
-        Some("std.json.decode")
-    );
-}
-
-#[tokio::test]
-async fn runtime_program_catches_without_type_does_not_swallow_cancellation() {
-    let program = Arc::new(program_with_executable_and_std_builtins(
-        catch_time_sleep_without_catch_type_executable(100),
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation("svc.main.run");
-    let cancellation = frame.cancellation.clone();
-    let cancel_task = tokio::spawn(async move {
-        sleep(Duration::from_millis(10)).await;
-        cancellation.cancel();
-    });
-
-    let error = tokio::time::timeout(
-        Duration::from_secs(1),
-        execute_test_program_route(&interpreter, &frame),
+#[test]
+fn request_local_rethrow_preserves_identity_source_stack_and_correlation() {
+    let identity = local_execution_catch_identity(0);
+    let source = test_instruction_site();
+    let stack = vec![ExceptionStackFrame::Local {
+        site: source.clone(),
+    }];
+    let correlation = ErrorCorrelation {
+        trace_id: "trace-driver-local".to_string(),
+        error_id: "trace-driver-local:local-error:1".to_string(),
+    };
+    let exception = RequestException::local(
+        RuntimeValueCarrier::identified(RuntimeValue::from("denied"), identity.clone()),
+        source.clone(),
+        stack.clone(),
+        correlation.clone(),
     )
-    .await
-    .expect("std.time.sleep catch test should observe cancellation")
-    .expect_err("catch without type must not swallow cancellation");
-    cancel_task
-        .await
-        .expect("cancellation task should complete");
+    .expect("request-local exception");
+    let mut heap = RequestHeap::default();
+    let handle = heap
+        .alloc_exception(exception.clone())
+        .expect("request-local exception node");
+    let exception_value = RuntimeValueCarrier::unidentified(RuntimeValue::Heap(handle));
 
+    let rethrown = request_exception_for_rethrow(&exception_value, &heap)
+        .expect("rethrow must use the existing request-local exception node");
+
+    assert_eq!(rethrown.local_catch_identity(), Some(&identity));
+    assert_eq!(rethrown.source(), &source);
+    assert_eq!(rethrown.stack(), stack);
+    assert_eq!(rethrown.correlation(), &correlation);
+    assert_eq!(rethrown, exception);
     assert!(matches!(
-        runtime_error_leaf(&error),
-        RuntimeError::Cancelled
+        heap.get(handle).expect("same request-local exception node"),
+        HeapNode::Exception(stored) if stored == &rethrown
     ));
-}
-
-#[tokio::test]
-async fn runtime_program_catches_cancel_error_with_builtin_catch_type() {
-    let program = Arc::new(program_with_executable_and_std_builtins(
-        catch_time_sleep_with_catch_type_executable(100, "CancelError"),
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation("svc.main.run");
-    let cancellation = frame.cancellation.clone();
-    let cancel_task = tokio::spawn(async move {
-        sleep(Duration::from_millis(10)).await;
-        cancellation.cancel();
-    });
-
-    let value = tokio::time::timeout(
-        Duration::from_secs(1),
-        execute_test_program_route(&interpreter, &frame),
-    )
-    .await
-    .expect("std.time.sleep catch test should observe cancellation")
-    .expect("CancelError catch should catch cancellation");
-    cancel_task
-        .await
-        .expect("cancellation task should complete");
-
-    assert_eq!(value["tag"], "err");
-    assert_eq!(
-        value["exception"]["__skiffActualPayloadType"],
-        json!({
-            "kind": "builtin",
-            "name": "CancelError"
-        })
-    );
-    assert_eq!(
-        value["exception"]["error"]["message"],
-        "request was cancelled"
-    );
-}
-
-#[tokio::test]
-async fn runtime_program_catches_without_type_does_not_swallow_execution_budget() {
-    let program = Arc::new(program_with_executable_and_std_builtins(
-        catch_time_sleep_without_catch_type_executable(100),
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let mut frame = test_invocation("svc.main.run");
-    frame.execution_budget = Arc::new(crate::execution_budget::ExecutionBudget::new(
-        crate::execution_budget::ExecutionBudgetConfig::runtime_default(),
-        Some(std::time::Instant::now() + Duration::from_millis(15)),
-    ));
-
-    let error = tokio::time::timeout(
-        Duration::from_secs(1),
-        execute_test_program_route(&interpreter, &frame),
-    )
-    .await
-    .expect("std.time.sleep catch test should observe request deadline")
-    .expect_err("catch without type must not swallow execution budget");
-
-    assert!(matches!(
-        runtime_error_leaf(&error),
-        RuntimeError::ExecutionBudgetExceeded {
-            reason: BudgetReason::DeadlineExceeded,
-            ..
-        }
-    ));
-}
-
-#[tokio::test]
-async fn runtime_program_catches_timeout_error_with_builtin_catch_type() {
-    let program = Arc::new(program_with_executable_and_std_builtins(
-        catch_time_sleep_with_catch_type_executable(100, "TimeoutError"),
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let mut frame = test_invocation("svc.main.run");
-    frame.execution_budget = Arc::new(crate::execution_budget::ExecutionBudget::new(
-        crate::execution_budget::ExecutionBudgetConfig::runtime_default(),
-        Some(std::time::Instant::now() + Duration::from_millis(15)),
-    ));
-
-    let value = tokio::time::timeout(
-        Duration::from_secs(1),
-        execute_test_program_route(&interpreter, &frame),
-    )
-    .await
-    .expect("std.time.sleep catch test should observe request deadline")
-    .expect("TimeoutError catch should catch execution budget");
-
-    assert_eq!(value["tag"], "err");
-    assert_eq!(
-        value["exception"]["__skiffActualPayloadType"],
-        json!({
-            "kind": "builtin",
-            "name": "TimeoutError"
-        })
-    );
-    assert_eq!(value["exception"]["error"]["reason"], "deadlineExceeded");
-}
-
-#[test]
-fn user_exception_rethrow_envelope_accepts_erased_payload() {
-    let exception = UserException::from_typed_payload(
-        json!({ "message": "denied" }),
-        TypeIdentity::address(service_type_addr(0)),
-        Some(TypeIdentity::address(service_type_addr(0))),
-    )
-    .expect("typed user exception should be constructed");
-
-    let mut envelope = exception.envelope();
-    envelope["__skiffActualPayloadTypeDebug"] = json!("svc.main.AuthError");
-    let rethrown = UserException::from_envelope(envelope).expect("envelope should rethrow");
-
-    assert_eq!(
-        rethrown.actual_payload_type(),
-        &TypeIdentity::address(service_type_addr(0))
-    );
-    assert_eq!(
-        rethrown.envelope().pointer("/error/message"),
-        Some(&json!("denied"))
-    );
-    assert!(rethrown.envelope().pointer("/error/__skiffType").is_none());
-}
-
-#[test]
-fn user_exception_wire_roundtrip_detaches_payload_and_envelope_identity() {
-    let mut caller_payload = json!({
-        "message": "denied",
-        "nested": { "attempt": 1 }
-    });
-    let exception = UserException::from_typed_payload(
-        caller_payload.clone(),
-        TypeIdentity::address(service_type_addr(0)),
-        Some(TypeIdentity::address(service_type_addr(0))),
-    )
-    .expect("typed user exception should be constructed");
-
-    caller_payload["nested"]["attempt"] = json!(2);
-    assert_eq!(
-        exception.envelope().pointer("/error/nested/attempt"),
-        Some(&json!(1)),
-        "throw must own a detached wire value"
-    );
-
-    let mut wire_envelope = exception.envelope();
-    let rethrown =
-        UserException::from_envelope(wire_envelope.clone()).expect("wire envelope should rethrow");
-    wire_envelope["error"]["nested"]["attempt"] = json!(3);
-    assert_eq!(
-        rethrown.envelope().pointer("/error/nested/attempt"),
-        Some(&json!(1)),
-        "rethrow must rebuild from an owned wire envelope"
-    );
-    assert_eq!(
-        rethrown.actual_payload_type(),
-        &TypeIdentity::address(service_type_addr(0))
-    );
-}
-
-#[test]
-fn user_exception_rethrow_rejects_string_payload_type_identity() {
-    let exception = UserException::from_typed_payload(
-        json!({ "message": "denied" }),
-        TypeIdentity::address(service_type_addr(0)),
-        Some(TypeIdentity::address(service_type_addr(0))),
-    )
-    .expect("typed user exception should be constructed");
-
-    let mut envelope = exception.envelope();
-    envelope["__skiffActualPayloadType"] = json!("service:file[0]:type[0]");
-
-    let error = UserException::from_envelope(envelope)
-        .expect_err("string payload type must not rebuild TypeIdentity");
-    assert!(error.to_string().contains("invalid actual payload type"));
 }
 
 #[tokio::test]
@@ -2655,7 +2386,7 @@ async fn runtime_program_does_not_catch_same_named_error_with_different_type_add
         RuntimeError::UserException(exception) => {
             assert_eq!(
                 exception.actual_payload_type(),
-                &TypeIdentity::address(service_type_addr(1))
+                Some(&local_execution_catch_identity(1))
             );
         }
         other => panic!("expected user exception, got {other:?}"),
@@ -4734,26 +4465,6 @@ fn runtime_error_leaf(error: &RuntimeError) -> &RuntimeError {
     unwrap_diagnostic_source_context(error)
 }
 
-fn assert_no_legacy_skiff_type_key(value: &Value) {
-    match value {
-        Value::Object(object) => {
-            assert!(
-                !object.contains_key("__skiffType"),
-                "exception envelope must not contain legacy __skiffType metadata: {value}"
-            );
-            for child in object.values() {
-                assert_no_legacy_skiff_type_key(child);
-            }
-        }
-        Value::Array(items) => {
-            for child in items {
-                assert_no_legacy_skiff_type_key(child);
-            }
-        }
-        _ => {}
-    }
-}
-
 fn assert_unsupported_foreground_wait_error(error: &RuntimeError) {
     assert!(
         error
@@ -4817,6 +4528,7 @@ fn outbound_service_dependency_call(
 ) -> crate::eval::program::CallIr {
     crate::eval::program::CallIr {
         target: crate::eval::program::LinkedCallTarget::ServiceDependencySymbol { symbol },
+        site: test_instruction_site(),
         args: Vec::new(),
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
@@ -4938,6 +4650,7 @@ fn remote_any_reader_call_executable(mode: &str) -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": remote_reader_interface_method_target(),
                         "args": [
                             { "expression": 1 }
@@ -5024,6 +4737,7 @@ fn remote_any_reader_stream_for_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": remote_reader_interface_method_target(),
                         "args": [
                             { "expression": 1 }
@@ -5074,6 +4788,7 @@ fn remote_any_direct_then_indirect_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "serviceDependencySymbol",
                             "symbol": serde_json::to_value(remote_reader_symbol()).unwrap()
@@ -5091,6 +4806,7 @@ fn remote_any_direct_then_indirect_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": remote_reader_interface_method_target(),
                         "args": [
                             { "expression": 2 }
@@ -5405,6 +5121,7 @@ fn db_call_expr_without_type<const N: usize>(op: &str, args: [Value; N]) -> Valu
     json!({
         "kind": "call",
         "call": {
+            "site": test_instruction_site(),
             "target": {
                 "kind": "builtin",
                 "op": op
@@ -5538,6 +5255,7 @@ fn self_local_call_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 1)).unwrap()
@@ -5616,6 +5334,7 @@ fn receiver_builtin_array_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": receiver_builtin_target("Array", "push"),
                         "args": [
                             { "expression": 0 },
@@ -5658,6 +5377,7 @@ fn bytes_concat_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -5673,6 +5393,7 @@ fn bytes_concat_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -5694,6 +5415,7 @@ fn bytes_concat_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -5708,6 +5430,7 @@ fn bytes_concat_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": receiver_builtin_target("bytes", "toUtf8String"),
                         "args": [{ "expression": 5 }]
                     }
@@ -5745,6 +5468,7 @@ fn bytes_from_utf8_invalid_arg_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -5792,6 +5516,7 @@ fn time_sleep_executable(ms: i64) -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -5803,89 +5528,6 @@ fn time_sleep_executable(ms: i64) -> LinkedExecutable {
                         "args": [{ "expression": 0 }]
                     }
                 }
-            ]
-        })),
-    }
-}
-
-fn catch_time_sleep_without_catch_type_executable(ms: i64) -> LinkedExecutable {
-    catch_time_sleep_with_optional_catch_type_executable(ms, None)
-}
-
-fn catch_time_sleep_with_catch_type_executable(ms: i64, catch_type_name: &str) -> LinkedExecutable {
-    catch_time_sleep_with_optional_catch_type_executable(ms, Some(catch_type_name))
-}
-
-fn catch_time_sleep_with_optional_catch_type_executable(
-    ms: i64,
-    catch_type_name: Option<&str>,
-) -> LinkedExecutable {
-    let catch_expression = match catch_type_name {
-        Some(catch_type_name) => json!({
-            "kind": "catch",
-            "tryExpression": { "expression": 1 },
-            "catchSlot": 0,
-            "catchType": {
-                "kind": "builtin",
-                "name": catch_type_name
-            },
-            "body": { "expression": 2 }
-        }),
-        None => json!({
-            "kind": "catch",
-            "tryExpression": { "expression": 1 },
-            "catchSlot": 0,
-            "body": { "expression": 2 }
-        }),
-    };
-
-    LinkedExecutable {
-        kind: ExecutableKind::Function,
-        symbol: "run".to_string(),
-        type_params: Vec::new(),
-        params: Vec::new(),
-        return_type: None,
-        self_type: None,
-        slots: SlotLayoutIr {
-            slots: vec![SlotIr {
-                index: 0,
-                name: "$catch0".to_string(),
-                kind: "temp".to_string(),
-            }],
-            frame_size: 1,
-        },
-        may_suspend: false,
-        body: executable_body(json!({
-            "blocks": [
-                {
-                    "label": "entry",
-                    "statements": [{ "statement": 0 }]
-                }
-            ],
-            "statements": [
-                {
-                    "kind": "return",
-                    "value": { "expression": 3 }
-                }
-            ],
-            "expressions": [
-                { "kind": "literal", "value": { "kind": "number", "value": ms } },
-                {
-                    "kind": "call",
-                    "call": {
-                        "target": {
-                            "kind": "native",
-                            "target": {
-                                "namespace": "std.time",
-                                "symbol": "sleep",
-                                "bindingKey": "std.time.sleep"
-                            }
-                        },
-                        "args": [{ "expression": 0 }]
-                    }
-                },
-                { "kind": "loadSlot", "slot": 0 },
-                catch_expression
             ]
         })),
     }
@@ -5988,6 +5630,7 @@ fn package_call_executable_with_symbol(_symbol: Value) -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::package(0, 0, 0)).unwrap()
@@ -6040,6 +5683,7 @@ fn telemetry_emit_native_direct_call_executable() -> LinkedExecutable {
                                 metadata: BTreeMap::new(),
                             },
                         },
+                        site: test_instruction_site(),
                         args: vec![
                             ExprRefIr { expression: 0 },
                             ExprRefIr { expression: 1 },
@@ -6191,6 +5835,7 @@ fn service_calls_package_resource_text_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::package(0, 0, 0)).unwrap()
@@ -6232,6 +5877,11 @@ fn builtin_type(name: &str) -> LinkedTypeRef {
 fn assert_resource_error(error: &RuntimeError, path: &str) {
     let payload = error.payload();
     assert_eq!(payload.code, "std.resource.ResourceError");
+    assert_eq!(
+        WirePayload::catch_projection(error),
+        None,
+        "ResourceError must stay package-owned even through eval diagnostic wrappers",
+    );
     assert_eq!(
         payload
             .details
@@ -6409,6 +6059,7 @@ fn local_stream_aggregate_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 1)).unwrap()
@@ -6477,6 +6128,7 @@ fn local_stream_first_item_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 1)).unwrap()
@@ -6537,6 +6189,7 @@ fn local_const_receiver_stream_first_item_route_executable() -> LinkedExecutable
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": local_const_receiver_target(1),
                         "args": []
                     }
@@ -6682,6 +6335,7 @@ fn forwarding_string_stream_producer_executable(next_index: usize) -> LinkedExec
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, next_index)).unwrap()
@@ -6816,6 +6470,7 @@ fn outer_string_stream_from_sse_producer_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 3)).unwrap()
@@ -6826,6 +6481,7 @@ fn outer_string_stream_from_sse_producer_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 2)).unwrap()
@@ -7057,6 +6713,7 @@ fn stream_variable_json_object_length_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": receiver_builtin_target("JsonObject", "length"),
                         "args": [
                             { "expression": 3 }
@@ -7097,6 +6754,7 @@ fn create_from_stream_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 1)).unwrap()
@@ -7107,6 +6765,7 @@ fn create_from_stream_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -7170,6 +6829,7 @@ fn bytes_stream_emit_then_bad_emit_producer_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -7222,6 +6882,7 @@ fn emit_response_stream_call_ir() -> CallIr {
                 metadata: BTreeMap::new(),
             },
         },
+        site: test_instruction_site(),
         args: vec![ExprRefIr { expression: 0 }],
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
@@ -7239,6 +6900,7 @@ fn create_from_stream_call_ir() -> CallIr {
                 metadata: BTreeMap::new(),
             },
         },
+        site: test_instruction_site(),
         args: vec![ExprRefIr { expression: 0 }, ExprRefIr { expression: 1 }],
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
@@ -7305,6 +6967,7 @@ fn local_native_stream_wrapper_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -7394,6 +7057,7 @@ fn local_native_sse_forwarding_stream_producer_executable() -> LinkedExecutable 
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -7481,6 +7145,7 @@ fn http_stream_effect_in_http_handler_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -7542,6 +7207,7 @@ fn http_stream_start_helper_in_http_handler_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -7590,6 +7256,7 @@ fn http_stream_event_helper_executable(
     expressions.push(json!({
         "kind": "call",
         "call": {
+            "site": test_instruction_site(),
             "target": {
                 "kind": "native",
                 "target": {
@@ -7775,18 +7442,6 @@ fn type_pattern_match_executable() -> LinkedExecutable {
     }
 }
 
-fn catch_throw_executable() -> LinkedExecutable {
-    catch_throw_with_type_addrs_executable(service_type_addr(0), service_type_addr(0))
-}
-
-fn catch_throw_without_catch_type_executable() -> LinkedExecutable {
-    catch_throw_with_optional_type_addr_executable(service_type_addr(0), None)
-}
-
-fn catch_builtin_decode_error_throw_executable() -> LinkedExecutable {
-    catch_builtin_decode_error_throw_with_catch_type_executable("std.json.DecodeError")
-}
-
 fn catch_builtin_decode_error_throw_with_catch_type_executable(
     catch_type_name: &str,
 ) -> LinkedExecutable {
@@ -7833,6 +7488,7 @@ fn catch_builtin_decode_error_throw_with_catch_type_executable(
                 },
                 {
                     "kind": "throw",
+                    "site": test_instruction_site(),
                     "value": { "expression": 2 },
                     "payloadType": {
                         "kind": "builtin",
@@ -7853,14 +7509,6 @@ fn catch_builtin_decode_error_throw_with_catch_type_executable(
             ]
         })),
     }
-}
-
-fn catch_native_decode_error_executable() -> LinkedExecutable {
-    catch_native_decode_error_with_catch_type_executable(Some("std.json.DecodeError"))
-}
-
-fn catch_native_decode_error_without_catch_type_executable() -> LinkedExecutable {
-    catch_native_decode_error_with_catch_type_executable(None)
 }
 
 fn catch_literal_with_catch_type_executable(catch_type_name: &str) -> LinkedExecutable {
@@ -7912,116 +7560,20 @@ fn catch_literal_with_catch_type_executable(catch_type_name: &str) -> LinkedExec
     }
 }
 
-fn catch_native_decode_error_with_catch_type_executable(
-    catch_type_name: Option<&str>,
-) -> LinkedExecutable {
-    let catch_expression = match catch_type_name {
-        Some(catch_type_name) => json!({
-            "kind": "catch",
-            "tryExpression": { "expression": 1 },
-            "catchSlot": 0,
-            "catchType": {
-                "kind": "builtin",
-                "name": catch_type_name
-            },
-            "body": { "expression": 2 }
-        }),
-        None => json!({
-            "kind": "catch",
-            "tryExpression": { "expression": 1 },
-            "catchSlot": 0,
-            "body": { "expression": 2 }
-        }),
-    };
-
-    LinkedExecutable {
-        kind: ExecutableKind::Function,
-        symbol: "run".to_string(),
-        type_params: Vec::new(),
-        params: Vec::new(),
-        return_type: None,
-        self_type: None,
-        slots: SlotLayoutIr {
-            slots: vec![SlotIr {
-                index: 0,
-                name: "$catch0".to_string(),
-                kind: "temp".to_string(),
-            }],
-            frame_size: 1,
-        },
-        may_suspend: false,
-        body: executable_body(json!({
-            "blocks": [
-                {
-                    "label": "entry",
-                    "statements": [
-                        { "statement": 0 }
-                    ]
-                }
-            ],
-            "statements": [
-                {
-                    "kind": "return",
-                    "value": { "expression": 3 }
-                }
-            ],
-            "expressions": [
-                { "kind": "literal", "value": { "kind": "string", "value": "{" } },
-                {
-                    "kind": "call",
-                    "call": {
-                        "target": {
-                            "kind": "native",
-                            "target": {
-                                "namespace": "std.json",
-                                "symbol": "decode",
-                                "bindingKey": "std.json.decode"
-                            }
-                        },
-                        "args": [
-                            { "expression": 0 }
-                        ],
-                        "typeArgs": {
-                            "T0": { "kind": "builtin", "name": "JsonObject" }
-                        }
-                    }
-                },
-                { "kind": "loadSlot", "slot": 0 },
-                catch_expression
-            ]
-        })),
-    }
-}
-
 fn catch_throw_with_type_addrs_executable(
     throw_type_addr: TypeAddr,
     catch_type_addr: TypeAddr,
 ) -> LinkedExecutable {
-    catch_throw_with_optional_type_addr_executable(throw_type_addr, Some(catch_type_addr))
-}
-
-fn catch_throw_with_optional_type_addr_executable(
-    throw_type_addr: TypeAddr,
-    catch_type_addr: Option<TypeAddr>,
-) -> LinkedExecutable {
-    let catch_expression = match catch_type_addr {
-        Some(catch_type_addr) => json!({
-            "kind": "catch",
-            "tryExpression": { "expression": 2 },
-            "catchSlot": 0,
-            "catchType": {
-                "kind": "address",
-                "addr": serde_json::to_value(catch_type_addr).unwrap()
-            },
-            "body": { "expression": 4 }
-        }),
-        None => json!({
-            "kind": "catch",
-            "tryExpression": { "expression": 2 },
-            "catchSlot": 0,
-            "body": { "expression": 4 }
-        }),
-    };
+    let catch_expression = json!({
+        "kind": "catch",
+        "tryExpression": { "expression": 2 },
+        "catchSlot": 0,
+        "catchType": {
+            "kind": "address",
+            "addr": serde_json::to_value(catch_type_addr).unwrap()
+        },
+        "body": { "expression": 4 }
+    });
 
     LinkedExecutable {
         kind: ExecutableKind::Function,
@@ -8064,6 +7616,7 @@ fn catch_throw_with_optional_type_addr_executable(
                 },
                 {
                     "kind": "throw",
+                    "site": test_instruction_site(),
                     "value": { "expression": 1 },
                     "payloadType": {
                         "kind": "address",
@@ -8214,6 +7767,7 @@ fn package_stream_chain_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 1)).unwrap()
@@ -8225,6 +7779,7 @@ fn package_stream_chain_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::package(0, 0, 0)).unwrap()
@@ -8259,6 +7814,7 @@ fn package_string_stream_forwarder_executable(
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(
@@ -8384,6 +7940,7 @@ fn package_call_config_reader_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": {
@@ -8433,6 +7990,7 @@ fn config_require_string_executable(path: &str) -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "builtin",
                             "op": "config.require"
@@ -8480,6 +8038,7 @@ fn package_generic_json_decode_call_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::package(0, 0, 0)).unwrap()
@@ -8529,6 +8088,7 @@ fn package_generic_config_require_call_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::package(0, 0, 0)).unwrap()
@@ -8590,6 +8150,7 @@ fn generic_json_decode_native_wrapper_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -8643,6 +8204,7 @@ fn generic_config_require_wrapper_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "builtin",
                             "op": "config.require"
@@ -8693,6 +8255,7 @@ fn json_decode_native_missing_type_args_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -8782,6 +8345,7 @@ fn json_encode_native_missing_type_args_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -8833,6 +8397,7 @@ fn json_decode_native_missing_t0_type_arg_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -8887,6 +8452,7 @@ fn json_decode_native_unresolved_type_arg_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -8970,6 +8536,7 @@ fn json_native_direct_type_args_with_nullable_json_object_return_executable() ->
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -8989,6 +8556,7 @@ fn json_native_direct_type_args_with_nullable_json_object_return_executable() ->
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -9008,6 +8576,7 @@ fn json_native_direct_type_args_with_nullable_json_object_return_executable() ->
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {

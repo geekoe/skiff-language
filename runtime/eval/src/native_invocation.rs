@@ -766,6 +766,9 @@ mod tests {
         let target = actor_find_target();
         CallIr {
             target: LinkedCallTarget::Native { target },
+            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            },
             args: vec![ExprRefIr { expression: 0 }],
             type_args,
             metadata: BTreeMap::new(),
@@ -833,6 +836,9 @@ mod tests {
         let call = CallIr {
             target: LinkedCallTarget::Builtin {
                 op: "config.require".to_string(),
+            },
+            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
             type_args: BTreeMap::new(),

@@ -413,6 +413,9 @@ fn caller_executable(metadata_symbol: Option<&str>) -> ExecutableIr {
                     target: skiff_artifact_model::CallTargetIr::LocalExecutable {
                         executable_index: 1,
                     },
+                    site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                        reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                    },
                     args: Vec::new(),
                     type_args: BTreeMap::new(),
                     metadata,

@@ -13,6 +13,9 @@ use skiff_runtime_linked_program::LinkedCallTarget;
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
     runtime_value::{HeapHandle, HeapNode, RuntimeValue},
+    service_error::{
+        CatchIdentity, ExceptionStackFrame, LocalExecutionTypeIdentity, NominalTypeIdentity,
+    },
 };
 
 use crate::{
@@ -22,6 +25,12 @@ use crate::{
 };
 
 const DEPENDENCY_ALIAS: &str = "mutableDependency";
+
+fn test_instruction_site() -> InstructionSourceSite {
+    InstructionSourceSite::Synthetic {
+        reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+    }
+}
 
 /// Executes a real linked caller and package callee through the canonical dispatcher. The
 /// callee's index assignment can only be observed here when package-direct keeps the exact
@@ -170,28 +179,52 @@ async fn inline_effect_typed_throw_is_caught_by_exact_linked_nominal_type() {
     let RuntimeValue::Heap(exception_handle) = caught_object
         .fields()
         .get("exception")
-        .expect("caught result should retain the exception envelope")
+        .expect("caught result should retain the request-local exception")
     else {
-        panic!("exception envelope should be an object");
+        panic!("request-local exception should be a heap node");
     };
-    let HeapNode::Object(exception) = heap.get(*exception_handle).expect("exception envelope")
+    let HeapNode::Exception(exception) = heap
+        .get(*exception_handle)
+        .expect("request-local exception")
     else {
-        panic!("exception envelope should be an object");
+        panic!("caught value must retain RequestException");
     };
+    let expected_identity = CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+        LocalExecutionTypeIdentity {
+            addr: skiff_runtime_linked_program::TypeAddr {
+                unit: skiff_runtime_linked_program::UnitAddr::Package(0),
+                file: skiff_runtime_linked_program::FileAddr::LoadedFileIndex(0),
+                type_index: 0,
+            },
+            type_arguments: Vec::new(),
+        },
+    ));
+    let expected_site = test_instruction_site();
     assert_eq!(
-        exception.fields().get("__skiffActualPayloadTypeDebug"),
-        Some(&RuntimeValue::String(
-            "package[0]:file[0]:type[0]".to_string()
-        ))
+        exception.local_catch_identity(),
+        Some(&expected_identity),
+        "catch must retain the exact linked nominal identity",
+    );
+    assert_eq!(exception.source(), &expected_site);
+    assert!(matches!(
+        exception.stack().last(),
+        Some(ExceptionStackFrame::Local { site }) if site == &expected_site
+    ));
+    assert!(
+        exception.correlation().error_id.starts_with(&format!(
+            "{}:local-error:",
+            exception.correlation().trace_id
+        )),
+        "local exception correlation must retain the request trace",
     );
     let RuntimeValue::Heap(payload_handle) = exception
-        .fields()
-        .get("error")
-        .expect("exception should retain its typed payload")
+        .local_value()
+        .expect("request-local exception cause")
+        .value()
     else {
         panic!("typed payload should be an object");
     };
-    let HeapNode::Object(payload) = heap.get(*payload_handle).expect("typed payload") else {
+    let HeapNode::Object(payload) = heap.get(*payload_handle).expect("typed local payload") else {
         panic!("typed payload should be an object");
     };
     assert_eq!(
@@ -309,6 +342,7 @@ fn ordinary_in_process_keeps_lane_specific_type_arguments_out_of_shared_planner(
         target: LinkedCallTarget::Builtin {
             op: "ordinary-lane-validation".to_string(),
         },
+        site: test_instruction_site(),
         args: Vec::new(),
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
@@ -875,6 +909,7 @@ fn inline_effect_producer_heap_caller_executable(
                         target: CallTargetIr::LocalExecutable {
                             executable_index: 1,
                         },
+                        site: test_instruction_site(),
                         args: vec![ExprRefIr { expression: 0 }],
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
@@ -946,6 +981,7 @@ fn inline_effect_dispatching_stream_producer(
                             package_ref,
                             package_callable_id,
                         },
+                        site: test_instruction_site(),
                         args: vec![ExprRefIr { expression: 0 }],
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
@@ -1061,6 +1097,7 @@ fn inline_effect_stream_executable(
                             package_ref,
                             package_callable_id,
                         },
+                        site: test_instruction_site(),
                         args: vec![ExprRefIr { expression: 0 }],
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
@@ -1154,6 +1191,7 @@ fn inline_effect_throw_catch_executable(
                             package_ref,
                             package_callable_id,
                         },
+                        site: test_instruction_site(),
                         args: vec![ExprRefIr { expression: 0 }],
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
@@ -1163,7 +1201,7 @@ fn inline_effect_throw_catch_executable(
                 ExprIr::Catch {
                     try_expression: ExprRefIr { expression: 3 },
                     catch_slot: 1,
-                    catch_type: Some(error_type),
+                    catch_type: error_type,
                     body: ExprRefIr { expression: 4 },
                 },
             ],
@@ -1231,6 +1269,7 @@ fn inline_effect_caller_executable(
                             package_ref,
                             package_callable_id,
                         },
+                        site: test_instruction_site(),
                         args: vec![ExprRefIr { expression: 0 }],
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
@@ -1276,6 +1315,7 @@ fn caller_executable(
                             package_ref,
                             package_callable_id,
                         },
+                        site: test_instruction_site(),
                         args: vec![ExprRefIr { expression: 0 }],
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
