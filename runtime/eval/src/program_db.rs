@@ -17,6 +17,7 @@ use skiff_runtime_model::{
 };
 
 use super::{
+    assembly_execution::RuntimeExecutionProjection,
     capabilities::{
         DbCapabilityContext, DbCapabilityStore, DbRecoverableRuntimeContext,
         DbRecoverableRuntimeExpectedPlans,
@@ -24,7 +25,6 @@ use super::{
     db_command::{DbCommand, DbCommandChange, DbCommandValue, DbOneCommandSelector},
     db_eval::DbIrEvaluator,
     env::{Env, Flow},
-    assembly_execution::RuntimeExecutionProjection,
     program_execution::ProgramExecutionContext,
     recoverable_behavior::EvalRecoverableBehaviorHooks,
     runtime_ops::{runtime_from_wire, runtime_from_wire_required_plan_with_use, runtime_to_wire},
@@ -766,11 +766,7 @@ fn db_recoverable_runtime_context(
         .to_string();
     let build_id = actor_context.request_build_id().to_string();
     Ok(DbRecoverableRuntimeContext {
-        behavior_hooks: Arc::new(EvalRecoverableBehaviorHooks::new(
-            program.legacy("recoverable DB behavior")?,
-            &artifact_identity,
-            &build_id,
-        )?),
+        behavior_hooks: Arc::new(EvalRecoverableBehaviorHooks::new_for_execution(program)?),
         expected_plans,
         artifact_identity,
         build_id: build_id.clone(),

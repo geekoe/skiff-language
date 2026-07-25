@@ -414,6 +414,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::{
+        recoverable_behavior::EvalRecoverableBehaviorHooks, type_projection::EvalTypeProjection,
+    };
     use skiff_artifact_model::{
         AssemblyIdentity, CanonicalPackageLinkPlan, ExecutableBody, ExecutableIr, ExecutableKind,
         FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBuildId,
@@ -501,6 +504,68 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("legacy service dispatch"));
+    }
+
+    #[test]
+    fn assembly_database_type_and_recoverable_views_use_the_execution_image() {
+        let (image, file_identity) = projection_image();
+        let execution = RuntimeExecutionProjection::Assembly(
+            RuntimeAssemblyExecutionProjection::from_image(image),
+        );
+        let current_addr = ExecutableAddr {
+            unit: UnitAddr::Package(0),
+            file: FileAddr::FileIrIdentity(file_identity.clone()),
+            executable: 0,
+        };
+        let plan = EvalTypeProjection::from_execution_projection(execution.clone())
+            .plan_from_linked_nested_ref(
+                &skiff_runtime_linked_program::LinkedTypeRef::Address {
+                    addr: TypeAddr {
+                        unit: UnitAddr::Package(0),
+                        file: FileAddr::FileIrIdentity(file_identity),
+                        type_index: 0,
+                    },
+                },
+                &current_addr,
+            )
+            .expect("assembly database result type must resolve from the execution image");
+        assert!(matches!(
+            plan.node,
+            skiff_runtime_model::type_plan::RuntimeTypeNode::Record { .. }
+        ));
+
+        EvalRecoverableBehaviorHooks::new_for_execution(&execution)
+            .expect("assembly recoverable DB behavior must index the execution image");
+    }
+
+    #[test]
+    fn assembly_database_type_view_rejects_missing_type_information() {
+        let (image, file_identity) = projection_image();
+        let execution = RuntimeExecutionProjection::Assembly(
+            RuntimeAssemblyExecutionProjection::from_image(image),
+        );
+        let current_addr = ExecutableAddr {
+            unit: UnitAddr::Package(0),
+            file: FileAddr::FileIrIdentity(file_identity.clone()),
+            executable: 0,
+        };
+        let error = EvalTypeProjection::from_execution_projection(execution)
+            .plan_from_linked_nested_ref(
+                &skiff_runtime_linked_program::LinkedTypeRef::Address {
+                    addr: TypeAddr {
+                        unit: UnitAddr::Package(0),
+                        file: FileAddr::FileIrIdentity(file_identity),
+                        type_index: 99,
+                    },
+                },
+                &current_addr,
+            )
+            .expect_err("missing assembly database type information must fail closed");
+        assert!(
+            error.to_string().contains("TypeIndexOutOfBounds")
+                && error.to_string().contains("type_index: 99"),
+            "unexpected missing-type error: {error}"
+        );
     }
 
     fn projection_image() -> (Arc<AssemblyExecutionImage>, String) {

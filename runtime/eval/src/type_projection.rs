@@ -51,6 +51,18 @@ impl<'a> EvalTypeProjection<'a> {
         type_ref: &LinkedTypeRef,
         current_addr: &ExecutableAddr,
     ) -> Result<RuntimeTypePlan> {
+        let canonical_type_ref;
+        let type_ref =
+            if let (RuntimeExecutionProjection::Assembly(_), LinkedTypeRef::Address { addr }) =
+                (&self.program, type_ref)
+            {
+                canonical_type_ref = LinkedTypeRef::Address {
+                    addr: self.program.canonical_type_addr(addr)?,
+                };
+                &canonical_type_ref
+            } else {
+                type_ref
+            };
         Ok(RuntimeTypePlan::from_linked_nested_ref(
             type_ref,
             &PlanContext::from_type_view(self.program.type_view(), current_addr),
