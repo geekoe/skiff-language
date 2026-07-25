@@ -1,6 +1,7 @@
 # P5-F308 Representation wrap shared model acceptance
 
-状态：Ready。
+状态：PASS。结果见
+`P5-F308-representation-wrap-model-acceptance-result.md`。
 
 ## 验收输入
 
@@ -31,4 +32,3 @@
 mutation/serde/admission探针并记录。
 
 PASS解除representation compiler与linked consumer；FAIL列出精确blocker及失效证据面。
-
