@@ -26,24 +26,6 @@ pub struct BoundaryReturn {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-pub enum BoundaryErrorContract {
-    None,
-    Typed {
-        payload_type: ContractTypeRef,
-        value_plan: BoundaryValuePlan,
-    },
-    Unsupported {
-        reason: BoundaryFeatureUnavailableReason,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
 pub enum BoundaryStreamContract {
     Unary,
     ServerStream {
@@ -131,7 +113,6 @@ pub struct BoundaryEffectGuarantee {
 pub struct BoundaryOperationContract {
     pub parameters: Vec<BoundaryParameter>,
     pub return_value: BoundaryReturn,
-    pub errors: BoundaryErrorContract,
     pub stream: BoundaryStreamContract,
     pub cancellation: BoundaryCancellationContract,
     pub callbacks: BoundaryCallbackContract,

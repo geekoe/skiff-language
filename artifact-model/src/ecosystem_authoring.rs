@@ -319,11 +319,11 @@ fn is_safe_token(value: &str) -> bool {
 mod tests {
     use crate::{
         ActivationPolicy, BoundaryCallbackContract, BoundaryCancellationContract,
-        BoundaryEffectGuarantee, BoundaryErrorContract, BoundaryReturn, BoundaryStreamContract,
-        BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-        BoundaryValuePlan, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-        DeploymentPolicy, DeploymentRevision, PackageArtifactRef, PackageBuildId,
-        PackageLocalAbiIdentity, ResourcePolicy, ServiceContractRef, ServiceProtocolIdentity,
+        BoundaryEffectGuarantee, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+        BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+        ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentPolicy,
+        DeploymentRevision, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
+        ResourcePolicy, ServiceContractRef, ServiceProtocolIdentity,
         SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
     };
 
@@ -368,6 +368,11 @@ mod tests {
         );
         assert!(parse_service_contract_definition_yml(&format!(
             "{contract_yml}providerBuildId: forbidden\n"
+        ))
+        .is_err());
+        assert!(parse_service_contract_definition_yml(&contract_yml.replace(
+            SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION,
+            "skiff-service-contract-definition-v2"
         ))
         .is_err());
 
@@ -447,7 +452,6 @@ mod tests {
                     lifetime: BoundaryValueLifetime::Call,
                 },
             },
-            errors: BoundaryErrorContract::None,
             stream: BoundaryStreamContract::Unary,
             cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,

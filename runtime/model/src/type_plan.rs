@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::service_error::CatchIdentity;
+
 #[derive(Clone)]
 pub struct RuntimeRecordFieldPlan {
     pub name: String,
@@ -10,10 +12,8 @@ pub struct RuntimeRecordFieldPlan {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RuntimeTypeIdentityPlan {
-    pub nominal: Option<String>,
+    pub catch_identity: Option<CatchIdentity>,
     pub interface: Option<String>,
-    pub union: Option<String>,
-    pub union_branch: Option<String>,
     pub method_projection: Option<String>,
 }
 
@@ -150,20 +150,12 @@ impl RuntimeTypePlan {
         self.identity.has_any()
     }
 
-    pub fn nominal_identity(&self) -> Option<&str> {
-        self.identity.nominal.as_deref()
-    }
-
     pub fn interface_identity(&self) -> Option<&str> {
         self.identity.interface.as_deref()
     }
 
-    pub fn union_identity(&self) -> Option<&str> {
-        self.identity.union.as_deref()
-    }
-
-    pub fn union_branch_identity(&self) -> Option<&str> {
-        self.identity.union_branch.as_deref()
+    pub fn catch_identity(&self) -> Option<&CatchIdentity> {
+        self.identity.catch_identity.as_ref()
     }
 
     pub fn method_projection_identity(&self) -> Option<&str> {
@@ -207,10 +199,8 @@ impl RuntimeRecordFieldPlan {
 
 impl RuntimeTypeIdentityPlan {
     pub fn has_any(&self) -> bool {
-        self.nominal.is_some()
+        self.catch_identity.is_some()
             || self.interface.is_some()
-            || self.union.is_some()
-            || self.union_branch.is_some()
             || self.method_projection.is_some()
     }
 }
@@ -261,10 +251,8 @@ mod tests {
             RuntimeTypePlan::synthetic_named_builtin("string", RuntimeTypeNode::String, vec![]);
 
         assert!(!plan.has_identity());
-        assert_eq!(plan.nominal_identity(), None);
+        assert_eq!(plan.catch_identity(), None);
         assert_eq!(plan.interface_identity(), None);
-        assert_eq!(plan.union_identity(), None);
-        assert_eq!(plan.union_branch_identity(), None);
         assert_eq!(plan.method_projection_identity(), None);
     }
 

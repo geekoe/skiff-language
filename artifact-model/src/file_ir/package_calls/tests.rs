@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::{
     validate_file_ir_service_calls, CallIr, CallTargetIr, ConstIr, ExecutableBody, ExecutableIr,
-    ExecutableKind, ExprIr, ExternalRefTable, PackageCallableId, PackageCallableRef, PackageRefIr,
-    SlotLayout, TypeRefIr,
+    ExecutableKind, ExprIr, ExternalRefTable, InstructionSourceSite, PackageCallableId,
+    PackageCallableRef, PackageRefIr, SlotLayout, SyntheticInstructionSiteReason, TypeRefIr,
 };
 
 use super::*;
@@ -211,6 +211,9 @@ fn package_call(package_ref: PackageRefIr, package_callable_id: PackageCallableI
             target: CallTargetIr::PackageCallable {
                 package_ref,
                 package_callable_id,
+            },
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
             type_args: BTreeMap::new(),

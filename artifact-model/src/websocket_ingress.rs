@@ -6,9 +6,9 @@ use std::{
 };
 
 use crate::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryErrorContract,
-    BoundaryStreamContract, ContractOperationId, ContractTypeDescriptor, ContractTypeRef,
-    PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSchemaTypeRef, ServiceContract,
+    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryStreamContract,
+    ContractOperationId, ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeId,
+    PackageSchemaTypeRecord, PackageSchemaTypeRef, ServiceContract,
 };
 
 pub const WEBSOCKET_INGRESS_OPERATION_NAME: &str = "websocket";
@@ -529,11 +529,6 @@ where
     if return_context != &generic_context_ref(&context) {
         return Err(WebSocketIngressContractError::new(
             "WebSocket ingress event and result Context must be identical",
-        ));
-    }
-    if !matches!(operation.errors, BoundaryErrorContract::None) {
-        return Err(WebSocketIngressContractError::new(
-            "WebSocket ingress operation must not declare throws",
         ));
     }
     if !matches!(operation.stream, BoundaryStreamContract::Unary) {
