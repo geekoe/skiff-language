@@ -5,6 +5,8 @@ mod ingress;
 pub(crate) mod ordinary;
 mod projection;
 pub(crate) mod service_error_channel;
+#[cfg(test)]
+mod service_error_convergence;
 mod websocket_identity;
 mod websocket_ingress;
 mod websocket_response;
