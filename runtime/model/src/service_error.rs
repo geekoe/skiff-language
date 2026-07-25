@@ -389,8 +389,15 @@ pub enum ExceptionStackFrame {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RequestExceptionCause {
-    Local { value: RuntimeValueCarrier },
-    OpaqueService { error: OpaqueServiceError },
+    Local {
+        value: RuntimeValueCarrier,
+    },
+    /// An imported service failure. `local_value` is present only when the
+    /// fixed error was materialized into an exact caller-local value.
+    OpaqueService {
+        error: OpaqueServiceError,
+        local_value: Option<RuntimeValueCarrier>,
+    },
 }
 
 /// Request-local exception state. It is deliberately not serializable.
@@ -424,21 +431,29 @@ impl RequestException {
         })
     }
 
-    pub fn opaque(
+    pub fn imported(
         error: OpaqueServiceError,
+        local_value: Option<RuntimeValueCarrier>,
         source: InstructionSourceSite,
         stack: Vec<ExceptionStackFrame>,
-    ) -> Self {
+    ) -> Result<Self, String> {
+        if let Some(value) = &local_value {
+            if value.catch_identity().is_none() {
+                return Err(
+                    "imported local exception value requires an actual catch identity".to_string(),
+                );
+            }
+        }
         let correlation = ErrorCorrelation {
             trace_id: error.envelope().trace_id().to_string(),
             error_id: error.envelope().error_id().to_string(),
         };
-        Self {
-            cause: RequestExceptionCause::OpaqueService { error },
+        Ok(Self {
+            cause: RequestExceptionCause::OpaqueService { error, local_value },
             source,
             stack,
             correlation,
-        }
+        })
     }
 
     pub fn cause(&self) -> &RequestExceptionCause {
@@ -458,16 +473,21 @@ impl RequestException {
     }
 
     pub fn local_catch_identity(&self) -> Option<&CatchIdentity> {
-        match &self.cause {
-            RequestExceptionCause::Local { value } => value.catch_identity(),
-            RequestExceptionCause::OpaqueService { .. } => None,
-        }
+        self.local_value()
+            .and_then(RuntimeValueCarrier::catch_identity)
     }
 
     pub fn local_value(&self) -> Option<&RuntimeValueCarrier> {
         match &self.cause {
             RequestExceptionCause::Local { value } => Some(value),
-            RequestExceptionCause::OpaqueService { .. } => None,
+            RequestExceptionCause::OpaqueService { local_value, .. } => local_value.as_ref(),
+        }
+    }
+
+    pub fn fixed_service_error(&self) -> Option<&OpaqueServiceError> {
+        match &self.cause {
+            RequestExceptionCause::Local { .. } => None,
+            RequestExceptionCause::OpaqueService { error, .. } => Some(error),
         }
     }
 
@@ -479,7 +499,16 @@ impl RequestException {
             RequestExceptionCause::Local { value } => {
                 RequestExceptionCause::Local { value: map(value) }
             }
-            opaque @ RequestExceptionCause::OpaqueService { .. } => opaque,
+            RequestExceptionCause::OpaqueService {
+                error,
+                local_value: Some(value),
+            } => RequestExceptionCause::OpaqueService {
+                error,
+                local_value: Some(map(value)),
+            },
+            imported @ RequestExceptionCause::OpaqueService {
+                local_value: None, ..
+            } => imported,
         };
         Self { cause, ..self }
     }
@@ -543,6 +572,38 @@ mod tests {
         }
     }
 
+    fn internal_envelope() -> ServiceErrorEnvelope {
+        ServiceErrorEnvelope::InternalError {
+            payload: InternalErrorPayload {
+                message: "The service could not complete the request.".to_string(),
+                trace_id: "trace-1".to_string(),
+                error_id: "error-2".to_string(),
+            },
+        }
+    }
+
+    fn platform_envelope() -> ServiceErrorEnvelope {
+        ServiceErrorEnvelope::PlatformError {
+            builtin_error_identity: PlatformBuiltinErrorIdentity::DbConflict,
+            encoded_payload: br#"{"retryable":true}"#.to_vec(),
+            trace_id: "trace-1".to_string(),
+            error_id: "error-3".to_string(),
+        }
+    }
+
+    fn exact_public_bytes() -> Vec<u8> {
+        br#"{
+          "kind":"publicTypedError",
+          "packageId":"example.errors",
+          "stableSchemaKey":"NotFound",
+          "packageSchemaTypeId":"schema:not-found",
+          "encodedPayload":[123,125],
+          "traceId":"trace-1",
+          "errorId":"error-1"
+        }"#
+        .to_vec()
+    }
+
     fn local_identity(type_index: usize) -> CatchIdentity {
         CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
             LocalExecutionTypeIdentity {
@@ -558,22 +619,7 @@ mod tests {
 
     #[test]
     fn service_error_envelopes_round_trip_all_variants() {
-        let envelopes = [
-            public_envelope(),
-            ServiceErrorEnvelope::InternalError {
-                payload: InternalErrorPayload {
-                    message: "The service could not complete the request.".to_string(),
-                    trace_id: "trace-1".to_string(),
-                    error_id: "error-2".to_string(),
-                },
-            },
-            ServiceErrorEnvelope::PlatformError {
-                builtin_error_identity: PlatformBuiltinErrorIdentity::DbConflict,
-                encoded_payload: br#"{"retryable":true}"#.to_vec(),
-                trace_id: "trace-1".to_string(),
-                error_id: "error-3".to_string(),
-            },
-        ];
+        let envelopes = [public_envelope(), internal_envelope(), platform_envelope()];
 
         for expected in envelopes {
             let wire = serde_json::to_value(&expected).unwrap();
@@ -658,45 +704,120 @@ mod tests {
     }
 
     #[test]
-    fn opaque_service_error_preserves_exact_bytes_and_has_no_local_identity() {
-        let encoded = br#"{
-          "kind":"publicTypedError",
-          "packageId":"example.errors",
-          "stableSchemaKey":"NotFound",
-          "packageSchemaTypeId":"schema:not-found",
-          "encodedPayload":[123,125],
-          "traceId":"trace-1",
-          "errorId":"error-1"
-        }"#
-        .to_vec();
+    fn linked_imported_error_catches_exactly_and_preserves_fixed_bytes() {
+        let encoded = exact_public_bytes();
         let opaque = OpaqueServiceError::decode(encoded.clone()).unwrap();
-        let exception = RequestException::opaque(opaque, site(), Vec::new());
+        let identity = local_identity(4);
+        let local_value =
+            RuntimeValueCarrier::identified(RuntimeValue::from("payload"), identity.clone());
+        let exception =
+            RequestException::imported(opaque, Some(local_value), site(), Vec::new()).unwrap();
 
-        assert_eq!(exception.local_catch_identity(), None);
-        let RequestExceptionCause::OpaqueService { error } = exception.cause() else {
-            panic!("expected opaque cause");
+        assert_eq!(exception.local_catch_identity(), Some(&identity));
+        assert_eq!(
+            exception.fixed_service_error().unwrap().encoded_bytes(),
+            encoded
+        );
+        let RequestExceptionCause::OpaqueService {
+            error,
+            local_value: Some(local_value),
+        } = exception.cause()
+        else {
+            panic!("expected linked imported cause");
         };
         assert_eq!(error.encoded_bytes(), encoded);
+        assert_eq!(local_value.catch_identity(), Some(&identity));
+
+        let mapped = exception.map_local_value(|_| {
+            RuntimeValueCarrier::identified(RuntimeValue::from("moved"), identity.clone())
+        });
+        assert_eq!(mapped.local_catch_identity(), Some(&identity));
+        assert_eq!(
+            mapped.fixed_service_error().unwrap().encoded_bytes(),
+            encoded
+        );
     }
 
     #[test]
-    fn local_exception_requires_and_exposes_actual_identity() {
+    fn unlinked_imported_error_misses_catch_and_map_keeps_fixed_bytes() {
+        let encoded = exact_public_bytes();
+        let opaque = OpaqueServiceError::decode(encoded.clone()).unwrap();
+        let exception = RequestException::imported(opaque, None, site(), Vec::new()).unwrap();
+
+        assert_eq!(exception.local_catch_identity(), None);
+        assert_eq!(exception.local_value(), None);
+        let mapped = exception.map_local_value(|_| panic!("None must not materialize a carrier"));
+        assert_eq!(mapped.local_catch_identity(), None);
+        assert_eq!(mapped.local_value(), None);
+        assert_eq!(
+            mapped.fixed_service_error().unwrap().encoded_bytes(),
+            encoded
+        );
+    }
+
+    #[test]
+    fn every_fixed_error_kind_can_retain_a_local_carrier() {
+        for (type_index, expected) in [
+            (7, public_envelope()),
+            (8, internal_envelope()),
+            (9, platform_envelope()),
+        ] {
+            let encoded = serde_json::to_vec(&expected).unwrap();
+            let opaque = OpaqueServiceError::decode(encoded.clone()).unwrap();
+            let identity = local_identity(type_index);
+            let local_value =
+                RuntimeValueCarrier::identified(RuntimeValue::from("payload"), identity.clone());
+            let exception =
+                RequestException::imported(opaque, Some(local_value), site(), Vec::new()).unwrap();
+
+            assert_eq!(exception.local_catch_identity(), Some(&identity));
+            assert_eq!(
+                exception.fixed_service_error().unwrap().envelope(),
+                &expected
+            );
+            assert_eq!(
+                exception.fixed_service_error().unwrap().encoded_bytes(),
+                encoded
+            );
+        }
+    }
+
+    #[test]
+    fn local_exception_rethrow_state_stays_local_and_has_no_fixed_error() {
         let identity = local_identity(4);
-        let value =
-            RuntimeValueCarrier::identified(RuntimeValue::from("payload"), identity.clone());
-        let exception = RequestException::local(
-            value,
-            site(),
-            vec![ExceptionStackFrame::Local { site: site() }],
-            ErrorCorrelation {
-                trace_id: "trace".to_string(),
+        let source = site();
+        let stack = vec![
+            ExceptionStackFrame::Local {
+                site: source.clone(),
+            },
+            ExceptionStackFrame::RemoteBoundary {
+                service_id: "skiff.run/catalog".to_string(),
+                operation_id: "lookup".to_string(),
                 error_id: "error".to_string(),
             },
-        )
-        .unwrap();
+        ];
+        let correlation = ErrorCorrelation {
+            trace_id: "trace".to_string(),
+            error_id: "error".to_string(),
+        };
+        let value =
+            RuntimeValueCarrier::identified(RuntimeValue::from("payload"), identity.clone());
+        let exception =
+            RequestException::local(value, source.clone(), stack.clone(), correlation.clone())
+                .unwrap();
+        let rethrown = exception.map_local_value(|_| {
+            RuntimeValueCarrier::identified(RuntimeValue::from("moved"), identity.clone())
+        });
 
-        assert_eq!(exception.local_catch_identity(), Some(&identity));
-        assert_eq!(exception.stack().len(), 1);
+        assert_eq!(rethrown.local_catch_identity(), Some(&identity));
+        assert_eq!(rethrown.fixed_service_error(), None);
+        assert_eq!(rethrown.source(), &source);
+        assert_eq!(rethrown.stack(), stack);
+        assert_eq!(rethrown.correlation(), &correlation);
+        assert!(matches!(
+            rethrown.cause(),
+            RequestExceptionCause::Local { .. }
+        ));
     }
 
     #[test]
@@ -730,5 +851,33 @@ mod tests {
             },
         )
         .is_err());
+    }
+
+    #[test]
+    fn imported_error_rejects_an_unidentified_local_value() {
+        let opaque = OpaqueServiceError::decode(exact_public_bytes()).unwrap();
+        assert!(RequestException::imported(
+            opaque,
+            Some(RuntimeValue::from("payload").into()),
+            site(),
+            Vec::new(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn opaque_service_error_decode_remains_strict() {
+        let malformed = br#"{
+          "kind":"internalError",
+          "payload":{
+            "message":"sanitized",
+            "traceId":"trace",
+            "errorId":"error",
+            "private":true
+          }
+        }"#
+        .to_vec();
+
+        assert!(OpaqueServiceError::decode(malformed).is_err());
     }
 }
