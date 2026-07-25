@@ -23,7 +23,7 @@ use crate::{
         FailClosedServiceLinkableCapabilityHooks, ServiceLinkableContractPlan,
         ServiceLinkableMaterializationError, ServiceLinkableMaterializationScope,
     },
-    service_value_plan::ServiceValuePlan,
+    service_value_plan::{ServiceValuePlan, ServiceValueSelection},
 };
 
 const CONTEXT_ID: &str = "contract-type:Context";
@@ -63,6 +63,41 @@ fn schema_type(
                 descriptor,
             },
         }),
+    )
+}
+
+fn single_field_record_schema_type(
+    id: &PackageSchemaTypeId,
+    field_name: &str,
+    field_type: ContractTypeRef,
+) -> (PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>) {
+    let stable_key = id
+        .as_str()
+        .rsplit(':')
+        .next()
+        .expect("test package schema id has a stable-key suffix");
+    schema_type(
+        id.as_str(),
+        stable_key,
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([(field_name.to_string(), field_type)]),
+        },
+    )
+}
+
+fn structural_union_schema_type(
+    id: &PackageSchemaTypeId,
+    variants: Vec<ContractTypeRef>,
+) -> (PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>) {
+    let stable_key = id
+        .as_str()
+        .rsplit(':')
+        .next()
+        .expect("test package schema id has a stable-key suffix");
+    schema_type(
+        id.as_str(),
+        stable_key,
+        ContractTypeDescriptor::StructuralUnion { variants },
     )
 }
 
@@ -356,6 +391,366 @@ fn assert_json_binary_round_trip(
         *expected
     );
     (decoded_heap, decoded)
+}
+
+fn service_response_boundary() -> PayloadBoundary {
+    PayloadBoundary::external_untrusted(PayloadBoundaryKind::ServiceResponse)
+}
+
+fn object_value(
+    heap: &mut RequestHeap,
+    fields: impl IntoIterator<Item = (String, RuntimeValue)>,
+) -> RuntimeValue {
+    RuntimeValue::Heap(
+        heap.alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from_iter(
+            fields,
+        )))
+        .unwrap(),
+    )
+}
+
+fn string_field<'a>(heap: &'a RequestHeap, value: &RuntimeValue, name: &str) -> &'a str {
+    let handle = value
+        .as_heap_handle()
+        .expect("selected record should decode to a heap value");
+    let HeapNode::Object(object) = heap.get(handle).unwrap() else {
+        panic!("selected record should decode to an object");
+    };
+    let Some(RuntimeValue::String(value)) = object.fields().get(name) else {
+        panic!("selected record should retain string field {name}");
+    };
+    value
+}
+
+#[test]
+fn selected_binary_root_round_trips_record_and_representation_without_changing_ordinary_wire() {
+    let record_id = PackageSchemaTypeId::new("contract-type:SelectedRecord");
+    let representation_id = PackageSchemaTypeId::new("contract-type:SelectedRepresentation");
+    let schema = BTreeMap::from([
+        single_field_record_schema_type(&record_id, "message", ContractTypeRef::builtin("string")),
+        schema_type(
+            representation_id.as_str(),
+            "SelectedRepresentation",
+            ContractTypeDescriptor::Representation {
+                target: ContractTypeRef::builtin("string"),
+            },
+        ),
+    ]);
+    let record_type = package_ref(record_id);
+    let representation_type = package_ref(representation_id);
+    let record_plan = ServiceValuePlan::compile(&record_type, &schema).unwrap();
+    let representation_plan = ServiceValuePlan::compile(&representation_type, &schema).unwrap();
+    let boundary = service_response_boundary();
+
+    let mut record_heap = RequestHeap::default();
+    let record = object_value(
+        &mut record_heap,
+        [(
+            "message".to_string(),
+            RuntimeValue::String("record".to_string()),
+        )],
+    );
+    let ordinary_record = record_plan
+        .encode_binary(&record, &boundary, &record_heap)
+        .unwrap();
+    let selected_record = record_plan
+        .encode_binary_selected(
+            &record,
+            ServiceValueSelection::Root,
+            &boundary,
+            &record_heap,
+        )
+        .unwrap();
+    assert_eq!(selected_record, ordinary_record);
+
+    let mut decoded_record_heap = RequestHeap::default();
+    let decoded_record = record_plan
+        .decode_binary_selected(&selected_record, &boundary, &mut decoded_record_heap)
+        .unwrap();
+    assert_eq!(decoded_record.selection, ServiceValueSelection::Root);
+    assert_eq!(
+        string_field(&decoded_record_heap, &decoded_record.value, "message"),
+        "record"
+    );
+
+    let representation = RuntimeValue::String("represented".to_string());
+    let representation_heap = RequestHeap::default();
+    let ordinary_representation = representation_plan
+        .encode_binary(&representation, &boundary, &representation_heap)
+        .unwrap();
+    let selected_representation = representation_plan
+        .encode_binary_selected(
+            &representation,
+            ServiceValueSelection::Root,
+            &boundary,
+            &representation_heap,
+        )
+        .unwrap();
+    assert_eq!(selected_representation, ordinary_representation);
+
+    let mut decoded_representation_heap = RequestHeap::default();
+    let decoded_representation = representation_plan
+        .decode_binary_selected(
+            &selected_representation,
+            &boundary,
+            &mut decoded_representation_heap,
+        )
+        .unwrap();
+    assert_eq!(
+        decoded_representation,
+        crate::DecodedSelectedServiceValue {
+            value: representation,
+            selection: ServiceValueSelection::Root,
+        }
+    );
+}
+
+#[test]
+fn selected_binary_distinguishes_same_shape_named_union_branches_by_wire_ordinal() {
+    let first_id = PackageSchemaTypeId::new("contract-type:SameShapeFirst");
+    let second_id = PackageSchemaTypeId::new("contract-type:SameShapeSecond");
+    let union_id = PackageSchemaTypeId::new("contract-type:SameShapeUnion");
+    let schema = BTreeMap::from([
+        single_field_record_schema_type(&first_id, "message", ContractTypeRef::builtin("string")),
+        single_field_record_schema_type(&second_id, "message", ContractTypeRef::builtin("string")),
+        structural_union_schema_type(
+            &union_id,
+            vec![
+                package_ref(first_id.clone()),
+                package_ref(second_id.clone()),
+            ],
+        ),
+    ]);
+    let union_type = package_ref(union_id);
+    let plan = ServiceValuePlan::compile(&union_type, &schema).unwrap();
+    let boundary = service_response_boundary();
+    let mut source_heap = RequestHeap::default();
+    let value = object_value(
+        &mut source_heap,
+        [(
+            "message".to_string(),
+            RuntimeValue::String("same payload".to_string()),
+        )],
+    );
+
+    assert!(matches!(
+        plan.encode_binary(&value, &boundary, &source_heap),
+        Err(ServiceLinkableMaterializationError::AmbiguousStructuralUnion)
+    ));
+    let first_bytes = plan
+        .encode_binary_selected(
+            &value,
+            ServiceValueSelection::NamedUnionBranch(0),
+            &boundary,
+            &source_heap,
+        )
+        .unwrap();
+    let second_bytes = plan
+        .encode_binary_selected(
+            &value,
+            ServiceValueSelection::NamedUnionBranch(1),
+            &boundary,
+            &source_heap,
+        )
+        .unwrap();
+    assert_eq!(first_bytes[5], 0);
+    assert_eq!(second_bytes[5], 1);
+    let mut normalized_second = second_bytes.clone();
+    normalized_second[5] = 0;
+    assert_eq!(normalized_second, first_bytes);
+
+    for (bytes, expected_index) in [(&first_bytes, 0usize), (&second_bytes, 1usize)] {
+        let mut decoded_heap = RequestHeap::default();
+        let decoded = plan
+            .decode_binary_selected(bytes, &boundary, &mut decoded_heap)
+            .unwrap();
+        assert_eq!(
+            decoded.selection,
+            ServiceValueSelection::NamedUnionBranch(expected_index)
+        );
+        assert_eq!(
+            string_field(&decoded_heap, &decoded.value, "message"),
+            "same payload"
+        );
+        assert_eq!(
+            plan.encode_binary_selected(
+                &decoded.value,
+                decoded.selection,
+                &boundary,
+                &decoded_heap,
+            )
+            .unwrap(),
+            *bytes
+        );
+    }
+}
+
+#[test]
+fn selected_binary_rejects_selection_ordinal_payload_and_trailing_byte_mismatches() {
+    let message_id = PackageSchemaTypeId::new("contract-type:MessageBranch");
+    let code_id = PackageSchemaTypeId::new("contract-type:CodeBranch");
+    let union_id = PackageSchemaTypeId::new("contract-type:DistinctUnion");
+    let schema = BTreeMap::from([
+        single_field_record_schema_type(&message_id, "message", ContractTypeRef::builtin("string")),
+        single_field_record_schema_type(&code_id, "code", ContractTypeRef::builtin("integer")),
+        structural_union_schema_type(
+            &union_id,
+            vec![
+                package_ref(message_id.clone()),
+                package_ref(code_id.clone()),
+            ],
+        ),
+    ]);
+    let union_type = package_ref(union_id);
+    let message_type = package_ref(message_id);
+    let union_plan = ServiceValuePlan::compile(&union_type, &schema).unwrap();
+    let message_plan = ServiceValuePlan::compile(&message_type, &schema).unwrap();
+    let boundary = service_response_boundary();
+    let mut source_heap = RequestHeap::default();
+    let message = object_value(
+        &mut source_heap,
+        [(
+            "message".to_string(),
+            RuntimeValue::String("selected".to_string()),
+        )],
+    );
+
+    assert!(union_plan
+        .encode_binary_selected(
+            &message,
+            ServiceValueSelection::NamedUnionBranch(2),
+            &boundary,
+            &source_heap,
+        )
+        .is_err());
+    assert!(union_plan
+        .encode_binary_selected(
+            &message,
+            ServiceValueSelection::Root,
+            &boundary,
+            &source_heap,
+        )
+        .is_err());
+    assert!(message_plan
+        .encode_binary_selected(
+            &message,
+            ServiceValueSelection::NamedUnionBranch(0),
+            &boundary,
+            &source_heap,
+        )
+        .is_err());
+    assert!(matches!(
+        union_plan.encode_binary_selected(
+            &message,
+            ServiceValueSelection::NamedUnionBranch(1),
+            &boundary,
+            &source_heap,
+        ),
+        Err(ServiceLinkableMaterializationError::TypeMismatch)
+    ));
+
+    let valid = union_plan
+        .encode_binary_selected(
+            &message,
+            ServiceValueSelection::NamedUnionBranch(0),
+            &boundary,
+            &source_heap,
+        )
+        .unwrap();
+    let mutations = [
+        {
+            let mut bytes = valid.clone();
+            bytes[5] = 1;
+            bytes
+        },
+        {
+            let mut bytes = valid.clone();
+            bytes[5] = 2;
+            bytes
+        },
+        {
+            let mut bytes = valid;
+            bytes.push(0);
+            bytes
+        },
+    ];
+    for mutation in mutations {
+        let mut heap = RequestHeap::default();
+        let checkpoint_len = heap.len();
+        assert!(union_plan
+            .decode_binary_selected(&mutation, &boundary, &mut heap)
+            .is_err());
+        assert_eq!(heap.len(), checkpoint_len);
+    }
+}
+
+#[test]
+fn selected_binary_returns_only_root_for_nested_union_and_keeps_service_response_restrictions() {
+    let nested_type = ContractTypeRef::Record {
+        fields: BTreeMap::from([(
+            "choice".to_string(),
+            ContractTypeRef::structural_union(vec![
+                ContractTypeRef::builtin("string"),
+                ContractTypeRef::builtin("number"),
+            ]),
+        )]),
+    };
+    let schema = BTreeMap::new();
+    let nested_plan = ServiceValuePlan::compile(&nested_type, &schema).unwrap();
+    let boundary = service_response_boundary();
+    let mut source_heap = RequestHeap::default();
+    let nested = object_value(
+        &mut source_heap,
+        [(
+            "choice".to_string(),
+            RuntimeValue::String("nested".to_string()),
+        )],
+    );
+    let bytes = nested_plan
+        .encode_binary_selected(
+            &nested,
+            ServiceValueSelection::Root,
+            &boundary,
+            &source_heap,
+        )
+        .unwrap();
+    let mut decoded_heap = RequestHeap::default();
+    let decoded = nested_plan
+        .decode_binary_selected(&bytes, &boundary, &mut decoded_heap)
+        .unwrap();
+    assert_eq!(decoded.selection, ServiceValueSelection::Root);
+    let nested_handle = decoded.value.as_heap_handle().unwrap();
+    let HeapNode::Object(nested_object) = decoded_heap.get(nested_handle).unwrap() else {
+        panic!("nested selected root should decode to an object");
+    };
+    assert_eq!(
+        nested_object.fields().get("choice"),
+        Some(&RuntimeValue::String("nested".to_string()))
+    );
+
+    let json_type = ContractTypeRef::builtin("Json");
+    let json_plan = ServiceValuePlan::compile(&json_type, &schema).unwrap();
+    let mut restricted_heap = RequestHeap::default();
+    let interface_error = json_plan
+        .decode_binary_selected(b"SKPV\x02\x09", &boundary, &mut restricted_heap)
+        .expect_err("selected decode must retain the service-response interface restriction");
+    let ServiceLinkableMaterializationError::Codec { message } = interface_error else {
+        panic!("service-response restriction should surface as a codec error");
+    };
+    assert!(
+        message.contains("recoverableUnsupportedDecode"),
+        "{message}"
+    );
+    assert!(message.contains("runtimeBinaryPayload"), "{message}");
+
+    let malformed_error = json_plan
+        .decode_binary_selected(b"SKPV\x02\xff", &boundary, &mut restricted_heap)
+        .expect_err("selected decode must preserve service-response codec context");
+    let ServiceLinkableMaterializationError::Codec { message } = malformed_error else {
+        panic!("service-response codec context should surface as a codec error");
+    };
+    assert!(message.contains("kind=ServiceResponse"), "{message}");
+    assert_eq!(restricted_heap.len(), 0);
 }
 
 #[test]

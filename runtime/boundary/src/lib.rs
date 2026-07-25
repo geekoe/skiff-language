@@ -25,6 +25,7 @@ pub mod value;
 pub mod websocket_shape_descriptor;
 
 pub use error::{Result, RuntimeError};
+pub use service_value_plan::{DecodedSelectedServiceValue, ServiceValueSelection};
 
 pub use skiff_runtime_model::{request_heap, runtime_value, runtime_value_graph};
 
