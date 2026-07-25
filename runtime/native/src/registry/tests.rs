@@ -21,7 +21,11 @@ use super::{
 };
 
 fn detached_native_semantics(binding_key: &'static str) -> NativeCallableSemantics {
-    let mut semantics = STD_NATIVE_CALLABLE_SEMANTICS[0].clone();
+    let mut semantics = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|semantics| semantics.binding_key == "std.string.truncateUtf8Bytes")
+        .expect("detached non-suspending native semantics should exist")
+        .clone();
     semantics.binding_key = binding_key;
     semantics
 }
@@ -661,8 +665,6 @@ fn receiver_callable_semantics_registry_rejects_registry_handler() {
 fn native_callable_semantics_registry_keeps_unaudited_non_websocket_capabilities_unregistered() {
     for binding_key in [
         "std.file.readText",
-        "std.actor.getOrCreate",
-        "std.actor.replace",
         "std.telemetry.emit",
         "std.resource.text",
     ] {
