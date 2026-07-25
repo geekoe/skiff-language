@@ -15,6 +15,7 @@ mod type_projection;
 pub(super) use projected_environment::ContractProjectionState;
 pub(super) use type_projection::{
     contract_source_assignability, contract_source_assignability_with_projections,
+    package_type_ref_from_contract_type,
 };
 use type_projection::{
     package_type_assignable, resolved_contract_type, ContractCallTypeProjection,

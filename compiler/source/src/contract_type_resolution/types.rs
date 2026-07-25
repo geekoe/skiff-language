@@ -69,19 +69,20 @@ impl ContractAwareTypeResolver<'_> {
                     .resolve_type_text(&text, context)
                     .map_err(|error| format!("cannot resolve source type `{text}`: {error}"))?;
                 if let TypeRefIr::PackageSymbol { symbol } = &resolved.ir {
-                    if let skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } =
-                        &symbol.package
-                    {
-                        if let Some(record) = self
+                    let record = match &symbol.package {
+                        skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } => self
                             .dependency_analysis
-                            .direct_package_type(dependency_ref, &symbol.symbol_path)
-                        {
-                            return Ok(PackageTypeRef::PackageSchema {
-                                package_id: record.package_id.clone(),
-                                stable_schema_key: record.stable_schema_key.clone(),
-                                package_schema_type_id: record.package_schema_type_id.clone(),
-                            });
-                        }
+                            .direct_package_type(dependency_ref, &symbol.symbol_path),
+                        skiff_artifact_model::PackageRefIr::PackageId { package_id } => self
+                            .dependency_analysis
+                            .package_type_by_owner_and_stable_key(package_id, &symbol.symbol_path),
+                    };
+                    if let Some(record) = record {
+                        return Ok(PackageTypeRef::PackageSchema {
+                            package_id: record.package_id.clone(),
+                            stable_schema_key: record.stable_schema_key.clone(),
+                            package_schema_type_id: record.package_schema_type_id.clone(),
+                        });
                     }
                 }
                 if let TypeRefIr::Builtin { name, .. } = resolved.ir {

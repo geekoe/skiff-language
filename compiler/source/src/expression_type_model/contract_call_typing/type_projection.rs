@@ -168,6 +168,111 @@ fn package_type_ref_from_resolved_ir(
     }
 }
 
+pub(crate) fn package_type_ref_from_contract_type(ty: &ContractTypeRef) -> PackageTypeRef {
+    match ty {
+        ContractTypeRef::Builtin { name, arguments } => PackageTypeRef::Container {
+            name: name.clone(),
+            arguments: arguments
+                .iter()
+                .map(package_type_ref_from_contract_type)
+                .collect(),
+        },
+        ContractTypeRef::Nullable { inner } => PackageTypeRef::Nullable {
+            inner: Box::new(package_type_ref_from_contract_type(inner)),
+        },
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => PackageTypeRef::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
+        },
+        ContractTypeRef::TypeParam { name } => PackageTypeRef::Local {
+            local_type: TypeRefIr::TypeParam { name: name.clone() },
+        },
+        ContractTypeRef::Record { fields } => PackageTypeRef::Local {
+            local_type: TypeRefIr::Record {
+                fields: fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), contract_type_ref_to_ir(ty)))
+                    .collect(),
+            },
+        },
+        ContractTypeRef::StructuralUnion { variants } => PackageTypeRef::Local {
+            local_type: TypeRefIr::Union {
+                items: variants.iter().map(contract_type_ref_to_ir).collect(),
+            },
+        },
+        ContractTypeRef::Literal { value } => PackageTypeRef::Local {
+            local_type: TypeRefIr::Literal {
+                value: match value {
+                    skiff_artifact_model::ContractLiteral::String { value } => {
+                        skiff_artifact_model::LiteralIr::String {
+                            value: value.clone(),
+                        }
+                    }
+                },
+            },
+        },
+    }
+}
+
+fn contract_type_ref_to_ir(ty: &ContractTypeRef) -> TypeRefIr {
+    match package_type_ref_from_contract_type(ty) {
+        PackageTypeRef::Local { local_type } => local_type,
+        PackageTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId { package_id },
+                symbol_path: stable_schema_key,
+                abi_expectation: None,
+            },
+        },
+        PackageTypeRef::Container { name, arguments } => TypeRefIr::Builtin {
+            name,
+            args: arguments
+                .iter()
+                .map(|argument| contract_type_ref_to_ir_from_package(argument.clone()))
+                .collect(),
+        },
+        PackageTypeRef::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(contract_type_ref_to_ir_from_package(*inner)),
+        },
+    }
+}
+
+fn contract_type_ref_to_ir_from_package(ty: PackageTypeRef) -> TypeRefIr {
+    match ty {
+        PackageTypeRef::Local { local_type } => local_type,
+        PackageTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId { package_id },
+                symbol_path: stable_schema_key,
+                abi_expectation: None,
+            },
+        },
+        PackageTypeRef::Container { name, arguments } => TypeRefIr::Builtin {
+            name,
+            args: arguments
+                .into_iter()
+                .map(contract_type_ref_to_ir_from_package)
+                .collect(),
+        },
+        PackageTypeRef::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(contract_type_ref_to_ir_from_package(*inner)),
+        },
+    }
+}
+
 fn resolved_ir_contains_contract_symbol(
     ty: &TypeRefIr,
     dependency_analysis: &SourceDependencyAnalysisInput,

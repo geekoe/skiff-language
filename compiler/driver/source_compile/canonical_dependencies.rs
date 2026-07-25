@@ -86,7 +86,18 @@ fn package_analysis(
                 && schema.package_id() == dependency.id
                 && schema.exact_version() == dependency.version
         }) {
-            analysis = analysis.with_schema_records(schema.records().values().cloned());
+            analysis = analysis.with_schema_bindings(schema.index().types.iter().filter_map(
+                |(stable_key, entry)| {
+                    let record = schema.records().get(&entry.package_schema_type_id)?;
+                    Some((
+                        entry
+                            .public_path
+                            .clone()
+                            .unwrap_or_else(|| stable_key.clone()),
+                        record.clone(),
+                    ))
+                },
+            ));
         }
         facts.push((alias, analysis));
     }

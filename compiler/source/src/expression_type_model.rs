@@ -1455,6 +1455,7 @@ impl<'a> OwnerChecker<'a> {
                 }
             }
             Expr::Field { object, field } => {
+                let object_key = self.peek_key();
                 let object_ty = if diagnose_unknown_field {
                     self.check_expr(object)
                 } else {
@@ -1476,6 +1477,37 @@ impl<'a> OwnerChecker<'a> {
                         } else {
                             self.record_field_type(&object_ty, field)
                         };
+                    if let (
+                        Some(dependency_analysis),
+                        Some(PackageTypeRef::PackageSchema {
+                            package_id,
+                            stable_schema_key,
+                            package_schema_type_id,
+                        }),
+                    ) = (
+                        self.dependency_analysis,
+                        self.contract_projection.expression_type(&object_key),
+                    ) {
+                        if let Some(record) = dependency_analysis.exact_package_type(
+                            package_id,
+                            stable_schema_key,
+                            package_schema_type_id,
+                        ) {
+                            if let skiff_artifact_model::ContractTypeDescriptor::Record {
+                                fields,
+                            } = &record.canonical_descriptor.descriptor
+                            {
+                                if let Some(field_type) = fields.get(field) {
+                                    self.contract_projection.record_expression_type(
+                                        key.clone(),
+                                        contract_call_typing::package_type_ref_from_contract_type(
+                                            field_type,
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
                     if diagnose_unknown_field && field_ty.is_none() {
                         self.diagnostics.push(format!(
                             "{}: unknown field `{field}` on {} at {}",
@@ -3382,6 +3414,16 @@ impl<'a> OwnerChecker<'a> {
                 self.diagnostics.extend(diagnostics);
                 return false;
             }
+        }
+        if let (Some(expected), Some(actual)) = (
+            expected_projected.as_ref(),
+            self.contract_projection.expression_type(value_key),
+        ) {
+            self.diagnostics.push(format!(
+                "{}: {context} canonical type identity mismatch at {}: expected {expected:?}, found {actual:?}",
+                self.module_path,
+                span_label(fallback_span),
+            ));
         }
         self.push_type_mismatch(context, fallback_span, expected, actual);
         false

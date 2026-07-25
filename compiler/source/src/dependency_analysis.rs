@@ -202,6 +202,28 @@ impl SourceDependencyAnalysisInput {
         self.packages.get(alias)?.schema_records.get(stable_key)
     }
 
+    pub fn exact_package_type(
+        &self,
+        package_id: &str,
+        stable_key: &str,
+        type_id: &skiff_artifact_model::PackageSchemaTypeId,
+    ) -> Option<&PackageSchemaTypeRecord> {
+        let contract = self
+            .contracts
+            .package_type_by_owner_and_stable_key(package_id, stable_key);
+        let direct = self
+            .packages
+            .values()
+            .flat_map(|facts| facts.schema_records.values())
+            .find(|record| {
+                record.package_id == package_id && record.stable_schema_key == stable_key
+            });
+        contract
+            .into_iter()
+            .chain(direct)
+            .find(|record| &record.package_schema_type_id == type_id)
+    }
+
     pub(crate) fn package_callable(
         &self,
         alias: &str,
@@ -251,6 +273,14 @@ impl PackageDependencyAnalysisFacts {
             .into_iter()
             .map(|record| (record.stable_schema_key.clone(), record))
             .collect();
+        self
+    }
+
+    pub fn with_schema_bindings(
+        mut self,
+        records: impl IntoIterator<Item = (String, skiff_artifact_model::PackageSchemaTypeRecord)>,
+    ) -> Self {
+        self.schema_records = records.into_iter().collect();
         self
     }
 }

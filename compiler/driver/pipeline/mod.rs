@@ -108,6 +108,12 @@ fn pre_source_contract_package_schemas(
         .iter()
         .flat_map(|dependency| &dependency.contract.package_type_requirements)
         .map(|requirement| requirement.package_id.as_str())
+        .chain(
+            input
+                .package_dependencies
+                .iter()
+                .map(|dependency| dependency.id.as_str()),
+        )
         .collect::<std::collections::BTreeSet<_>>();
 
     for owner in owners.iter().copied() {
