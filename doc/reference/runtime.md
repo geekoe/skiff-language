@@ -125,9 +125,29 @@ Block 的退出结果属于普通完成、正常控制退出、错误退出、ti
 
 获胜事件确定后，外层 `catch` 只能捕获该事件对应的 exception envelope。其他 lane 后续错误只能进入平台日志 / trace。
 
-服务 API 不在函数签名上声明业务 `throws`。预期内业务失败应收敛为返回类型，例如 named union 或 discriminator record union。未捕获并越过服务边界的业务 error leaf 会被 runtime 转换为平台级未处理服务错误。
+服务 API 不在函数签名或operation contract上声明业务 `throws`，也不发布推导出的throw set。预期内业务失败
+应收敛为返回类型，例如 named union 或 discriminator record union。任意用户名义 `type` 都可在当前request
+内被抛出；这不要求该类型可序列化。
 
-Service-to-service 和 gateway-to-runtime 的 response error 在 caller 侧恢复为普通 throw envelope；`catch<E>` 不区分本地 throw 与远程 platform error throw。Ingress decode 在进入 service operation 前失败时，业务代码尚未运行，不能被业务 `catch` 捕获。
+未捕获错误越过service boundary时，runtime首先检查实际类型自己的Package owner。只有该类型在owner
+`api.yml`中显式公开、满足`SchemaClosed`且成功编码时，response error才携带其精确
+`PackageSchemaTypeId`和payload；caller链接同一identity后恢复原名义值。私有、不可name、非closed或编码失败
+的错误不发送原type identity、字段或显示字符串，统一替换为可序列化的
+`std.service.InternalError`。错误可能由throwing service的dependency package声明，判断始终使用类型自己的
+owner。
+
+Service-to-service 和 gateway-to-runtime 的 response error 在 caller 侧恢复为普通 throw envelope；
+`catch<E>` 不区分本地throw与远程throw。`std.service.InternalError`是普通可捕获错误；中间service未捕获
+时直接继续传播同一个错误payload和`traceId/errorId`，不增加包装类型。
+
+每个 `throw` 都生成包含source location和stack trace的request-local `Exception<E>`；同一request中的
+`rethrow`保留该envelope。跨service只传输错误payload与固定envelope，不序列化callee的
+`Exception<E>`。caller在service call site创建新的本地exception stack，并附加脱敏remote-boundary frame；
+因此A的错误经未处理的B继续传播后，B的caller得到相同错误值，但得到自己这一跳的新栈。各service完整本地栈
+只进入受限telemetry/log，并通过`traceId/errorId`关联，不能把私有源码路径或原始私有错误字段暴露给caller。
+InProcessBoundary与remote binding必须遵守同一规则。
+
+Ingress decode 在进入 service operation 前失败时，业务代码尚未运行，不能被业务 `catch` 捕获。
 
 ## 8. Timeout and cancel
 

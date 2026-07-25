@@ -28,7 +28,8 @@ prelude 类型和基础 receiver API 默认加载，不需要 `import`。它们�
 
 `integer` 可赋给 `number`；`number` 不能隐式赋给 `integer`，除非是可静态证明的整数 literal 或经过显式 safe integer 校验 API。
 
-runtime prelude 类型包括 `Array<T>`、`Map<K,V>`、`Stream<T>`、`Config`、`Json`、`JsonObject`、`ErrorPayload`、`Exception<E>`、`CatchResult<T,E>`、`SourceLocation`、`StackTrace` 和 `StackFrame`。
+runtime prelude 类型包括 `Array<T>`、`Map<K,V>`、`Stream<T>`、`Config`、`Json`、`JsonObject`、
+`Exception<E>`、`CatchResult<T,E>`、`SourceLocation`、`StackTrace` 和 `StackFrame`。
 
 `Date` 表示 UTC instant。运行时内部表示为 epoch milliseconds；HTTP/API、service boundary、JSON schema 和 DB business JSON 统一以 RFC3339 UTC string 表达，例如 `2026-06-04T15:12:03.456Z`。可表示范围限定为 RFC3339 stable year `0000..9999`；超过范围的构造和 arithmetic 抛 `std.time.DecodeError`。leap second 输入不支持。
 
@@ -40,9 +41,13 @@ HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.
 
 ## 3. Standard Platform Errors
 
-标准平台错误都是名义 record，并显式 `implements ErrorPayload`。它们可被 `catch<E>` 捕获，前提是错误发生在用户代码已经进入当前 Skiff request 后，或由用户代码发起的 std API / service call 产生。
+标准平台错误都是带稳定名义identity的具体类型，不需要共同的marker interface。它们可被 `catch<E>` 捕获，
+前提是错误发生在用户代码已经进入当前 Skiff request 后，或由用户代码发起的 std API / service call 产生。
 
-当前 platform error surface 包括 `std.json.DecodeError`、`std.bytes.DecodeError`、`std.db.DecodeError`、`std.db.ConflictError`、`std.file.FileError`、`std.number.DecodeError`、`std.time.DecodeError`、`config.DecodeError`、`std.service.ProviderUnavailableError`、`std.service.ProtocolError`、`std.http.HttpError`、`CancelError` 和 `TimeoutError`。
+当前 platform error surface 包括 `std.json.DecodeError`、`std.bytes.DecodeError`、`std.db.DecodeError`、
+`std.db.ConflictError`、`std.file.FileError`、`std.number.DecodeError`、`std.time.DecodeError`、
+`config.DecodeError`、`std.service.ProviderUnavailableError`、`std.service.ProtocolError`、
+`std.service.InternalError`、`std.http.HttpError`、`CancelError` 和 `TimeoutError`。
 
 decode 类错误按所属模块命名，用于用户代码发起的 JSON、bytes、DB、file、number、time 和 config 转换失败。runtime 内部 decode / artifact / transport 不变量失败不暴露为用户可 catch 的 decode 类型。错误消息必须脱敏，不能包含 secret 或原始敏感值。
 
@@ -52,19 +57,29 @@ provider unavailable 类错误表示目标服务、网络连接、DNS、TLS 或 
 
 protocol 类错误表示跨服务、HTTP/SSE 或 gateway/runtime 协议不匹配、无法恢复 identity 或 payload 与 lock / schema 不一致。
 
-unhandled service error 是服务边界 wire code，表示 callee operation 中未捕获业务 error leaf 越过服务边界，被 runtime 转换为平台错误并记录 trace；它不是用户可 catch 的 platform error type。
+`std.service.InternalError`用于隐藏不能安全保留原始类型的跨服务错误。用户错误为私有类型、不可name、
+不满足`SchemaClosed`或实际编码失败时，runtime在该错误第一次越过service boundary时生成
+`InternalError`，不发送原始type identity、字段或显示字符串。它是公开、schema-closed、可捕获且可继续跨
+服务序列化的名义类型，包含固定脱敏`message`、`traceId`和唯一`errorId`。中间service未捕获时继续传播同一
+错误值与关联identity，不重复包装。
 
 gateway 在进入 service operation 之前发生的 HTTP / WebSocket decode error 不会被业务 service 捕获；它由 gateway 按外部协议返回。
 
 ## 4. Request-Local Control Flow Types
 
-`Exception<E>` 是 request-local throw envelope，包含业务 error payload、source location 和 stack trace。
+`Exception<E>` 是 request-local throw envelope，包含被抛出的值、source location 和 stack trace。每个错误
+值都通过该envelope传播，所以`std.service.InternalError`与任意用户错误一样必定有栈；栈不是错误值的业务
+字段。
 
 `CatchResult<T,E>` 表达 `catch<E>` 的结果，逻辑上是 ok / err discriminator union：ok branch 携带值，err branch 携带 `Exception<E>`。
 
 `Exception<E>` 和 `CatchResult<T,E>` 不是业务数据结构，不通过 boundary schema closure。它们不能出现在 service API、public contract type、跨服务 payload 或持久化 schema 中。
 
 预期内业务失败应使用应用自定义命名 union 或 discriminator record union 表达，而不是返回 `Exception<E>`。
+
+普通`throw`捕获当前request的source location与stack；同一request中的`rethrow`保留原envelope。跨service
+传输只编码错误值和固定错误元数据，caller在调用点创建新的`Exception<E>`和当前这一跳的新栈，并加入脱敏的
+remote-boundary frame。完整callee栈留在服务端telemetry/log，通过`traceId/errorId`关联。
 
 ## 5. Collections
 
@@ -212,7 +227,9 @@ DNS、连接失败、TLS、payload decode 或协议错误抛标准平台错误�
 
 `std.http.errorResponse`、`std.http.noContent`、`std.http.methodNotAllowed` 和 `std.http.requireMethod` 是 raw route 的显式 response helper，不是 platform error channel。`std.http.forwardableHeaders` 过滤 hop-by-hop / connection response headers，`std.http.sseHeaders` 返回常用 SSE response headers。
 
-`std.http.HttpError implements ErrorPayload` 用于 HTTP handler 或 `http.pre` 主动抛出业务 HTTP failure，只携带 `message` 和可选 `detail`。越过 HTTP boundary 的 thrown failure 由平台选择 HTTP status，并写回固定 JSON body `{ "message": string, "detail": Json? }`；业务代码不能通过 thrown error 指定 HTTP status 或 code。
+`std.http.HttpError` 用于 HTTP handler 或 `http.pre` 主动抛出业务 HTTP failure，只携带 `message` 和可选
+`detail`。越过 HTTP boundary 的 thrown failure 由平台选择 HTTP status，并写回固定 JSON body
+`{ "message": string, "detail": Json? }`；业务代码不能通过 thrown error 指定 HTTP status 或 code。
 
 `std.http.HttpResponseStreamEvent` 表达 raw HTTP streaming response：`start` 必须先于 `chunk`，`end` 后不能再 emit。`std.http.streamStart` / `std.http.streamChunk` / `std.http.streamEnd` 是构造该 stream event 的平台 helper。
 
@@ -282,7 +299,9 @@ break、return、外层 timeout 或 ancestor cancel 必须向 source 传播 canc
 
 测试替身按 target 和可选 conflict-key 匹配。典型 target 包括 `std.http.request`、`std.http.sse`、LLM stream、provider package operation 和 service operation target。
 
-替身必须返回 schema-closed payload，或抛标准 `ErrorPayload` leaf。它不能返回无法通过边界 schema 的临时对象。
+替身必须返回目标要求的schema-closed payload。替身可以抛任意语言允许的名义错误值；当它模拟service或
+host boundary时，公开且schema-closed的错误保留原类型，私有、非closed或编码失败的错误对调用方表现为
+`std.service.InternalError`，与真实boundary一致。
 
 替身执行仍参与 effect summary；不能因为是 mock 就绕过 `concurrent` effect conflict 检查。
 

@@ -210,12 +210,16 @@ Service projection 使用同一份 Publication API graph：
 - public instance root 按其 explicitly listed interface methods projection 成 public instance method
   operations。
 - package/service 共享 `PublicationAbiUnit` contract：public operation 的 canonical signature、schema
-  closure 和 stream/effect/throw/config metadata 都写入 `operationAbi[operation_abi_id]`。
+  closure 和 stream/effect/config metadata 都写入 `operationAbi[operation_abi_id]`。
 - service runtime projection 额外生成 `ServiceUnit.operations` 和 `OperationRouteBinding`。HTTP/WebSocket
   ingress、service-call selector 和 gateway route 必须先映射成 `operation_abi_id`；provider 执行阶段只按
   `operation_abi_id` 查 target，不按 public path、method name 或 display name 查找。
 - operation / protocol identity 使用 public path、`operation_abi_id`、canonical signature、
   `public_instance_key`、exposed `InterfaceInstantiationRef` 和 schema closure。
+
+`api.yml`不声明每个operation的throw set，compiler也不把推导出的可能错误类型写入
+`PublicationAbiUnit`。任意希望跨service后仍保留原名义类型的错误，必须作为其owner Package的普通public
+type出现在该owner的`api.yml`并满足`SchemaClosed`；它不因此成为某个operation signature的一部分。
 
 source module path 不作为 service protocol identity。HTTP path、WebSocket route key、timeout、routing
 revision 和 runtime activation 属于 service projection 或部署 metadata，不属于 `api.yml`。

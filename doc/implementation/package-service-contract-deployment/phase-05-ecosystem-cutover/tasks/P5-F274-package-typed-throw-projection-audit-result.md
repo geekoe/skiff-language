@@ -1,6 +1,10 @@
 # P5-F274 Package typed-throw projection audit result
 
-状态：Audit complete；实现 `TASK_NOT_EXECUTABLE`，等待语言设计决策。
+状态：Superseded by P5-F279。审计事实保留；declared-throws建议与`throw_types`长期方向已失效。
+
+P5-F279确定函数签名、Package ABI和ServiceContract都不拥有operation-specific throw set。本文以下关于
+“当前实现为什么总为空”的代码事实仍可用于清理，但不得再据此实现`throws`语法、填充
+`PackageCallableSignature.throw_types`或把错误集合加入protocol identity。
 
 ## 结论
 
@@ -79,4 +83,3 @@ decode 等错误，故不能把恒空列表当作长期完成状态。
 - Package publish/import → test-service inline typed throw → `catch<T>` 的真实执行链。
 
 审计 worktree 未修改文件、未运行测试。
-

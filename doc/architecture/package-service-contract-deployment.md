@@ -181,9 +181,10 @@ artifact receipt与IDE应消费同一projection，不能静默排除。
 缺字段不表示不可用或尚未分析。PackageArtifact必须保存完成boundary判断所需的typed effect、
 provenance和link facts，使deployment无需读取源码。
 
-`BoundaryOperationContract`只承载boundary可观察的signature、error/stream/cancel/callback、value plan与
+`BoundaryOperationContract`只承载boundary可观察的signature、stream/cancel/callback、value plan与
 公开effect保证；其中所有命名类型引用都保留`PackageSchemaTypeId`及其package owner。ServiceContract
-projection在该body外增加稳定operation key/id，不把Package类型重写成`ContractTypeId`。具体
+projection在该body外增加稳定operation key/id，不把Package类型重写成`ContractTypeId`。service operation
+统一拥有§6.3定义的开放错误通道，不在operation contract中列出可能抛出的类型集合。具体
 config/state/native capability requirement和完整may-effect属于
 `BoundaryImplementationRequirements`，不能泄漏进ServiceProtocolIdentity。
 
@@ -209,8 +210,9 @@ ServiceContract
   packageSchemaRequirements
 ```
 
-每个operation descriptor包含canonical参数、返回、throw/error、stream、cancel、callback与value
-plan契约。ServiceContract不拥有第二套boundary类型，不内嵌或复制Package字段定义。它记录精确
+每个operation descriptor包含canonical参数、返回、stream、cancel、callback与value plan契约，并统一使用
+开放错误通道；它不包含operation-specific throw set。ServiceContract不拥有第二套boundary类型，不内嵌或
+复制Package字段定义。它记录精确
 `PackageTypeRequirement`：
 
 ```text
@@ -392,6 +394,69 @@ thread-local“当前service”。Callback调用切回capability owner后，返�
 - PackageLocalAbi：provider内部最终调用executable的本地代码ABI。
 
 本地和远程binding不需要相同的机器ABI；它们必须实现同一个ServiceContract。
+
+### 6.3 Service error channel 与异常栈
+
+语言不在函数签名、Package Local ABI或ServiceContract operation中声明、推导或发布可能抛出的类型集合。
+每个service operation都有同一个开放错误通道；实现新增一种可能抛出的错误，不改变operation signature或
+`ServiceProtocolIdentity`。预期调用方穷尽处理的业务失败仍应建模为普通返回union。
+
+任意用户`type`声明的名义值都可以在request内被抛出，不因此自动获得boundary schema。跨service时传输的是
+错误payload和固定错误envelope，不是request-local的`Exception<E>`对象：
+
+```text
+ServiceErrorEnvelope
+  = PublicTypedError {
+      packageId
+      stableSchemaKey
+      packageSchemaTypeId
+      encodedPayload
+      traceId
+      errorId
+    }
+  | InternalError {
+      payload: std.service.InternalError
+    }
+  | PlatformError {
+      builtinErrorIdentity
+      encodedPayload
+      traceId
+      errorId
+    }
+```
+
+只有同时满足以下条件的用户错误才能以原始名义类型进入`PublicTypedError`：
+
+- 实际concrete错误类型在其owner Package的`api.yml`中显式公开且`PublicNameable`；
+- 该类型的完整字段闭包满足`SchemaClosed`；
+- runtime能够按owner提供的`PackageSchemaTypeId`成功编码实际值。
+
+错误可以由service package或其任意dependency package声明；公开性、schema和identity始终在类型自己的
+Package owner中判断，不能把外部类型改写成throwing service拥有的类型。接收方链接了同一
+`PackageSchemaTypeId`时，runtime恢复原名义值，普通`catch<ownerAlias.Error>`即可匹配。接收方没有链接该
+类型时，可以把已编码的公开错误envelope作为不可匹配的异常因果继续向外传播；runtime不得按结构猜类型，
+也不得为转发而要求中间service声明operation throw set。
+
+私有、不可name、非`SchemaClosed`或编码失败的用户错误不得发送原type identity、字段或显示字符串。
+callee在第一次越过service boundary时把它替换为固定、公开且schema-closed的
+`std.service.InternalError`。该错误带稳定脱敏message以及`traceId`、`errorId`，因此后续service可以像处理
+其它普通错误一样捕获；未捕获时直接继续发送同一个错误payload和关联identity，不反复包装成新的错误类型。
+
+所有错误值都由当前request的`Exception<E>`承载，因而`std.service.InternalError`也一定有source location和
+stack trace。普通`throw`创建当前request的异常栈；同一request中的`rethrow`保留原envelope与throw site。
+service response只传输上面的错误envelope，不把callee的request-local`Exception<E>`对象或原始私有栈当作
+业务payload序列化。caller在service call site恢复为新的本地exception envelope，生成caller这一跳的栈并
+附加一帧脱敏remote-boundary信息。若B调用A后不捕获错误，B对外继续发送同一个错误payload；B的caller再为
+自己这一跳得到新的异常栈。
+
+每次最初throw、私有错误转换和跨service传播都保留同一因果`traceId`，并以`errorId`关联。每个service的完整
+本地栈进入受限telemetry/log；跨边界只暴露service/operation/errorId等脱敏诊断，不暴露私有源码路径、函数名
+或原始错误字段。`InProcessBoundary`必须执行同样的编码、identity、转换和新栈语义，不能因为共享进程而泄漏
+本地引用或callee栈。
+
+“可抛出”与“可序列化”是两个独立性质：package内部throw不要求`SchemaClosed`；只有希望跨service后保留原始
+名义类型的公开错误payload需要`SchemaClosed`。`std.service.InternalError`和固定platform error envelope本身
+始终可序列化。记录日志不要求序列化用户错误payload。
 
 ## 7. Linkable、Recoverable 与 Callback Capability
 

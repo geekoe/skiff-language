@@ -238,9 +238,11 @@ Service public callable 使用 remote linkage：
 
 因此 compiler 不应维护两套“package exports”和“service contract API”解析逻辑；分叉点应是
 linkage policy、`implementationLinks` 和 service runtime projection。public operation 的 canonical
-signature、schema closure 和 effect/throw/config metadata 的唯一查询表是
+signature、schema closure 和 effect/config metadata 的唯一查询表是
 `PublicationAbiUnit.operationAbi[operation_abi_id]`。同一 source callable 可以被多个 public path 暴露；
 每个 public path 生成独立 `operation_abi_id` 和 `OperationAbiRef`，但可以链接到同一个 executable target。
+可能抛出的类型不写入该表：service operation统一使用开放错误通道，函数签名和public ABI都不拥有
+operation-specific throw set。
 
 ### Package abstract capabilities
 
@@ -299,7 +301,7 @@ canonical schema 的 roots 包括：
 
 会改变 protocol identity 的典型变化：
 
-- remote operation `operation_abi_id`、参数、返回、stream/effect/throw/config metadata 或 public path 变化。
+- remote operation `operation_abi_id`、参数、返回、stream/effect/config metadata 或 public path 变化。
 - public instance / binding target 的 `public_instance_key`、exposed `InterfaceInstantiationRef`、
   source-call method index 或 method operation table 变化。
 - boundary schema closure 中的 public/schema type 变化。
@@ -315,6 +317,7 @@ implementation target、gateway path、route alias 和 display name 不属于 pr
 - 注释、空白、源码文件顺序。
 - 未进入 remote boundary 的 private helper。
 - 只影响 implementation 的 code revision。
+- 实现新增、删除或改变某条执行路径可能抛出的具体错误类型；错误通道本身仍是同一固定开放contract。
 - 未被当前service operations的Package schema closure引用的Package类型或public callable变化。
 
 当前不定义自动兼容、字段投影、adapter 或 protocol fallback。schema closure 失败时不得生成

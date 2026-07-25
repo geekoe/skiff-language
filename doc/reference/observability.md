@@ -63,13 +63,19 @@ topic 是平台路由、采样和保留策略维度，不是业务分类机制�
 - event source。
 - service 归属：service id、revision id、build id、activation identity。
 - runtime 归属：runtime id、provider / host 相关摘要。
-- 因果链：trace id、request id、client request id、span id、parent span id。
+- 因果链：trace id、request id、client request id、span id、parent span id，以及错误事件的 error id。
 - target：stable target id。
 - 内容：level、name、message、attrs、error、duration、dropped counters。
 
 事件字段必须能被脱敏和限长。secret、完整 prompt、完整 external raw payload、完整文件内容默认不得进入 telemetry。
 
-runtime error 可以携带诊断帧。帧应引用当前 build / assembly 内的 source id，并依赖事件上的 build id 或 assembly identity 回查 source map；telemetry 不保存源码全文。
+runtime error 可以携带当前service的完整诊断帧。帧应引用当前 build / assembly 内的 source id，并依赖事件
+上的 build id 或 assembly identity 回查 source map；telemetry 不保存源码全文。最初throw、跨service转换和
+后续传播使用同一`traceId`并以`errorId`关联，使每一跳各自记录的本地栈能组成同一错误因果链。
+
+完整本地栈只进入受限telemetry/log。service error response不能携带私有source id、源码路径、函数名或原始
+私有错误字段；caller只能得到当前request的新异常栈和一帧包含service/operation/errorId等安全字段的
+remote-boundary诊断。
 
 本文不复制 fixture schema。共享协议 fixture 留在 `../architecture/fixtures/observability-minimal.json`，由 router、runtime 和 telemetry 测试复用。
 

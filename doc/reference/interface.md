@@ -148,11 +148,13 @@ type ChatPartition
 marker 仍然是显式 conformance，不是注解字符串。compiler 和 artifact 可以读取该 conformance，用于：
 
 - 资源分区或 shard id type binding。
-- platform error marker，例如 `ErrorPayload`。
 - publication / package capability metadata。
 - 后续安全能力标记。
 
 marker 不应该引入 runtime wrapper value。
+
+错误可抛出性不通过marker interface表达。任意用户`type`声明都有名义catch identity；语言不定义
+`ErrorPayload`接口。
 
 ## 7. Interface-Typed Access
 

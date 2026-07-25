@@ -70,21 +70,33 @@ record literal target typing 要求未知字段报错，缺失的非 nullable �
 
 ## 5. Throw, Catch And Rethrow
 
-`CatchLeaves(T)` 是类型 `T` 可作为 runtime catch payload 的 concrete error leaves 集合。
+`CatchLeaves(T)` 是类型 `T` 可作为 runtime catch payload 的 concrete nominal leaves 集合。
 
-显式 `implements ErrorPayload` 的名义 record 是 catchable leaf。union 的 leaves 是各 branch leaves 的并集，且所有 branch 都必须有非空 leaves。命名 union 先展开 RHS 再计算 leaves。
+任意用户 `type` 声明都创建可抛出、可捕获的名义 runtime identity，包括名义 record、名义
+representation 以及命名 union 中的 concrete / synthetic branch identity。透明 `alias` 不创建新 identity，
+按 RHS 展开。union 的 leaves 是各 branch leaves 的并集，且所有 branch 都必须有可确定的 runtime identity；
+命名 union 按其保留 enclosing union context 的 runtime branches 计算 leaves。
 
-interface、primitive、literal、anonymous record、container、`unknown`、`FnType`、类型参数和 representation wrapper 本身不能成为 catch leaves。
+未被用户 `type` 包装的 interface、primitive、literal、anonymous record、container、`unknown`、`FnType`
+和无约束类型参数本身不能成为 catch leaves。它们可以作为名义 representation 或名义 record 的内部
+representation；这不取消外层 `type` 的名义 catch identity。
 
-`throw expr` 合法当且仅当 `expr` 的静态类型所有可能运行时值都是 catchable leaves。运行时 envelope 的 payload 是实际 concrete error leaf，不是“union 本身”。
+`throw expr` 合法当且仅当 `expr` 的静态类型所有可能运行时值都有可确定的名义 catch identity。运行时
+envelope 记录实际 concrete leaf identity；对命名 union，它同时保留 enclosing union context。
 
 `catch<E>` 合法当且仅当 `CatchLeaves(E)` 非空。捕获时按 envelope 的 actual payload type id 与 leaves 集合匹配，否则继续向外传播。
 
-`catch<ErrorPayload>`、`catch<MyErrorInterface>`、`catch<unknown>` 和无约束类型参数捕获都应报错。
+`catch<MyErrorInterface>`、`catch<unknown>`、`catch<string>` 和无约束类型参数捕获都应报错。不存在要求
+错误类型实现的 `ErrorPayload` marker。
 
 `rethrow exception` 要求操作数静态类型是 `Exception<E>` 且 `CatchLeaves(E)` 非空。它重新抛出同一 envelope，不创建新 throw site。
 
 `Exception<E>` 和 `CatchResult<T,E>` 是 request-local 控制流结构，不是 boundary payload；不能出现在 service API、contract public type、跨服务 payload 或持久化 schema 中。
+
+可抛出不等于可序列化。package内部throw不要求`SchemaClosed`。未捕获错误越过service boundary时，只有
+在其owner Package中显式公开且`SchemaClosed`的名义类型才能保留原始类型；私有、非closed或编码失败的错误
+由runtime替换为`std.service.InternalError`。具体错误envelope与逐跳异常栈语义见`runtime.md`和
+`../architecture/package-service-contract-deployment.md`。
 
 ## 6. Match Typing And Narrowing
 
@@ -216,7 +228,10 @@ callback 捕获外层变量时，其读写集合并入承载 API 调用的 lane�
 
 ## 12. Function Effect Metadata
 
-函数 effect metadata 至少描述 Skiff 可见 read / write path、external effect target 和 conflict-key、返回值 provenance、可能抛出的 ErrorPayload leaves、callback profile 和 stream 生产 / 消费行为。
+函数 effect metadata 至少描述 Skiff 可见 read / write path、external effect target 和 conflict-key、返回值
+provenance、boundary分析需要的throw payload provenance、callback profile 和 stream 生产 / 消费行为。
+它不包含对调用方公开的“可能抛出类型集合”；函数签名、Package ABI和ServiceContract都不声明或推导
+operation-specific throw set。
 
 跨模块调用使用被 import 模块发布的 metadata；resolver 不重新解析依赖模块实现来猜 effect。
 
