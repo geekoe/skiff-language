@@ -37,6 +37,10 @@
 允许迁移这些 owner 的 co-located tests，以及 `compiler/tests/**` 中只构造/断言本任务
 declaration、throw/catch/rethrow、instruction site 或已删除 error-set DTO 的机械 fixture。
 
+另精确允许 `compiler/core/src/spawn_targets.rs` 的 test module 中现有 `service_file_ir` 手写
+`CallIr` fixture补 required synthetic site；只能使用
+`CompilerGeneratedTestHarness`，不得修改该文件 production spawn projection。
+
 禁止修改：
 
 - syntax surface/grammar；
