@@ -142,14 +142,21 @@ fn nested_local_calls_preserve_exact_effects_and_provenance() {
     );
 
     for callable in ["nested", "nestedRecordField", "nestedCollectionElement"] {
-        assert_eq!(effects(&model, callable), suspend_only_effects(), "{callable}");
+        assert_eq!(
+            effects(&model, callable),
+            suspend_only_effects(),
+            "{callable}"
+        );
         assert!(matches!(
             provenance(&model, callable),
             CallableProvenanceSummary::Analyzed { .. }
         ));
     }
     for callable in ["unknownInner", "unknownOuter"] {
-        assert!(effects(&model, callable).invokes_unknown_target, "{callable}");
+        assert!(
+            effects(&model, callable).invokes_unknown_target,
+            "{callable}"
+        );
         assert!(matches!(
             provenance(&model, callable),
             CallableProvenanceSummary::Unknown {
@@ -1370,6 +1377,54 @@ fn exact_http_client_stream_is_fresh_detached_and_suspending_through_raw_request
             target,
             ResolvedCallTarget::NativeFunction { binding_key }
                 if binding_key == "std.http.client.stream"
+        )
+    }));
+}
+
+#[test]
+fn exact_http_client_sse_is_fresh_detached_and_suspending_through_raw_request() {
+    let model = analyze(
+        r#"
+            function rawRequest(input: std.http.HttpClientRequest) -> std.http.HttpClientRequest {
+              return std.http.HttpClientRequest {
+                method: input.method,
+                url: input.url,
+                headers: input.headers,
+                body: input.body,
+                timeoutMs: input.timeoutMs,
+              }
+            }
+
+            function responses(input: std.http.HttpClientRequest) -> Stream<std.http.HttpSseEvent> {
+              return std.http.sse(rawRequest(input))
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(
+        effects(&model, "rawRequest"),
+        CallableMayEffects {
+            returns_caller_alias: true,
+            ..no_effects()
+        }
+    );
+    assert_eq!(effects(&model, "responses"), suspend_only_effects());
+    assert!(matches!(
+        provenance(&model, "responses"),
+        CallableProvenanceSummary::Analyzed {
+            return_origins,
+            throw_origins,
+            escape_lanes,
+        } if return_origins == &vec![ValueProvenance::Fresh]
+            && throw_origins.is_empty()
+            && escape_lanes.is_empty()
+    ));
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::NativeFunction { binding_key }
+                if binding_key == "std.http.client.sse"
         )
     }));
 }

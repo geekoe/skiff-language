@@ -563,7 +563,11 @@ fn native_callable_semantics_registry_accepts_exact_websocket_route_matrix() {
 
 #[test]
 fn native_callable_semantics_registry_accepts_http_suspend_detachment_routes() {
-    for binding_key in ["std.http.client.request", "std.http.client.stream"] {
+    for binding_key in [
+        "std.http.client.request",
+        "std.http.client.stream",
+        "std.http.client.sse",
+    ] {
         let semantics = STD_NATIVE_CALLABLE_SEMANTICS
             .iter()
             .find(|semantics| semantics.binding_key == binding_key)
@@ -670,8 +674,7 @@ fn file_create_semantics_reject_malformed_signatures_and_lookalikes() {
             },
             {
                 let mut signature = canonical;
-                signature.return_type =
-                    NativeSignatureTypeExpr::Builtin("string");
+                signature.return_type = NativeSignatureTypeExpr::Builtin("string");
                 signature
             },
         ] {
@@ -879,6 +882,79 @@ fn http_client_stream_semantics_reject_malformed_signature_and_noncanonical_look
 }
 
 #[test]
+fn http_client_sse_semantics_reject_malformed_signature_context_route_and_lookalike() {
+    let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|semantics| semantics.binding_key == "std.http.client.sse")
+        .cloned()
+        .expect("HTTP client SSE must have exact callable semantics");
+    let canonical = *STD_NATIVE_SIGNATURES
+        .iter()
+        .find(|signature| signature.binding_key == semantics.binding_key)
+        .expect("HTTP client SSE must have an exact signature");
+
+    for (case, signature) in [
+        {
+            let mut signature = canonical;
+            signature.params = &[];
+            ("missing request", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.params = &[NativeSignatureTypeExpr::Builtin("string")];
+            ("wrong request", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.return_type = NativeSignatureTypeExpr::Builtin("string");
+            ("wrong return", signature)
+        },
+    ] {
+        let error = validate_native_callable_semantics_registry(
+            std::slice::from_ref(&semantics),
+            &[signature],
+            NATIVE_BINDINGS,
+        )
+        .expect_err("malformed HTTP client SSE signature must fail closed");
+        assert!(
+            error.contains("std.http.client.sse")
+                && error.contains("does not match the exact shared native signature"),
+            "{case}: unexpected error: {error}"
+        );
+    }
+
+    assert!(native_route_matches_required_context(
+        semantics.binding_key,
+        NativeRequiredContext::HttpClient,
+        RuntimeNativeRoute::Http,
+    ));
+    assert!(!native_route_matches_required_context(
+        semantics.binding_key,
+        NativeRequiredContext::None,
+        RuntimeNativeRoute::Http,
+    ));
+    assert!(!native_route_matches_required_context(
+        semantics.binding_key,
+        NativeRequiredContext::HttpClient,
+        RuntimeNativeRoute::Json,
+    ));
+
+    let mut lookalike = semantics;
+    lookalike.binding_key = "std.http.client.sse.extra";
+    let error = validate_native_callable_semantics_registry(
+        &[lookalike],
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect_err("non-canonical HTTP client SSE lookalike must fail closed");
+    assert!(
+        error.contains("std.http.client.sse.extra")
+            && error.contains("not in the exact audited registry"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn http_stream_event_constructor_semantics_require_exact_runtime_contracts() {
     for binding_key in [
         "std.http.stream.start",
@@ -918,8 +994,7 @@ fn http_stream_event_constructor_semantics_require_exact_runtime_contracts() {
             },
             {
                 let mut signature = canonical;
-                signature.return_type =
-                    NativeSignatureTypeExpr::Builtin("string");
+                signature.return_type = NativeSignatureTypeExpr::Builtin("string");
                 ("return", signature)
             },
         ] {

@@ -95,6 +95,7 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_scalar_native("std.crypto.uuidSimple"),
     detached_native("std.http.client.request", true),
     detached_native("std.http.client.stream", true),
+    detached_native("std.http.client.sse", true),
     detached_scalar_native("std.http.request.cookie"),
     detached_scalar_native("std.http.request.headers"),
     detached_scalar_native("std.http.stream.start"),
@@ -907,6 +908,7 @@ mod tests {
             "std.file.create",
             "std.file.createFromStream",
             "std.http.client.request",
+            "std.http.client.sse",
             "std.http.client.stream",
             "std.http.request.cookie",
             "std.http.request.headers",
@@ -955,6 +957,7 @@ mod tests {
                             | "std.file.create"
                             | "std.file.createFromStream"
                             | "std.http.client.request"
+                            | "std.http.client.sse"
                             | "std.http.client.stream"
                             | "std.time.sleep"
                     ),
@@ -1198,13 +1201,55 @@ mod tests {
         for near_miss in [
             "std.http.stream",
             "std.http.client.stream.extra",
-            "std.http.client.sse",
+            "std.http.client.streams",
             "std.http.stream.emitResponse",
         ] {
             assert_eq!(
                 native_callable_semantics(near_miss),
                 None,
                 "{near_miss} must not inherit HTTP client stream semantics"
+            );
+        }
+    }
+
+    #[test]
+    fn http_client_sse_semantics_match_exact_signature_and_remain_canonical() {
+        let semantics = native_callable_semantics("std.http.client.sse")
+            .expect("audited HTTP client SSE should have exact semantics");
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: true,
+            }
+        );
+        assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+        let signature = STD_NATIVE_SIGNATURES
+            .iter()
+            .find(|signature| signature.binding_key == semantics.binding_key)
+            .expect("audited HTTP client SSE should have a native signature");
+        assert_eq!(signature.target, "std.http.sse");
+        assert!(signature.aliases.is_empty());
+        assert_eq!(signature.type_param_count, 0);
+        assert_eq!(signature.params, &[super::HTTP_CLIENT_REQUEST]);
+        assert_eq!(signature.return_type, super::HTTP_SSE_STREAM);
+
+        for near_miss in [
+            "std.http.sse",
+            "std.http.client.sse.extra",
+            "std.http.client.sses",
+            "std.http.stream.emitResponse",
+        ] {
+            assert_eq!(
+                native_callable_semantics(near_miss),
+                None,
+                "{near_miss} must not inherit HTTP client SSE semantics"
             );
         }
     }
