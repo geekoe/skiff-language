@@ -186,6 +186,7 @@ mod tests {
             ("std.actor.getOrCreate", NativeRequiredContext::Actor),
             ("std.actor.replace", NativeRequiredContext::Actor),
             ("std.file.create", NativeRequiredContext::File),
+            ("std.file.createFromStream", NativeRequiredContext::File),
             ("core.date.now", NativeRequiredContext::Time),
             ("std.time.sleep", NativeRequiredContext::Time),
             ("std.http.client.request", NativeRequiredContext::HttpClient),

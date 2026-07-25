@@ -2351,6 +2351,52 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
 }
 
 #[test]
+fn exact_file_creation_wrappers_are_fresh_and_only_suspend() {
+    let model = analyze_named(
+        r#"
+            function createBytes(content: bytes) -> std.file.ImmutableFile {
+              return std.file.create(content, null)
+            }
+
+            function createStream(source: Stream<bytes>) -> std.file.ImmutableFile {
+              return std.file.createFromStream(source, null)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "std.file_effect_test",
+        crate::shared::id::SKIFF_STD_PUBLICATION_ID,
+    );
+
+    for (callable, binding_key) in [
+        ("createBytes", "std.file.create"),
+        ("createStream", "std.file.createFromStream"),
+    ] {
+        assert_eq!(
+            effects_in(&model, "std.file_effect_test", callable),
+            suspend_only_effects(),
+            "{callable}"
+        );
+        assert!(matches!(
+            provenance_in(&model, "std.file_effect_test", callable),
+            CallableProvenanceSummary::Analyzed {
+                return_origins,
+                throw_origins,
+                escape_lanes,
+            } if return_origins == &vec![ValueProvenance::Fresh]
+                && throw_origins.is_empty()
+                && escape_lanes.is_empty()
+        ));
+        assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+            matches!(
+                target,
+                ResolvedCallTarget::NativeFunction { binding_key: actual }
+                    if actual == binding_key
+            )
+        }));
+    }
+}
+
+#[test]
 fn exact_dependency_callee_does_not_poison_known_target() {
     let dependency_effects = CallableMayEffects {
         writes_caller_reachable: true,

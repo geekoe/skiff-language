@@ -601,6 +601,113 @@ fn native_callable_semantics_registry_accepts_http_suspend_detachment_routes() {
 }
 
 #[test]
+fn file_create_semantics_match_exact_signatures_and_file_routes() {
+    for binding_key in ["std.file.create", "std.file.createFromStream"] {
+        let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+            .iter()
+            .find(|semantics| semantics.binding_key == binding_key)
+            .cloned()
+            .unwrap_or_else(|| panic!("{binding_key} must have exact callable semantics"));
+
+        assert_eq!(
+            semantics.return_provenance,
+            skiff_artifact_model::ValueProvenance::Fresh
+        );
+        assert_eq!(
+            semantics.effects,
+            skiff_artifact_model::CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: true,
+            }
+        );
+        assert_eq!(
+            NativeRequiredContext::for_binding_key(binding_key),
+            Some(NativeRequiredContext::File)
+        );
+        assert_eq!(
+            runtime_shared_native_route_for_validation(binding_key, false),
+            Some(RuntimeNativeRoute::File)
+        );
+        validate_native_callable_semantics_registry(
+            &[semantics],
+            STD_NATIVE_SIGNATURES,
+            NATIVE_BINDINGS,
+        )
+        .unwrap_or_else(|error| {
+            panic!("{binding_key} should match its exact File capability route: {error}")
+        });
+    }
+}
+
+#[test]
+fn file_create_semantics_reject_malformed_signatures_and_lookalikes() {
+    for binding_key in ["std.file.create", "std.file.createFromStream"] {
+        let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+            .iter()
+            .find(|semantics| semantics.binding_key == binding_key)
+            .cloned()
+            .unwrap_or_else(|| panic!("{binding_key} must have exact callable semantics"));
+        let canonical = *STD_NATIVE_SIGNATURES
+            .iter()
+            .find(|signature| signature.binding_key == binding_key)
+            .unwrap_or_else(|| panic!("{binding_key} must have an exact signature"));
+
+        for signature in [
+            {
+                let mut signature = canonical;
+                signature.params = &[];
+                signature
+            },
+            {
+                let mut signature = canonical;
+                signature.params = &[NativeSignatureTypeExpr::Builtin("string")];
+                signature
+            },
+            {
+                let mut signature = canonical;
+                signature.return_type =
+                    NativeSignatureTypeExpr::Builtin("string");
+                signature
+            },
+        ] {
+            let error = validate_native_callable_semantics_registry(
+                std::slice::from_ref(&semantics),
+                &[signature],
+                NATIVE_BINDINGS,
+            )
+            .expect_err("malformed file creation signature must fail closed");
+            assert!(
+                error.contains(binding_key)
+                    && error.contains("does not match the exact shared native signature"),
+                "unexpected error: {error}"
+            );
+        }
+
+        let mut lookalike = semantics;
+        lookalike.binding_key = if binding_key == "std.file.create" {
+            "std.file.create.extra"
+        } else {
+            "std.file.createFromStreams"
+        };
+        let error = validate_native_callable_semantics_registry(
+            &[lookalike],
+            STD_NATIVE_SIGNATURES,
+            NATIVE_BINDINGS,
+        )
+        .expect_err("non-canonical file creation lookalike must fail closed");
+        assert!(
+            error.contains("not in the exact audited registry"),
+            "unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
 fn native_callable_semantics_registry_accepts_only_exact_context_free_http_request_helpers() {
     for binding_key in [
         "std.http.request.headers",

@@ -100,6 +100,8 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_scalar_native("std.http.stream.start"),
     detached_scalar_native("std.http.stream.chunk"),
     detached_scalar_native("std.http.stream.end"),
+    detached_native("std.file.create", true),
+    detached_native("std.file.createFromStream", true),
     detached_native("std.time.sleep", true),
     detached_scalar_native("std.websocket.sendTextToConnection"),
     detached_scalar_native("std.websocket.sendBinaryToConnection"),
@@ -902,6 +904,8 @@ mod tests {
             "std.crypto.sha256",
             "std.crypto.uuid",
             "std.crypto.uuidSimple",
+            "std.file.create",
+            "std.file.createFromStream",
             "std.http.client.request",
             "std.http.client.stream",
             "std.http.request.cookie",
@@ -948,6 +952,8 @@ mod tests {
                             | "std.actor.replace"
                             | "std.actor.find"
                             | "std.actor.remove"
+                            | "std.file.create"
+                            | "std.file.createFromStream"
                             | "std.http.client.request"
                             | "std.http.client.stream"
                             | "std.time.sleep"
