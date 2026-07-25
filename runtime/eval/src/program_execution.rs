@@ -165,6 +165,16 @@ impl<'a> ProgramExecutionContext<'a> {
         self
     }
 
+    /// Starts a provider-local service stack while retaining request-wide
+    /// trace identity and the shared error-id sequence.
+    ///
+    /// Boundary consumers call this only when entering a provider activation;
+    /// ordinary local calls continue to inherit their request-local stack.
+    pub(crate) fn with_provider_service_stack_scope(mut self) -> Self {
+        reset_provider_local_stack(&mut self.local_call_stack);
+        self
+    }
+
     pub(crate) fn with_actor_execution_frame(
         mut self,
         frame: crate::actor_executor::ActorExecutionFrame,
@@ -297,6 +307,33 @@ impl<'a> ProgramExecutionContext<'a> {
 
     pub(crate) fn runtime_assembly_target_if_present(&self) -> Option<&RuntimeAssemblyEvalTarget> {
         self.runtime_assembly_target.as_ref()
+    }
+}
+
+pub(crate) fn reset_provider_local_stack(stack: &mut Vec<ExceptionStackFrame>) {
+    stack.clear();
+}
+
+#[cfg(test)]
+mod provider_service_stack_scope_tests {
+    use super::*;
+    use skiff_artifact_model::SyntheticInstructionSiteReason;
+
+    #[test]
+    fn provider_scope_clears_only_local_stack_and_keeps_shared_sequence() {
+        let sequence = Arc::new(AtomicU64::new(7));
+        let same_request_sequence = Arc::clone(&sequence);
+        let mut stack = vec![ExceptionStackFrame::Local {
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            },
+        }];
+
+        reset_provider_local_stack(&mut stack);
+
+        assert!(stack.is_empty());
+        assert!(Arc::ptr_eq(&sequence, &same_request_sequence));
+        assert_eq!(same_request_sequence.fetch_add(1, Ordering::Relaxed), 7);
     }
 }
 

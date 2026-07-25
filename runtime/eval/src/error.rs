@@ -8,7 +8,8 @@ use skiff_runtime_model::request_heap::{
 pub use skiff_runtime_model::{
     error::{RuntimeErrorPayload, WirePayload},
     service_error::{
-        CatchIdentity, PlatformBuiltinErrorIdentity, RequestException, RequestExceptionCause,
+        CatchIdentity, OpaqueServiceError, PlatformBuiltinErrorIdentity, RequestException,
+        RequestExceptionCause,
     },
 };
 
@@ -84,6 +85,10 @@ pub enum RuntimeError {
     },
     #[error("unhandled user exception {0}")]
     UserException(UserException),
+    /// A strict, already-fixed service failure. Its display text is deliberately
+    /// constant so raw payload bytes never enter generic diagnostics.
+    #[error("canonical service failure")]
+    FixedServiceFailure(OpaqueServiceError),
     #[error("provider unavailable for {target}: {reason}")]
     ProviderUnavailable { target: String, reason: String },
     #[error("protocol error for {target}: {message}")]
@@ -487,6 +492,9 @@ fn runtime_error_from_eval_ref(error: &RuntimeError) -> RuntimeError {
             requested_delta: *requested_delta,
         },
         RuntimeError::UserException(error) => RuntimeError::UserException(error.clone()),
+        RuntimeError::FixedServiceFailure(error) => {
+            RuntimeError::FixedServiceFailure(error.clone())
+        }
         RuntimeError::ProviderUnavailable { target, reason } => RuntimeError::ProviderUnavailable {
             target: target.clone(),
             reason: reason.clone(),
@@ -1272,6 +1280,19 @@ impl RuntimeError {
         runtime_error_from_wire_payload(error)
     }
 
+    /// Returns only the strict fixed carrier, recursively ignoring local
+    /// diagnostic wrappers. Generic wire payloads and message/code projections
+    /// are intentionally not accepted.
+    pub(crate) fn fixed_service_failure(&self) -> Option<&OpaqueServiceError> {
+        match self {
+            Self::FixedServiceFailure(error) => Some(error),
+            Self::WithSource { error, .. } | Self::WithDiagnosticFrame { error, .. } => {
+                error.fixed_service_failure()
+            }
+            _ => None,
+        }
+    }
+
     /// Whether this error is (or carries) a cancellation signal.
     ///
     /// Cancellation may arrive either as eval's structured
@@ -1513,6 +1534,15 @@ impl RuntimeError {
                 })),
             },
             RuntimeError::UserException(exception) => user_exception_payload(exception),
+            // `RuntimeError`'s legacy diagnostic trait is total. Keep this
+            // fallback constant and opaque: the canonical service channel
+            // reads the strict carrier through `fixed_service_failure`.
+            RuntimeError::FixedServiceFailure(_) => RuntimeErrorPayload {
+                code: "InternalError".to_string(),
+                message: "canonical service failure".to_string(),
+                status: None,
+                details: None,
+            },
             RuntimeError::ProviderUnavailable { target, reason } => RuntimeErrorPayload {
                 code: "std.service.ProviderUnavailableError".to_string(),
                 message: reason.clone(),
@@ -1660,6 +1690,7 @@ impl WirePayload for RuntimeError {
             | RuntimeError::ResourceError { .. }
             | RuntimeError::ResourceLimitExceeded { .. }
             | RuntimeError::UserException(_)
+            | RuntimeError::FixedServiceFailure(_)
             | RuntimeError::RootRuntimePayload(_)
             | RuntimeError::Json(_) => None,
         }

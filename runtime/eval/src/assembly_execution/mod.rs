@@ -4,6 +4,7 @@ mod callback_native;
 mod ingress;
 pub(crate) mod ordinary;
 mod projection;
+pub(crate) mod service_error_channel;
 mod websocket_identity;
 mod websocket_ingress;
 mod websocket_response;
