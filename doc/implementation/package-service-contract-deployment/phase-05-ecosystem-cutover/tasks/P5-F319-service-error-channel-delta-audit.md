@@ -1,6 +1,7 @@
 # P5-F319 Service error channel delta audit
 
-状态：Ready（只读审计）。
+状态：Completed。结果见
+`P5-F319-service-error-channel-delta-audit-result.md`。
 
 ## 直接父节点
 
