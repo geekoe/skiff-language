@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 use skiff_artifact_model::{
-    validate_supported_receiver_builtin_op, BuiltinReceiverCallableSemantics,
-    NativeCallableSemantics, NativeSignatureDef, BUILTIN_RECEIVER_CALLABLE_SEMANTICS,
-    STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
+    native_signature_for_receiver_op, validate_supported_receiver_builtin_op,
+    BuiltinReceiverCallableSemantics, NativeCallableSemantics, NativeSignatureDef,
+    BUILTIN_RECEIVER_CALLABLE_SEMANTICS, STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
 };
 use skiff_runtime_native_contract::{NativeRequiredContext, NativeSignatureRegistry};
 
@@ -219,7 +219,7 @@ pub(super) fn native_route_matches_required_context(
 
 pub(super) fn validate_receiver_callable_semantics_registry(
     semantics_entries: &[BuiltinReceiverCallableSemantics],
-    _signatures: &[NativeSignatureDef],
+    signatures: &[NativeSignatureDef],
     handler_entries: &[NativeHandlerEntry],
 ) -> RegistryValidationResult {
     let mut registered_keys = BTreeSet::new();
@@ -251,6 +251,33 @@ pub(super) fn validate_receiver_callable_semantics_registry(
                 "receiver callable semantics entry {} does not match exact audited semantics",
                 op.canonical_key
             ));
+        }
+        // Some receiver builtins are implemented directly by the evaluator and
+        // intentionally have no NativeSignatureRegistry entry. Whenever an
+        // audited receiver does map to a native signature, keep the semantics
+        // descriptor pinned to that exact shared signature.
+        if let Some(canonical_signature) = native_signature_for_receiver_op(op) {
+            let mut matching_signatures = signatures
+                .iter()
+                .filter(|signature| signature.binding_key == canonical_signature.binding_key);
+            let Some(signature) = matching_signatures.next() else {
+                return Err(format!(
+                    "receiver callable semantics entry {} is missing native signature {}",
+                    op.canonical_key, canonical_signature.binding_key
+                ));
+            };
+            if matching_signatures.next().is_some() {
+                return Err(format!(
+                    "receiver callable semantics entry {} does not have a unique native signature {}",
+                    op.canonical_key, canonical_signature.binding_key
+                ));
+            }
+            if signature != canonical_signature {
+                return Err(format!(
+                    "receiver callable semantics entry {} does not match the exact shared native signature {}",
+                    op.canonical_key, canonical_signature.binding_key
+                ));
+            }
         }
         let handler_count = handler_entries
             .iter()

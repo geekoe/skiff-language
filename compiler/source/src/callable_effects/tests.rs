@@ -1651,6 +1651,10 @@ fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
               return left.isBefore(right)
             }
 
+            function compare(left: Date, right: Date) -> integer {
+              return left.compare(right)
+            }
+
             function epochMilliseconds(value: Date) -> integer {
               return value.toEpochMilliseconds()
             }
@@ -1664,7 +1668,12 @@ fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
         crate::shared::id::SKIFF_STD_PUBLICATION_ID,
     );
 
-    for callable in ["isBefore", "epochMilliseconds", "durationMilliseconds"] {
+    for callable in [
+        "isBefore",
+        "compare",
+        "epochMilliseconds",
+        "durationMilliseconds",
+    ] {
         assert_eq!(
             effects_in(&model, "std.effect_test", callable),
             no_effects(),
@@ -1682,11 +1691,46 @@ fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
     assert_eq!(
         receiver_targets,
         std::collections::BTreeSet::from([
+            "receiver:Date.compare@1",
             "receiver:Date.isBefore@1",
             "receiver:Date.toEpochMilliseconds@1",
             "receiver:Duration.toMilliseconds@1",
         ])
     );
+}
+
+#[test]
+fn nullable_date_compare_keeps_upstream_status_shape_detached() {
+    let model = analyze_named(
+        r#"
+            function upstreamStatus(now: Date, fixedRecoverAt: Date?) -> string {
+              if fixedRecoverAt != null && now.compare(fixedRecoverAt) < 0 {
+                return "recovering"
+              }
+              return "available"
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "upstream_health",
+        "skiff.run/codex-relay",
+    );
+
+    assert_eq!(
+        effects_in(&model, "upstream_health", "upstreamStatus"),
+        no_effects()
+    );
+    assert!(matches!(
+        provenance_in(&model, "upstream_health", "upstreamStatus"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins == &vec![ValueProvenance::Constant]
+    ));
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::ReceiverBuiltin { op }
+                if op.canonical_key == "receiver:Date.compare@1"
+        )
+    }));
 }
 
 #[test]
