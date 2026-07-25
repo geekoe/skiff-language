@@ -36,12 +36,26 @@ impl RuntimeAssemblyExecutionProjection {
             .iter()
             .map(|code| code.static_resources().clone())
             .collect();
+        let packages = image
+            .shared_packages()
+            .code_slots()
+            .iter()
+            .map(|code| {
+                let artifact = code.artifact();
+                Arc::new(PackageUnit::empty(
+                    artifact.package_id.clone(),
+                    artifact.package_version.clone(),
+                    artifact.package_build_id.to_string(),
+                    artifact.package_local_abi.local_abi_identity.to_string(),
+                ))
+            })
+            .collect();
         let link_overlay = image.link_overlay().clone();
         Self {
             image,
             storage: Arc::new(AssemblyProjectionStorage {
                 service_files: Vec::new(),
-                packages: Vec::new(),
+                packages,
                 package_files,
                 service_resources: PublicationResourceTable::default(),
                 package_resources,
@@ -415,7 +429,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        recoverable_behavior::EvalRecoverableBehaviorHooks, type_projection::EvalTypeProjection,
+        error::TypeIdentity,
+        exceptions::{catch_type_leaves, throw_payload_actual_type},
+        recoverable_behavior::EvalRecoverableBehaviorHooks,
+        type_projection::EvalTypeProjection,
     };
     use skiff_artifact_model::{
         AssemblyIdentity, CanonicalPackageLinkPlan, ExecutableBody, ExecutableIr, ExecutableKind,
@@ -566,6 +583,198 @@ mod tests {
                 && error.to_string().contains("type_index: 99"),
             "unexpected missing-type error: {error}"
         );
+    }
+
+    #[test]
+    fn canonical_assembly_resolves_every_std_package_error_address_to_its_builtin_identity() {
+        let (image, errors) = std_error_projection_image("skiff.run/std");
+        let projection = RuntimeAssemblyExecutionProjection::from_image(image);
+
+        for (symbol, addr) in errors {
+            let catch_type =
+                skiff_runtime_linked_program::LinkedTypeRef::Address { addr: addr.clone() };
+            let leaves = catch_type_leaves(&catch_type, projection.type_view())
+                .unwrap_or_else(|error| panic!("{symbol} catch leaves must resolve: {error}"));
+            assert!(
+                leaves.contains(&TypeIdentity::address(addr.clone())),
+                "{symbol} catch must retain its exact linked address"
+            );
+            assert!(
+                leaves.contains(&TypeIdentity::builtin(&symbol)),
+                "{symbol} catch must include its registered native payload identity; got {leaves:?}"
+            );
+            assert_eq!(
+                throw_payload_actual_type(&catch_type, projection.type_view())
+                    .unwrap_or_else(|error| panic!("{symbol} throw type must resolve: {error}")),
+                TypeIdentity::builtin(&symbol),
+                "canonical explicit {symbol} throws must use the native payload identity"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_assembly_std_error_resolution_is_exact_and_nominal() {
+        let (image, errors) = std_error_projection_image("skiff.run/std");
+        let projection = RuntimeAssemblyExecutionProjection::from_image(image);
+        let (json_symbol, json_addr) = errors
+            .iter()
+            .find(|(symbol, _)| symbol == "std.json.DecodeError")
+            .expect("json error fixture");
+        let leaves = catch_type_leaves(
+            &skiff_runtime_linked_program::LinkedTypeRef::Address {
+                addr: json_addr.clone(),
+            },
+            projection.type_view(),
+        )
+        .expect("json catch leaves");
+        assert_eq!(json_symbol, "std.json.DecodeError");
+        assert!(!leaves.contains(&TypeIdentity::builtin("std.bytes.DecodeError")));
+
+        let (image, errors) = std_error_projection_image("example.invalid/std-lookalike");
+        let projection = RuntimeAssemblyExecutionProjection::from_image(image);
+        let (_, addr) = errors
+            .into_iter()
+            .find(|(symbol, _)| symbol == "std.json.DecodeError")
+            .expect("nominal lookalike fixture");
+        let leaves = catch_type_leaves(
+            &skiff_runtime_linked_program::LinkedTypeRef::Address { addr: addr.clone() },
+            projection.type_view(),
+        )
+        .expect("nominal package catch leaves");
+        assert_eq!(leaves, vec![TypeIdentity::address(addr)]);
+    }
+
+    #[test]
+    fn builtin_only_registered_errors_remain_native_without_package_guessing() {
+        let (image, _) = projection_image();
+        let projection = RuntimeAssemblyExecutionProjection::from_image(image);
+        for symbol in ["CancelError", "TimeoutError", "config.DecodeError"] {
+            let catch_type = skiff_runtime_linked_program::LinkedTypeRef::Native {
+                name: symbol.to_string(),
+                args: Vec::new(),
+            };
+            assert_eq!(
+                catch_type_leaves(&catch_type, projection.type_view())
+                    .expect("registered builtin catch"),
+                vec![TypeIdentity::builtin(symbol)]
+            );
+        }
+    }
+
+    fn std_error_projection_image(
+        package_id: &str,
+    ) -> (Arc<AssemblyExecutionImage>, Vec<(String, TypeAddr)>) {
+        const ERROR_TYPES: &[(&str, &[&str])] = &[
+            ("std.bytes", &["DecodeError"]),
+            ("std.number", &["DecodeError"]),
+            ("std.json", &["DecodeError"]),
+            ("std.db", &["ConflictError", "DecodeError"]),
+            ("std.file", &["FileError"]),
+            ("std.resource", &["ResourceError"]),
+            ("std.time", &["DecodeError"]),
+            (
+                "std.service",
+                &["ProviderUnavailableError", "ProtocolError"],
+            ),
+            ("std.http", &["HttpError"]),
+        ];
+        let mut files = Vec::new();
+        let mut file_refs = Vec::new();
+        let mut errors = Vec::new();
+        for (file_index, (module_path, names)) in ERROR_TYPES.iter().enumerate() {
+            let mut file = FileIrUnit::empty(*module_path, format!("source:{module_path}"));
+            file.file_ir_identity = format!("file:{module_path}");
+            for (type_index, name) in names.iter().enumerate() {
+                file.type_table.push(TypeDeclIr {
+                    name: (*name).to_string(),
+                    descriptor: TypeDescriptorIr::Record {
+                        fields: BTreeMap::new(),
+                    },
+                    type_params: Vec::new(),
+                    discriminator: None,
+                    implements: Vec::new(),
+                    source_span: None,
+                });
+                errors.push((
+                    format!("{module_path}.{name}"),
+                    TypeAddr {
+                        unit: UnitAddr::Package(0),
+                        file: FileAddr::LoadedFileIndex(file_index),
+                        type_index,
+                    },
+                ));
+            }
+            file_refs.push(FileIrRef {
+                file_ir_identity: file.file_ir_identity.clone(),
+                module_path: file.module_path.clone(),
+                artifact_path: None,
+                source_ast_hash: Some(file.source_ast_hash.clone()),
+            });
+            files.push(file);
+        }
+        let package = PackageArtifact {
+            schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
+            package_id: package_id.to_string(),
+            package_version: "1.0.0".to_string(),
+            package_build_id: PackageBuildId::new(format!("{package_id}:build")),
+            files: file_refs,
+            static_resources: Vec::new(),
+            package_local_abi: PackageLocalAbi {
+                local_abi_identity: PackageLocalAbiIdentity::new(format!("{package_id}:abi")),
+                public_symbols: BTreeMap::new(),
+            },
+            package_schema_index: PackageSchemaIndexRef {
+                package_id: package_id.to_string(),
+                package_schema_index_identity:
+                    skiff_artifact_identity::package_schema_index_identity(
+                        package_id,
+                        &BTreeMap::new(),
+                    )
+                    .expect("empty Package schema index is canonical"),
+            },
+            package_schema_type_records: BTreeMap::new(),
+            implementation_links: PackageImplementationLinks::default(),
+            callable_links: BTreeMap::new(),
+            package_requirements: Vec::new(),
+            contract_requirements: Vec::new(),
+            service_requirements: Vec::new(),
+            runtime_requirements: PackageRuntimeRequirements {
+                config: Vec::new(),
+                state: Vec::new(),
+                resources: Vec::new(),
+                runtime_capabilities: Vec::new(),
+            },
+            callable_semantic_facts: BTreeMap::new(),
+            boundary_projections: BTreeMap::new(),
+            service_call_refs: Vec::new(),
+        };
+        let package_ref = PackageArtifactRef {
+            package_id: package.package_id.clone(),
+            package_version: package.package_version.clone(),
+            package_build_id: package.package_build_id.clone(),
+            package_local_abi_identity: package.package_local_abi.local_abi_identity.clone(),
+        };
+        let assembly = RuntimeAssembly {
+            schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
+            assembly_identity: AssemblyIdentity::new(format!("assembly:{package_id}")),
+            roots: Vec::new(),
+            resolved_deployments: Vec::new(),
+            resolved_contracts: Vec::new(),
+            resolved_packages: vec![package_ref.clone()],
+            package_link_plan: CanonicalPackageLinkPlan {
+                code_slots: vec![PackageCodeSlot {
+                    package: package_ref,
+                }],
+                package_links: Vec::new(),
+            },
+            service_binding_templates: Vec::new(),
+            activation_templates: Vec::new(),
+            global_ingress: Vec::new(),
+        };
+        (
+            crate::test_support::link_package_fixture(assembly, vec![(package, files)]),
+            errors,
+        )
     }
 
     fn projection_image() -> (Arc<AssemblyExecutionImage>, String) {
