@@ -9,7 +9,7 @@ use serde_json::Value;
 use skiff_runtime_boundary::{contract::RuntimeBoundaryContract, plan::BoundaryUse};
 use skiff_runtime_model::{
     request_heap::RequestHeap,
-    runtime_value::{HeapNode, RuntimeMap, RuntimeValue},
+    runtime_value::RuntimeValue,
     type_plan::{RuntimeTypeNode, RuntimeTypePlan},
 };
 
@@ -48,6 +48,23 @@ fn runtime_from_wire_internal_handle_required_plan(
     Ok(RuntimeBoundaryContract::default()
         .codec_for_expected(expected_type, BoundaryUse::NativeReturn, boundary)
         .from_wire_json_internal_handle(value, heap)?)
+}
+
+fn runtime_to_wire_required_plan(
+    value: &RuntimeValue,
+    expected_type: Option<&RuntimeTypePlan>,
+    boundary: &str,
+    heap: &mut RequestHeap,
+) -> Result<Value> {
+    let expected_type = expected_type.ok_or_else(|| {
+        RuntimeError::invalid_artifact(format!(
+            "{boundary} boundary is missing expected type descriptor"
+        ))
+    })?;
+    RuntimeBoundaryContract::default()
+        .codec_for_expected(expected_type, BoundaryUse::NativeArg, boundary)
+        .to_wire_json(value, heap)
+        .map_err(Into::into)
 }
 
 #[derive(Clone, Debug)]
@@ -264,26 +281,45 @@ impl TestEffectDoubleContext {
             return self.missing_double_error(target).map(Err);
         };
         if let Some(expected) = &double.expect_request {
+            let Some(arg_plan) = arg_plan else {
+                return Some(Err(RuntimeError::invalid_artifact(format!(
+                    "test double request {target} boundary is missing expected type descriptor"
+                ))));
+            };
             let actual = input.unwrap_or(&RuntimeValue::Null);
+            let actual = match runtime_to_wire_required_plan(
+                actual,
+                Some(arg_plan),
+                &format!("test double request {target}"),
+                heap,
+            ) {
+                Ok(value) => value,
+                Err(error) => return Some(Err(error)),
+            };
+            let expected_plan = fixture_subset_plan(arg_plan, expected);
             let mut expected_heap = RequestHeap::default();
-            let expected_plan = arg_plan.map(|plan| fixture_subset_plan(plan, expected));
             let expected_runtime = match runtime_from_wire_required_plan(
                 expected,
-                expected_plan.as_ref(),
-                &format!("test double request {target}"),
+                Some(&expected_plan),
+                &format!("test double request {target} expectation"),
                 &mut expected_heap,
             ) {
                 Ok(value) => value,
                 Err(error) => return Some(Err(error)),
             };
-            match runtime_value_contains(actual, heap, &expected_runtime, &expected_heap) {
-                Ok(true) => {}
-                Ok(false) => {
-                    return Some(Err(RuntimeError::Decode(format!(
-                        "test double expectation failed for {target}: expected request subset {expected}, got runtime input {actual:?}"
-                    ))));
-                }
+            let expected = match runtime_to_wire_required_plan(
+                &expected_runtime,
+                Some(&expected_plan),
+                &format!("test double request {target} expectation"),
+                &mut expected_heap,
+            ) {
+                Ok(value) => value,
                 Err(error) => return Some(Err(error)),
+            };
+            if !json_contains(&actual, &expected) {
+                return Some(Err(RuntimeError::Decode(format!(
+                    "test double expectation failed for {target}: expected request subset {expected}, got a nonmatching materialized request"
+                ))));
             }
         }
         let response = if is_stream_source_double_target(target) {
@@ -399,90 +435,6 @@ fn is_std_log_stable_target(target: &str) -> bool {
     )
 }
 
-fn runtime_value_contains(
-    actual: &RuntimeValue,
-    actual_heap: &RequestHeap,
-    expected: &RuntimeValue,
-    expected_heap: &RequestHeap,
-) -> Result<bool> {
-    match (actual, expected) {
-        (RuntimeValue::Null, RuntimeValue::Null) => Ok(true),
-        (RuntimeValue::Bool(actual), RuntimeValue::Bool(expected)) => Ok(actual == expected),
-        (RuntimeValue::Number(actual), RuntimeValue::Number(expected)) => Ok(actual == expected),
-        (RuntimeValue::String(actual), RuntimeValue::String(expected)) => Ok(actual == expected),
-        (RuntimeValue::ActorRef(actual), RuntimeValue::ActorRef(expected)) => {
-            Ok(actual == expected)
-        }
-        (RuntimeValue::Heap(actual), RuntimeValue::Heap(expected)) => runtime_heap_node_contains(
-            actual_heap.get(*actual)?,
-            actual_heap,
-            expected_heap.get(*expected)?,
-            expected_heap,
-        ),
-        _ => Ok(false),
-    }
-}
-
-fn runtime_heap_node_contains(
-    actual: &HeapNode,
-    actual_heap: &RequestHeap,
-    expected: &HeapNode,
-    expected_heap: &RequestHeap,
-) -> Result<bool> {
-    match (actual, expected) {
-        (HeapNode::Bytes(actual), HeapNode::Bytes(expected)) => Ok(actual == expected),
-        (HeapNode::Array(actual), HeapNode::Array(expected)) => {
-            if actual.len() != expected.len() {
-                return Ok(false);
-            }
-            actual
-                .iter()
-                .zip(expected.iter())
-                .try_fold(true, |matches, (actual, expected)| {
-                    if !matches {
-                        return Ok(false);
-                    }
-                    runtime_value_contains(actual, actual_heap, expected, expected_heap)
-                })
-        }
-        (HeapNode::Object(actual), HeapNode::Object(expected)) => expected
-            .fields()
-            .iter()
-            .try_fold(true, |matches, (key, expected_value)| {
-                if !matches {
-                    return Ok(false);
-                }
-                let Some(actual_value) = actual.fields().get(key) else {
-                    return Ok(false);
-                };
-                runtime_value_contains(actual_value, actual_heap, expected_value, expected_heap)
-            }),
-        (HeapNode::Map(actual), HeapNode::Map(expected)) => {
-            runtime_map_contains(actual, actual_heap, expected, expected_heap)
-        }
-        _ => Ok(false),
-    }
-}
-
-fn runtime_map_contains(
-    actual: &RuntimeMap,
-    actual_heap: &RequestHeap,
-    expected: &RuntimeMap,
-    expected_heap: &RequestHeap,
-) -> Result<bool> {
-    expected
-        .iter()
-        .try_fold(true, |matches, (key, expected_value)| {
-            if !matches {
-                return Ok(false);
-            }
-            let Some(actual_value) = actual.get(key) else {
-                return Ok(false);
-            };
-            runtime_value_contains(actual_value, actual_heap, expected_value, expected_heap)
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -521,15 +473,13 @@ mod tests {
             "actual HTTP request",
             &mut actual_heap,
         )?;
-        let fixture_plan = fixture_subset_plan(&plan, fixture);
-        let mut fixture_heap = RequestHeap::default();
-        let fixture = runtime_from_wire_required_plan(
-            fixture,
-            Some(&fixture_plan),
-            "fixture HTTP request",
-            &mut fixture_heap,
+        let actual = runtime_to_wire_required_plan(
+            &actual,
+            Some(&plan),
+            "test double HTTP request",
+            &mut actual_heap,
         )?;
-        runtime_value_contains(&actual, &actual_heap, &fixture, &fixture_heap)
+        Ok(json_contains(&actual, fixture))
     }
 
     fn actual_request() -> Value {
@@ -582,5 +532,88 @@ mod tests {
                 "fixture unexpectedly matched: {fixture}"
             );
         }
+    }
+
+    #[test]
+    fn request_materialization_preserves_nested_maps_and_nullable_values() {
+        let metadata = RuntimeTypePlan::synthetic_map(
+            leaf("String", RuntimeTypeNode::String),
+            RuntimeTypePlan::synthetic_nullable(leaf("String", RuntimeTypeNode::String)),
+        );
+        let plan = RuntimeTypePlan::synthetic_request_record(vec![
+            RuntimeRecordFieldPlan::new("metadata", metadata, true),
+            RuntimeRecordFieldPlan::new(
+                "note",
+                RuntimeTypePlan::synthetic_nullable(leaf("String", RuntimeTypeNode::String)),
+                false,
+            ),
+        ]);
+        let wire = json!({
+            "metadata": {
+                "present": "value",
+                "absent": null
+            },
+            "note": null
+        });
+        let mut heap = RequestHeap::default();
+        let runtime =
+            runtime_from_wire_required_plan(&wire, Some(&plan), "nested request", &mut heap)
+                .expect("nested request should decode");
+
+        let materialized =
+            runtime_to_wire_required_plan(&runtime, Some(&plan), "nested request", &mut heap)
+                .expect("nested request should materialize");
+
+        assert_eq!(materialized, wire);
+    }
+
+    #[test]
+    fn request_materialization_rejects_runtime_type_mismatch() {
+        let plan = http_request_plan();
+        let mut heap = RequestHeap::default();
+        let error = runtime_to_wire_required_plan(
+            &RuntimeValue::String("not a request".to_string()),
+            Some(&plan),
+            "test double request",
+            &mut heap,
+        )
+        .expect_err("request type mismatch must fail closed");
+
+        assert!(
+            error.to_string().contains("expected heap object"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn one_shot_response_sequence_order_is_unchanged() {
+        let first = TestEffectDouble {
+            expect_request: None,
+            response: json!({ "status": 200 }),
+        };
+        let second = TestEffectDouble {
+            expect_request: None,
+            response: json!({ "status": 201 }),
+        };
+        let registry = TestEffectDoubleRegistry::one_shot_sequences(HashMap::from([(
+            TARGET_STD_HTTP_REQUEST.to_string(),
+            vec![first.clone(), second.clone()],
+        )]));
+
+        assert_eq!(
+            registry
+                .next(TARGET_STD_HTTP_REQUEST)
+                .expect("first response")
+                .response,
+            first.response
+        );
+        assert_eq!(
+            registry
+                .next(TARGET_STD_HTTP_REQUEST)
+                .expect("second response")
+                .response,
+            second.response
+        );
+        assert!(registry.next(TARGET_STD_HTTP_REQUEST).is_none());
     }
 }

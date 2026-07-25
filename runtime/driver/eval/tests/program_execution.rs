@@ -20,7 +20,7 @@ use skiff_runtime_host::eval_capability_adapter;
 use skiff_runtime_model::{
     error::WirePayload,
     request_heap::{RequestHeap, RequestHeapLimits},
-    runtime_value::{HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue},
+    runtime_value::{HeapHandle, HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue},
 };
 use skiff_runtime_request::cancellation::CancellationToken;
 use tokio::time::sleep;
@@ -1802,7 +1802,7 @@ async fn runtime_program_http_stream_chunk_and_end_construct_canonical_wire_even
 }
 
 #[test]
-fn test_host_operation_double_matches_bytes_request_without_materializing_actual_input() {
+fn test_host_operation_double_materializes_typed_request_without_consuming_actual_input() {
     let program = Arc::new(program_with_executable(run_executable()));
     let interpreter = Interpreter::with_program_test_effect_doubles(
         program,
@@ -1824,11 +1824,9 @@ fn test_host_operation_double_matches_bytes_request_without_materializing_actual
         )]),
         runtime_factory(),
     );
-    let mut heap = RequestHeap::new(RequestHeapLimits {
-        max_materialize_output_bytes: 1,
-        ..RequestHeapLimits::default()
-    });
+    let mut heap = RequestHeap::default();
     let input = http_client_request_runtime_value(&mut heap);
+    let input_before = input.clone();
     let arg_type = json!({ "kind": "builtin", "name": "std.http.HttpClientRequest", "args": [] });
     let return_type =
         json!({ "kind": "builtin", "name": "std.http.HttpClientResponse", "args": [] });
@@ -1845,10 +1843,57 @@ fn test_host_operation_double_matches_bytes_request_without_materializing_actual
             &mut heap,
         )
         .expect("test double should dispatch")
-        .expect("test double should match bytes input without materializing it");
+        .expect("test double should match the materialized bytes input");
 
     assert!(matches!(value, RuntimeValue::Heap(_)));
-    assert_eq!(heap.stats().materialize_output_bytes, 0);
+    assert_eq!(input, input_before);
+    assert!(heap.stats().materialize_output_bytes > 0);
+}
+
+#[test]
+fn test_host_operation_double_fails_closed_for_invalid_request_heap_handle() {
+    let program = Arc::new(program_with_executable(run_executable()));
+    let interpreter = Interpreter::with_program_test_effect_doubles(
+        program,
+        HashMap::from([(
+            "std.http.client.request".to_string(),
+            TestEffectDouble {
+                expect_request: Some(json!({ "method": "POST" })),
+                response: json!({
+                    "status": 204,
+                    "headers": [],
+                    "body": { "__skiffBytesBase64": "" }
+                }),
+            },
+        )]),
+        runtime_factory(),
+    );
+    let mut heap = RequestHeap::default();
+    let invalid_input = RuntimeValue::Heap(HeapHandle::new(42, 0));
+    let arg_plan = RuntimeTypePlan::from_descriptor(
+        &json!({ "kind": "builtin", "name": "std.http.HttpClientRequest", "args": [] }),
+    )
+    .expect("arg plan should build");
+    let return_plan = RuntimeTypePlan::from_descriptor(
+        &json!({ "kind": "builtin", "name": "std.http.HttpClientResponse", "args": [] }),
+    )
+    .expect("return plan should build");
+
+    let error = interpreter
+        .dispatch_test_http_effect_invocation_double(
+            "std.http.client.request",
+            Some(&invalid_input),
+            Some(&arg_plan),
+            Some(&return_plan),
+            &mut heap,
+        )
+        .expect("test double should dispatch")
+        .expect_err("invalid request heap handle must fail closed");
+
+    assert!(
+        error.to_string().contains("invalid heap handle 42:0"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
@@ -7465,7 +7510,9 @@ fn http_stream_start_helper_in_http_handler_executable() -> LinkedExecutable {
             slot: 0,
             ty: std_http_type_ref(STD_HTTP_REQUEST_TYPE_INDEX),
         }],
-        return_type: Some(std_http_type_ref(STD_HTTP_RESPONSE_STREAM_EVENT_TYPE_INDEX)),
+        return_type: Some(std_http_type_ref(
+            STD_HTTP_RESPONSE_STREAM_EVENT_TYPE_INDEX,
+        )),
         self_type: None,
         slots: SlotLayoutIr {
             slots: vec![SlotIr {
@@ -7565,9 +7612,7 @@ fn http_stream_event_helper_executable(
             slot: 0,
             ty: std_http_type_ref(STD_HTTP_REQUEST_TYPE_INDEX),
         }],
-        return_type: Some(std_http_type_ref(
-            STD_HTTP_RESPONSE_STREAM_EVENT_TYPE_INDEX,
-        )),
+        return_type: Some(std_http_type_ref(STD_HTTP_RESPONSE_STREAM_EVENT_TYPE_INDEX)),
         self_type: None,
         slots: SlotLayoutIr {
             slots: vec![SlotIr {
