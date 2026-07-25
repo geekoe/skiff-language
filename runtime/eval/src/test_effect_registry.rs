@@ -25,6 +25,9 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+use crate::runtime_ops::runtime_to_wire_required_plan;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum TestEffectTarget {
     PackageCallable {

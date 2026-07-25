@@ -506,7 +506,6 @@ mod recoverable_spawn_payload_tests {
                     target: string_type(),
                 },
                 type_params: Vec::new(),
-                discriminator: None,
                 implements: vec![LinkedTypeRef::AnyInterface {
                     interface: tool_provider_interface(),
                 }],
