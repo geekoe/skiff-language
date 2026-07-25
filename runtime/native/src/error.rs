@@ -1,5 +1,8 @@
 use serde_json::json;
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BudgetReason {
@@ -244,55 +247,50 @@ impl WirePayload for RuntimeError {
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
         match self {
             Self::DecodeTarget { target, message } => {
-                skiff_runtime_boundary::error::decode_target_error_code(target).map(|code| {
-                    (
-                        TypeIdentity::builtin(code),
-                        json!({
-                            "target": target,
-                            "message": message,
-                        }),
-                    )
-                })
+                skiff_runtime_boundary::error::decode_target_error_code(target)
+                    .and_then(PlatformBuiltinErrorIdentity::from_symbol)
+                    .map(|identity| {
+                        (
+                            identity.catch_identity(),
+                            json!({
+                                "target": target,
+                                "message": message,
+                            }),
+                        )
+                    })
             }
             Self::BytesDecode { target, message } => Some((
-                TypeIdentity::builtin("std.bytes.DecodeError"),
+                PlatformBuiltinErrorIdentity::BytesDecode.catch_identity(),
                 json!({
                     "target": target,
                     "message": message,
                 }),
             )),
             Self::DbDecode { target, message } => Some((
-                TypeIdentity::builtin("std.db.DecodeError"),
+                PlatformBuiltinErrorIdentity::DbDecode.catch_identity(),
                 json!({
                     "target": target,
                     "message": message,
                 }),
             )),
             Self::FileError { message } => Some((
-                TypeIdentity::builtin("std.file.FileError"),
+                PlatformBuiltinErrorIdentity::File.catch_identity(),
                 json!({
-                    "message": message,
-                }),
-            )),
-            Self::ResourceError { path, message } => Some((
-                TypeIdentity::builtin("std.resource.ResourceError"),
-                json!({
-                    "path": path,
                     "message": message,
                 }),
             )),
             Self::HttpError { message, detail } => Some((
-                TypeIdentity::builtin("std.http.HttpError"),
+                PlatformBuiltinErrorIdentity::Http.catch_identity(),
                 json!({
                     "message": message,
                     "detail": detail,
                 }),
             )),
             Self::Cancelled => Some((
-                TypeIdentity::builtin("CancelError"),
+                PlatformBuiltinErrorIdentity::Cancel.catch_identity(),
                 json!({
                     "message": "request was cancelled",
                 }),
@@ -303,7 +301,7 @@ impl WirePayload for RuntimeError {
                 limit,
                 elapsed_ms,
             } => Some((
-                TypeIdentity::builtin("TimeoutError"),
+                PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
                 json!({
                     "reason": reason.as_str(),
                     "instructionCount": instruction_count,
@@ -313,6 +311,7 @@ impl WirePayload for RuntimeError {
             )),
             Self::InvalidArtifact(_)
             | Self::Decode(_)
+            | Self::ResourceError { .. }
             | Self::Unsupported(_)
             | Self::Recoverable(_)
             | Self::ResourceLimitExceeded { .. }
@@ -808,9 +807,9 @@ mod tests {
             }
         }
 
-        fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
+        fn catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
             Some((
-                TypeIdentity::builtin("test.NativeOpaqueCatch"),
+                PlatformBuiltinErrorIdentity::Http.catch_identity(),
                 serde_json::json!({ "caught": true }),
             ))
         }
@@ -871,7 +870,7 @@ mod tests {
         assert_eq!(
             RuntimeError::decode_target("Date.requireParse", "bad date").catch_projection(),
             Some((
-                TypeIdentity::builtin("std.time.DecodeError"),
+                PlatformBuiltinErrorIdentity::TimeDecode.catch_identity(),
                 serde_json::json!({
                     "target": "Date.requireParse",
                     "message": "bad date",
@@ -879,28 +878,56 @@ mod tests {
             ))
         );
         assert_eq!(
+            RuntimeError::bytes_decode("request.body", "invalid utf-8").catch_projection(),
+            Some((
+                PlatformBuiltinErrorIdentity::BytesDecode.catch_identity(),
+                serde_json::json!({
+                    "target": "request.body",
+                    "message": "invalid utf-8",
+                })
+            ))
+        );
+        assert_eq!(
+            RuntimeError::db_decode("users.createdAt", "invalid date").catch_projection(),
+            Some((
+                PlatformBuiltinErrorIdentity::DbDecode.catch_identity(),
+                serde_json::json!({
+                    "target": "users.createdAt",
+                    "message": "invalid date",
+                })
+            ))
+        );
+        assert_eq!(
             RuntimeError::file_error("std.file denied").catch_projection(),
             Some((
-                TypeIdentity::builtin("std.file.FileError"),
+                PlatformBuiltinErrorIdentity::File.catch_identity(),
                 serde_json::json!({
                     "message": "std.file denied",
                 })
             ))
         );
         assert_eq!(
-            RuntimeError::resource_error("prompts/system.md", "missing").catch_projection(),
+            RuntimeError::http_error(
+                "upstream failed",
+                Some(serde_json::json!({ "status": 503 })),
+            )
+            .catch_projection(),
             Some((
-                TypeIdentity::builtin("std.resource.ResourceError"),
+                PlatformBuiltinErrorIdentity::Http.catch_identity(),
                 serde_json::json!({
-                    "path": "prompts/system.md",
-                    "message": "missing",
+                    "message": "upstream failed",
+                    "detail": { "status": 503 },
                 })
             ))
         );
         assert_eq!(
+            RuntimeError::resource_error("prompts/system.md", "missing").catch_projection(),
+            None
+        );
+        assert_eq!(
             RuntimeError::Cancelled.catch_projection(),
             Some((
-                TypeIdentity::builtin("CancelError"),
+                PlatformBuiltinErrorIdentity::Cancel.catch_identity(),
                 serde_json::json!({
                     "message": "request was cancelled",
                 })
@@ -915,7 +942,7 @@ mod tests {
             }
             .catch_projection(),
             Some((
-                TypeIdentity::builtin("TimeoutError"),
+                PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
                 serde_json::json!({
                     "reason": "instructionLimitExceeded",
                     "instructionCount": 42,
@@ -923,6 +950,37 @@ mod tests {
                     "elapsedMs": 12.5,
                 })
             ))
+        );
+    }
+
+    #[test]
+    fn native_ordinary_diagnostics_have_no_catch_projection() {
+        assert_eq!(
+            RuntimeError::decode_target("unknown.target", "bad value").catch_projection(),
+            None
+        );
+        assert_eq!(
+            RuntimeError::InvalidArtifact("bad artifact".to_string()).catch_projection(),
+            None
+        );
+        assert_eq!(
+            RuntimeError::Decode("bad value".to_string()).catch_projection(),
+            None
+        );
+        assert_eq!(
+            RuntimeError::Unsupported("not implemented".to_string()).catch_projection(),
+            None
+        );
+        assert_eq!(
+            RuntimeError::ResourceLimitExceeded {
+                resource: "memory".to_string(),
+                reason: "limit reached".to_string(),
+                limit: 10,
+                current: 10,
+                requested_delta: 1,
+            }
+            .catch_projection(),
+            None
         );
     }
 
@@ -935,7 +993,7 @@ mod tests {
         assert_eq!(
             error.catch_projection(),
             Some((
-                TypeIdentity::builtin("test.NativeOpaqueCatch"),
+                PlatformBuiltinErrorIdentity::Http.catch_identity(),
                 serde_json::json!({ "caught": true }),
             ))
         );

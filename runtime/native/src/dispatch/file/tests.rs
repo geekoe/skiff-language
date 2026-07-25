@@ -9,7 +9,10 @@ use std::{
 };
 
 use skiff_runtime_boundary::stream::stream_value;
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+};
 use skiff_runtime_native_contract::{NativeBindingKey, NativeCallPlan, NativeRequiredContext};
 
 #[derive(Debug)]
@@ -33,9 +36,9 @@ impl WirePayload for DummyWirePayload {
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
         Some((
-            TypeIdentity::builtin("test.FileProducerCatch"),
+            PlatformBuiltinErrorIdentity::Http.catch_identity(),
             serde_json::json!({ "caught": true }),
         ))
     }
@@ -57,7 +60,7 @@ fn file_capability_error_from_native_preserves_opaque_producer_payload() {
             assert_eq!(
                 error.catch_projection(),
                 Some((
-                    TypeIdentity::builtin("test.FileProducerCatch"),
+                    PlatformBuiltinErrorIdentity::Http.catch_identity(),
                     serde_json::json!({ "caught": true }),
                 ))
             );

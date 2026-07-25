@@ -3,7 +3,7 @@ use skiff_artifact_model::{
     BuiltinReceiverCallableSemantics, NativeCallableSemantics, NativeSignatureTypeExpr,
     BUILTIN_RECEIVER_CALLABLE_SEMANTICS, STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
 };
-use skiff_runtime_model::error::{TypeIdentity, WirePayload};
+use skiff_runtime_model::{error::WirePayload, service_error::PlatformBuiltinErrorIdentity};
 use skiff_runtime_native_contract::NativeRequiredContext;
 
 use crate::{
@@ -34,6 +34,7 @@ fn assert_decode_target_projection(
     error: crate::error::RuntimeError,
     target: &str,
     code: &str,
+    expected_identity: PlatformBuiltinErrorIdentity,
     message_fragment: &str,
 ) {
     let payload = error.payload();
@@ -52,7 +53,7 @@ fn assert_decode_target_projection(
     );
     assert_eq!(
         error.catch_projection().map(|(identity, _)| identity),
-        Some(TypeIdentity::builtin(code))
+        Some(expected_identity.catch_identity())
     );
 }
 
@@ -1939,6 +1940,7 @@ fn date_native_targets_dispatch() {
         error,
         "Date.requireParse",
         "std.time.DecodeError",
+        PlatformBuiltinErrorIdentity::TimeDecode,
         "requires RFC3339 Date",
     );
 }
@@ -1986,6 +1988,7 @@ fn duration_native_targets_dispatch_erased_milliseconds() {
         error,
         "Duration.seconds",
         "std.time.DecodeError",
+        PlatformBuiltinErrorIdentity::TimeDecode,
         "safe integer",
     );
 }
@@ -2036,6 +2039,7 @@ fn std_number_safe_integer_natives_dispatch() {
         error,
         "number.assertSafeInteger",
         "std.number.DecodeError",
+        PlatformBuiltinErrorIdentity::NumberDecode,
         "safe integer",
     );
 }
