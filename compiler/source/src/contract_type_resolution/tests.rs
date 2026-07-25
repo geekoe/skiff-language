@@ -262,6 +262,50 @@ fn public_instance_operations_receive_exact_source_owned_signatures() {
 }
 
 #[test]
+fn public_type_and_public_instance_publish_impl_method_only_through_instance() {
+    let dependency_analysis = contract_dependencies();
+    let publication_api = PublicationApiSpec::new(
+        vec![
+            PublicationApiEntry::for_source("Handler", "api", "Handler"),
+            PublicationApiEntry::for_source("submit", "api", "submit"),
+        ],
+        vec![PublicationApiPublicInstanceEntry::for_source(
+            "handler",
+            "root.api.handler",
+            ["root.api.PublicApi"],
+        )
+        .unwrap()],
+        None,
+    );
+    let model = build_model_with_publication_api(
+        r#"
+            interface PublicApi {
+              function submit(input: string) -> string
+            }
+            type Handler implements PublicApi {}
+            impl Handler {
+              function submit(self: Handler, input: string) -> string {
+                return input
+              }
+            }
+            const handler: Handler = Handler {}
+            function submit(input: string) -> string { return input }
+        "#,
+        &dependency_analysis,
+        &BTreeMap::new(),
+        &[],
+        &publication_api,
+    )
+    .expect("publication ownership must select exact callable paths");
+
+    let signatures = model.callable_signatures();
+    assert_eq!(signatures.iter().count(), 2);
+    assert!(signatures.signature("handler.submit").is_some());
+    assert!(signatures.signature("submit").is_some());
+    assert!(signatures.signature("Handler.submit").is_none());
+}
+
+#[test]
 fn unknown_service_package_type_fails_closed() {
     let dependency_analysis = contract_dependencies();
     let error = build_model(

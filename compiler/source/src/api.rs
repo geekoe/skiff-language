@@ -202,7 +202,7 @@ impl PublicationApi {
             if impl_method_index.contains(&selector_label) {
                 return Err(PublicationError::ContractValidation {
                     message: format!(
-                        "api.yml selector {selector_label} points to an impl method; publish the receiver type instead"
+                        "api.yml selector {selector_label} points to an impl method; publish it through an explicit public instance instead"
                     ),
                 });
             }
@@ -229,35 +229,6 @@ impl PublicationApi {
                 kind,
                 &mut duplicates,
             );
-
-            // A public type carries its impl methods into the public contract:
-            // any method on an impl targeting that type becomes a public
-            // callable under `<public_path>.<method>`. Impl methods still
-            // cannot be listed as api.yml selectors on their own.
-            if kind == PublicSymbolKind::Type {
-                if let Some(source) = production_sources_by_module.get(resolved_module.as_str()) {
-                    for implementation in &source.ast.impls {
-                        let Some(local_target) =
-                            local_implementation_target(&implementation.target, &resolved_module)
-                        else {
-                            continue;
-                        };
-                        if local_target != source_symbol {
-                            continue;
-                        }
-                        for method in &implementation.methods {
-                            let method_public_path = join_public_path(&public_path, &method.name);
-                            api.insert_public_callable(
-                                method_public_path,
-                                &resolved_module,
-                                &format!("{local_target}.{}", method.name),
-                                PublicCallableKind::Method,
-                                &mut duplicates,
-                            );
-                        }
-                    }
-                }
-            }
         }
 
         for entry in spec.public_instances() {
@@ -758,17 +729,6 @@ fn build_impl_method_index(
     methods
 }
 
-/// Join a surface `path` prefix with an export's local public path.
-fn join_public_path(prefix: &str, local: &str) -> String {
-    if prefix.is_empty() {
-        local.to_string()
-    } else if local.is_empty() {
-        prefix.to_string()
-    } else {
-        format!("{prefix}.{local}")
-    }
-}
-
 fn public_module_path_from_public_symbol(public_path: &str) -> String {
     public_path
         .rsplit_once('.')
@@ -847,6 +807,50 @@ mod tests {
         assert!(api.schema_types.contains_key("chat.Events"));
         assert!(api.callables.contains_key("chat.start"));
         assert!(api.public_symbols.contains_key("chat.VERSION"));
+    }
+
+    #[test]
+    fn public_nominal_type_does_not_publish_its_impl_methods() {
+        let spec = PublicationApiSpec::from_entries(vec![PublicationApiEntry::for_source(
+            "Client", "client", "Client",
+        )]);
+        let sources = [source(
+            "client.skiff",
+            "client",
+            r#"
+                type Client {}
+                impl Client {
+                  function send(self: Client, input: string) -> string { return input }
+                }
+            "#,
+        )];
+
+        let api = PublicationApi::build_from_publication_sources(&spec, sources.iter()).unwrap();
+
+        assert!(api.public_symbols.contains_key("Client"));
+        assert!(api.callables.is_empty());
+    }
+
+    #[test]
+    fn similarly_named_explicit_functions_remain_distinct_public_operations() {
+        let spec = PublicationApiSpec::from_entries(vec![
+            PublicationApiEntry::for_source("send", "api", "send"),
+            PublicationApiEntry::for_source("admin.send", "api", "adminSend"),
+        ]);
+        let sources = [source(
+            "api.skiff",
+            "api",
+            r#"
+                function send(input: string) -> string { return input }
+                function adminSend(input: string) -> string { return input }
+            "#,
+        )];
+
+        let api = PublicationApi::build_from_publication_sources(&spec, sources.iter()).unwrap();
+
+        assert_eq!(api.callables.len(), 2);
+        assert_eq!(api.callables["send"].source_symbol, "send");
+        assert_eq!(api.callables["admin.send"].source_symbol, "adminSend");
     }
 
     #[test]
