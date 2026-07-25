@@ -5,9 +5,10 @@ use crate::error::{unwrap_diagnostic_source_context, WirePayload};
 use skiff_artifact_model::InstructionSourceSite;
 use skiff_runtime_linked_program::{
     FileAddr, LinkedFileUnit, LinkedNamedUnionBranch, LinkedNominalTypeRefBase,
-    LinkedTypeDescriptor, LinkedTypeRef, TypeAddr, UnitAddr,
+    LinkedTypeDescriptor, LinkedTypeRef, ServiceErrorExecutionContext, ServiceErrorTypeLink,
+    TypeAddr, UnitAddr,
 };
-use skiff_runtime_linked_type_plan::ProgramTypeView;
+use skiff_runtime_linked_type_plan::{PlanContext, ProgramTypeView, RuntimeTypePlanLinkedExt};
 use skiff_runtime_model::{
     service_error::{
         CatchIdentity, ErrorCorrelation, ExceptionStackFrame, InstantiatedTypeArgumentIdentity,
@@ -109,6 +110,97 @@ pub fn request_exception_for_rethrow(
         ));
     };
     Ok(exception.clone())
+}
+
+/// Resolves an actual named-union identity to the one exact linked branch.
+///
+/// This consumes linked declaration identity only; it never compares runtime
+/// value shape or public/display names.
+pub(crate) fn exact_named_union_branch_index(
+    union: &LocalExecutionTypeIdentity,
+    actual: &NamedUnionBranchIdentity,
+    program: ProgramTypeView<'_>,
+) -> Result<usize> {
+    let declaration = program.types.declaration(&union.addr).ok_or_else(|| {
+        RuntimeError::InvalidArtifact(format!(
+            "RuntimeProgram type address {} is not interned",
+            union.addr
+        ))
+    })?;
+    if declaration.type_params.len() != union.type_arguments.len() {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "RuntimeProgram nominal {} expects {} type argument(s), got {}",
+            declaration.name,
+            declaration.type_params.len(),
+            union.type_arguments.len()
+        )));
+    }
+    if !union.type_arguments.is_empty() {
+        return Err(RuntimeError::InvalidArtifact(
+            "public service-error named union must be schema-closed".to_string(),
+        ));
+    }
+    let LinkedTypeDescriptor::Union { branches } = &declaration.descriptor else {
+        return Err(RuntimeError::InvalidArtifact(
+            "named-union service error identity points at a non-union declaration".to_string(),
+        ));
+    };
+    let mut matches = Vec::new();
+    for (index, branch) in branches.iter().enumerate() {
+        let identity =
+            named_union_branch_identity(branch, &BTreeMap::new(), program, &mut HashSet::new())?;
+        if &identity == actual {
+            matches.push(index);
+        }
+    }
+    match matches.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(RuntimeError::InvalidArtifact(
+            "actual named-union service error identity has no linked branch".to_string(),
+        )),
+        _ => Err(RuntimeError::InvalidArtifact(
+            "actual named-union service error identity matches multiple linked branches"
+                .to_string(),
+        )),
+    }
+}
+
+/// Restores a decoded Package-schema value to its exact caller-local carrier.
+///
+/// The selected service-error index row chooses the local declaration or union
+/// branch before recursive carrier annotation, so equal-shape union branches
+/// cannot be guessed by `runtime_carrier_for_plan`.
+pub(crate) fn materialize_service_error_local_value(
+    value: RuntimeValue,
+    link: &ServiceErrorTypeLink,
+    program: ProgramTypeView<'_>,
+    current_addr: &skiff_runtime_linked_program::ExecutableAddr,
+    heap: &mut RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    let root_ref = LinkedTypeRef::Address {
+        addr: link.context().execution_addr().clone(),
+    };
+    let mut plan = RuntimeTypePlan::from_linked_nested_ref(
+        &root_ref,
+        &PlanContext::from_type_view(program, current_addr),
+    )?;
+    annotate_runtime_type_plan(&mut plan, &root_ref, program)?;
+    let selected = match link.context() {
+        ServiceErrorExecutionContext::Declaration { .. } => plan,
+        ServiceErrorExecutionContext::NamedUnionBranch { branch_index, .. } => {
+            let RuntimeTypeNode::Union(branches) = plan.node() else {
+                return Err(RuntimeError::InvalidArtifact(
+                    "service-error named-union row produced a non-union local plan".to_string(),
+                ));
+            };
+            branches.get(*branch_index).cloned().ok_or_else(|| {
+                RuntimeError::InvalidArtifact(format!(
+                    "service-error named-union branch {branch_index} is outside the local plan"
+                ))
+            })?
+        }
+    };
+    runtime_carrier_for_plan(value, &selected, "service error import", heap)
 }
 
 pub fn catch_type_leaves<'p>(
