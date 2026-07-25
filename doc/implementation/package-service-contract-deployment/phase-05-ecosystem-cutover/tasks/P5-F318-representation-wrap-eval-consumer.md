@@ -1,6 +1,7 @@
 # P5-F318 Representation wrap eval consumer
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F318-representation-wrap-eval-consumer-result.md`。
 
 ## 直接父节点
 
@@ -79,4 +80,3 @@ host/workspace/stable/live。
 - 风险：高；进入A5；
 - 一次性Agent，5分钟内修改；提交并返回raw-value/identity/promotion/throw矩阵、反搜与验证；
 - 不push、不承接combined probe。
-
