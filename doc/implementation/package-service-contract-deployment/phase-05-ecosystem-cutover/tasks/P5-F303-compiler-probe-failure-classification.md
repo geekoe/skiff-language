@@ -1,6 +1,7 @@
 # P5-F303 Compiler combined probe failure classification
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F303-compiler-probe-failure-classification-result.md`。
 
 ## 输入
 
@@ -34,4 +35,3 @@
    缺口而不是既定policy实现错误，明确标为需要用户决定。
 
 只允许`rg`、文件读取和git只读命令；返回精确`file:line`与结论，不承接实现。
-
