@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use skiff_artifact_model::{
     builtin_receiver_callable_semantics, native_callable_semantics, BoundaryCallbackContract,
     BoundaryErrorContract, BoundaryOperationDescriptor, BoundaryStreamContract, BuiltinReceiverOp,
@@ -301,12 +303,18 @@ impl Evaluator<'_, '_> {
         let any_caller_reference = actuals
             .iter()
             .any(|value| value.contains_caller_reference() || value.unknown);
-        let any_caller_value = actuals
-            .iter()
-            .any(|value| value.contains_caller_value() || value.unknown);
-        if callee.parameter_stores.is_empty() {
+        if callee.write_parameters.is_empty() && callee.parameter_stores.is_empty() {
             self.state.effects.writes_caller_reachable |=
                 callee.effects.writes_caller_reachable && any_caller_reference;
+        } else if callee.effects.writes_caller_reachable {
+            for actual in indexed_actuals(&callee.write_parameters, actuals) {
+                if actual.contains_caller_reference() || actual.unknown {
+                    self.state.effects.writes_caller_reachable = true;
+                    self.state
+                        .write_parameters
+                        .extend(actual.caller_references.iter().copied());
+                }
+            }
         }
         for (formal, stored) in &callee.parameter_stores {
             let Some(actual) = usize::try_from(*formal)
@@ -328,6 +336,9 @@ impl Evaluator<'_, '_> {
             } else if actual.contains_caller_reference() && actual.fresh_roots.is_empty() {
                 self.state.effects.writes_caller_reachable = true;
                 self.state.effects.requires_same_heap_identity = true;
+                self.state
+                    .write_parameters
+                    .extend(actual.caller_references.iter().copied());
                 self.state
                     .same_heap_identity_parameters
                     .extend(actual.caller_references.iter().copied());
@@ -370,14 +381,25 @@ impl Evaluator<'_, '_> {
         self.state.effects.invokes_unknown_target |= callee.effects.invokes_unknown_target;
         self.state.effects.may_suspend |= callee.effects.may_suspend;
 
-        if callee.effects.escapes_caller_value && any_caller_value {
-            self.state.effects.escapes_caller_value = true;
-            if callee.escape_lanes.is_empty() {
-                self.state.escape_lanes.insert(EscapeLane::External);
+        if callee.effects.escapes_caller_value {
+            let lanes = if callee.escape_lanes.is_empty() {
+                BTreeSet::from([EscapeLane::External])
             } else {
-                self.state
-                    .escape_lanes
-                    .extend(callee.escape_lanes.iter().copied());
+                callee.escape_lanes.clone()
+            };
+            for lane in lanes {
+                if let Some(parameters) = callee.escape_parameters.get(&lane) {
+                    for actual in indexed_actuals(parameters, actuals) {
+                        self.state.record_escape(actual, lane);
+                    }
+                } else {
+                    // Public/dependency summaries and unresolved effects have
+                    // no internal selector identity. Preserve their aggregate
+                    // effect by conservatively considering every actual.
+                    for actual in actuals {
+                        self.state.record_escape(actual, lane);
+                    }
+                }
             }
         }
 
@@ -454,6 +476,12 @@ fn native_callable_callee(binding_key: &str) -> Option<CallableState> {
     if let Some(semantics) = native_callable_semantics(binding_key) {
         let mut state = CallableState::bottom();
         state.effects = semantics.effects;
+        if binding_key == "std.http.stream.emitResponse" && state.effects.escapes_caller_value {
+            state.escape_lanes.insert(EscapeLane::External);
+            state
+                .escape_parameters
+                .insert(EscapeLane::External, BTreeSet::from([0]));
+        }
         state
             .return_origins
             .insert(Origin::from(semantics.return_provenance.clone()));
@@ -476,6 +504,9 @@ fn receiver_callable_callee(op: BuiltinReceiverOp) -> Option<CallableState> {
     if let Some(semantics) = builtin_receiver_callable_semantics(op) {
         let mut state = CallableState::bottom();
         state.effects = semantics.effects;
+        if state.effects.writes_caller_reachable {
+            state.write_parameters.insert(0);
+        }
         if state.effects.requires_same_heap_identity {
             state.same_heap_identity_parameters.insert(0);
         }

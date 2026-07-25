@@ -52,6 +52,12 @@ pub(super) struct CallableState {
     pub return_origins: BTreeSet<Origin>,
     pub throw_origins: BTreeSet<Origin>,
     pub escape_lanes: BTreeSet<EscapeLane>,
+    /// Formal parameters whose reachable graph is written. An empty set with
+    /// the public write effect set is deliberately unscoped/fail-closed.
+    pub write_parameters: BTreeSet<u32>,
+    /// Formal parameters whose values enter each escape lane. A lane absent
+    /// from this map remains deliberately unscoped/fail-closed.
+    pub escape_parameters: BTreeMap<EscapeLane, BTreeSet<u32>>,
     /// Formal parameters whose caller-owned graph makes an identity-sensitive
     /// operation observable. An empty set with the public effect set means the
     /// dependency could not be attributed and must remain conservative.
@@ -167,6 +173,15 @@ impl AbstractValue {
                 .iter()
                 .any(|origin| matches!(origin, Origin::CallerParameter(_)))
     }
+
+    pub fn formal_parameters(&self) -> BTreeSet<u32> {
+        let mut parameters = self.caller_references.clone();
+        parameters.extend(self.origins.iter().filter_map(|origin| match origin {
+            Origin::CallerParameter(index) => Some(*index),
+            _ => None,
+        }));
+        parameters
+    }
 }
 
 impl CallableState {
@@ -176,6 +191,8 @@ impl CallableState {
             return_origins: BTreeSet::new(),
             throw_origins: BTreeSet::new(),
             escape_lanes: BTreeSet::new(),
+            write_parameters: BTreeSet::new(),
+            escape_parameters: BTreeMap::new(),
             same_heap_identity_parameters: BTreeSet::new(),
             parameter_stores: BTreeMap::new(),
             unknown: None,
@@ -188,6 +205,8 @@ impl CallableState {
             return_origins: BTreeSet::new(),
             throw_origins: BTreeSet::new(),
             escape_lanes: BTreeSet::from([EscapeLane::External]),
+            write_parameters: BTreeSet::new(),
+            escape_parameters: BTreeMap::new(),
             same_heap_identity_parameters: BTreeSet::new(),
             parameter_stores: BTreeMap::new(),
             unknown: Some(reason),
@@ -202,6 +221,14 @@ impl CallableState {
         self.throw_origins
             .extend(other.throw_origins.iter().cloned());
         self.escape_lanes.extend(other.escape_lanes.iter().copied());
+        self.write_parameters
+            .extend(other.write_parameters.iter().copied());
+        for (lane, parameters) in &other.escape_parameters {
+            self.escape_parameters
+                .entry(*lane)
+                .or_default()
+                .extend(parameters.iter().copied());
+        }
         self.same_heap_identity_parameters
             .extend(other.same_heap_identity_parameters.iter().copied());
         for (parameter, value) in &other.parameter_stores {
@@ -242,6 +269,10 @@ impl CallableState {
         if value.contains_caller_value() || value.unknown {
             self.effects.escapes_caller_value = true;
             self.escape_lanes.insert(lane);
+            self.escape_parameters
+                .entry(lane)
+                .or_default()
+                .extend(value.formal_parameters());
         }
         if value.unknown {
             self.mark_unknown_value_if_unowned();
@@ -255,6 +286,10 @@ impl CallableState {
         if value.contains_caller_reference() || value.unknown {
             self.effects.escapes_caller_value = true;
             self.escape_lanes.insert(EscapeLane::Database);
+            self.escape_parameters
+                .entry(EscapeLane::Database)
+                .or_default()
+                .extend(value.formal_parameters());
         }
         if value.unknown {
             self.mark_unknown_value_if_unowned();

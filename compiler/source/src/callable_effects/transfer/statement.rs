@@ -182,6 +182,9 @@ impl Evaluator<'_, '_> {
             self.state.effects.writes_caller_reachable = true;
             self.state.effects.requires_same_heap_identity = true;
             self.state
+                .write_parameters
+                .extend(base.caller_references.iter().copied());
+            self.state
                 .same_heap_identity_parameters
                 .extend(base.caller_references.iter().copied());
             for parameter in &base.caller_references {

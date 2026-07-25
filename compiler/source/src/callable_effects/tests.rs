@@ -2842,6 +2842,121 @@ fn exact_map_has_and_set_keep_contextual_receiver_semantics() {
 }
 
 #[test]
+fn formal_indexed_receiver_writes_ignore_unrelated_caller_actuals_through_helpers_and_scc() {
+    let model = analyze_named(
+        r#"
+            function add(headers: Array<string>, request: string) -> void {
+              headers.push(request)
+            }
+
+            function nestedAdd(headers: Array<string>, request: string) -> void {
+              add(headers, request)
+            }
+
+            function recursiveAdd(headers: Array<string>, request: string, again: bool) -> void {
+              headers.push(request)
+              if again { recursiveAdd(headers, request, false) }
+            }
+
+            function freshHeaders(request: string) -> void {
+              const headers = Array.empty<string>()
+              nestedAdd(headers, request)
+              recursiveAdd(headers, request, true)
+            }
+
+            function callerHeaders(headers: Array<string>, request: string) -> void {
+              nestedAdd(headers, request)
+              recursiveAdd(headers, request, true)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "formal_write",
+        "skiff.run/formal-write",
+    );
+
+    assert_eq!(
+        effects_in(&model, "formal_write", "freshHeaders"),
+        no_effects(),
+        "a caller request actual must not make a Fresh headers receiver write caller-visible"
+    );
+    for callable in ["add", "nestedAdd", "recursiveAdd", "callerHeaders"] {
+        assert_eq!(
+            effects_in(&model, "formal_write", callable),
+            CallableMayEffects {
+                writes_caller_reachable: true,
+                requires_same_heap_identity: true,
+                ..no_effects()
+            },
+            "{callable}"
+        );
+    }
+}
+
+#[test]
+fn formal_indexed_stream_escape_ignores_unrelated_caller_actuals_through_helpers_and_scc() {
+    let model = analyze_named(
+        r#"
+            function forward(stream: bytes, state: JsonObject) -> void {
+              emit(stream)
+            }
+
+            function nestedForward(stream: bytes, state: JsonObject) -> void {
+              forward(stream, state)
+            }
+
+            function recursiveForward(stream: bytes, state: JsonObject, again: bool) -> void {
+              emit(stream)
+              if again { recursiveForward(stream, state, false) }
+            }
+
+            function freshStream(state: JsonObject) -> void {
+              const stream = std.bytes.fromUtf8("fresh")
+              nestedForward(stream, state)
+              recursiveForward(stream, state, true)
+            }
+
+            function callerStream(stream: bytes, state: JsonObject) -> void {
+              nestedForward(stream, state)
+              recursiveForward(stream, state, true)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "formal_escape",
+        "skiff.run/formal-escape",
+    );
+
+    assert_eq!(
+        effects_in(&model, "formal_escape", "freshStream"),
+        CallableMayEffects {
+            may_suspend: true,
+            ..no_effects()
+        },
+        "a caller state actual must not enter the Stream lane selected by the Fresh stream"
+    );
+    for callable in [
+        "forward",
+        "nestedForward",
+        "recursiveForward",
+        "callerStream",
+    ] {
+        assert_eq!(
+            effects_in(&model, "formal_escape", callable),
+            CallableMayEffects {
+                escapes_caller_value: true,
+                may_suspend: true,
+                ..no_effects()
+            },
+            "{callable}"
+        );
+        assert!(matches!(
+            provenance_in(&model, "formal_escape", callable),
+            CallableProvenanceSummary::Analyzed { escape_lanes, .. }
+                if escape_lanes == &vec![ValueEscapeLane::Stream]
+        ));
+    }
+}
+
+#[test]
 fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
     let model = analyze_named(
         r#"
