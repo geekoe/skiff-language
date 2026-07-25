@@ -797,9 +797,11 @@ fn linked_stmt(
         artifact::StmtIr::Throw {
             value,
             payload_type,
+            site,
         } => LinkedStmtIr::Throw {
             value: linked_expr_ref(value),
             payload_type: linked_type_ref(payload_type),
+            site: site.clone(),
         },
         artifact::StmtIr::Rethrow { exception_slot } => LinkedStmtIr::Rethrow {
             exception_slot: *exception_slot,
@@ -897,9 +899,11 @@ fn linked_expr(
         artifact::ExprIr::Throw {
             value,
             payload_type,
+            site,
         } => LinkedExprIr::Throw {
             value: linked_expr_ref(value),
             payload_type: linked_type_ref(payload_type),
+            site: site.clone(),
         },
         artifact::ExprIr::Rethrow { exception_slot } => LinkedExprIr::Rethrow {
             exception_slot: *exception_slot,
@@ -912,7 +916,7 @@ fn linked_expr(
         } => LinkedExprIr::Catch {
             try_expression: linked_expr_ref(try_expression),
             catch_slot: *catch_slot,
-            catch_type: catch_type.as_ref().map(linked_type_ref),
+            catch_type: linked_type_ref(catch_type),
             body: linked_expr_ref(body),
         },
         artifact::ExprIr::ValueBlock { block, result } => LinkedExprIr::ValueBlock {
@@ -1225,6 +1229,7 @@ fn linked_call(
                 slot: *slot,
             },
         },
+        site: call.site.clone(),
         args: call.args.iter().map(linked_expr_ref).collect(),
         type_args: call
             .type_args
@@ -1466,6 +1471,193 @@ fn linked_interface_method_slot_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn source_site(seed: u32) -> artifact::InstructionSourceSite {
+        artifact::InstructionSourceSite::Source {
+            span: artifact::SourceSpanRef {
+                source_id: u64::from(seed) + 100,
+                start: artifact::SourcePosition {
+                    line: seed,
+                    column: seed + 1,
+                    offset: Some(seed + 2),
+                },
+                end: artifact::SourcePosition {
+                    line: seed + 3,
+                    column: seed + 4,
+                    offset: Some(seed + 5),
+                },
+            },
+        }
+    }
+
+    fn artifact_call(
+        target: artifact::CallTargetIr,
+        site: artifact::InstructionSourceSite,
+    ) -> artifact::CallIr {
+        artifact::CallIr {
+            target,
+            site,
+            args: Vec::new(),
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn linked_throw_statement_and_expression_preserve_exact_source_sites() {
+        let statement_site = source_site(11);
+        let statement = linked_stmt(
+            &artifact::StmtIr::Throw {
+                value: artifact::ExprRefIr { expression: 2 },
+                payload_type: artifact::TypeRefIr::builtin("string"),
+                site: statement_site.clone(),
+            },
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        assert!(matches!(
+            statement,
+            LinkedStmtIr::Throw { site, .. } if site == statement_site
+        ));
+
+        let expression_site = source_site(29);
+        let expression = linked_expr(
+            &artifact::ExprIr::Throw {
+                value: artifact::ExprRefIr { expression: 5 },
+                payload_type: artifact::TypeRefIr::builtin("number"),
+                site: expression_site.clone(),
+            },
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        assert!(matches!(
+            expression,
+            LinkedExprIr::Throw { site, .. } if site == expression_site
+        ));
+    }
+
+    #[test]
+    fn linked_throw_preserves_exact_synthetic_site() {
+        let expected = artifact::InstructionSourceSite::Synthetic {
+            reason: artifact::SyntheticInstructionSiteReason::RuntimeControlFlow,
+        };
+        let linked = linked_expr(
+            &artifact::ExprIr::Throw {
+                value: artifact::ExprRefIr { expression: 0 },
+                payload_type: artifact::TypeRefIr::builtin("unknown"),
+                site: expected.clone(),
+            },
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        assert!(matches!(
+            linked,
+            LinkedExprIr::Throw { site, .. } if site == expected
+        ));
+    }
+
+    #[test]
+    fn linked_local_package_service_and_native_calls_preserve_exact_sites() {
+        let local_site = source_site(41);
+        let local = linked_call(
+            &artifact_call(
+                artifact::CallTargetIr::LocalExecutable {
+                    executable_index: 7,
+                },
+                local_site.clone(),
+            ),
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        assert_eq!(local.site, local_site);
+
+        let package_site = source_site(51);
+        let package = linked_call(
+            &artifact_call(
+                artifact::CallTargetIr::PackageCallable {
+                    package_ref: artifact::PackageRefIr::Dependency {
+                        dependency_ref: "models".to_string(),
+                    },
+                    package_callable_id: artifact::PackageCallableId::new("callable:models.lookup"),
+                },
+                package_site.clone(),
+            ),
+            &|target| match target {
+                artifact::CallTargetIr::PackageCallable { .. } => Ok(LinkedCallTarget::Builtin {
+                    op: "resolved-package".to_string(),
+                }),
+                _ => unreachable!(),
+            },
+        )
+        .unwrap();
+        assert_eq!(package.site, package_site);
+
+        let service_site = source_site(61);
+        let service = linked_call(
+            &artifact_call(
+                artifact::CallTargetIr::ServiceCall {
+                    service_call_ref_index: artifact::ServiceCallRefIndex::new(3),
+                },
+                service_site.clone(),
+            ),
+            &|target| match target {
+                artifact::CallTargetIr::ServiceCall { .. } => Ok(LinkedCallTarget::Builtin {
+                    op: "resolved-service".to_string(),
+                }),
+                _ => unreachable!(),
+            },
+        )
+        .unwrap();
+        assert_eq!(service.site, service_site);
+
+        let native_site = source_site(71);
+        let native = linked_call(
+            &artifact_call(
+                artifact::CallTargetIr::Native {
+                    target: artifact::NativeTarget {
+                        namespace: "std.http".to_string(),
+                        symbol: "fetch".to_string(),
+                        binding_key: Some("std.http.fetch".to_string()),
+                        metadata: BTreeMap::new(),
+                    },
+                },
+                native_site.clone(),
+            ),
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        assert_eq!(native.site, native_site);
+    }
+
+    #[test]
+    fn linked_required_catch_type_preserves_applied_nominal() {
+        let linked = linked_expr(
+            &artifact::ExprIr::Catch {
+                try_expression: artifact::ExprRefIr { expression: 0 },
+                catch_slot: 1,
+                catch_type: artifact::TypeRefIr::AppliedNominal {
+                    base: artifact::NominalTypeRefBaseIr::LocalType { type_index: 2 },
+                    arguments: vec![artifact::TypeRefIr::builtin("string")],
+                },
+                body: artifact::ExprRefIr { expression: 3 },
+            },
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        assert!(matches!(
+            linked,
+            LinkedExprIr::Catch {
+                catch_type: LinkedTypeRef::AppliedNominal {
+                    base: LinkedNominalTypeRefBase::LocalType { type_index: 2 },
+                    arguments,
+                },
+                ..
+            } if arguments == vec![LinkedTypeRef::Native {
+                name: "string".to_string(),
+                args: Vec::new(),
+            }]
+        ));
+    }
 
     fn generic_type_file() -> artifact::FileIrUnit {
         let mut file = artifact::FileIrUnit::empty("models", "source");
@@ -1734,6 +1926,9 @@ mod tests {
                     "actor-impl:test",
                 ),
                 method_identity: artifact::ActorMethodIdentity::new("actor-method:submit"),
+            },
+            site: artifact::InstructionSourceSite::Synthetic {
+                reason: artifact::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
             type_args: std::collections::BTreeMap::new(),

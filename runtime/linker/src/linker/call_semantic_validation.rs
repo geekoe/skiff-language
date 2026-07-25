@@ -399,6 +399,9 @@ mod tests {
     fn call(target: LinkedCallTarget, arg_count: usize) -> CallIr {
         CallIr {
             target,
+            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            },
             args: (0..arg_count)
                 .map(|expression| ExprRefIr {
                     expression: expression as u32,

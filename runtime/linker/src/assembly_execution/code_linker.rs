@@ -523,9 +523,7 @@ impl<'a> AssemblyCodeLinker<'a> {
                     self.addresses.validate_const_addr(const_addr)?;
                 }
                 LinkedExprIr::Catch { catch_type, .. } => {
-                    if let Some(catch_type) = catch_type {
-                        self.link_type_ref(code_slot, file_index, catch_type)?;
-                    }
+                    self.link_type_ref(code_slot, file_index, catch_type)?;
                 }
                 LinkedExprIr::DbOperation { operation } => {
                     self.link_type_ref(code_slot, file_index, &mut operation.target.type_ref)?;

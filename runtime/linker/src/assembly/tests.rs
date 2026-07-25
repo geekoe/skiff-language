@@ -13,6 +13,12 @@ mod fixtures;
 
 use fixtures::CycleFixture;
 
+fn test_instruction_site() -> skiff_artifact_model::InstructionSourceSite {
+    skiff_artifact_model::InstructionSourceSite::Synthetic {
+        reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+    }
+}
+
 struct NoContent;
 
 impl RuntimeAssemblyContentResolver for NoContent {
@@ -518,6 +524,7 @@ fn linked_call(
 
     skiff_runtime_linked_program::CallIr {
         target,
+        site: test_instruction_site(),
         args: (0..arg_count)
             .map(|expression| ExprRefIr {
                 expression: expression as u32,
@@ -527,6 +534,84 @@ fn linked_call(
         metadata: BTreeMap::new(),
         actor_metadata: None,
     }
+}
+
+#[test]
+fn assembly_code_linker_links_required_catch_applied_nominal_exactly() {
+    use skiff_artifact_model::{
+        ExprIr, ExprRefIr, NominalTypeRefBaseIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+    };
+    use skiff_runtime_linked_program::{
+        FileAddr, LinkedExprIr, LinkedNominalTypeRefBase, LinkedTypeRef, TypeAddr, UnitAddr,
+    };
+
+    let image = link_identity_valid_execution_image(|file| {
+        let generic_type_index = u32::try_from(file.type_table.len()).unwrap();
+        file.type_table.push(TypeDeclIr {
+            name: "Box".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::from([(
+                    "value".to_string(),
+                    TypeRefIr::TypeParam {
+                        name: "T".to_string(),
+                    },
+                )]),
+            },
+            type_params: vec!["T".to_string()],
+            implements: Vec::new(),
+            source_span: None,
+        });
+        file.executables[0].body.expressions.push(ExprIr::Catch {
+            try_expression: ExprRefIr { expression: 0 },
+            catch_slot: 0,
+            catch_type: TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::LocalType {
+                    type_index: generic_type_index,
+                },
+                arguments: vec![TypeRefIr::LocalType { type_index: 0 }],
+            },
+            body: ExprRefIr { expression: 0 },
+        });
+    })
+    .expect("required catch type should link");
+
+    let (code_slot, file_index, file) = image
+        .code_slots()
+        .iter()
+        .enumerate()
+        .flat_map(|(code_slot, code)| {
+            code.files()
+                .iter()
+                .enumerate()
+                .map(move |(file_index, file)| (code_slot, file_index, file))
+        })
+        .find(|(_, _, file)| file.module_path == "shared.main")
+        .expect("mutated shared file should be in the execution image");
+    let LinkedExprIr::Catch { catch_type, .. } =
+        file.executables[0].body.expressions.last().unwrap()
+    else {
+        panic!("last expression should remain a catch")
+    };
+    let generic_type_index = file.types.len() - 1;
+    let generic_addr = TypeAddr {
+        unit: UnitAddr::Package(code_slot),
+        file: FileAddr::LoadedFileIndex(file_index),
+        type_index: generic_type_index,
+    };
+    let argument_addr = TypeAddr {
+        unit: UnitAddr::Package(code_slot),
+        file: FileAddr::LoadedFileIndex(file_index),
+        type_index: 0,
+    };
+    assert_eq!(
+        catch_type,
+        &LinkedTypeRef::AppliedNominal {
+            base: LinkedNominalTypeRefBase::Address { addr: generic_addr },
+            arguments: vec![LinkedTypeRef::Address {
+                addr: argument_addr,
+            }],
+        }
+    );
 }
 
 fn append_linked_receiver_call(
@@ -584,6 +669,7 @@ fn assembly_execution_call_validation_rejects_identity_valid_native_tamper() {
                         metadata: BTreeMap::new(),
                     },
                 },
+                site: test_instruction_site(),
                 args: vec![ExprRefIr { expression: 0 }],
                 type_args: BTreeMap::from([("T0".to_string(), TypeRefIr::builtin("Json"))]),
                 metadata: BTreeMap::new(),
@@ -659,6 +745,7 @@ fn append_actor_registry_call(
                     metadata: BTreeMap::new(),
                 },
             },
+            site: test_instruction_site(),
             args: vec![ExprRefIr { expression: 0 }, ExprRefIr { expression: 0 }],
             type_args,
             metadata: BTreeMap::new(),
@@ -841,9 +928,7 @@ fn assembly_execution_call_validation_rejects_identity_valid_interface_tamper() 
                     type_params: Vec::new(),
                     params: vec![FunctionTypeParamIr {
                         name: "self".to_string(),
-                        ty: TypeRefIr::TypeParam {
-                            name: "Self".to_string(),
-                        },
+                        ty: TypeRefIr::builtin("Self"),
                     }],
                     return_type: TypeRefIr::builtin("string"),
                     is_native: false,
@@ -873,6 +958,7 @@ fn assembly_execution_call_validation_rejects_identity_valid_interface_tamper() 
                     method_abi_id: "method:tampered".to_string(),
                     slot: 1,
                 },
+                site: test_instruction_site(),
                 args: Vec::new(),
                 type_args: BTreeMap::new(),
                 metadata: BTreeMap::new(),

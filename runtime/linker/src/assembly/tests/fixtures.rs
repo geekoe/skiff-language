@@ -16,21 +16,27 @@ use skiff_artifact_model::{
     ContractOperationId, ContractRequirement, DeploymentArtifactIdentity, DeploymentDiagnosticText,
     DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
     ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, ExprRefIr, FileIrRef, FileIrUnit,
-    GlobalIngressBinding, IngressProtocol, IngressSelector, MetadataValue, OperationCallableKind,
-    OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
-    PackageCallableId, PackageCallableLinkFact, PackageCallableRef, PackageCallableSignature,
-    PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageLocalAbiSymbol, PackageRefIr, PackageRequirement, PackageRequirementKey,
-    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, PackageTypeRef,
-    PublicationResourceRef, ResolvedServiceBinding, ResourceBinding, ResourcePolicy,
-    RuntimeAssembly, SecretRefBinding, ServiceBindingTemplate, ServiceCallRef, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity,
-    ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding, SlotLayout, StateBinding,
-    StateBindingKind, TypeDeclIr, TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    GlobalIngressBinding, IngressProtocol, IngressSelector, InstructionSourceSite, MetadataValue,
+    OperationCallableKind, OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBinding,
+    PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableRef,
+    PackageCallableSignature, PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi,
+    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
+    PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
+    PackageTypeRef, PublicationResourceRef, ResolvedServiceBinding, ResourceBinding,
+    ResourcePolicy, RuntimeAssembly, SecretRefBinding, ServiceBindingTemplate, ServiceCallRef,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
+    SlotLayout, StateBinding, StateBindingKind, SyntheticInstructionSiteReason, TypeDeclIr,
+    TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::RuntimeAssemblyContentResolver;
+
+fn test_instruction_site() -> InstructionSourceSite {
+    InstructionSourceSite::Synthetic {
+        reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+    }
+}
 
 pub(super) struct CycleFixture {
     pub assembly: RuntimeAssembly,
@@ -129,6 +135,7 @@ impl CycleFixture {
                         },
                         package_callable_id: helper_callable.clone(),
                     },
+                    site: test_instruction_site(),
                     args: Vec::new(),
                     type_args: BTreeMap::new(),
                     metadata: BTreeMap::new(),
@@ -154,6 +161,7 @@ impl CycleFixture {
                     target: CallTargetIr::LocalExecutable {
                         executable_index: 1,
                     },
+                    site: test_instruction_site(),
                     args: Vec::new(),
                     type_args: BTreeMap::new(),
                     metadata: BTreeMap::new(),
@@ -167,6 +175,7 @@ impl CycleFixture {
                     target: CallTargetIr::ServiceCall {
                         service_call_ref_index: skiff_artifact_model::ServiceCallRefIndex::new(0),
                     },
+                    site: test_instruction_site(),
                     args: Vec::new(),
                     type_args: BTreeMap::new(),
                     metadata: BTreeMap::new(),
@@ -213,6 +222,7 @@ impl CycleFixture {
                         actor_implementation_identity,
                         method_identity,
                     },
+                    site: test_instruction_site(),
                     args: vec![ExprRefIr { expression: 1 }],
                     type_args: BTreeMap::new(),
                     metadata: BTreeMap::new(),
