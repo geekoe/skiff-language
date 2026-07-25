@@ -562,35 +562,42 @@ fn native_callable_semantics_registry_accepts_exact_websocket_route_matrix() {
 }
 
 #[test]
-fn native_callable_semantics_registry_accepts_http_suspend_detachment_route() {
-    let semantics = STD_NATIVE_CALLABLE_SEMANTICS
-        .iter()
-        .find(|semantics| semantics.binding_key == "std.http.client.request")
-        .cloned()
-        .expect("HTTP request must have exact callable semantics");
-    assert!(semantics.effects.may_suspend);
-    assert!(!semantics.effects.returns_caller_alias);
-    assert!(!semantics.effects.throws_caller_alias);
-    assert!(!semantics.effects.escapes_caller_value);
-    let handler_count = NATIVE_BINDINGS
-        .iter()
-        .filter(|entry| entry.binding_key == semantics.binding_key)
-        .count();
+fn native_callable_semantics_registry_accepts_http_suspend_detachment_routes() {
+    for binding_key in ["std.http.client.request", "std.http.client.stream"] {
+        let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+            .iter()
+            .find(|semantics| semantics.binding_key == binding_key)
+            .cloned()
+            .unwrap_or_else(|| panic!("{binding_key} must have exact callable semantics"));
+        assert!(semantics.effects.may_suspend);
+        assert!(!semantics.effects.writes_caller_reachable);
+        assert!(!semantics.effects.returns_caller_alias);
+        assert!(!semantics.effects.throws_caller_alias);
+        assert!(!semantics.effects.escapes_caller_value);
+        assert!(!semantics.effects.requires_same_heap_identity);
+        assert!(!semantics.effects.invokes_unknown_target);
+        let handler_count = NATIVE_BINDINGS
+            .iter()
+            .filter(|entry| entry.binding_key == semantics.binding_key)
+            .count();
 
-    assert_eq!(
-        NativeRequiredContext::for_binding_key(semantics.binding_key),
-        Some(NativeRequiredContext::HttpClient)
-    );
-    assert_eq!(
-        runtime_shared_native_route_for_validation(semantics.binding_key, handler_count > 0),
-        Some(RuntimeNativeRoute::Http)
-    );
-    validate_native_callable_semantics_registry(
-        &[semantics],
-        STD_NATIVE_SIGNATURES,
-        NATIVE_BINDINGS,
-    )
-    .expect("detached, suspending HTTP request should match its runtime route");
+        assert_eq!(
+            NativeRequiredContext::for_binding_key(semantics.binding_key),
+            Some(NativeRequiredContext::HttpClient)
+        );
+        assert_eq!(
+            runtime_shared_native_route_for_validation(semantics.binding_key, handler_count > 0),
+            Some(RuntimeNativeRoute::Http)
+        );
+        validate_native_callable_semantics_registry(
+            &[semantics],
+            STD_NATIVE_SIGNATURES,
+            NATIVE_BINDINGS,
+        )
+        .unwrap_or_else(|error| {
+            panic!("detached, suspending {binding_key} should match its runtime route: {error}")
+        });
+    }
 }
 
 #[test]
@@ -682,6 +689,67 @@ fn native_callable_semantics_registry_rejects_http_registry_handler() {
     assert!(
         error.contains("std.http.client.request")
             && error.contains("expected 0 runtime registry handler(s), found 1"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn http_client_stream_semantics_reject_malformed_signature_and_noncanonical_lookalike() {
+    let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|semantics| semantics.binding_key == "std.http.client.stream")
+        .cloned()
+        .expect("HTTP client stream must have exact callable semantics");
+    let canonical = STD_NATIVE_SIGNATURES
+        .iter()
+        .find(|signature| signature.binding_key == semantics.binding_key)
+        .cloned()
+        .expect("HTTP client stream must have an exact signature");
+
+    for (case, signature) in [
+        {
+            let mut signature = canonical;
+            signature.params = &[];
+            ("missing request", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.params = &[skiff_artifact_model::NativeSignatureTypeExpr::Builtin(
+                "string",
+            )];
+            ("wrong request", signature)
+        },
+        {
+            let mut signature = canonical;
+            signature.return_type =
+                skiff_artifact_model::NativeSignatureTypeExpr::Builtin("string");
+            ("wrong return", signature)
+        },
+    ] {
+        let error = validate_native_callable_semantics_registry(
+            std::slice::from_ref(&semantics),
+            &[signature],
+            NATIVE_BINDINGS,
+        )
+        .expect_err("malformed HTTP client stream signature must fail closed");
+        assert!(
+            error.contains("std.http.client.stream")
+                && error.contains("does not match the exact shared native signature"),
+            "{case}: unexpected error: {error}"
+        );
+    }
+
+    let mut lookalike = semantics;
+    lookalike.binding_key = "std.http.client.stream.extra";
+    let error = validate_native_callable_semantics_registry(
+        &[lookalike],
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect_err("non-canonical HTTP client stream lookalike must fail closed");
+    assert!(
+        error.contains("std.http.client.stream.extra")
+            && error.contains("not in the exact audited registry"),
         "unexpected error: {error}"
     );
 }

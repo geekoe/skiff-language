@@ -94,6 +94,7 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_scalar_native("std.crypto.uuid"),
     detached_scalar_native("std.crypto.uuidSimple"),
     detached_native("std.http.client.request", true),
+    detached_native("std.http.client.stream", true),
     detached_scalar_native("std.http.request.cookie"),
     detached_scalar_native("std.http.request.headers"),
     detached_native("std.time.sleep", true),
@@ -899,6 +900,7 @@ mod tests {
             "std.crypto.uuid",
             "std.crypto.uuidSimple",
             "std.http.client.request",
+            "std.http.client.stream",
             "std.http.request.cookie",
             "std.http.request.headers",
             "std.json.encode",
@@ -941,6 +943,7 @@ mod tests {
                             | "std.actor.find"
                             | "std.actor.remove"
                             | "std.http.client.request"
+                            | "std.http.client.stream"
                             | "std.time.sleep"
                     ),
                 }
@@ -1145,6 +1148,49 @@ mod tests {
                 .expect("audited HTTP request binding should have a native signature");
             assert_eq!(signature.params, &[super::HTTP_REQUEST, super::STRING]);
             assert_eq!(signature.return_type, return_type);
+        }
+    }
+
+    #[test]
+    fn http_client_stream_semantics_match_exact_signature_and_remain_canonical() {
+        let semantics = native_callable_semantics("std.http.client.stream")
+            .expect("audited HTTP client stream should have exact semantics");
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: true,
+            }
+        );
+        assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+        let signature = STD_NATIVE_SIGNATURES
+            .iter()
+            .find(|signature| signature.binding_key == semantics.binding_key)
+            .expect("audited HTTP client stream should have a native signature");
+        assert_eq!(signature.target, "std.http.stream");
+        assert!(signature.aliases.is_empty());
+        assert_eq!(signature.type_param_count, 0);
+        assert_eq!(signature.params, &[super::HTTP_CLIENT_REQUEST]);
+        assert_eq!(signature.return_type, super::HTTP_CLIENT_STREAM_HANDLE);
+
+        for near_miss in [
+            "std.http.stream",
+            "std.http.client.stream.extra",
+            "std.http.client.sse",
+            "std.http.stream.start",
+            "std.http.stream.emitResponse",
+        ] {
+            assert_eq!(
+                native_callable_semantics(near_miss),
+                None,
+                "{near_miss} must not inherit HTTP client stream semantics"
+            );
         }
     }
 

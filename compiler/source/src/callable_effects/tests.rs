@@ -1327,6 +1327,84 @@ fn exact_http_request_natives_transfer_through_local_helpers() {
 }
 
 #[test]
+fn exact_http_client_stream_is_fresh_detached_and_suspending_through_raw_request() {
+    let model = analyze(
+        r#"
+            function rawRequest(input: std.http.HttpClientRequest) -> std.http.HttpClientRequest {
+              return std.http.HttpClientRequest {
+                method: input.method,
+                url: input.url,
+                headers: input.headers,
+                body: input.body,
+                timeoutMs: input.timeoutMs,
+              }
+            }
+
+            function responses(input: std.http.HttpClientRequest) -> std.http.HttpClientStreamHandle {
+              return std.http.stream(rawRequest(input))
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(
+        effects(&model, "rawRequest"),
+        CallableMayEffects {
+            returns_caller_alias: true,
+            ..no_effects()
+        }
+    );
+    assert_eq!(effects(&model, "responses"), suspend_only_effects());
+    assert!(matches!(
+        provenance(&model, "responses"),
+        CallableProvenanceSummary::Analyzed {
+            return_origins,
+            throw_origins,
+            escape_lanes,
+        } if return_origins == &vec![ValueProvenance::Fresh]
+            && throw_origins.is_empty()
+            && escape_lanes.is_empty()
+    ));
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::NativeFunction { binding_key }
+                if binding_key == "std.http.client.stream"
+        )
+    }));
+}
+
+#[test]
+fn http_client_stream_semantics_do_not_generalize_to_response_stream_events() {
+    let model = analyze(
+        r#"
+            function responseStart(
+              status: integer,
+              headers: Array<std.http.HttpHeader>
+            ) -> std.http.HttpResponseStreamEvent {
+              return std.http.streamStart(status, headers)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert!(effects(&model, "responseStart").invokes_unknown_target);
+    assert!(matches!(
+        provenance(&model, "responseStart"),
+        CallableProvenanceSummary::Unknown {
+            reason: CallableProvenanceUnknownReason::UnknownCallTarget
+        }
+    ));
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::NativeFunction { binding_key }
+                if binding_key == "std.http.stream.start"
+        )
+    }));
+}
+
+#[test]
 fn std_exact_native_matrix_uses_shared_callable_semantics() {
     let model = analyze_named(
         r#"
