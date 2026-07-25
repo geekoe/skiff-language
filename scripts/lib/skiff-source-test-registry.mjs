@@ -5,6 +5,10 @@ export const canonicalSkiffSourceTestRegistry = Object.freeze([
     id: 'std',
     root: 'std',
   }),
+  Object.freeze({
+    id: 'alias-return-catch-once',
+    root: 'test-runner/fixtures/alias-return-catch-once',
+  }),
 ]);
 
 export function createCanonicalSkiffSourceTestPlan({

@@ -1,0 +1,46 @@
+test "direct alias receiver chain followed by catch success executes effect once" {
+  const state = Array.empty<string>()
+  assert root.main.aliasThenCatch(state, false) == "value:ok"
+  assert state.length() == 1
+}
+
+test "direct alias receiver chain followed by catch error executes effect once" {
+  const state = Array.empty<string>()
+  assert root.main.aliasThenCatch(state, true) == "value:error"
+  assert state.length() == 1
+}
+
+test "fresh return receiver chain control executes effect once" {
+  const state = Array.empty<string>()
+  assert root.main.copiedThenCatch(state) == "value:ok"
+  assert state.length() == 1
+}
+
+function joinChunks(chunks: Array<bytes>) -> string {
+  let output = ""
+  for chunk in chunks {
+    output = output.concat(chunk.toUtf8String())
+  }
+  return output
+}
+
+test "package alias receiver followed by nested catch call executes effect once" {
+  const state = Array.empty<string>()
+  const first = root.main.alias(bytes.fromUtf8("value")).toUtf8String()
+  const second = joinChunks(root.main.caughtEffect(state, false))
+  assert first == "value"
+  assert second == "ok"
+  assert state.length() == 1
+}
+
+test "nested catch error executes effect once" {
+  const state = Array.empty<string>()
+  assert joinChunks(root.main.caughtEffect(state, true)) == ""
+  assert state.length() == 1
+}
+
+test "optional narrowing preserves alias and executes following catch once" {
+  const state = Array.empty<string>()
+  assert root.main.optionalAliasThenCatch(bytes.fromUtf8("value"), state) == "value:ok"
+  assert state.length() == 1
+}

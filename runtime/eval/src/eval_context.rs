@@ -1233,8 +1233,8 @@ impl<'a> EvalContext<'a> {
         call: &CallIr,
         callee_addr: &ExecutableAddr,
     ) -> Result<Option<RuntimeValue>> {
-        let mut prepared: Option<super::program_stream::PreparedNativeStreamProducer> = None;
-        let mut values = Vec::with_capacity(call.args.len());
+        let mut producers = Vec::with_capacity(call.args.len());
+        let mut producer_count = 0usize;
         for arg in &call.args {
             let expr = program_expression_ref(self.executable, *arg)?;
             let producer = self.interpreter.resolve_stream_producer_call(
@@ -1245,15 +1245,22 @@ impl<'a> EvalContext<'a> {
                 self.executable,
                 expr,
             )?;
+            producer_count += usize::from(producer.is_some());
+            producers.push(producer);
+        }
+        if producer_count == 0 {
+            return Ok(None);
+        }
+        if producer_count > 1 {
+            return Err(RuntimeError::Unsupported(
+                "multiple stream-producing executable call arguments are not supported".to_string(),
+            ));
+        }
+
+        let mut prepared: Option<super::program_stream::PreparedNativeStreamProducer> = None;
+        let mut values = Vec::with_capacity(call.args.len());
+        for (arg, producer) in call.args.iter().zip(producers) {
             if let Some(producer) = producer {
-                if let Some(existing) = prepared.as_ref() {
-                    self.interpreter
-                        .cancel_prepared_native_stream_producer_arg(existing);
-                    return Err(RuntimeError::Unsupported(
-                        "multiple stream-producing executable call arguments are not supported"
-                            .to_string(),
-                    ));
-                }
                 let next_prepared = self
                     .interpreter
                     .prepare_native_stream_producer_arg(
@@ -1292,9 +1299,7 @@ impl<'a> EvalContext<'a> {
             }
         }
 
-        let Some(prepared) = prepared else {
-            return Ok(None);
-        };
+        let prepared = prepared.expect("producer count was validated before argument evaluation");
         let consumer = self.interpreter.call_program_executable(
             self.context.clone(),
             self.heap,

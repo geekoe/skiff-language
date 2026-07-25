@@ -18,15 +18,29 @@ import {
 
 const assemblyIdentity = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
 
-test('canonical registry starts with the checked-in std test root', () => {
-  assert.deepEqual(canonicalSkiffSourceTestRegistry, [{ id: 'std', root: 'std' }]);
+test('canonical registry contains the checked-in source test roots', () => {
+  assert.deepEqual(canonicalSkiffSourceTestRegistry, [
+    { id: 'std', root: 'std' },
+    {
+      id: 'alias-return-catch-once',
+      root: 'test-runner/fixtures/alias-return-catch-once',
+    },
+  ]);
   assert.deepEqual(
     createCanonicalSkiffSourceTestPlan({ skiffRoot: '/checkout/skiff' }),
-    [{
-      id: 'std',
-      root: 'std',
-      absoluteRoot: '/checkout/skiff/std',
-    }],
+    [
+      {
+        id: 'std',
+        root: 'std',
+        absoluteRoot: '/checkout/skiff/std',
+      },
+      {
+        id: 'alias-return-catch-once',
+        root: 'test-runner/fixtures/alias-return-catch-once',
+        absoluteRoot:
+          '/checkout/skiff/test-runner/fixtures/alias-return-catch-once',
+      },
+    ],
   );
 });
 
