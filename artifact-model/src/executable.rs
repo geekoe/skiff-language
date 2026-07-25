@@ -12,7 +12,7 @@ use crate::{
     refs::SourceSpanRef,
     symbols::{PackageRefIr, ServiceDependencySymbolRef, ServiceSymbolRef},
     targets::NativeTarget,
-    types::{FunctionTypeParamIr, LiteralIr, TypeRefIr},
+    types::{visit_type_ref, FunctionTypeParamIr, LiteralIr, TypeRefIr},
     ReceiverCallAbi,
 };
 
@@ -793,6 +793,201 @@ pub enum CallTargetIr {
         method_abi_id: String,
         slot: u32,
     },
+}
+
+pub(crate) fn visit_executable_type_refs<E>(
+    executable: &ExecutableIr,
+    visitor: &mut impl FnMut(&TypeRefIr) -> Result<(), E>,
+) -> Result<(), E> {
+    for parameter in &executable.params {
+        visit_type_ref(&parameter.ty, visitor)?;
+    }
+    visit_type_ref(&executable.return_type, visitor)?;
+    if let Some(self_type) = &executable.self_type {
+        visit_type_ref(self_type, visitor)?;
+    }
+    visit_executable_body_type_refs(&executable.body, visitor)
+}
+
+pub(crate) fn visit_executable_body_type_refs<E>(
+    body: &ExecutableBody,
+    visitor: &mut impl FnMut(&TypeRefIr) -> Result<(), E>,
+) -> Result<(), E> {
+    for statement in &body.statements {
+        visit_statement_type_refs(statement, visitor)?;
+    }
+    for expression in &body.expressions {
+        visit_expression_type_refs(expression, visitor)?;
+    }
+    Ok(())
+}
+
+fn visit_statement_type_refs<E>(
+    statement: &StmtIr,
+    visitor: &mut impl FnMut(&TypeRefIr) -> Result<(), E>,
+) -> Result<(), E> {
+    match statement {
+        StmtIr::Assign {
+            target: AssignTargetIr::ActorSelfField { field_type, .. },
+            ..
+        } => visit_type_ref(field_type, visitor)?,
+        StmtIr::ForIn {
+            item_type: Some(item_type),
+            ..
+        } => visit_type_ref(item_type, visitor)?,
+        StmtIr::Match { arms, .. } => {
+            for arm in arms {
+                if let PatternIr::Type { ty } = &arm.pattern {
+                    visit_type_ref(ty, visitor)?;
+                }
+            }
+        }
+        StmtIr::TestEffectRegister {
+            expect,
+            step_expect,
+            outcome,
+            ..
+        } => {
+            for expected in expect.iter().chain(step_expect.iter()) {
+                visit_type_ref(&expected.request_type, visitor)?;
+            }
+            match outcome {
+                TestEffectOutcomeIr::Respond { value_type, .. } => {
+                    visit_type_ref(value_type, visitor)?;
+                }
+                TestEffectOutcomeIr::Throw { payload_type, .. } => {
+                    visit_type_ref(payload_type, visitor)?;
+                }
+                TestEffectOutcomeIr::Stream { item_type, .. } => {
+                    visit_type_ref(item_type, visitor)?;
+                }
+            }
+        }
+        StmtIr::Throw { payload_type, .. } => visit_type_ref(payload_type, visitor)?,
+        StmtIr::Let { .. }
+        | StmtIr::Assign { .. }
+        | StmtIr::If { .. }
+        | StmtIr::ForIn { .. }
+        | StmtIr::Assert { .. }
+        | StmtIr::Break
+        | StmtIr::Continue
+        | StmtIr::Spawn { .. }
+        | StmtIr::Emit { .. }
+        | StmtIr::Expr { .. }
+        | StmtIr::Return { .. }
+        | StmtIr::Rethrow { .. } => {}
+    }
+    Ok(())
+}
+
+fn visit_expression_type_refs<E>(
+    expression: &ExprIr,
+    visitor: &mut impl FnMut(&TypeRefIr) -> Result<(), E>,
+) -> Result<(), E> {
+    match expression {
+        ExprIr::ActorSelfField { field_type, .. } => visit_type_ref(field_type, visitor)?,
+        ExprIr::Construct { type_ref, .. } => visit_type_ref(type_ref, visitor)?,
+        ExprIr::InterfaceBox {
+            interface, source, ..
+        } => {
+            visit_interface_type_args(interface, visitor)?;
+            visit_box_source_type_refs(source, visitor)?;
+        }
+        ExprIr::Call { call } => {
+            for argument in call.type_args.values() {
+                visit_type_ref(argument, visitor)?;
+            }
+            if let CallTargetIr::InterfaceMethod { interface, .. } = &call.target {
+                visit_interface_type_args(interface, visitor)?;
+            }
+        }
+        ExprIr::Throw { payload_type, .. } => visit_type_ref(payload_type, visitor)?,
+        ExprIr::Catch { catch_type, .. } => visit_type_ref(catch_type, visitor)?,
+        ExprIr::DbOperation { operation } => {
+            visit_db_target_type_refs(&operation.target, visitor)?;
+            visit_type_ref(&operation.result_type, visitor)?;
+        }
+        ExprIr::DbQuery { query } => {
+            visit_db_target_type_refs(&query.target, visitor)?;
+            visit_type_ref(&query.result_type, visitor)?;
+        }
+        ExprIr::DbTransaction { transaction } => {
+            visit_type_ref(&transaction.result_type, visitor)?;
+        }
+        ExprIr::DbLeaseClaim { claim } => {
+            visit_db_target_type_refs(&claim.target, visitor)?;
+            visit_type_ref(&claim.result_type, visitor)?;
+        }
+        ExprIr::DbLeaseRead { read } => {
+            visit_db_target_type_refs(&read.target, visitor)?;
+            visit_type_ref(&read.result_type, visitor)?;
+        }
+        ExprIr::Literal { .. }
+        | ExprIr::LoadSlot { .. }
+        | ExprIr::LoadConst { .. }
+        | ExprIr::LoadPackageConst { .. }
+        | ExprIr::Field { .. }
+        | ExprIr::MapLiteral { .. }
+        | ExprIr::ArrayLiteral { .. }
+        | ExprIr::Unary { .. }
+        | ExprIr::Binary { .. }
+        | ExprIr::Rethrow { .. }
+        | ExprIr::ValueBlock { .. } => {}
+    }
+    Ok(())
+}
+
+fn visit_db_target_type_refs<E>(
+    target: &DbTargetIr,
+    visitor: &mut impl FnMut(&TypeRefIr) -> Result<(), E>,
+) -> Result<(), E> {
+    visit_type_ref(&target.type_ref, visitor)
+}
+
+fn visit_box_source_type_refs<E>(
+    source: &BoxSourceIr,
+    visitor: &mut impl FnMut(&TypeRefIr) -> Result<(), E>,
+) -> Result<(), E> {
+    match source {
+        BoxSourceIr::Local {
+            concrete_type,
+            method_table,
+        } => {
+            visit_type_ref(concrete_type, visitor)?;
+            visit_interface_type_args(&method_table.interface, visitor)?;
+            visit_type_ref(&method_table.concrete_type, visitor)?;
+            for slot in &method_table.slots {
+                visit_interface_method_signature_type_refs(&slot.signature, visitor)?;
+            }
+        }
+        BoxSourceIr::Remote { operations, .. } => {
+            visit_interface_type_args(&operations.interface, visitor)?;
+            for slot in &operations.slots {
+                visit_interface_method_signature_type_refs(&slot.signature, visitor)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn visit_interface_method_signature_type_refs<E>(
+    signature: &InterfaceMethodSlotSignatureIr,
+    visitor: &mut impl FnMut(&TypeRefIr) -> Result<(), E>,
+) -> Result<(), E> {
+    for parameter in &signature.params {
+        visit_type_ref(&parameter.ty, visitor)?;
+    }
+    visit_type_ref(&signature.return_type, visitor)
+}
+
+fn visit_interface_type_args<E>(
+    interface: &InterfaceInstantiationRef,
+    visitor: &mut impl FnMut(&TypeRefIr) -> Result<(), E>,
+) -> Result<(), E> {
+    for argument in &interface.canonical_type_args {
+        visit_type_ref(argument, visitor)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

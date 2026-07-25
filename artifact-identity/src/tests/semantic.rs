@@ -1,7 +1,7 @@
 use super::*;
 use skiff_artifact_model::{
     AbiContractRevision, AbiDeclarationKind, AbiSourceDeclarationAnchor, DescriptorHash,
-    SchemaRevision,
+    NominalTypeRefBaseIr, SchemaRevision,
 };
 
 fn anchor(
@@ -126,4 +126,31 @@ fn interface_instantiation_splits_native_declaration_from_args() {
         string_ref.canonical_type_args,
         number_ref.canonical_type_args
     );
+}
+
+#[test]
+fn type_ref_abi_key_preserves_applied_nominal_owner_nesting_and_order() {
+    let applied = |type_index, arguments| TypeRefIr::AppliedNominal {
+        base: NominalTypeRefBaseIr::LocalType { type_index },
+        arguments,
+    };
+    let string_box = applied(0, vec![TypeRefIr::builtin("string")]);
+    let number_box = applied(0, vec![TypeRefIr::builtin("number")]);
+    assert_ne!(type_ref_abi_key(&string_box), type_ref_abi_key(&number_box));
+
+    let nested = applied(
+        0,
+        vec![applied(
+            1,
+            vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("number")],
+        )],
+    );
+    let reordered = applied(
+        0,
+        vec![applied(
+            1,
+            vec![TypeRefIr::builtin("number"), TypeRefIr::builtin("string")],
+        )],
+    );
+    assert_ne!(type_ref_abi_key(&nested), type_ref_abi_key(&reordered));
 }

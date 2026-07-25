@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
 use crate::{
     compile_identity::PackageSchemaTypeId,
@@ -28,6 +28,34 @@ pub enum LiteralIr {
 pub struct FunctionTypeParamIr {
     pub name: String,
     pub ty: TypeRefIr,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum NominalTypeRefBaseIr {
+    LocalType {
+        type_index: u32,
+    },
+    PublicationType {
+        module_path: String,
+        type_index: u32,
+    },
+    ServiceSymbol {
+        symbol: ServiceSymbolRef,
+    },
+    PackageSymbol {
+        symbol: PackageSymbolRef,
+    },
+    PackageSchema {
+        package_id: String,
+        stable_schema_key: String,
+        package_schema_type_id: PackageSchemaTypeId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -64,6 +92,11 @@ pub enum TypeRefIr {
         stable_schema_key: String,
         package_schema_type_id: PackageSchemaTypeId,
     },
+    AppliedNominal {
+        base: NominalTypeRefBaseIr,
+        #[serde(deserialize_with = "deserialize_non_empty_type_arguments")]
+        arguments: Vec<TypeRefIr>,
+    },
     DbObjectSymbol {
         symbol: ServiceSymbolRef,
     },
@@ -98,6 +131,104 @@ impl TypeRefIr {
             args: Vec::new(),
         }
     }
+}
+
+fn deserialize_non_empty_type_arguments<'de, D>(deserializer: D) -> Result<Vec<TypeRefIr>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let arguments = Vec::<TypeRefIr>::deserialize(deserializer)?;
+    if arguments.is_empty() {
+        return Err(D::Error::custom(
+            "appliedNominal arguments must be non-empty",
+        ));
+    }
+    Ok(arguments)
+}
+
+pub(crate) fn visit_type_ref<E>(
+    ty: &TypeRefIr,
+    visitor: &mut impl FnMut(&TypeRefIr) -> Result<(), E>,
+) -> Result<(), E> {
+    visitor(ty)?;
+    match ty {
+        TypeRefIr::Builtin { args, .. } => {
+            for argument in args {
+                visit_type_ref(argument, visitor)?;
+            }
+        }
+        TypeRefIr::AppliedNominal { arguments, .. } => {
+            for argument in arguments {
+                visit_type_ref(argument, visitor)?;
+            }
+        }
+        TypeRefIr::Record { fields } => {
+            for field in fields.values() {
+                visit_type_ref(field, visitor)?;
+            }
+        }
+        TypeRefIr::Union { items } => {
+            for item in items {
+                visit_type_ref(item, visitor)?;
+            }
+        }
+        TypeRefIr::Nullable { inner } => visit_type_ref(inner, visitor)?,
+        TypeRefIr::AnyInterface { interface } => {
+            for argument in &interface.canonical_type_args {
+                visit_type_ref(argument, visitor)?;
+            }
+        }
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => {
+            for parameter in params {
+                visit_type_ref(&parameter.ty, visitor)?;
+            }
+            visit_type_ref(return_type, visitor)?;
+        }
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => {}
+    }
+    Ok(())
+}
+
+pub(crate) fn visit_type_descriptor_type_refs<E>(
+    descriptor: &TypeDescriptorIr,
+    visitor: &mut impl FnMut(&TypeRefIr) -> Result<(), E>,
+) -> Result<(), E> {
+    match descriptor {
+        TypeDescriptorIr::Record { fields } => {
+            for field in fields.values() {
+                visit_type_ref(field, visitor)?;
+            }
+        }
+        TypeDescriptorIr::Representation { representation } => {
+            visit_type_ref(representation, visitor)?;
+        }
+        TypeDescriptorIr::Union { branches } => {
+            for branch in branches {
+                match branch {
+                    NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                        visit_type_ref(nominal_type, visitor)?;
+                    }
+                    NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                        visit_type_ref(payload_type, visitor)?;
+                    }
+                    NamedUnionBranchIr::Literal { .. } => {}
+                }
+            }
+        }
+        TypeDescriptorIr::Alias { target } => visit_type_ref(target, visitor)?,
+        TypeDescriptorIr::Interface => {}
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -178,7 +309,6 @@ pub enum TypeDescriptorIr {
 pub enum NamedUnionBranchIr {
     ConcreteNominal {
         nominal_type: TypeRefIr,
-        type_arguments: BTreeMap<String, TypeRefIr>,
     },
     SyntheticDiscriminator {
         payload_type: TypeRefIr,
@@ -230,6 +360,58 @@ mod tests {
     }
 
     #[test]
+    fn applied_nominal_has_one_strict_non_empty_wire_shape() {
+        let expected = TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::LocalType { type_index: 2 },
+            arguments: vec![TypeRefIr::builtin("string")],
+        };
+        let wire = serde_json::json!({
+            "kind": "appliedNominal",
+            "base": { "kind": "localType", "typeIndex": 2 },
+            "arguments": [{ "kind": "builtin", "name": "string" }]
+        });
+        assert_eq!(serde_json::to_value(&expected).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<TypeRefIr>(wire).unwrap(), expected);
+
+        for invalid in [
+            serde_json::json!({
+                "kind": "appliedNominal",
+                "base": { "kind": "localType", "typeIndex": 2 }
+            }),
+            serde_json::json!({
+                "kind": "appliedNominal",
+                "base": { "kind": "localType", "typeIndex": 2 },
+                "arguments": null
+            }),
+            serde_json::json!({
+                "kind": "appliedNominal",
+                "base": { "kind": "localType", "typeIndex": 2 },
+                "arguments": []
+            }),
+            serde_json::json!({
+                "kind": "appliedNominal",
+                "base": { "kind": "builtin", "name": "Array" },
+                "arguments": [{ "kind": "builtin", "name": "string" }]
+            }),
+            serde_json::json!({
+                "kind": "appliedNominal",
+                "base": { "kind": "localType", "typeIndex": 2, "name": "Box" },
+                "arguments": [{ "kind": "builtin", "name": "string" }]
+            }),
+            serde_json::json!({
+                "kind": "localType",
+                "typeIndex": 2,
+                "arguments": [{ "kind": "builtin", "name": "string" }]
+            }),
+        ] {
+            assert!(
+                serde_json::from_value::<TypeRefIr>(invalid.clone()).is_err(),
+                "strict applied nominal wire must reject {invalid}"
+            );
+        }
+    }
+
+    #[test]
     fn declaration_descriptors_distinguish_all_canonical_kinds() {
         let descriptors = [
             TypeDescriptorIr::Record {
@@ -267,11 +449,10 @@ mod tests {
         let descriptor = TypeDescriptorIr::Union {
             branches: vec![
                 NamedUnionBranchIr::ConcreteNominal {
-                    nominal_type: TypeRefIr::LocalType { type_index: 1 },
-                    type_arguments: BTreeMap::from([(
-                        "T".to_string(),
-                        TypeRefIr::builtin("string"),
-                    )]),
+                    nominal_type: TypeRefIr::AppliedNominal {
+                        base: NominalTypeRefBaseIr::LocalType { type_index: 1 },
+                        arguments: vec![TypeRefIr::builtin("string")],
+                    },
                 },
                 NamedUnionBranchIr::SyntheticDiscriminator {
                     payload_type: TypeRefIr::Record {
@@ -287,12 +468,27 @@ mod tests {
         };
         let wire = serde_json::to_value(&descriptor).unwrap();
 
-        assert_eq!(wire["branches"][0]["typeArguments"]["T"]["name"], "string");
+        assert_eq!(
+            wire["branches"][0]["nominalType"]["arguments"][0]["name"],
+            "string"
+        );
+        assert!(wire["branches"][0].get("typeArguments").is_none());
         assert_eq!(wire["branches"][1]["discriminatorField"], "kind");
         assert_eq!(wire["branches"][2]["value"]["kind"], "bool");
         assert_eq!(
             serde_json::from_value::<TypeDescriptorIr>(wire).unwrap(),
             descriptor
+        );
+
+        assert!(
+            serde_json::from_value::<NamedUnionBranchIr>(serde_json::json!({
+                "kind": "concreteNominal",
+                "nominalType": { "kind": "localType", "typeIndex": 1 },
+                "typeArguments": {
+                    "T": { "kind": "builtin", "name": "string" }
+                }
+            }))
+            .is_err()
         );
     }
 }

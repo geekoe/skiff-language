@@ -156,10 +156,11 @@ fn invalid_artifact<T>(message: impl Into<String>) -> Result<T> {
 mod tests {
     use skiff_artifact_model::{
         BoundaryUnavailableReason, CallableEffectSummary, CallableMayEffects,
-        CallableProvenanceSummary, CallableSemanticFacts, FileIrRef, OperationCallableKind,
-        OperationTargetRef, PackageCallableLinkFact, PackageCallableParameter,
-        PackageCallableSignature, PackageImplementationLinks, PackageTypeRef, TypeRefIr,
-        ValueProvenance, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        CallableProvenanceSummary, CallableSemanticFacts, FileIrRef, NominalTypeRefBaseIr,
+        OperationCallableKind, OperationTargetRef, PackageCallableLinkFact,
+        PackageCallableParameter, PackageCallableSignature, PackageImplementationLinks,
+        PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr, ValueProvenance,
+        PACKAGE_ARTIFACT_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -191,7 +192,7 @@ mod tests {
         validate_package_artifact_identities(&artifact).unwrap();
 
         let mut stale_schema = artifact.clone();
-        stale_schema.schema_version = "skiff-package-artifact-v3".to_string();
+        stale_schema.schema_version = "skiff-package-artifact-v4".to_string();
         assert!(matches!(
             validate_package_artifact_identities(&stale_schema),
             Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
@@ -205,7 +206,7 @@ mod tests {
                 .as_str()
                 .replacen(
                     crate::PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
-                    "skiff-package-local-abi-v3:sha256",
+                    "skiff-package-local-abi-v4:sha256",
                     1,
                 ),
         );
@@ -218,7 +219,7 @@ mod tests {
         stale_build.package_build_id =
             PackageBuildId::new(stale_build.package_build_id.as_str().replacen(
                 crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-                "skiff-package-build-v4:sha256",
+                "skiff-package-build-v5:sha256",
                 1,
             ));
         assert!(matches!(
@@ -324,6 +325,131 @@ mod tests {
         assert!(serde_json::from_value::<PackageCallableSignature>(legacy).is_err());
     }
 
+    #[test]
+    fn applied_nominal_argument_matrix_changes_local_abi_and_build_and_rejects_tampering() {
+        let mut string_box = callable_fixture();
+        set_parameter_local_type(
+            &mut string_box,
+            applied_package_nominal("Box", vec![TypeRefIr::builtin("string")]),
+        );
+        let mut number_box = callable_fixture();
+        set_parameter_local_type(
+            &mut number_box,
+            applied_package_nominal("Box", vec![TypeRefIr::builtin("number")]),
+        );
+        assert_ne!(
+            package_artifact_local_abi_identity(&string_box).unwrap(),
+            package_artifact_local_abi_identity(&number_box).unwrap()
+        );
+        assert_ne!(
+            package_artifact_build_identity(&string_box).unwrap(),
+            package_artifact_build_identity(&number_box).unwrap()
+        );
+
+        let mut ordered = callable_fixture();
+        set_parameter_local_type(
+            &mut ordered,
+            applied_package_nominal(
+                "Box",
+                vec![applied_package_nominal(
+                    "Pair",
+                    vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("number")],
+                )],
+            ),
+        );
+        let mut reordered = callable_fixture();
+        set_parameter_local_type(
+            &mut reordered,
+            applied_package_nominal(
+                "Box",
+                vec![applied_package_nominal(
+                    "Pair",
+                    vec![TypeRefIr::builtin("number"), TypeRefIr::builtin("string")],
+                )],
+            ),
+        );
+        assert_ne!(
+            package_artifact_local_abi_identity(&ordered).unwrap(),
+            package_artifact_local_abi_identity(&reordered).unwrap()
+        );
+        assert_ne!(
+            package_artifact_build_identity(&ordered).unwrap(),
+            package_artifact_build_identity(&reordered).unwrap()
+        );
+
+        assign_package_artifact_identities(&mut string_box).unwrap();
+        let PackageTypeRef::Local { local_type } =
+            &mut callable_signature_mut(&mut string_box).parameters[0].ty
+        else {
+            panic!("fixture parameter must be local")
+        };
+        let TypeRefIr::AppliedNominal { arguments, .. } = local_type else {
+            panic!("fixture parameter must be applied")
+        };
+        arguments[0] = TypeRefIr::builtin("number");
+        assert!(matches!(
+            validate_package_artifact_identities(&string_box),
+            Err(ArtifactIdentityError::PackageArtifactLocalAbiIdentityMismatch { .. })
+        ));
+
+        assign_package_artifact_identities(&mut ordered).unwrap();
+        let PackageTypeRef::Local { local_type } =
+            &mut callable_signature_mut(&mut ordered).parameters[0].ty
+        else {
+            panic!("fixture parameter must be local")
+        };
+        let TypeRefIr::AppliedNominal { base, .. } = local_type else {
+            panic!("fixture parameter must be applied")
+        };
+        let NominalTypeRefBaseIr::PackageSymbol { symbol } = base else {
+            panic!("fixture base must be a package symbol")
+        };
+        symbol.package = PackageRefIr::PackageId {
+            package_id: "example.other-model".to_string(),
+        };
+        assert!(matches!(
+            validate_package_artifact_identities(&ordered),
+            Err(ArtifactIdentityError::PackageArtifactLocalAbiIdentityMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn package_artifact_admission_rejects_empty_and_applied_package_schema() {
+        let mut empty = callable_fixture();
+        set_parameter_local_type(
+            &mut empty,
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol {
+                    symbol: package_symbol("Box"),
+                },
+                arguments: Vec::new(),
+            },
+        );
+        assert!(matches!(
+            package_artifact_local_abi_identity(&empty),
+            Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+        ));
+
+        let mut package_schema = callable_fixture();
+        set_parameter_local_type(
+            &mut package_schema,
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSchema {
+                    package_id: "example.model".to_string(),
+                    stable_schema_key: "Box".to_string(),
+                    package_schema_type_id: skiff_artifact_model::PackageSchemaTypeId::new(
+                        "schema:box",
+                    ),
+                },
+                arguments: vec![TypeRefIr::builtin("string")],
+            },
+        );
+        assert!(matches!(
+            package_artifact_local_abi_identity(&package_schema),
+            Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+        ));
+    }
+
     fn fixture() -> PackageArtifact {
         let mut artifact = PackageArtifact {
             schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
@@ -369,7 +495,7 @@ mod tests {
         let mut artifact = fixture();
         let callable_id = PackageCallableId::new("pkg-callable:example.identity:run");
         let file = FileIrRef::new(
-            "skiff-file-ir-v6:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "skiff-file-ir-v7:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "api",
         );
         artifact.files.push(file.clone());
@@ -446,5 +572,28 @@ mod tests {
             panic!("fixture run must be callable")
         };
         signature
+    }
+
+    fn set_parameter_local_type(artifact: &mut PackageArtifact, local_type: TypeRefIr) {
+        callable_signature_mut(artifact).parameters[0].ty = PackageTypeRef::Local { local_type };
+    }
+
+    fn applied_package_nominal(symbol_path: &str, arguments: Vec<TypeRefIr>) -> TypeRefIr {
+        TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::PackageSymbol {
+                symbol: package_symbol(symbol_path),
+            },
+            arguments,
+        }
+    }
+
+    fn package_symbol(symbol_path: &str) -> PackageSymbolRef {
+        PackageSymbolRef {
+            package: PackageRefIr::PackageId {
+                package_id: "example.model".to_string(),
+            },
+            symbol_path: symbol_path.to_string(),
+            abi_expectation: Some("model-abi".to_string()),
+        }
     }
 }

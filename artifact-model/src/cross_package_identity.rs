@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::package_unit::PackageUnit;
 use crate::symbols::{PackageRefIr, PackageSymbolRef};
-use crate::types::{TypeDescriptorIr, TypeRefIr};
+use crate::types::{NominalTypeRefBaseIr, TypeDescriptorIr, TypeRefIr};
 
 /// Read-only view over the loaded package units needed to resolve cross-package
 /// alias re-exports. Construct once per match scope from the loaded package set.
@@ -103,11 +103,7 @@ impl<'a> PackageReexportIndex<'a> {
 }
 
 fn symbol_paths_match(a: &str, b: &str) -> bool {
-    a == b || trailing_segment(a) == trailing_segment(b)
-}
-
-fn trailing_segment(symbol_path: &str) -> &str {
-    symbol_path.rsplit('.').next().unwrap_or(symbol_path)
+    a == b
 }
 
 /// Canonicalize a type ref by rebasing package refs to `PackageId` and following
@@ -133,6 +129,28 @@ fn canonicalize_inner(
     match ty {
         TypeRefIr::PackageSymbol { symbol } => {
             canonicalize_package_symbol(symbol, owner_package_id, consumer_deps, index)
+        }
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            let base = match base {
+                NominalTypeRefBaseIr::PackageSymbol { symbol } => {
+                    let TypeRefIr::PackageSymbol { symbol } =
+                        canonicalize_package_symbol(symbol, owner_package_id, consumer_deps, index)
+                    else {
+                        unreachable!("package-symbol canonicalization must preserve nominal kind")
+                    };
+                    NominalTypeRefBaseIr::PackageSymbol { symbol }
+                }
+                _ => base.clone(),
+            };
+            TypeRefIr::AppliedNominal {
+                base,
+                arguments: arguments
+                    .iter()
+                    .map(|argument| {
+                        canonicalize_inner(argument, owner_package_id, consumer_deps, index)
+                    })
+                    .collect(),
+            }
         }
         TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
             name: name.clone(),
@@ -260,5 +278,115 @@ fn canonicalize_package_symbol(
             symbol_path,
             abi_expectation,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FileIrRef, PackageDependencyConstraint, PackageRefIr, TypeExport};
+
+    fn file_ref(module_path: &str) -> FileIrRef {
+        FileIrRef::new(
+            format!("skiff-file-ir-v7:sha256:{}", "a".repeat(64)),
+            module_path,
+        )
+    }
+
+    #[test]
+    fn applied_nominal_rebinds_exact_base_owner_and_nested_arguments() {
+        let mut alias_owner = PackageUnit::empty("example.com/alias", "1.0.0", "build", "abi");
+        alias_owner.dependencies.push(PackageDependencyConstraint {
+            id: "example.com/model".to_string(),
+            version: "1.0.0".to_string(),
+            alias: "model".to_string(),
+            config: serde_json::json!({}),
+        });
+        alias_owner.implementation_links.types.insert(
+            "exports.Box".to_string(),
+            TypeExport {
+                file: file_ref("alias"),
+                type_index: 0,
+                symbol: "exports.Box".to_string(),
+                is_interface: false,
+                descriptor: Some(TypeDescriptorIr::Alias {
+                    target: TypeRefIr::PackageSymbol {
+                        symbol: PackageSymbolRef {
+                            package: PackageRefIr::Dependency {
+                                dependency_ref: "model".to_string(),
+                            },
+                            symbol_path: "Box".to_string(),
+                            abi_expectation: Some("model-abi".to_string()),
+                        },
+                    },
+                }),
+                type_params: Vec::new(),
+                interface_methods: Vec::new(),
+            },
+        );
+        let model = PackageUnit::empty("example.com/model", "1.0.0", "build", "abi");
+        let argument_owner = PackageUnit::empty("example.com/argument", "1.0.0", "build", "abi");
+        let index = PackageReexportIndex::new([&alias_owner, &model, &argument_owner]);
+        let consumer_deps = BTreeMap::from([
+            ("alias".to_string(), "example.com/alias".to_string()),
+            ("argument".to_string(), "example.com/argument".to_string()),
+        ]);
+        let input = TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::Dependency {
+                        dependency_ref: "alias".to_string(),
+                    },
+                    symbol_path: "exports.Box".to_string(),
+                    abi_expectation: Some("expected-alias-abi".to_string()),
+                },
+            },
+            arguments: vec![TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::Dependency {
+                            dependency_ref: "argument".to_string(),
+                        },
+                        symbol_path: "Inner".to_string(),
+                        abi_expectation: Some("argument-abi".to_string()),
+                    },
+                },
+                arguments: vec![TypeRefIr::builtin("string")],
+            }],
+        };
+
+        let rebound = canonicalize_reexport_type_ref(&input, &consumer_deps, &index);
+        let TypeRefIr::AppliedNominal { base, arguments } = rebound else {
+            panic!("applied wrapper must be retained");
+        };
+        let NominalTypeRefBaseIr::PackageSymbol { symbol } = base else {
+            panic!("base owner must remain a package symbol");
+        };
+        assert_eq!(
+            symbol.package,
+            PackageRefIr::PackageId {
+                package_id: "example.com/model".to_string()
+            }
+        );
+        assert_eq!(symbol.symbol_path, "Box");
+        assert_eq!(
+            symbol.abi_expectation.as_deref(),
+            Some("expected-alias-abi")
+        );
+
+        let TypeRefIr::AppliedNominal { base, arguments } = &arguments[0] else {
+            panic!("nested argument must retain its applied wrapper");
+        };
+        let NominalTypeRefBaseIr::PackageSymbol { symbol } = base else {
+            panic!("nested owner must remain a package symbol");
+        };
+        assert_eq!(
+            symbol.package,
+            PackageRefIr::PackageId {
+                package_id: "example.com/argument".to_string()
+            }
+        );
+        assert_eq!(symbol.symbol_path, "Inner");
+        assert_eq!(arguments, &[TypeRefIr::builtin("string")]);
     }
 }

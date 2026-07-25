@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn package_artifact_wire_rejects_legacy_aggregate_fields() {
         let value = json!({
-            "schemaVersion": "skiff-package-artifact-v4",
+            "schemaVersion": "skiff-package-artifact-v5",
             "packageId": "example.pkg",
             "packageVersion": "1.0.0",
             "packageBuildId": "build",

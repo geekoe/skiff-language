@@ -732,8 +732,8 @@ fn file_ir_unit_round_trips_canonical_artifact_shape() {
 fn empty_file_ir_uses_canonical_identity_versions_and_external_refs() {
     let unit = FileIrUnit::empty("svc.empty", "source:empty");
 
-    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v6");
-    assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v4");
+    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v7");
+    assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v5");
     assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v1");
     assert_eq!(unit.schema_version, FILE_IR_SCHEMA_VERSION);
     assert_eq!(unit.ir_format_version, FILE_IR_FORMAT_VERSION);
@@ -2106,7 +2106,6 @@ fn type_descriptor_union_serializes_variants() {
         branches: vec![
             NamedUnionBranchIr::ConcreteNominal {
                 nominal_type: TypeRefIr::LocalType { type_index: 1 },
-                type_arguments: BTreeMap::new(),
             },
             NamedUnionBranchIr::Literal {
                 value: LiteralIr::String {
@@ -2124,8 +2123,7 @@ fn type_descriptor_union_serializes_variants() {
             "branches": [
                 {
                     "kind": "concreteNominal",
-                    "nominalType": { "kind": "localType", "typeIndex": 1 },
-                    "typeArguments": {}
+                    "nominalType": { "kind": "localType", "typeIndex": 1 }
                 },
                 {
                     "kind": "literal",
