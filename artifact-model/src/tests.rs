@@ -17,15 +17,15 @@ use crate::{
     FunctionTypeParamIr, GatewayConfig, GatewayRoute, InterfaceInstantiationRef,
     InterfaceMethodSignature, InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr,
     InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr, LiteralIr, LocalReceiverExecutableRef,
-    OperationAbiRef, OperationCallableKind, OperationConstReceiverRef, OperationTargetRef,
-    PackageCallableId, PackageCallableRef, PackageDependencyConstraint, PackageOperationTarget,
-    PackageRefIr, PackageSymbolRef, PackageTestAssembly, PackageTestAssemblyKind,
-    PackageTestEntrypointKind, PackageUnit, PublicationAbiUnit, PublicationOperationKind,
-    PublicationResourceRef, ReceiverCallAbi, RecoverableAdapterSchemaCompatibility,
-    RecoverableArtifactMetadata, RecoverableBoundaryContext, RecoverableBoundaryKind,
-    RecoverableBoundaryPlan, RecoverableCapabilityFlag, RecoverableCustomRestorePlan,
-    RecoverableCustomRestorePlanRef, RecoverableExpectedTypePlan, RecoverableExpectedTypeRoot,
-    RecoverableFieldIdentityFact, RecoverableFieldIdentityRef,
+    NamedUnionBranchIr, OperationAbiRef, OperationCallableKind, OperationConstReceiverRef,
+    OperationTargetRef, PackageCallableId, PackageCallableRef, PackageDependencyConstraint,
+    PackageOperationTarget, PackageRefIr, PackageSymbolRef, PackageTestAssembly,
+    PackageTestAssemblyKind, PackageTestEntrypointKind, PackageUnit, PublicationAbiUnit,
+    PublicationOperationKind, PublicationResourceRef, ReceiverCallAbi,
+    RecoverableAdapterSchemaCompatibility, RecoverableArtifactMetadata, RecoverableBoundaryContext,
+    RecoverableBoundaryKind, RecoverableBoundaryPlan, RecoverableCapabilityFlag,
+    RecoverableCustomRestorePlan, RecoverableCustomRestorePlanRef, RecoverableExpectedTypePlan,
+    RecoverableExpectedTypeRoot, RecoverableFieldIdentityFact, RecoverableFieldIdentityRef,
     RecoverableInterfaceMethodIdentityFact, RecoverableInterfaceMethodIdentityRef,
     RecoverableInterfaceProjectionIdentityFact, RecoverableInterfaceProjectionIdentityRef,
     RecoverableNativeAdapterOwner, RecoverableNativeAdapterPlan, RecoverableNativeAdapterPlanRef,
@@ -586,7 +586,6 @@ fn sample_file_ir_unit() -> FileIrUnit {
             fields: BTreeMap::from([("name".to_owned(), string_type())]),
         },
         type_params: Vec::new(),
-        discriminator: None,
         implements: Vec::new(),
         source_span: None,
     });
@@ -733,8 +732,8 @@ fn file_ir_unit_round_trips_canonical_artifact_shape() {
 fn empty_file_ir_uses_canonical_identity_versions_and_external_refs() {
     let unit = FileIrUnit::empty("svc.empty", "source:empty");
 
-    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v5");
-    assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v3");
+    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v6");
+    assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v4");
     assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v1");
     assert_eq!(unit.schema_version, FILE_IR_SCHEMA_VERSION);
     assert_eq!(unit.ir_format_version, FILE_IR_FORMAT_VERSION);
@@ -809,15 +808,40 @@ fn for_in_value_slot_round_trips_and_defaults_to_single_binding() {
 }
 
 #[test]
-fn type_decl_ir_round_trips_discriminator_metadata() {
-    let mut unit = sample_file_ir_unit();
-    unit.type_table[0].discriminator = Some("kind".to_string());
+fn type_decl_ir_round_trips_named_union_branch_identity_input() {
+    let declaration = TypeDeclIr {
+        name: "Outcome".to_string(),
+        descriptor: TypeDescriptorIr::Union {
+            branches: vec![NamedUnionBranchIr::SyntheticDiscriminator {
+                payload_type: TypeRefIr::Record {
+                    fields: BTreeMap::from([(
+                        "kind".to_string(),
+                        TypeRefIr::Literal {
+                            value: LiteralIr::String {
+                                value: "ok".to_string(),
+                            },
+                        },
+                    )]),
+                },
+                discriminator_field: "kind".to_string(),
+                discriminator_value: "ok".to_string(),
+            }],
+        },
+        type_params: vec!["T".to_string()],
+        implements: Vec::new(),
+        source_span: None,
+    };
 
-    let value = serde_json::to_value(&unit).unwrap();
-    assert_eq!(value["typeTable"][0]["discriminator"], "kind");
-
-    let decoded: FileIrUnit = serde_json::from_value(value).unwrap();
-    assert_eq!(decoded.type_table[0].discriminator.as_deref(), Some("kind"));
+    let value = serde_json::to_value(&declaration).unwrap();
+    assert_eq!(value["descriptor"]["kind"], "union");
+    assert_eq!(
+        value["descriptor"]["branches"][0]["kind"],
+        "syntheticDiscriminator"
+    );
+    assert_eq!(
+        serde_json::from_value::<TypeDeclIr>(value).unwrap(),
+        declaration
+    );
 }
 
 #[test]
@@ -2079,7 +2103,17 @@ fn type_ref_union_serializes_items() {
 #[test]
 fn type_descriptor_union_serializes_variants() {
     let value = serde_json::to_value(TypeDescriptorIr::Union {
-        variants: vec![string_type(), number_type()],
+        branches: vec![
+            NamedUnionBranchIr::ConcreteNominal {
+                nominal_type: TypeRefIr::LocalType { type_index: 1 },
+                type_arguments: BTreeMap::new(),
+            },
+            NamedUnionBranchIr::Literal {
+                value: LiteralIr::String {
+                    value: "other".to_string(),
+                },
+            },
+        ],
     })
     .unwrap();
 
@@ -2087,9 +2121,16 @@ fn type_descriptor_union_serializes_variants() {
         value,
         json!({
             "kind": "union",
-            "variants": [
-                { "kind": "builtin", "name": "string" },
-                { "kind": "builtin", "name": "number" }
+            "branches": [
+                {
+                    "kind": "concreteNominal",
+                    "nominalType": { "kind": "localType", "typeIndex": 1 },
+                    "typeArguments": {}
+                },
+                {
+                    "kind": "literal",
+                    "value": { "kind": "string", "value": "other" }
+                }
             ]
         })
     );
@@ -2274,9 +2315,9 @@ fn legacy_union_shapes_fail_closed_when_canonical_field_is_missing() {
         "kind": "union",
         "items": [{ "kind": "builtin", "name": "string" }]
     }))
-    .expect_err("descriptor union must use variants, not items");
+    .expect_err("descriptor union must use branches, not items");
     assert!(
-        descriptor_error.to_string().contains("variants"),
+        descriptor_error.to_string().contains("branches"),
         "unexpected descriptor error: {descriptor_error}"
     );
 

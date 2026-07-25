@@ -117,6 +117,37 @@ pub struct StmtRefIr {
     pub statement: u32,
 }
 
+/// Required origin for instructions that create an exception boundary.
+///
+/// Source-authored instructions carry their real source span. Generated
+/// instructions must state a stable, finite reason and cannot masquerade as a
+/// source location.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields,
+    tag = "kind"
+)]
+pub enum InstructionSourceSite {
+    Source {
+        span: SourceSpanRef,
+    },
+    Synthetic {
+        reason: SyntheticInstructionSiteReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SyntheticInstructionSiteReason {
+    CompilerDesugaring,
+    CompilerGeneratedWrapper,
+    CompilerGeneratedTestHarness,
+    RuntimeBoundaryDispatch,
+    RuntimeControlFlow,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     rename_all = "camelCase",
@@ -190,6 +221,7 @@ pub enum StmtIr {
     Throw {
         value: ExprRefIr,
         payload_type: TypeRefIr,
+        site: InstructionSourceSite,
     },
     Rethrow {
         exception_slot: u32,
@@ -353,6 +385,7 @@ pub enum ExprIr {
     Throw {
         value: ExprRefIr,
         payload_type: TypeRefIr,
+        site: InstructionSourceSite,
     },
     Rethrow {
         exception_slot: u32,
@@ -360,8 +393,7 @@ pub enum ExprIr {
     Catch {
         try_expression: ExprRefIr,
         catch_slot: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        catch_type: Option<TypeRefIr>,
+        catch_type: TypeRefIr,
         body: ExprRefIr,
     },
     ValueBlock {
@@ -698,6 +730,7 @@ pub enum BinaryOpIr {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CallIr {
     pub target: CallTargetIr,
+    pub site: InstructionSourceSite,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<ExprRefIr>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -760,4 +793,111 @@ pub enum CallTargetIr {
         method_abi_id: String,
         slot: u32,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::refs::SourcePosition;
+
+    fn source_site() -> InstructionSourceSite {
+        InstructionSourceSite::Source {
+            span: SourceSpanRef {
+                source_id: 3,
+                start: SourcePosition::new(8, 2),
+                end: SourcePosition::new(8, 11),
+            },
+        }
+    }
+
+    #[test]
+    fn throw_and_call_round_trip_required_source_sites() {
+        let statement = StmtIr::Throw {
+            value: ExprRefIr { expression: 1 },
+            payload_type: TypeRefIr::builtin("string"),
+            site: source_site(),
+        };
+        let call = CallIr {
+            target: CallTargetIr::LocalExecutable {
+                executable_index: 2,
+            },
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
+            },
+            args: Vec::new(),
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        };
+
+        for expected in [
+            serde_json::to_value(&statement).unwrap(),
+            serde_json::to_value(&call).unwrap(),
+        ] {
+            assert!(expected.get("site").is_some());
+        }
+        assert_eq!(
+            serde_json::from_value::<StmtIr>(serde_json::to_value(&statement).unwrap()).unwrap(),
+            statement
+        );
+        assert_eq!(
+            serde_json::from_value::<CallIr>(serde_json::to_value(&call).unwrap()).unwrap(),
+            call
+        );
+    }
+
+    #[test]
+    fn source_owned_instructions_reject_missing_or_invalid_sites() {
+        let missing_throw_site = json!({
+            "kind": "throw",
+            "value": { "expression": 0 },
+            "payloadType": { "kind": "builtin", "name": "string" }
+        });
+        let missing_call_site = json!({
+            "target": { "kind": "localExecutable", "executableIndex": 0 }
+        });
+        let forged_synthetic_source = json!({
+            "kind": "synthetic",
+            "reason": "compilerDesugaring",
+            "span": {
+                "sourceId": 1,
+                "start": { "line": 1, "column": 1 },
+                "end": { "line": 1, "column": 2 }
+            }
+        });
+        let unknown_reason = json!({
+            "kind": "synthetic",
+            "reason": "futureReason"
+        });
+
+        assert!(serde_json::from_value::<StmtIr>(missing_throw_site.clone()).is_err());
+        assert!(serde_json::from_value::<ExprIr>(missing_throw_site).is_err());
+        assert!(serde_json::from_value::<CallIr>(missing_call_site).is_err());
+        assert!(serde_json::from_value::<InstructionSourceSite>(forged_synthetic_source).is_err());
+        assert!(serde_json::from_value::<InstructionSourceSite>(unknown_reason).is_err());
+    }
+
+    #[test]
+    fn catch_type_is_required_and_never_null() {
+        let valid = json!({
+            "kind": "catch",
+            "tryExpression": { "expression": 0 },
+            "catchSlot": 1,
+            "catchType": { "kind": "builtin", "name": "string" },
+            "body": { "expression": 2 }
+        });
+        assert!(serde_json::from_value::<ExprIr>(valid.clone()).is_ok());
+
+        for replacement in [None, Some(serde_json::Value::Null)] {
+            let mut invalid = valid.clone();
+            match replacement {
+                None => {
+                    invalid.as_object_mut().unwrap().remove("catchType");
+                }
+                Some(value) => invalid["catchType"] = value,
+            }
+            assert!(serde_json::from_value::<ExprIr>(invalid).is_err());
+        }
+    }
 }

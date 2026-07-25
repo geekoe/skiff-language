@@ -1,6 +1,9 @@
 use std::{cmp::Ordering, collections::BTreeMap, fmt};
 
-use crate::addr::{ExecutableAddr, TypeAddr};
+use crate::{
+    addr::{ExecutableAddr, TypeAddr},
+    service_error::CatchIdentity,
+};
 
 pub type RuntimeString = String;
 pub type RuntimeObjectFields = BTreeMap<RuntimeString, RuntimeValue>;
@@ -86,6 +89,46 @@ pub enum RuntimeValue {
     String(RuntimeString),
     ActorRef(ActorRef),
     Heap(HeapHandle),
+}
+
+/// Canonical runtime value carrier for nominal catch identity.
+///
+/// Slots, container elements and call arguments can carry this value by move
+/// or clone without reconstructing identity from a static type plan or runtime
+/// shape. Structural values deliberately use `unidentified`; nominal records,
+/// representations and selected union branches use `identified`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeValueCarrier {
+    value: RuntimeValue,
+    catch_identity: Option<CatchIdentity>,
+}
+
+impl RuntimeValueCarrier {
+    pub fn unidentified(value: RuntimeValue) -> Self {
+        Self {
+            value,
+            catch_identity: None,
+        }
+    }
+
+    pub fn identified(value: RuntimeValue, catch_identity: CatchIdentity) -> Self {
+        Self {
+            value,
+            catch_identity: Some(catch_identity),
+        }
+    }
+
+    pub fn value(&self) -> &RuntimeValue {
+        &self.value
+    }
+
+    pub fn into_value(self) -> RuntimeValue {
+        self.value
+    }
+
+    pub fn catch_identity(&self) -> Option<&CatchIdentity> {
+        self.catch_identity.as_ref()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -613,6 +656,91 @@ impl PartialOrd for RuntimeValueKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        addr::{FileAddr, UnitAddr},
+        service_error::{
+            CatchIdentity, LocalExecutionTypeIdentity, NamedUnionBranchIdentity,
+            NamedUnionOwnerIdentity, NominalTypeIdentity,
+        },
+    };
+
+    fn local_nominal(type_index: usize) -> LocalExecutionTypeIdentity {
+        LocalExecutionTypeIdentity {
+            addr: TypeAddr {
+                unit: UnitAddr::Service,
+                file: FileAddr::loaded_file(0),
+                type_index,
+            },
+            type_arguments: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn runtime_value_carrier_distinguishes_equal_shapes_by_nominal_identity() {
+        let payload = RuntimeValue::from("same");
+        let first = RuntimeValueCarrier::identified(
+            payload.clone(),
+            CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(local_nominal(1))),
+        );
+        let second = RuntimeValueCarrier::identified(
+            payload,
+            CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(local_nominal(2))),
+        );
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn runtime_value_carrier_keeps_representation_outer_identity() {
+        let identity =
+            CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(local_nominal(3)));
+        let representation = RuntimeValueCarrier::identified(
+            RuntimeValue::from("primitive payload"),
+            identity.clone(),
+        );
+
+        assert_eq!(representation.catch_identity(), Some(&identity));
+        assert_eq!(
+            representation.value(),
+            &RuntimeValue::from("primitive payload")
+        );
+    }
+
+    #[test]
+    fn named_union_branch_identity_includes_enclosing_union_context() {
+        let branch = NamedUnionBranchIdentity::SyntheticDiscriminator {
+            discriminator_field: "kind".to_string(),
+            discriminator_value: "retryable".to_string(),
+        };
+        let first = RuntimeValueCarrier::identified(
+            RuntimeValue::Null,
+            CatchIdentity::NamedUnionBranch {
+                union: NamedUnionOwnerIdentity::LocalExecution(local_nominal(10)),
+                branch: branch.clone(),
+            },
+        );
+        let second = RuntimeValueCarrier::identified(
+            RuntimeValue::Null,
+            CatchIdentity::NamedUnionBranch {
+                union: NamedUnionOwnerIdentity::LocalExecution(local_nominal(11)),
+                branch,
+            },
+        );
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn carrier_clone_preserves_identity_for_slot_container_and_call_handoffs() {
+        let identity =
+            CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(local_nominal(12)));
+        let assigned =
+            RuntimeValueCarrier::identified(RuntimeValue::from("payload"), identity.clone());
+        let container = [assigned.clone()];
+        let call_argument = container[0].clone();
+
+        assert_eq!(call_argument.catch_identity(), Some(&identity));
+    }
 
     #[test]
     fn interface_value_local_carrier_keeps_method_table_and_payload() {

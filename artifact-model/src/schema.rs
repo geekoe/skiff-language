@@ -7,17 +7,51 @@ pub const PACKAGE_TEST_ENTRYPOINT_KIND: &str = "testOnly";
 pub const BUNDLE_SCHEMA_VERSION: &str = "skiff-bundle-v1";
 pub const ARTIFACT_INDEX_SCHEMA_VERSION: &str = "skiff-artifact-index-v1";
 pub const CONTRACT_SCHEMA_ARTIFACT_VERSION: &str = "skiff-contract-schema-v1";
-pub const FILE_IR_SCHEMA_VERSION: &str = "skiff-file-ir-v5";
-pub const FILE_IR_FORMAT_VERSION: &str = "skiff-file-ir-format-v3";
+pub const FILE_IR_SCHEMA_VERSION: &str = "skiff-file-ir-v6";
+pub const FILE_IR_FORMAT_VERSION: &str = "skiff-file-ir-format-v4";
 pub const FILE_IR_OPCODE_TABLE_VERSION: &str = "skiff-opcode-table-v1";
 pub const PUBLICATION_ABI_UNIT_SCHEMA_VERSION: &str = "skiff-publication-abi-unit-v1";
 pub const PACKAGE_UNIT_SCHEMA_VERSION: &str = "skiff-package-unit-v1";
 pub const SERVICE_UNIT_SCHEMA_VERSION: &str = "skiff-service-unit-v1";
-pub const PACKAGE_ARTIFACT_SCHEMA_VERSION: &str = "skiff-package-artifact-v3";
-pub const SERVICE_CONTRACT_SCHEMA_VERSION: &str = "skiff-service-contract-v3";
-pub const SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION: &str = "skiff-service-contract-definition-v2";
+pub const PACKAGE_ARTIFACT_SCHEMA_VERSION: &str = "skiff-package-artifact-v4";
+pub const SERVICE_CONTRACT_SCHEMA_VERSION: &str = "skiff-service-contract-v4";
+pub const SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION: &str = "skiff-service-contract-definition-v3";
 pub const SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION: &str = "skiff-service-deployment-input-v1";
 pub const SERVICE_DEPLOYMENT_SCHEMA_VERSION: &str = "skiff-service-deployment-v1";
 pub const RUNTIME_ASSEMBLY_SCHEMA_VERSION: &str = "skiff-runtime-assembly-v1";
 pub const SERVICE_VERSION_POINTER_SCHEMA_VERSION: &str = "skiff-service-version-pointer-v1";
 pub const SERVICE_BUILD_SCHEMA_VERSION: &str = "skiff-service-build-v1";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_error_channel_schema_versions_have_one_strict_generation() {
+        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v6");
+        assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v4");
+        assert_eq!(PACKAGE_ARTIFACT_SCHEMA_VERSION, "skiff-package-artifact-v4");
+        assert_eq!(SERVICE_CONTRACT_SCHEMA_VERSION, "skiff-service-contract-v4");
+        assert_eq!(
+            SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION,
+            "skiff-service-contract-definition-v3"
+        );
+
+        for legacy in [
+            "skiff-file-ir-v5",
+            "skiff-file-ir-format-v3",
+            "skiff-package-artifact-v3",
+            "skiff-service-contract-v3",
+            "skiff-service-contract-definition-v2",
+        ] {
+            assert!(![
+                FILE_IR_SCHEMA_VERSION,
+                FILE_IR_FORMAT_VERSION,
+                PACKAGE_ARTIFACT_SCHEMA_VERSION,
+                SERVICE_CONTRACT_SCHEMA_VERSION,
+                SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION,
+            ]
+            .contains(&legacy));
+        }
+    }
+}
