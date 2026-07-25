@@ -98,6 +98,13 @@ fn substitute_local_type(
                 .map(|arg| substitute_local_type(arg, substitutions))
                 .collect::<Result<Vec<_>, _>>()?,
         }),
+        TypeRefIr::AppliedNominal { base, arguments } => Ok(TypeRefIr::AppliedNominal {
+            base: base.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| substitute_local_type(argument, substitutions))
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
         TypeRefIr::Record { fields } => Ok(TypeRefIr::Record {
             fields: fields
                 .iter()

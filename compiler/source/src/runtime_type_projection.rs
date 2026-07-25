@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    LiteralIr, NamedUnionBranchIr, PackageRefIr, PackageSymbolRef, TypeDeclIr, TypeDescriptorIr,
-    TypeRefIr,
+    LiteralIr, NamedUnionBranchIr, NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef,
+    TypeDeclIr, TypeDescriptorIr, TypeRefIr,
 };
 
 use crate::{
@@ -134,15 +134,20 @@ fn named_type_descriptor(
                 args,
             };
         }
-        return TypeRefIr::PackageSymbol {
-            symbol: PackageSymbolRef {
-                package: PackageRefIr::PackageId {
-                    package_id: SKIFF_STD_PUBLICATION_ID.to_string(),
-                },
-                symbol_path,
-                abi_expectation: None,
+        let base = PackageSymbolRef {
+            package: PackageRefIr::PackageId {
+                package_id: SKIFF_STD_PUBLICATION_ID.to_string(),
             },
+            symbol_path,
+            abi_expectation: None,
         };
+        if !args.is_empty() {
+            return TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol { symbol: base },
+                arguments: args,
+            };
+        }
+        return TypeRefIr::PackageSymbol { symbol: base };
     }
     TypeRefIr::Builtin {
         name: canonical,
@@ -353,11 +358,11 @@ fn lower_prelude_named_union_branch(
                     | TypeRefIr::ServiceSymbol { .. }
                     | TypeRefIr::PackageSymbol { .. }
                     | TypeRefIr::PackageSchema { .. }
+                    | TypeRefIr::AppliedNominal { .. }
             ) =>
         {
-            let type_arguments = generic_parts(branch)
-                .map(|parts| {
-                    let symbol = prelude_registry()
+            if let Some(parts) = generic_parts(branch) {
+                let symbol = prelude_registry()
                         .known_type_symbol(parts.root)
                         .ok_or_else(|| {
                             format!(
@@ -365,35 +370,22 @@ fn lower_prelude_named_union_branch(
                                 owner.name
                             )
                         })?;
-                    let declaration = prelude_registry().type_decl(&symbol).ok_or_else(|| {
-                        format!(
-                            "prelude named union `{}` branch `{branch}` has no declaration",
-                            owner.name
-                        )
-                    })?;
-                    if declaration.type_params.len() != parts.args.len() {
-                        return Err(format!(
+                let declaration = prelude_registry().type_decl(&symbol).ok_or_else(|| {
+                    format!(
+                        "prelude named union `{}` branch `{branch}` has no declaration",
+                        owner.name
+                    )
+                })?;
+                if declaration.type_params.len() != parts.args.len() {
+                    return Err(format!(
                             "prelude named union `{}` branch `{branch}` expects {} type arguments, found {}",
                             owner.name,
                             declaration.type_params.len(),
                             parts.args.len()
                         ));
-                    }
-                    Ok(declaration
-                        .type_params
-                        .iter()
-                        .cloned()
-                        .zip(parts.args.iter().map(|argument| {
-                            prelude_type_text_descriptor(argument, bindings, type_params)
-                        }))
-                        .collect())
-                })
-                .transpose()?
-                .unwrap_or_default();
-            Ok(NamedUnionBranchIr::ConcreteNominal {
-                nominal_type,
-                type_arguments,
-            })
+                }
+            }
+            Ok(NamedUnionBranchIr::ConcreteNominal { nominal_type })
         }
         _ => Err(format!(
             "prelude named union `{}` branch `{branch}` has no nominal branch identity",
@@ -426,6 +418,11 @@ fn substitute_prelude_type_params_in_ir(ty: &mut TypeRefIr, type_params: &BTreeS
             }
             for arg in args {
                 substitute_prelude_type_params_in_ir(arg, type_params);
+            }
+        }
+        TypeRefIr::AppliedNominal { arguments, .. } => {
+            for argument in arguments {
+                substitute_prelude_type_params_in_ir(argument, type_params);
             }
         }
         TypeRefIr::Record { fields } => {

@@ -10,8 +10,9 @@ use crate::file_ir::{
     InstructionSourceSite, LiteralIr, MetadataValue, ServiceSymbolRef, SlotKind, StmtIr,
     SyntheticInstructionSiteReason, TypeDescriptorIr, TypeRefIr,
 };
-use skiff_artifact_model::NamedUnionBranchIr;
+use skiff_artifact_model::{NamedUnionBranchIr, NominalTypeRefBaseIr};
 use skiff_compiler_core::db_projection::project_db_read_type;
+use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref;
 use skiff_compiler_source::{
     semantic::DbAttachmentIndex, LocalDbObjectIndex, PublicationDbMetadata,
     PublicationDbMetadataIndex, PublicationTypeSymbolIndex, SourceSymbolKey,
@@ -577,6 +578,81 @@ fn expand_db_storage_type_ref(
                 .map(|arg| expand_db_storage_type_ref(arg, unit, seen_local_types))
                 .collect::<Result<Vec<_>>>()?,
         }),
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            let NominalTypeRefBaseIr::LocalType { type_index } = base else {
+                return Ok(TypeRefIr::AppliedNominal {
+                    base: base.clone(),
+                    arguments: arguments
+                        .iter()
+                        .map(|argument| {
+                            expand_db_storage_type_ref(argument, unit, seen_local_types)
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                });
+            };
+            let Some(decl) = unit.type_table.get(*type_index as usize) else {
+                return Err(CompileError::Semantic(format!(
+                    "missing local type index {type_index} while lowering applied db storage type"
+                )));
+            };
+            if decl.type_params.len() != arguments.len() {
+                return Err(CompileError::Semantic(format!(
+                    "db storage type `{}` expects {} type arguments, found {}",
+                    decl.name,
+                    decl.type_params.len(),
+                    arguments.len()
+                )));
+            }
+            if !seen_local_types.insert(*type_index) {
+                return Ok(ty.clone());
+            }
+            let substitutions = decl
+                .type_params
+                .iter()
+                .cloned()
+                .zip(arguments.iter().cloned())
+                .collect::<BTreeMap<_, _>>();
+            let expand = |ty: &TypeRefIr, seen: &mut BTreeSet<u32>| {
+                let substituted = substitute_type_params_in_type_ref_ref(ty, &substitutions);
+                expand_db_storage_type_ref(&substituted, unit, seen)
+            };
+            let expanded = match &decl.descriptor {
+                TypeDescriptorIr::Record { fields } => TypeRefIr::Record {
+                    fields: fields
+                        .iter()
+                        .map(|(name, ty)| Ok((name.clone(), expand(ty, seen_local_types)?)))
+                        .collect::<Result<BTreeMap<_, _>>>()?,
+                },
+                TypeDescriptorIr::Alias { target } => expand(target, seen_local_types)?,
+                TypeDescriptorIr::Representation { representation } => {
+                    expand(representation, seen_local_types)?
+                }
+                TypeDescriptorIr::Union { branches } => TypeRefIr::Union {
+                    items: branches
+                        .iter()
+                        .map(|branch| match branch {
+                            NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                                expand(nominal_type, seen_local_types)
+                            }
+                            NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                                expand(payload_type, seen_local_types)
+                            }
+                            NamedUnionBranchIr::Literal { value } => Ok(TypeRefIr::Literal {
+                                value: value.clone(),
+                            }),
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                },
+                TypeDescriptorIr::Interface => {
+                    return Err(CompileError::Semantic(format!(
+                        "interface type `{}` cannot be used as db storage",
+                        decl.name
+                    )));
+                }
+            };
+            seen_local_types.remove(type_index);
+            Ok(expanded)
+        }
         TypeRefIr::Nullable { inner } => Ok(TypeRefIr::Nullable {
             inner: Box::new(expand_db_storage_type_ref(inner, unit, seen_local_types)?),
         }),

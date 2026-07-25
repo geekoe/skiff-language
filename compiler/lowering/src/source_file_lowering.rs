@@ -831,8 +831,8 @@ mod tests {
     };
     use skiff_artifact_model::{
         validate_file_ir_service_calls, ContractOperationId, ContractRequirement,
-        InstructionSourceSite, LiteralIr, NamedUnionBranchIr, PackageCallableId,
-        PackageLocalAbiIdentity, ReceiverCallAbi, ServiceProtocolIdentity,
+        InstructionSourceSite, LiteralIr, NamedUnionBranchIr, NominalTypeRefBaseIr,
+        PackageCallableId, PackageLocalAbiIdentity, ReceiverCallAbi, ServiceProtocolIdentity,
         SyntheticInstructionSiteReason, TypeDescriptorIr,
     };
     use skiff_compiler_input::CompilerPlatformSources;
@@ -1034,18 +1034,16 @@ mod tests {
             &union_one[0],
             NamedUnionBranchIr::ConcreteNominal {
                 nominal_type: TypeRefIr::LocalType { type_index: 0 },
-                type_arguments,
-            } if type_arguments.is_empty()
+            }
         ));
         assert!(matches!(
             &union_one[1],
             NamedUnionBranchIr::ConcreteNominal {
-                nominal_type: TypeRefIr::LocalType { type_index: 2 },
-                type_arguments,
-            } if type_arguments == &BTreeMap::from([(
-                "T".to_string(),
-                TypeRefIr::builtin("string"),
-            )])
+                nominal_type: TypeRefIr::AppliedNominal {
+                    base: NominalTypeRefBaseIr::LocalType { type_index: 2 },
+                    arguments,
+                },
+            } if arguments == &vec![TypeRefIr::builtin("string")]
         ));
         assert!(matches!(
             &union_one[2],
@@ -1084,6 +1082,201 @@ mod tests {
         assert_eq!(union_one[2], union_two[1]);
         assert_eq!(union_one[3], union_two[2]);
         assert_ne!(declaration("UnionOne").name, declaration("UnionTwo").name);
+    }
+
+    #[test]
+    fn applied_nominals_flow_from_source_through_file_ir_signatures_sites_and_calls() {
+        let unit = lowered_unit(
+            r#"
+              type Id = string
+              type Box<T> { value: T }
+              type Outer<A, B> { first: A, second: B }
+              type Token<T> = string
+              type Branch<T> { value: T }
+              type Choice<T> discriminator "kind" =
+                Branch<T> |
+                { kind: "inline", value: T } |
+                "literal"
+              alias StringBox = Box<string>
+
+              function use(
+                stringBox: Box<string>,
+                numberBox: Box<number>,
+                nested: Outer<Box<string>, Array<Id>>,
+                token: Token<string>,
+                choice: Choice<string>
+              ) -> Box<string> {
+                const constructed = Box<string> { value: stringBox.value }
+                const empty = Array.empty<Box<string>>()
+                return constructed
+              }
+
+              function fail(value: Box<string>) -> void {
+                throw value
+              }
+
+              function caught(value: Box<string>) -> void {
+                const attempted = catch<Box<string>>(throw value)
+              }
+
+              function inspected(value: Box<string>) -> void {
+                match value {
+                  Box<string> { value } => {
+                  }
+                  _ => {
+                  }
+                }
+              }
+            "#,
+        );
+        assert_eq!(unit.schema_version, "skiff-file-ir-v7");
+        assert_eq!(unit.ir_format_version, "skiff-file-ir-format-v5");
+
+        let declaration = |name: &str| {
+            unit.type_table
+                .iter()
+                .find(|declaration| declaration.name == name)
+                .unwrap_or_else(|| panic!("missing declaration `{name}`"))
+        };
+        let index = |name: &str| {
+            unit.type_table
+                .iter()
+                .position(|declaration| declaration.name == name)
+                .unwrap_or_else(|| panic!("missing declaration `{name}`")) as u32
+        };
+        let applied = |name: &str, arguments: Vec<TypeRefIr>| TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::LocalType {
+                type_index: index(name),
+            },
+            arguments,
+        };
+        let string_box = applied("Box", vec![TypeRefIr::builtin("string")]);
+        let number_box = applied("Box", vec![TypeRefIr::builtin("number")]);
+
+        assert_eq!(declaration("Box").type_params, ["T".to_string()]);
+        assert!(matches!(
+            &declaration("Box").descriptor,
+            TypeDescriptorIr::Record { fields }
+                if fields["value"] == TypeRefIr::TypeParam { name: "T".to_string() }
+        ));
+        assert_eq!(declaration("Token").type_params, ["T".to_string()]);
+        assert!(matches!(
+            declaration("Token").descriptor,
+            TypeDescriptorIr::Representation { ref representation }
+                if representation == &TypeRefIr::builtin("string")
+        ));
+        assert!(matches!(
+            &declaration("StringBox").descriptor,
+            TypeDescriptorIr::Alias { target } if target == &string_box
+        ));
+
+        let TypeDescriptorIr::Union {
+            branches: choice_branches,
+        } = &declaration("Choice").descriptor
+        else {
+            panic!("generic Choice must remain a named union");
+        };
+        assert!(matches!(
+            &choice_branches[0],
+            NamedUnionBranchIr::ConcreteNominal {
+                nominal_type:
+                    TypeRefIr::AppliedNominal {
+                        base: NominalTypeRefBaseIr::LocalType { type_index },
+                        arguments,
+                    },
+            } if *type_index == index("Branch")
+                && arguments == &vec![TypeRefIr::TypeParam { name: "T".to_string() }]
+        ));
+        assert!(matches!(
+            &choice_branches[1],
+            NamedUnionBranchIr::SyntheticDiscriminator {
+                payload_type: TypeRefIr::Record { fields },
+                ..
+            } if fields["value"] == TypeRefIr::TypeParam { name: "T".to_string() }
+        ));
+        assert!(matches!(
+            &choice_branches[2],
+            NamedUnionBranchIr::Literal { .. }
+        ));
+
+        let use_executable = executable(&unit, "use");
+        assert_eq!(use_executable.params[0].ty, string_box);
+        assert_eq!(use_executable.params[1].ty, number_box);
+        assert_ne!(use_executable.params[0].ty, use_executable.params[1].ty);
+        assert_eq!(
+            use_executable.params[2].ty,
+            applied(
+                "Outer",
+                vec![
+                    string_box.clone(),
+                    TypeRefIr::Builtin {
+                        name: "Array".to_string(),
+                        args: vec![TypeRefIr::LocalType {
+                            type_index: index("Id"),
+                        }],
+                    },
+                ],
+            )
+        );
+        assert_eq!(
+            use_executable.params[3].ty,
+            applied("Token", vec![TypeRefIr::builtin("string")])
+        );
+        assert_eq!(
+            use_executable.params[4].ty,
+            applied("Choice", vec![TypeRefIr::builtin("string")])
+        );
+        assert_eq!(use_executable.return_type, string_box);
+        assert!(use_executable.body.expressions.iter().any(|expression| {
+            matches!(
+                expression,
+                ExprIr::Construct { type_ref, .. } if type_ref == &string_box
+            )
+        }));
+        assert!(use_executable.body.expressions.iter().any(|expression| {
+            matches!(
+                expression,
+                ExprIr::Call { call }
+                    if call.type_args.get("T0") == Some(&string_box)
+            )
+        }));
+
+        let failed = executable(&unit, "fail");
+        assert!(failed.body.statements.iter().any(|statement| {
+            matches!(
+                statement,
+                skiff_artifact_model::StmtIr::Throw { payload_type, .. }
+                    if payload_type == &string_box
+            )
+        }));
+        let caught = executable(&unit, "caught");
+        assert!(caught.body.expressions.iter().any(|expression| {
+            matches!(
+                expression,
+                ExprIr::Throw { payload_type, .. } if payload_type == &string_box
+            )
+        }));
+        assert!(caught.body.expressions.iter().any(|expression| {
+            matches!(
+                expression,
+                ExprIr::Catch { catch_type, .. } if catch_type == &string_box
+            )
+        }));
+        let inspected = executable(&unit, "inspected");
+        assert!(inspected.body.statements.iter().any(|statement| {
+            matches!(
+                statement,
+                skiff_artifact_model::StmtIr::Match { arms, .. }
+                    if matches!(
+                        &arms[0].pattern,
+                        skiff_artifact_model::PatternIr::Type { ty } if ty == &string_box
+                    )
+            )
+        }));
+
+        let wire = serde_json::to_string(&unit).expect("File IR serializes");
+        assert!(wire.contains("\"kind\":\"appliedNominal\""));
+        assert!(!wire.contains("\"typeArguments\""));
     }
 
     #[test]
@@ -2184,7 +2377,7 @@ mod tests {
         assert!(!wire.contains("operationAbiId"));
         assert!(unit
             .file_ir_identity
-            .starts_with("skiff-file-ir-v6:sha256:"));
+            .starts_with("skiff-file-ir-v7:sha256:"));
     }
 
     #[test]

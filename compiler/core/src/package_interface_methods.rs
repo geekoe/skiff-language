@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, PackageRefIr, PackageSymbolRef,
-    TypeRefIr,
+    FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, NominalTypeRefBaseIr, PackageRefIr,
+    PackageSymbolRef, TypeRefIr,
 };
 
 use crate::type_ref::substitute_type_params_in_type_ref;
@@ -339,6 +339,89 @@ fn package_interface_type_ref(
                 },
             })
         }
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            let base_ref = match base {
+                NominalTypeRefBaseIr::LocalType { type_index } => TypeRefIr::LocalType {
+                    type_index: *type_index,
+                },
+                NominalTypeRefBaseIr::PublicationType {
+                    module_path,
+                    type_index,
+                } => TypeRefIr::PublicationType {
+                    module_path: module_path.clone(),
+                    type_index: *type_index,
+                },
+                NominalTypeRefBaseIr::ServiceSymbol { symbol } => TypeRefIr::ServiceSymbol {
+                    symbol: symbol.clone(),
+                },
+                NominalTypeRefBaseIr::PackageSymbol { symbol } => TypeRefIr::PackageSymbol {
+                    symbol: symbol.clone(),
+                },
+                NominalTypeRefBaseIr::PackageSchema {
+                    package_id,
+                    stable_schema_key,
+                    package_schema_type_id,
+                } => TypeRefIr::PackageSchema {
+                    package_id: package_id.clone(),
+                    stable_schema_key: stable_schema_key.clone(),
+                    package_schema_type_id: package_schema_type_id.clone(),
+                },
+            };
+            let rebound = package_interface_type_ref(
+                package_id,
+                type_symbols,
+                module_path,
+                &base_ref,
+                context,
+            )?;
+            let base = match rebound {
+                TypeRefIr::LocalType { type_index } => {
+                    NominalTypeRefBaseIr::LocalType { type_index }
+                }
+                TypeRefIr::PublicationType {
+                    module_path,
+                    type_index,
+                } => NominalTypeRefBaseIr::PublicationType {
+                    module_path,
+                    type_index,
+                },
+                TypeRefIr::ServiceSymbol { symbol } => {
+                    NominalTypeRefBaseIr::ServiceSymbol { symbol }
+                }
+                TypeRefIr::PackageSymbol { symbol } => {
+                    NominalTypeRefBaseIr::PackageSymbol { symbol }
+                }
+                TypeRefIr::PackageSchema {
+                    package_id,
+                    stable_schema_key,
+                    package_schema_type_id,
+                } => NominalTypeRefBaseIr::PackageSchema {
+                    package_id,
+                    stable_schema_key,
+                    package_schema_type_id,
+                },
+                _ => {
+                    return Err(format!(
+                        "package {package_id} exported interface method {context} resolved an applied nominal base to a non-nominal type"
+                    ));
+                }
+            };
+            Ok(TypeRefIr::AppliedNominal {
+                base,
+                arguments: arguments
+                    .iter()
+                    .map(|argument| {
+                        package_interface_type_ref(
+                            package_id,
+                            type_symbols,
+                            module_path,
+                            argument,
+                            context,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            })
+        }
         TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
@@ -573,6 +656,50 @@ mod tests {
             InterfaceMethodInstantiationError {
                 expected_type_args: 2,
                 actual_type_args: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn normalizes_applied_nominal_base_and_arguments_to_exact_package_owners() {
+        let mut symbols = PackageTypeSymbolIndex::default();
+        symbols.insert_type("pkg.types", 0, "Box", "types.Box");
+        symbols.insert_type("pkg.types", 1, "Payload", "types.Payload");
+        let applied = TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+            arguments: vec![TypeRefIr::LocalType { type_index: 1 }],
+        };
+
+        let normalized = normalize_package_interface_type_ref(
+            "example.com/pkg",
+            &symbols,
+            "pkg.types",
+            &applied,
+            "interface method",
+        )
+        .unwrap();
+
+        assert_eq!(
+            normalized,
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: "example.com/pkg".to_string(),
+                        },
+                        symbol_path: "types.Box".to_string(),
+                        abi_expectation: None,
+                    },
+                },
+                arguments: vec![TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: "example.com/pkg".to_string(),
+                        },
+                        symbol_path: "types.Payload".to_string(),
+                        abi_expectation: None,
+                    },
+                }],
             }
         );
     }

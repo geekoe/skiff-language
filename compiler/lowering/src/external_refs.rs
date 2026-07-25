@@ -7,7 +7,7 @@ use crate::file_ir::{
     TestEffectOutcomeIr, TestEffectRegisterTargetIr, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_artifact_model::{
-    NamedUnionBranchIr, ServiceCallRef, RECEIVER_BUILTIN_CAPABILITY_VERSION,
+    NamedUnionBranchIr, NominalTypeRefBaseIr, ServiceCallRef, RECEIVER_BUILTIN_CAPABILITY_VERSION,
 };
 
 pub(super) fn required_receiver_builtin_capability_version(unit: &FileIrUnit) -> u32 {
@@ -472,14 +472,8 @@ fn collect_type_ref_external_refs_from_descriptor(
         TypeDescriptorIr::Union { branches } => {
             for branch in branches {
                 match branch {
-                    NamedUnionBranchIr::ConcreteNominal {
-                        nominal_type,
-                        type_arguments,
-                    } => {
+                    NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
                         collect_type_ref_external_refs(nominal_type, refs);
-                        for argument in type_arguments.values() {
-                            collect_type_ref_external_refs(argument, refs);
-                        }
                     }
                     NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
                         collect_type_ref_external_refs(payload_type, refs);
@@ -504,6 +498,22 @@ fn collect_type_ref_external_refs(ty: &TypeRefIr, refs: &mut ExternalRefTable) {
         TypeRefIr::Builtin { args, .. } => {
             for arg in args {
                 collect_type_ref_external_refs(arg, refs);
+            }
+        }
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            match base {
+                NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+                    push_unique(&mut refs.service_symbols, symbol.clone());
+                }
+                NominalTypeRefBaseIr::PackageSymbol { symbol } => {
+                    push_unique(&mut refs.package_symbols, symbol.clone());
+                }
+                NominalTypeRefBaseIr::LocalType { .. }
+                | NominalTypeRefBaseIr::PublicationType { .. }
+                | NominalTypeRefBaseIr::PackageSchema { .. } => {}
+            }
+            for argument in arguments {
+                collect_type_ref_external_refs(argument, refs);
             }
         }
         TypeRefIr::Record { fields } => {

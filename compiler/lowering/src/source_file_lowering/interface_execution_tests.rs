@@ -42,12 +42,7 @@ fn exact_interface_and_impl_contract_types_share_opaque_execution_projection() {
     let expected = nested_contract_execution_type();
     let operation = &empty.declarations.interfaces["Gateway"].operations[0];
     assert_eq!(operation.name, "echo");
-    assert_eq!(
-        operation.params[0].ty,
-        TypeRefIr::TypeParam {
-            name: "Self".to_string()
-        }
-    );
+    assert_eq!(operation.params[0].ty, TypeRefIr::builtin("Self"));
     assert_eq!(operation.params[1].name, "input");
     assert_eq!(operation.params[1].ty, expected);
     assert_eq!(operation.return_type, expected);

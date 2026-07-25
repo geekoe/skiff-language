@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::{LiteralIr, NamedUnionBranchIr, TypeRefIr};
+use skiff_artifact_model::{LiteralIr, NamedUnionBranchIr, NominalTypeRefBaseIr, TypeRefIr};
 use skiff_compiler_core::{
     prelude_registry::{compiler_builtin_type, CompilerBuiltinType, CompilerBuiltinTypeKind},
     type_ref::substitute_type_params_in_type_ref_ref,
@@ -42,33 +42,29 @@ impl CatchLeaves {
 pub enum CatchLeafIdentity {
     Nominal {
         nominal_type: TypeRefIr,
-        type_arguments: BTreeMap<String, TypeRefIr>,
     },
     NamedUnionBranch {
         union_type: TypeRefIr,
-        union_type_arguments: BTreeMap<String, TypeRefIr>,
         branch: NamedUnionBranchIr,
     },
 }
 
 struct NominalInstantiation<'a> {
     named: ResolvedNamedType<'a>,
-    type_arguments: BTreeMap<String, TypeRefIr>,
+    substitutions: BTreeMap<String, TypeRefIr>,
 }
 
 impl TypeResolutionModel {
     /// Computes the reusable source-language CatchLeaves set.
     ///
-    /// The resolved IR is the identity source. `source_text` is consulted only
-    /// for the type arguments that legacy `TypeRefIr` nominal refs do not
-    /// carry; missing arguments therefore fail closed.
+    /// The resolved IR is the sole identity source. Applied nominal arguments
+    /// are carried positionally by `TypeRefIr::AppliedNominal`.
     pub fn catch_leaves(
         &self,
         ty: &ResolvedTypeRef,
         context: &TypeResolutionContext<'_>,
     ) -> Result<CatchLeaves, String> {
-        let hint = TypeExpr::parse(&ty.source_text);
-        let leaves = self.collect_catch_leaves(&ty.ir, Some(&hint), context)?;
+        let leaves = self.collect_catch_leaves(&ty.ir, context)?;
         if leaves.is_empty() {
             return Err(format!("`{}` has no catch leaves", ty.source_text));
         }
@@ -99,72 +95,24 @@ impl TypeResolutionModel {
             ));
         }
 
-        let hint = match TypeExpr::parse(&exception.source_text) {
-            TypeExpr::Named { name, args }
-                if name.rsplit('.').next() == Some("Exception") && args.len() == 1 =>
-            {
-                args.into_iter().next()
-            }
-            _ => None,
-        };
-        let leaves = self.collect_catch_leaves(payload, hint.as_ref(), context)?;
+        let leaves = self.collect_catch_leaves(payload, context)?;
         if leaves.is_empty() {
             return Err("Exception<E> payload has no catch leaves".to_string());
         }
         Ok(CatchLeaves { leaves })
     }
 
-    /// Resolves the exact parameter-name-to-type-argument map used by named
-    /// union branch lowering. This never invents positional `T0` keys.
-    pub fn nominal_type_argument_bindings(
-        &self,
-        ty: &crate::shared::ast::TypeRef,
-        context: &TypeResolutionContext<'_>,
-    ) -> Result<BTreeMap<String, TypeRefIr>, String> {
-        let resolved = self.resolve_type_ref(ty, context)?;
-        let hint = TypeExpr::parse(&resolved.source_text);
-        let hinted_arguments = match &hint {
-            TypeExpr::Named { args, .. } => args.as_slice(),
-            _ => &[],
-        };
-        let type_params = if let Some(named) = self.resolved_named_type(&resolved.ir, context) {
-            named.resolution.type_params.as_slice()
-        } else if let Some((_, type_params)) = prelude_nominal_type(&resolved.ir) {
-            type_params
-        } else if compiler_builtin_type_for_catch(&resolved.ir)
-            .is_some_and(|builtin| builtin.arity == 0)
-        {
-            &[]
-        } else {
-            return Err(format!("`{}` is not a nominal type", resolved.source_text));
-        };
-        if hinted_arguments.len() != type_params.len() {
-            return Err(format!(
-                "nominal `{}` expects {} type arguments, found {}",
-                resolved.source_text,
-                type_params.len(),
-                hinted_arguments.len()
-            ));
-        }
-        type_params
-            .iter()
-            .zip(hinted_arguments)
-            .map(|(name, argument)| Ok((name.clone(), self.resolve_type_expr(argument, context)?)))
-            .collect()
-    }
-
     fn collect_catch_leaves(
         &self,
         ty: &TypeRefIr,
-        hint: Option<&TypeExpr>,
         context: &TypeResolutionContext<'_>,
     ) -> Result<Vec<CatchLeafIdentity>, String> {
-        if let Some(leaves) = self.collect_prelude_catch_leaves(ty, hint, context)? {
+        if let Some(leaves) = self.collect_prelude_catch_leaves(ty, context)? {
             return Ok(leaves);
         }
         if let Some(instantiation) = self
             .resolved_named_type(ty, context)
-            .map(|named| self.nominal_instantiation_for(named, ty, hint, context))
+            .map(|named| self.nominal_instantiation_for(named, ty, context))
             .transpose()?
         {
             return self.collect_nominal_catch_leaves(ty, instantiation, context);
@@ -173,19 +121,11 @@ impl TypeResolutionModel {
         match ty {
             TypeRefIr::PackageSchema { .. } => Ok(vec![CatchLeafIdentity::Nominal {
                 nominal_type: ty.clone(),
-                type_arguments: BTreeMap::new(),
             }]),
             TypeRefIr::Union { items } => {
-                let hinted_items = match hint {
-                    Some(TypeExpr::Union(hinted_items)) if hinted_items.len() == items.len() => {
-                        Some(hinted_items)
-                    }
-                    _ => None,
-                };
                 let mut leaves = Vec::new();
-                for (index, item) in items.iter().enumerate() {
-                    let item_hint = hinted_items.and_then(|items| items.get(index));
-                    leaves.extend(self.collect_catch_leaves(item, item_hint, context)?);
+                for item in items {
+                    leaves.extend(self.collect_catch_leaves(item, context)?);
                 }
                 if leaves.is_empty() {
                     return Err("anonymous union has no catch leaves".to_string());
@@ -211,6 +151,7 @@ impl TypeResolutionModel {
             | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::PackageSymbol { .. }
+            | TypeRefIr::AppliedNominal { .. }
             | TypeRefIr::DbObjectSymbol { .. } => {
                 Err("nominal catch type cannot be resolved to its declaration".to_string())
             }
@@ -220,7 +161,6 @@ impl TypeResolutionModel {
     fn collect_prelude_catch_leaves(
         &self,
         nominal_type: &TypeRefIr,
-        hint: Option<&TypeExpr>,
         context: &TypeResolutionContext<'_>,
     ) -> Result<Option<Vec<CatchLeafIdentity>>, String> {
         if let TypeRefIr::Builtin { name, args } = nominal_type {
@@ -240,7 +180,6 @@ impl TypeResolutionModel {
                 }
                 return Ok(Some(vec![CatchLeafIdentity::Nominal {
                     nominal_type: nominal_type.clone(),
-                    type_arguments: BTreeMap::new(),
                 }]));
             }
         }
@@ -248,24 +187,20 @@ impl TypeResolutionModel {
         let Some((symbol, type_params)) = prelude_nominal_type(nominal_type) else {
             return Ok(None);
         };
-        let hinted_arguments = match hint {
-            Some(TypeExpr::Named { args, .. }) => args.as_slice(),
-            _ => &[],
-        };
-        if hinted_arguments.len() != type_params.len() {
+        let arguments = nominal_arguments(nominal_type);
+        if arguments.len() != type_params.len() {
             return Err(format!(
                 "prelude nominal `{symbol}` requires {} fully-instantiated type arguments, found {}",
                 type_params.len(),
-                hinted_arguments.len()
+                arguments.len()
             ));
         }
-        let type_arguments = type_params
+        let substitutions = type_params
             .iter()
-            .zip(hinted_arguments)
+            .zip(arguments)
             .map(|(name, argument)| {
-                let argument = self.resolve_type_expr(argument, context)?;
                 self.validate_instantiated_type_argument(&argument, context)?;
-                Ok((name.clone(), argument))
+                Ok((name.clone(), argument.clone()))
             })
             .collect::<Result<BTreeMap<_, _>, String>>()?;
 
@@ -278,11 +213,7 @@ impl TypeResolutionModel {
             let expanded =
                 self.resolve_type_expr(&TypeExpr::parse(&alias.target_type.name), &alias_context)?;
             return self
-                .collect_catch_leaves(
-                    &expanded,
-                    Some(&TypeExpr::parse(&alias.target_type.name)),
-                    &alias_context,
-                )
+                .collect_catch_leaves(&expanded, &alias_context)
                 .map(Some);
         }
         let declaration = registry
@@ -294,13 +225,12 @@ impl TypeResolutionModel {
             | skiff_artifact_model::TypeDescriptorIr::Representation { .. } => {
                 vec![CatchLeafIdentity::Nominal {
                     nominal_type: nominal_type.clone(),
-                    type_arguments,
                 }]
             }
             skiff_artifact_model::TypeDescriptorIr::Union { branches } => {
                 let branches = branches
                     .iter()
-                    .map(|branch| substitute_named_union_branch(branch, &type_arguments))
+                    .map(|branch| substitute_named_union_branch(branch, &substitutions))
                     .collect::<Vec<_>>();
                 if branches.is_empty() {
                     return Err(format!("prelude named union `{symbol}` has no branches"));
@@ -317,7 +247,6 @@ impl TypeResolutionModel {
                     .into_iter()
                     .map(|branch| CatchLeafIdentity::NamedUnionBranch {
                         union_type: nominal_type.clone(),
-                        union_type_arguments: type_arguments.clone(),
                         branch,
                     })
                     .collect()
@@ -345,7 +274,6 @@ impl TypeResolutionModel {
         match &instantiation.named.resolution.kind {
             SourceTypeKind::Record { .. } => Ok(vec![CatchLeafIdentity::Nominal {
                 nominal_type: nominal_type.clone(),
-                type_arguments: instantiation.type_arguments,
             }]),
             SourceTypeKind::Representation {
                 target,
@@ -356,7 +284,7 @@ impl TypeResolutionModel {
                     branches
                         .iter()
                         .map(|branch| {
-                            substitute_named_union_branch(branch, &instantiation.type_arguments)
+                            substitute_named_union_branch(branch, &instantiation.substitutions)
                         })
                         .collect::<Vec<_>>()
                 } else {
@@ -364,14 +292,13 @@ impl TypeResolutionModel {
                     let TypeExpr::Union(branches) = target else {
                         return Ok(vec![CatchLeafIdentity::Nominal {
                             nominal_type: nominal_type.clone(),
-                            type_arguments: instantiation.type_arguments,
                         }]);
                     };
                     self.source_named_union_branches(
                         &instantiation.named,
                         &branches,
                         discriminator.as_deref(),
-                        &instantiation.type_arguments,
+                        &instantiation.substitutions,
                         caller_context,
                     )?
                 };
@@ -389,7 +316,6 @@ impl TypeResolutionModel {
                     .into_iter()
                     .map(|branch| CatchLeafIdentity::NamedUnionBranch {
                         union_type: nominal_type.clone(),
-                        union_type_arguments: instantiation.type_arguments.clone(),
                         branch,
                     })
                     .collect())
@@ -399,7 +325,7 @@ impl TypeResolutionModel {
                 if expanded == *nominal_type {
                     return Err("transparent alias could not be expanded".to_string());
                 }
-                self.collect_catch_leaves(&expanded, None, caller_context)
+                self.collect_catch_leaves(&expanded, caller_context)
             }
             SourceTypeKind::Actor { .. } => {
                 Err("actor handles are not user `type` catch payloads".to_string())
@@ -412,33 +338,23 @@ impl TypeResolutionModel {
         &'a self,
         named: ResolvedNamedType<'a>,
         nominal_type: &TypeRefIr,
-        hint: Option<&TypeExpr>,
         context: &TypeResolutionContext<'_>,
     ) -> Result<NominalInstantiation<'a>, String> {
-        let hinted_arguments = match hint {
-            Some(TypeExpr::Named { args, .. }) => args.as_slice(),
-            _ => &[],
-        };
+        let arguments = nominal_arguments(nominal_type);
         let expected = named.resolution.type_params.len();
-        if hinted_arguments.len() != expected {
+        if arguments.len() != expected {
             return Err(format!(
                 "generic nominal `{}` requires {expected} fully-instantiated type arguments, found {}",
                 named.resolution.name,
-                hinted_arguments.len()
+                arguments.len()
             ));
         }
-        let mut type_arguments = BTreeMap::new();
-        for (name, argument) in named
-            .resolution
-            .type_params
-            .iter()
-            .zip(hinted_arguments.iter())
-        {
-            let argument = self.resolve_type_expr(argument, context)?;
+        let mut substitutions = BTreeMap::new();
+        for (name, argument) in named.resolution.type_params.iter().zip(arguments) {
             self.validate_instantiated_type_argument(&argument, context)?;
-            type_arguments.insert(name.clone(), argument);
+            substitutions.insert(name.clone(), argument.clone());
         }
-        if expected == 0 && !type_arguments.is_empty() {
+        if expected == 0 && !substitutions.is_empty() {
             return Err(format!(
                 "non-generic nominal `{}` received type arguments",
                 named.resolution.name
@@ -449,7 +365,7 @@ impl TypeResolutionModel {
         }
         Ok(NominalInstantiation {
             named,
-            type_arguments,
+            substitutions,
         })
     }
 
@@ -467,6 +383,23 @@ impl TypeResolutionModel {
             }
             TypeRefIr::Builtin { args, .. } => {
                 for argument in args {
+                    self.validate_instantiated_type_argument(argument, context)?;
+                }
+                Ok(())
+            }
+            TypeRefIr::AppliedNominal { arguments, .. } => {
+                let named = self
+                    .resolved_named_type(ty, context)
+                    .ok_or_else(|| "applied nominal declaration cannot be resolved".to_string())?;
+                if named.resolution.type_params.len() != arguments.len() {
+                    return Err(format!(
+                        "nested generic nominal `{}` expects {} type arguments, found {}",
+                        named.resolution.name,
+                        named.resolution.type_params.len(),
+                        arguments.len()
+                    ));
+                }
+                for argument in arguments {
                     self.validate_instantiated_type_argument(argument, context)?;
                 }
                 Ok(())
@@ -527,7 +460,7 @@ impl TypeResolutionModel {
         owner: &ResolvedNamedType<'_>,
         branches: &[TypeExpr],
         discriminator: Option<&str>,
-        owner_type_arguments: &BTreeMap<String, TypeRefIr>,
+        substitutions: &BTreeMap<String, TypeRefIr>,
         caller_context: &TypeResolutionContext<'_>,
     ) -> Result<Vec<NamedUnionBranchIr>, String> {
         let declaration_context = TypeResolutionContext::with_type_params(
@@ -565,17 +498,17 @@ impl TypeResolutionModel {
                         })?;
                     let payload_type = self.resolve_type_expr(branch, &declaration_context)?;
                     let payload_type =
-                        substitute_type_params_in_type_ref_ref(&payload_type, owner_type_arguments);
+                        substitute_type_params_in_type_ref_ref(&payload_type, substitutions);
                     Ok(NamedUnionBranchIr::SyntheticDiscriminator {
                         payload_type,
                         discriminator_field: discriminator.to_string(),
                         discriminator_value,
                     })
                 }
-                TypeExpr::Named { args, .. } => {
+                TypeExpr::Named { .. } => {
                     let nominal_type = self.resolve_type_expr(branch, &declaration_context)?;
                     let nominal_type =
-                        substitute_type_params_in_type_ref_ref(&nominal_type, owner_type_arguments);
+                        substitute_type_params_in_type_ref_ref(&nominal_type, substitutions);
                     let named = self
                         .resolved_named_type(&nominal_type, caller_context)
                         .or_else(|| {
@@ -604,33 +537,7 @@ impl TypeResolutionModel {
                             branch.to_type_string()
                         ));
                     }
-                    let expected = named.resolution.type_params.len();
-                    if args.len() != expected {
-                        return Err(format!(
-                            "named-union branch `{}` expects {expected} type arguments, found {}",
-                            branch.to_type_string(),
-                            args.len()
-                        ));
-                    }
-                    let type_arguments = named
-                        .resolution
-                        .type_params
-                        .iter()
-                        .zip(args)
-                        .map(|(name, argument)| {
-                            let argument =
-                                self.resolve_type_expr(argument, &declaration_context)?;
-                            let argument = substitute_type_params_in_type_ref_ref(
-                                &argument,
-                                owner_type_arguments,
-                            );
-                            Ok((name.clone(), argument))
-                        })
-                        .collect::<Result<BTreeMap<_, _>, String>>()?;
-                    Ok(NamedUnionBranchIr::ConcreteNominal {
-                        nominal_type,
-                        type_arguments,
-                    })
+                    Ok(NamedUnionBranchIr::ConcreteNominal { nominal_type })
                 }
                 _ => Err(format!(
                     "named-union branch `{}` has no deterministic branch identity",
@@ -646,10 +553,7 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Result<(), String> {
         match branch {
-            NamedUnionBranchIr::ConcreteNominal {
-                nominal_type,
-                type_arguments,
-            } => {
+            NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
                 let (name, type_params) =
                     if let Some(named) = self.resolved_named_type(nominal_type, context) {
                         if matches!(
@@ -677,16 +581,13 @@ impl TypeResolutionModel {
                                 .to_string(),
                         );
                     };
-                if type_arguments.len() != type_params.len()
-                    || type_params
-                        .iter()
-                        .any(|name| !type_arguments.contains_key(name))
-                {
+                let arguments = nominal_arguments(nominal_type);
+                if arguments.len() != type_params.len() {
                     return Err(format!(
                         "concrete named-union branch `{name}` is not fully instantiated",
                     ));
                 }
-                for argument in type_arguments.values() {
+                for argument in arguments {
                     self.validate_instantiated_type_argument(argument, context)?;
                 }
                 Ok(())
@@ -734,21 +635,11 @@ fn substitute_named_union_branch(
     substitutions: &BTreeMap<String, TypeRefIr>,
 ) -> NamedUnionBranchIr {
     match branch {
-        NamedUnionBranchIr::ConcreteNominal {
-            nominal_type,
-            type_arguments,
-        } => NamedUnionBranchIr::ConcreteNominal {
-            nominal_type: substitute_type_params_in_type_ref_ref(nominal_type, substitutions),
-            type_arguments: type_arguments
-                .iter()
-                .map(|(name, argument)| {
-                    (
-                        name.clone(),
-                        substitute_type_params_in_type_ref_ref(argument, substitutions),
-                    )
-                })
-                .collect(),
-        },
+        NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+            NamedUnionBranchIr::ConcreteNominal {
+                nominal_type: substitute_type_params_in_type_ref_ref(nominal_type, substitutions),
+            }
+        }
         NamedUnionBranchIr::SyntheticDiscriminator {
             payload_type,
             discriminator_field,
@@ -788,6 +679,14 @@ fn compiler_builtin_type_for_catch(ty: &TypeRefIr) -> Option<&'static CompilerBu
     compiler_builtin_type(name).filter(|builtin| builtin.kind == CompilerBuiltinTypeKind::Error)
 }
 
+fn nominal_arguments(ty: &TypeRefIr) -> &[TypeRefIr] {
+    match ty {
+        TypeRefIr::AppliedNominal { arguments, .. } => arguments,
+        TypeRefIr::Builtin { args, .. } => args,
+        _ => &[],
+    }
+}
+
 fn prelude_nominal_type(ty: &TypeRefIr) -> Option<(String, &'static [String])> {
     let symbol = match ty {
         TypeRefIr::Builtin { name, .. } if compiler_builtin_type(name).is_none() => {
@@ -799,6 +698,17 @@ fn prelude_nominal_type(ty: &TypeRefIr) -> Option<(String, &'static [String])> {
                 skiff_artifact_model::PackageRefIr::PackageId { package_id }
                     if package_id == SKIFF_STD_PUBLICATION_ID
             ) =>
+        {
+            symbol.symbol_path.clone()
+        }
+        TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::PackageSymbol { symbol },
+            ..
+        } if matches!(
+            &symbol.package,
+            skiff_artifact_model::PackageRefIr::PackageId { package_id }
+                if package_id == SKIFF_STD_PUBLICATION_ID
+        ) =>
         {
             symbol.symbol_path.clone()
         }

@@ -16,7 +16,7 @@ use crate::file_ir::{
     ServiceSymbolRef, TypeDescriptorIr, TypeLinkTargetIr, TypeRefIr,
 };
 use skiff_artifact_identity::type_ref_abi_key;
-use skiff_artifact_model::NamedUnionBranchIr;
+use skiff_artifact_model::{NamedUnionBranchIr, NominalTypeRefBaseIr};
 use skiff_compiler_core::source_role::PublicationSourceRole;
 use skiff_compiler_source::api::PublicSymbolKind;
 use skiff_compiler_source::parsed_sources::ParsedCompilerSource;
@@ -442,6 +442,30 @@ fn projection_visible_type_ref(
                 .map(|arg| projection_visible_type_ref(arg, publication_type_names))
                 .collect(),
         },
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            let base = match base {
+                NominalTypeRefBaseIr::PublicationType {
+                    module_path,
+                    type_index,
+                } => publication_type_names
+                    .get(&(module_path.clone(), *type_index))
+                    .map(|symbol| NominalTypeRefBaseIr::ServiceSymbol {
+                        symbol: ServiceSymbolRef {
+                            module_path: module_path.clone(),
+                            symbol: symbol.clone(),
+                        },
+                    })
+                    .unwrap_or_else(|| base.clone()),
+                _ => base.clone(),
+            };
+            TypeRefIr::AppliedNominal {
+                base,
+                arguments: arguments
+                    .iter()
+                    .map(|argument| projection_visible_type_ref(argument, publication_type_names))
+                    .collect(),
+            }
+        }
         TypeRefIr::Record { fields } => TypeRefIr::Record {
             fields: fields
                 .iter()
@@ -711,24 +735,13 @@ fn derive_file_ir_link_targets(units: &mut [FileIrUnit], seed: &PublicationApiSe
             TypeDescriptorIr::Union { branches } => {
                 for branch in branches {
                     match branch {
-                        NamedUnionBranchIr::ConcreteNominal {
-                            nominal_type,
-                            type_arguments,
-                        } => {
+                        NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
                             collect_type_ref_named_locations(
                                 &index,
                                 &module_path,
                                 nominal_type,
                                 &mut refs,
                             );
-                            for argument in type_arguments.values() {
-                                collect_type_ref_named_locations(
-                                    &index,
-                                    &module_path,
-                                    argument,
-                                    &mut refs,
-                                );
-                            }
                         }
                         NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
                             collect_type_ref_named_locations(
@@ -918,6 +931,39 @@ fn collect_type_ref_named_locations(
         TypeRefIr::Builtin { args, .. } => {
             for arg in args {
                 collect_type_ref_named_locations(index, module_path, arg, out);
+            }
+        }
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            match base {
+                NominalTypeRefBaseIr::LocalType { type_index } => {
+                    if let Some(location) = index.resolve_local(module_path, *type_index) {
+                        out.push(location);
+                    }
+                }
+                NominalTypeRefBaseIr::PublicationType {
+                    module_path,
+                    type_index,
+                } => {
+                    if let Some(location) = index.resolve_local(module_path, *type_index) {
+                        out.push(location);
+                    }
+                }
+                NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+                    if let Some(location) =
+                        index.resolve_module_symbol(&symbol.module_path, &symbol.symbol)
+                    {
+                        out.push(location);
+                    }
+                }
+                NominalTypeRefBaseIr::PackageSymbol { symbol } => {
+                    if let Some(location) = index.resolve_source_path(&symbol.symbol_path) {
+                        out.push(location);
+                    }
+                }
+                NominalTypeRefBaseIr::PackageSchema { .. } => {}
+            }
+            for argument in arguments {
+                collect_type_ref_named_locations(index, module_path, argument, out);
             }
         }
         TypeRefIr::LocalType { type_index } => {

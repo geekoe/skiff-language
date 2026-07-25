@@ -7,6 +7,7 @@ use crate::file_ir::{
     FunctionTypeParamIr, LiteralIr, PackageRefIr, PackageSymbolRef, ServiceSymbolRef, TypeRefIr,
 };
 use skiff_artifact_identity::interface_instantiation_ref;
+use skiff_artifact_model::NominalTypeRefBaseIr;
 use skiff_compiler_core::{
     id::SKIFF_STD_PUBLICATION_ID, package_export_resolver::PackageExportResolver,
 };
@@ -143,6 +144,15 @@ pub(super) fn type_ref_ir_type_text(ty: &TypeRefIr) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        TypeRefIr::AppliedNominal { base, arguments } => format!(
+            "{}<{}>",
+            nominal_base_type_text(base),
+            arguments
+                .iter()
+                .map(type_ref_ir_type_text)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         TypeRefIr::Record { fields } => format!(
             "{{ {} }}",
             fields
@@ -207,6 +217,23 @@ pub(super) fn type_ref_ir_type_text(ty: &TypeRefIr) -> String {
         }
         TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
         TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => format!("{package_id}::{stable_schema_key}"),
+    }
+}
+
+fn nominal_base_type_text(base: &NominalTypeRefBaseIr) -> String {
+    match base {
+        NominalTypeRefBaseIr::LocalType { type_index } => format!("$localType{type_index}"),
+        NominalTypeRefBaseIr::PublicationType {
+            module_path,
+            type_index,
+        } => format!("publicationType({module_path}:{type_index})"),
+        NominalTypeRefBaseIr::ServiceSymbol { symbol } => symbol.symbol_path(),
+        NominalTypeRefBaseIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
+        NominalTypeRefBaseIr::PackageSchema {
             package_id,
             stable_schema_key,
             ..
@@ -523,8 +550,26 @@ pub(super) fn lower_type_text(
                         .collect::<Result<Vec<_>>>()?,
                 });
             }
-            return Ok(TypeRefIr::PackageSymbol {
-                symbol: std_package_symbol_ref(name),
+            return Ok(TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol {
+                    symbol: std_package_symbol_ref(name),
+                },
+                arguments: parts
+                    .args
+                    .iter()
+                    .map(|arg| {
+                        lower_type_text(
+                            arg,
+                            type_indices,
+                            local_db_objects,
+                            publication_db_metadata,
+                            package_aliases,
+                            external_type_symbols,
+                            source_alias_targets,
+                            context,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?,
             });
         }
         return lower_generic_type_text(
@@ -668,46 +713,62 @@ fn lower_generic_type_text(
     context: TypeLoweringContext<'_>,
 ) -> Result<TypeRefIr> {
     let root = root.trim();
+    let arguments = args
+        .iter()
+        .map(|arg| {
+            lower_type_text(
+                arg,
+                type_indices,
+                local_db_objects,
+                publication_db_metadata,
+                package_aliases,
+                external_type_symbols,
+                source_alias_targets,
+                context,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
     if let Some(index) = type_indices.get(root) {
-        return Ok(TypeRefIr::LocalType { type_index: *index });
+        return Ok(TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::LocalType { type_index: *index },
+            arguments,
+        });
     }
     if !is_file_ir_builtin_generic_type(root) {
         if let Some(symbol) = package_type_symbol_ref(root, package_aliases) {
-            return Ok(TypeRefIr::PackageSymbol { symbol });
+            return Ok(TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol { symbol },
+                arguments,
+            });
         }
         if let Some(service_path) = root.strip_prefix("root.") {
             let package_path = package_scoped_root_path("", service_path);
             if let Some(symbol) = package_type_symbol_ref(&package_path, package_aliases) {
-                return Ok(TypeRefIr::PackageSymbol { symbol });
+                return Ok(TypeRefIr::AppliedNominal {
+                    base: NominalTypeRefBaseIr::PackageSymbol { symbol },
+                    arguments,
+                });
             }
-            return Ok(TypeRefIr::ServiceSymbol {
-                symbol: service_symbol_ref("", service_path),
+            return Ok(TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::ServiceSymbol {
+                    symbol: service_symbol_ref("", service_path),
+                },
+                arguments,
             });
         }
         if root.contains('.') {
-            return Ok(TypeRefIr::ServiceSymbol {
-                symbol: service_symbol_ref("", root),
+            return Ok(TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::ServiceSymbol {
+                    symbol: service_symbol_ref("", root),
+                },
+                arguments,
             });
         }
         return Err(unsupported_file_ir_generic_root(root));
     }
     Ok(TypeRefIr::Builtin {
         name: root.to_string(),
-        args: args
-            .iter()
-            .map(|arg| {
-                lower_type_text(
-                    arg,
-                    type_indices,
-                    local_db_objects,
-                    publication_db_metadata,
-                    package_aliases,
-                    external_type_symbols,
-                    source_alias_targets,
-                    context,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?,
+        args: arguments,
     })
 }
 
@@ -744,8 +805,27 @@ pub(super) fn lower_named_type(
                     .collect::<Result<Vec<_>>>()?,
             });
         }
-        return Ok(TypeRefIr::PackageSymbol {
-            symbol: std_package_symbol_ref(canonical_name),
+        let symbol = std_package_symbol_ref(canonical_name);
+        if type_args.is_empty() {
+            return Ok(TypeRefIr::PackageSymbol { symbol });
+        }
+        return Ok(TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::PackageSymbol { symbol },
+            arguments: type_args
+                .iter()
+                .map(|arg| {
+                    lower_type_ref(
+                        arg,
+                        type_indices,
+                        local_db_objects,
+                        publication_db_metadata,
+                        package_aliases,
+                        external_type_symbols,
+                        source_alias_targets,
+                        context,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?,
         });
     }
     let service_name = name.strip_prefix("root.").unwrap_or(name);
@@ -802,28 +882,58 @@ pub(super) fn lower_named_type(
         )));
     }
 
-    if type_indices.contains_key(service_name) {
-        return Err(unsupported(format!(
-            "generic local type `{name}` is not supported by the File IR unit emitter yet"
-        )));
+    let arguments = type_args
+        .iter()
+        .map(|arg| {
+            lower_type_ref(
+                arg,
+                type_indices,
+                local_db_objects,
+                publication_db_metadata,
+                package_aliases,
+                external_type_symbols,
+                source_alias_targets,
+                context,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if let Some(type_index) = type_indices.get(service_name) {
+        return Ok(TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::LocalType {
+                type_index: *type_index,
+            },
+            arguments,
+        });
     }
     if !is_file_ir_builtin_generic_type(service_name) {
         if let Some(symbol) = package_type_symbol_ref(service_name, package_aliases) {
-            return Ok(TypeRefIr::PackageSymbol { symbol });
+            return Ok(TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol { symbol },
+                arguments,
+            });
         }
         if let Some(package_scoped_root) = package_scoped_root.as_deref() {
             if let Some(symbol) = package_type_symbol_ref(package_scoped_root, package_aliases) {
-                return Ok(TypeRefIr::PackageSymbol { symbol });
+                return Ok(TypeRefIr::AppliedNominal {
+                    base: NominalTypeRefBaseIr::PackageSymbol { symbol },
+                    arguments,
+                });
             }
         }
         if let Some(symbol) = external_type_symbols.resolve_source_text(service_name) {
-            return Ok(TypeRefIr::ServiceSymbol {
-                symbol: service_symbol_ref_from_source_key(symbol),
+            return Ok(TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::ServiceSymbol {
+                    symbol: service_symbol_ref_from_source_key(symbol),
+                },
+                arguments,
             });
         }
         if !external_type_symbols.is_empty() {
-            return Ok(TypeRefIr::ServiceSymbol {
-                symbol: service_symbol_ref("", service_name),
+            return Ok(TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::ServiceSymbol {
+                    symbol: service_symbol_ref("", service_name),
+                },
+                arguments,
             });
         }
         if service_name.contains('.') {
@@ -837,21 +947,7 @@ pub(super) fn lower_named_type(
     }
     Ok(TypeRefIr::Builtin {
         name: service_name.to_string(),
-        args: type_args
-            .iter()
-            .map(|arg| {
-                lower_type_ref(
-                    arg,
-                    type_indices,
-                    local_db_objects,
-                    publication_db_metadata,
-                    package_aliases,
-                    external_type_symbols,
-                    source_alias_targets,
-                    context,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?,
+        args: arguments,
     })
 }
 

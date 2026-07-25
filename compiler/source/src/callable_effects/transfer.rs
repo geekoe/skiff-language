@@ -456,6 +456,10 @@ fn type_ir_is_definitely_scalar(ty: &TypeRefIr) -> bool {
         TypeRefIr::Literal { .. } => true,
         TypeRefIr::Union { items } => items.iter().all(type_ir_is_definitely_scalar),
         TypeRefIr::Nullable { inner } => type_ir_is_definitely_scalar(inner),
+        TypeRefIr::AppliedNominal { arguments, .. } => {
+            let _arguments_are_scalar = arguments.iter().all(type_ir_is_definitely_scalar);
+            false
+        }
         TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }

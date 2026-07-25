@@ -43,6 +43,13 @@ pub fn map_type_ref(ty: TypeRefIr, map: &mut impl FnMut(TypeRefIr) -> TypeRefIr)
             stable_schema_key,
             package_schema_type_id,
         },
+        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+            base,
+            arguments: arguments
+                .into_iter()
+                .map(|argument| map_type_ref(argument, map))
+                .collect(),
+        },
         TypeRefIr::DbObjectSymbol { symbol } => TypeRefIr::DbObjectSymbol { symbol },
         TypeRefIr::Record { fields } => TypeRefIr::Record {
             fields: fields
@@ -117,6 +124,9 @@ pub fn substitute_type_params_in_type_ref(
             stable_schema_key,
             package_schema_type_id,
         },
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            TypeRefIr::AppliedNominal { base, arguments }
+        }
         TypeRefIr::DbObjectSymbol { symbol } => TypeRefIr::DbObjectSymbol { symbol },
         TypeRefIr::Record { fields } => TypeRefIr::Record { fields },
         TypeRefIr::Union { items } => TypeRefIr::Union { items },
@@ -151,6 +161,7 @@ pub fn contains_boundary_unsafe_type(ty: &TypeRefIr) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeRefVisitPathSegment {
     NativeArg { name: String, index: usize },
+    AppliedNominalArgument { index: usize },
     RecordField { name: String },
     UnionItem { index: usize },
     NullableInner,
@@ -176,6 +187,14 @@ pub fn type_ref_children(ty: &TypeRefIr) -> Vec<TypeRefChild<'_>> {
                     name: name.clone(),
                     index,
                 },
+            })
+            .collect(),
+        TypeRefIr::AppliedNominal { arguments, .. } => arguments
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| TypeRefChild {
+                ty,
+                segment: TypeRefVisitPathSegment::AppliedNominalArgument { index },
             })
             .collect(),
         TypeRefIr::Record { fields } => fields
@@ -310,6 +329,13 @@ mod tests {
         }
     }
 
+    fn applied_local(type_index: u32, arguments: Vec<TypeRefIr>) -> TypeRefIr {
+        TypeRefIr::AppliedNominal {
+            base: skiff_artifact_model::NominalTypeRefBaseIr::LocalType { type_index },
+            arguments,
+        }
+    }
+
     #[test]
     fn substitutes_root_type_param() {
         let substitutions = BTreeMap::from([("T".to_string(), native("string"))]);
@@ -399,6 +425,66 @@ mod tests {
     }
 
     #[test]
+    fn applied_nominal_arguments_are_walked_in_order_and_substituted() {
+        let ty = applied_local(
+            4,
+            vec![
+                type_param("T"),
+                TypeRefIr::Builtin {
+                    name: "Array".to_string(),
+                    args: vec![applied_local(2, vec![type_param("U")])],
+                },
+            ],
+        );
+        let substitutions = BTreeMap::from([
+            ("T".to_string(), native("string")),
+            ("U".to_string(), native("number")),
+        ]);
+
+        let substituted = substitute_type_params_in_type_ref_ref(&ty, &substitutions);
+        assert_eq!(
+            substituted,
+            applied_local(
+                4,
+                vec![
+                    native("string"),
+                    TypeRefIr::Builtin {
+                        name: "Array".to_string(),
+                        args: vec![applied_local(2, vec![native("number")])],
+                    },
+                ],
+            )
+        );
+
+        let children = type_ref_children(&ty);
+        assert_eq!(children.len(), 2);
+        assert_eq!(
+            children[0].segment,
+            TypeRefVisitPathSegment::AppliedNominalArgument { index: 0 }
+        );
+        assert_eq!(
+            children[1].segment,
+            TypeRefVisitPathSegment::AppliedNominalArgument { index: 1 }
+        );
+        let mut visited = Vec::new();
+        walk_type_ref_with_path(&ty, &mut |visit| {
+            if let TypeRefIr::TypeParam { name } = visit.ty {
+                visited.push((name.clone(), visit.path.segments().to_vec()));
+            }
+        });
+        assert_eq!(visited[0].0, "T");
+        assert_eq!(
+            visited[0].1,
+            vec![TypeRefVisitPathSegment::AppliedNominalArgument { index: 0 }]
+        );
+        assert_eq!(visited[1].0, "U");
+        assert_eq!(
+            visited[1].1.last(),
+            Some(&TypeRefVisitPathSegment::AppliedNominalArgument { index: 0 })
+        );
+    }
+
+    #[test]
     fn walk_and_any_visit_function_params_and_return_type() {
         let ty = TypeRefIr::Function {
             params: vec![param("input", type_param("P"))],
@@ -436,6 +522,7 @@ mod tests {
                 TypeRefIr::ServiceSymbol { .. } => visited.push("service".to_string()),
                 TypeRefIr::PackageSymbol { .. } => visited.push("package".to_string()),
                 TypeRefIr::PackageSchema { .. } => visited.push("packageSchema".to_string()),
+                TypeRefIr::AppliedNominal { .. } => visited.push("appliedNominal".to_string()),
                 TypeRefIr::DbObjectSymbol { .. } => visited.push("db".to_string()),
                 TypeRefIr::Record { .. } => visited.push("record".to_string()),
                 TypeRefIr::Union { .. } => visited.push("union".to_string()),

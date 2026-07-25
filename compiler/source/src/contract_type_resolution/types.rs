@@ -90,6 +90,9 @@ impl ContractAwareTypeResolver<'_> {
                         .collect::<Result<Vec<_>, _>>()?,
                 })
             }
+            TypeRefIr::AppliedNominal { .. } => Ok(PackageTypeRef::Local {
+                local_type: self.normalize_local_ir(ty)?,
+            }),
             TypeRefIr::LocalType { .. }
             | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
@@ -131,6 +134,13 @@ impl ContractAwareTypeResolver<'_> {
                     None => ty.clone(),
                 })
             }
+            TypeRefIr::AppliedNominal { base, arguments } => Ok(TypeRefIr::AppliedNominal {
+                base: base.clone(),
+                arguments: arguments
+                    .iter()
+                    .map(|argument| self.normalize_local_ir(argument))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
             TypeRefIr::Record { fields } => Ok(TypeRefIr::Record {
                 fields: fields
                     .iter()

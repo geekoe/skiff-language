@@ -1,5 +1,6 @@
 use skiff_artifact_model::{
-    ContractTypeRef, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
+    ContractTypeRef, NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, PackageTypeRef,
+    TypeRefIr,
 };
 
 pub(super) use crate::contract_type_resolution::package_type_contains_contract;
@@ -349,6 +350,17 @@ fn resolved_ir_contains_contract_symbol(
         TypeRefIr::ServiceSymbol { symbol } => dependency_analysis
             .contract_requirement(&symbol.module_path)
             .is_ok(),
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            matches!(
+                base,
+                NominalTypeRefBaseIr::ServiceSymbol { symbol }
+                    if dependency_analysis
+                        .contract_requirement(&symbol.module_path)
+                        .is_ok()
+            ) || arguments
+                .iter()
+                .any(|argument| resolved_ir_contains_contract_symbol(argument, dependency_analysis))
+        }
         TypeRefIr::Builtin { args, .. } | TypeRefIr::Union { items: args } => args
             .iter()
             .any(|argument| resolved_ir_contains_contract_symbol(argument, dependency_analysis)),

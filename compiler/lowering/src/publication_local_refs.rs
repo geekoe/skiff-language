@@ -7,7 +7,7 @@ use crate::file_ir::{
     TypeDescriptorIr, TypeRefIr,
 };
 use skiff_artifact_identity::{canonical_interface_method_abi_id, type_ref_abi_key};
-use skiff_artifact_model::{InterfaceInstantiationRef, NamedUnionBranchIr};
+use skiff_artifact_model::{InterfaceInstantiationRef, NamedUnionBranchIr, NominalTypeRefBaseIr};
 use skiff_compiler_source::TypeResolutionModel;
 
 use super::external_refs::rebuild_external_refs_for_file_ir_unit;
@@ -203,14 +203,8 @@ fn rewrite_type_descriptor(
         TypeDescriptorIr::Union { branches } => {
             for branch in branches {
                 match branch {
-                    NamedUnionBranchIr::ConcreteNominal {
-                        nominal_type,
-                        type_arguments,
-                    } => {
+                    NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
                         rewrite_type_ref(index, module_path, nominal_type);
-                        for argument in type_arguments.values_mut() {
-                            rewrite_type_ref(index, module_path, argument);
-                        }
                     }
                     NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
                         rewrite_type_ref(index, module_path, payload_type);
@@ -639,6 +633,13 @@ fn rewrite_type_ref(
             }
             changed
         }
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            let mut changed = rewrite_applied_nominal_base(index, module_path, base);
+            for argument in arguments {
+                changed |= rewrite_type_ref(index, module_path, argument);
+            }
+            changed
+        }
         TypeRefIr::Record { fields } => {
             let mut changed = false;
             for field in fields.values_mut() {
@@ -676,6 +677,66 @@ fn rewrite_type_ref(
         | TypeRefIr::TypeParam { .. } => false,
     };
     changed || nested_changed
+}
+
+fn rewrite_applied_nominal_base(
+    index: &PublicationLocalRefIndex,
+    module_path: &str,
+    base: &mut NominalTypeRefBaseIr,
+) -> bool {
+    match base {
+        NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+            let Some(location) = index.type_location(&symbol.module_path, &symbol.symbol) else {
+                return false;
+            };
+            *base = if location.module_path == module_path {
+                NominalTypeRefBaseIr::LocalType {
+                    type_index: location.type_index,
+                }
+            } else {
+                NominalTypeRefBaseIr::PublicationType {
+                    module_path: location.module_path.clone(),
+                    type_index: location.type_index,
+                }
+            };
+            true
+        }
+        NominalTypeRefBaseIr::PackageSymbol { symbol } => {
+            if let Some(location) =
+                index.current_package_type_location(&symbol.package, &symbol.symbol_path)
+            {
+                *base = if location.module_path == module_path {
+                    NominalTypeRefBaseIr::LocalType {
+                        type_index: location.type_index,
+                    }
+                } else {
+                    NominalTypeRefBaseIr::PublicationType {
+                        module_path: location.module_path.clone(),
+                        type_index: location.type_index,
+                    }
+                };
+                true
+            } else if let PackageRefIr::Dependency { dependency_ref } = &symbol.package {
+                let Some(abi_expectation) = index
+                    .package_dependency_abi_expectations
+                    .get(dependency_ref)
+                else {
+                    return false;
+                };
+                if symbol.abi_expectation.as_ref() == Some(abi_expectation) {
+                    false
+                } else {
+                    symbol.abi_expectation = Some(abi_expectation.clone());
+                    true
+                }
+            } else {
+                false
+            }
+        }
+        NominalTypeRefBaseIr::LocalType { .. }
+        | NominalTypeRefBaseIr::PublicationType { .. }
+        | NominalTypeRefBaseIr::PackageSchema { .. } => false,
+    }
 }
 
 fn rewrite_type_ref_to_publication_location(

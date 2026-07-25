@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::file_ir::{LiteralIr, TypeRefIr};
-use skiff_artifact_model::InterfaceInstantiationRef;
+use skiff_artifact_model::{InterfaceInstantiationRef, NominalTypeRefBaseIr};
 
 #[derive(Debug, Clone)]
 pub struct EntryFunctionSignature {
@@ -93,6 +93,19 @@ fn type_ref_ir_source_text_with_named_types(
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        TypeRefIr::AppliedNominal { base, arguments } => format!(
+            "{}<{}>",
+            nominal_base_source_text(base, local_type_name, named_type),
+            arguments
+                .iter()
+                .map(|argument| type_ref_ir_source_text_with_named_types(
+                    argument,
+                    local_type_name,
+                    named_type,
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         TypeRefIr::LocalType { type_index } => named_type(
             &local_type_name(*type_index)
                 .unwrap_or_else(|| format!("__invalid_local_type_{type_index}")),
@@ -168,6 +181,38 @@ fn type_ref_ir_source_text_with_named_types(
                 .join(", "),
             type_ref_ir_source_text_with_named_types(return_type, local_type_name, named_type)
         ),
+    }
+}
+
+fn nominal_base_source_text(
+    base: &NominalTypeRefBaseIr,
+    local_type_name: &impl Fn(u32) -> Option<String>,
+    named_type: &impl Fn(&str) -> String,
+) -> String {
+    match base {
+        NominalTypeRefBaseIr::LocalType { type_index } => named_type(
+            &local_type_name(*type_index)
+                .unwrap_or_else(|| format!("__invalid_local_type_{type_index}")),
+        ),
+        NominalTypeRefBaseIr::PublicationType { module_path, .. } => {
+            named_type(&format!("root.{module_path}"))
+        }
+        NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+            let name = if symbol.module_path.is_empty() {
+                symbol.symbol.clone()
+            } else if symbol.module_path.starts_with("std.") {
+                symbol.symbol_path()
+            } else {
+                format!("root.{}", symbol.symbol_path())
+            };
+            named_type(&name)
+        }
+        NominalTypeRefBaseIr::PackageSymbol { symbol } => named_type(&symbol.symbol_path),
+        NominalTypeRefBaseIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => named_type(&format!("{package_id}::{stable_schema_key}")),
     }
 }
 
