@@ -1,6 +1,7 @@
 # P5-F331 Service error channel convergence probe
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F331-service-error-channel-convergence-probe-result.md`。
 
 ## 直接父节点
 
@@ -93,4 +94,3 @@ selector必须非零。可新增一个exact convergence selector。完整eval仍
 - 风险：高，test-only real-path convergence；新的一次性Agent，5分钟内先运行compile/selector发现合流断点；
 - 提交test/result并返回candidate commit/tree、R4矩阵、反搜、PASS/FAIL和blocker；
 - 不push、不承接A5/W2-W。
-
