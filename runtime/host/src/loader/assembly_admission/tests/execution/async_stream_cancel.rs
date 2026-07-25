@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryFeatureUnavailableReason, BoundaryOperationContract,
-    BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
+    BoundaryFeatureUnavailableReason, BoundaryOperationContract, BoundaryReturn,
+    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
 };
 use skiff_runtime_activation::CallbackCapabilityError;
 use skiff_runtime_eval::error::RuntimeError;
@@ -81,7 +81,7 @@ async fn typed_execution_async_stream_cancel_reaches_owned_provider_future_full_
 }
 
 #[tokio::test]
-async fn typed_execution_async_stream_cancel_detaches_declared_typed_error_with_shared_planner() {
+async fn typed_execution_async_stream_cancel_restores_public_typed_error_from_fixed_carrier() {
     let fixture =
         TypedExecutionFixture::admit_contract(TypedExecutionContract::async_typed_error()).await;
     let runtime = TypedExecutionRuntime::new(
@@ -104,14 +104,49 @@ async fn typed_execution_async_stream_cancel_detaches_declared_typed_error_with_
             Vec::new(),
         )
         .await
-        .expect_err("declared provider throw should cross the async service boundary");
+        .expect_err("provider throw should cross the async service boundary");
     let RuntimeError::UserException(exception) = error else {
-        panic!("declared async typed error should retain its user-exception class: {error}")
+        panic!("linked public error should materialize as a caller user exception: {error}")
+    };
+    let request = exception.request();
+    assert!(
+        request.fixed_service_error().is_some(),
+        "cross-service materialization must retain the fixed carrier"
+    );
+    assert!(
+        request.local_catch_identity().is_some(),
+        "the linked public package type must restore a nominal caller catch identity"
+    );
+    assert!(!request.correlation().trace_id.is_empty());
+    assert!(!request.correlation().error_id.is_empty());
+    let RuntimeValue::Heap(payload_handle) = request
+        .local_value()
+        .expect("linked public error must restore a local payload")
+        .value()
+    else {
+        panic!("restored public error payload must remain a record")
+    };
+    let HeapNode::Object(payload) = heap
+        .get(*payload_handle)
+        .expect("restored public error record must remain in the caller heap")
+    else {
+        panic!("restored public error payload must remain an object")
+    };
+    let Some(RuntimeValue::Heap(messages_handle)) = payload.fields().get("messages") else {
+        panic!("restored public error payload must retain its messages array")
+    };
+    let HeapNode::Array(messages) = heap
+        .get(*messages_handle)
+        .expect("restored public error messages must remain in the caller heap")
+    else {
+        panic!("restored public error messages must remain an array")
     };
     assert_eq!(
-        exception.error_payload().unwrap().get("messages"),
-        Some(&serde_json::json!(["provider async typed error"])),
-        "shared planner must materialize the declared payload shape into the caller error"
+        messages,
+        &[RuntimeValue::String(
+            "provider async typed error".to_string()
+        )],
+        "typed API must expose the exact restored public payload"
     );
 }
 
@@ -271,9 +306,34 @@ async fn typed_execution_service_stream_propagates_provider_error_full_chain() {
         .await
         .expect_err("provider failure after its first item must terminate the consumer");
 
+    let RuntimeError::UserException(exception) = error else {
+        panic!("public provider stream failure must restore a caller user exception: {error}")
+    };
+    let request = exception.request();
     assert!(
-        error.to_string().contains("assertion failed"),
-        "provider terminal must retain the admitted provider diagnostic: {error}"
+        request.fixed_service_error().is_some(),
+        "provider stream failure must retain its fixed cross-service carrier"
+    );
+    assert!(!request.correlation().trace_id.is_empty());
+    assert!(!request.correlation().error_id.is_empty());
+    let RuntimeValue::Heap(payload_handle) = request
+        .local_value()
+        .expect("linked stream error type must restore its payload")
+        .value()
+    else {
+        panic!("restored stream error payload must be a record")
+    };
+    let HeapNode::Object(payload) = heap
+        .get(*payload_handle)
+        .expect("restored stream error record must remain in the caller heap")
+    else {
+        panic!("restored stream error payload must remain an object")
+    };
+    assert_eq!(
+        payload.fields().get("message"),
+        Some(&RuntimeValue::String(
+            "provider stream typed error".to_string()
+        ))
     );
     wait_for_stream_runtime_empty(&interpreter.stream_runtime).await;
 }
@@ -592,7 +652,6 @@ fn async_unary_contract() -> BoundaryOperationContract {
             ty: ContractTypeRef::builtin("void"),
             value_plan: detached_plan(BoundaryValueLifetime::Call),
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::Unary,
         cancellation: BoundaryCancellationContract::Cooperative,
         callbacks: BoundaryCallbackContract::None,

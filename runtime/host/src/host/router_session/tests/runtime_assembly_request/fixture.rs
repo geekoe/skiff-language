@@ -236,6 +236,9 @@ fn void_file(may_suspend: bool, submits_spawn: bool) -> FileIrUnit {
                     target: CallTargetIr::LocalExecutable {
                         executable_index: 1,
                     },
+                    site: InstructionSourceSite::Synthetic {
+                        reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                    },
                     args: Vec::new(),
                     type_args: BTreeMap::new(),
                     metadata: BTreeMap::from([(
@@ -346,7 +349,6 @@ fn void_package(
                         return_type: PackageTypeRef::Local {
                             local_type: TypeRefIr::builtin("void"),
                         },
-                        throw_types: Vec::new(),
                         may_suspend,
                     },
                 },
@@ -486,7 +488,6 @@ fn void_unary_contract(may_suspend: bool) -> BoundaryOperationContract {
                 lifetime: BoundaryValueLifetime::Call,
             },
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::Unary,
         cancellation: if may_suspend {
             BoundaryCancellationContract::Cooperative

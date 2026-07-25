@@ -1,16 +1,24 @@
 use std::fmt;
 
 use serde_json::json;
+use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
 use skiff_runtime_boundary::error::{RecoverableBoundaryError, RecoverableBoundaryErrorCode};
-use skiff_runtime_model::recoverable::{
-    RuntimeRecoverableBoundaryContext, RuntimeRecoverableBoundaryKind,
-    RuntimeRecoverableExpectedTypePlan, RuntimeRecoverableStorageLane,
-    RuntimeRecoverableTrustBoundary,
+use skiff_runtime_model::{
+    recoverable::{
+        RuntimeRecoverableBoundaryContext, RuntimeRecoverableBoundaryKind,
+        RuntimeRecoverableExpectedTypePlan, RuntimeRecoverableStorageLane,
+        RuntimeRecoverableTrustBoundary,
+    },
+    runtime_value::{RuntimeValue, RuntimeValueCarrier},
+    service_error::{
+        ErrorCorrelation, ExceptionStackFrame, LocalExecutionTypeIdentity, NominalTypeIdentity,
+        RequestException,
+    },
 };
 
 use super::{
-    add_diagnostic_frame, add_source_frame, Diagnosed, RuntimeError, RuntimeErrorPayload,
-    TypeIdentity, WirePayload,
+    add_diagnostic_frame, add_source_frame, CatchIdentity, Diagnosed, PlatformBuiltinErrorIdentity,
+    RuntimeError, RuntimeErrorPayload, WirePayload,
 };
 use skiff_runtime_linked_program::{FileAddr, TypeAddr, UnitAddr};
 
@@ -40,7 +48,7 @@ impl WirePayload for DummyWirePayload {
         dummy_wire_payload()
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
         dummy_catch_projection()
     }
 
@@ -60,9 +68,9 @@ fn dummy_wire_payload() -> RuntimeErrorPayload {
     }
 }
 
-fn dummy_catch_projection() -> Option<(TypeIdentity, serde_json::Value)> {
+fn dummy_catch_projection() -> Option<(CatchIdentity, serde_json::Value)> {
     Some((
-        TypeIdentity::builtin("test.OpaqueCatchError"),
+        PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
         json!({
             "caught": true,
         }),
@@ -79,7 +87,13 @@ fn assert_wire_case(
     assert_eq!(payload.code, expected_code, "{name} payload code");
     match (error.catch_projection(), expected_catch) {
         (Some((identity, _)), Some(expected)) => {
-            assert_eq!(identity, TypeIdentity::builtin(expected), "{name} catch")
+            assert_eq!(
+                identity,
+                PlatformBuiltinErrorIdentity::from_symbol(expected)
+                    .unwrap_or_else(|| panic!("{name} expected a registered platform catch"))
+                    .catch_identity(),
+                "{name} catch"
+            )
         }
         (None, None) => {}
         (actual, expected) => {
@@ -208,7 +222,7 @@ fn service_db_conflict_survives_host_opaque_boundary_with_sanitized_projection()
     assert_eq!(
         WirePayload::catch_projection(&error),
         Some((
-            TypeIdentity::builtin("std.db.ConflictError"),
+            PlatformBuiltinErrorIdentity::DbConflict.catch_identity(),
             json!({
                 "target": "std.db",
                 "message": "database conflict; retry only at an explicit side-effect-safe boundary",
@@ -518,7 +532,7 @@ fn eval_diagnostic_fold_keeps_host_wrappers_and_delegates_catch_projection() {
     assert_eq!(
         WirePayload::catch_projection(&error),
         Some((
-            TypeIdentity::builtin("std.file.FileError"),
+            PlatformBuiltinErrorIdentity::File.catch_identity(),
             json!({ "message": "std.file not found" }),
         ))
     );
@@ -943,14 +957,14 @@ fn phase6_host_small_root_golden_matrix() {
             "host Opaque",
             RuntimeError::Opaque(Box::new(DummyWirePayload)),
             "test.OpaqueWireError",
-            Some("test.OpaqueCatchError"),
+            Some("std.service.ProtocolError"),
         ),
         (
             "host Diagnosed Opaque",
             RuntimeError::Opaque(Box::new(DummyWirePayload))
                 .with_diagnostic_frame(json!({ "operation": "phase6.matrix" })),
             "test.OpaqueWireError",
-            Some("test.OpaqueCatchError"),
+            Some("std.service.ProtocolError"),
         ),
     ];
 
@@ -992,12 +1006,7 @@ fn phase6_cross_crate_error_code_and_catch_golden_matrix() {
         details: Some(json!({ "service": "account" })),
     };
     let eval_user_exception = skiff_runtime_eval::error::RuntimeError::UserException(
-        skiff_runtime_eval::error::UserException::from_typed_payload(
-            json!({ "message": "assertion failed" }),
-            TypeIdentity::builtin("std.json.DecodeError"),
-            Some(TypeIdentity::builtin("std.json.DecodeError")),
-        )
-        .expect("user exception should build"),
+        local_user_exception(0, "assertion failed", "phase6"),
     );
     let eval_root_payload =
         skiff_runtime_eval::error::RuntimeError::RootRuntimePayload(RuntimeErrorPayload {
@@ -1092,7 +1101,7 @@ fn phase6_cross_crate_error_code_and_catch_golden_matrix() {
                 DummyWirePayload,
             )),
             "test.OpaqueWireError",
-            Some("test.OpaqueCatchError"),
+            Some("std.service.ProtocolError"),
         ),
         (
             "capability RequestPayloadContextError::MissingBinaryHttp",
@@ -1258,7 +1267,7 @@ fn phase6_cross_crate_error_code_and_catch_golden_matrix() {
                 DummyWirePayload,
             ))),
             "test.OpaqueWireError",
-            Some("test.OpaqueCatchError"),
+            Some("std.service.ProtocolError"),
         ),
         (
             "eval UserException",
@@ -1365,134 +1374,81 @@ fn recoverable_boundary_error() -> RecoverableBoundaryError {
     )
 }
 
-fn service_type_identity(type_index: usize) -> TypeIdentity {
-    TypeIdentity::address(TypeAddr {
-        unit: UnitAddr::Service,
-        file: FileAddr::LoadedFileIndex(0),
-        type_index,
-    })
-}
-
-fn legacy_metadata_spoofed_eval_user_exception_payload(
-    legacy_metadata_type_name: &str,
-) -> RuntimeErrorPayload {
-    let identity = service_type_identity(0);
-    let eval_error = skiff_runtime_eval::error::RuntimeError::UserException(
-        skiff_runtime_eval::error::UserException::from_envelope(json!({
-            "__skiffException": true,
-            "__skiffActualPayloadType": identity,
-            "__skiffActualPayloadTypeDebug": legacy_metadata_type_name,
-            "error": {
-                "__skiffType": legacy_metadata_type_name,
-                "message": "spoofed message",
-                "detail": { "title": "ship" },
-                "target": { "path": "body.title" }
+fn service_type_identity(type_index: usize) -> CatchIdentity {
+    CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+        LocalExecutionTypeIdentity {
+            addr: TypeAddr {
+                unit: UnitAddr::Service,
+                file: FileAddr::LoadedFileIndex(0),
+                type_index,
             },
-            "source": null,
-            "stack": []
-        }))
-        .expect("spoofed user exception envelope should build"),
-    );
-    let error = RuntimeError::from(eval_error);
-
-    error.payload()
+            type_arguments: Vec::new(),
+        },
+    ))
 }
 
-#[test]
-fn user_exception_payload_ignores_legacy_metadata_spoofed_http_error_type() {
-    let payload = legacy_metadata_spoofed_eval_user_exception_payload("std.http.HttpError");
-
-    assert_eq!(payload.status, None);
-    assert_eq!(payload.code, "UnhandledServiceError");
-    assert_eq!(
-        payload.message,
-        "unhandled user exception service:file[0]:type[0]: spoofed message"
-    );
-    assert_eq!(
-        payload.details,
-        Some(json!({ "actualPayloadType": "service:file[0]:type[0]" }))
-    );
+fn test_exception_site() -> InstructionSourceSite {
+    InstructionSourceSite::Synthetic {
+        reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+    }
 }
 
-#[test]
-fn user_exception_payload_ignores_legacy_metadata_spoofed_decode_error_type() {
-    let payload = legacy_metadata_spoofed_eval_user_exception_payload("std.json.DecodeError");
-
-    assert_eq!(payload.status, None);
-    assert_eq!(payload.code, "UnhandledServiceError");
-    assert_eq!(
-        payload.message,
-        "unhandled user exception service:file[0]:type[0]: spoofed message"
-    );
-    assert_eq!(
-        payload.details,
-        Some(json!({ "actualPayloadType": "service:file[0]:type[0]" }))
-    );
-}
-
-#[test]
-fn user_exception_payload_includes_erased_payload_message() {
-    let eval_error = skiff_runtime_eval::error::RuntimeError::UserException(
-        skiff_runtime_eval::error::UserException::from_typed_payload(
-            json!({
-                "target": "skiff.test.assert",
-                "message": "assertion detail survived boundary"
-            }),
-            TypeIdentity::builtin("std.json.DecodeError"),
-            Some(TypeIdentity::builtin("std.json.DecodeError")),
+fn local_user_exception(
+    type_index: usize,
+    payload: &str,
+    correlation_label: &str,
+) -> skiff_runtime_eval::error::UserException {
+    let site = test_exception_site();
+    skiff_runtime_eval::error::UserException::new(
+        RequestException::local(
+            RuntimeValueCarrier::identified(
+                RuntimeValue::from(payload),
+                service_type_identity(type_index),
+            ),
+            site.clone(),
+            vec![ExceptionStackFrame::Local { site }],
+            ErrorCorrelation {
+                trace_id: format!("trace-{correlation_label}"),
+                error_id: format!("trace-{correlation_label}:local-error:1"),
+            },
         )
-        .expect("typed user exception should build"),
+        .expect("test user exception should carry identity, source, stack and correlation"),
+    )
+}
+
+#[test]
+fn user_exception_payload_redacts_local_value_and_exposes_only_correlation() {
+    let identity = service_type_identity(0);
+    let exception = local_user_exception(0, "private assertion detail", "redaction");
+    assert_eq!(exception.actual_payload_type(), Some(&identity));
+    assert_eq!(
+        exception.request().local_value().map(|value| value.value()),
+        Some(&RuntimeValue::from("private assertion detail"))
     );
+    assert_eq!(
+        exception.request().correlation(),
+        &ErrorCorrelation {
+            trace_id: "trace-redaction".to_string(),
+            error_id: "trace-redaction:local-error:1".to_string(),
+        }
+    );
+    let eval_error = skiff_runtime_eval::error::RuntimeError::UserException(exception);
     let error = RuntimeError::from(eval_error);
 
     let payload = error.payload();
 
     assert_eq!(payload.code, "UnhandledServiceError");
-    assert_eq!(
-        payload.message,
-        "unhandled user exception std.json.DecodeError: assertion detail survived boundary"
-    );
+    assert_eq!(payload.message, "unhandled request-local user exception");
     assert_eq!(
         payload.details,
-        Some(json!({ "actualPayloadType": "std.json.DecodeError" }))
+        Some(json!({
+            "traceId": "trace-redaction",
+            "errorId": "trace-redaction:local-error:1",
+        }))
     );
+    assert!(!payload.message.contains("private assertion detail"));
+    assert!(!payload.message.contains("service:file"));
     assert_eq!(WirePayload::catch_projection(&error), None);
-}
-
-#[test]
-fn user_exception_debug_name_remains_display_only_envelope_data() {
-    let identity = TypeIdentity::address(TypeAddr {
-        unit: UnitAddr::Service,
-        file: FileAddr::LoadedFileIndex(0),
-        type_index: 0,
-    });
-    let exception = skiff_runtime_eval::error::UserException::from_envelope(json!({
-        "__skiffException": true,
-        "__skiffActualPayloadType": identity,
-        "__skiffActualPayloadTypeDebug": "std.http.HttpError",
-        "error": { "message": "spoofed message" },
-        "source": null,
-        "stack": []
-    }))
-    .expect("spoofed user exception envelope should build");
-
-    assert_eq!(
-        exception.envelope()["__skiffActualPayloadTypeDebug"],
-        "std.http.HttpError"
-    );
-    let payload = RuntimeError::from(skiff_runtime_eval::error::RuntimeError::UserException(
-        exception,
-    ))
-    .payload();
-
-    assert_eq!(
-        payload.message,
-        "unhandled user exception service:file[0]:type[0]: spoofed message"
-    );
-    assert_eq!(
-        payload.details,
-        Some(json!({ "actualPayloadType": "service:file[0]:type[0]" }))
-    );
 }
 
 #[test]

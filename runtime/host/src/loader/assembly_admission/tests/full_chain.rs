@@ -57,6 +57,32 @@ impl RuntimeAssemblyContentResolver for CountingResolver {
             .ok_or_else(|| anyhow::anyhow!("missing contract"))
     }
 
+    fn resolve_package_schema_index(
+        &self,
+        reference: &PackageSchemaIndexRef,
+    ) -> anyhow::Result<Arc<PackageSchemaIndex>> {
+        let package = self
+            .packages
+            .iter()
+            .find(|(_, package)| package.package_schema_index == *reference)
+            .map(|(_, package)| package)
+            .ok_or_else(|| anyhow::anyhow!("missing package schema index"))?;
+        if !package.package_schema_type_records.is_empty() {
+            anyhow::bail!("full-chain fixture only supports an empty package schema index");
+        }
+        let types = BTreeMap::new();
+        let identity =
+            skiff_artifact_identity::package_schema_index_identity(&reference.package_id, &types)?;
+        if identity != reference.package_schema_index_identity {
+            anyhow::bail!("package schema index identity mismatch");
+        }
+        Ok(Arc::new(PackageSchemaIndex {
+            package_id: reference.package_id.clone(),
+            package_schema_index_identity: identity,
+            types,
+        }))
+    }
+
     fn resolve_package_schema_type(
         &self,
         reference: &skiff_artifact_model::PackageSchemaTypeRecordRef,
@@ -539,6 +565,9 @@ fn implementation_file(
                 target: CallTargetIr::ServiceCall {
                     service_call_ref_index: ServiceCallRefIndex::new(0),
                 },
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                },
                 args: Vec::new(),
                 type_args: BTreeMap::new(),
                 metadata: BTreeMap::new(),
@@ -595,7 +624,6 @@ fn implementation_package(
                         return_type: PackageTypeRef::Local {
                             local_type: TypeRefIr::builtin("bool"),
                         },
-                        throw_types: Vec::new(),
                         may_suspend: false,
                     },
                 },
@@ -701,7 +729,6 @@ fn operation_contract() -> BoundaryOperationContract {
                 lifetime: BoundaryValueLifetime::Call,
             },
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::Unary,
         cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,
