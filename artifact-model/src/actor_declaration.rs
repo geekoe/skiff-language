@@ -201,6 +201,17 @@ fn reject_actor_ref(ty: &TypeRefIr) -> Result<(), String> {
             .canonical_type_args
             .iter()
             .try_for_each(reject_actor_ref),
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            if arguments.is_empty() {
+                return Err("appliedNominal arguments must be non-empty".to_string());
+            }
+            if matches!(base, crate::NominalTypeRefBaseIr::PackageSchema { .. }) {
+                return Err(
+                    "applied PackageSchema is not admitted in this artifact generation".to_string(),
+                );
+            }
+            arguments.iter().try_for_each(reject_actor_ref)
+        }
         TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
@@ -253,6 +264,47 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("legacy ActorRef"));
+
+        let nested_actor_ref = json!({
+            "actorName": "DocHub",
+            "actorIdType": {
+                "kind": "appliedNominal",
+                "base": { "kind": "localType", "typeIndex": 0 },
+                "arguments": [{
+                    "kind": "builtin",
+                    "name": "ActorRef",
+                    "args": [{ "kind": "builtin", "name": "string" }]
+                }]
+            },
+            "fields": [],
+            "actorRuntimeAbiVersion": ACTOR_RUNTIME_ABI_VERSION_V1
+        });
+        assert!(serde_json::from_value::<ActorAbiInput>(nested_actor_ref)
+            .unwrap_err()
+            .to_string()
+            .contains("legacy ActorRef"));
+
+        let applied_package_schema = json!({
+            "actorName": "DocHub",
+            "actorIdType": {
+                "kind": "appliedNominal",
+                "base": {
+                    "kind": "packageSchema",
+                    "packageId": "example.model",
+                    "stableSchemaKey": "ActorId",
+                    "packageSchemaTypeId": "schema:actor-id"
+                },
+                "arguments": [{ "kind": "builtin", "name": "string" }]
+            },
+            "fields": [],
+            "actorRuntimeAbiVersion": ACTOR_RUNTIME_ABI_VERSION_V1
+        });
+        assert!(
+            serde_json::from_value::<ActorAbiInput>(applied_package_schema)
+                .unwrap_err()
+                .to_string()
+                .contains("not admitted")
+        );
 
         let duplicate_fields = json!({
             "actorName": "DocHub",

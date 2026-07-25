@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    BoundaryCallableProjection, FileIrRef, PackageArtifact, PackageLocalAbiSymbol, PackageTypeRef,
-    PublicationResourceRef, StateBindingKind, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    BoundaryCallableProjection, ExecutableSignatureIr, FileIrRef, InterfaceMethodSignature,
+    NominalTypeRefBaseIr, PackageArtifact, PackageLocalAbiSymbol, PackageTypeRef,
+    PublicationResourceRef, StateBindingKind, TypeDescriptorIr, TypeRefIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use crate::Result;
@@ -132,30 +134,67 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
         if public_path.trim().is_empty() {
             return invalid_artifact("package local ABI contains an empty public path");
         }
-        if let PackageLocalAbiSymbol::Callable {
-            callable_id,
-            signature,
-        } = symbol
-        {
-            if !public_callables.insert(callable_id.clone()) {
-                return invalid_artifact(format!(
-                    "package local ABI repeats callable id {callable_id}"
-                ));
-            }
-            for parameter in &signature.parameters {
+        match symbol {
+            PackageLocalAbiSymbol::Callable {
+                callable_id,
+                signature,
+            } => {
+                if !public_callables.insert(callable_id.clone()) {
+                    return invalid_artifact(format!(
+                        "package local ABI repeats callable id {callable_id}"
+                    ));
+                }
+                for parameter in &signature.parameters {
+                    validate_package_type_ref(
+                        artifact,
+                        &parameter.ty,
+                        &format!("callable {callable_id} parameter {}", parameter.name),
+                    )?;
+                }
                 validate_package_type_ref(
                     artifact,
-                    &parameter.ty,
-                    &format!("callable {callable_id} parameter {}", parameter.name),
+                    &signature.return_type,
+                    &format!("callable {callable_id} return type"),
                 )?;
             }
-            validate_package_type_ref(
-                artifact,
-                &signature.return_type,
-                &format!("callable {callable_id} return type"),
-            )?;
-        } else if let PackageLocalAbiSymbol::Constant { const_id, ty } = symbol {
-            validate_package_type_ref(artifact, ty, &format!("constant {const_id}"))?;
+            PackageLocalAbiSymbol::Constant { const_id, ty } => {
+                validate_package_type_ref(artifact, ty, &format!("constant {const_id}"))?;
+            }
+            PackageLocalAbiSymbol::Type {
+                descriptor,
+                type_params,
+                interface_methods,
+                ..
+            } => {
+                validate_type_descriptor(
+                    descriptor,
+                    type_params,
+                    &format!("public type {public_path}"),
+                )?;
+                validate_interface_methods(
+                    interface_methods,
+                    type_params,
+                    &format!("public type {public_path}"),
+                )?;
+            }
+            PackageLocalAbiSymbol::PublicInstance {
+                declared_receiver_type,
+                interfaces,
+                ..
+            } => {
+                validate_local_type_ref(
+                    declared_receiver_type,
+                    &[],
+                    &format!("public instance {public_path} receiver"),
+                )?;
+                for interface in interfaces {
+                    validate_local_type_ref(
+                        interface,
+                        &[],
+                        &format!("public instance {public_path} interface"),
+                    )?;
+                }
+            }
         }
     }
     let mut implementation_callables = BTreeSet::new();
@@ -195,12 +234,22 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
             }
             PackageLocalAbiSymbol::Type {
                 local_type_id,
-                descriptor: _,
+                descriptor,
                 is_alias: _,
                 is_interface,
                 type_params,
                 interface_methods,
             } => {
+                validate_type_descriptor(
+                    descriptor,
+                    type_params,
+                    &format!("implementation type {source_path}"),
+                )?;
+                validate_interface_methods(
+                    interface_methods,
+                    type_params,
+                    &format!("implementation type {source_path}"),
+                )?;
                 if local_type_id != &format!("type:{}:top-level:{source_path}", artifact.package_id)
                 {
                     return invalid_artifact(format!(
@@ -306,6 +355,186 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
             ));
         }
     }
+    validate_implementation_link_type_refs(artifact)?;
+    Ok(())
+}
+
+fn validate_implementation_link_type_refs(artifact: &PackageArtifact) -> Result<()> {
+    for (path, export) in &artifact.implementation_links.types {
+        if let Some(descriptor) = &export.descriptor {
+            validate_type_descriptor(
+                descriptor,
+                &export.type_params,
+                &format!("implementation link type {path}"),
+            )?;
+        }
+        validate_interface_methods(
+            &export.interface_methods,
+            &export.type_params,
+            &format!("implementation link type {path}"),
+        )?;
+    }
+    for (path, export) in &artifact.implementation_links.constants {
+        validate_local_type_ref(
+            &export.ty,
+            &[],
+            &format!("implementation link constant {path}"),
+        )?;
+    }
+    for (path, export) in artifact
+        .implementation_links
+        .functions
+        .iter()
+        .chain(&artifact.implementation_links.impl_methods)
+    {
+        validate_executable_signature(
+            &export.signature,
+            &format!("implementation link executable {path}"),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_executable_signature(signature: &ExecutableSignatureIr, location: &str) -> Result<()> {
+    for parameter in &signature.params {
+        validate_local_type_ref(&parameter.ty, &[], location)?;
+    }
+    validate_local_type_ref(&signature.return_type, &[], location)?;
+    if let Some(self_type) = &signature.self_type {
+        validate_local_type_ref(self_type, &[], location)?;
+    }
+    Ok(())
+}
+
+fn validate_interface_methods(
+    methods: &[InterfaceMethodSignature],
+    owner_scope: &[String],
+    location: &str,
+) -> Result<()> {
+    for method in methods {
+        let mut scope = owner_scope.to_vec();
+        scope.extend(method.type_params.iter().cloned());
+        for parameter in &method.params {
+            validate_local_type_ref(&parameter.ty, &scope, location)?;
+        }
+        validate_local_type_ref(&method.return_type, &scope, location)?;
+        if let Some(implicit_self) = &method.implicit_self {
+            validate_local_type_ref(implicit_self, &scope, location)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_type_descriptor(
+    descriptor: &TypeDescriptorIr,
+    scope: &[String],
+    location: &str,
+) -> Result<()> {
+    match descriptor {
+        TypeDescriptorIr::Record { fields } => {
+            for ty in fields.values() {
+                validate_local_type_ref(ty, scope, location)?;
+            }
+        }
+        TypeDescriptorIr::Representation { representation } => {
+            validate_local_type_ref(representation, scope, location)?;
+        }
+        TypeDescriptorIr::Union { branches } => {
+            for branch in branches {
+                match branch {
+                    skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                        if !matches!(
+                            nominal_type,
+                            TypeRefIr::LocalType { .. }
+                                | TypeRefIr::PublicationType { .. }
+                                | TypeRefIr::ServiceSymbol { .. }
+                                | TypeRefIr::PackageSymbol { .. }
+                                | TypeRefIr::PackageSchema { .. }
+                                | TypeRefIr::AppliedNominal { .. }
+                        ) {
+                            return invalid_artifact(format!(
+                                "{location} concreteNominal branch must contain an exact nominal ref"
+                            ));
+                        }
+                        validate_local_type_ref(nominal_type, scope, location)?;
+                    }
+                    skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type,
+                        ..
+                    } => validate_local_type_ref(payload_type, scope, location)?,
+                    skiff_artifact_model::NamedUnionBranchIr::Literal { .. } => {}
+                }
+            }
+        }
+        TypeDescriptorIr::Alias { target } => {
+            validate_local_type_ref(target, scope, location)?;
+        }
+        TypeDescriptorIr::Interface => {}
+    }
+    Ok(())
+}
+
+fn validate_local_type_ref(ty: &TypeRefIr, scope: &[String], location: &str) -> Result<()> {
+    match ty {
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            if arguments.is_empty() {
+                return invalid_artifact(format!(
+                    "{location} contains appliedNominal with empty arguments"
+                ));
+            }
+            if matches!(base, NominalTypeRefBaseIr::PackageSchema { .. }) {
+                return invalid_artifact(format!(
+                    "{location} contains applied PackageSchema, which is not admitted in this artifact generation"
+                ));
+            }
+            for argument in arguments {
+                validate_local_type_ref(argument, scope, location)?;
+            }
+        }
+        TypeRefIr::Builtin { args, .. } => {
+            for argument in args {
+                validate_local_type_ref(argument, scope, location)?;
+            }
+        }
+        TypeRefIr::Record { fields } => {
+            for field in fields.values() {
+                validate_local_type_ref(field, scope, location)?;
+            }
+        }
+        TypeRefIr::Union { items } => {
+            for item in items {
+                validate_local_type_ref(item, scope, location)?;
+            }
+        }
+        TypeRefIr::Nullable { inner } => validate_local_type_ref(inner, scope, location)?,
+        TypeRefIr::AnyInterface { interface } => {
+            for argument in &interface.canonical_type_args {
+                validate_local_type_ref(argument, scope, location)?;
+            }
+        }
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => {
+            for parameter in params {
+                validate_local_type_ref(&parameter.ty, scope, location)?;
+            }
+            validate_local_type_ref(return_type, scope, location)?;
+        }
+        TypeRefIr::TypeParam { name } if !scope.iter().any(|parameter| parameter == name) => {
+            return invalid_artifact(format!(
+                "{location} contains out-of-scope type parameter {name}"
+            ));
+        }
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => {}
+    }
     Ok(())
 }
 
@@ -315,7 +544,7 @@ fn validate_package_type_ref(
     location: &str,
 ) -> Result<()> {
     match ty {
-        PackageTypeRef::Local { .. } => Ok(()),
+        PackageTypeRef::Local { local_type } => validate_local_type_ref(local_type, &[], location),
         PackageTypeRef::PackageSchema {
             package_id,
             stable_schema_key,

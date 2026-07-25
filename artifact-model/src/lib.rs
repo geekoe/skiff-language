@@ -207,7 +207,7 @@ pub use symbols::{
 pub use targets::NativeTarget;
 pub use types::{
     FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, LiteralIr, NamedUnionBranchIr,
-    TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+    NominalTypeRefBaseIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
 };
 pub use websocket_ingress::{
     websocket_ingress_context, WebSocketIngressContext, WebSocketIngressContractError,

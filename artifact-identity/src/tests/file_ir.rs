@@ -1,5 +1,7 @@
 use super::*;
-use skiff_artifact_model::FileIrPackageCallValidationError;
+use skiff_artifact_model::{
+    FileIrPackageCallValidationError, NominalTypeRefBaseIr, TypeDeclIr, TypeDescriptorIr,
+};
 
 #[test]
 fn file_ir_identity_omits_storage_identity_and_source_hashes() {
@@ -45,8 +47,8 @@ fn file_ir_identity_validation_rejects_stale_identity() {
 #[test]
 fn file_ir_identity_validation_rejects_non_current_generation_even_when_recomputed() {
     for (field, stale) in [
-        ("schemaVersion", "skiff-file-ir-v5"),
-        ("irFormatVersion", "skiff-file-ir-format-v3"),
+        ("schemaVersion", "skiff-file-ir-v6"),
+        ("irFormatVersion", "skiff-file-ir-format-v4"),
         ("opcodeTableVersion", "skiff-opcode-table-v0"),
     ] {
         let mut unit = FileIrUnit::empty("internal.example", "source-ast-hash-a");
@@ -80,12 +82,104 @@ fn file_ir_identity_validation_rejects_non_current_generation_even_when_recomput
 fn file_ir_identity_validation_rejects_stale_prefix_with_current_preimage() {
     let mut unit = FileIrUnit::empty("internal.example", "source-ast-hash-a");
     let current = file_ir_identity(&unit).expect("current identity");
-    unit.file_ir_identity = current.replacen(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v5:sha256", 1);
+    unit.file_ir_identity = current.replacen(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v6:sha256", 1);
 
     assert!(matches!(
         validate_file_ir_identity(&unit),
         Err(ArtifactIdentityError::FileIrIdentityMismatch { .. })
     ));
+}
+
+#[test]
+fn applied_nominal_argument_identity_matrix_changes_file_ir_and_rejects_tampering() {
+    let string_box = applied_nominal_file_ir(TypeRefIr::builtin("string"));
+    let number_box = applied_nominal_file_ir(TypeRefIr::builtin("number"));
+    assert_ne!(
+        file_ir_identity(&string_box).unwrap(),
+        file_ir_identity(&number_box).unwrap()
+    );
+
+    let string_number_pair = TypeRefIr::AppliedNominal {
+        base: NominalTypeRefBaseIr::LocalType { type_index: 1 },
+        arguments: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("number")],
+    };
+    let number_string_pair = TypeRefIr::AppliedNominal {
+        base: NominalTypeRefBaseIr::LocalType { type_index: 1 },
+        arguments: vec![TypeRefIr::builtin("number"), TypeRefIr::builtin("string")],
+    };
+    let nested = applied_nominal_file_ir(string_number_pair);
+    let reordered = applied_nominal_file_ir(number_string_pair);
+    assert_ne!(
+        file_ir_identity(&nested).unwrap(),
+        file_ir_identity(&reordered).unwrap()
+    );
+
+    let mut assigned = file_ir_with_identity(string_box).unwrap();
+    let TypeDescriptorIr::Record { fields } = &mut assigned.type_table[2].descriptor else {
+        panic!("fixture use type must be a record")
+    };
+    let TypeRefIr::AppliedNominal { arguments, .. } = fields.get_mut("value").unwrap() else {
+        panic!("fixture value must be applied")
+    };
+    arguments[0] = TypeRefIr::builtin("number");
+    assert!(matches!(
+        validate_file_ir_identity(&assigned),
+        Err(ArtifactIdentityError::FileIrIdentityMismatch { .. })
+    ));
+
+    let mut owner_tampered =
+        file_ir_with_identity(applied_nominal_file_ir(TypeRefIr::builtin("string"))).unwrap();
+    let TypeDescriptorIr::Record { fields } = &mut owner_tampered.type_table[2].descriptor else {
+        panic!("fixture use type must be a record")
+    };
+    let TypeRefIr::AppliedNominal { base, .. } = fields.get_mut("value").unwrap() else {
+        panic!("fixture value must be applied")
+    };
+    *base = NominalTypeRefBaseIr::LocalType { type_index: 3 };
+    assert!(matches!(
+        validate_file_ir_identity(&owner_tampered),
+        Err(ArtifactIdentityError::FileIrIdentityMismatch { .. })
+    ));
+}
+
+fn applied_nominal_file_ir(argument: TypeRefIr) -> FileIrUnit {
+    let mut unit = FileIrUnit::empty("identity.generic", "source");
+    unit.type_table = vec![
+        nominal_declaration("Box", &["T"]),
+        nominal_declaration("Pair", &["A", "B"]),
+        TypeDeclIr {
+            name: "Use".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::from([(
+                    "value".to_string(),
+                    TypeRefIr::AppliedNominal {
+                        base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                        arguments: vec![argument],
+                    },
+                )]),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        },
+        nominal_declaration("OtherBox", &["T"]),
+    ];
+    unit
+}
+
+fn nominal_declaration(name: &str, type_params: &[&str]) -> TypeDeclIr {
+    TypeDeclIr {
+        name: name.to_string(),
+        descriptor: TypeDescriptorIr::Record {
+            fields: BTreeMap::new(),
+        },
+        type_params: type_params
+            .iter()
+            .map(|parameter| (*parameter).to_string())
+            .collect(),
+        implements: Vec::new(),
+        source_span: None,
+    }
 }
 
 #[test]
@@ -169,7 +263,7 @@ fn service_call_table_and_instruction_indices_participate_in_file_ir_identity() 
     let baseline = file_ir_identity(&base).expect("valid service-call File IR identity");
     assert_eq!(
         baseline,
-        "skiff-file-ir-v6:sha256:57498432e8faeb4df5bff1930016a2b2a12906d86747c3a3c141b531366549d0"
+        "skiff-file-ir-v7:sha256:4eff18aa8b01dcf7f18cbcc7b4cee4562b1d511227c86abbd501c9c222e3333b"
     );
 
     let mut changed_ref = base.clone();

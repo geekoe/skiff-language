@@ -5,7 +5,10 @@ use crate::{
     executable::{CallTargetIr, ExprIr, StmtIr, TestEffectRegisterTargetIr},
 };
 
-use super::{file_ir_expressions, FileIrExpressionOwner, FileIrUnit, ServiceCallRefIndex};
+use super::{
+    file_ir_expressions, validate_file_ir_type_refs, FileIrExpressionOwner,
+    FileIrTypeRefValidationError, FileIrUnit, ServiceCallRefIndex,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileIrServiceCallOwner {
@@ -22,6 +25,7 @@ pub struct FileIrServiceCallSite {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileIrServiceCallValidationError {
+    InvalidTypeRef(FileIrTypeRefValidationError),
     DuplicateRef {
         first_index: usize,
         duplicate_index: usize,
@@ -38,6 +42,7 @@ pub enum FileIrServiceCallValidationError {
 impl fmt::Display for FileIrServiceCallValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidTypeRef(error) => write!(formatter, "File IR type ref is invalid: {error}"),
             Self::DuplicateRef {
                 first_index,
                 duplicate_index,
@@ -96,6 +101,7 @@ pub fn file_ir_service_call_sites(
 pub fn validate_file_ir_service_calls(
     unit: &FileIrUnit,
 ) -> Result<(), FileIrServiceCallValidationError> {
+    validate_file_ir_type_refs(unit).map_err(FileIrServiceCallValidationError::InvalidTypeRef)?;
     validate_unique_refs(&unit.external_refs.service_call_refs)?;
 
     let mut used = vec![false; unit.external_refs.service_call_refs.len()];
