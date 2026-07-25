@@ -57,6 +57,9 @@ pub struct TypeResolutionModel {
     package_constants: BTreeMap<PackageSymbolKey, PackageConstantResolution>,
     package_interfaces: BTreeMap<PackageSymbolKey, PackageInterfaceFact>,
     package_type_slots: BTreeMap<(String, String, u32), String>,
+    /// Exact selected public path for a verified Local ABI implementation type.
+    /// This keeps source `ServiceSymbol` recovery owner-aware without a short-name lookup.
+    package_type_source_paths: BTreeMap<(String, String, String), String>,
     package_dependencies: BTreeMap<String, String>,
     package_dependency_access: BTreeMap<String, PackageDependencyAccess>,
     package_artifact_identities: BTreeMap<String, (PackageLocalAbiIdentity, PackageBuildId)>,
@@ -377,6 +380,7 @@ impl TypeResolutionModel {
         let mut package_constants = BTreeMap::new();
         let mut package_interfaces = BTreeMap::new();
         let mut package_type_slots = BTreeMap::new();
+        let mut package_type_source_paths = BTreeMap::new();
         let mut package_public_to_internal = BTreeMap::new();
         if let Some(package_facts) = package_facts {
             for package in package_facts {
@@ -404,6 +408,12 @@ impl TypeResolutionModel {
                     &mut package_types,
                     &mut package_interfaces,
                     &mut package_type_slots,
+                )?;
+                index_artifact_package_type_source_paths(
+                    artifact,
+                    dependency_ref,
+                    dependency.access,
+                    &mut package_type_source_paths,
                 )?;
                 index_artifact_package_constants(
                     artifact,
@@ -433,6 +443,7 @@ impl TypeResolutionModel {
             package_constants,
             package_interfaces,
             package_type_slots,
+            package_type_source_paths,
             package_dependencies,
             package_dependency_access,
             package_artifact_identities,
@@ -3189,6 +3200,45 @@ fn index_artifact_package_types(
     Ok(())
 }
 
+fn index_artifact_package_type_source_paths(
+    artifact: &PackageArtifact,
+    dependency_ref: &str,
+    access: PackageDependencyAccess,
+    source_paths: &mut BTreeMap<(String, String, String), String>,
+) -> Result<(), String> {
+    let symbols = match access {
+        PackageDependencyAccess::Public => &artifact.package_local_abi.public_symbols,
+        PackageDependencyAccess::TopLevel => &artifact.package_local_abi.implementation_symbols,
+    };
+    for (public_path, symbol) in symbols {
+        if !matches!(symbol, PackageLocalAbiSymbol::Type { .. }) {
+            continue;
+        }
+        let export = artifact
+            .implementation_links
+            .types
+            .get(public_path)
+            .ok_or_else(|| {
+                format!(
+                    "package {} selected type {} has no exact implementation link",
+                    artifact.package_id, public_path
+                )
+            })?;
+        let key = (
+            dependency_ref.to_string(),
+            export.file.module_path.clone(),
+            export.symbol.clone(),
+        );
+        if let Some(existing) = source_paths.insert(key, public_path.clone()) {
+            return Err(format!(
+                "package {} source type {}.{} is ambiguously exported as {} and {}",
+                artifact.package_id, export.file.module_path, export.symbol, existing, public_path
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn index_artifact_package_constants(
     artifact: &PackageArtifact,
     dependency_ref: &str,
@@ -5354,6 +5404,332 @@ mod tests {
 
     fn context() -> TypeResolutionContext<'static> {
         TypeResolutionContext::source(MODULE)
+    }
+
+    fn signature_rehydration_artifact() -> PackageArtifact {
+        use skiff_artifact_model::{
+            PackageImplementationLinks, PackageLocalAbi, PackageRuntimeRequirements,
+            PackageSchemaIndexRef, TypeExport,
+        };
+
+        let file = skiff_artifact_model::FileIrRef {
+            file_ir_identity: "provider-file".to_string(),
+            artifact_path: Some("types.json".to_string()),
+            module_path: "types".to_string(),
+            source_ast_hash: Some("provider-source".to_string()),
+        };
+        let descriptor = TypeDescriptorIr::Record {
+            fields: BTreeMap::new(),
+        };
+        let type_symbol = |public_path: &str| PackageLocalAbiSymbol::Type {
+            local_type_id: format!("type:{public_path}"),
+            descriptor: descriptor.clone(),
+            is_alias: false,
+            is_interface: false,
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+        };
+        let type_export = |type_index, symbol: &str| TypeExport {
+            file: file.clone(),
+            type_index,
+            symbol: symbol.to_string(),
+            is_interface: false,
+            descriptor: Some(descriptor.clone()),
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+        };
+        PackageArtifact {
+            schema_version: "skiff-package-artifact-v2".to_string(),
+            package_id: "example.com/provider".to_string(),
+            package_version: "1.0.0".to_string(),
+            package_build_id: PackageBuildId::new("provider-build"),
+            files: vec![file.clone()],
+            static_resources: Vec::new(),
+            package_local_abi: PackageLocalAbi {
+                local_abi_identity: PackageLocalAbiIdentity::new("provider-abi"),
+                public_symbols: BTreeMap::from([
+                    ("Bindings".to_string(), type_symbol("Bindings")),
+                    ("Result".to_string(), type_symbol("Result")),
+                ]),
+                implementation_symbols: BTreeMap::new(),
+            },
+            package_schema_index: PackageSchemaIndexRef {
+                package_id: "example.com/provider".to_string(),
+                package_schema_index_identity: "provider-schema-index".into(),
+            },
+            package_schema_type_records: BTreeMap::new(),
+            implementation_links: PackageImplementationLinks {
+                types: BTreeMap::from([
+                    ("Bindings".to_string(), type_export(0, "Bindings")),
+                    ("Result".to_string(), type_export(1, "Result")),
+                ]),
+                ..PackageImplementationLinks::default()
+            },
+            callable_links: BTreeMap::new(),
+            package_requirements: Vec::new(),
+            contract_requirements: Vec::new(),
+            service_requirements: Vec::new(),
+            runtime_requirements: PackageRuntimeRequirements {
+                config: Vec::new(),
+                state: Vec::new(),
+                resources: Vec::new(),
+                runtime_capabilities: Vec::new(),
+            },
+            callable_semantic_facts: BTreeMap::new(),
+            boundary_projections: BTreeMap::new(),
+            service_call_refs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn package_signature_local_slots_rehydrate_to_dependency_owner() {
+        let parsed_sources = parsed_sources("function noop() -> void {}");
+        let mut dependency = PackageDependency::id("example.com/provider");
+        dependency.alias = Some("provider".to_string());
+        let artifact = signature_rehydration_artifact();
+        let model = TypeResolutionModel::build(
+            &parsed_sources,
+            &BTreeMap::from([("provider".to_string(), vec![String::new()])]),
+            &[dependency],
+            None,
+            Some(std::slice::from_ref(&artifact)),
+            &PublicationTypeSymbolIndex::default(),
+        )
+        .expect("artifact-only dependency type facts should build");
+
+        let dependency_symbol = |symbol_path: &str| TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::Dependency {
+                    dependency_ref: "provider".to_string(),
+                },
+                symbol_path: symbol_path.to_string(),
+                abi_expectation: Some("provider-abi".to_string()),
+            },
+        };
+        let interface_identity = serde_json::to_string(&TypeRefIr::ServiceSymbol {
+            symbol: ServiceSymbolRef {
+                module_path: "types".to_string(),
+                symbol: "Bindings".to_string(),
+            },
+        })
+        .unwrap();
+        let signature_type = PackageTypeRef::Local {
+            local_type: TypeRefIr::Function {
+                params: vec![
+                    FunctionTypeParamIr {
+                        name: "local".to_string(),
+                        ty: TypeRefIr::LocalType { type_index: 0 },
+                    },
+                    FunctionTypeParamIr {
+                        name: "publication".to_string(),
+                        ty: TypeRefIr::PublicationType {
+                            module_path: "types".to_string(),
+                            type_index: 1,
+                        },
+                    },
+                    FunctionTypeParamIr {
+                        name: "nested".to_string(),
+                        ty: TypeRefIr::Builtin {
+                            name: "Array".to_string(),
+                            args: vec![TypeRefIr::Nullable {
+                                inner: Box::new(TypeRefIr::Union {
+                                    items: vec![
+                                        TypeRefIr::ServiceSymbol {
+                                            symbol: ServiceSymbolRef {
+                                                module_path: "types".to_string(),
+                                                symbol: "Bindings".to_string(),
+                                            },
+                                        },
+                                        TypeRefIr::PublicationType {
+                                            module_path: "types".to_string(),
+                                            type_index: 1,
+                                        },
+                                    ],
+                                }),
+                            }],
+                        },
+                    },
+                ],
+                return_type: Box::new(TypeRefIr::Record {
+                    fields: BTreeMap::from([
+                        (
+                            "service".to_string(),
+                            TypeRefIr::ServiceSymbol {
+                                symbol: ServiceSymbolRef {
+                                    module_path: "types".to_string(),
+                                    symbol: "Bindings".to_string(),
+                                },
+                            },
+                        ),
+                        (
+                            "package".to_string(),
+                            TypeRefIr::PackageSymbol {
+                                symbol: PackageSymbolRef {
+                                    package: PackageRefIr::PackageId {
+                                        package_id: "example.com/provider".to_string(),
+                                    },
+                                    symbol_path: "types.Result".to_string(),
+                                    abi_expectation: None,
+                                },
+                            },
+                        ),
+                        (
+                            "interface".to_string(),
+                            TypeRefIr::AnyInterface {
+                                interface: InterfaceInstantiationRef {
+                                    interface_abi_id: interface_identity,
+                                    canonical_type_args: vec![TypeRefIr::PublicationType {
+                                        module_path: "types".to_string(),
+                                        type_index: 1,
+                                    }],
+                                },
+                            },
+                        ),
+                    ]),
+                }),
+            },
+        };
+        let normalized = model
+            .rehydrate_package_signature_type_for_dependency("provider", &signature_type)
+            .expect("all public owner-local references should normalize");
+        let PackageTypeRef::Local {
+            local_type:
+                TypeRefIr::Function {
+                    params,
+                    return_type,
+                },
+        } = normalized
+        else {
+            panic!("normalized signature should retain its function shape")
+        };
+        assert_eq!(params[0].ty, dependency_symbol("Bindings"));
+        assert_eq!(params[1].ty, dependency_symbol("Result"));
+        assert_eq!(
+            params[2].ty,
+            TypeRefIr::Builtin {
+                name: "Array".to_string(),
+                args: vec![TypeRefIr::Nullable {
+                    inner: Box::new(TypeRefIr::Union {
+                        items: vec![dependency_symbol("Bindings"), dependency_symbol("Result"),],
+                    }),
+                }],
+            }
+        );
+        let TypeRefIr::Record { fields } = return_type.as_ref() else {
+            panic!("normalized return should retain its record shape")
+        };
+        assert_eq!(fields["service"], dependency_symbol("Bindings"));
+        assert_eq!(fields["package"], dependency_symbol("Result"));
+        let TypeRefIr::AnyInterface { interface } = &fields["interface"] else {
+            panic!("normalized nested interface should retain its existential shape")
+        };
+        assert_eq!(
+            serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).unwrap(),
+            dependency_symbol("Bindings")
+        );
+        assert_eq!(
+            interface.canonical_type_args,
+            vec![dependency_symbol("Result")]
+        );
+        let wrapped = PackageTypeRef::Container {
+            name: "Array".to_string(),
+            arguments: vec![PackageTypeRef::Nullable {
+                inner: Box::new(PackageTypeRef::AnyInterface {
+                    interface: Box::new(PackageTypeRef::Local {
+                        local_type: TypeRefIr::ServiceSymbol {
+                            symbol: ServiceSymbolRef {
+                                module_path: "types".to_string(),
+                                symbol: "Bindings".to_string(),
+                            },
+                        },
+                    }),
+                    arguments: vec![PackageTypeRef::Local {
+                        local_type: TypeRefIr::PublicationType {
+                            module_path: "types".to_string(),
+                            type_index: 1,
+                        },
+                    }],
+                }),
+            }],
+        };
+        assert_eq!(
+            model
+                .rehydrate_package_signature_type_for_dependency("provider", &wrapped)
+                .unwrap(),
+            PackageTypeRef::Container {
+                name: "Array".to_string(),
+                arguments: vec![PackageTypeRef::Nullable {
+                    inner: Box::new(PackageTypeRef::AnyInterface {
+                        interface: Box::new(PackageTypeRef::Local {
+                            local_type: dependency_symbol("Bindings"),
+                        }),
+                        arguments: vec![PackageTypeRef::Local {
+                            local_type: dependency_symbol("Result"),
+                        }],
+                    }),
+                }],
+            }
+        );
+
+        let exact_schema = PackageTypeRef::PackageSchema {
+            package_id: "example.com/provider".to_string(),
+            stable_schema_key: "Result".to_string(),
+            package_schema_type_id: "schema-result".into(),
+        };
+        assert_eq!(
+            model
+                .rehydrate_package_signature_type_for_dependency("provider", &exact_schema)
+                .unwrap(),
+            exact_schema,
+            "exact PackageSchema owner/key/type id must remain unchanged"
+        );
+
+        let mut missing = model.clone();
+        missing
+            .package_type_slots
+            .remove(&("provider".to_string(), "types".to_string(), 0));
+        let error = missing
+            .rehydrate_package_signature_type_for_dependency(
+                "provider",
+                &PackageTypeRef::Local {
+                    local_type: TypeRefIr::LocalType { type_index: 0 },
+                },
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("no public Local ABI type slot #0"),
+            "{error}"
+        );
+
+        let mut ambiguous = model.clone();
+        ambiguous.package_type_slots.insert(
+            ("provider".to_string(), "other".to_string(), 0),
+            "other.Bindings".to_string(),
+        );
+        let error = ambiguous
+            .rehydrate_package_signature_type_for_dependency(
+                "provider",
+                &PackageTypeRef::Local {
+                    local_type: TypeRefIr::LocalType { type_index: 0 },
+                },
+            )
+            .unwrap_err();
+        assert!(error.contains("ambiguous owners"), "{error}");
+
+        let error = model
+            .rehydrate_package_signature_type_for_dependency(
+                "provider",
+                &PackageTypeRef::Local {
+                    local_type: TypeRefIr::ServiceSymbol {
+                        symbol: ServiceSymbolRef {
+                            module_path: "private".to_string(),
+                            symbol: "Hidden".to_string(),
+                        },
+                    },
+                },
+            )
+            .unwrap_err();
+        assert!(error.contains("no unique public Local ABI type"), "{error}");
     }
 
     fn conformance_source() -> &'static str {

@@ -599,6 +599,280 @@ function invalid() -> tools.ToolChoice {
 }
 
 #[test]
+fn dependency_callable_local_parameter_preserves_schema_result_field_types() {
+    let temp = TestDir::new("skiff-compiler", "dependency-local-parameter-schema-result");
+    fs::write(
+        temp.path().join("package.yml"),
+        r#"id: example.com/result-consumer
+version: 1.0.0
+packages:
+  - id: example.com/result-provider
+    version: 1.0.0
+    alias: provider
+"#,
+    )
+    .unwrap();
+    let provider = temp
+        .path()
+        .join(".skiff-packages/example~com~~result-provider/1.0.0");
+    fs::create_dir_all(&provider).unwrap();
+    fs::write(
+        provider.join("package.yml"),
+        "id: example.com/result-provider\nversion: 1.0.0\n",
+    )
+    .unwrap();
+    fs::write(
+        provider.join("api.yml"),
+        r#"Handler: tools.Handler
+Bindings: tools.Bindings
+Child: api.Child
+Result: api.Result
+Label: api.Label
+run: api.run
+"#,
+    )
+    .unwrap();
+    fs::write(
+        provider.join("tools.skiff"),
+        r#"
+interface Handler {
+  function handle(self: Self, input: string) -> string
+}
+
+type Bindings {
+  handler: any Handler
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        provider.join("api.skiff"),
+        r#"
+
+type Child {
+  id: string
+}
+
+alias Label = string
+
+type Result {
+  ok: bool,
+  note: string?,
+  child: Child,
+  label: Label,
+}
+
+type PrivateBindings {
+  marker: string
+}
+
+function run(bindings: root.tools.Bindings) -> Result {
+  return {
+    ok: true,
+    note: null,
+    child: { id: "child" },
+    label: "ready",
+  }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("main.skiff"),
+        r#"
+import provider
+
+function throughLocal(bindings: provider.Bindings) -> JsonObject {
+  const result = provider/run(bindings)
+  return {
+    ok: result.ok,
+    note: result.note,
+    childId: result.child.id,
+    label: result.label,
+  }
+}
+
+function direct(bindings: provider.Bindings) -> bool {
+  return provider/run(bindings).ok
+}
+"#,
+    )
+    .unwrap();
+
+    let project = compile_package_project(temp.path())
+        .expect("artifact-only owner-local parameter should preserve schema result field types");
+    let provider = project
+        .dependency("example.com/result-provider", "1.0.0")
+        .expect("fresh provider artifact");
+    assert!(
+        !provider.package_schema_index.types.contains_key("Label"),
+        "transparent alias must not acquire PackageSchema identity"
+    );
+    assert!(
+        !provider.package_schema_index.types.contains_key("Bindings"),
+        "owner-local any-interface bindings must remain outside boundary schema"
+    );
+    for public_path in ["Child", "Result"] {
+        assert!(
+            provider
+                .package_schema_index
+                .types
+                .contains_key(public_path),
+            "schema-closed public record {public_path} should retain schema identity"
+        );
+    }
+    let run = provider
+        .artifact
+        .package_local_abi
+        .public_symbols
+        .get("run")
+        .expect("public run callable");
+    let skiff_artifact_model::PackageLocalAbiSymbol::Callable {
+        callable_id,
+        signature,
+    } = run
+    else {
+        panic!("run must remain a package callable")
+    };
+    assert_eq!(
+        callable_id.as_str(),
+        "pkg-callable:example.com/result-provider:run"
+    );
+    assert!(matches!(
+        &signature.parameters[0].ty,
+        skiff_artifact_model::PackageTypeRef::Local {
+            local_type:
+                skiff_artifact_model::TypeRefIr::ServiceSymbol {
+                    symbol:
+                        skiff_artifact_model::ServiceSymbolRef {
+                            module_path,
+                            symbol,
+                        },
+                },
+        } if module_path == "tools" && symbol == "Bindings"
+    ));
+    assert!(matches!(
+        &signature.return_type,
+        skiff_artifact_model::PackageTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } if package_id == "example.com/result-provider" && stable_schema_key == "Result"
+    ));
+
+    let consumer = module_artifact(&project.package, "main");
+    assert!(
+        consumer
+            .unit
+            .external_refs
+            .package_callables
+            .iter()
+            .any(|reference| {
+                matches!(
+                    &reference.package_ref,
+                    skiff_artifact_model::PackageRefIr::Dependency { dependency_ref }
+                        if dependency_ref == "provider"
+                ) && reference.package_callable_id == *callable_id
+            }),
+        "lowered call must retain the manifest alias and exact callable id"
+    );
+    let requirement = project
+        .package
+        .artifact
+        .package_requirements
+        .iter()
+        .find(|requirement| requirement.alias == "provider")
+        .expect("provider requirement");
+    assert_eq!(
+        requirement.expected_local_abi, provider.artifact.package_local_abi.local_abi_identity,
+        "lowered dependency requirement must retain the expected Local ABI"
+    );
+
+    let compile_error = |source: &str| {
+        fs::write(temp.path().join("main.skiff"), source).unwrap();
+        compile_package_project(temp.path())
+            .expect_err("negative dependency-call fixture should fail")
+            .to_string()
+    };
+    let error = compile_error(
+        r#"
+import provider
+function bad() -> bool {
+  return provider/run().ok
+}
+"#,
+    );
+    assert!(
+        error.contains("call `provider/run` arity mismatch"),
+        "{error}"
+    );
+    assert!(
+        !error.contains("unknown field `ok`") && !error.contains("has no resolved expression type"),
+        "arity failure must not discard an independently resolved return: {error}"
+    );
+
+    let error = compile_error(
+        r#"
+import provider
+function bad() -> bool {
+  return provider/run("wrong").ok
+}
+"#,
+    );
+    assert!(
+        error.contains("call `provider/run` argument 1")
+            && error.contains("type mismatch")
+            && error.contains("expected Bindings"),
+        "{error}"
+    );
+    assert!(
+        !error.contains("unknown field `ok`") && !error.contains("has no resolved expression type"),
+        "scalar mismatch must not discard an independently resolved return: {error}"
+    );
+
+    let error = compile_error(
+        r#"
+import provider
+type OtherBindings { marker: string }
+function bad(other: OtherBindings) -> bool {
+  return provider/run(other).ok
+}
+"#,
+    );
+    assert!(
+        error.contains("call `provider/run` argument 1") && error.contains("type mismatch"),
+        "{error}"
+    );
+    assert!(
+        !error.contains("unknown field `ok`") && !error.contains("has no resolved expression type"),
+        "nominal mismatch must not discard an independently resolved return: {error}"
+    );
+
+    let error = compile_error(
+        r#"
+import provider
+function bad(bindings: provider.Bindings) -> string {
+  return provider/run(bindings).missing
+}
+"#,
+    );
+    assert!(error.contains("unknown field `missing`"), "{error}");
+
+    let error = compile_error(
+        r#"
+import provider
+function bad(value: provider.PrivateBindings) -> string {
+  return value.marker
+}
+"#,
+    );
+    assert!(
+        error.contains("unknown field `marker` on provider.PrivateBindings"),
+        "private/nonexported owner-local record shape must not resolve through the dependency alias: {error}"
+    );
+}
+
+#[test]
 fn transitive_aliases_are_owned_by_each_package_artifact() {
     let temp = TestDir::new("skiff-compiler", "transitive-package-alias");
     fs::write(

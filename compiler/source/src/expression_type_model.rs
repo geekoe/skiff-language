@@ -2808,56 +2808,59 @@ impl<'a> OwnerChecker<'a> {
                     dependency_source_address_parts(&path).or_else(|| path.split_once('.'))?;
                 let signature = dependency_analysis
                     .package_callable_by_source_path(&path)
-                    .and_then(|callable| callable.signature())
-                    .filter(|signature| {
-                        !package_type_contains_local_slot(&signature.return_type)
-                            && signature
-                                .parameters
-                                .iter()
-                                .all(|parameter| !package_type_contains_local_slot(&parameter.ty))
-                    })?
+                    .and_then(|callable| callable.signature())?
                     .clone();
                 Some((dependency_ref.to_string(), signature))
             });
             if let Some((dependency_ref, signature)) = signature {
+                // Resolve each parameter independently: an owner/slot diagnostic
+                // must fail the compile without erasing an exact return fact.
                 let expected = signature
                     .parameters
                     .iter()
                     .map(|parameter| {
                         (
                             parameter.name.clone(),
-                            self.type_resolution.bind_package_type_refs_to_dependency(
-                                &resolved_package_type_ref(&parameter.ty),
-                                &dependency_ref,
-                            ),
+                            self.type_resolution
+                                .rehydrate_package_signature_type_for_dependency(
+                                    &dependency_ref,
+                                    &parameter.ty,
+                                )
+                                .map(|exact| {
+                                    let ordinary =
+                                        self.type_resolution.bind_package_type_refs_to_dependency(
+                                            &resolved_package_type_ref(&exact),
+                                            &dependency_ref,
+                                        );
+                                    (ordinary, exact)
+                                }),
                         )
                     })
-                    .collect();
-                let exact_expected = signature
-                    .parameters
-                    .iter()
-                    .map(|parameter| Some(parameter.ty.clone()))
                     .collect::<Vec<_>>();
-                self.validate_resolved_call_params_with_projections(
-                    &path,
-                    expected,
-                    &exact_expected,
-                    args,
-                    arg_types,
+                self.validate_dependency_package_call_params(
+                    key, &path, &expected, args, arg_types,
                 );
 
+                let exact_projection = match self
+                    .type_resolution
+                    .rehydrate_package_signature_type_for_dependency(
+                        &dependency_ref,
+                        &signature.return_type,
+                    ) {
+                    Ok(return_type) => return_type,
+                    Err(error) => {
+                        self.diagnostics.push(format!(
+                            "{}: call `{path}` return dependency type resolution failed at {}: {error}",
+                            self.module_path,
+                            self.expression_span_label(key),
+                        ));
+                        return None;
+                    }
+                };
                 let resolved_return = self.type_resolution.bind_package_type_refs_to_dependency(
-                    &resolved_package_type_ref(&signature.return_type),
+                    &resolved_package_type_ref(&exact_projection),
                     &dependency_ref,
                 );
-                let exact_projection = contract_call_typing::project_resolved_package_type(
-                    &resolved_return,
-                    self.type_resolution,
-                    self.dependency_analysis
-                        .expect("exact package signature requires dependency analysis"),
-                    &self.type_context,
-                )
-                .unwrap_or_else(|_| signature.return_type.clone());
                 self.contract_projection
                     .record_expression_type(key.clone(), exact_projection);
                 return Some(resolved_return);
@@ -3369,6 +3372,58 @@ impl<'a> OwnerChecker<'a> {
                 actual,
                 expected,
                 exact_expected.get(index).and_then(Option::as_ref),
+                &context,
+                self.expression_span(key),
+            );
+        }
+    }
+
+    fn validate_dependency_package_call_params(
+        &mut self,
+        call_key: &ExpressionKey,
+        callable: &str,
+        expected: &[(String, Result<(ResolvedTypeRef, PackageTypeRef), String>)],
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) {
+        if expected.len() != args.len() {
+            self.diagnostics.push(format!(
+                "{}: call `{callable}` arity mismatch: expected {} arguments, found {}",
+                self.module_path,
+                expected.len(),
+                args.len()
+            ));
+        }
+        for (index, (name, expected)) in expected.iter().enumerate() {
+            let (expected, exact_expected) = match expected {
+                Ok(expected) => expected,
+                Err(error) => {
+                    self.diagnostics.push(format!(
+                        "{}: call `{callable}` parameter {} `{name}` dependency type resolution failed at {}: {error}",
+                        self.module_path,
+                        index + 1,
+                        self.expression_span_label(call_key),
+                    ));
+                    continue;
+                }
+            };
+            let Some((key, actual)) = arg_types.get(index) else {
+                continue;
+            };
+            let Some(actual) = actual else {
+                continue;
+            };
+            if type_contains_type_param(&expected.ir) || type_contains_type_param(&actual.ir) {
+                continue;
+            }
+            let context = format!("call `{callable}` argument {}", index + 1);
+            self.check_value_assignable_to_expected(
+                None,
+                &args[index],
+                key,
+                actual,
+                expected,
+                Some(exact_expected),
                 &context,
                 self.expression_span(key),
             );
@@ -4969,7 +5024,7 @@ fn resolved_package_type_ref(ty: &PackageTypeRef) -> ResolvedTypeRef {
 
 fn package_type_ref_ir(ty: &PackageTypeRef) -> TypeRefIr {
     match ty {
-        PackageTypeRef::Local { local_type } => local_type.clone(),
+        PackageTypeRef::Local { local_type } => ordinary_package_local_type_ir(local_type),
         PackageTypeRef::PackageSchema {
             package_id,
             stable_schema_key,
@@ -5003,33 +5058,74 @@ fn package_type_ref_ir(ty: &PackageTypeRef) -> TypeRefIr {
     }
 }
 
-fn package_type_contains_local_slot(ty: &PackageTypeRef) -> bool {
+fn ordinary_package_local_type_ir(ty: &TypeRefIr) -> TypeRefIr {
+    let recurse = ordinary_package_local_type_ir;
     match ty {
-        PackageTypeRef::Local { local_type } => type_ir_contains_local_slot(local_type),
-        PackageTypeRef::PackageSchema { .. } => false,
-        PackageTypeRef::Container { arguments, .. } => {
-            arguments.iter().any(package_type_contains_local_slot)
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.clone(),
+                },
+                symbol_path: stable_schema_key.clone(),
+                abi_expectation: None,
+            },
+        },
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
+            name: name.clone(),
+            args: args.iter().map(recurse).collect(),
+        },
+        TypeRefIr::Record { fields } => TypeRefIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), recurse(ty)))
+                .collect(),
+        },
+        TypeRefIr::Union { items } => TypeRefIr::Union {
+            items: items.iter().map(recurse).collect(),
+        },
+        TypeRefIr::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(recurse(inner)),
+        },
+        TypeRefIr::AnyInterface { interface } => {
+            let interface_abi_id = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+                .map(|identity| recurse(&identity))
+                .and_then(|identity| serde_json::to_string(&identity))
+                .unwrap_or_else(|_| interface.interface_abi_id.clone());
+            TypeRefIr::AnyInterface {
+                interface: skiff_artifact_model::InterfaceInstantiationRef {
+                    interface_abi_id,
+                    canonical_type_args: interface
+                        .canonical_type_args
+                        .iter()
+                        .map(recurse)
+                        .collect(),
+                },
+            }
         }
-        PackageTypeRef::Nullable { inner } => package_type_contains_local_slot(inner),
-        PackageTypeRef::AnyInterface {
-            interface,
-            arguments,
-        } => {
-            package_type_contains_local_slot(interface)
-                || arguments.iter().any(package_type_contains_local_slot)
-        }
-    }
-}
-
-fn type_ir_contains_local_slot(ty: &TypeRefIr) -> bool {
-    match ty {
-        TypeRefIr::LocalType { .. } | TypeRefIr::ServiceSymbol { .. } => true,
-        TypeRefIr::Builtin { args, .. } | TypeRefIr::Union { items: args } => {
-            args.iter().any(type_ir_contains_local_slot)
-        }
-        TypeRefIr::Nullable { inner } => type_ir_contains_local_slot(inner),
-        TypeRefIr::Record { fields } => fields.values().any(type_ir_contains_local_slot),
-        _ => false,
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => TypeRefIr::Function {
+            params: params
+                .iter()
+                .map(|parameter| skiff_artifact_model::FunctionTypeParamIr {
+                    name: parameter.name.clone(),
+                    ty: recurse(&parameter.ty),
+                })
+                .collect(),
+            return_type: Box::new(recurse(return_type)),
+        },
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => ty.clone(),
     }
 }
 
