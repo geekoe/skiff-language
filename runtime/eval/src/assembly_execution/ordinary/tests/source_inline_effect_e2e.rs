@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -10,15 +10,7 @@ use std::{
 };
 
 use skiff_artifact_identity::{package_artifact_ref, service_contract_ref};
-use skiff_artifact_model::{
-    AssemblyIdentity, BoundaryCallbackContract, BoundaryCancellationContract,
-    BoundaryEffectGuarantee, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
-    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, CanonicalPackageLinkPlan, ContractTypeRef,
-    PackageArtifact, PackageBinding, PackageCallableId, PackageCodeSlot, PackageRefIr,
-    PackageRequirementKey, PackageTypeRequirement, RuntimeAssembly, TestEffectOutcomeIr, TypeRefIr,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
-};
+use skiff_artifact_model::*;
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
     compile_contract, CompilerPlatformSources, ServiceContractDefinition,
@@ -26,7 +18,20 @@ use skiff_compiler::{
 };
 use skiff_deployment::storage::{CanonicalArtifactStore, ServiceContractPointer};
 use skiff_runtime_activation::RequestActivationContext;
-use skiff_runtime_model::request_heap::RequestHeap;
+use skiff_runtime_linked_program::{
+    ExecutableAddr, FileAddr, HydratedPackageCode, PublicationResourceTable, UnitAddr,
+};
+use skiff_runtime_model::{
+    request_heap::RequestHeap,
+    runtime_value::{
+        HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue, RuntimeValueCarrier,
+    },
+    service_error::{
+        CatchIdentity, ErrorCorrelation, ExceptionStackFrame, InstantiatedTypeArgumentIdentity,
+        LocalExecutionTypeIdentity, NominalTypeIdentity, OpaqueServiceError,
+        PlatformBuiltinErrorIdentity, RequestException, ServiceErrorEnvelope,
+    },
+};
 use skiff_test_runner::{
     canonical_fixture::discover_package_test_cases,
     canonical_package::compile_package_project,
@@ -34,17 +39,923 @@ use skiff_test_runner::{
     test_overlay::{compile_package_test_overlay, PublishedPackageTestOverlay},
 };
 
-use crate::{Interpreter, RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget};
+use crate::{
+    error::{RuntimeError, UserException},
+    test_effect_registry::{
+        RegisteredTestEffect, RegisteredTestEffectFailure, RegisteredTestEffectOutcome,
+        RegisteredTestEffectThrow, TestEffectTarget,
+    },
+    Interpreter, RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget,
+};
 
-use super::{activation_context, execution_context, test_runtime, TestResolver};
+use super::{
+    activation_context, execution_context, execution_context_with_trace, test_runtime, TestResolver,
+};
 
 const ERROR_PACKAGE_ID: &str = "example.com/typed-effect-errors";
 const ERROR_PACKAGE_VERSION: &str = "1.0.0";
 const ERROR_STABLE_SCHEMA_KEY: &str = "Failure";
 const SERVICE_ID: &str = "example.com/typed-effect-payments";
 const SERVICE_VERSION: &str = "1.0.0";
+const LINKED_SERVICE_EFFECT_PACKAGE_ID: &str = "skiff.run/std";
+const LINKED_ERROR_DEPENDENCY_ALIAS: &str = "errors";
+const LINKED_INTERNAL_ERROR_KEY: &str = "std.service.InternalError";
+const LINKED_SERVICE_EFFECT_TRACE_ID: &str = "trace:linked-service-effect";
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct LinkedEffectExecution {
+    interpreter: Interpreter,
+    result: crate::error::Result<RuntimeValue>,
+    heap: RequestHeap,
+}
+
+#[tokio::test]
+async fn linked_service_effect_public_throw_imports_and_consumes_sequence() {
+    let run = execute_linked_effect(0, None).await;
+    let result = run.result.as_ref().expect("public throw must be caught");
+    let exception = caught_exception(result, &run.heap);
+    let expected_identity = CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+        LocalExecutionTypeIdentity {
+            addr: skiff_runtime_linked_program::TypeAddr {
+                unit: UnitAddr::Package(1),
+                file: FileAddr::LoadedFileIndex(0),
+                type_index: 0,
+            },
+            type_arguments: Vec::new(),
+        },
+    ));
+    assert_eq!(exception.local_catch_identity(), Some(&expected_identity));
+    assert!(matches!(
+        exception.fixed_service_error().unwrap().envelope(),
+        ServiceErrorEnvelope::PublicTypedError {
+            package_id,
+            stable_schema_key,
+            ..
+        } if package_id == ERROR_PACKAGE_ID
+            && stable_schema_key == ERROR_STABLE_SCHEMA_KEY
+    ));
+    assert_boundary_stack(exception);
+    let RuntimeValue::Heap(payload) = exception.local_value().unwrap().value() else {
+        panic!("public payload must be caller-local");
+    };
+    let HeapNode::Object(payload) = run.heap.get(*payload).unwrap() else {
+        panic!("public payload must be a caller-local object");
+    };
+    assert_eq!(
+        payload.fields().get("message"),
+        Some(&RuntimeValue::String("denied".to_string()))
+    );
+    let RuntimeValue::Heap(result) = result else {
+        panic!("linked result must be an object");
+    };
+    let HeapNode::Object(result) = run.heap.get(*result).unwrap() else {
+        panic!("linked result must remain an object");
+    };
+    assert_eq!(
+        result.fields().get("response"),
+        Some(&RuntimeValue::String("accepted".to_string()))
+    );
+    run.interpreter.finalize_test_case().unwrap();
+}
+
+#[tokio::test]
+async fn linked_service_effect_internalization_matrix_is_fixed_once() {
+    let private = execute_linked_effect(1, None).await;
+    assert_internal(
+        caught_exception(private.result.as_ref().unwrap(), &private.heap),
+        "private-detail",
+    );
+    private.interpreter.finalize_test_case().unwrap();
+
+    for (case, unit_index, type_index, args, malformed) in [
+        ("encode", 1, 0, Vec::new(), true),
+        (
+            "nonclosed",
+            0,
+            3,
+            vec![InstantiatedTypeArgumentIdentity::new("builtin:string").unwrap()],
+            false,
+        ),
+    ] {
+        let mut setup_heap = RequestHeap::default();
+        let leaked = format!("{case}-private-detail");
+        let value = if malformed {
+            RuntimeValue::Heap(
+                setup_heap
+                    .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
+                        "leak".to_string(),
+                        RuntimeValue::String(leaked.clone()),
+                    )])))
+                    .unwrap(),
+            )
+        } else {
+            RuntimeValue::String(leaked.clone())
+        };
+        let correlation = ErrorCorrelation {
+            trace_id: format!("trace:{case}"),
+            error_id: format!("trace:{case}:error:1"),
+        };
+        let failure = local_provider_failure(
+            RuntimeValueCarrier::identified(value, local_identity_at(unit_index, type_index, args)),
+            correlation.clone(),
+        );
+        let run = execute_linked_effect(
+            2,
+            Some((
+                RegisteredTestEffectFailure::ProviderFailure(failure),
+                setup_heap,
+            )),
+        )
+        .await;
+        let exception = caught_exception(run.result.as_ref().unwrap(), &run.heap);
+        assert_eq!(exception.correlation(), &correlation);
+        assert_internal(exception, &leaked);
+        run.interpreter.finalize_test_case().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn linked_service_effect_opaque_failure_forwards_exact_bytes_and_new_stack() {
+    let envelope = ServiceErrorEnvelope::PublicTypedError {
+        package_id: "unknown.example/errors".to_string(),
+        stable_schema_key: "Opaque".to_string(),
+        package_schema_type_id: PackageSchemaTypeId::new("type:opaque"),
+        encoded_payload: vec![1],
+        trace_id: "trace:opaque".to_string(),
+        error_id: "trace:opaque:error:1".to_string(),
+    };
+    let encoded = skiff_canonical_json::canonical_json_bytes(&envelope).unwrap();
+    let opaque = OpaqueServiceError::decode(encoded.clone()).unwrap();
+    let run = execute_linked_effect(
+        2,
+        Some((
+            RegisteredTestEffectFailure::FixedService(opaque),
+            RequestHeap::default(),
+        )),
+    )
+    .await;
+    let error = run.result.as_ref().expect_err("opaque catch must miss");
+    let exception = crate::exceptions::user_exception_for_catch(error)
+        .unwrap()
+        .request();
+    assert_eq!(
+        exception.fixed_service_error().unwrap().encoded_bytes(),
+        encoded
+    );
+    assert!(exception.local_value().is_none());
+    assert_boundary_stack(exception);
+    run.interpreter.finalize_test_case().unwrap();
+}
+
+#[tokio::test]
+async fn linked_service_effect_platform_failure_uses_the_same_r0_channel() {
+    let run = execute_linked_effect(
+        2,
+        Some((
+            RegisteredTestEffectFailure::ProviderFailure(RuntimeError::FileError {
+                message: "denied".to_string(),
+            }),
+            RequestHeap::default(),
+        )),
+    )
+    .await;
+    let error = run.result.as_ref().expect_err("platform catch must miss");
+    let exception = crate::exceptions::user_exception_for_catch(error)
+        .unwrap()
+        .request();
+    assert!(matches!(
+        exception.fixed_service_error().unwrap().envelope(),
+        ServiceErrorEnvelope::PlatformError {
+            builtin_error_identity: PlatformBuiltinErrorIdentity::File,
+            ..
+        }
+    ));
+    assert_eq!(
+        exception.local_catch_identity(),
+        Some(&PlatformBuiltinErrorIdentity::File.catch_identity())
+    );
+    assert_boundary_stack(exception);
+    run.interpreter.finalize_test_case().unwrap();
+}
+
+async fn execute_linked_effect(
+    executable_index: usize,
+    injected: Option<(RegisteredTestEffectFailure, RequestHeap)>,
+) -> LinkedEffectExecution {
+    let (target, addr) = linked_service_effect_fixture(executable_index);
+    let interpreter = Interpreter::for_runtime_assembly_with_test_effect_double_sequences(
+        Default::default(),
+        test_runtime::runtime_factory(),
+    );
+    if let Some((failure, setup_heap)) = injected {
+        interpreter.runtime_test_effects.register(
+            service_effect_target(),
+            RegisteredTestEffect {
+                expect: None,
+                step_expect: None,
+                outcome: RegisteredTestEffectOutcome::Throw(RegisteredTestEffectThrow {
+                    failure,
+                    setup_heap,
+                    setup_package_build_id: PackageBuildId::new("build:linked-service-effect"),
+                }),
+            },
+        );
+    }
+    let context =
+        execution_context_with_trace(&interpreter, target, LINKED_SERVICE_EFFECT_TRACE_ID);
+    let mut heap = RequestHeap::default();
+    let result = interpreter
+        .execute_runtime_assembly_addr(context, &mut heap, &addr, Vec::new())
+        .await;
+    LinkedEffectExecution {
+        interpreter,
+        result,
+        heap,
+    }
+}
+
+fn caught_exception<'a>(caught: &RuntimeValue, heap: &'a RequestHeap) -> &'a RequestException {
+    let RuntimeValue::Heap(caught) = caught else {
+        panic!("catch result must be an object");
+    };
+    let HeapNode::Object(caught) = heap.get(*caught).unwrap() else {
+        panic!("catch result must remain an object");
+    };
+    let RuntimeValue::Heap(exception) = caught.fields().get("exception").unwrap() else {
+        panic!("catch result must contain an exception");
+    };
+    let HeapNode::Exception(exception) = heap.get(*exception).unwrap() else {
+        panic!("catch result must retain RequestException");
+    };
+    exception
+}
+
+fn assert_internal(exception: &RequestException, forbidden: &str) {
+    assert_eq!(
+        exception.local_catch_identity(),
+        Some(&local_identity(2, Vec::new()))
+    );
+    let fixed = exception.fixed_service_error().unwrap();
+    assert!(matches!(
+        fixed.envelope(),
+        ServiceErrorEnvelope::InternalError { .. }
+    ));
+    let bytes = String::from_utf8_lossy(fixed.encoded_bytes());
+    assert_eq!(bytes.matches("Internal service error").count(), 1);
+    assert!(!bytes.contains(forbidden));
+    assert_boundary_stack(exception);
+}
+
+fn assert_boundary_stack(exception: &RequestException) {
+    assert_eq!(exception.source(), &linked_service_effect_call_site());
+    assert_eq!(exception.stack().len(), 2);
+    assert!(matches!(
+        exception.stack().last(),
+        Some(ExceptionStackFrame::RemoteBoundary {
+            service_id,
+            operation_id,
+            error_id,
+        }) if service_id == "test-effect:protocol:linked-service-effect"
+            && operation_id == "operation:echo"
+            && error_id == &exception.correlation().error_id
+    ));
+    assert!(!exception.stack().iter().any(|frame| matches!(
+        frame,
+        ExceptionStackFrame::Local {
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            },
+        }
+    )));
+}
+
+fn local_identity(
+    type_index: usize,
+    type_arguments: Vec<InstantiatedTypeArgumentIdentity>,
+) -> CatchIdentity {
+    local_identity_at(0, type_index, type_arguments)
+}
+
+fn local_identity_at(
+    unit_index: usize,
+    type_index: usize,
+    type_arguments: Vec<InstantiatedTypeArgumentIdentity>,
+) -> CatchIdentity {
+    CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+        LocalExecutionTypeIdentity {
+            addr: skiff_runtime_linked_program::TypeAddr {
+                unit: UnitAddr::Package(unit_index),
+                file: FileAddr::LoadedFileIndex(0),
+                type_index,
+            },
+            type_arguments,
+        },
+    ))
+}
+
+fn local_provider_failure(
+    payload: RuntimeValueCarrier,
+    correlation: ErrorCorrelation,
+) -> RuntimeError {
+    let site = InstructionSourceSite::Synthetic {
+        reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+    };
+    RuntimeError::UserException(UserException::new(
+        RequestException::local(
+            payload,
+            site.clone(),
+            vec![ExceptionStackFrame::Local { site }],
+            correlation,
+        )
+        .unwrap(),
+    ))
+}
+
+fn service_effect_target() -> TestEffectTarget {
+    TestEffectTarget::contract_operation(
+        ContractOperationId::new("operation:echo"),
+        ServiceProtocolIdentity::new("protocol:linked-service-effect"),
+    )
+}
+
+fn linked_service_effect_fixture(
+    executable_index: usize,
+) -> (RuntimeAssemblyEvalTarget, ExecutableAddr) {
+    let error_dependency = linked_error_dependency();
+    let operation_id = ContractOperationId::new("operation:echo");
+    let protocol_identity = ServiceProtocolIdentity::new("protocol:linked-service-effect");
+    let service_call = ServiceCallRef {
+        service_requirement_slot: 0,
+        contract_operation_id: operation_id.clone(),
+        expected_protocol_identity: protocol_identity.clone(),
+    };
+    let service_call_index = ServiceCallRefIndex::try_from(0_usize).expect("service call index");
+    let public_error_symbol = PackageSymbolRef {
+        package: PackageRefIr::Dependency {
+            dependency_ref: LINKED_ERROR_DEPENDENCY_ALIAS.to_string(),
+        },
+        symbol_path: ERROR_STABLE_SCHEMA_KEY.to_string(),
+        abi_expectation: Some(
+            error_dependency
+                .artifact_ref
+                .package_local_abi_identity
+                .to_string(),
+        ),
+    };
+    let public_error_type = TypeRefIr::PackageSymbol {
+        symbol: public_error_symbol.clone(),
+    };
+    let private_error_type = TypeRefIr::PublicationType {
+        module_path: "linked.effect".to_string(),
+        type_index: 1,
+    };
+    let internal_error_type = TypeRefIr::PublicationType {
+        module_path: "linked.effect".to_string(),
+        type_index: 2,
+    };
+    let mut file = FileIrUnit::empty("linked.effect", "source:linked-service-effect");
+    file.type_table.extend([
+        TypeDeclIr {
+            name: ERROR_STABLE_SCHEMA_KEY.to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::from([("message".to_string(), TypeRefIr::builtin("string"))]),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        },
+        TypeDeclIr {
+            name: "PrivateFailure".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::from([("secret".to_string(), TypeRefIr::builtin("string"))]),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        },
+        TypeDeclIr {
+            name: LINKED_INTERNAL_ERROR_KEY.to_string(),
+            descriptor: internal_error_source_descriptor(),
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        },
+        TypeDeclIr {
+            name: "GenericFailure".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::from([(
+                    "value".to_string(),
+                    TypeRefIr::TypeParam {
+                        name: "T".to_string(),
+                    },
+                )]),
+            },
+            type_params: vec!["T".to_string()],
+            implements: Vec::new(),
+            source_span: None,
+        },
+    ]);
+    file.external_refs
+        .service_call_refs
+        .push(service_call.clone());
+    file.external_refs.package_symbols.push(public_error_symbol);
+    file.executables.extend([
+        linked_service_effect_executable(
+            service_call_index,
+            public_error_type.clone(),
+            public_error_type,
+            "message",
+            "denied",
+        ),
+        linked_service_effect_executable(
+            service_call_index,
+            private_error_type,
+            internal_error_type.clone(),
+            "secret",
+            "private-detail",
+        ),
+        linked_service_effect_consumer_executable(service_call_index, internal_error_type),
+    ]);
+    skiff_artifact_identity::assign_file_ir_identity(&mut file)
+        .expect("linked service-effect File IR identity");
+
+    let internal_canonical_descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: internal_error_contract_descriptor(),
+    };
+    let internal_type_id = skiff_artifact_identity::package_schema_type_id(
+        LINKED_SERVICE_EFFECT_PACKAGE_ID,
+        LINKED_INTERNAL_ERROR_KEY,
+        &internal_canonical_descriptor,
+    )
+    .expect("linked Internal error identity");
+    let index_types = BTreeMap::from([(
+        LINKED_INTERNAL_ERROR_KEY.to_string(),
+        PackageSchemaIndexEntry {
+            package_schema_type_id: internal_type_id.clone(),
+            public_path: Some(LINKED_INTERNAL_ERROR_KEY.to_string()),
+            nameability: ContractTypeNameability::PublicNameable,
+        },
+    )]);
+    let schema_index = PackageSchemaIndex {
+        package_id: LINKED_SERVICE_EFFECT_PACKAGE_ID.to_string(),
+        package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+            LINKED_SERVICE_EFFECT_PACKAGE_ID,
+            &index_types,
+        )
+        .expect("linked service-effect schema index identity"),
+        types: index_types,
+    };
+    let internal_record = Arc::new(PackageSchemaTypeRecord {
+        package_id: LINKED_SERVICE_EFFECT_PACKAGE_ID.to_string(),
+        stable_schema_key: LINKED_INTERNAL_ERROR_KEY.to_string(),
+        package_schema_type_id: internal_type_id.clone(),
+        canonical_descriptor: internal_canonical_descriptor,
+    });
+    let file_ref = FileIrRef {
+        file_ir_identity: file.file_ir_identity.clone(),
+        module_path: file.module_path.clone(),
+        artifact_path: None,
+        source_ast_hash: Some(file.source_ast_hash.clone()),
+    };
+    let package_build_id = PackageBuildId::new("build:linked-service-effect");
+    let package_local_abi_identity = PackageLocalAbiIdentity::new("abi:linked-service-effect");
+    let mut package = super::private_package(LINKED_SERVICE_EFFECT_PACKAGE_ID, &file);
+    package.package_build_id = package_build_id.clone();
+    package.package_local_abi.local_abi_identity = package_local_abi_identity.clone();
+    package.package_schema_index.package_schema_index_identity =
+        schema_index.package_schema_index_identity.clone();
+    package.package_schema_type_records = BTreeMap::from([(
+        internal_type_id.clone(),
+        PackageSchemaTypeRecordRef {
+            package_id: LINKED_SERVICE_EFFECT_PACKAGE_ID.to_string(),
+            package_schema_type_id: internal_type_id.clone(),
+        },
+    )]);
+    package.implementation_links.types = BTreeMap::from([(
+        LINKED_INTERNAL_ERROR_KEY.to_string(),
+        TypeExport {
+            file: file_ref,
+            type_index: 2,
+            symbol: LINKED_INTERNAL_ERROR_KEY.to_string(),
+            is_interface: false,
+            descriptor: Some(internal_error_source_descriptor()),
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+        },
+    )]);
+    package.package_requirements = vec![PackageRequirement {
+        alias: LINKED_ERROR_DEPENDENCY_ALIAS.to_string(),
+        package_id: error_dependency.artifact_ref.package_id.clone(),
+        exact_version: error_dependency.artifact_ref.package_version.clone(),
+        expected_local_abi: error_dependency
+            .artifact_ref
+            .package_local_abi_identity
+            .clone(),
+        expected_package_build: Some(error_dependency.artifact_ref.package_build_id.clone()),
+    }];
+    package.service_requirements = vec![ServiceRequirement {
+        contract_requirement: ContractRequirement {
+            alias: "payments".to_string(),
+            service_id: "example.com/linked-effect-provider".to_string(),
+            contract_version: "1.0.0".to_string(),
+            expected_protocol_identity: protocol_identity,
+        },
+        service_binding_slot: 0,
+        used_operations: BTreeSet::from([operation_id]),
+    }];
+    package.service_call_refs = vec![service_call];
+    let package_ref = super::package_ref(&package);
+    let dependency_ref = error_dependency.artifact_ref.clone();
+    let assembly = RuntimeAssembly {
+        schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
+        assembly_identity: AssemblyIdentity::new("assembly:linked-service-effect"),
+        roots: Vec::new(),
+        resolved_deployments: Vec::new(),
+        resolved_contracts: Vec::new(),
+        resolved_packages: vec![package_ref.clone(), dependency_ref.clone()],
+        package_link_plan: CanonicalPackageLinkPlan {
+            code_slots: vec![
+                PackageCodeSlot {
+                    package: package_ref.clone(),
+                },
+                PackageCodeSlot {
+                    package: dependency_ref.clone(),
+                },
+            ],
+            package_links: vec![PackageBinding {
+                key: PackageRequirementKey {
+                    caller_package_build_id: package_ref.package_build_id.clone(),
+                    package_requirement_alias: LINKED_ERROR_DEPENDENCY_ALIAS.to_string(),
+                },
+                package: dependency_ref,
+            }],
+        },
+        service_binding_templates: Vec::new(),
+        activation_templates: Vec::new(),
+        global_ingress: Vec::new(),
+    };
+    let records = BTreeMap::from([(internal_type_id, internal_record)]);
+    let hydrated = HydratedPackageCode::new(
+        Arc::new(package),
+        vec![Arc::new(file)],
+        PublicationResourceTable::default(),
+    )
+    .with_schema_index(Arc::new(schema_index))
+    .with_schema_records(records);
+    let dependency_hydrated = HydratedPackageCode::new(
+        Arc::new(error_dependency.artifact),
+        vec![Arc::new(error_dependency.file)],
+        PublicationResourceTable::default(),
+    )
+    .with_schema_index(Arc::new(error_dependency.schema_index))
+    .with_schema_records(error_dependency.records);
+    let image = skiff_runtime_linker::link_package_fixture_from_runtime_assembly(
+        &assembly,
+        vec![hydrated, dependency_hydrated],
+    )
+    .expect("link narrow service-effect fixture");
+    let activation = activation_context(assembly.assembly_identity, package_build_id);
+    let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::new(TestResolver {
+        activation: Arc::clone(&activation),
+    });
+    let request = RequestActivationContext::begin(activation)
+        .expect("linked service-effect request generation");
+    let target = RuntimeAssemblyEvalTarget::new(image, request, resolver)
+        .expect("linked service-effect eval target");
+    (
+        target,
+        ExecutableAddr {
+            unit: UnitAddr::Package(0),
+            file: FileAddr::LoadedFileIndex(0),
+            executable: executable_index,
+        },
+    )
+}
+
+struct LinkedErrorDependency {
+    artifact_ref: PackageArtifactRef,
+    artifact: PackageArtifact,
+    file: FileIrUnit,
+    schema_index: PackageSchemaIndex,
+    records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+}
+
+fn linked_error_dependency() -> LinkedErrorDependency {
+    let source_descriptor = TypeDescriptorIr::Record {
+        fields: BTreeMap::from([("message".to_string(), TypeRefIr::builtin("string"))]),
+    };
+    let canonical_descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([("message".to_string(), ContractTypeRef::builtin("string"))]),
+        },
+    };
+    let type_id = skiff_artifact_identity::package_schema_type_id(
+        ERROR_PACKAGE_ID,
+        ERROR_STABLE_SCHEMA_KEY,
+        &canonical_descriptor,
+    )
+    .expect("linked dependency error identity");
+    let index_types = BTreeMap::from([(
+        ERROR_STABLE_SCHEMA_KEY.to_string(),
+        PackageSchemaIndexEntry {
+            package_schema_type_id: type_id.clone(),
+            public_path: Some(ERROR_STABLE_SCHEMA_KEY.to_string()),
+            nameability: ContractTypeNameability::PublicNameable,
+        },
+    )]);
+    let schema_index = PackageSchemaIndex {
+        package_id: ERROR_PACKAGE_ID.to_string(),
+        package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+            ERROR_PACKAGE_ID,
+            &index_types,
+        )
+        .expect("linked dependency schema index identity"),
+        types: index_types,
+    };
+    let record = Arc::new(PackageSchemaTypeRecord {
+        package_id: ERROR_PACKAGE_ID.to_string(),
+        stable_schema_key: ERROR_STABLE_SCHEMA_KEY.to_string(),
+        package_schema_type_id: type_id.clone(),
+        canonical_descriptor,
+    });
+    let mut file = FileIrUnit::empty("errors", "source:linked-service-effect-errors");
+    file.type_table.push(TypeDeclIr {
+        name: ERROR_STABLE_SCHEMA_KEY.to_string(),
+        descriptor: source_descriptor.clone(),
+        type_params: Vec::new(),
+        implements: Vec::new(),
+        source_span: None,
+    });
+    skiff_artifact_identity::assign_file_ir_identity(&mut file)
+        .expect("linked dependency File IR identity");
+    let file_ref = FileIrRef {
+        file_ir_identity: file.file_ir_identity.clone(),
+        module_path: file.module_path.clone(),
+        artifact_path: None,
+        source_ast_hash: Some(file.source_ast_hash.clone()),
+    };
+    let mut artifact = super::private_package(ERROR_PACKAGE_ID, &file);
+    artifact.package_build_id = PackageBuildId::new("build:linked-service-effect-errors");
+    artifact.package_local_abi.local_abi_identity =
+        PackageLocalAbiIdentity::new("abi:linked-service-effect-errors");
+    artifact.package_schema_index.package_schema_index_identity =
+        schema_index.package_schema_index_identity.clone();
+    artifact.package_schema_type_records = BTreeMap::from([(
+        type_id.clone(),
+        PackageSchemaTypeRecordRef {
+            package_id: ERROR_PACKAGE_ID.to_string(),
+            package_schema_type_id: type_id.clone(),
+        },
+    )]);
+    artifact.implementation_links.types = BTreeMap::from([(
+        ERROR_STABLE_SCHEMA_KEY.to_string(),
+        TypeExport {
+            file: file_ref,
+            type_index: 0,
+            symbol: ERROR_STABLE_SCHEMA_KEY.to_string(),
+            is_interface: false,
+            descriptor: Some(source_descriptor),
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+        },
+    )]);
+    let artifact_ref = super::package_ref(&artifact);
+    LinkedErrorDependency {
+        artifact_ref,
+        artifact,
+        file,
+        schema_index,
+        records: BTreeMap::from([(type_id, record)]),
+    }
+}
+
+fn linked_service_effect_executable(
+    service_call_ref_index: ServiceCallRefIndex,
+    payload_type: TypeRefIr,
+    catch_type: TypeRefIr,
+    payload_field: &str,
+    payload_value: &str,
+) -> ExecutableIr {
+    let service_call = |site| ExprIr::Call {
+        call: CallIr {
+            target: CallTargetIr::ServiceCall {
+                service_call_ref_index,
+            },
+            site,
+            args: Vec::new(),
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        },
+    };
+    ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: "linkedServiceEffectCase".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("Json"),
+        self_type: None,
+        slots: SlotLayout {
+            slots: vec![
+                SlotIr {
+                    index: 0,
+                    name: "$exception".to_string(),
+                    kind: SlotKind::Temp,
+                },
+                SlotIr {
+                    index: 1,
+                    name: "caught".to_string(),
+                    kind: SlotKind::Temp,
+                },
+                SlotIr {
+                    index: 2,
+                    name: "response".to_string(),
+                    kind: SlotKind::Temp,
+                },
+            ],
+            frame_size: 3,
+        },
+        may_suspend: false,
+        body: ExecutableBody {
+            blocks: vec![BlockIr {
+                label: "entry".to_string(),
+                statements: (0_u32..5)
+                    .map(|statement| StmtRefIr { statement })
+                    .collect(),
+            }],
+            statements: vec![
+                StmtIr::TestEffectRegister {
+                    target: TestEffectRegisterTargetIr::ContractOperation {
+                        service_call_ref_index,
+                    },
+                    expect: None,
+                    step_expect: None,
+                    outcome: TestEffectOutcomeIr::Throw {
+                        value: ExprRefIr { expression: 1 },
+                        payload_type: payload_type.clone(),
+                    },
+                },
+                StmtIr::TestEffectRegister {
+                    target: TestEffectRegisterTargetIr::ContractOperation {
+                        service_call_ref_index,
+                    },
+                    expect: None,
+                    step_expect: None,
+                    outcome: TestEffectOutcomeIr::Respond {
+                        value: ExprRefIr { expression: 5 },
+                        value_type: TypeRefIr::builtin("string"),
+                    },
+                },
+                StmtIr::Let {
+                    slot: 1,
+                    value: ExprRefIr { expression: 4 },
+                },
+                StmtIr::Let {
+                    slot: 2,
+                    value: ExprRefIr { expression: 6 },
+                },
+                StmtIr::Return {
+                    value: Some(ExprRefIr { expression: 10 }),
+                },
+            ],
+            expressions: vec![
+                ExprIr::Literal {
+                    value: LiteralIr::String {
+                        value: payload_value.to_string(),
+                    },
+                },
+                ExprIr::Construct {
+                    type_ref: TypeRefIr::Record {
+                        fields: BTreeMap::from([(
+                            payload_field.to_string(),
+                            TypeRefIr::builtin("string"),
+                        )]),
+                    },
+                    fields: BTreeMap::from([(
+                        payload_field.to_string(),
+                        ExprRefIr { expression: 0 },
+                    )]),
+                },
+                service_call(linked_service_effect_call_site()),
+                ExprIr::LoadSlot { slot: 0 },
+                ExprIr::Catch {
+                    try_expression: ExprRefIr { expression: 2 },
+                    catch_slot: 0,
+                    catch_type,
+                    body: ExprRefIr { expression: 3 },
+                },
+                ExprIr::Literal {
+                    value: LiteralIr::String {
+                        value: "accepted".to_string(),
+                    },
+                },
+                service_call(InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::RuntimeControlFlow,
+                }),
+                ExprIr::LoadSlot { slot: 1 },
+                ExprIr::Field {
+                    object: ExprRefIr { expression: 7 },
+                    field: "exception".to_string(),
+                },
+                ExprIr::LoadSlot { slot: 2 },
+                ExprIr::Construct {
+                    type_ref: TypeRefIr::Record {
+                        fields: BTreeMap::from([
+                            ("exception".to_string(), TypeRefIr::builtin("Json")),
+                            ("response".to_string(), TypeRefIr::builtin("string")),
+                        ]),
+                    },
+                    fields: BTreeMap::from([
+                        ("exception".to_string(), ExprRefIr { expression: 8 }),
+                        ("response".to_string(), ExprRefIr { expression: 9 }),
+                    ]),
+                },
+            ],
+        },
+        source_span: None,
+    }
+}
+
+fn internal_error_source_descriptor() -> TypeDescriptorIr {
+    TypeDescriptorIr::Record {
+        fields: BTreeMap::from([
+            ("errorId".to_string(), TypeRefIr::builtin("string")),
+            ("message".to_string(), TypeRefIr::builtin("string")),
+            ("traceId".to_string(), TypeRefIr::builtin("string")),
+        ]),
+    }
+}
+
+fn linked_service_effect_consumer_executable(
+    service_call_ref_index: ServiceCallRefIndex,
+    catch_type: TypeRefIr,
+) -> ExecutableIr {
+    ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: "linkedOpaqueServiceEffectCase".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("Json"),
+        self_type: None,
+        slots: SlotLayout {
+            slots: vec![SlotIr {
+                index: 0,
+                name: "$exception".to_string(),
+                kind: SlotKind::Temp,
+            }],
+            frame_size: 1,
+        },
+        may_suspend: false,
+        body: ExecutableBody {
+            blocks: vec![BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            }],
+            statements: vec![StmtIr::Return {
+                value: Some(ExprRefIr { expression: 2 }),
+            }],
+            expressions: vec![
+                ExprIr::Call {
+                    call: CallIr {
+                        target: CallTargetIr::ServiceCall {
+                            service_call_ref_index,
+                        },
+                        site: linked_service_effect_call_site(),
+                        args: Vec::new(),
+                        type_args: BTreeMap::new(),
+                        metadata: BTreeMap::new(),
+                    },
+                },
+                ExprIr::LoadSlot { slot: 0 },
+                ExprIr::Catch {
+                    try_expression: ExprRefIr { expression: 0 },
+                    catch_slot: 0,
+                    catch_type,
+                    body: ExprRefIr { expression: 1 },
+                },
+            ],
+        },
+        source_span: None,
+    }
+}
+
+fn internal_error_contract_descriptor() -> ContractTypeDescriptor {
+    ContractTypeDescriptor::Record {
+        fields: BTreeMap::from([
+            ("errorId".to_string(), ContractTypeRef::builtin("string")),
+            ("message".to_string(), ContractTypeRef::builtin("string")),
+            ("traceId".to_string(), ContractTypeRef::builtin("string")),
+        ]),
+    }
+}
+
+fn linked_service_effect_call_site() -> InstructionSourceSite {
+    InstructionSourceSite::Synthetic {
+        reason: SyntheticInstructionSiteReason::RuntimeBoundaryDispatch,
+    }
+}
 
 #[tokio::test]
 async fn source_inline_service_effect_sequence_typed_throw_is_caught_then_responds() {

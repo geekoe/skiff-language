@@ -11,7 +11,7 @@ use skiff_artifact_model::{
 use skiff_runtime_model::{
     request_heap::{deep_clone_runtime_value_carrier_between_heaps, RequestHeap},
     runtime_value::RuntimeValueCarrier,
-    service_error::{ErrorCorrelation, ExceptionStackFrame, RequestException},
+    service_error::{ErrorCorrelation, ExceptionStackFrame, OpaqueServiceError, RequestException},
     type_plan::RuntimeTypePlan,
 };
 
@@ -77,27 +77,39 @@ impl TestEffectTarget {
     }
 }
 
-#[derive(Clone)]
 pub(crate) struct RegisteredTestEffect {
     pub(crate) expect: Option<Value>,
     pub(crate) step_expect: Option<Value>,
     pub(crate) outcome: RegisteredTestEffectOutcome,
 }
 
-#[derive(Clone)]
 pub(crate) enum RegisteredTestEffectOutcome {
     Respond {
         value: Value,
         value_plan: RuntimeTypePlan,
     },
-    Throw {
-        payload: RuntimeValueCarrier,
-        setup_heap: RequestHeap,
-    },
+    Throw(RegisteredTestEffectThrow),
     Stream {
         values: Vec<Value>,
         item_plan: RuntimeTypePlan,
     },
+}
+
+pub(crate) struct RegisteredTestEffectThrow {
+    pub(crate) failure: RegisteredTestEffectFailure,
+    pub(crate) setup_heap: RequestHeap,
+    pub(crate) setup_package_build_id: PackageBuildId,
+}
+
+pub(crate) enum RegisteredTestEffectFailure {
+    LocalPayload(RuntimeValueCarrier),
+    FixedService(OpaqueServiceError),
+    ProviderFailure(RuntimeError),
+}
+
+pub(crate) enum ServiceTestEffectDispatch {
+    Complete(RuntimeValueCarrier),
+    Throw(RegisteredTestEffectThrow),
 }
 
 #[derive(Clone, Default)]
@@ -134,7 +146,7 @@ impl RuntimeTestEffectRegistry {
             .contains_key(target)
     }
 
-    pub(crate) fn dispatch(
+    pub(crate) fn dispatch_package(
         &self,
         target: &TestEffectTarget,
         args: &[RuntimeValueCarrier],
@@ -143,17 +155,42 @@ impl RuntimeTestEffectRegistry {
         context: &ProgramExecutionContext<'_>,
         site: &InstructionSourceSite,
     ) -> Option<Result<RuntimeValueCarrier>> {
-        self.dispatch_internal(target, args, stream_runtime, heap, Some((context, site)))
+        if !matches!(target, TestEffectTarget::PackageCallable { .. }) {
+            return Some(Err(RuntimeError::InvalidArtifact(
+                "package test-effect dispatch requires an exact PackageCallable target".to_string(),
+            )));
+        }
+        let effect = self.take_matching_effect(target, args, heap)?;
+        Some(effect.and_then(|effect| {
+            self.materialize_package_effect(effect, stream_runtime, heap, Some((context, site)))
+        }))
     }
 
-    fn dispatch_internal(
+    pub(crate) fn dispatch_service(
         &self,
         target: &TestEffectTarget,
         args: &[RuntimeValueCarrier],
         stream_runtime: Option<&StreamRuntime>,
         heap: &mut RequestHeap,
-        exception_context: Option<(&ProgramExecutionContext<'_>, &InstructionSourceSite)>,
-    ) -> Option<Result<RuntimeValueCarrier>> {
+    ) -> Option<Result<ServiceTestEffectDispatch>> {
+        if !matches!(target, TestEffectTarget::ContractOperation { .. }) {
+            return Some(Err(RuntimeError::InvalidArtifact(
+                "service test-effect dispatch requires an exact ContractOperation target"
+                    .to_string(),
+            )));
+        }
+        let effect = self.take_matching_effect(target, args, heap)?;
+        Some(
+            effect.and_then(|effect| self.materialize_service_effect(effect, stream_runtime, heap)),
+        )
+    }
+
+    fn take_matching_effect(
+        &self,
+        target: &TestEffectTarget,
+        args: &[RuntimeValueCarrier],
+        heap: &RequestHeap,
+    ) -> Option<Result<RegisteredTestEffect>> {
         let effect = {
             let mut entries = self
                 .entries
@@ -168,63 +205,83 @@ impl RuntimeTestEffectRegistry {
                 target.diagnostic()
             ))));
         };
-        Some(self.materialize(effect, args, stream_runtime, heap, exception_context))
+        if let Some(expected) = effect.expect.as_ref() {
+            if let Err(error) = Self::match_expected_request_subset("target", expected, args, heap)
+            {
+                return Some(Err(error));
+            }
+        }
+        if let Some(expected) = effect.step_expect.as_ref() {
+            if let Err(error) =
+                Self::match_expected_request_subset("sequence step", expected, args, heap)
+            {
+                return Some(Err(error));
+            }
+        }
+        Some(Ok(effect))
     }
 
-    fn materialize(
+    fn materialize_package_effect(
         &self,
         effect: RegisteredTestEffect,
-        args: &[RuntimeValueCarrier],
         stream_runtime: Option<&StreamRuntime>,
         heap: &mut RequestHeap,
         exception_context: Option<(&ProgramExecutionContext<'_>, &InstructionSourceSite)>,
     ) -> Result<RuntimeValueCarrier> {
-        if let Some(expected) = effect.expect {
-            Self::match_expected_request_subset("target", expected, args, heap)?;
-        }
-        if let Some(expected) = effect.step_expect {
-            Self::match_expected_request_subset("sequence step", expected, args, heap)?;
-        }
         match effect.outcome {
             RegisteredTestEffectOutcome::Respond { value, value_plan } => {
-                runtime_carrier_from_wire_required_plan(
-                    &value,
-                    Some(&value_plan),
-                    "test effect response",
-                    heap,
-                )
+                materialize_test_response(value, &value_plan, heap)
             }
-            RegisteredTestEffectOutcome::Throw {
-                payload,
-                setup_heap,
-            } => {
-                let Some((context, site)) = exception_context else {
-                    return Err(RuntimeError::InvalidArtifact(
-                        "test effect throw requires request exception context".to_string(),
-                    ));
-                };
-                materialize_local_test_throw(
-                    payload,
-                    &setup_heap,
-                    heap,
-                    site.clone(),
-                    context.exception_stack_for_site(site.clone()),
-                    context.next_exception_correlation()?,
-                )
+            RegisteredTestEffectOutcome::Throw(throw) => match throw.failure {
+                RegisteredTestEffectFailure::LocalPayload(payload) => {
+                    let Some((context, site)) = exception_context else {
+                        return Err(RuntimeError::InvalidArtifact(
+                            "package test effect throw requires request exception context"
+                                .to_string(),
+                        ));
+                    };
+                    materialize_local_test_throw(
+                        payload,
+                        &throw.setup_heap,
+                        heap,
+                        site.clone(),
+                        context.exception_stack_for_site(site.clone()),
+                        context.next_exception_correlation()?,
+                    )
+                }
+                RegisteredTestEffectFailure::FixedService(_) => Err(RuntimeError::InvalidArtifact(
+                    "PackageCallable test effects cannot carry a fixed service error".to_string(),
+                )),
+                RegisteredTestEffectFailure::ProviderFailure(_) => {
+                    Err(RuntimeError::InvalidArtifact(
+                        "PackageCallable test effects cannot carry a service runtime failure"
+                            .to_string(),
+                    ))
+                }
+            },
+            RegisteredTestEffectOutcome::Stream { values, item_plan } => {
+                materialize_test_stream(values, item_plan, stream_runtime, heap)
+            }
+        }
+    }
+
+    fn materialize_service_effect(
+        &self,
+        effect: RegisteredTestEffect,
+        stream_runtime: Option<&StreamRuntime>,
+        heap: &mut RequestHeap,
+    ) -> Result<ServiceTestEffectDispatch> {
+        match effect.outcome {
+            RegisteredTestEffectOutcome::Respond { value, value_plan } => {
+                materialize_test_response(value, &value_plan, heap)
+                    .map(ServiceTestEffectDispatch::Complete)
+            }
+            RegisteredTestEffectOutcome::Throw(throw) => {
+                Ok(ServiceTestEffectDispatch::Throw(throw))
             }
             RegisteredTestEffectOutcome::Stream { values, item_plan } => {
-                let stream_runtime = stream_runtime.ok_or_else(|| {
-                    RuntimeError::Decode("test effect stream runtime is unavailable".to_string())
-                })?;
-                let stream = stream_runtime.buffered_stream(values);
-                let stream_plan = RuntimeTypePlan::synthetic_stream(item_plan);
-                runtime_from_wire_internal_handle_required_plan(
-                    &stream,
-                    Some(&stream_plan),
-                    "test effect stream",
-                    heap,
-                )
-                .map(Into::into)
+                materialize_test_stream(values, item_plan, stream_runtime, heap)
+                    .map(ServiceTestEffectDispatch::Complete)
             }
         }
     }
@@ -237,12 +294,33 @@ impl RuntimeTestEffectRegistry {
         stream_runtime: Option<&StreamRuntime>,
         heap: &mut RequestHeap,
     ) -> Option<Result<RuntimeValueCarrier>> {
-        self.dispatch_internal(target, args, stream_runtime, heap, None)
+        if !matches!(target, TestEffectTarget::PackageCallable { .. }) {
+            return Some(Err(RuntimeError::InvalidArtifact(
+                "package test-effect dispatch requires an exact PackageCallable target".to_string(),
+            )));
+        }
+        let effect = self.take_matching_effect(target, args, heap)?;
+        Some(
+            effect.and_then(|effect| {
+                self.materialize_package_effect(effect, stream_runtime, heap, None)
+            }),
+        )
+    }
+
+    #[cfg(test)]
+    fn dispatch_service_for_test(
+        &self,
+        target: &TestEffectTarget,
+        args: &[RuntimeValueCarrier],
+        stream_runtime: Option<&StreamRuntime>,
+        heap: &mut RequestHeap,
+    ) -> Option<Result<ServiceTestEffectDispatch>> {
+        self.dispatch_service(target, args, stream_runtime, heap)
     }
 
     fn match_expected_request_subset(
         scope: &str,
-        expected: Value,
+        expected: &Value,
         args: &[RuntimeValueCarrier],
         heap: &RequestHeap,
     ) -> Result<()> {
@@ -256,7 +334,7 @@ impl RuntimeTestEffectRegistry {
                     .collect::<Result<_>>()?,
             ),
         };
-        if !json_contains(&actual, &expected) {
+        if !json_contains(&actual, expected) {
             let subject = if scope == "target" {
                 "test effect".to_string()
             } else {
@@ -292,6 +370,34 @@ impl RuntimeTestEffectRegistry {
             )))
         }
     }
+}
+
+fn materialize_test_response(
+    value: Value,
+    value_plan: &RuntimeTypePlan,
+    heap: &mut RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    runtime_carrier_from_wire_required_plan(&value, Some(value_plan), "test effect response", heap)
+}
+
+fn materialize_test_stream(
+    values: Vec<Value>,
+    item_plan: RuntimeTypePlan,
+    stream_runtime: Option<&StreamRuntime>,
+    heap: &mut RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    let stream_runtime = stream_runtime.ok_or_else(|| {
+        RuntimeError::Decode("test effect stream runtime is unavailable".to_string())
+    })?;
+    let stream = stream_runtime.buffered_stream(values);
+    let stream_plan = RuntimeTypePlan::synthetic_stream(item_plan);
+    runtime_from_wire_internal_handle_required_plan(
+        &stream,
+        Some(&stream_plan),
+        "test effect stream",
+        heap,
+    )
+    .map(Into::into)
 }
 
 fn materialize_local_test_throw(
@@ -418,7 +524,7 @@ mod tests {
         );
 
         assert!(registry
-            .dispatch_for_test(&dispatched_call.2, &[], None, &mut RequestHeap::default(),)
+            .dispatch_service_for_test(&dispatched_call.2, &[], None, &mut RequestHeap::default(),)
             .is_some());
     }
 
@@ -439,10 +545,10 @@ mod tests {
                 },
             );
             assert!(registry
-                .dispatch_for_test(&wrong, &[], None, &mut RequestHeap::default())
+                .dispatch_service_for_test(&wrong, &[], None, &mut RequestHeap::default())
                 .is_none());
             assert!(registry
-                .dispatch_for_test(&exact, &[], None, &mut RequestHeap::default())
+                .dispatch_service_for_test(&exact, &[], None, &mut RequestHeap::default())
                 .is_some());
         }
     }
@@ -519,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_throw_clones_the_exact_carrier_into_the_request_heap() {
+    fn package_typed_throw_clones_the_exact_carrier_into_the_request_heap_without_service_export() {
         let outer_identity = CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
             LocalExecutionTypeIdentity {
                 addr: TypeAddr {
@@ -631,6 +737,188 @@ mod tests {
     }
 
     #[test]
+    fn service_typed_throw_retains_the_setup_snapshot_without_cloning_into_the_caller_heap() {
+        let identity = CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+            LocalExecutionTypeIdentity {
+                addr: TypeAddr {
+                    unit: UnitAddr::Package(7),
+                    file: FileAddr::loaded_file(3),
+                    type_index: 2,
+                },
+                type_arguments: Vec::new(),
+            },
+        ));
+        let mut setup_heap = RequestHeap::default();
+        let setup_handle = setup_heap
+            .alloc_array_carriers(vec![RuntimeValueCarrier::identified(
+                RuntimeValue::from("denied"),
+                identity.clone(),
+            )])
+            .expect("service setup payload");
+        let registry = RuntimeTestEffectRegistry::default();
+        let exact = service_target("operation:lookup", "protocol:v1");
+        registry.register(
+            exact.clone(),
+            RegisteredTestEffect {
+                expect: None,
+                step_expect: None,
+                outcome: RegisteredTestEffectOutcome::Throw(RegisteredTestEffectThrow {
+                    failure: RegisteredTestEffectFailure::LocalPayload(
+                        RuntimeValueCarrier::identified(
+                            RuntimeValue::Heap(setup_handle),
+                            identity.clone(),
+                        ),
+                    ),
+                    setup_heap,
+                    setup_package_build_id: PackageBuildId::new("build:synthetic-provider"),
+                }),
+            },
+        );
+        let mut caller_heap = RequestHeap::default();
+
+        let dispatch = registry
+            .dispatch_service_for_test(&exact, &[], None, &mut caller_heap)
+            .expect("exact service effect")
+            .expect("typed service throw snapshot");
+        let ServiceTestEffectDispatch::Throw(throw) = dispatch else {
+            panic!("service throw must remain a typed provider snapshot");
+        };
+        assert_eq!(
+            throw.setup_package_build_id,
+            PackageBuildId::new("build:synthetic-provider")
+        );
+        let RegisteredTestEffectFailure::LocalPayload(payload) = &throw.failure else {
+            panic!("ordinary registered service throw must retain its local payload");
+        };
+        assert_eq!(payload.catch_identity(), Some(&identity));
+        assert_eq!(payload.value(), &RuntimeValue::Heap(setup_handle));
+        assert_eq!(
+            throw
+                .setup_heap
+                .array_item_carrier(setup_handle, 0)
+                .expect("setup array")
+                .expect("setup item")
+                .catch_identity(),
+            Some(&identity)
+        );
+        assert_eq!(
+            caller_heap.len(),
+            0,
+            "service dispatch must not deep-clone setup handles or TypeAddr values"
+        );
+        registry.finalize().unwrap();
+    }
+
+    #[test]
+    fn service_throw_then_response_consumes_in_order_and_finalizes() {
+        let identity = CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+            LocalExecutionTypeIdentity {
+                addr: TypeAddr {
+                    unit: UnitAddr::Package(1),
+                    file: FileAddr::loaded_file(0),
+                    type_index: 0,
+                },
+                type_arguments: Vec::new(),
+            },
+        ));
+        let exact = service_target("operation:lookup", "protocol:v1");
+        let registry = RuntimeTestEffectRegistry::default();
+        registry.register(
+            exact.clone(),
+            RegisteredTestEffect {
+                expect: None,
+                step_expect: None,
+                outcome: RegisteredTestEffectOutcome::Throw(RegisteredTestEffectThrow {
+                    failure: RegisteredTestEffectFailure::LocalPayload(
+                        RuntimeValueCarrier::identified(RuntimeValue::from("denied"), identity),
+                    ),
+                    setup_heap: RequestHeap::default(),
+                    setup_package_build_id: PackageBuildId::new("build:synthetic-provider"),
+                }),
+            },
+        );
+        registry.register(
+            exact.clone(),
+            RegisteredTestEffect {
+                expect: None,
+                step_expect: None,
+                outcome: string_response("accepted"),
+            },
+        );
+        let mut caller_heap = RequestHeap::default();
+
+        assert!(matches!(
+            registry
+                .dispatch_service_for_test(&exact, &[], None, &mut caller_heap)
+                .expect("first service effect")
+                .expect("service throw snapshot"),
+            ServiceTestEffectDispatch::Throw(_)
+        ));
+        let second = registry
+            .dispatch_service_for_test(&exact, &[], None, &mut caller_heap)
+            .expect("second service effect")
+            .expect("service response");
+        let ServiceTestEffectDispatch::Complete(second) = second else {
+            panic!("second service effect must respond");
+        };
+        assert_eq!(second.value(), &RuntimeValue::from("accepted"));
+        registry.finalize().unwrap();
+    }
+
+    #[test]
+    fn package_shaped_target_cannot_enter_the_service_dispatch_path() {
+        let registry = RuntimeTestEffectRegistry::default();
+        registry.register(
+            target(),
+            RegisteredTestEffect {
+                expect: None,
+                step_expect: None,
+                outcome: string_response("package-local"),
+            },
+        );
+        let mut heap = RequestHeap::default();
+
+        let rejected = registry
+            .dispatch_service_for_test(&target(), &[], None, &mut heap)
+            .expect("wrong typed dispatch fails closed");
+        assert!(matches!(rejected, Err(RuntimeError::InvalidArtifact(_))));
+        let package_result = registry
+            .dispatch_for_test(&target(), &[], None, &mut heap)
+            .expect("rejection must not consume the package outcome")
+            .expect("package-local response");
+        assert_eq!(package_result.value(), &RuntimeValue::from("package-local"));
+        registry.finalize().unwrap();
+    }
+
+    #[test]
+    fn package_throw_rejects_a_service_runtime_failure_without_exporting_it() {
+        let registry = RuntimeTestEffectRegistry::default();
+        registry.register(
+            target(),
+            RegisteredTestEffect {
+                expect: None,
+                step_expect: None,
+                outcome: RegisteredTestEffectOutcome::Throw(RegisteredTestEffectThrow {
+                    failure: RegisteredTestEffectFailure::ProviderFailure(
+                        RuntimeError::Unsupported("provider-only detail".to_string()),
+                    ),
+                    setup_heap: RequestHeap::default(),
+                    setup_package_build_id: PackageBuildId::new("build:test"),
+                }),
+            },
+        );
+        let mut heap = RequestHeap::default();
+
+        let error = registry
+            .dispatch_for_test(&target(), &[], None, &mut heap)
+            .expect("registered package effect")
+            .expect_err("package effects must reject service failure carriers");
+        assert!(matches!(error, RuntimeError::InvalidArtifact(_)));
+        assert_eq!(heap.len(), 0);
+        registry.finalize().unwrap();
+    }
+
+    #[test]
     fn stream_outcome_materializes_in_sequence_order() {
         let registry = RuntimeTestEffectRegistry::default();
         registry.register(
@@ -668,7 +956,7 @@ mod tests {
 
     #[test]
     fn typed_throw_rejects_missing_runtime_identity() {
-        let mut setup_heap = RequestHeap::default();
+        let setup_heap = RequestHeap::default();
         let payload = RuntimeValueCarrier::unidentified(RuntimeValue::from("denied"));
         let source = InstructionSourceSite::Synthetic {
             reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
