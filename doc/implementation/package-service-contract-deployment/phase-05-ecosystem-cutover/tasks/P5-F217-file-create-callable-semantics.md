@@ -17,30 +17,36 @@ relayProxy.responsesCompletedResult
   -> std.file.create
 ```
 
-The canonical native signature exists:
+The canonical native signatures exist:
 
 ```text
 std.file.create(bytes, CreateOptions?) -> ImmutableFile
+std.file.createFromStream(Stream<bytes>, CreateOptions?) -> ImmutableFile
 ```
 
-The Runtime uses File capability context and asynchronously creates a file, but
-exact compiler callable semantics are absent.
+Both use File capability context and asynchronously create a file. The stream
+variant consumes typed byte items into staging storage and commits on natural
+end, cleaning up and cancelling on decode, source, write, or commit failure.
+Exact compiler callable semantics are absent for both reachable bindings.
 
 ## Required semantics
 
-Add exact semantics for canonical `std.file.create` only:
+Add exact semantics for canonical `std.file.create` and
+`std.file.createFromStream` only:
 
-- validate binding identity, bytes parameter, nullable CreateOptions parameter,
-  and ImmutableFile return type against the native signature;
+- validate each exact binding identity, its bytes or Stream<bytes> parameter,
+  nullable CreateOptions parameter, and ImmutableFile return type against the
+  native signature;
 - required context is File;
 - `maySuspend=true`;
 - successful return is a newly created detached ImmutableFile value;
 - no caller alias, caller write, caller escape, unknown-target, or same-heap
   requirement;
-- preserve exact typed File capability errors without caller-alias provenance;
+- preserve exact typed File capability, stream source/decode, cancellation, and
+  cleanup errors without caller-alias provenance;
 - malformed signature/arity/types/context/route and non-canonical lookalikes
   remain fail-closed;
-- do not generalize to createText, read operations, or createFromStream.
+- do not generalize to createText or any read/other File operation.
 
 ## Acceptance
 
@@ -48,7 +54,9 @@ Add exact semantics for canonical `std.file.create` only:
   lookalike rejection.
 - Runtime route/context/signature parity is validated.
 - File capability success and typed error tests prove Fresh return and no
-  caller alias/escape.
+  caller alias/escape for both bindings.
+- Existing createFromStream natural-end, decode, source, write, commit,
+  cleanup, and cancellation tests remain green.
 - Focused archiveRequestFile/archiveResponseBytes caller shapes have only the
   real suspension effect.
 - Real Relay `v1Proxy`, `relayProxy.responsesCompleted`, and
@@ -61,7 +69,7 @@ Add exact semantics for canonical `std.file.create` only:
 
 ## Authority
 
-Use this task as immediate authority. The canonical native signature and File
-capability Runtime route define exact behavior. Ask the primary agent if the
-ImmutableFile result retains caller-owned bytes or capability storage contrary
-to the detached behavior described above.
+Use this task as immediate authority. The two canonical native signatures and
+File capability Runtime routes define exact behavior. Ask the primary agent if
+the ImmutableFile result retains caller-owned bytes, stream items, or
+capability storage contrary to the detached behavior described above.
