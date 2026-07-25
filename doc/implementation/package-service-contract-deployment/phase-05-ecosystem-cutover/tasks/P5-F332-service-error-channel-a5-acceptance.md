@@ -1,6 +1,7 @@
 # P5-F332 Service error channel A5 acceptance
 
-状态：Ready（独立只读验收）。
+状态：Completed。结果见
+`P5-F332-service-error-channel-a5-acceptance-result.md`。
 
 ## 验收输入
 
@@ -67,4 +68,3 @@ eval/workspace/root/stable/live，不push、不承接W2-W。
 - 返回`PASS`/`FAIL`、blocking、non-blocking、独立证据、结构判断与残余风险；
 - PASS冻结A5并允许W2-W消费fixed carrier，不代表W2-W/Phase 5；
 - result提交，不push、不承接实现。
-

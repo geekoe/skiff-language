@@ -1,6 +1,7 @@
 # P5-F333 Wire and observability delta audit
 
-状态：Ready（只读审计）。
+状态：Completed。结果见
+`P5-F333-wire-observability-delta-audit-result.md`。
 
 ## 直接父节点
 
@@ -77,4 +78,3 @@ result必须包含：
 - 新的一次性只读Agent，5分钟内开始写result；
 - 提交并返回commit、审计HEAD/tree、关键跳点、建议DAG和设计缺口；
 - 不push、不承接实现。
-
