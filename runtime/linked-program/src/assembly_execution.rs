@@ -8,8 +8,8 @@ use skiff_artifact_model::{
 use crate::{
     ActivationRelativeServiceCall, ExecutableAddr, FileAddr, LinkOverlay, LinkedExecutable,
     LinkedFileUnit, LinkedPackageDirectCall, PackageCodeSlotIndex, PackageSymbolKey,
-    ResolvedSymbol, RuntimeTypeContext, SharedPackageCode, SharedPackageImageError,
-    SharedPackageLinkedImage, TypeAddr, UnitAddr,
+    ResolvedSymbol, RuntimeTypeContext, ServiceErrorTypeIndex, SharedPackageCode,
+    SharedPackageImageError, SharedPackageLinkedImage, TypeAddr, UnitAddr,
 };
 
 /// Immutable, activation-independent executable/type image for one admitted assembly.
@@ -20,6 +20,7 @@ pub struct AssemblyExecutionImage {
     code_slot_by_build: BTreeMap<PackageBuildId, PackageCodeSlotIndex>,
     link_overlay: LinkOverlay,
     types: RuntimeTypeContext,
+    service_error_types: Arc<ServiceErrorTypeIndex>,
 }
 
 /// Runtime-ready code owned exactly once for one canonical package code slot.
@@ -43,6 +44,7 @@ impl AssemblyExecutionImage {
         shared_packages: Arc<SharedPackageLinkedImage>,
         code_slots: Vec<Arc<AssemblyPackageExecutionCode>>,
         types: RuntimeTypeContext,
+        service_error_types: Arc<ServiceErrorTypeIndex>,
     ) -> AssemblyExecutionResult<Self> {
         if code_slots.len() != shared_packages.code_slots().len() {
             return Err(AssemblyExecutionImageError::CodeSlotCountMismatch {
@@ -85,6 +87,7 @@ impl AssemblyExecutionImage {
             code_slot_by_build,
             link_overlay,
             types,
+            service_error_types,
         })
     }
 
@@ -115,6 +118,10 @@ impl AssemblyExecutionImage {
 
     pub fn link_overlay(&self) -> &LinkOverlay {
         &self.link_overlay
+    }
+
+    pub fn service_error_types(&self) -> &Arc<ServiceErrorTypeIndex> {
+        &self.service_error_types
     }
 
     pub fn executable_at(

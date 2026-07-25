@@ -1,0 +1,15 @@
+[package]
+name = "skiff-runtime-linker-service-error-index-owner"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+anyhow = "1.0"
+skiff-artifact-model = { path = "../../../../artifact-model" }
+skiff-runtime-linked-program = { path = "../../../linked-program" }
+
+[dev-dependencies]
+skiff-artifact-identity = { path = "../../../../artifact-identity" }

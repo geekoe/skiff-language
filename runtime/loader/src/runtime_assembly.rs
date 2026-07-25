@@ -5,10 +5,10 @@ use std::{
 
 use anyhow::Context;
 use skiff_artifact_model::{
-    package_schema_descriptor_refs, BoundaryCallbackContract, BoundaryErrorContract,
-    BoundaryOperationDescriptor, BoundaryStreamContract, ContractOperationId,
-    ContractTypeDescriptor, ContractTypeRef, FileIrRef, FileIrUnit, PackageArtifact,
-    PackageArtifactRef, PackageBuildId, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    package_schema_descriptor_refs, BoundaryCallbackContract, BoundaryOperationDescriptor,
+    BoundaryStreamContract, ContractOperationId, ContractTypeDescriptor, ContractTypeRef,
+    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBuildId, PackageSchemaIndex,
+    PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
     PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssembly, RuntimeAssemblyRef,
     ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
@@ -39,6 +39,15 @@ pub trait RuntimeAssemblyContentResolver {
         &self,
         reference: &ServiceContractRef,
     ) -> anyhow::Result<Arc<ServiceContract>>;
+
+    fn resolve_package_schema_index(
+        &self,
+        reference: &PackageSchemaIndexRef,
+    ) -> anyhow::Result<Arc<PackageSchemaIndex>> {
+        anyhow::bail!(
+            "runtime assembly resolver does not implement exact PackageSchemaIndex lookup for {reference:?}"
+        )
+    }
 
     fn resolve_package_schema_type(
         &self,
@@ -190,6 +199,7 @@ pub struct HydratedPackageCodeSlot {
     file_slots: BTreeMap<String, usize>,
     resources: Vec<HydratedStaticResource>,
     resource_slots: BTreeMap<String, usize>,
+    schema_index: Arc<PackageSchemaIndex>,
     schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
 }
 
@@ -224,6 +234,10 @@ impl HydratedPackageCodeSlot {
 
     pub fn schema_records(&self) -> &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>> {
         &self.schema_records
+    }
+
+    pub fn schema_index(&self) -> &Arc<PackageSchemaIndex> {
+        &self.schema_index
     }
 }
 
@@ -473,21 +487,12 @@ where
                 .resolve_package(&reference)
                 .with_context(|| format!("failed to resolve package {reference:?}"))?;
             validate_package_ref(&reference, &artifact)?;
+            let schema_index = self.load_package_schema_index(&artifact)?;
             let (files, file_slots) = self.load_files(&reference, &artifact, &mut shared_files)?;
             validate_package_file_targets(&reference, &artifact, &files, &file_slots)?;
             let (resources, resource_slots) = self.load_resources(&reference, &artifact)?;
-            for (type_id, record_ref) in &artifact.package_schema_type_records {
-                if record_ref.package_id != artifact.package_id
-                    || record_ref.package_schema_type_id != *type_id
-                {
-                    anyhow::bail!(
-                        "package {} schema record reference {type_id} has mismatched owner or identity",
-                        artifact.package_id
-                    );
-                }
-            }
             let schema_records =
-                self.load_package_schema_closure(&artifact, shared_schema_records)?;
+                self.load_package_schema_closure(&artifact, &schema_index, shared_schema_records)?;
             let resolved_schema_records = schema_records
                 .iter()
                 .map(|(id, record)| (id.clone(), record.as_ref().clone()))
@@ -504,22 +509,124 @@ where
                 file_slots,
                 resources,
                 resource_slots,
+                schema_index,
                 schema_records,
             });
         }
         Ok((code_slots, code_slots_by_build))
     }
 
+    fn load_package_schema_index(
+        &self,
+        artifact: &PackageArtifact,
+    ) -> anyhow::Result<Arc<PackageSchemaIndex>> {
+        let reference = &artifact.package_schema_index;
+        if reference.package_id != artifact.package_id {
+            anyhow::bail!(
+                "package {} schema index ref has mismatched owner {}",
+                artifact.package_id,
+                reference.package_id
+            );
+        }
+        let index = self
+            .resolver
+            .resolve_package_schema_index(reference)
+            .with_context(|| {
+                format!(
+                    "failed to resolve exact Package schema index for package {}",
+                    artifact.package_id
+                )
+            })?;
+        if index.package_id != reference.package_id
+            || index.package_schema_index_identity != reference.package_schema_index_identity
+        {
+            anyhow::bail!(
+                "Package schema index content does not match exact ref for package {}",
+                artifact.package_id
+            );
+        }
+        skiff_artifact_identity::validate_package_schema_index(&index)
+            .map_err(anyhow::Error::from)
+            .with_context(|| {
+                format!(
+                    "invalid Package schema index for package {}",
+                    artifact.package_id
+                )
+            })?;
+
+        let mut type_ids = BTreeSet::new();
+        let mut public_paths = BTreeSet::new();
+        for (stable_key, entry) in &index.types {
+            if !type_ids.insert(entry.package_schema_type_id.clone()) {
+                anyhow::bail!(
+                    "package {} schema index assigns type {} to more than one stable key",
+                    artifact.package_id,
+                    entry.package_schema_type_id
+                );
+            }
+            let public_path = entry.public_path.as_deref().with_context(|| {
+                format!(
+                    "package {} schema index entry {stable_key} has no public path",
+                    artifact.package_id
+                )
+            })?;
+            if !public_paths.insert(public_path) {
+                anyhow::bail!(
+                    "package {} schema index repeats public path {public_path}",
+                    artifact.package_id
+                );
+            }
+            let record_ref = artifact
+                .package_schema_type_records
+                .get(&entry.package_schema_type_id)
+                .with_context(|| {
+                    format!(
+                        "package {} schema index entry {stable_key} has no exact record ref",
+                        artifact.package_id
+                    )
+                })?;
+            if record_ref.package_id != artifact.package_id
+                || record_ref.package_schema_type_id != entry.package_schema_type_id
+            {
+                anyhow::bail!(
+                    "package {} schema index entry {stable_key} has mismatched record owner or identity",
+                    artifact.package_id
+                );
+            }
+        }
+        if artifact.package_schema_type_records.len() != index.types.len()
+            || artifact
+                .package_schema_type_records
+                .keys()
+                .any(|type_id| !type_ids.contains(type_id))
+        {
+            anyhow::bail!(
+                "package {} schema record refs do not exactly match its Package schema index",
+                artifact.package_id
+            );
+        }
+        Ok(index)
+    }
+
     fn load_package_schema_closure(
         &self,
         artifact: &PackageArtifact,
+        index: &PackageSchemaIndex,
         shared_schema_records: &mut BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
     ) -> anyhow::Result<BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>> {
         let mut pending = artifact
             .package_schema_type_records
-            .values()
-            .cloned()
-            .map(|reference| (reference, None))
+            .iter()
+            .map(|(type_id, reference)| {
+                let stable_key = index
+                    .types
+                    .iter()
+                    .find_map(|(stable_key, entry)| {
+                        (&entry.package_schema_type_id == type_id).then(|| stable_key.clone())
+                    })
+                    .expect("record refs and validated Package schema index are exact");
+                (reference.clone(), Some(stable_key))
+            })
             .collect::<Vec<(PackageSchemaTypeRecordRef, Option<String>)>>();
         let mut records = BTreeMap::<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>::new();
 
@@ -534,17 +641,24 @@ where
                 continue;
             }
 
-            let record = if let Some(record) = shared_schema_records.get(type_id) {
-                Arc::clone(record)
+            let resolved = self
+                .resolver
+                .resolve_package_schema_type(&record_ref)
+                .with_context(|| {
+                    format!(
+                        "failed to resolve package schema type {type_id} for package {} closure",
+                        artifact.package_id
+                    )
+                })?;
+            let record = if let Some(existing) = shared_schema_records.get(type_id) {
+                if existing.as_ref() != resolved.as_ref() {
+                    anyhow::bail!(
+                        "conflicting Package schema record content for exact type identity {type_id}"
+                    );
+                }
+                Arc::clone(existing)
             } else {
-                self.resolver
-                    .resolve_package_schema_type(&record_ref)
-                    .with_context(|| {
-                        format!(
-                            "failed to resolve package schema type {type_id} for package {} closure",
-                            artifact.package_id
-                        )
-                    })?
+                resolved
             };
             validate_package_schema_record_ref(
                 &record_ref,
@@ -722,9 +836,6 @@ fn validate_resolved_service_schema(
             collect_reachable_type_refs(&parameter.ty, records, &mut reachable)?;
         }
         collect_reachable_type_refs(&operation.contract.return_value.ty, records, &mut reachable)?;
-        if let BoundaryErrorContract::Typed { payload_type, .. } = &operation.contract.errors {
-            collect_reachable_type_refs(payload_type, records, &mut reachable)?;
-        }
         if let BoundaryStreamContract::ServerStream { item_type, .. } = &operation.contract.stream {
             collect_reachable_type_refs(item_type, records, &mut reachable)?;
         }

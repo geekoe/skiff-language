@@ -8,27 +8,27 @@ use skiff_artifact_model::{
     ActivationPolicy, ActivationTemplate, ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr,
     ActorFieldIr, ActorImplementationIdentity, ActorMethodIdentity, ActorPublicMethodIr,
     BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCancellationContract,
-    BoundaryEffectGuarantee, BoundaryErrorContract, BoundaryImplementationRequirements,
-    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract,
-    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, CallIr, CallTargetIr, CallableEffectSummary, CallableMayEffects,
-    CallableProvenanceSummary, CallableSemanticFacts, CanonicalPackageLinkPlan,
-    ConfigLiteralBinding, ContractDiagnosticText, ContractOperationId, ContractRequirement,
-    DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentIngressBinding,
-    DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision, ExecutableBody, ExecutableIr,
-    ExecutableKind, ExprIr, ExprRefIr, FileIrRef, FileIrUnit, GlobalIngressBinding,
-    IngressProtocol, IngressSelector, MetadataValue, OperationCallableKind, OperationTargetRef,
-    PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId,
-    PackageCallableLinkFact, PackageCallableRef, PackageCallableSignature, PackageCodeSlot,
-    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
-    PackageRefIr, PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
-    PackageSchemaIndexRef, PackageTypeRef, PublicationResourceRef, ResolvedServiceBinding,
-    ResourceBinding, ResourcePolicy, RuntimeAssembly, SecretRefBinding, ServiceBindingTemplate,
-    ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
-    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
-    SlotLayout, StateBinding, StateBindingKind, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    BoundaryEffectGuarantee, BoundaryImplementationRequirements, BoundaryOperationContract,
+    BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallIr,
+    CallTargetIr, CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
+    CallableSemanticFacts, CanonicalPackageLinkPlan, ConfigLiteralBinding, ContractDiagnosticText,
+    ContractOperationId, ContractRequirement, DeploymentArtifactIdentity, DeploymentDiagnosticText,
+    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
+    ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, ExprRefIr, FileIrRef, FileIrUnit,
+    GlobalIngressBinding, IngressProtocol, IngressSelector, MetadataValue, OperationCallableKind,
+    OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
+    PackageCallableId, PackageCallableLinkFact, PackageCallableRef, PackageCallableSignature,
+    PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageLocalAbiSymbol, PackageRefIr, PackageRequirement, PackageRequirementKey,
+    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, PackageTypeRef,
+    PublicationResourceRef, ResolvedServiceBinding, ResourceBinding, ResourcePolicy,
+    RuntimeAssembly, SecretRefBinding, ServiceBindingTemplate, ServiceCallRef, ServiceContract,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity,
+    ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding, SlotLayout, StateBinding,
+    StateBindingKind, TypeDeclIr, TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::RuntimeAssemblyContentResolver;
 
@@ -344,6 +344,22 @@ impl CycleFixture {
         let shared_build = shared.package_build_id.clone();
         let helper_build = helper.package_build_id.clone();
         let shared_file_identity = shared_file.file_ir_identity.clone();
+        let schema_indexes = [&shared, &helper]
+            .into_iter()
+            .map(|package| {
+                (
+                    package.package_schema_index.clone(),
+                    Arc::new(PackageSchemaIndex {
+                        package_id: package.package_id.clone(),
+                        package_schema_index_identity: package
+                            .package_schema_index
+                            .package_schema_index_identity
+                            .clone(),
+                        types: BTreeMap::new(),
+                    }),
+                )
+            })
+            .collect();
         let resolver = FixtureResolver {
             deployments: BTreeMap::from([
                 (activation_a.clone(), Arc::new(deployment_a)),
@@ -354,6 +370,7 @@ impl CycleFixture {
                 (shared_ref, Arc::new(shared)),
                 (helper_ref, Arc::new(helper)),
             ]),
+            schema_indexes,
             files: BTreeMap::from([
                 (
                     (shared_build.clone(), shared_file_identity.clone()),
@@ -576,6 +593,7 @@ pub(super) struct FixtureResolver {
     deployments: BTreeMap<ServiceDeploymentRef, Arc<ServiceDeployment>>,
     contracts: BTreeMap<ServiceContractRef, Arc<ServiceContract>>,
     packages: BTreeMap<PackageArtifactRef, Arc<PackageArtifact>>,
+    schema_indexes: Vec<(PackageSchemaIndexRef, Arc<PackageSchemaIndex>)>,
     files: BTreeMap<(PackageBuildId, String), Arc<FileIrUnit>>,
     resources: BTreeMap<(PackageBuildId, String), Arc<[u8]>>,
 }
@@ -614,6 +632,18 @@ impl RuntimeAssemblyContentResolver for FixtureResolver {
         _reference: &skiff_artifact_model::PackageSchemaTypeRecordRef,
     ) -> anyhow::Result<Arc<skiff_artifact_model::PackageSchemaTypeRecord>> {
         anyhow::bail!("fixture has no package schema records")
+    }
+
+    fn resolve_package_schema_index(
+        &self,
+        reference: &PackageSchemaIndexRef,
+    ) -> anyhow::Result<Arc<PackageSchemaIndex>> {
+        self.schema_indexes
+            .iter()
+            .find(|(candidate, _)| candidate == reference)
+            .map(|(_, index)| index)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing package schema index"))
     }
 
     fn resolve_package(
@@ -698,7 +728,6 @@ fn package(
                         return_type: PackageTypeRef::Local {
                             local_type: TypeRefIr::builtin("bool"),
                         },
-                        throw_types: Vec::new(),
                         may_suspend: false,
                     },
                 },
@@ -914,7 +943,6 @@ fn operation_contract() -> BoundaryOperationContract {
                 lifetime: BoundaryValueLifetime::Call,
             },
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::Unary,
         cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,

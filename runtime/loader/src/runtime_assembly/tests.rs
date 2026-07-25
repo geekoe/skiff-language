@@ -3,24 +3,23 @@ use std::{cell::Cell, collections::BTreeMap, sync::Arc};
 use sha2::{Digest, Sha256};
 use skiff_artifact_model::{
     ActivationPolicy, ActivationTemplate, BoundaryCallableProjection, BoundaryCallbackContract,
-    BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryErrorContract,
-    BoundaryImplementationRequirements, BoundaryOperationContract, BoundaryOperationDescriptor,
-    BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary,
-    CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, ContractDiagnosticText,
-    ContractOperationId, ContractTypeDescriptor, ContractTypeRef, DeploymentArtifactIdentity,
-    DeploymentDiagnosticText, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
-    ExecutableBody, ExecutableIr, ExecutableKind, FileIrRef, FileIrUnit, PackageArtifact,
-    PackageArtifactRef, PackageBuildId, PackageCallableId, PackageCallableLinkFact,
-    PackageCallableSignature, PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRuntimeRequirements,
-    PackageSchemaCanonicalDescriptor, PackageSchemaIndexRef, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, PackageTypeRef, PackageTypeRequirement,
-    PublicationResourceRef, ResourcePolicy, RuntimeAssembly, ServiceBindingTemplate,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
-    ServiceProtocolIdentity, SlotLayout, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryImplementationRequirements,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
+    CallableSemanticFacts, ContractDiagnosticText, ContractOperationId, ContractTypeDescriptor,
+    ContractTypeNameability, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
+    DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision, ExecutableBody, ExecutableIr,
+    ExecutableKind, FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBuildId,
+    PackageCallableId, PackageCallableLinkFact, PackageCallableSignature, PackageCodeSlot,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageRuntimeRequirements, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
+    PackageSchemaIndexEntry, PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    PackageSchemaTypeRecordRef, PackageTypeRef, PackageTypeRequirement, PublicationResourceRef,
+    ResourcePolicy, RuntimeAssembly, ServiceBindingTemplate, ServiceContract, ServiceContractRef,
+    ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity, SlotLayout, TypeRefIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -88,6 +87,7 @@ struct FixtureResolver {
     resource: Arc<[u8]>,
     package_loads: Cell<usize>,
     schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    schema_index: Option<Arc<PackageSchemaIndex>>,
     schema_loads: Cell<usize>,
 }
 
@@ -126,6 +126,22 @@ impl RuntimeAssemblyContentResolver for FixtureResolver {
             .get(&reference.package_schema_type_id)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("missing package schema type"))
+    }
+
+    fn resolve_package_schema_index(
+        &self,
+        reference: &PackageSchemaIndexRef,
+    ) -> anyhow::Result<Arc<PackageSchemaIndex>> {
+        let index = self
+            .schema_index
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("missing package schema index"))?;
+        if index.package_id != reference.package_id
+            || index.package_schema_index_identity != reference.package_schema_index_identity
+        {
+            anyhow::bail!("missing package schema index")
+        }
+        Ok(Arc::clone(index))
     }
 
     fn resolve_package(
@@ -171,6 +187,7 @@ struct Fixture {
     resource: Arc<[u8]>,
     deployment: ServiceDeployment,
     assembly: RuntimeAssembly,
+    schema_index: PackageSchemaIndex,
     schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
 }
 
@@ -246,6 +263,15 @@ impl Fixture {
             throw_origins: Vec::new(),
             escape_lanes: Vec::new(),
         };
+        let schema_index = PackageSchemaIndex {
+            package_id: "example.health-provider".to_string(),
+            package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+                "example.health-provider",
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+            types: BTreeMap::new(),
+        };
         let mut package = PackageArtifact {
             schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
             package_id: "example.health-provider".to_string(),
@@ -264,7 +290,6 @@ impl Fixture {
                             return_type: PackageTypeRef::Local {
                                 local_type: TypeRefIr::builtin("bool"),
                             },
-                            throw_types: Vec::new(),
                             may_suspend: false,
                         },
                     },
@@ -272,13 +297,8 @@ impl Fixture {
                 implementation_symbols: BTreeMap::new(),
             },
             package_schema_index: PackageSchemaIndexRef {
-                package_id: "example.health-provider".to_string(),
-                package_schema_index_identity:
-                    skiff_artifact_identity::package_schema_index_identity(
-                        "example.health-provider",
-                        &BTreeMap::new(),
-                    )
-                    .unwrap(),
+                package_id: schema_index.package_id.clone(),
+                package_schema_index_identity: schema_index.package_schema_index_identity.clone(),
             },
             package_schema_type_records: BTreeMap::new(),
             implementation_links: PackageImplementationLinks::default(),
@@ -391,6 +411,7 @@ impl Fixture {
             resource,
             deployment,
             assembly,
+            schema_index,
             schema_records: BTreeMap::new(),
         }
     }
@@ -410,6 +431,7 @@ impl Fixture {
             resource: Arc::clone(&self.resource),
             package_loads: Cell::new(0),
             schema_records: self.schema_records.clone(),
+            schema_index: Some(Arc::new(self.schema_index.clone())),
             schema_loads: Cell::new(0),
         }
     }
@@ -452,6 +474,24 @@ impl Fixture {
                 package_schema_type_id: type_id.clone(),
             },
         );
+        self.schema_index.types.insert(
+            record.stable_schema_key.clone(),
+            PackageSchemaIndexEntry {
+                package_schema_type_id: type_id.clone(),
+                public_path: Some(record.stable_schema_key.clone()),
+                nameability: ContractTypeNameability::PublicNameable,
+            },
+        );
+        self.schema_index.package_schema_index_identity =
+            skiff_artifact_identity::package_schema_index_identity(
+                &self.schema_index.package_id,
+                &self.schema_index.types,
+            )
+            .unwrap();
+        self.package.package_schema_index = PackageSchemaIndexRef {
+            package_id: self.schema_index.package_id.clone(),
+            package_schema_index_identity: self.schema_index.package_schema_index_identity.clone(),
+        };
         skiff_artifact_identity::assign_service_contract_identities(&mut self.contract).unwrap();
         self.schema_records.insert(type_id, Arc::new(record));
         let contract_ref = contract_ref(&self.contract);
@@ -638,6 +678,131 @@ fn loader_hydrates_and_pins_exact_package_schema_records() {
             .shared_schema_record(&type_id)
             .unwrap()
     ));
+}
+
+#[test]
+fn loader_requires_exact_package_schema_index_and_rejects_duplicate_public_facts() {
+    let fixture = Fixture::new();
+    let mut missing = fixture.resolver();
+    missing.schema_index = None;
+    let error = RuntimeAssemblyLoader::new(&missing)
+        .load(fixture.assembly.clone())
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("missing package schema index"),
+        "unexpected error: {error:#}"
+    );
+
+    for mutate in [
+        |index: &mut PackageSchemaIndex| index.package_id.push_str(".wrong"),
+        |index: &mut PackageSchemaIndex| {
+            index.package_schema_index_identity =
+                skiff_artifact_model::PackageSchemaIndexIdentity::new("wrong")
+        },
+    ] as [fn(&mut PackageSchemaIndex); 2]
+    {
+        let mut resolver = fixture.resolver();
+        mutate(Arc::make_mut(
+            resolver.schema_index.as_mut().expect("fixture index"),
+        ));
+        assert!(RuntimeAssemblyLoader::new(&resolver)
+            .load(fixture.assembly.clone())
+            .is_err());
+    }
+
+    let mut duplicate = Fixture::new();
+    let record = schema_record(
+        "example.health-provider",
+        "api.Health",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::new(),
+        },
+    );
+    let type_id = record.package_schema_type_id.clone();
+    duplicate.add_schema_return(record);
+    duplicate.schema_index.types.insert(
+        "api.Other".to_string(),
+        PackageSchemaIndexEntry {
+            package_schema_type_id: type_id,
+            public_path: Some("api.Other".to_string()),
+            nameability: ContractTypeNameability::PublicNameable,
+        },
+    );
+    duplicate.schema_index.package_schema_index_identity =
+        skiff_artifact_identity::package_schema_index_identity(
+            &duplicate.schema_index.package_id,
+            &duplicate.schema_index.types,
+        )
+        .unwrap();
+    duplicate.package.package_schema_index = PackageSchemaIndexRef {
+        package_id: duplicate.schema_index.package_id.clone(),
+        package_schema_index_identity: duplicate.schema_index.package_schema_index_identity.clone(),
+    };
+    duplicate.refresh_package_chain();
+    let error = RuntimeAssemblyLoader::new(&duplicate.resolver())
+        .load(duplicate.assembly)
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("more than one stable key"),
+        "unexpected error: {error:#}"
+    );
+
+    let mut duplicate_path = Fixture::new();
+    let first = schema_record(
+        "example.health-provider",
+        "api.First",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::new(),
+        },
+    );
+    duplicate_path.add_schema_return(first);
+    let second = schema_record(
+        "example.health-provider",
+        "api.Second",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::new(),
+        },
+    );
+    let second_id = second.package_schema_type_id.clone();
+    duplicate_path.package.package_schema_type_records.insert(
+        second_id.clone(),
+        PackageSchemaTypeRecordRef {
+            package_id: second.package_id.clone(),
+            package_schema_type_id: second_id.clone(),
+        },
+    );
+    duplicate_path
+        .schema_records
+        .insert(second_id.clone(), Arc::new(second));
+    duplicate_path.schema_index.types.insert(
+        "api.Second".to_string(),
+        PackageSchemaIndexEntry {
+            package_schema_type_id: second_id,
+            public_path: Some("api.First".to_string()),
+            nameability: ContractTypeNameability::PublicNameable,
+        },
+    );
+    duplicate_path.schema_index.package_schema_index_identity =
+        skiff_artifact_identity::package_schema_index_identity(
+            &duplicate_path.schema_index.package_id,
+            &duplicate_path.schema_index.types,
+        )
+        .unwrap();
+    duplicate_path.package.package_schema_index = PackageSchemaIndexRef {
+        package_id: duplicate_path.schema_index.package_id.clone(),
+        package_schema_index_identity: duplicate_path
+            .schema_index
+            .package_schema_index_identity
+            .clone(),
+    };
+    duplicate_path.refresh_package_chain();
+    let error = RuntimeAssemblyLoader::new(&duplicate_path.resolver())
+        .load(duplicate_path.assembly)
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("must be an api.yml public named type"),
+        "unexpected error: {error:#}"
+    );
 }
 
 #[test]
@@ -1128,6 +1293,9 @@ fn runtime_assembly_filesystem_resolver_hydrates_exact_canonical_closure() {
     let assembly_ref = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
 
     store.write_service_contract(&fixture.contract).unwrap();
+    store
+        .write_package_schema_index(&fixture.schema_index)
+        .unwrap();
     let record_path = store.write_package_schema_type_record(&record).unwrap();
     store.write_package_artifact(&fixture.package).unwrap();
     store
@@ -1243,7 +1411,6 @@ fn operation_contract() -> BoundaryOperationContract {
                 lifetime: BoundaryValueLifetime::Call,
             },
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::Unary,
         cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,
