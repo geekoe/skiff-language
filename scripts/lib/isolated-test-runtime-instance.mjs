@@ -1,7 +1,7 @@
 import {
   spawn as spawnSupervisorChild,
 } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -156,13 +156,32 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       );
       return JSON.parse(result.stdout);
     },
-    spawnSupervisor: ({ configPath, env }) => {
+    spawnSupervisor: ({ configPath, startupGate, startupReady, env }) => {
       // child-process-owner: isolated-supervisor
       return spawnSupervisorChild(
         'node',
-        [join(skiffRoot, 'scripts', 'skiff-instance.mjs'), 'supervise', configPath],
+        [
+          join(skiffRoot, 'scripts', 'skiff-instance.mjs'),
+          'supervise',
+          configPath,
+          '--startup-gate',
+          startupGate,
+          '--startup-ready',
+          startupReady,
+        ],
         { cwd: skiffRoot, env, stdio: 'inherit' },
       );
+    },
+    waitMongoStarted,
+    waitMongoPrimary: initializeSingleNodeReplicaSet,
+    seedActivationState: initializeRouterActivationState,
+    releaseStartupGate: async (startupGate, ownershipReceipt) => {
+      await assertIsolatedTestWorkspaceOwned(ownershipReceipt, { requireConfig: true });
+      await writeFile(startupGate, 'activation-seeded\n', {
+        encoding: 'utf8',
+        flag: 'wx',
+        mode: 0o600,
+      });
     },
     waitReady: waitForIsolatedRuntime,
     stopSupervisor,
@@ -186,26 +205,46 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
   };
 }
 
+async function waitMongoStarted({ startupReady, supervisor, signal }) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < START_TIMEOUT_MS) {
+    signal.throwIfAborted();
+    if (supervisor.exitCode !== null || supervisor.signalCode !== null) {
+      throw new Error(
+        `isolated MongoDB supervisor exited during spawn with ${
+          supervisor.signalCode ?? supervisor.exitCode
+        }`,
+      );
+    }
+    try {
+      await access(startupReady);
+      return;
+    } catch {
+      await delay(50);
+    }
+  }
+  throw new Error(`isolated MongoDB did not report a successful spawn within ${START_TIMEOUT_MS}ms`);
+}
+
 async function waitForIsolatedRuntime({
   controlUrl,
-  mongoPort,
   bootstrap,
   supervisor,
   signal,
 }) {
-  await initializeSingleNodeReplicaSet({ mongoPort, supervisor, signal });
-  await initializeRouterActivationState({ mongoPort, bootstrap, signal });
   const exit = childExit(supervisor);
   const startedAt = Date.now();
   let lastError;
+  let routerReady = false;
   while (Date.now() - startedAt < START_TIMEOUT_MS) {
     signal.throwIfAborted();
     if (supervisor.exitCode !== null || supervisor.signalCode !== null) {
-      throw new Error(`isolated runtime supervisor exited before readiness with ${supervisor.signalCode ?? supervisor.exitCode}`);
+      throw new Error(`isolated Router/Runtime supervisor exited before readiness with ${supervisor.signalCode ?? supervisor.exitCode}`);
     }
     try {
       const response = await fetch(`${controlUrl}/__router/health`, { signal });
       if (response.ok) {
+        routerReady = true;
         const health = await response.json();
         if (isolatedRuntimeHealthReady(health, bootstrap)) {
           return;
@@ -216,8 +255,9 @@ async function waitForIsolatedRuntime({
     }
     await Promise.race([delay(100), exit.then(() => undefined)]);
   }
+  const component = routerReady ? 'Runtime' : 'Router';
   throw new Error(
-    `isolated runtime did not become ready at ${controlUrl} within ${START_TIMEOUT_MS}ms${lastError ? `: ${errorMessage(lastError)}` : ''}`,
+    `isolated ${component} startup failed at ${controlUrl} within ${START_TIMEOUT_MS}ms${lastError ? `: ${errorMessage(lastError)}` : ''}`,
   );
 }
 
@@ -278,7 +318,7 @@ async function initializeSingleNodeReplicaSet({ mongoPort, supervisor, signal })
   while (Date.now() - startedAt < START_TIMEOUT_MS) {
     signal.throwIfAborted();
     if (supervisor.exitCode !== null || supervisor.signalCode !== null) {
-      throw new Error('isolated runtime supervisor exited while initializing MongoDB');
+      throw new Error('isolated MongoDB supervisor exited before primary election');
     }
     try {
       await captureCheckedCommand(

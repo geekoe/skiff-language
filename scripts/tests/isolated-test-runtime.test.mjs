@@ -299,7 +299,7 @@ test('one absolute checkout and Cargo target flow through config, bootstrap, sup
     dependencies,
     validateBootstrapReceipt: (receipt) => {
       observed.validatedBootstrapReceipt = receipt;
-      assert.equal(observed.supervisor, undefined);
+      assert.match(observed.supervisor.startupGate, /activation-seeded\.ready$/);
     },
     runTest: async (environment) => { observed.runnerEnv = environment; },
   });
@@ -347,7 +347,8 @@ test('success and test failure both run owner shutdown, status, ports, lease, an
     }
     assert.deepEqual(actions, [
       'lease', 'temp', 'workspace-claim', 'source-artifacts', 'config', 'config-owner',
-      'bootstrap', 'spawn', 'ready', 'test',
+      'spawn', 'mongo-started', 'mongo-primary', 'bootstrap', 'activation-state',
+      'startup-gate', 'ready', 'test',
       'stop-supervisor', 'instance-down', 'instance-status', 'ports-closed',
       'lease-release', 'temp-remove',
     ]);
@@ -408,7 +409,7 @@ test('false supervisor stop remains a cleanup failure while later owners still s
   assert.equal(actions.includes('temp-remove'), false);
 });
 
-test('write and bootstrap startup failures do not run instance ownership commands', async () => {
+test('write and bootstrap startup failures preserve dependency order and cleanup ownership', async () => {
   for (const failureAt of ['config', 'bootstrap']) {
     const { actions, dependencies } = lifecycleDouble({
       ...(failureAt === 'config'
@@ -437,8 +438,8 @@ test('write and bootstrap startup failures do not run instance ownership command
         ? /config failed.*preserve workspace with uncaptured config/s
         : /bootstrap failed/,
     );
-    assert.equal(actions.includes('instance-down'), false);
-    assert.equal(actions.includes('instance-status'), false);
+    assert.equal(actions.includes('instance-down'), failureAt === 'bootstrap');
+    assert.equal(actions.includes('instance-status'), failureAt === 'bootstrap');
     assert.equal(actions.includes('lease-release'), true);
     assert.equal(actions.includes('temp-remove'), failureAt === 'bootstrap');
   }
@@ -489,6 +490,44 @@ test('partial supervisor startup failure still runs owner down plus status and p
     'stop-supervisor', 'instance-down', 'instance-status', 'ports-closed',
     'lease-release', 'temp-remove',
   ]);
+});
+
+test('every ordered startup stage fails precisely and completes owned cleanup', async () => {
+  const scenarios = [
+    ['Mongo spawn', 'waitMongoStarted', 'mongo spawn exploded'],
+    ['Mongo primary election', 'waitMongoPrimary', 'primary election exploded'],
+    ['activation seed', 'seedActivationState', 'activation seed exploded'],
+    ['Router/Runtime readiness', 'waitReady', 'isolated Router startup failed'],
+  ];
+  for (const [diagnostic, operation, detail] of scenarios) {
+    const { actions, dependencies } = lifecycleDouble({
+      [operation]: async () => {
+        actions.push(operation === 'spawnSupervisor' ? 'spawn' : {
+          waitMongoStarted: 'mongo-started',
+          waitMongoPrimary: 'mongo-primary',
+          seedActivationState: 'activation-state',
+          waitReady: 'ready',
+        }[operation]);
+        throw new Error(detail);
+      },
+    });
+    await assert.rejects(
+      runInIsolatedTestRuntime({
+        skiffRoot: '/checkout/skiff',
+        baseEnv: {},
+        signalTarget: new EventEmitter(),
+        dependencies,
+        runTest: async () => assert.fail('test runner must not start'),
+      }),
+      new RegExp(`isolated ${diagnostic} failed: ${detail}`),
+    );
+    assert.equal(actions.includes('ports-closed'), true);
+    assert.equal(actions.includes('lease-release'), true);
+    assert.deepEqual(actions.slice(-6), [
+      'stop-supervisor', 'instance-down', 'instance-status', 'ports-closed',
+      'lease-release', 'temp-remove',
+    ]);
+  }
 });
 
 test('SIGTERM aborts the test and still completes owned cleanup', async () => {
@@ -630,6 +669,10 @@ function lifecycleDouble(overrides = {}) {
       actions.push('spawn');
       return { pid: 1000 };
     },
+    waitMongoStarted: async () => { actions.push('mongo-started'); },
+    waitMongoPrimary: async () => { actions.push('mongo-primary'); },
+    seedActivationState: async () => { actions.push('activation-state'); },
+    releaseStartupGate: async () => { actions.push('startup-gate'); },
     waitReady: async () => { actions.push('ready'); },
     stopSupervisor: async () => { actions.push('stop-supervisor'); },
     stopOwnedInstance: async () => { actions.push('instance-down'); },

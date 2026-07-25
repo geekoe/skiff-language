@@ -312,7 +312,9 @@ async function runInstance(rawArgs, configPath) {
 }
 
 async function superviseCommand(rawArgs, configPath) {
-  const args = parseFlags(rawArgs, { flags: new Set() });
+  const args = parseFlags(rawArgs, {
+    values: new Set(['--startup-gate', '--startup-ready']),
+  });
   if (args.positionals.length !== 0) {
     throw new Error(`unexpected argument ${args.positionals[0]}`);
   }
@@ -320,7 +322,10 @@ async function superviseCommand(rawArgs, configPath) {
   await ensureInstanceDirs(config.paths);
   await writeRuntimeConfigs(config, true);
   await buildComponentBinaries(config);
-  await superviseInstance(config);
+  await superviseInstance(config, {
+    startupGate: args.values.get('--startup-gate'),
+    startupReady: args.values.get('--startup-ready'),
+  });
 }
 
 async function downInstance(rawArgs, configPath) {
@@ -811,8 +816,14 @@ async function waitForComponentRunning(config, spec, pid) {
   throw new Error(`${spec.name} did not become healthy within ${startTimeoutMs}ms; status=${status.category}`);
 }
 
-async function superviseInstance(config) {
+async function superviseInstance(config, { startupGate, startupReady } = {}) {
   const specs = managedProcessSpecs(config);
+  if (startupGate !== undefined && specs[0]?.name !== 'mongo') {
+    throw new Error('supervisor startup gate requires managed MongoDB');
+  }
+  if ((startupGate === undefined) !== (startupReady === undefined)) {
+    throw new Error('supervisor startup gate and startup ready receipt must be used together');
+  }
   const running = new Map();
   const active = new Map();
   const pendingStarts = new Set();
@@ -950,10 +961,26 @@ async function superviseInstance(config) {
   };
 
   try {
-    for (const spec of specs) {
-      await start(spec);
-      if (stopping) {
-        break;
+    if (startupGate === undefined) {
+      for (const spec of specs) {
+        await start(spec);
+        if (stopping) {
+          break;
+        }
+      }
+    } else {
+      await start(specs[0]);
+      await writeFile(startupReady, 'mongo-started\n', {
+        encoding: 'utf8',
+        flag: 'wx',
+        mode: 0o600,
+      });
+      console.log(`[skiff-instance] startup gate waiting after ${specs[0].name}: ${startupGate}`);
+      while (!stopping && !await fileExists(startupGate)) {
+        await delay(50);
+      }
+      if (!stopping) {
+        await Promise.all(specs.slice(1).map((spec) => start(spec)));
       }
     }
     if (!stopping) {
@@ -1778,11 +1805,17 @@ function parseInstanceConfig(rawArgs) {
 
 function parseFlags(rawArgs, spec) {
   const flags = new Set();
+  const values = new Map();
   const positionals = [];
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
-    if (spec.flags.has(arg)) {
+    if (spec.flags?.has(arg)) {
       flags.add(arg);
+      continue;
+    }
+    if (spec.values?.has(arg)) {
+      values.set(arg, requireNext(rawArgs, index, arg));
+      index += 1;
       continue;
     }
     if (arg.startsWith('-')) {
@@ -1790,7 +1823,7 @@ function parseFlags(rawArgs, spec) {
     }
     positionals.push(arg);
   }
-  return { flags, positionals };
+  return { flags, values, positionals };
 }
 
 function requireNext(args, index, optionName) {

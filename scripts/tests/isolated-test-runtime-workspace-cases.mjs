@@ -272,6 +272,10 @@ async function createOwnershipLifecycleDouble({
     },
     seedBootstrap: async () => ({ environment: 'skiff-test', bootstrap: {} }),
     spawnSupervisor: () => ({ pid: 4242 }),
+    waitMongoStarted: async () => {},
+    waitMongoPrimary: async () => {},
+    seedActivationState: async () => {},
+    releaseStartupGate: async () => {},
     waitReady: async () => {},
     stopSupervisor: async () => {
       actions.push('stop:supervisor');

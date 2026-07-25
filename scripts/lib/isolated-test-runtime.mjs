@@ -148,6 +148,8 @@ async function startIsolatedTestRuntime({
     const configPath = join(instanceRoot, 'config.yml');
     const devHome = join(instanceRoot, 'dev-home');
     const artifactRoot = join(devHome, 'artifacts');
+    const startupGate = join(instanceRoot, 'activation-seeded.ready');
+    const startupReady = join(instanceRoot, 'mongo-started.ready');
     const basePort = portLease.ports[0];
     const controlPort = basePort + 1;
     const mongoPort = portLease.ports[3];
@@ -170,20 +172,36 @@ async function startIsolatedTestRuntime({
       routerHttpPort: basePort,
       environment,
     });
-    const bootstrap = await ops.seedBootstrap({
-      skiffRoot,
-      artifactRoot,
-      environment,
-      env: isolatedEnv,
-      signal,
-    });
-    validateBootstrapReceipt?.(bootstrap);
     signal.throwIfAborted();
     supervisorAttempted = true;
-    supervisor = ops.spawnSupervisor({ skiffRoot, configPath, env: isolatedEnv });
+    supervisor = await stageCall('Mongo spawn', () =>
+      ops.spawnSupervisor({
+        skiffRoot,
+        configPath,
+        startupGate,
+        startupReady,
+        env: isolatedEnv,
+      }));
+    await stageCall('Mongo spawn', () =>
+      ops.waitMongoStarted({ startupReady, supervisor, signal }));
+    await stageCall('Mongo primary election', () =>
+      ops.waitMongoPrimary({ mongoPort, supervisor, signal }));
+    const bootstrap = await stageCall('activation seed', async () => {
+      const receipt = await ops.seedBootstrap({
+        skiffRoot,
+        artifactRoot,
+        environment,
+        env: isolatedEnv,
+        signal,
+      });
+      validateBootstrapReceipt?.(receipt);
+      await ops.seedActivationState({ mongoPort, bootstrap: receipt, signal });
+      await ops.releaseStartupGate(startupGate, ownershipReceipt);
+      return receipt;
+    });
     const controlUrl = `http://127.0.0.1:${controlPort}`;
     const routerHttpUrl = `http://127.0.0.1:${basePort}`;
-    await ops.waitReady({
+    await stageCall('Router/Runtime readiness', () => ops.waitReady({
       controlUrl,
       routerHttpUrl,
       mongoPort,
@@ -191,7 +209,7 @@ async function startIsolatedTestRuntime({
       bootstrap,
       supervisor,
       signal,
-    });
+    }));
     for (let replica = 1; replica < runtimeReplicas; replica += 1) {
       const runtimeHome = join(tempRoot, `runtime-${replica + 1}-home`);
       const runtimeConfig = join(tempRoot, `runtime-${replica + 1}.yml`);
@@ -247,7 +265,7 @@ async function startIsolatedTestRuntime({
       tempRoot,
     };
     try {
-      await cleanupIsolatedTestRuntime(partial, ops);
+      await cleanupIsolatedTestRuntime(partial, ops, error);
     } catch (cleanupError) {
       throw new Error(
         `${errorMessage(error)}; isolated runtime startup cleanup failed: ${errorMessage(cleanupError)}`,
@@ -402,6 +420,14 @@ function isolatedRuntimeOperations(overrides, skiffRoot, baseEnv) {
 
 function errorMessage(error) {
   return error?.message || String(error);
+}
+
+async function stageCall(stage, operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    throw new Error(`isolated ${stage} failed: ${errorMessage(error)}`, { cause: error });
+  }
 }
 
 function cleanupStepError(step, error) {
