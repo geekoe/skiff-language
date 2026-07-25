@@ -7,12 +7,13 @@ use skiff_runtime_request_contract::{
 use crate::{
     error::TransportResult,
     protocol::{
-        encode_binary_frame, ResponseChunkFrameHeader, ResponseEndFrameHeader,
-        ResponseEndFrameMetadata, ResponseErrorFrameHeader, ResponseStartFrameHeader,
-        RuntimeErrorFramePayload, RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader,
-        RuntimeWebSocketConnectAcceptFrameHeader, RuntimeWebSocketConnectContextFrameHeader,
-        RuntimeWebSocketConnectRejectFrameHeader, RuntimeWebSocketContextCodecFrameHeader,
-        RuntimeWebSocketResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+        encode_binary_frame, validate_response_error_frame, ResponseChunkFrameHeader,
+        ResponseEndFrameHeader, ResponseEndFrameMetadata, ResponseErrorFrameHeader,
+        ResponseStartFrameHeader, RuntimeErrorFramePayload, RuntimeHttpNameValueFrameHeader,
+        RuntimeHttpResponseFrameHeader, RuntimeWebSocketConnectAcceptFrameHeader,
+        RuntimeWebSocketConnectContextFrameHeader, RuntimeWebSocketConnectRejectFrameHeader,
+        RuntimeWebSocketContextCodecFrameHeader, RuntimeWebSocketResponseFrameHeader,
+        ValidatedResponseErrorFrame, RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
 
@@ -33,18 +34,23 @@ pub fn response_event_into_frame(
             validate_response_end_frame(&header, &payload, phase)?;
             encode_response_frame(&header, &payload)
         }
+        ResponseEvent::FixedServiceFailure(failure) => {
+            let payload = failure.into_error().into_encoded_bytes();
+            let header = ResponseErrorFrameHeader::fixed_service(request_id);
+            validate_response_error_frame(&header, payload.clone())?;
+            encode_response_frame(&header, &payload)
+        }
         ResponseEvent::Error(error) => {
-            let header = ResponseErrorFrameHeader {
-                schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-                envelope_type: "response.error".to_string(),
+            let header = ResponseErrorFrameHeader::control(
                 request_id,
-                error: RuntimeErrorFramePayload {
+                RuntimeErrorFramePayload {
                     code: error.code,
                     message: error.message,
                     status: error.status,
                     details: error.details,
                 },
-            };
+            );
+            validate_response_error_frame(&header, Vec::new())?;
             encode_response_frame(&header, &[])
         }
     }
@@ -170,8 +176,19 @@ pub fn response_chunk_to_outbound(
     }
 }
 
-pub fn response_error_to_outbound(header: &ResponseErrorFrameHeader) -> OutboundResponse {
-    OutboundResponse::Error(request_response_error(header.error.clone()))
+pub fn response_error_to_outbound(
+    header: &ResponseErrorFrameHeader,
+    payload: Vec<u8>,
+) -> OutboundResponse {
+    match validate_response_error_frame(header, payload) {
+        Ok(ValidatedResponseErrorFrame::FixedService(error)) => {
+            OutboundResponse::fixed_service_failure(error)
+        }
+        Ok(ValidatedResponseErrorFrame::Control(error)) => {
+            OutboundResponse::Error(request_response_error(error))
+        }
+        Err(error) => invalid_response_error(&error.to_string()),
+    }
 }
 
 fn encode_response_frame<THeader: serde::Serialize>(
@@ -318,6 +335,15 @@ fn protocol_websocket_connect_reject(
 }
 
 fn invalid_response_end(message: &str) -> OutboundResponse {
+    OutboundResponse::Error(ResponseError {
+        code: "RuntimeProtocolViolation".to_string(),
+        message: message.to_string(),
+        status: None,
+        details: None,
+    })
+}
+
+fn invalid_response_error(message: &str) -> OutboundResponse {
     OutboundResponse::Error(ResponseError {
         code: "RuntimeProtocolViolation".to_string(),
         message: message.to_string(),

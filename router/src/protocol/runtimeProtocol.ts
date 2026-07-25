@@ -1,13 +1,19 @@
+import { TextDecoder } from 'node:util';
+
 import {
+  RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
   RUNTIME_FRAME_SCHEMA_VERSION,
   TELEMETRY_PROTOCOL,
   TELEMETRY_TOPICS,
+  TELEMETRY_VISIBILITIES,
   isRecord,
   type RequestCancelReason,
+  type ResponseErrorFrameHeader,
   type RouterToRuntimeFrameHeader,
   type RuntimeFrameHeader,
   type RuntimeFrameHeaderName,
   type RuntimeToRouterFrameHeader,
+  type TelemetryEvent,
   type TelemetryTopic
 } from './envelope.js';
 import {
@@ -63,6 +69,49 @@ export type EnvelopeValidationResult<TEnvelope> =
   | {
       ok: false;
       error: string;
+    };
+
+export interface PublicTypedServiceErrorEnvelopeView {
+  readonly kind: 'publicTypedError';
+  readonly packageId: string;
+  readonly stableSchemaKey: string;
+  readonly packageSchemaTypeId: string;
+  readonly encodedPayload: readonly number[];
+  readonly traceId: string;
+  readonly errorId: string;
+}
+
+export interface InternalServiceErrorEnvelopeView {
+  readonly kind: 'internalError';
+  readonly payload: {
+    readonly message: string;
+    readonly traceId: string;
+    readonly errorId: string;
+  };
+}
+
+export interface PlatformServiceErrorEnvelopeView {
+  readonly kind: 'platformError';
+  readonly builtinErrorIdentity: string;
+  readonly encodedPayload: readonly number[];
+  readonly traceId: string;
+  readonly errorId: string;
+}
+
+export type ServiceErrorEnvelopeView =
+  | PublicTypedServiceErrorEnvelopeView
+  | InternalServiceErrorEnvelopeView
+  | PlatformServiceErrorEnvelopeView;
+
+export type ValidatedResponseErrorFrame =
+  | {
+      readonly header: Extract<ResponseErrorFrameHeader, { errorKind: 'fixedService' }>;
+      readonly payloadBytes: Uint8Array;
+      readonly serviceError: ServiceErrorEnvelopeView;
+    }
+  | {
+      readonly header: Extract<ResponseErrorFrameHeader, { errorKind: 'control' }>;
+      readonly payloadBytes: Uint8Array;
     };
 
 const runtimeToRouterFrameHeaderTypes = [
@@ -135,6 +184,56 @@ const CONFIG_REDACTION_IDENTITY_PATTERN =
 const REVISION_ID_PATTERN = /^[0-9a-f]{64}$/;
 const ACTOR_ID_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const PLATFORM_SERVICE_ERROR_IDENTITIES = [
+  'CancelError',
+  'TimeoutError',
+  'config.DecodeError',
+  'std.bytes.DecodeError',
+  'std.number.DecodeError',
+  'std.json.DecodeError',
+  'std.db.ConflictError',
+  'std.db.DecodeError',
+  'std.file.FileError',
+  'std.time.DecodeError',
+  'std.service.ProviderUnavailableError',
+  'std.service.ProtocolError',
+  'std.http.HttpError'
+] as const;
+const TELEMETRY_EVENT_SOURCES = ['gateway', 'router', 'runtime', 'provider', 'test'] as const;
+const TELEMETRY_EVENT_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
+const TELEMETRY_EVENT_STRING_FIELDS = [
+  'serviceId',
+  'revisionId',
+  'buildId',
+  'activationIdentity',
+  'runtimeId',
+  'providerId',
+  'providerRevision',
+  'providerCapability',
+  'providerTarget',
+  'requestId',
+  'clientRequestId',
+  'traceId',
+  'errorId',
+  'spanId',
+  'parentSpanId',
+  'target',
+  'name',
+  'message'
+] as const;
+const TELEMETRY_EVENT_OBJECT_FIELDS = ['attrs', 'error', 'dropped'] as const;
+const TELEMETRY_EVENT_FIELDS = new Set<string>([
+  'topic',
+  'ts',
+  'source',
+  'visibility',
+  ...TELEMETRY_EVENT_STRING_FIELDS,
+  'level',
+  ...TELEMETRY_EVENT_OBJECT_FIELDS,
+  'durationMs'
+]);
+const RFC3339_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 
 const configShapeProtocolSchema = {
   type: 'object',
@@ -708,6 +807,7 @@ const packageTestStartFrameProperties = {
 const responseErrorProperties = {
   type: { type: 'string', enum: ['response.error'] },
   requestId: { type: 'string' },
+  errorKind: { type: 'string', enum: ['fixedService', 'control'] },
   error: {
     type: 'object',
     required: ['code', 'message'],
@@ -717,7 +817,7 @@ const responseErrorProperties = {
       status: { type: 'integer' },
       details: { type: 'any' }
     },
-    additionalProperties: true
+    additionalProperties: false
   }
 } as const satisfies Record<string, ProtocolSchemaProperty>;
 
@@ -1441,9 +1541,9 @@ export const runtimeFrameHeaderSchemas = {
   },
   'response.error': {
     type: 'object',
-    required: ['schemaVersion', 'type', 'requestId', 'error'],
+    required: ['schemaVersion', 'type', 'requestId', 'errorKind'],
     properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+      schemaVersion: { type: 'string', enum: [RESPONSE_ERROR_FRAME_SCHEMA_VERSION] },
       ...responseErrorProperties
     },
     additionalProperties: false
@@ -1589,6 +1689,7 @@ const packageTestStartFrameFixture = {
 const responseErrorFixture = {
   type: 'response.error',
   requestId: 'request-fixture-1',
+  errorKind: 'control',
   error: {
     code: 'FixtureError',
     message: 'fixture runtime error',
@@ -1995,7 +2096,7 @@ export const runtimeFrameHeaderFixtures = {
     }
   },
   'response.error': {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
     ...responseErrorFixture
   },
   'request.cancel': {
@@ -2148,6 +2249,154 @@ export function validateRouterToRuntimeFrameHeader(
     ok: true,
     envelope: envelope as unknown as RouterToRuntimeFrameHeader
   };
+}
+
+export function validateResponseErrorFrame(
+  header: unknown,
+  payloadBytes: unknown
+): EnvelopeValidationResult<ValidatedResponseErrorFrame> {
+  if (!isRecord(header) || header.type !== 'response.error') {
+    return {
+      ok: false,
+      error: 'invalid response.error frame: header must be a response.error object'
+    };
+  }
+  const headerError =
+    validateFrameHeaderBase(header, 'response.error') ?? validateResponseError(header);
+  if (headerError) {
+    return { ok: false, error: headerError };
+  }
+  if (!(payloadBytes instanceof Uint8Array)) {
+    return {
+      ok: false,
+      error: 'invalid response.error frame: payload must be a Uint8Array'
+    };
+  }
+  if (header.errorKind === 'control') {
+    if (payloadBytes.byteLength !== 0) {
+      return {
+        ok: false,
+        error: 'invalid response.error control frame: payload must be empty'
+      };
+    }
+    return {
+      ok: true,
+      envelope: {
+        header: header as unknown as Extract<ResponseErrorFrameHeader, { errorKind: 'control' }>,
+        payloadBytes
+      }
+    };
+  }
+  if (payloadBytes.byteLength === 0) {
+    return {
+      ok: false,
+      error: 'invalid response.error fixedService frame: payload must be non-empty'
+    };
+  }
+  const serviceError = decodeServiceErrorEnvelope(payloadBytes);
+  if (!serviceError.ok) {
+    return serviceError;
+  }
+  return {
+    ok: true,
+    envelope: {
+      header: header as unknown as Extract<
+        ResponseErrorFrameHeader,
+        { errorKind: 'fixedService' }
+      >,
+      payloadBytes,
+      serviceError: serviceError.envelope
+    }
+  };
+}
+
+export function validateTelemetryEvent(
+  value: unknown
+): EnvelopeValidationResult<TelemetryEvent> {
+  if (!isRecord(value)) {
+    return { ok: false, error: 'invalid telemetry event: event must be an object' };
+  }
+  const unknown = Object.keys(value).find((field) => !TELEMETRY_EVENT_FIELDS.has(field));
+  if (unknown !== undefined) {
+    return { ok: false, error: `invalid telemetry event: ${unknown} is not supported` };
+  }
+  if (
+    typeof value.topic !== 'string' ||
+    !isAllowedType(value.topic, TELEMETRY_TOPICS)
+  ) {
+    return { ok: false, error: 'invalid telemetry event: topic is not supported' };
+  }
+  if (
+    typeof value.ts !== 'string' ||
+    !RFC3339_TIMESTAMP_PATTERN.test(value.ts) ||
+    !Number.isFinite(Date.parse(value.ts))
+  ) {
+    return { ok: false, error: 'invalid telemetry event: ts must be an RFC3339 timestamp' };
+  }
+  if (
+    typeof value.source !== 'string' ||
+    !isAllowedType(value.source, TELEMETRY_EVENT_SOURCES)
+  ) {
+    return { ok: false, error: 'invalid telemetry event: source is not supported' };
+  }
+  if (
+    typeof value.visibility !== 'string' ||
+    !isAllowedType(value.visibility, TELEMETRY_VISIBILITIES)
+  ) {
+    return { ok: false, error: 'invalid telemetry event: visibility is not supported' };
+  }
+  for (const field of TELEMETRY_EVENT_STRING_FIELDS) {
+    if (value[field] !== undefined && typeof value[field] !== 'string') {
+      return { ok: false, error: `invalid telemetry event: ${field} must be a string` };
+    }
+  }
+  if (
+    value.errorId !== undefined &&
+    (typeof value.errorId !== 'string' || value.errorId.trim().length === 0)
+  ) {
+    return { ok: false, error: 'invalid telemetry event: errorId must be non-empty' };
+  }
+  if (value.visibility === 'restricted') {
+    if (typeof value.traceId !== 'string' || value.traceId.trim().length === 0) {
+      return {
+        ok: false,
+        error: 'invalid telemetry event: restricted event requires traceId'
+      };
+    }
+    if (typeof value.errorId !== 'string' || value.errorId.trim().length === 0) {
+      return {
+        ok: false,
+        error: 'invalid telemetry event: restricted event requires errorId'
+      };
+    }
+  }
+  if (
+    value.level !== undefined &&
+    (typeof value.level !== 'string' ||
+      !isAllowedType(value.level, TELEMETRY_EVENT_LEVELS))
+  ) {
+    return { ok: false, error: 'invalid telemetry event: level is not supported' };
+  }
+  for (const field of TELEMETRY_EVENT_OBJECT_FIELDS) {
+    if (value[field] !== undefined && !isRecord(value[field])) {
+      return { ok: false, error: `invalid telemetry event: ${field} must be an object` };
+    }
+  }
+  if (
+    value.durationMs !== undefined &&
+    (typeof value.durationMs !== 'number' ||
+      !Number.isFinite(value.durationMs) ||
+      value.durationMs < 0)
+  ) {
+    return { ok: false, error: 'invalid telemetry event: durationMs must be non-negative' };
+  }
+  if (value.topic === 'log' && value.level === undefined) {
+    return { ok: false, error: 'invalid telemetry event: log event requires level' };
+  }
+  if (value.topic === 'trace' && value.name === undefined && value.target === undefined) {
+    return { ok: false, error: 'invalid telemetry event: trace event requires name or target' };
+  }
+  return { ok: true, envelope: value as unknown as TelemetryEvent };
 }
 
 export function validateRuntimeAssemblyRequestStartFrameHeader(
@@ -3869,16 +4118,156 @@ function validateNameValueArray(
 }
 
 function validateResponseError(envelope: Record<string, unknown>): string | null {
-  return (
+  const commonError =
     rejectHeaderPayloadFields(envelope, 'response.error') ??
+    requireNonBlankString(envelope, 'response.error', 'requestId') ??
+    requireEnum(envelope, 'response.error', 'errorKind', ['fixedService', 'control']);
+  if (commonError) {
+    return commonError;
+  }
+  if (envelope.errorKind === 'fixedService') {
+    return rejectUnsupportedFrameHeaderFields(envelope, 'response.error', [
+      'schemaVersion',
+      'type',
+      'requestId',
+      'errorKind'
+    ]);
+  }
+  return (
     rejectUnsupportedFrameHeaderFields(envelope, 'response.error', [
       'schemaVersion',
       'type',
       'requestId',
+      'errorKind',
       'error'
     ]) ??
-    requireString(envelope, 'response.error', 'requestId') ??
-    validateErrorPayload(envelope, 'response.error')
+    validateErrorPayload(envelope, 'response.error') ??
+    requireNonBlankString(envelope, 'response.error', 'error.code') ??
+    requireNonBlankString(envelope, 'response.error', 'error.message')
+  );
+}
+
+function decodeServiceErrorEnvelope(
+  payloadBytes: Uint8Array
+): EnvelopeValidationResult<ServiceErrorEnvelopeView> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(payloadBytes));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: `invalid response.error fixedService frame: payload is not strict JSON: ${message}`
+    };
+  }
+  if (!isRecord(parsed) || typeof parsed.kind !== 'string') {
+    return {
+      ok: false,
+      error: 'invalid response.error fixedService frame: service error must be an object with kind'
+    };
+  }
+  const validationError =
+    parsed.kind === 'publicTypedError'
+      ? validatePublicTypedServiceError(parsed)
+      : parsed.kind === 'internalError'
+        ? validateInternalServiceError(parsed)
+        : parsed.kind === 'platformError'
+          ? validatePlatformServiceError(parsed)
+          : 'service error kind is not supported';
+  if (validationError) {
+    return {
+      ok: false,
+      error: `invalid response.error fixedService frame: ${validationError}`
+    };
+  }
+  return {
+    ok: true,
+    envelope: parsed as unknown as ServiceErrorEnvelopeView
+  };
+}
+
+function validatePublicTypedServiceError(envelope: Record<string, unknown>): string | null {
+  return (
+    rejectServiceErrorFields(envelope, [
+      'kind',
+      'packageId',
+      'stableSchemaKey',
+      'packageSchemaTypeId',
+      'encodedPayload',
+      'traceId',
+      'errorId'
+    ]) ??
+    exactNonEmptyString(envelope.packageId, 'packageId') ??
+    exactNonEmptyString(envelope.stableSchemaKey, 'stableSchemaKey') ??
+    exactNonEmptyString(envelope.packageSchemaTypeId, 'packageSchemaTypeId') ??
+    validateEncodedServiceErrorPayload(envelope.encodedPayload) ??
+    validateServiceErrorCorrelation(envelope)
+  );
+}
+
+function validateInternalServiceError(envelope: Record<string, unknown>): string | null {
+  const topLevelError = rejectServiceErrorFields(envelope, ['kind', 'payload']);
+  if (topLevelError) {
+    return topLevelError;
+  }
+  if (!isRecord(envelope.payload)) {
+    return 'payload must be an object';
+  }
+  return (
+    rejectServiceErrorFields(envelope.payload, ['message', 'traceId', 'errorId'], 'payload') ??
+    exactNonEmptyString(envelope.payload.message, 'payload.message') ??
+    validateServiceErrorCorrelation(envelope.payload, 'payload.')
+  );
+}
+
+function validatePlatformServiceError(envelope: Record<string, unknown>): string | null {
+  return (
+    rejectServiceErrorFields(envelope, [
+      'kind',
+      'builtinErrorIdentity',
+      'encodedPayload',
+      'traceId',
+      'errorId'
+    ]) ??
+    (typeof envelope.builtinErrorIdentity === 'string' &&
+    isAllowedType(envelope.builtinErrorIdentity, PLATFORM_SERVICE_ERROR_IDENTITIES)
+      ? null
+      : 'builtinErrorIdentity is not supported') ??
+    validateEncodedServiceErrorPayload(envelope.encodedPayload) ??
+    validateServiceErrorCorrelation(envelope)
+  );
+}
+
+function rejectServiceErrorFields(
+  value: Record<string, unknown>,
+  allowedFields: readonly string[],
+  prefix = ''
+): string | null {
+  const unknown = Object.keys(value).find((field) => !allowedFields.includes(field));
+  return unknown === undefined ? null : `${prefix}${unknown} is not supported`;
+}
+
+function exactNonEmptyString(value: unknown, field: string): string | null {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value
+    ? null
+    : `${field} must be non-empty and contain no surrounding whitespace`;
+}
+
+function validateEncodedServiceErrorPayload(value: unknown): string | null {
+  return Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)
+    ? null
+    : 'encodedPayload must be a non-empty byte array';
+}
+
+function validateServiceErrorCorrelation(
+  envelope: Record<string, unknown>,
+  prefix = ''
+): string | null {
+  return (
+    exactNonEmptyString(envelope.traceId, `${prefix}traceId`) ??
+    exactNonEmptyString(envelope.errorId, `${prefix}errorId`)
   );
 }
 
@@ -3986,8 +4375,12 @@ function validateFrameHeaderBase(
   envelope: Record<string, unknown>,
   envelopeType: string
 ): string | null {
+  const schemaVersion =
+    envelopeType === 'response.error'
+      ? RESPONSE_ERROR_FRAME_SCHEMA_VERSION
+      : RUNTIME_FRAME_SCHEMA_VERSION;
   return requireEnum(envelope, `${envelopeType} frame header`, 'schemaVersion', [
-    RUNTIME_FRAME_SCHEMA_VERSION
+    schemaVersion
   ]);
 }
 
@@ -4107,6 +4500,17 @@ function requireString(
   return getPath(envelope, field, (value) => typeof value === 'string')
     ? null
     : `invalid ${envelopeType} envelope: ${field} must be a string`;
+}
+
+function requireNonBlankString(
+  envelope: Record<string, unknown>,
+  envelopeType: string,
+  field: string
+): string | null {
+  const value = getPathValue(envelope, field);
+  return typeof value === 'string' && value.trim().length > 0
+    ? null
+    : `invalid ${envelopeType} envelope: ${field} must be non-empty`;
 }
 
 function requireObject(

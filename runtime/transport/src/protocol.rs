@@ -7,6 +7,7 @@ use skiff_artifact_model::{
     validate_activation_generation, validate_activation_token, validate_runtime_assembly_identity,
     ConfigShape,
 };
+use skiff_runtime_model::service_error::OpaqueServiceError;
 use skiff_runtime_request_contract::{
     RuntimeClientSessionControl, WebSocketConnectionPolicyControl,
 };
@@ -15,6 +16,7 @@ pub const BINARY_FRAME_MAGIC: [u8; 4] = *b"SKBF";
 pub const BINARY_FRAME_VERSION: u8 = 1;
 pub const BINARY_FRAME_HEADER_ENCODING_JSON: u8 = 1;
 pub const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v1";
+pub const RESPONSE_ERROR_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v2";
 
 const BINARY_FRAME_FIXED_HEADER_BYTES: usize = 14;
 
@@ -890,13 +892,149 @@ pub struct RuntimeErrorFramePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ResponseErrorFrameHeader {
-    pub schema_version: String,
-    #[serde(rename = "type")]
-    pub envelope_type: String,
-    pub request_id: String,
-    pub error: RuntimeErrorFramePayload,
+#[serde(
+    tag = "errorKind",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ResponseErrorFrameHeader {
+    #[serde(rename = "fixedService")]
+    FixedService {
+        schema_version: String,
+        #[serde(rename = "type")]
+        envelope_type: String,
+        request_id: String,
+    },
+    #[serde(rename = "control")]
+    Control {
+        schema_version: String,
+        #[serde(rename = "type")]
+        envelope_type: String,
+        request_id: String,
+        error: RuntimeErrorFramePayload,
+    },
+}
+
+impl ResponseErrorFrameHeader {
+    pub fn fixed_service(request_id: String) -> Self {
+        Self::FixedService {
+            schema_version: RESPONSE_ERROR_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "response.error".to_string(),
+            request_id,
+        }
+    }
+
+    pub fn control(request_id: String, error: RuntimeErrorFramePayload) -> Self {
+        Self::Control {
+            schema_version: RESPONSE_ERROR_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "response.error".to_string(),
+            request_id,
+            error,
+        }
+    }
+
+    pub fn request_id(&self) -> &str {
+        match self {
+            Self::FixedService { request_id, .. } | Self::Control { request_id, .. } => request_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValidatedResponseErrorFrame {
+    FixedService(OpaqueServiceError),
+    Control(RuntimeErrorFramePayload),
+}
+
+pub fn validate_response_error_frame(
+    header: &ResponseErrorFrameHeader,
+    payload_bytes: Vec<u8>,
+) -> std::result::Result<ValidatedResponseErrorFrame, BinaryFrameError> {
+    let (schema_version, envelope_type, request_id) = match header {
+        ResponseErrorFrameHeader::FixedService {
+            schema_version,
+            envelope_type,
+            request_id,
+        }
+        | ResponseErrorFrameHeader::Control {
+            schema_version,
+            envelope_type,
+            request_id,
+            ..
+        } => (schema_version, envelope_type, request_id),
+    };
+    if schema_version != RESPONSE_ERROR_FRAME_SCHEMA_VERSION {
+        return Err(TransportError::decode(format!(
+            "invalid response.error frame: schemaVersion must be {RESPONSE_ERROR_FRAME_SCHEMA_VERSION}"
+        )));
+    }
+    if envelope_type != "response.error" {
+        return Err(TransportError::decode(
+            "invalid response.error frame: type must be response.error",
+        ));
+    }
+    if request_id.trim().is_empty() {
+        return Err(TransportError::decode(
+            "invalid response.error frame: requestId must be non-empty",
+        ));
+    }
+
+    match header {
+        ResponseErrorFrameHeader::FixedService { .. } => {
+            if payload_bytes.is_empty() {
+                return Err(TransportError::decode(
+                    "invalid response.error fixedService frame: payload must be non-empty",
+                ));
+            }
+            let error = OpaqueServiceError::decode(payload_bytes).map_err(|error| {
+                TransportError::decode(format!(
+                    "invalid response.error fixedService frame: payload failed strict service error decode: {error}"
+                ))
+            })?;
+            Ok(ValidatedResponseErrorFrame::FixedService(error))
+        }
+        ResponseErrorFrameHeader::Control { error, .. } => {
+            if !payload_bytes.is_empty() {
+                return Err(TransportError::decode(
+                    "invalid response.error control frame: payload must be empty",
+                ));
+            }
+            if error.code.trim().is_empty() {
+                return Err(TransportError::decode(
+                    "invalid response.error control frame: error.code must be non-empty",
+                ));
+            }
+            if error.message.trim().is_empty() {
+                return Err(TransportError::decode(
+                    "invalid response.error control frame: error.message must be non-empty",
+                ));
+            }
+            if error
+                .status
+                .is_some_and(|status| !(400..=599).contains(&status))
+            {
+                return Err(TransportError::decode(
+                    "invalid response.error control frame: error.status must be between 400 and 599",
+                ));
+            }
+            Ok(ValidatedResponseErrorFrame::Control(error.clone()))
+        }
+    }
+}
+
+pub fn decode_response_error_frame(
+    frame: &[u8],
+) -> std::result::Result<(ResponseErrorFrameHeader, ValidatedResponseErrorFrame), BinaryFrameError>
+{
+    let decoded = decode_binary_frame(frame)?;
+    let header =
+        serde_json::from_value::<ResponseErrorFrameHeader>(decoded.header).map_err(|error| {
+            TransportError::decode(format!(
+                "invalid response.error frame: header failed strict decode: {error}"
+            ))
+        })?;
+    let body = validate_response_error_frame(&header, decoded.payload_bytes)?;
+    Ok((header, body))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1355,6 +1493,13 @@ pub enum TelemetryLevel {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TelemetryVisibility {
+    Operational,
+    Restricted,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FileBackendControlConfig {
@@ -1400,12 +1545,13 @@ pub struct TelemetryRegisterEnvelope {
     pub topics: Vec<TelemetryTopic>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetryEvent {
     pub topic: TelemetryTopic,
     pub ts: String,
     pub source: TelemetrySource,
+    pub visibility: TelemetryVisibility,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1431,6 +1577,8 @@ pub struct TelemetryEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub span_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_span_id: Option<String>,
@@ -1450,6 +1598,108 @@ pub struct TelemetryEvent {
     pub duration_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dropped: Option<serde_json::Map<String, Value>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawTelemetryEvent {
+    topic: TelemetryTopic,
+    ts: String,
+    source: TelemetrySource,
+    visibility: TelemetryVisibility,
+    service_id: Option<String>,
+    revision_id: Option<String>,
+    build_id: Option<String>,
+    activation_identity: Option<String>,
+    runtime_id: Option<String>,
+    provider_id: Option<String>,
+    provider_revision: Option<String>,
+    provider_capability: Option<String>,
+    provider_target: Option<String>,
+    request_id: Option<String>,
+    client_request_id: Option<String>,
+    trace_id: Option<String>,
+    error_id: Option<String>,
+    span_id: Option<String>,
+    parent_span_id: Option<String>,
+    target: Option<String>,
+    level: Option<TelemetryLevel>,
+    name: Option<String>,
+    message: Option<String>,
+    attrs: Option<serde_json::Map<String, Value>>,
+    error: Option<serde_json::Map<String, Value>>,
+    duration_ms: Option<f64>,
+    dropped: Option<serde_json::Map<String, Value>>,
+}
+
+impl TryFrom<RawTelemetryEvent> for TelemetryEvent {
+    type Error = String;
+
+    fn try_from(raw: RawTelemetryEvent) -> Result<Self, Self::Error> {
+        if raw
+            .error_id
+            .as_deref()
+            .is_some_and(|error_id| error_id.trim().is_empty())
+        {
+            return Err("telemetry event errorId must be non-empty when present".to_string());
+        }
+        if raw.visibility == TelemetryVisibility::Restricted {
+            if raw
+                .trace_id
+                .as_deref()
+                .is_none_or(|trace_id| trace_id.trim().is_empty())
+            {
+                return Err("restricted telemetry event requires a non-empty traceId".to_string());
+            }
+            if raw
+                .error_id
+                .as_deref()
+                .is_none_or(|error_id| error_id.trim().is_empty())
+            {
+                return Err("restricted telemetry event requires a non-empty errorId".to_string());
+            }
+        }
+        Ok(Self {
+            topic: raw.topic,
+            ts: raw.ts,
+            source: raw.source,
+            visibility: raw.visibility,
+            service_id: raw.service_id,
+            revision_id: raw.revision_id,
+            build_id: raw.build_id,
+            activation_identity: raw.activation_identity,
+            runtime_id: raw.runtime_id,
+            provider_id: raw.provider_id,
+            provider_revision: raw.provider_revision,
+            provider_capability: raw.provider_capability,
+            provider_target: raw.provider_target,
+            request_id: raw.request_id,
+            client_request_id: raw.client_request_id,
+            trace_id: raw.trace_id,
+            error_id: raw.error_id,
+            span_id: raw.span_id,
+            parent_span_id: raw.parent_span_id,
+            target: raw.target,
+            level: raw.level,
+            name: raw.name,
+            message: raw.message,
+            attrs: raw.attrs,
+            error: raw.error,
+            duration_ms: raw.duration_ms,
+            dropped: raw.dropped,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for TelemetryEvent {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        RawTelemetryEvent::deserialize(deserializer)?
+            .try_into()
+            .map_err(de::Error::custom)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -13,11 +13,13 @@ export const TELEMETRY_SOURCES = [
 export const TELEMETRY_REGISTER_SOURCES = ['router', 'runtime', 'test'] as const;
 
 export const TELEMETRY_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
+export const TELEMETRY_VISIBILITIES = ['operational', 'restricted'] as const;
 
 export type TelemetryTopic = (typeof TELEMETRY_TOPICS)[number];
 export type TelemetrySource = (typeof TELEMETRY_SOURCES)[number];
 export type TelemetryRegisterSource = (typeof TELEMETRY_REGISTER_SOURCES)[number];
 export type TelemetryLevel = (typeof TELEMETRY_LEVELS)[number];
+export type TelemetryVisibility = (typeof TELEMETRY_VISIBILITIES)[number];
 
 export interface TelemetryRegisterEnvelope {
   type: 'telemetry.register';
@@ -32,6 +34,7 @@ export interface TelemetryEvent {
   topic: TelemetryTopic;
   ts: string;
   source: TelemetrySource;
+  visibility: TelemetryVisibility;
   serviceId?: string;
   revisionId?: string;
   buildId?: string;
@@ -44,6 +47,7 @@ export interface TelemetryEvent {
   requestId?: string;
   clientRequestId?: string;
   traceId?: string;
+  errorId?: string;
   spanId?: string;
   parentSpanId?: string;
   target?: string;
@@ -88,6 +92,7 @@ const eventStringFields = [
   'requestId',
   'clientRequestId',
   'traceId',
+  'errorId',
   'spanId',
   'parentSpanId',
   'target',
@@ -101,6 +106,7 @@ const allowedEventFields = new Set<string>([
   'topic',
   'ts',
   'source',
+  'visibility',
   ...eventStringFields,
   'level',
   ...eventObjectFields,
@@ -224,9 +230,26 @@ export function validateTelemetryEvent(
   if (!isOneOf(value.source, TELEMETRY_SOURCES)) {
     return invalid(`${label}.source must be one of ${TELEMETRY_SOURCES.join(', ')}`);
   }
+  if (!isOneOf(value.visibility, TELEMETRY_VISIBILITIES)) {
+    return invalid(`${label}.visibility must be one of ${TELEMETRY_VISIBILITIES.join(', ')}`);
+  }
   for (const field of eventStringFields) {
     if (value[field] !== undefined && typeof value[field] !== 'string') {
       return invalid(`${label}.${field} must be a string`);
+    }
+  }
+  if (
+    value.errorId !== undefined &&
+    (typeof value.errorId !== 'string' || value.errorId.trim().length === 0)
+  ) {
+    return invalid(`${label}.errorId must be a non-empty string when present`);
+  }
+  if (value.visibility === 'restricted') {
+    if (typeof value.traceId !== 'string' || value.traceId.trim().length === 0) {
+      return invalid(`${label}.traceId must be a non-empty string when visibility is restricted`);
+    }
+    if (typeof value.errorId !== 'string' || value.errorId.trim().length === 0) {
+      return invalid(`${label}.errorId must be a non-empty string when visibility is restricted`);
     }
   }
   if (value.level !== undefined && !isOneOf(value.level, TELEMETRY_LEVELS)) {
