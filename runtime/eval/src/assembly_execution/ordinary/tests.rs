@@ -1,4 +1,5 @@
 mod representation_combined_probe;
+pub(crate) mod service_error_consumer;
 mod source_inline_effect_e2e;
 #[path = "test_runtime.rs"]
 pub(crate) mod test_runtime;

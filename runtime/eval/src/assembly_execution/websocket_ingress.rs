@@ -357,6 +357,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::assembly_execution::ordinary::tests::{
+        service_error_consumer::{ProviderFailureKind, ServiceErrorConsumerFixture},
+        test_runtime,
+    };
     use crate::invocation_builder::{
         EvalInvocationBuildArg, EvalInvocationBuildWebSocketConnectRequest,
         EvalInvocationBuildWebSocketContextCodec, EvalInvocationBuildWebSocketContextExpectation,
@@ -422,6 +426,67 @@ mod tests {
                 payload_segments,
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn websocket_ingress_hands_fixed_failure_up_without_external_caller_import() {
+        let fixture = ServiceErrorConsumerFixture::websocket(ProviderFailureKind::Private);
+        let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+        let eval_target = fixture.terminal_eval_target();
+        let target = fixture.ingress_target(&eval_target);
+        let context = fixture.execution_context(&interpreter, eval_target);
+        let selector = skiff_artifact_model::IngressSelector {
+            protocol: skiff_artifact_model::IngressProtocol::WebSocket,
+            host: "socket.example.com".to_string(),
+            method: None,
+            path: "/errors".to_string(),
+        };
+        let body = json!({
+            "adapterArgs": [{
+                "param": "event",
+                "source": { "kind": "websocket.ingressEvent" },
+            }],
+            "contractOperationId": fixture.operation_id().as_str(),
+            "selector": {
+                "protocol": "webSocket",
+                "host": selector.host,
+                "method": null,
+                "path": selector.path,
+            },
+            "serviceId": fixture.contract().service_id,
+            "serviceProtocolIdentity": fixture.contract().service_protocol_identity.as_str(),
+        });
+        let hash = skiff_artifact_identity::package_unit_content_hash(&body)
+            .expect("canonical admitted WebSocket identity");
+        let admitted = AdmittedWebSocketIngressIdentity {
+            selector,
+            websocket_entry_id: format!("skiff-websocket-entry-v1:sha256:{hash}"),
+            gateway_entry_identity: format!("skiff-gateway-v1:sha256:{hash}"),
+        };
+        let request = RequestPayloadContext::new("websocket-fixture", &[], None);
+        let mut heap = RequestHeap::default();
+
+        let error = dispatch_websocket_ingress_via_in_process_boundary(
+            &interpreter,
+            context,
+            &mut heap,
+            target,
+            &request,
+            &connect_adapter(),
+            &admitted,
+        )
+        .await
+        .expect_err("private provider failure must leave WebSocket ingress fixed");
+        let RuntimeError::FixedServiceFailure(error) = error else {
+            panic!("WebSocket ingress returned a non-fixed error: {error:?}");
+        };
+        assert!(matches!(
+            error.envelope(),
+            skiff_runtime_model::service_error::ServiceErrorEnvelope::InternalError { .. }
+        ));
+        let bytes = String::from_utf8_lossy(error.encoded_bytes());
+        assert!(!bytes.contains("provider-private-secret"));
+        assert!(!bytes.contains("source:provider-private-path"));
     }
 
     #[test]
