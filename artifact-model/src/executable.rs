@@ -307,6 +307,12 @@ pub enum ExprIr {
     LoadConst {
         const_index: u32,
     },
+    /// Exact constant owned by a direct package dependency. The dependency
+    /// requirement carries the selected Local ABI and, for top-level test
+    /// access, the exact implementation build.
+    LoadPackageConst {
+        symbol: crate::symbols::PackageSymbolRef,
+    },
     /// Reads the current Actor instance's durable field frame. The linker
     /// validates that only the owning Actor method can carry this expression.
     ActorSelfField {

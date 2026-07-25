@@ -288,6 +288,10 @@ fn package_bindings(
                         && candidate.package_version == requirement.exact_version
                         && candidate.package_local_abi.local_abi_identity
                             == requirement.expected_local_abi
+                        && requirement
+                            .expected_package_build
+                            .as_ref()
+                            .is_none_or(|expected| expected == &candidate.package_build_id)
                 })
                 .ok_or_else(|| {
                     invalid(format!(

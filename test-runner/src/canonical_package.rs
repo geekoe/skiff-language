@@ -3,7 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use skiff_artifact_model::{ContractRequirement, PackageArtifact, PackageLocalAbiIdentity};
+use skiff_artifact_model::{
+    ContractRequirement, PackageArtifact, PackageLocalAbiIdentity, ServiceAuthoringKind,
+    ServiceConfigProfileAuthoring,
+};
 use skiff_compiler::{
     compile_package, CompilerPlatformSources, PackageCompileError, PackageCompileInput,
     PackageContractCompileDependency, PackageSourceInput, PublishedPackageArtifact,
@@ -14,7 +17,8 @@ use skiff_compiler_input::{
         PackageManifest, PACKAGE_CONFIG_FILE,
     },
     package_sources::{read_official_package_sources, read_package_sources},
-    read_publication_resources, InputAssemblyError, ManifestOwner,
+    read_publication_resources, read_service_package_root, InputAssemblyError, ManifestOwner,
+    ServiceSourceConfigError,
 };
 use skiff_compiler_source::{
     prelude_registry::{initialize_prelude_registry, PreludeRegistryInitializationError},
@@ -29,6 +33,14 @@ pub struct CanonicalPackageProject {
     pub package: PublishedPackageArtifact,
     pub dependency_packages: Vec<PackageArtifact>,
     pub contract_dependencies: Vec<PackageContractCompileDependency>,
+    pub test_service_profile: Option<CanonicalTestServiceProfile>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CanonicalTestServiceProfile {
+    pub service_id: String,
+    pub profile_name: String,
+    pub authoring: ServiceConfigProfileAuthoring,
 }
 
 impl CanonicalPackageProject {
@@ -49,6 +61,8 @@ pub enum CanonicalPackageProjectError {
     PlatformContext(#[from] PreludeRegistryInitializationError),
     #[error(transparent)]
     PackageConfig(#[from] PackageConfigError),
+    #[error(transparent)]
+    ServiceConfig(#[from] ServiceSourceConfigError),
     #[error(transparent)]
     Input(#[from] InputAssemblyError),
     #[error(transparent)]
@@ -78,6 +92,10 @@ pub enum CanonicalPackageProjectError {
     },
     #[error("package manifest path {path} has no package root")]
     MissingPackageRoot { path: String },
+    #[error(
+        "test service {service_id} requires config.{profile}.yml for the selected test environment"
+    )]
+    MissingTestServiceProfile { service_id: String, profile: String },
 }
 
 /// Compile one package source input through the production canonical pipeline.
@@ -97,6 +115,7 @@ pub fn compile_package_artifact(
         available_packages,
         contract_dependencies,
         None,
+        false,
     )
 }
 
@@ -108,6 +127,7 @@ pub(crate) fn compile_package_artifact_with_store(
     available_packages: &[PackageArtifact],
     contract_dependencies: &[PackageContractCompileDependency],
     canonical_artifact_store: Option<&CanonicalArtifactStore>,
+    test_service: bool,
 ) -> Result<PublishedPackageArtifact, PackageCompileError> {
     let package_id = package.manifest().id.to_string();
     let mut input =
@@ -116,6 +136,9 @@ pub(crate) fn compile_package_artifact_with_store(
             .with_available_canonical_packages(available_packages);
     if let Some(store) = canonical_artifact_store {
         input = input.with_canonical_artifact_store(store);
+    }
+    if test_service {
+        input = input.for_test_service();
     }
     compile_package(input)
 }
@@ -129,8 +152,37 @@ pub fn compile_package_project(
     root: &Path,
     artifact_root: &Path,
 ) -> Result<CanonicalPackageProject, CanonicalPackageProjectError> {
+    compile_package_project_for_workflow(platform_sources, root, artifact_root, None)
+}
+
+/// Compile the source root selected by a real `skiff test` invocation.
+///
+/// An explicit `kind: test` service is compiler-authorized for top-level
+/// dependency access and must bind the profile selected by the runtime
+/// environment. Ordinary package/service roots retain the legacy overlay
+/// workflow until its dedicated removal task.
+pub fn compile_package_project_for_test(
+    platform_sources: &CompilerPlatformSources,
+    root: &Path,
+    artifact_root: &Path,
+    environment: &str,
+) -> Result<CanonicalPackageProject, CanonicalPackageProjectError> {
+    compile_package_project_for_workflow(platform_sources, root, artifact_root, Some(environment))
+}
+
+fn compile_package_project_for_workflow(
+    platform_sources: &CompilerPlatformSources,
+    root: &Path,
+    artifact_root: &Path,
+    test_environment: Option<&str>,
+) -> Result<CanonicalPackageProject, CanonicalPackageProjectError> {
     run_after_platform_context_guard(platform_sources, || {
-        compile_package_project_after_platform_context_guard(platform_sources, root, artifact_root)
+        compile_package_project_after_platform_context_guard(
+            platform_sources,
+            root,
+            artifact_root,
+            test_environment,
+        )
     })
 }
 
@@ -146,8 +198,11 @@ fn compile_package_project_after_platform_context_guard(
     platform_sources: &CompilerPlatformSources,
     root: &Path,
     artifact_root: &Path,
+    test_environment: Option<&str>,
 ) -> Result<CanonicalPackageProject, CanonicalPackageProjectError> {
     let manifest = read_root_package_manifest(platform_sources, root)?;
+    let test_service_profile = read_test_service_profile(root, test_environment)?;
+    let is_test_service = test_service_profile.is_some();
     let store = CanonicalArtifactStore::open(artifact_root)?;
     let manifest_dependencies = read_package_dependency_closure(&store, &manifest)?;
     let direct_dependencies = manifest
@@ -180,13 +235,45 @@ fn compile_package_project_after_platform_context_guard(
         &available,
         &contract_dependencies,
         Some(&store),
+        is_test_service,
     )?;
     let dependency_packages = read_compiled_dependency_closure(&store, &package.artifact)?;
     Ok(CanonicalPackageProject {
         package,
         dependency_packages,
         contract_dependencies,
+        test_service_profile,
     })
+}
+
+fn read_test_service_profile(
+    root: &Path,
+    test_environment: Option<&str>,
+) -> Result<Option<CanonicalTestServiceProfile>, CanonicalPackageProjectError> {
+    if !root.join("service.yml").is_file() {
+        return Ok(None);
+    }
+    let service = read_service_package_root(root)?;
+    if service.service.kind != ServiceAuthoringKind::Test {
+        return Ok(None);
+    }
+    let profile_name = test_environment.ok_or_else(|| {
+        CanonicalPackageProjectError::MissingTestServiceProfile {
+            service_id: service.service.id.clone(),
+            profile: "<test-environment>".to_string(),
+        }
+    })?;
+    let profile = service.config_profiles.get(profile_name).ok_or_else(|| {
+        CanonicalPackageProjectError::MissingTestServiceProfile {
+            service_id: service.service.id.clone(),
+            profile: profile_name.to_string(),
+        }
+    })?;
+    Ok(Some(CanonicalTestServiceProfile {
+        service_id: service.service.id,
+        profile_name: profile_name.to_string(),
+        authoring: profile.authoring.clone(),
+    }))
 }
 
 pub(crate) fn read_root_package_manifest(
@@ -241,7 +328,7 @@ fn read_package_dependency_closure(
     )
 }
 
-fn read_compiled_dependency_closure(
+pub(crate) fn read_compiled_dependency_closure(
     store: &CanonicalArtifactStore,
     package: &PackageArtifact,
 ) -> Result<Vec<PackageArtifact>, CanonicalPackageProjectError> {
@@ -335,7 +422,7 @@ fn read_contract_dependencies(
         .collect()
 }
 
-fn read_optional_platform_std(
+pub(crate) fn read_optional_platform_std(
     store: &CanonicalArtifactStore,
     available: &mut Vec<PackageArtifact>,
 ) -> Result<(), CanonicalPackageProjectError> {

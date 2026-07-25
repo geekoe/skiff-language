@@ -481,6 +481,10 @@ fn resolve_reachable_package_closure(
                 .collect::<Vec<_>>();
             let candidate = if let Some(candidate) = matching_coordinates.iter().find(|candidate| {
                 candidate.package_local_abi.local_abi_identity == requirement.expected_local_abi
+                    && requirement
+                        .expected_package_build
+                        .as_ref()
+                        .is_none_or(|expected| expected == &candidate.package_build_id)
             }) {
                 (*candidate).clone()
             } else if matching_coordinates.is_empty() {
@@ -535,6 +539,17 @@ fn validate_package_requirement_candidate(
             requirement.expected_local_abi,
             candidate.package_local_abi.local_abi_identity
         )));
+    }
+    if let Some(expected) = &requirement.expected_package_build {
+        if &candidate.package_build_id != expected {
+            return Err(invalid_input(format!(
+                "exact package requirement {}@{} expected implementation build {}, but resolved candidate has {}",
+                requirement.package_id,
+                requirement.exact_version,
+                expected,
+                candidate.package_build_id
+            )));
+        }
     }
     Ok(())
 }

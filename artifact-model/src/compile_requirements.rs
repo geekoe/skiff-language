@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    compile_identity::{ContractOperationId, PackageLocalAbiIdentity, ServiceProtocolIdentity},
+    compile_identity::{
+        ContractOperationId, PackageBuildId, PackageLocalAbiIdentity, ServiceProtocolIdentity,
+    },
     StateBindingKind,
 };
 
@@ -14,6 +16,11 @@ pub struct PackageRequirement {
     pub package_id: String,
     pub exact_version: String,
     pub expected_local_abi: PackageLocalAbiIdentity,
+    /// Test-service `access: topLevel` dependencies bind the exact
+    /// implementation build because private symbols are outside the public
+    /// Local ABI. Ordinary public dependencies leave this unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_package_build: Option<PackageBuildId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

@@ -1661,12 +1661,25 @@ impl<'a> OwnerChecker<'a> {
     ) -> Option<ResolvedTypeRef> {
         let key = self.next_key();
         let refined_ty = expr_path(expr).and_then(|path| self.path_refinements.get(&path).cloned());
-        let ty = match expr {
-            Expr::Literal(literal) => self.literal_type(literal),
-            Expr::Identifier(name) => refined_ty.clone().or_else(|| self.env.get(name).cloned()),
-            Expr::DependencySourceAddress(source) => {
-                if diagnose_unknown_field {
-                    let message = format!(
+        let package_constant = expr_path(expr).and_then(|path| {
+            self.dependency_analysis
+                .and_then(|dependencies| dependencies.package_constant_by_source_path(&path))
+                .map(|(_, _, constant)| constant.ty().clone())
+        });
+        let ty = if let Some(package_constant) = package_constant {
+            self.consume_static_package_value_descendants(expr);
+            self.contract_projection
+                .record_expression_type(key.clone(), package_constant.clone());
+            Some(resolved_package_type_ref(&package_constant))
+        } else {
+            match expr {
+                Expr::Literal(literal) => self.literal_type(literal),
+                Expr::Identifier(name) => {
+                    refined_ty.clone().or_else(|| self.env.get(name).cloned())
+                }
+                Expr::DependencySourceAddress(source) => {
+                    if diagnose_unknown_field {
+                        let message = format!(
                         "{}: dependency source address `{}/{}` is not a value at {}; use `{}/{} as I` to box a public instance or call an exported callable",
                         self.module_path,
                         source.dependency_ref,
@@ -1675,154 +1688,169 @@ impl<'a> OwnerChecker<'a> {
                         source.dependency_ref,
                         source.public_path
                     );
-                    self.diagnostics.push(message);
+                        self.diagnostics.push(message);
+                    }
+                    None
                 }
-                None
-            }
-            Expr::Binary { op, left, right } => {
-                let db_relational = db_predicate_fields.is_some()
-                    && matches!(
-                        op,
-                        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+                Expr::Binary { op, left, right } => {
+                    let db_relational = db_predicate_fields.is_some()
+                        && matches!(
+                            op,
+                            BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+                        );
+                    let db_logical =
+                        db_predicate_fields.is_some() && matches!(op, BinaryOp::And | BinaryOp::Or);
+                    let db_field_relational = db_relational
+                        && db_predicate_fields
+                            .is_some_and(|fields| Self::is_db_field_operand(left, fields));
+                    let left_ty = if db_field_relational {
+                        self.check_db_field_operand(
+                            left,
+                            db_predicate_fields.expect("checked above"),
+                        )
+                    } else if db_logical {
+                        self.check_db_predicate_expr(
+                            left,
+                            db_predicate_fields.expect("checked above"),
+                        )
+                    } else {
+                        self.check_expr(left)
+                    };
+                    let right_ty = if db_logical {
+                        self.check_db_predicate_expr(
+                            right,
+                            db_predicate_fields.expect("checked above"),
+                        )
+                    } else {
+                        match op {
+                            BinaryOp::And => {
+                                let narrowing = self.condition_narrowings(left).when_true;
+                                self.check_expr_scoped(right, &narrowing)
+                            }
+                            BinaryOp::Or => {
+                                let narrowing = self.condition_narrowings(left).when_false;
+                                self.check_expr_scoped(right, &narrowing)
+                            }
+                            _ => self.check_expr(right),
+                        }
+                    };
+                    self.check_binary_operands(
+                        &key,
+                        *op,
+                        left_ty.as_ref(),
+                        right_ty.as_ref(),
+                        db_field_relational,
                     );
-                let db_logical =
-                    db_predicate_fields.is_some() && matches!(op, BinaryOp::And | BinaryOp::Or);
-                let db_field_relational = db_relational
-                    && db_predicate_fields
-                        .is_some_and(|fields| Self::is_db_field_operand(left, fields));
-                let left_ty = if db_field_relational {
-                    self.check_db_field_operand(left, db_predicate_fields.expect("checked above"))
-                } else if db_logical {
-                    self.check_db_predicate_expr(left, db_predicate_fields.expect("checked above"))
-                } else {
-                    self.check_expr(left)
-                };
-                let right_ty = if db_logical {
-                    self.check_db_predicate_expr(right, db_predicate_fields.expect("checked above"))
-                } else {
-                    match op {
-                        BinaryOp::And => {
-                            let narrowing = self.condition_narrowings(left).when_true;
-                            self.check_expr_scoped(right, &narrowing)
-                        }
-                        BinaryOp::Or => {
-                            let narrowing = self.condition_narrowings(left).when_false;
-                            self.check_expr_scoped(right, &narrowing)
-                        }
-                        _ => self.check_expr(right),
-                    }
-                };
-                self.check_binary_operands(
-                    &key,
-                    *op,
-                    left_ty.as_ref(),
-                    right_ty.as_ref(),
-                    db_field_relational,
-                );
-                self.binary_type(*op, left_ty.as_ref(), right_ty.as_ref())
-            }
-            Expr::Unary { op, expr } => {
-                let operand_ty = if db_predicate_fields.is_some() && matches!(op, UnaryOp::Not) {
-                    self.check_db_predicate_expr(expr, db_predicate_fields.expect("checked above"))
-                } else {
-                    self.check_expr(expr)
-                };
-                self.check_unary_operand(&key, *op, operand_ty.as_ref());
-                self.unary_type(*op)
-            }
-            Expr::Call { callee, args } => {
-                self.check_callee_expr(callee);
-                let arg_types = args
-                    .iter()
-                    .map(|arg| {
-                        let key = self.peek_key();
-                        (key, self.check_expr(arg))
-                    })
-                    .collect::<Vec<_>>();
-                self.call_type(&key, callee, args, &arg_types)
-            }
-            Expr::Generic { callee, .. } => {
-                if diagnose_unknown_field {
-                    self.check_expr(callee)
-                } else {
-                    self.check_callee_expr(callee)
+                    self.binary_type(*op, left_ty.as_ref(), right_ty.as_ref())
                 }
-            }
-            Expr::InterfaceBox { value, interface } => {
-                let value_ty = self.check_expr(value);
-                let selector = match self
-                    .type_resolution
-                    .resolve_canonical_interface_selector_type_ref(interface, &self.type_context)
-                {
-                    Ok(selector) => selector,
-                    Err(error) => {
-                        self.diagnostics.push(format!(
-                            "{}: interface boxing selector `{}` failed at {}: {error}",
-                            self.module_path,
-                            interface.name,
-                            self.expression_span_label(&key)
-                        ));
-                        return None;
+                Expr::Unary { op, expr } => {
+                    let operand_ty = if db_predicate_fields.is_some() && matches!(op, UnaryOp::Not)
+                    {
+                        self.check_db_predicate_expr(
+                            expr,
+                            db_predicate_fields.expect("checked above"),
+                        )
+                    } else {
+                        self.check_expr(expr)
+                    };
+                    self.check_unary_operand(&key, *op, operand_ty.as_ref());
+                    self.unary_type(*op)
+                }
+                Expr::Call { callee, args } => {
+                    self.check_callee_expr(callee);
+                    let arg_types = args
+                        .iter()
+                        .map(|arg| {
+                            let key = self.peek_key();
+                            (key, self.check_expr(arg))
+                        })
+                        .collect::<Vec<_>>();
+                    self.call_type(&key, callee, args, &arg_types)
+                }
+                Expr::Generic { callee, .. } => {
+                    if diagnose_unknown_field {
+                        self.check_expr(callee)
+                    } else {
+                        self.check_callee_expr(callee)
                     }
-                };
-                let Some(value_ty) = value_ty else {
-                    return None;
-                };
-                let Some(receiver) = self
-                    .type_resolution
-                    .concrete_nominal_record_symbol(&value_ty, &self.type_context)
-                else {
-                    self.diagnostics.push(format!(
+                }
+                Expr::InterfaceBox { value, interface } => {
+                    let value_ty = self.check_expr(value);
+                    let selector = match self
+                        .type_resolution
+                        .resolve_canonical_interface_selector_type_ref(
+                            interface,
+                            &self.type_context,
+                        ) {
+                        Ok(selector) => selector,
+                        Err(error) => {
+                            self.diagnostics.push(format!(
+                                "{}: interface boxing selector `{}` failed at {}: {error}",
+                                self.module_path,
+                                interface.name,
+                                self.expression_span_label(&key)
+                            ));
+                            return None;
+                        }
+                    };
+                    let Some(value_ty) = value_ty else {
+                        return None;
+                    };
+                    let Some(receiver) = self
+                        .type_resolution
+                        .concrete_nominal_record_symbol(&value_ty, &self.type_context)
+                    else {
+                        self.diagnostics.push(format!(
                         "{}: interface boxing source at {} must be a concrete nominal record, found {}",
                         self.module_path,
                         self.expression_span_label(&key),
                         value_ty.source_text
                     ));
-                    return None;
-                };
-                let expected_interface = ResolvedTypeRef {
-                    source_text: selector.source_text.clone(),
-                    ir: selector.identity.clone(),
-                };
-                match self.type_resolution.concrete_type_conforms_to_interface(
-                    &value_ty,
-                    &expected_interface,
-                    &self.type_context,
-                ) {
-                    Ok(Some(_)) => Some(ResolvedTypeRef {
-                        source_text: format!("any {}", selector.source_text),
-                        ir: TypeRefIr::AnyInterface {
-                            interface: selector.instantiation_ref,
-                        },
-                    }),
-                    Ok(None) => {
-                        self.diagnostics.push(format!(
+                        return None;
+                    };
+                    let expected_interface = ResolvedTypeRef {
+                        source_text: selector.source_text.clone(),
+                        ir: selector.identity.clone(),
+                    };
+                    match self.type_resolution.concrete_type_conforms_to_interface(
+                        &value_ty,
+                        &expected_interface,
+                        &self.type_context,
+                    ) {
+                        Ok(Some(_)) => Some(ResolvedTypeRef {
+                            source_text: format!("any {}", selector.source_text),
+                            ir: TypeRefIr::AnyInterface {
+                                interface: selector.instantiation_ref,
+                            },
+                        }),
+                        Ok(None) => {
+                            self.diagnostics.push(format!(
                             "{}: type {} does not explicitly implement interface {} for boxing at {}",
                             self.module_path,
                             receiver,
                             selector.source_text,
                             self.expression_span_label(&key)
                         ));
-                        None
-                    }
-                    Err(error) => {
-                        self.diagnostics.push(format!(
-                            "{}: interface boxing conformance check failed at {}: {error}",
-                            self.module_path,
-                            self.expression_span_label(&key)
-                        ));
-                        None
+                            None
+                        }
+                        Err(error) => {
+                            self.diagnostics.push(format!(
+                                "{}: interface boxing conformance check failed at {}: {error}",
+                                self.module_path,
+                                self.expression_span_label(&key)
+                            ));
+                            None
+                        }
                     }
                 }
-            }
-            Expr::Field { object, field } => {
-                let object_key = self.peek_key();
-                let object_ty = if diagnose_unknown_field {
-                    self.check_expr(object)
-                } else {
-                    self.check_callee_expr(object)
-                };
-                object_ty.and_then(|object_ty| {
+                Expr::Field { object, field } => {
+                    let object_key = self.peek_key();
+                    let object_ty = if diagnose_unknown_field {
+                        self.check_expr(object)
+                    } else {
+                        self.check_callee_expr(object)
+                    };
+                    object_ty.and_then(|object_ty| {
                     let field_ty =
                         if matches!(object.as_ref(), Expr::Identifier(name) if name == "self")
                             && self
@@ -1879,145 +1907,146 @@ impl<'a> OwnerChecker<'a> {
                     }
                     field_ty
                 })
-            }
-            Expr::Record {
-                type_name,
-                type_args,
-                fields,
-            } => {
-                let mut field_types = Vec::new();
-                let mut provided_field_keys = Vec::new();
-                for (name, value) in fields {
-                    let value_key = self.peek_key();
-                    provided_field_keys.push((name.clone(), value_key));
-                    let value_ty = self.check_expr(value);
-                    field_types.push(value_ty);
                 }
-                self.validate_constructor(
-                    &key,
+                Expr::Record {
                     type_name,
                     type_args,
                     fields,
-                    &field_types,
-                    &provided_field_keys,
-                )
-            }
-            Expr::ObjectLiteral { entries } => {
-                let source_fact = self.expression_sources.fact(&key);
-                let mut fields = BTreeMap::new();
-                let mut source_fields = Vec::with_capacity(entries.len());
-                for (index, entry) in entries.iter().enumerate() {
-                    let value_key = self.peek_key();
-                    let actual = self.check_expr(&entry.value);
-                    let Some(name) = object_literal_key_text(&entry.key) else {
-                        continue;
-                    };
-                    if let Some(actual) = &actual {
-                        fields.insert(name.clone(), actual.clone());
+                } => {
+                    let mut field_types = Vec::new();
+                    let mut provided_field_keys = Vec::new();
+                    for (name, value) in fields {
+                        let value_key = self.peek_key();
+                        provided_field_keys.push((name.clone(), value_key));
+                        let value_ty = self.check_expr(value);
+                        field_types.push(value_ty);
                     }
-                    source_fields.push(ObjectLiteralSourceField {
-                        name,
-                        expression: value_key,
-                        actual,
-                        value_span: record_field_value_source_span(source_fact, index),
-                    });
+                    self.validate_constructor(
+                        &key,
+                        type_name,
+                        type_args,
+                        fields,
+                        &field_types,
+                        &provided_field_keys,
+                    )
                 }
-                self.object_materialization.sources.insert(
-                    key.clone(),
-                    ObjectLiteralSource {
-                        span: source_fact
-                            .map(|fact| fact.span)
-                            .unwrap_or_else(SourceSpan::synthetic),
-                        fields: source_fields,
-                    },
-                );
-                Some(ResolvedTypeRef {
-                    ir: TypeRefIr::Record {
-                        fields: fields
-                            .iter()
-                            .map(|(name, ty)| (name.clone(), ty.ir.clone()))
-                            .collect(),
-                    },
-                    source_text: "{}".to_string(),
-                })
-            }
-            Expr::Patch { operations, .. } => {
-                for operation in operations {
-                    match operation {
-                        crate::shared::ast::PatchOperation::Set { value, .. }
-                        | crate::shared::ast::PatchOperation::Inc { value, .. } => {
-                            self.check_expr(value);
+                Expr::ObjectLiteral { entries } => {
+                    let source_fact = self.expression_sources.fact(&key);
+                    let mut fields = BTreeMap::new();
+                    let mut source_fields = Vec::with_capacity(entries.len());
+                    for (index, entry) in entries.iter().enumerate() {
+                        let value_key = self.peek_key();
+                        let actual = self.check_expr(&entry.value);
+                        let Some(name) = object_literal_key_text(&entry.key) else {
+                            continue;
+                        };
+                        if let Some(actual) = &actual {
+                            fields.insert(name.clone(), actual.clone());
+                        }
+                        source_fields.push(ObjectLiteralSourceField {
+                            name,
+                            expression: value_key,
+                            actual,
+                            value_span: record_field_value_source_span(source_fact, index),
+                        });
+                    }
+                    self.object_materialization.sources.insert(
+                        key.clone(),
+                        ObjectLiteralSource {
+                            span: source_fact
+                                .map(|fact| fact.span)
+                                .unwrap_or_else(SourceSpan::synthetic),
+                            fields: source_fields,
+                        },
+                    );
+                    Some(ResolvedTypeRef {
+                        ir: TypeRefIr::Record {
+                            fields: fields
+                                .iter()
+                                .map(|(name, ty)| (name.clone(), ty.ir.clone()))
+                                .collect(),
+                        },
+                        source_text: "{}".to_string(),
+                    })
+                }
+                Expr::Patch { operations, .. } => {
+                    for operation in operations {
+                        match operation {
+                            crate::shared::ast::PatchOperation::Set { value, .. }
+                            | crate::shared::ast::PatchOperation::Inc { value, .. } => {
+                                self.check_expr(value);
+                            }
                         }
                     }
+                    None
                 }
-                None
-            }
-            Expr::Throw { value } => {
-                self.check_expr(value);
-                None
-            }
-            Expr::Rethrow { exception } => {
-                self.check_expr(exception);
-                None
-            }
-            Expr::Catch {
-                catch_type,
-                try_expr,
-            } => {
-                let try_ty = self.check_expr(try_expr)?;
-                let catch_ty = self
-                    .type_resolution
-                    .resolve_type_ref(catch_type, &self.type_context)
-                    .ok()?;
-                Some(catch_result_type(try_ty, catch_ty))
-            }
-            Expr::DbOperation(operation) => {
-                self.check_db_operation_children(operation);
-                self.db_operation_type(operation)
-            }
-            Expr::DbQuery(query) => {
-                self.check_db_query_block(&query.query, &query.target);
-                self.db_query_type(&query.target)
-            }
-            Expr::DbTransaction(transaction) => {
-                let mut last = None;
-                for stmt in &transaction.body.statements {
-                    if let Stmt::Expr(value) = stmt {
-                        last = self.check_expr(value);
-                    } else {
-                        self.check_stmt(stmt);
-                    }
+                Expr::Throw { value } => {
+                    self.check_expr(value);
+                    None
                 }
-                match transaction.mode {
-                    DbBlockMode::Effect => self.resolve_builtin("null"),
-                    DbBlockMode::Value => last,
+                Expr::Rethrow { exception } => {
+                    self.check_expr(exception);
+                    None
                 }
-            }
-            Expr::DbLeaseClaim(claim) => {
-                self.check_expr(&claim.key);
-                if let Some(binding) = &claim.binding {
-                    if let Ok(target) = self
+                Expr::Catch {
+                    catch_type,
+                    try_expr,
+                } => {
+                    let try_ty = self.check_expr(try_expr)?;
+                    let catch_ty = self
                         .type_resolution
-                        .resolve_type_ref(&claim.target, &self.type_context)
-                    {
-                        let previous = self.env.insert(binding.clone(), target);
-                        self.check_block(&claim.body);
-                        if let Some(previous) = previous {
-                            self.env.insert(binding.clone(), previous);
+                        .resolve_type_ref(catch_type, &self.type_context)
+                        .ok()?;
+                    Some(catch_result_type(try_ty, catch_ty))
+                }
+                Expr::DbOperation(operation) => {
+                    self.check_db_operation_children(operation);
+                    self.db_operation_type(operation)
+                }
+                Expr::DbQuery(query) => {
+                    self.check_db_query_block(&query.query, &query.target);
+                    self.db_query_type(&query.target)
+                }
+                Expr::DbTransaction(transaction) => {
+                    let mut last = None;
+                    for stmt in &transaction.body.statements {
+                        if let Stmt::Expr(value) = stmt {
+                            last = self.check_expr(value);
                         } else {
-                            self.env.remove(binding);
+                            self.check_stmt(stmt);
+                        }
+                    }
+                    match transaction.mode {
+                        DbBlockMode::Effect => self.resolve_builtin("null"),
+                        DbBlockMode::Value => last,
+                    }
+                }
+                Expr::DbLeaseClaim(claim) => {
+                    self.check_expr(&claim.key);
+                    if let Some(binding) = &claim.binding {
+                        if let Ok(target) = self
+                            .type_resolution
+                            .resolve_type_ref(&claim.target, &self.type_context)
+                        {
+                            let previous = self.env.insert(binding.clone(), target);
+                            self.check_block(&claim.body);
+                            if let Some(previous) = previous {
+                                self.env.insert(binding.clone(), previous);
+                            } else {
+                                self.env.remove(binding);
+                            }
+                        } else {
+                            self.check_block(&claim.body);
                         }
                     } else {
                         self.check_block(&claim.body);
                     }
-                } else {
-                    self.check_block(&claim.body);
+                    self.resolve_builtin("bool")
                 }
-                self.resolve_builtin("bool")
-            }
-            Expr::DbLeaseRead(read) => {
-                self.check_expr(&read.key);
-                Some(db_lease_read_type())
+                Expr::DbLeaseRead(read) => {
+                    self.check_expr(&read.key);
+                    Some(db_lease_read_type())
+                }
             }
         };
         let ty = refined_ty.clone().or(ty);
@@ -2459,6 +2488,37 @@ impl<'a> OwnerChecker<'a> {
         let key = self.peek_key();
         self.next_index += 1;
         key
+    }
+
+    fn consume_static_package_value_descendants(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Field { object, .. } => {
+                self.next_key();
+                self.consume_static_package_value_descendants(object);
+            }
+            Expr::Generic { callee, .. } => {
+                self.next_key();
+                self.consume_static_package_value_descendants(callee);
+            }
+            Expr::Literal(_)
+            | Expr::Identifier(_)
+            | Expr::DependencySourceAddress(_)
+            | Expr::Binary { .. }
+            | Expr::Unary { .. }
+            | Expr::Call { .. }
+            | Expr::Record { .. }
+            | Expr::ObjectLiteral { .. }
+            | Expr::Patch { .. }
+            | Expr::InterfaceBox { .. }
+            | Expr::Throw { .. }
+            | Expr::Rethrow { .. }
+            | Expr::Catch { .. }
+            | Expr::DbOperation(_)
+            | Expr::DbQuery(_)
+            | Expr::DbTransaction(_)
+            | Expr::DbLeaseClaim(_)
+            | Expr::DbLeaseRead(_) => {}
+        }
     }
 
     fn peek_key(&self) -> ExpressionKey {

@@ -236,6 +236,7 @@ impl CycleFixture {
             package_id: helper_ref.package_id.clone(),
             exact_version: helper_ref.package_version.clone(),
             expected_local_abi: helper_ref.package_local_abi_identity.clone(),
+            expected_package_build: None,
         });
         shared
             .contract_requirements

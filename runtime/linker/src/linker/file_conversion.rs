@@ -817,6 +817,9 @@ fn linked_expr(
         artifact::ExprIr::LoadConst { const_index } => LinkedExprIr::LoadConst {
             const_index: *const_index,
         },
+        artifact::ExprIr::LoadPackageConst { symbol } => LinkedExprIr::LoadPackageConst {
+            symbol: symbol.clone(),
+        },
         artifact::ExprIr::ActorSelfField { field, field_type } => LinkedExprIr::ActorSelfField {
             field: field.clone(),
             field_type: linked_type_ref(field_type),

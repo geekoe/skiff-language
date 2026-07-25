@@ -38,6 +38,7 @@ pub struct PackageArtifactBuildIdentityProjection {
     schema: &'static str,
     package_id: String,
     local_abi_identity: PackageLocalAbiIdentity,
+    implementation_symbols: BTreeMap<String, PackageLocalAbiSymbol>,
     package_schema_index: PackageSchemaIndexRef,
     package_schema_type_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecordRef>,
     files: Vec<FileIrOwnerIdentityProjection>,

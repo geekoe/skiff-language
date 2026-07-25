@@ -57,6 +57,21 @@ async fn package_direct_same_heap_uses_canonical_executor_and_exposes_callee_mut
 }
 
 #[tokio::test]
+async fn package_constant_load_resolves_exact_dependency_implementation_address() {
+    let fixture = package_constant_fixture();
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(&interpreter, fixture.eval_target);
+    let mut heap = RequestHeap::default();
+
+    let result = interpreter
+        .execute_runtime_assembly_addr(context, &mut heap, &fixture.caller_addr, Vec::new())
+        .await
+        .expect("linked package constant should execute through its exact ConstAddr");
+
+    assert_eq!(result, RuntimeValue::String("private-value".to_string()));
+}
+
+#[tokio::test]
 async fn inline_effect_setup_dispatch_reports_request_subset_mismatch() {
     let fixture = package_direct_fixture_with_caller(CallerFixtureKind::EffectMismatch);
     let interpreter = Interpreter::for_runtime_assembly_with_test_effect_double_sequences(
@@ -410,6 +425,178 @@ fn package_direct_fixture() -> PackageDirectFixture {
     package_direct_fixture_with_caller(CallerFixtureKind::Mutation)
 }
 
+fn package_constant_fixture() -> PackageDirectFixture {
+    const CONSTANT_PATH: &str = "internal.values.PRIVATE_VALUE";
+    let string_type = TypeRefIr::builtin("string");
+
+    let mut dependency_file =
+        FileIrUnit::empty("internal.values", "source:package-constant-dependency");
+    dependency_file.declarations.constants.insert(
+        "PRIVATE_VALUE".to_string(),
+        ConstDeclarationIr {
+            const_index: 0,
+            symbol: "PRIVATE_VALUE".to_string(),
+            ty: string_type.clone(),
+            source_span: None,
+        },
+    );
+    dependency_file.constants.push(ConstIr {
+        name: "PRIVATE_VALUE".to_string(),
+        ty: string_type.clone(),
+        body: ExecutableBody {
+            blocks: vec![BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            }],
+            statements: vec![StmtIr::Return {
+                value: Some(ExprRefIr { expression: 0 }),
+            }],
+            expressions: vec![ExprIr::Literal {
+                value: LiteralIr::String {
+                    value: "private-value".to_string(),
+                },
+            }],
+        },
+        source_span: None,
+    });
+    skiff_artifact_identity::assign_file_ir_identity(&mut dependency_file)
+        .expect("dependency File IR should receive a canonical identity");
+
+    let mut dependency_package =
+        private_package("example.package-constant-dependency", &dependency_file);
+    dependency_package
+        .package_local_abi
+        .implementation_symbols
+        .insert(
+            CONSTANT_PATH.to_string(),
+            PackageLocalAbiSymbol::Constant {
+                const_id: format!(
+                    "pkg-const:{}:top-level:{CONSTANT_PATH}",
+                    dependency_package.package_id
+                ),
+                ty: PackageTypeRef::Local {
+                    local_type: string_type.clone(),
+                },
+            },
+        );
+    dependency_package.implementation_links.constants.insert(
+        CONSTANT_PATH.to_string(),
+        ConstExport {
+            file: file_ref(&dependency_file),
+            const_index: 0,
+            symbol: "PRIVATE_VALUE".to_string(),
+            ty: string_type,
+        },
+    );
+    skiff_artifact_identity::assign_package_artifact_identities(&mut dependency_package)
+        .expect("dependency package should receive canonical identities");
+    let dependency_ref = package_ref(&dependency_package);
+
+    let package_symbol = PackageSymbolRef {
+        package: PackageRefIr::Dependency {
+            dependency_ref: DEPENDENCY_ALIAS.to_string(),
+        },
+        symbol_path: CONSTANT_PATH.to_string(),
+        abi_expectation: Some(dependency_ref.package_local_abi_identity.to_string()),
+    };
+    let mut caller_file = FileIrUnit::empty("main", "source:package-constant-caller");
+    caller_file
+        .external_refs
+        .package_symbols
+        .push(package_symbol.clone());
+    caller_file.executables.push(ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: "loadPrivateValue".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("string"),
+        self_type: None,
+        slots: SlotLayout::default(),
+        may_suspend: false,
+        body: ExecutableBody {
+            blocks: vec![BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            }],
+            statements: vec![StmtIr::Return {
+                value: Some(ExprRefIr { expression: 0 }),
+            }],
+            expressions: vec![ExprIr::LoadPackageConst {
+                symbol: package_symbol,
+            }],
+        },
+        source_span: None,
+    });
+    skiff_artifact_identity::assign_file_ir_identity(&mut caller_file)
+        .expect("caller File IR should receive a canonical identity");
+    let mut caller_package = private_package("example.package-constant-caller", &caller_file);
+    caller_package
+        .package_requirements
+        .push(PackageRequirement {
+            alias: DEPENDENCY_ALIAS.to_string(),
+            package_id: dependency_ref.package_id.clone(),
+            exact_version: dependency_ref.package_version.clone(),
+            expected_local_abi: dependency_ref.package_local_abi_identity.clone(),
+            expected_package_build: Some(dependency_ref.package_build_id.clone()),
+        });
+    skiff_artifact_identity::assign_package_artifact_identities(&mut caller_package)
+        .expect("caller package should receive canonical identities");
+    let caller_ref = package_ref(&caller_package);
+
+    let assembly = RuntimeAssembly {
+        schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
+        assembly_identity: AssemblyIdentity::new("assembly:package-constant"),
+        roots: Vec::new(),
+        resolved_deployments: Vec::new(),
+        resolved_contracts: Vec::new(),
+        resolved_packages: vec![caller_ref.clone(), dependency_ref.clone()],
+        package_link_plan: CanonicalPackageLinkPlan {
+            code_slots: vec![
+                PackageCodeSlot {
+                    package: caller_ref.clone(),
+                },
+                PackageCodeSlot {
+                    package: dependency_ref.clone(),
+                },
+            ],
+            package_links: vec![PackageBinding {
+                key: PackageRequirementKey {
+                    caller_package_build_id: caller_ref.package_build_id.clone(),
+                    package_requirement_alias: DEPENDENCY_ALIAS.to_string(),
+                },
+                package: dependency_ref,
+            }],
+        },
+        service_binding_templates: Vec::new(),
+        activation_templates: Vec::new(),
+        global_ingress: Vec::new(),
+    };
+    let image = crate::test_support::link_package_fixture(
+        assembly.clone(),
+        vec![
+            (caller_package, vec![caller_file]),
+            (dependency_package, vec![dependency_file]),
+        ],
+    );
+    let caller_addr = skiff_runtime_linked_program::ExecutableAddr {
+        unit: skiff_runtime_linked_program::UnitAddr::Package(0),
+        file: skiff_runtime_linked_program::FileAddr::LoadedFileIndex(0),
+        executable: 0,
+    };
+    let activation = activation_context(assembly.assembly_identity, caller_ref.package_build_id);
+    let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::new(TestResolver {
+        activation: Arc::clone(&activation),
+    });
+    let request = RequestActivationContext::begin(activation)
+        .expect("package constant request generation should begin");
+    let eval_target = RuntimeAssemblyEvalTarget::new(image, request, resolver)
+        .expect("package constant image and activation should form an eval target");
+    PackageDirectFixture {
+        eval_target,
+        caller_addr,
+    }
+}
+
 #[derive(Clone, Copy)]
 enum CallerFixtureKind {
     Mutation,
@@ -423,19 +610,33 @@ enum CallerFixtureKind {
 fn package_direct_fixture_with_caller(caller_kind: CallerFixtureKind) -> PackageDirectFixture {
     let array_type = array_type();
     let callable_id = PackageCallableId::new("callable:package-direct-mutate");
+    let real_callee_is_stream_producer = matches!(caller_kind, CallerFixtureKind::EffectStream);
 
     let mut callee_file = FileIrUnit::empty("package_direct.callee", "source:callee");
     callee_file
         .executables
-        .push(callee_executable(array_type.clone()));
+        .push(if real_callee_is_stream_producer {
+            stream_callee_executable(array_type.clone())
+        } else {
+            callee_executable(array_type.clone())
+        });
     skiff_artifact_identity::assign_file_ir_identity(&mut callee_file)
         .expect("callee File IR should receive a canonical identity");
-    let mut callee_package = callable_package(
-        "example.package-direct-callee",
-        &callee_file,
-        callable_id.clone(),
-        array_type.clone(),
-    );
+    let mut callee_package = if real_callee_is_stream_producer {
+        stream_callable_package(
+            "example.package-direct-callee",
+            &callee_file,
+            callable_id.clone(),
+            array_type.clone(),
+        )
+    } else {
+        callable_package(
+            "example.package-direct-callee",
+            &callee_file,
+            callable_id.clone(),
+            array_type.clone(),
+        )
+    };
     skiff_artifact_identity::assign_package_artifact_identities(&mut callee_package)
         .expect("callee package should receive canonical identities");
     let callee_ref = package_ref(&callee_package);
@@ -513,6 +714,7 @@ fn package_direct_fixture_with_caller(caller_kind: CallerFixtureKind) -> Package
             package_id: callee_ref.package_id.clone(),
             exact_version: callee_ref.package_version.clone(),
             expected_local_abi: callee_ref.package_local_abi_identity.clone(),
+            expected_package_build: None,
         });
     skiff_artifact_identity::assign_package_artifact_identities(&mut caller_package)
         .expect("caller package should receive canonical identities");
@@ -1135,6 +1337,39 @@ fn callee_executable(array_type: TypeRefIr) -> ExecutableIr {
     }
 }
 
+fn stream_callee_executable(array_type: TypeRefIr) -> ExecutableIr {
+    ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: "mutate".to_string(),
+        type_params: Vec::new(),
+        params: vec![ParamIr {
+            name: "value".to_string(),
+            slot: 0,
+            ty: array_type,
+        }],
+        return_type: stream_string_type(),
+        self_type: None,
+        slots: parameter_slots(),
+        may_suspend: true,
+        body: ExecutableBody {
+            blocks: vec![BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            }],
+            statements: vec![StmtIr::Emit {
+                operation: "mutate".to_string(),
+                value: ExprRefIr { expression: 0 },
+            }],
+            expressions: vec![ExprIr::Literal {
+                value: LiteralIr::String {
+                    value: "real-package-stream".to_string(),
+                },
+            }],
+        },
+        source_span: None,
+    }
+}
+
 fn parameter_slots() -> SlotLayout {
     SlotLayout {
         slots: vec![SlotIr {
@@ -1157,6 +1392,7 @@ fn callable_package(
     let effects = no_effects();
     let provenance = CallableProvenanceSummary::Analyzed {
         return_origins: Vec::new(),
+        direct_return_origins: Vec::new(),
         throw_origins: Vec::new(),
         escape_lanes: Vec::new(),
     };
@@ -1206,6 +1442,116 @@ fn callable_package(
         callable_id,
         BoundaryCallableProjection::Available {
             operation_contract: contract,
+            implementation_requirements: BoundaryImplementationRequirements {
+                config: Vec::new(),
+                state: Vec::new(),
+                native_capabilities: Vec::new(),
+                runtime_capabilities: Vec::new(),
+                complete_may_effects: effects,
+                provenance,
+            },
+        },
+    );
+    package
+}
+
+fn stream_callable_package(
+    package_id: &str,
+    file: &FileIrUnit,
+    callable_id: PackageCallableId,
+    array_type: TypeRefIr,
+) -> PackageArtifact {
+    let file_ref = file_ref(file);
+    let mut effects = no_effects();
+    effects.may_suspend = true;
+    let provenance = CallableProvenanceSummary::Analyzed {
+        return_origins: Vec::new(),
+        direct_return_origins: Vec::new(),
+        throw_origins: Vec::new(),
+        escape_lanes: vec![ValueEscapeLane::Stream],
+    };
+    let item_value_plan = BoundaryValuePlan::Linkable {
+        carrier: BoundaryValueCarrier::DetachedValueGraph,
+        encoding: BoundaryValueEncoding::CanonicalValue,
+        owner: BoundaryValueOwner::Provider,
+        lifetime: BoundaryValueLifetime::Stream,
+    };
+    let operation_contract = BoundaryOperationContract {
+        parameters: vec![BoundaryParameter {
+            name: "value".to_string(),
+            ty: ContractTypeRef::Builtin {
+                name: "Array".to_string(),
+                arguments: vec![ContractTypeRef::builtin("string")],
+            },
+            value_plan: detached_plan(BoundaryValueOwner::Caller),
+        }],
+        return_value: BoundaryReturn {
+            ty: ContractTypeRef::builtin("void"),
+            value_plan: detached_plan(BoundaryValueOwner::Provider),
+        },
+        errors: BoundaryErrorContract::None,
+        stream: BoundaryStreamContract::ServerStream {
+            item_type: ContractTypeRef::builtin("string"),
+            item_value_plan,
+        },
+        cancellation: BoundaryCancellationContract::Cooperative,
+        callbacks: BoundaryCallbackContract::None,
+        may_suspend: true,
+        effect_guarantee: BoundaryEffectGuarantee {
+            detached_parameters: true,
+            detached_return: true,
+            detached_error: true,
+            no_caller_reachable_mutation: true,
+            no_caller_value_escape: true,
+            no_same_heap_identity: true,
+        },
+    };
+    let mut package = private_package(package_id, file);
+    package.package_local_abi.public_symbols.insert(
+        "mutate".to_string(),
+        PackageLocalAbiSymbol::Callable {
+            callable_id: callable_id.clone(),
+            signature: PackageCallableSignature {
+                parameters: vec![PackageCallableParameter {
+                    name: "value".to_string(),
+                    ty: PackageTypeRef::Local {
+                        local_type: array_type,
+                    },
+                }],
+                return_type: PackageTypeRef::Local {
+                    local_type: stream_string_type(),
+                },
+                throw_types: Vec::new(),
+                may_suspend: true,
+            },
+        },
+    );
+    package.callable_links.insert(
+        callable_id.clone(),
+        PackageCallableLinkFact {
+            callable_id: callable_id.clone(),
+            target: OperationTargetRef {
+                file_ref,
+                executable_index: 0,
+                callable_abi_id: callable_id.to_string(),
+                callable_kind: OperationCallableKind::PublicFunction,
+            },
+        },
+    );
+    package.callable_semantic_facts.insert(
+        callable_id.clone(),
+        CallableSemanticFacts {
+            effects: CallableEffectSummary::Analyzed {
+                effects: effects.clone(),
+            },
+            provenance: provenance.clone(),
+            resolved_call_targets: BTreeMap::new(),
+        },
+    );
+    package.boundary_projections.insert(
+        callable_id,
+        BoundaryCallableProjection::Available {
+            operation_contract,
             implementation_requirements: BoundaryImplementationRequirements {
                 config: Vec::new(),
                 state: Vec::new(),
@@ -1313,6 +1659,13 @@ fn no_effects() -> CallableMayEffects {
 fn array_type() -> TypeRefIr {
     TypeRefIr::Builtin {
         name: "Array".to_string(),
+        args: vec![TypeRefIr::builtin("string")],
+    }
+}
+
+fn stream_string_type() -> TypeRefIr {
+    TypeRefIr::Builtin {
+        name: "Stream".to_string(),
         args: vec![TypeRefIr::builtin("string")],
     }
 }

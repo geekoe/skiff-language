@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     BoundaryOperationDescriptor, CallableSemanticFacts, ContractOperationId, ContractRequirement,
     PackageBuildId, PackageCallableId, PackageCallableSignature, PackageLocalAbiIdentity,
-    PackageSchemaTypeRecord, ServiceContract,
+    PackageSchemaTypeRecord, PackageTypeRef, ServiceContract,
 };
 use skiff_compiler_input::{
     ContractDependencyError, ContractDependencyIndex, ResolvedContractDependency,
@@ -38,6 +38,7 @@ pub struct PackageDependencyAnalysisFacts {
     package_build_id: PackageBuildId,
     expected_local_abi: PackageLocalAbiIdentity,
     callables: BTreeMap<String, PackageDependencyCallableAnalysis>,
+    constants: BTreeMap<String, PackageDependencyConstantAnalysis>,
     schema_records: BTreeMap<String, skiff_artifact_model::PackageSchemaTypeRecord>,
 }
 
@@ -46,6 +47,12 @@ pub struct PackageDependencyCallableAnalysis {
     callable_id: PackageCallableId,
     semantic_facts: CallableSemanticFacts,
     signature: Option<PackageCallableSignature>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PackageDependencyConstantAnalysis {
+    const_id: String,
+    ty: PackageTypeRef,
 }
 
 pub(crate) enum ResolvedDependencyAnalysisTarget<'a> {
@@ -264,6 +271,23 @@ impl SourceDependencyAnalysisInput {
         self.packages.get(alias)?.callables.get(public_path)
     }
 
+    pub fn package_constant_by_source_path(
+        &self,
+        path: &str,
+    ) -> Option<(
+        &str,
+        &PackageLocalAbiIdentity,
+        &PackageDependencyConstantAnalysis,
+    )> {
+        let (alias, source_path) = dependency_source_address_parts(path)?;
+        let (alias, facts) = self.packages.get_key_value(alias)?;
+        Some((
+            alias.as_str(),
+            &facts.expected_local_abi,
+            facts.constants.get(source_path)?,
+        ))
+    }
+
     pub(crate) fn package_aliases(&self) -> impl Iterator<Item = &str> {
         self.packages.keys().map(String::as_str)
     }
@@ -285,8 +309,17 @@ impl PackageDependencyAnalysisFacts {
             package_build_id,
             expected_local_abi,
             callables,
+            constants: BTreeMap::new(),
             schema_records: BTreeMap::new(),
         }
+    }
+
+    pub fn with_constants(
+        mut self,
+        constants: impl IntoIterator<Item = (String, PackageDependencyConstantAnalysis)>,
+    ) -> Self {
+        self.constants = constants.into_iter().collect();
+        self
     }
 
     pub fn with_schema_records(
@@ -333,6 +366,23 @@ impl PackageDependencyCallableAnalysis {
 
     pub(crate) fn signature(&self) -> Option<&PackageCallableSignature> {
         self.signature.as_ref()
+    }
+}
+
+impl PackageDependencyConstantAnalysis {
+    pub fn new(const_id: impl Into<String>, ty: PackageTypeRef) -> Self {
+        Self {
+            const_id: const_id.into(),
+            ty,
+        }
+    }
+
+    pub fn const_id(&self) -> &str {
+        &self.const_id
+    }
+
+    pub fn ty(&self) -> &PackageTypeRef {
+        &self.ty
     }
 }
 

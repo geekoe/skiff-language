@@ -13,7 +13,7 @@ use crate::{
     canonical_store::CanonicalBaseAssembly,
     inline_effects,
     package_test_assembly::{
-        assemble_package_test_fixture_for_run_with_config, CanonicalPackageTestEntrypoint,
+        assemble_package_test_fixture_for_run, CanonicalPackageTestEntrypoint,
     },
     test_discovery::PackageTestCase,
     test_overlay::compile_package_test_overlay,
@@ -55,15 +55,8 @@ pub fn run_package_cases(
         &project,
         &cases,
     )?;
-    let test_config_literals = options.test_config_literals.clone();
     let run_scope = package_test_run_scope()?;
-    let fixture = assemble_package_test_fixture_for_run_with_config(
-        &project,
-        overlay,
-        base,
-        &test_config_literals,
-        &run_scope,
-    )?;
+    let fixture = assemble_package_test_fixture_for_run(&project, overlay, base, &run_scope)?;
     fixture
         .records
         .publish(source_artifact_root, runtime_artifact_root)?;

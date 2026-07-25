@@ -8,11 +8,13 @@ import {
   canonicalSkiffSourceTestRegistry,
   createCanonicalSkiffSourceTestPlan,
 } from './skiff-source-test-registry.mjs';
+import { bootstrapCanonicalArgs } from './isolated-test-runtime-instance.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const defaultSkiffRoot = resolve(scriptDir, '..', '..');
 const hostFixtureRelativeRoot = join('test-runner', 'fixtures', 'package-service-host');
 const hostConsumerRelativeRoot = join(hostFixtureRelativeRoot, 'consumer');
+const hostTestRelativeRoot = join(hostFixtureRelativeRoot, 'consumer-tests');
 const hostReceiptSchemaVersion = 'skiff-package-service-host-fixture-v1';
 
 export function skiffSourceTestRunnerCargoArgs({
@@ -40,11 +42,35 @@ export function skiffSourceTestRunnerCargoArgs({
   ];
 }
 
+export function skiffSourceSubjectPublishArgs({
+  skiffRoot,
+  subjectRoot,
+  artifactRoot,
+}) {
+  return [
+    join(skiffRoot, 'scripts', 'skiff.mjs'),
+    'package',
+    'publish',
+    subjectRoot,
+    '--artifact-root',
+    artifactRoot,
+  ];
+}
+
+export function skiffSourceArtifactBootstrapCargoArgs({
+  skiffRoot,
+  artifactRoot,
+  environment,
+}) {
+  return bootstrapCanonicalArgs({ skiffRoot, artifactRoot, environment });
+}
+
 export function packageServiceHostFixturePaths({ skiffRoot, tempRoot }) {
   const fixtureRoot = resolve(skiffRoot, hostFixtureRelativeRoot);
   return Object.freeze({
     fixtureRoot,
     consumerRoot: resolve(skiffRoot, hostConsumerRelativeRoot),
+    testRoot: resolve(skiffRoot, hostTestRelativeRoot),
     workRoot: join(tempRoot, 'package-service-host-work'),
     receipt: join(tempRoot, 'package-service-host-receipt.json'),
   });
@@ -134,7 +160,33 @@ export async function runCanonicalSkiffSourceTests({
       if (stack?.sourceArtifactRoot === undefined) {
         throw new Error('isolated runtime owner omitted the canonical source artifact root');
       }
+      const environment = requiredText(
+        isolatedEnv.SKIFF_TEST_ENVIRONMENT,
+        'isolated runtime environment',
+      );
+      log(`[skiff-tests] bootstrapping source artifacts: ${stack.sourceArtifactRoot}`);
+      await runCommand(
+        'cargo',
+        skiffSourceArtifactBootstrapCargoArgs({
+          skiffRoot,
+          artifactRoot: stack.sourceArtifactRoot,
+          environment,
+        }),
+        { cwd: skiffRoot, env: isolatedEnv, signal },
+      );
       for (const [index, entry] of plan.entries()) {
+        if (entry.absoluteSubjectRoot !== undefined) {
+          log(`[skiff-tests] publishing ${entry.id} subject: ${entry.subjectRoot}`);
+          await runCommand(
+            process.execPath,
+            skiffSourceSubjectPublishArgs({
+              skiffRoot,
+              subjectRoot: entry.absoluteSubjectRoot,
+              artifactRoot: stack.sourceArtifactRoot,
+            }),
+            { cwd: skiffRoot, env: isolatedEnv, signal },
+          );
+        }
         log(`[skiff-tests] running ${entry.id}: ${entry.root}`);
         await runCommand(
           'cargo',
@@ -156,10 +208,6 @@ export async function runCanonicalSkiffSourceTests({
       if (typeof stack.tempRoot !== 'string' || stack.tempRoot.length === 0) {
         throw new Error('isolated runtime owner omitted its temporary workspace');
       }
-      const environment = requiredText(
-        isolatedEnv.SKIFF_TEST_ENVIRONMENT,
-        'isolated runtime environment',
-      );
       const host = packageServiceHostFixturePaths({ skiffRoot, tempRoot: stack.tempRoot });
       log(`[skiff-tests] preparing package-service-host: ${host.fixtureRoot}`);
       await runCommand(
@@ -175,12 +223,12 @@ export async function runCanonicalSkiffSourceTests({
         { cwd: skiffRoot, env: isolatedEnv, signal },
       );
       const receipt = await readHostReceipt(host.receipt, environment);
-      log(`[skiff-tests] running package-service-host: ${hostConsumerRelativeRoot}`);
+      log(`[skiff-tests] running package-service-host: ${hostTestRelativeRoot}`);
       await runCommand(
         'cargo',
         skiffSourceTestRunnerCargoArgs({
           skiffRoot,
-          root: host.consumerRoot,
+          root: host.testRoot,
           artifactRoot: stack.sourceArtifactRoot,
           baseAssembly: receipt.baseAssembly.assemblyIdentity,
         }),

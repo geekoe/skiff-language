@@ -435,6 +435,7 @@ mod tests {
                 TypeRefIr::PublicationType { .. } => visited.push("publication".to_string()),
                 TypeRefIr::ServiceSymbol { .. } => visited.push("service".to_string()),
                 TypeRefIr::PackageSymbol { .. } => visited.push("package".to_string()),
+                TypeRefIr::PackageSchema { .. } => visited.push("packageSchema".to_string()),
                 TypeRefIr::DbObjectSymbol { .. } => visited.push("db".to_string()),
                 TypeRefIr::Record { .. } => visited.push("record".to_string()),
                 TypeRefIr::Union { .. } => visited.push("union".to_string()),

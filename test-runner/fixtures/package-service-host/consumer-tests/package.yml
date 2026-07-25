@@ -1,0 +1,14 @@
+id: test.skiff/package-service-host-consumer-tests
+version: 1.0.0
+packages:
+  - id: example.com/consumer
+    version: 1.0.0
+    alias: subject
+    access: topLevel
+  - id: example.com/helper
+    version: 1.0.0
+    alias: helper
+services:
+  - id: example.com/payments
+    version: 1.0.0
+    alias: payments

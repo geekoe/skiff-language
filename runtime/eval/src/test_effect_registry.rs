@@ -27,9 +27,9 @@ pub(crate) enum TestEffectTarget {
         package_build_id: PackageBuildId,
         callable_id: PackageCallableId,
     },
+    // Caller build and requirement slot are binding coordinates. The contract
+    // protocol identity and operation id are the exact cross-caller identity.
     ContractOperation {
-        caller_package_build_id: PackageBuildId,
-        service_requirement_slot: u32,
         operation_id: ContractOperationId,
         expected_protocol_identity: ServiceProtocolIdentity,
     },
@@ -47,14 +47,10 @@ impl TestEffectTarget {
     }
 
     pub(crate) fn contract_operation(
-        caller_package_build_id: PackageBuildId,
-        service_requirement_slot: u32,
         operation_id: ContractOperationId,
         expected_protocol_identity: ServiceProtocolIdentity,
     ) -> Self {
         Self::ContractOperation {
-            caller_package_build_id,
-            service_requirement_slot,
             operation_id,
             expected_protocol_identity,
         }
@@ -67,13 +63,9 @@ impl TestEffectTarget {
                 callable_id,
             } => format!("package:{package_build_id}:{callable_id}"),
             Self::ContractOperation {
-                caller_package_build_id,
-                service_requirement_slot,
                 operation_id,
                 expected_protocol_identity,
-            } => format!(
-                "service:{caller_package_build_id}:{service_requirement_slot}:{operation_id}:{expected_protocol_identity}"
-            ),
+            } => format!("service:{expected_protocol_identity}:{operation_id}"),
         }
     }
 }
@@ -127,6 +119,13 @@ impl RuntimeTestEffectRegistry {
                 .and_then(|registered| registered.expect.clone());
         }
         sequence.push_back(effect);
+    }
+
+    pub(crate) fn contains(&self, target: &TestEffectTarget) -> bool {
+        self.entries
+            .lock()
+            .expect("runtime test effect registry lock poisoned")
+            .contains_key(target)
     }
 
     pub(crate) fn dispatch(
@@ -321,10 +320,8 @@ mod tests {
         )
     }
 
-    fn service_target(slot: u32, operation: &str, protocol: &str) -> TestEffectTarget {
+    fn service_target(operation: &str, protocol: &str) -> TestEffectTarget {
         TestEffectTarget::contract_operation(
-            PackageBuildId::new("build:caller"),
-            slot,
             ContractOperationId::new(operation),
             ServiceProtocolIdentity::new(protocol),
         )
@@ -354,11 +351,23 @@ mod tests {
     }
 
     #[test]
-    fn service_target_matches_only_the_exact_activation_relative_identity() {
+    fn service_target_matches_across_callers_and_slots_for_the_same_exact_contract_operation() {
         let registry = RuntimeTestEffectRegistry::default();
-        let exact = service_target(3, "operation:lookup", "protocol:v1");
+        let registered_call = (
+            PackageBuildId::new("build:test-service"),
+            3_u32,
+            service_target("operation:lookup", "protocol:v1"),
+        );
+        let dispatched_call = (
+            PackageBuildId::new("build:subject-package"),
+            19_u32,
+            service_target("operation:lookup", "protocol:v1"),
+        );
+        assert_ne!(registered_call.0, dispatched_call.0);
+        assert_ne!(registered_call.1, dispatched_call.1);
+        assert_eq!(registered_call.2, dispatched_call.2);
         registry.register(
-            exact.clone(),
+            registered_call.2,
             RegisteredTestEffect {
                 expect: None,
                 step_expect: None,
@@ -366,18 +375,34 @@ mod tests {
             },
         );
 
+        assert!(registry
+            .dispatch(&dispatched_call.2, &[], None, &mut RequestHeap::default())
+            .is_some());
+    }
+
+    #[test]
+    fn service_target_rejects_a_different_protocol_or_operation() {
         for wrong in [
-            service_target(4, "operation:lookup", "protocol:v1"),
-            service_target(3, "operation:other", "protocol:v1"),
-            service_target(3, "operation:lookup", "protocol:v2"),
+            service_target("operation:other", "protocol:v1"),
+            service_target("operation:lookup", "protocol:v2"),
         ] {
+            let registry = RuntimeTestEffectRegistry::default();
+            let exact = service_target("operation:lookup", "protocol:v1");
+            registry.register(
+                exact.clone(),
+                RegisteredTestEffect {
+                    expect: None,
+                    step_expect: None,
+                    outcome: null_response(),
+                },
+            );
             assert!(registry
                 .dispatch(&wrong, &[], None, &mut RequestHeap::default())
                 .is_none());
+            assert!(registry
+                .dispatch(&exact, &[], None, &mut RequestHeap::default())
+                .is_some());
         }
-        assert!(registry
-            .dispatch(&exact, &[], None, &mut RequestHeap::default())
-            .is_some());
     }
 
     #[test]

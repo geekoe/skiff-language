@@ -27,6 +27,7 @@ struct PublicationExecutableRefLocation {
 #[derive(Debug, Default)]
 struct PublicationLocalRefIndex<'a> {
     current_package_id: Option<String>,
+    package_dependency_abi_expectations: BTreeMap<String, String>,
     types_by_module_symbol: BTreeMap<(String, String), PublicationTypeRefLocation>,
     executables_by_module_symbol: BTreeMap<(String, String), PublicationExecutableRefLocation>,
     type_resolution: Option<&'a TypeResolutionModel>,
@@ -38,9 +39,11 @@ impl<'a> PublicationLocalRefIndex<'a> {
         units: &[FileIrUnit],
         current_package_id: Option<&str>,
         type_resolution: Option<&'a TypeResolutionModel>,
+        package_dependency_abi_expectations: &BTreeMap<String, String>,
     ) -> Self {
         let mut index = Self {
             current_package_id: current_package_id.map(str::to_string),
+            package_dependency_abi_expectations: package_dependency_abi_expectations.clone(),
             type_resolution,
             alias_expansion_error: RefCell::new(None),
             ..Self::default()
@@ -107,8 +110,14 @@ pub(super) fn rewrite_publication_local_refs(
     units: &mut [FileIrUnit],
     current_package_id: Option<&str>,
     type_resolution: Option<&TypeResolutionModel>,
+    package_dependency_abi_expectations: &BTreeMap<String, String>,
 ) -> Result<(), String> {
-    let index = PublicationLocalRefIndex::build(units, current_package_id, type_resolution);
+    let index = PublicationLocalRefIndex::build(
+        units,
+        current_package_id,
+        type_resolution,
+        package_dependency_abi_expectations,
+    );
     for unit in units {
         let module_path = unit.module_path.clone();
         rewrite_unit(&index, &module_path, unit);
@@ -323,6 +332,7 @@ fn rewrite_expr(index: &PublicationLocalRefIndex, module_path: &str, expr: &mut 
         ExprIr::Literal { .. }
         | ExprIr::LoadSlot { .. }
         | ExprIr::LoadConst { .. }
+        | ExprIr::LoadPackageConst { .. }
         | ExprIr::Field { .. }
         | ExprIr::MapLiteral { .. }
         | ExprIr::ArrayLiteral { .. }
@@ -589,6 +599,19 @@ fn rewrite_type_ref(
                 index.current_package_type_location(&symbol.package, &symbol.symbol_path)
             {
                 rewrite_type_ref_to_publication_location(module_path, ty, location)
+            } else if let PackageRefIr::Dependency { dependency_ref } = &symbol.package {
+                let Some(abi_expectation) = index
+                    .package_dependency_abi_expectations
+                    .get(dependency_ref)
+                else {
+                    return false;
+                };
+                if symbol.abi_expectation.as_ref() == Some(abi_expectation) {
+                    false
+                } else {
+                    symbol.abi_expectation = Some(abi_expectation.clone());
+                    true
+                }
             } else {
                 false
             }
@@ -682,6 +705,7 @@ mod tests {
     fn current_package_symbol_type_refs_become_publication_local() {
         let index = PublicationLocalRefIndex {
             current_package_id: Some("skiff.run/std".to_string()),
+            package_dependency_abi_expectations: BTreeMap::new(),
             types_by_module_symbol: BTreeMap::from([(
                 ("std.time".to_string(), "Duration".to_string()),
                 PublicationTypeRefLocation {
@@ -749,7 +773,13 @@ mod tests {
             source_span: None,
         });
 
-        rewrite_publication_local_refs(std::slice::from_mut(&mut unit), None, None).unwrap();
+        rewrite_publication_local_refs(
+            std::slice::from_mut(&mut unit),
+            None,
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(unit.external_refs.service_call_refs, vec![call_ref]);
         let ExprIr::Call { call } = &unit.constants[0].body.expressions[0] else {

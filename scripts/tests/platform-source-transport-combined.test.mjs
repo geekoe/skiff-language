@@ -47,7 +47,7 @@ test('merged compiler and test transports share one absolute platform root', asy
     process.env.PATH = `${fakeBin}${delimiter}${previousPath ?? ''}`;
     process.env.SKIFF_COMBINED_CARGO_MARKER = marker;
     try {
-      for (const kind of ['package', 'contract', 'deployment', 'assembly']) {
+      for (const kind of ['package', 'assembly']) {
         await runCompilerAuthoring({
           skiffRoot,
           kind,
@@ -82,14 +82,14 @@ test('merged compiler and test transports share one absolute platform root', asy
       .trim()
       .split(/\r?\n/)
       .map((line) => JSON.parse(line));
-    assert.equal(captured.length, 5);
+    assert.equal(captured.length, 3);
     const argv = [
       ...captured.map((args, index) => ({ label: `authoring-${index}`, args })),
       {
         label: 'source-suite-std',
         args: skiffSourceTestRunnerCargoArgs({
           skiffRoot,
-          root: join(skiffRoot, 'std'),
+          root: join(skiffRoot, 'test-services', 'std'),
           artifactRoot,
         }),
       },
@@ -97,7 +97,7 @@ test('merged compiler and test transports share one absolute platform root', asy
         label: 'source-suite-host-consumer',
         args: skiffSourceTestRunnerCargoArgs({
           skiffRoot,
-          root: join(skiffRoot, 'test-runner/fixtures/package-service-host/consumer'),
+          root: join(skiffRoot, 'test-runner/fixtures/package-service-host/consumer-tests'),
           artifactRoot,
           baseAssembly: `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`,
         }),
@@ -136,7 +136,14 @@ test('merged compiler and test transports share one absolute platform root', asy
     for (const entry of argv) {
       assertPlatformRoot(entry.args, entry.label);
     }
-    assert.deepEqual(canonicalSkiffSourceTestRegistry, [{ id: 'std', root: 'std' }]);
+    assert.deepEqual(canonicalSkiffSourceTestRegistry, [
+      { id: 'std', root: 'test-services/std' },
+      {
+        id: 'alias-return-catch-once',
+        root: 'test-runner/fixtures/alias-return-catch-once-tests',
+        subjectRoot: 'test-runner/fixtures/alias-return-catch-once',
+      },
+    ]);
 
     const omitted = await runProcess('cargo', [
       'run',

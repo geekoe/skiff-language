@@ -5,10 +5,11 @@ mod surface;
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    BoundaryCallableProjection, CallableSemanticFacts, ExecutableKind, FileIrRef, FileIrUnit,
-    OperationCallableKind, OperationTargetRef, PackageCallableId, PackageCallableLinkFact,
-    PackageCallableParameter, PackageCallableSignature, PackageImplementationLinks,
-    PackageLocalAbiSymbol, PackageRuntimeRequirements, PackageTypeRef,
+    BoundaryCallableProjection, CallableSemanticFacts, ConstExport, ExecutableKind, FileIrRef,
+    FileIrUnit, FunctionTypeParamIr, InterfaceMethodSignature, OperationCallableKind,
+    OperationTargetRef, PackageCallableId, PackageCallableLinkFact, PackageCallableParameter,
+    PackageCallableSignature, PackageImplementationLinks, PackageLocalAbiSymbol,
+    PackageRuntimeRequirements, PackageTypeRef, TypeExport,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableSignatureFacts, ResolvedPackageSchema,
@@ -111,10 +112,11 @@ pub(super) fn project_package_callable_surface(
             "boundary projection",
         )?;
     }
-    let implementation_symbols = project_implementation_callables(
+    let implementation_symbols = project_implementation_symbols(
         package_id,
         file_ir_units,
         semantic_facts_by_executable,
+        &mut local_surface.implementation_links,
         &mut callable_links,
         &mut semantic_facts,
     )?;
@@ -128,15 +130,24 @@ pub(super) fn project_package_callable_surface(
     })
 }
 
-fn project_implementation_callables(
+fn project_implementation_symbols(
     package_id: &str,
     units: &[FileIrUnit],
     facts_by_executable: &BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
+    implementation_links: &mut PackageImplementationLinks,
     callable_links: &mut BTreeMap<PackageCallableId, PackageCallableLinkFact>,
     semantic_facts: &mut BTreeMap<PackageCallableId, CallableSemanticFacts>,
 ) -> Result<BTreeMap<String, PackageLocalAbiSymbol>, ProjectionError> {
     let mut symbols = BTreeMap::new();
     for unit in units {
+        project_implementation_types(package_id, unit, units, &mut symbols, implementation_links)?;
+        project_implementation_constants(
+            package_id,
+            unit,
+            units,
+            &mut symbols,
+            implementation_links,
+        )?;
         for declaration in unit.declarations.executables.values() {
             let Some(executable) = unit.executables.get(declaration.executable_index as usize)
             else {
@@ -163,15 +174,44 @@ fn project_implementation_callables(
                 parameters: executable
                     .params
                     .iter()
-                    .map(|parameter| PackageCallableParameter {
-                        name: parameter.name.clone(),
-                        ty: PackageTypeRef::Local {
-                            local_type: parameter.ty.clone(),
-                        },
+                    .map(|parameter| {
+                        Ok(PackageCallableParameter {
+                            name: parameter.name.clone(),
+                            ty: PackageTypeRef::Local {
+                                local_type: normalization::normalize_implementation_type(
+                                    package_id,
+                                    &unit.module_path,
+                                    &parameter.ty,
+                                    units,
+                                )
+                                .map_err(|message| {
+                                    projection_error(
+                                        package_id,
+                                        format!(
+                                            "implementation callable {source_path} parameter {}: {message}",
+                                            parameter.name
+                                        ),
+                                    )
+                                })?,
+                            },
+                        })
                     })
-                    .collect(),
+                    .collect::<Result<Vec<_>, ProjectionError>>()?,
                 return_type: PackageTypeRef::Local {
-                    local_type: executable.return_type.clone(),
+                    local_type: normalization::normalize_implementation_type(
+                        package_id,
+                        &unit.module_path,
+                        &executable.return_type,
+                        units,
+                    )
+                    .map_err(|message| {
+                        projection_error(
+                            package_id,
+                            format!(
+                                "implementation callable {source_path} return type: {message}"
+                            ),
+                        )
+                    })?,
                 },
                 throw_types: Vec::new(),
                 may_suspend: executable.may_suspend,
@@ -232,6 +272,239 @@ fn project_implementation_callables(
         }
     }
     Ok(symbols)
+}
+
+fn project_implementation_types(
+    package_id: &str,
+    unit: &FileIrUnit,
+    units: &[FileIrUnit],
+    symbols: &mut BTreeMap<String, PackageLocalAbiSymbol>,
+    links: &mut PackageImplementationLinks,
+) -> Result<(), ProjectionError> {
+    for (name, declaration) in &unit.declarations.types {
+        let ty = unit
+            .type_table
+            .get(declaration.type_index as usize)
+            .ok_or_else(|| {
+                projection_error(
+                    package_id,
+                    format!(
+                        "implementation type {}.{} targets missing type #{}",
+                        unit.module_path, name, declaration.type_index
+                    ),
+                )
+            })?;
+        let source_path = format!("{}.{}", unit.module_path, name);
+        let descriptor = normalization::normalize_implementation_descriptor(
+            package_id,
+            &unit.module_path,
+            &ty.descriptor,
+            units,
+        )
+        .map_err(|message| {
+            projection_error(
+                package_id,
+                format!("implementation type {source_path}: {message}"),
+            )
+        })?;
+        let interface = unit.declarations.interfaces.get(name);
+        let interface_methods = interface
+            .map(|interface| {
+                interface
+                    .operations
+                    .iter()
+                    .map(|method| {
+                        Ok(InterfaceMethodSignature {
+                            name: method.name.clone(),
+                            type_params: method.type_params.clone(),
+                            params: method
+                                .params
+                                .iter()
+                                .map(|parameter| {
+                                    Ok(FunctionTypeParamIr {
+                                        name: parameter.name.clone(),
+                                        ty: normalization::normalize_implementation_type(
+                                            package_id,
+                                            &unit.module_path,
+                                            &parameter.ty,
+                                            units,
+                                        )
+                                        .map_err(|message| {
+                                            projection_error(
+                                                package_id,
+                                                format!(
+                                                    "implementation interface {source_path} method {} parameter {}: {message}",
+                                                    method.name, parameter.name
+                                                ),
+                                            )
+                                        })?,
+                                    })
+                                })
+                                .collect::<Result<Vec<_>, ProjectionError>>()?,
+                            return_type: normalization::normalize_implementation_type(
+                                package_id,
+                                &unit.module_path,
+                                &method.return_type,
+                                units,
+                            )
+                            .map_err(|message| {
+                                projection_error(
+                                    package_id,
+                                    format!(
+                                        "implementation interface {source_path} method {} return type: {message}",
+                                        method.name
+                                    ),
+                                )
+                            })?,
+                            may_suspend: false,
+                            is_native: method.is_native,
+                            is_provider: method.is_provider,
+                            is_static: method.is_static,
+                            implicit_self: method
+                                .implicit_self
+                                .as_ref()
+                                .map(|ty| {
+                                    normalization::normalize_implementation_type(
+                                        package_id,
+                                        &unit.module_path,
+                                        ty,
+                                        units,
+                                    )
+                                    .map_err(|message| {
+                                        projection_error(
+                                            package_id,
+                                            format!(
+                                                "implementation interface {source_path} method {} receiver: {message}",
+                                                method.name
+                                            ),
+                                        )
+                                    })
+                                })
+                                .transpose()?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ProjectionError>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        insert_implementation_symbol(
+            symbols,
+            source_path.clone(),
+            PackageLocalAbiSymbol::Type {
+                local_type_id: format!("type:{package_id}:top-level:{source_path}"),
+                descriptor: descriptor.clone(),
+                is_alias: ty.source_span.as_ref().is_some_and(|source_span| {
+                    unit.source_map.spans.iter().any(|span| {
+                        span.kind == "alias"
+                            && span.name.as_deref() == Some(ty.name.as_str())
+                            && span.span == *source_span
+                    })
+                }),
+                is_interface: interface.is_some(),
+                type_params: ty.type_params.clone(),
+                interface_methods: interface_methods.clone(),
+            },
+            package_id,
+        )?;
+        let link = TypeExport {
+            file: implementation_file_ref(unit),
+            type_index: declaration.type_index,
+            symbol: declaration.symbol.clone(),
+            is_interface: interface.is_some(),
+            descriptor: Some(descriptor),
+            type_params: ty.type_params.clone(),
+            interface_methods,
+        };
+        if let Some(existing) = links.types.get(&source_path) {
+            if existing.file != link.file || existing.type_index != link.type_index {
+                return Err(projection_error(
+                    package_id,
+                    format!("implementation type link {source_path} conflicts with a public link"),
+                ));
+            }
+        } else {
+            links.types.insert(source_path, link);
+        }
+    }
+    Ok(())
+}
+
+fn project_implementation_constants(
+    package_id: &str,
+    unit: &FileIrUnit,
+    units: &[FileIrUnit],
+    symbols: &mut BTreeMap<String, PackageLocalAbiSymbol>,
+    links: &mut PackageImplementationLinks,
+) -> Result<(), ProjectionError> {
+    for (name, declaration) in &unit.declarations.constants {
+        let source_path = format!("{}.{}", unit.module_path, name);
+        let ty = normalization::normalize_implementation_type(
+            package_id,
+            &unit.module_path,
+            &declaration.ty,
+            units,
+        )
+        .map_err(|message| {
+            projection_error(
+                package_id,
+                format!("implementation constant {source_path}: {message}"),
+            )
+        })?;
+        insert_implementation_symbol(
+            symbols,
+            source_path.clone(),
+            PackageLocalAbiSymbol::Constant {
+                const_id: format!("pkg-const:{package_id}:top-level:{source_path}"),
+                ty: PackageTypeRef::Local {
+                    local_type: ty.clone(),
+                },
+            },
+            package_id,
+        )?;
+        let link = ConstExport {
+            file: implementation_file_ref(unit),
+            const_index: declaration.const_index,
+            symbol: declaration.symbol.clone(),
+            ty,
+        };
+        if let Some(existing) = links.constants.get(&source_path) {
+            if existing.file != link.file || existing.const_index != link.const_index {
+                return Err(projection_error(
+                    package_id,
+                    format!(
+                        "implementation constant link {source_path} conflicts with a public link"
+                    ),
+                ));
+            }
+        } else {
+            links.constants.insert(source_path, link);
+        }
+    }
+    Ok(())
+}
+
+fn insert_implementation_symbol(
+    symbols: &mut BTreeMap<String, PackageLocalAbiSymbol>,
+    source_path: String,
+    symbol: PackageLocalAbiSymbol,
+    package_id: &str,
+) -> Result<(), ProjectionError> {
+    if symbols.insert(source_path.clone(), symbol).is_some() {
+        return Err(projection_error(
+            package_id,
+            format!("duplicate implementation source path {source_path}"),
+        ));
+    }
+    Ok(())
+}
+
+fn implementation_file_ref(unit: &FileIrUnit) -> FileIrRef {
+    FileIrRef {
+        file_ir_identity: unit.file_ir_identity.clone(),
+        module_path: unit.module_path.clone(),
+        artifact_path: None,
+        source_ast_hash: Some(unit.source_ast_hash.clone()),
+    }
 }
 
 fn insert_callable_entry<T>(

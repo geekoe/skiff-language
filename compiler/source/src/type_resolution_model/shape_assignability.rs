@@ -469,11 +469,23 @@ impl TypeResolutionModel {
         module_path: &str,
         type_index: u32,
     ) -> Option<TypeRefIr> {
-        let public_path = self.package_type_slots.get(&(
-            package_id.to_string(),
-            module_path.to_string(),
-            type_index,
-        ))?;
+        let public_path = self
+            .package_type_slots
+            .get(&(package_id.to_string(), module_path.to_string(), type_index))
+            .or_else(|| {
+                self.package_dependencies
+                    .iter()
+                    .filter(|(_, dependency_package_id)| {
+                        dependency_package_id.as_str() == package_id
+                    })
+                    .find_map(|(alias, _)| {
+                        self.package_type_slots.get(&(
+                            alias.clone(),
+                            module_path.to_string(),
+                            type_index,
+                        ))
+                    })
+            })?;
         Some(TypeRefIr::PackageSymbol {
             symbol: PackageSymbolRef {
                 package: PackageRefIr::PackageId {
@@ -969,14 +981,18 @@ impl TypeResolutionModel {
                     PackageRefIr::Dependency { dependency_ref } => dependency_ref.as_str(),
                     PackageRefIr::PackageId { package_id } => package_id.as_str(),
                 };
-                let package_root = package_root_for_symbol(symbol);
+                let package_root = package_root_for_symbol(
+                    symbol,
+                    &self.package_dependencies,
+                    &self.package_dependency_access,
+                );
                 self.package_type_resolution(dependency_ref, &symbol.symbol_path)
                     .and_then(|resolution| {
                         self.source_type_shape_ir(
                             resolution,
                             &type_args,
                             context,
-                            package_root,
+                            package_root.as_deref(),
                             resolution.module_path.as_str(),
                         )
                     })
@@ -1326,13 +1342,17 @@ impl TypeResolutionModel {
                     PackageRefIr::Dependency { dependency_ref } => dependency_ref.as_str(),
                     PackageRefIr::PackageId { package_id } => package_id.as_str(),
                 };
-                let package_root = package_root_for_symbol(symbol);
+                let package_root = package_root_for_symbol(
+                    symbol,
+                    &self.package_dependencies,
+                    &self.package_dependency_access,
+                );
                 self.package_type_resolution(dependency_ref, &symbol.symbol_path)
                     .and_then(|resolution| {
                         self.transparent_source_type_ir(
                             resolution,
                             context,
-                            package_root,
+                            package_root.as_deref(),
                             resolution.module_path.as_str(),
                         )
                     })

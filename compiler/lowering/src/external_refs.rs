@@ -270,6 +270,9 @@ fn collect_expr_external_refs(expr: &ExprIr, refs: &mut ExternalRefTable) {
         ExprIr::ActorSelfField { field_type, .. } => {
             collect_type_ref_external_refs(field_type, refs);
         }
+        ExprIr::LoadPackageConst { symbol } => {
+            push_unique(&mut refs.package_symbols, symbol.clone());
+        }
         ExprIr::Literal { .. }
         | ExprIr::LoadSlot { .. }
         | ExprIr::LoadConst { .. }

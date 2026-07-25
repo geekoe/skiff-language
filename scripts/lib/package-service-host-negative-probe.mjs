@@ -45,8 +45,9 @@ export async function runPackageServiceHostNegativeProbe({
     'package-service-host',
   );
   const consumerRoot = join(fixtureRoot, 'consumer');
+  const testRoot = join(fixtureRoot, 'consumer-tests');
   const fixtureHashBefore = await hashDirectory(fixtureRoot);
-  const sourceConsumer = await snapshotDirectory(consumerRoot);
+  const sourceConsumer = await snapshotDirectory(testRoot);
   const commandRuns = { hostPreparer: 0, canonicalRunner: 0 };
   let negativeProbeRuns = 0;
   let runtimeResources;
@@ -64,7 +65,11 @@ export async function runPackageServiceHostNegativeProbe({
         skiffRoot: absoluteSkiffRoot,
         tempRoot: stack.tempRoot,
       });
-      if (host.fixtureRoot !== fixtureRoot || host.consumerRoot !== consumerRoot) {
+      if (
+        host.fixtureRoot !== fixtureRoot
+        || host.consumerRoot !== consumerRoot
+        || host.testRoot !== testRoot
+      ) {
         throw new Error('canonical Host fixture paths did not resolve inside the selected checkout');
       }
 
@@ -72,7 +77,7 @@ export async function runPackageServiceHostNegativeProbe({
         stack.tempRoot,
         'package-service-host-negative-consumer',
       );
-      await cp(consumerRoot, negativeConsumerRoot, {
+      await cp(testRoot, negativeConsumerRoot, {
         recursive: true,
         errorOnExist: true,
         force: false,

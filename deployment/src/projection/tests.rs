@@ -912,6 +912,7 @@ fn exact_package_closure_is_required_and_binding_changes_identity() {
         package_id: dependency_a.package_id.clone(),
         exact_version: dependency_a.package_version.clone(),
         expected_local_abi: dependency_a.package_local_abi.local_abi_identity.clone(),
+        expected_package_build: None,
     }];
     fixture.refresh_implementation_ref();
     let binding_key = PackageRequirementKey {
@@ -973,6 +974,7 @@ fn transitive_requirement_cannot_fill_an_invalid_callable_projection() {
         package_id: dependency.package_id.clone(),
         exact_version: dependency.package_version.clone(),
         expected_local_abi: dependency.package_local_abi.local_abi_identity.clone(),
+        expected_package_build: None,
     }];
     let BoundaryCallableProjection::Available {
         implementation_requirements,

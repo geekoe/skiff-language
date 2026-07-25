@@ -401,6 +401,15 @@ impl<'a> AssemblyCodeLinker<'a> {
                     )
                     .map_err(anyhow::Error::new)?;
                 }
+                LinkedExprIr::LoadPackageConst { symbol } => {
+                    let const_addr = self
+                        .addresses
+                        .package_symbol_const_addr(code_slot, symbol)?;
+                    *expression = LinkedExprIr::LoadConstAddress { const_addr };
+                }
+                LinkedExprIr::LoadConstAddress { const_addr } => {
+                    self.addresses.validate_const_addr(const_addr)?;
+                }
                 LinkedExprIr::Catch { catch_type, .. } => {
                     if let Some(catch_type) = catch_type {
                         self.link_type_ref(code_slot, file_index, catch_type)?;

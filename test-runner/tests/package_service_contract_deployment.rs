@@ -9,8 +9,8 @@ use std::{
 use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryCancellationContract, BoundaryUnavailableReason,
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, IngressProtocol,
-    MetadataValue, PackageArtifactRef, PackageConfigRequirement, PackageLocalAbiSymbol,
-    RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef, StateBindingKind,
+    PackageArtifactRef, PackageLocalAbiSymbol, RuntimeAssemblyRef, ServiceContractRef,
+    ServiceDeploymentRef, StateBindingKind,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -23,17 +23,13 @@ use skiff_test_runner::{
         assemble_package_test_fixture, discover_package_test_cases, CanonicalBaseAssembly,
         CanonicalTestRecords,
     },
-    canonical_package::compile_package_project,
+    canonical_package::{compile_package_project, compile_package_project_for_test},
     canonical_std_seed::seed_canonical_std,
     ecosystem_smoke_fixture::assemble_ecosystem_smoke_fixture,
     package_service_host_fixture::{
         prepare_package_service_host_fixture, PACKAGE_SERVICE_HOST_FIXTURE_SCHEMA_VERSION,
     },
-    package_test_assembly::{
-        assemble_package_test_fixture_for_run_with_config,
-        assemble_package_test_fixture_with_config, CanonicalPackageTestFixture,
-        PackageTestConfigLiteral,
-    },
+    package_test_assembly::{assemble_package_test_fixture_for_run, CanonicalPackageTestFixture},
     run_skiff_tests_with_options,
     test_overlay::compile_package_test_overlay,
     SkiffTestError, SkiffTestOptions,
@@ -69,6 +65,7 @@ fn platform_source_context_contract() {
     }
     for retired in [
         "--profile",
+        "--test-config-literals",
         "--service-artifact-root",
         "--config",
         "--package-test-concurrency",
@@ -410,7 +407,6 @@ packages:
 fn official_platform_package_is_compiled_as_the_selected_source_root() {
     let root = TestRoot::new("platform-source");
     let artifacts = root.child("artifacts");
-    let runtime = root.child("runtime-artifacts");
     create_store(&artifacts);
 
     let platform_sources = platform_sources();
@@ -418,31 +414,11 @@ fn official_platform_package_is_compiled_as_the_selected_source_root() {
     let project = compile_package_project(&platform_sources, &platform_root, &artifacts).unwrap();
     assert_eq!(project.package.artifact.package_id, "skiff.run/std");
     assert!(project.dependency_packages.is_empty());
-
-    let cases = discover_package_test_cases(&platform_root, &platform_root, false).unwrap();
-    assert_eq!(cases.len(), 11, "the canonical std root must stay complete");
-    let overlay = compile_package_test_overlay(
-        &platform_sources,
-        &platform_root,
-        &artifacts,
-        &project,
-        &cases,
-    )
-    .unwrap();
-    assert!(overlay.bindings.iter().all(|binding| matches!(
-        overlay
-            .overlay
-            .artifact
-            .boundary_projections
-            .get(&binding.callable_id),
-        Some(BoundaryCallableProjection::Available { .. })
-    )));
-    assert_eq!(overlay.production.package_id, "skiff.run/std");
-    assert_eq!(overlay.bindings.len(), cases.len());
-    let fixture =
-        assemble_package_test_fixture(&project, overlay, CanonicalBaseAssembly::default()).unwrap();
-    assert_eq!(fixture.entrypoints.len(), cases.len());
-    fixture.records.publish(&artifacts, &runtime).unwrap();
+    assert!(
+        discover_package_test_cases(&platform_root, &platform_root, false)
+            .unwrap()
+            .is_empty()
+    );
 
     let fake_root = root.child("fake-reserved");
     fs::create_dir_all(&fake_root).unwrap();
@@ -455,6 +431,64 @@ fn official_platform_package_is_compiled_as_the_selected_source_root() {
     assert!(error
         .to_string()
         .contains("package id skiff.run/std is reserved"));
+}
+
+#[test]
+fn std_test_service_overlay_uses_its_exact_compiler_owned_std_closure() {
+    let root = TestRoot::new("std-test-service");
+    let artifacts = root.child("artifacts");
+    create_store(&artifacts);
+    let platform_sources = platform_sources();
+    let std = seed_canonical_std(&platform_sources, &artifacts).unwrap();
+    let test_service = platform_source_root().join("test-services/std");
+    let project = compile_package_project_for_test(
+        &platform_sources,
+        &test_service,
+        &artifacts,
+        "skiff-test",
+    )
+    .unwrap();
+    assert!(
+        project.dependency_packages.is_empty(),
+        "the empty production test service must not gain a synthetic std dependency"
+    );
+
+    let cases = discover_package_test_cases(&test_service, &test_service, false).unwrap();
+    assert_eq!(
+        cases.len(),
+        11,
+        "the migrated std test service must stay complete"
+    );
+    let overlay = compile_package_test_overlay(
+        &platform_sources,
+        &test_service,
+        &artifacts,
+        &project,
+        &cases,
+    )
+    .unwrap();
+    assert_eq!(overlay.dependency_packages.len(), 1);
+    assert_eq!(
+        overlay.dependency_packages[0].package_build_id,
+        std.package.artifact.package_build_id
+    );
+    assert!(overlay.bindings.iter().all(|binding| matches!(
+        overlay
+            .overlay
+            .artifact
+            .boundary_projections
+            .get(&binding.callable_id),
+        Some(BoundaryCallableProjection::Available { .. })
+    )));
+
+    let fixture =
+        assemble_package_test_fixture(&project, overlay, CanonicalBaseAssembly::default()).unwrap();
+    assert_eq!(fixture.entrypoints.len(), cases.len());
+    assert!(fixture
+        .records
+        .assembly
+        .resolved_packages
+        .contains(&std.package.artifact));
 }
 
 #[test]
@@ -486,7 +520,8 @@ fn base_assembly_supplies_provider_selectors_and_real_owner_bindings() {
         _root,
         artifacts,
         runtime,
-        consumer,
+        consumer: _,
+        test_service,
         helper_package,
         payments_contract,
         provider_deployment,
@@ -496,25 +531,35 @@ fn base_assembly_supplies_provider_selectors_and_real_owner_bindings() {
     } = create_base_assembly_scenario();
 
     let source_before_publish = read_tree(&artifacts);
-    let project = compile_package_project(&platform_sources(), &consumer, &artifacts).unwrap();
-    assert_eq!(project.package.artifact.package_requirements.len(), 1);
-    assert_eq!(project.package.artifact.service_call_refs.len(), 1);
-    let package_requirement = project
-        .package
-        .artifact
+    let project = compile_package_project_for_test(
+        &platform_sources(),
+        &test_service,
+        &artifacts,
+        "skiff-test",
+    )
+    .unwrap();
+    let subject = project
+        .dependency_packages
+        .iter()
+        .find(|package| package.package_id == "example.com/consumer")
+        .expect("exact subject package");
+    let package_requirement = subject
         .package_requirements
         .first()
         .expect("consumer helper requirement");
-    let service_requirement = project
-        .package
-        .artifact
+    let service_requirement = subject
         .service_requirements
         .first()
         .expect("consumer service requirement");
-    let cases = discover_package_test_cases(&consumer, &consumer, false).unwrap();
-    let overlay =
-        compile_package_test_overlay(&platform_sources(), &consumer, &artifacts, &project, &cases)
-            .unwrap();
+    let cases = discover_package_test_cases(&test_service, &test_service, false).unwrap();
+    let overlay = compile_package_test_overlay(
+        &platform_sources(),
+        &test_service,
+        &artifacts,
+        &project,
+        &cases,
+    )
+    .unwrap();
     let fixture = assemble_package_test_fixture(&project, overlay, base).unwrap();
     let test_deployment = fixture
         .records
@@ -534,24 +579,28 @@ fn base_assembly_supplies_provider_selectors_and_real_owner_bindings() {
         skiff_artifact_model::MetadataValue::String("owned-by-base".to_string())
     );
     assert_eq!(
-        test_deployment.config_literals, production_deployment.config_literals,
-        "test deployment must inherit the production deployment's typed config binding"
+        test_deployment.config_literals,
+        vec![skiff_artifact_model::ConfigLiteralBinding {
+            path: "app.token".to_string(),
+            value: skiff_artifact_model::MetadataValue::String("owned-by-test-service".to_string()),
+        }],
+        "the independent test service must own its ordinary profile config"
     );
     assert!(production_deployment
         .package_bindings
         .iter()
         .any(|binding| {
-            binding.key.caller_package_build_id == project.package.artifact.package_build_id
+            binding.key.caller_package_build_id == subject.package_build_id
                 && binding.key.package_requirement_alias == package_requirement.alias
                 && binding.package == helper_package
         }));
     assert!(test_deployment.package_bindings.iter().any(|binding| {
-        binding.key.caller_package_build_id == fixture.overlay.package_build_id
+        binding.key.caller_package_build_id == subject.package_build_id
             && binding.key.package_requirement_alias == package_requirement.alias
             && binding.package == helper_package
     }));
     assert!(test_deployment.service_selectors.iter().any(|selector| {
-        selector.key.caller_package_build_id == fixture.overlay.package_build_id
+        selector.key.caller_package_build_id == subject.package_build_id
             && selector.key.service_requirement_slot == service_requirement.service_binding_slot
             && selector.contract == payments_contract
     }));
@@ -562,7 +611,7 @@ fn base_assembly_supplies_provider_selectors_and_real_owner_bindings() {
         .iter()
         .flat_map(|template| &template.bindings)
         .any(|binding| {
-            binding.key.caller_package_build_id == fixture.overlay.package_build_id
+            binding.key.caller_package_build_id == subject.package_build_id
                 && binding.contract == payments_contract
                 && binding.provider == provider_deployment
         }));
@@ -606,6 +655,10 @@ fn base_assembly_supplies_provider_selectors_and_real_owner_bindings() {
     assert_eq!(
         helper_schema.records.len(),
         helper.package_schema_type_records.len()
+    );
+    assert!(
+        !helper_schema.records.is_empty(),
+        "the host helper fixture must exercise copied schema records"
     );
     runtime_store
         .read_runtime_assembly(&base_assembly_ref)
@@ -823,161 +876,210 @@ test "duplicate service target through aliases" effects {
 }
 
 #[test]
-fn test_config_literals_are_exact_typed_and_test_deployment_owned() {
-    let BaseAssemblyScenario {
-        _root,
-        artifacts,
-        consumer,
-        base,
-        ..
-    } = create_base_assembly_scenario();
-    let mut project = compile_package_project(&platform_sources(), &consumer, &artifacts).unwrap();
-    project.dependency_packages[0]
-        .runtime_requirements
-        .config
-        .push(PackageConfigRequirement {
-            path: "helper.token".to_string(),
-            value_type: "number".to_string(),
-            required: true,
-        });
-    project.dependency_packages[0]
-        .runtime_requirements
-        .config
-        .push(PackageConfigRequirement {
-            path: "helper.optional".to_string(),
-            value_type: "bool".to_string(),
-            required: false,
-        });
-    skiff_artifact_identity::assign_package_artifact_identities(
-        &mut project.dependency_packages[0],
+fn test_service_environment_profile_projects_over_the_exact_package_closure() {
+    let root = TestRoot::new("test-service-profile");
+    let artifacts = root.child("artifacts");
+    let dependency = root.child("dependency");
+    let service = root.child("tests");
+    create_store(&artifacts);
+
+    write_package(
+        &dependency,
+        r#"id: example.com/test-subject
+version: 1.0.0
+state:
+  dependency-db:
+    kind: database
+"#,
+        None,
+        Some(
+            "function hiddenConfig() -> string {\n\
+               return config.require<string>(\"dependency.token\")\n\
+             }\n\
+             function hiddenSecret() -> string {\n\
+               return config.require<string>(\"dependency.secret\")\n\
+             }\n\
+             type DependencyRecord { id: string }\n\
+             db object DependencyRecord { primary key(id) }\n",
+        ),
+    );
+    publish_package(&dependency, &artifacts);
+
+    write_package(
+        &service,
+        r#"id: example.com/test-subject-tests
+version: 1.0.0
+packages:
+  - id: example.com/test-subject
+    version: 1.0.0
+    alias: subject
+    access: topLevel
+"#,
+        Some(""),
+        Some(
+            "function ownConfig() -> string {\n\
+               return config.require<string>(\"test.token\")\n\
+             }\n",
+        ),
+    );
+    fs::write(
+        service.join("service.yml"),
+        "id: example.com/test-subject-tests\nkind: test\n",
     )
     .unwrap();
-    skiff_artifact_identity::assign_package_artifact_identities(&mut project.package.artifact)
-        .unwrap();
-    let exact_dependency =
-        skiff_artifact_identity::package_artifact_ref(&project.dependency_packages[0]).unwrap();
-    let exact_production =
-        skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
-    let cases = discover_package_test_cases(&consumer, &consumer, false).unwrap();
-    let probe_overlay =
-        compile_package_test_overlay(&platform_sources(), &consumer, &artifacts, &project, &cases)
-            .unwrap();
-    let exact_package =
-        skiff_artifact_identity::package_artifact_ref(&probe_overlay.overlay.artifact).unwrap();
+    fs::write(
+        service.join("config.skiff-test.yml"),
+        r#"config:
+  dependency.token: dependency-value
+  test.token: test-value
+secrets:
+  dependency.secret: test/dependency-secret
+state:
+  dependency-db:
+    kind: database
+    namespace: authored-shared-name
+timeout: 25000
+quota:
+  cpuMillis: 250
+  memoryBytes: 134217728
+principal: service:example.com/test-subject-tests
+lifecycle:
+  maxConcurrency: 2
+  idleTimeoutMs: 5000
+"#,
+    )
+    .unwrap();
+    fs::write(
+        service.join("main.test.skiff"),
+        "test \"profile is projected\" { assert root.main.ownConfig() == \"test-value\" }\n",
+    )
+    .unwrap();
 
-    let assemble = |literals: &[PackageTestConfigLiteral]| {
-        let overlay = compile_package_test_overlay(
-            &platform_sources(),
-            &consumer,
-            &artifacts,
-            &project,
-            &cases,
-        )
-        .unwrap();
-        assemble_package_test_fixture_with_config(&project, overlay, base.clone(), literals)
-    };
-    let required = PackageTestConfigLiteral {
-        package: exact_production.clone(),
-        key: "app.token".to_string(),
-        value: MetadataValue::String("owned-by-base".to_string()),
-    };
-    let dependency_required = PackageTestConfigLiteral {
-        package: exact_dependency.clone(),
-        key: "helper.token".to_string(),
-        value: MetadataValue::Number(7.into()),
-    };
-    let fixture = assemble(&[required.clone(), dependency_required.clone()]).unwrap();
+    let missing_profile =
+        compile_package_project_for_test(&platform_sources(), &service, &artifacts, "other")
+            .unwrap_err()
+            .to_string();
+    assert!(
+        missing_profile.contains("requires config.other.yml"),
+        "{missing_profile}"
+    );
+
+    let project =
+        compile_package_project_for_test(&platform_sources(), &service, &artifacts, "skiff-test")
+            .expect("kind:test must authorize topLevel and bind its environment profile");
+    let profile = project
+        .test_service_profile
+        .as_ref()
+        .expect("kind:test project must retain the selected profile");
+    assert_eq!(profile.service_id, "example.com/test-subject-tests");
+    assert_eq!(profile.profile_name, "skiff-test");
+
+    let cases = discover_package_test_cases(&service, &service, false).unwrap();
+    let overlay =
+        compile_package_test_overlay(&platform_sources(), &service, &artifacts, &project, &cases)
+            .expect("test-service overlay must retain compiler test-service authority");
+    let fixture =
+        assemble_package_test_fixture(&project, overlay, CanonicalBaseAssembly::default())
+            .expect("normal deployment projection must validate the exact package closure");
     assert_eq!(
         fixture.records.deployments[0].config_literals,
         vec![
             skiff_artifact_model::ConfigLiteralBinding {
-                path: "app.token".to_string(),
-                value: MetadataValue::String("owned-by-base".to_string()),
+                path: "dependency.token".to_string(),
+                value: skiff_artifact_model::MetadataValue::String("dependency-value".to_string()),
             },
             skiff_artifact_model::ConfigLiteralBinding {
-                path: "helper.token".to_string(),
-                value: MetadataValue::Number(7.into()),
+                path: "test.token".to_string(),
+                value: skiff_artifact_model::MetadataValue::String("test-value".to_string()),
             },
         ]
     );
-
-    let missing = assemble(&[]).unwrap_err().to_string();
-    assert!(missing.contains("required test config literal helper.token"));
-    let wrong_type = assemble(&[
-        PackageTestConfigLiteral {
-            value: MetadataValue::Bool(true),
-            ..required.clone()
-        },
-        dependency_required.clone(),
-    ])
-    .unwrap_err()
-    .to_string();
-    assert!(wrong_type.contains("must be string"));
-    let unknown = assemble(&[
-        PackageTestConfigLiteral {
-            key: "app.unknown".to_string(),
-            ..required.clone()
-        },
-        dependency_required.clone(),
-    ])
-    .unwrap_err()
-    .to_string();
-    assert!(unknown.contains("unknown requirement"));
-    let duplicate = assemble(&[
-        required.clone(),
-        PackageTestConfigLiteral {
-            package: exact_package.clone(),
-            ..required.clone()
-        },
-        dependency_required.clone(),
-    ])
-    .unwrap_err()
-    .to_string();
-    assert!(duplicate.contains("repeats exact package requirement"));
-
-    let mut wrong_production = exact_production.clone();
-    wrong_production.package_build_id = skiff_artifact_model::PackageBuildId::new(
-        "skiff-package-build-v4:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    );
-    let wrong_production = assemble(&[
-        PackageTestConfigLiteral {
-            package: wrong_production,
-            ..required.clone()
-        },
-        dependency_required.clone(),
-    ])
-    .unwrap_err()
-    .to_string();
-    assert!(wrong_production.contains("outside the exact deployment closure"));
-
-    let mut wrong_overlay = exact_package;
-    wrong_overlay.package_build_id = skiff_artifact_model::PackageBuildId::new(
-        "skiff-package-build-v4:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    );
-    let wrong_overlay = assemble(&[
-        PackageTestConfigLiteral {
-            package: wrong_overlay,
-            ..required.clone()
-        },
-        dependency_required.clone(),
-    ])
-    .unwrap_err()
-    .to_string();
-    assert!(wrong_overlay.contains("outside the exact deployment closure"));
-
-    let with_optional = assemble(&[
-        required,
-        dependency_required,
-        PackageTestConfigLiteral {
-            package: exact_dependency,
-            key: "helper.optional".to_string(),
-            value: MetadataValue::Bool(true),
-        },
-    ])
-    .unwrap();
     assert_eq!(
-        with_optional.records.deployments[0].config_literals.len(),
-        3
+        fixture.records.deployments[0].secret_refs,
+        vec![skiff_artifact_model::SecretRefBinding {
+            path: "dependency.secret".to_string(),
+            secret_ref: "test/dependency-secret".to_string(),
+        }]
+    );
+    assert_eq!(
+        fixture.records.deployments[0].policy.timeout_ms,
+        Some(25_000)
+    );
+    assert_eq!(
+        fixture.records.deployments[0].policy.resources.cpu_millis,
+        250
+    );
+    assert_eq!(
+        fixture.records.deployments[0]
+            .policy
+            .activation
+            .max_concurrency,
+        2
+    );
+    assert_eq!(
+        fixture.records.deployments[0].policy.principal,
+        "service:example.com/test-subject-tests"
+    );
+    assert_eq!(fixture.records.deployments[0].state_bindings.len(), 1);
+    assert_eq!(
+        fixture.records.deployments[0].state_bindings[0].requirement_key,
+        "dependency-db"
+    );
+    assert_ne!(
+        fixture.records.deployments[0].state_bindings[0].namespace, "authored-shared-name",
+        "the normal profile proves key/kind intent, but each case owns its namespace"
+    );
+
+    let mut wrong_dependency_type = project.clone();
+    wrong_dependency_type
+        .test_service_profile
+        .as_mut()
+        .unwrap()
+        .authoring
+        .config = serde_json::json!({
+        "dependency.token": true,
+        "test.token": "test-value",
+    });
+    let overlay = compile_package_test_overlay(
+        &platform_sources(),
+        &service,
+        &artifacts,
+        &wrong_dependency_type,
+        &cases,
+    )
+    .unwrap();
+    let error = assemble_package_test_fixture(
+        &wrong_dependency_type,
+        overlay,
+        CanonicalBaseAssembly::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("dependency.token"), "{error}");
+    assert!(error.contains("literal is not string"), "{error}");
+
+    let mut missing_state = project.clone();
+    missing_state
+        .test_service_profile
+        .as_mut()
+        .unwrap()
+        .authoring
+        .state = serde_json::json!({});
+    let overlay = compile_package_test_overlay(
+        &platform_sources(),
+        &service,
+        &artifacts,
+        &missing_state,
+        &cases,
+    )
+    .unwrap();
+    let error =
+        assemble_package_test_fixture(&missing_state, overlay, CanonicalBaseAssembly::default())
+            .unwrap_err()
+            .to_string();
+    assert!(
+        error.contains("missing state binding dependency-db"),
+        "{error}"
     );
 }
 
@@ -1089,11 +1191,10 @@ state:
             &cases,
         )
         .unwrap();
-        assemble_package_test_fixture_for_run_with_config(
+        assemble_package_test_fixture_for_run(
             &project,
             overlay,
             CanonicalBaseAssembly::default(),
-            &[],
             run_scope,
         )
         .unwrap()
@@ -1262,7 +1363,6 @@ fn non_live_runtime_root_cannot_be_nested_under_the_external_store() {
             platform_sources: platform_sources(),
             runtime_artifact_root: Some(runtime),
             base_assembly: None,
-            test_config_literals: Vec::new(),
             activation_url: Some("http://127.0.0.1:9/__skiff/activate-assembly".to_string()),
             ingress_url: Some("http://127.0.0.1:9".to_string()),
             environment: "nested-runtime-root".to_string(),
@@ -1359,9 +1459,9 @@ fn assert_helper_mutation_semantics(
         panic!("mutating helper must remain unavailable at a detached boundary")
     };
     assert!(reasons.contains(&BoundaryUnavailableReason::WritesCallerReachable));
+    assert!(reasons.contains(&BoundaryUnavailableReason::RequiresSameHeapIdentity));
     assert!(!reasons.contains(&BoundaryUnavailableReason::UnknownEffect));
     assert!(!reasons.contains(&BoundaryUnavailableReason::UnknownCallTarget));
-    assert!(reasons.contains(&BoundaryUnavailableReason::RequiresSameHeapIdentity));
 }
 
 #[test]
@@ -1370,6 +1470,7 @@ fn fresh_helper_mutation_then_detached_service_call_projects_and_assembles() {
         _root,
         artifacts,
         consumer,
+        test_service,
         helper_package,
         payments_contract,
         provider_deployment,
@@ -1403,11 +1504,23 @@ fn fresh_helper_mutation_then_detached_service_call_projects_and_assembles() {
         "fresh helper mutation plus detached service call must project available, got {consumer_projection:?}"
     );
 
-    let cases = discover_package_test_cases(&consumer, &consumer, false).unwrap();
+    let test_project = compile_package_project_for_test(
+        &platform_sources(),
+        &test_service,
+        &artifacts,
+        "skiff-test",
+    )
+    .unwrap();
+    let cases = discover_package_test_cases(&test_service, &test_service, false).unwrap();
     assert_eq!(cases.len(), 4);
-    let overlay =
-        compile_package_test_overlay(&platform_sources(), &consumer, &artifacts, &project, &cases)
-            .unwrap();
+    let overlay = compile_package_test_overlay(
+        &platform_sources(),
+        &test_service,
+        &artifacts,
+        &test_project,
+        &cases,
+    )
+    .unwrap();
     assert!(matches!(
         overlay
             .overlay
@@ -1417,7 +1530,7 @@ fn fresh_helper_mutation_then_detached_service_call_projects_and_assembles() {
             .expect("final business assertion boundary projection"),
         BoundaryCallableProjection::Available { .. }
     ));
-    let fixture = assemble_package_test_fixture(&project, overlay, base).unwrap();
+    let fixture = assemble_package_test_fixture(&test_project, overlay, base).unwrap();
     assert!(fixture
         .records
         .assembly
@@ -1618,6 +1731,7 @@ struct BaseAssemblyScenario {
     artifacts: PathBuf,
     runtime: PathBuf,
     consumer: PathBuf,
+    test_service: PathBuf,
     helper_package: PackageArtifactRef,
     payments_contract: ServiceContractRef,
     provider_deployment: ServiceDeploymentRef,
@@ -1632,6 +1746,7 @@ fn create_base_assembly_scenario() -> BaseAssemblyScenario {
     let runtime = root.child("runtime-artifacts");
     let fixture_root = package_service_host_fixture_root();
     let consumer = fixture_root.join("consumer");
+    let test_service = fixture_root.join("consumer-tests");
     let receipt = prepare_package_service_host_fixture(
         &platform_sources(),
         &fixture_root,
@@ -1685,6 +1800,7 @@ fn create_base_assembly_scenario() -> BaseAssemblyScenario {
         artifacts,
         runtime,
         consumer,
+        test_service,
         helper_package: receipt.helper_package,
         payments_contract: receipt.payments_contract,
         provider_deployment: receipt.provider_deployment,

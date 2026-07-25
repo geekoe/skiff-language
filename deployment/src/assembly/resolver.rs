@@ -344,4 +344,8 @@ fn package_requirement_matches(
     selected.package_id == requirement.package_id
         && selected.package_version == requirement.exact_version
         && selected.package_local_abi_identity == requirement.expected_local_abi
+        && requirement
+            .expected_package_build
+            .as_ref()
+            .is_none_or(|expected| expected == &selected.package_build_id)
 }

@@ -191,6 +191,7 @@ fn requirement(alias: &str, package: &PackageArtifact) -> PackageRequirement {
         expected_local_abi: PackageLocalAbiIdentity::new(
             package.package_local_abi.local_abi_identity.as_ref(),
         ),
+        expected_package_build: None,
     }
 }
 

@@ -78,7 +78,8 @@ pub use contract_type_resolution::{
 };
 pub use dependency_analysis::{
     PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis,
-    SourceDependencyAnalysisError, SourceDependencyAnalysisInput,
+    PackageDependencyConstantAnalysis, SourceDependencyAnalysisError,
+    SourceDependencyAnalysisInput,
 };
 pub use expression_model::{
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceFact, ExpressionSourceMap,

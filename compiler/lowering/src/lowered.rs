@@ -131,10 +131,14 @@ impl LoweredPackage {
             Ok::<(), skiff_compiler_source::SourceCompileError>(())
         })?;
 
+        let package_dependency_abi_expectations = model
+            .type_resolution()
+            .package_dependency_abi_expectations();
         rewrite_publication_local_refs(
             &mut file_ir_units,
             Some(model.policy().package_id()),
             Some(model.type_resolution()),
+            &package_dependency_abi_expectations,
         )
         .map_err(|error| PublicationError::ContractValidation {
             message: format!("File IR type finalization failed: {error}"),

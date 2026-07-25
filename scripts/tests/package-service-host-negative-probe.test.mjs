@@ -17,7 +17,7 @@ test('command-double runs only one copied-consumer negative Host probe', async (
   const root = await makeCheckout();
   const fixtureTest = join(
     root,
-    'test-runner/fixtures/package-service-host/consumer/main.test.skiff',
+    'test-runner/fixtures/package-service-host/consumer-tests/main.test.skiff',
   );
   const fixtureBefore = await readFile(fixtureTest, 'utf8');
   const commands = [];
@@ -207,13 +207,34 @@ test('counting proxy forwards Host, method, path, and body and mirrors Router re
 async function makeCheckout() {
   const root = await mkdtemp(join(tmpdir(), 'skiff-host-negative-test-'));
   const consumer = join(root, 'test-runner/fixtures/package-service-host/consumer');
+  const tests = join(root, 'test-runner/fixtures/package-service-host/consumer-tests');
   await mkdir(consumer, { recursive: true });
+  await mkdir(tests, { recursive: true });
   await writeFile(join(consumer, 'api.yml'), 'run: main.run\n');
   await writeFile(join(consumer, 'main.skiff'), 'function run() -> string { return "ok" }\n');
   await writeFile(join(consumer, 'package.yml'), 'id: example.com/consumer\nversion: 1.0.0\n');
+  await writeFile(join(tests, 'api.yml'), '{}\n');
   await writeFile(
-    join(consumer, 'main.test.skiff'),
-    'test "positive" {\n  assert root.main.run() == "ok"\n}\n',
+    join(tests, 'package.yml'),
+    [
+      'id: test.skiff/consumer-tests',
+      'version: 1.0.0',
+      'packages:',
+      '  - id: example.com/consumer',
+      '    version: 1.0.0',
+      '    alias: subject',
+      '    access: topLevel',
+      '',
+    ].join('\n'),
+  );
+  await writeFile(
+    join(tests, 'service.yml'),
+    'id: test.skiff/consumer-tests\nkind: test\n',
+  );
+  await writeFile(join(tests, 'config.skiff-test.yml'), '{}\n');
+  await writeFile(
+    join(tests, 'main.test.skiff'),
+    'import subject\n\ntest "positive" {\n  assert subject/main.run() == "ok"\n}\n',
   );
   return root;
 }

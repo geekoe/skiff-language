@@ -834,6 +834,12 @@ pub enum LinkedExprIr {
     LoadConst {
         const_index: u32,
     },
+    LoadPackageConst {
+        symbol: PackageSymbolRef,
+    },
+    LoadConstAddress {
+        const_addr: ConstAddr,
+    },
     ActorSelfField {
         field: String,
         field_type: LinkedTypeRef,

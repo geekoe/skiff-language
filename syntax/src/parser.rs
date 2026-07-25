@@ -1387,6 +1387,10 @@ impl Parser {
             TokenKind::String(value) => quote_string_type(&value),
             _ => return Err(CompileError::syntax("expected type name", token.span.start)),
         };
+        if self.match_symbol("/") {
+            name.push('/');
+            name.push_str(&self.expect_ident("expected source module after dependency /")?);
+        }
         while self.match_symbol(".") {
             name.push('.');
             name.push_str(&self.expect_ident("expected qualified type segment")?);

@@ -4,6 +4,7 @@ import {
   PROBE_TARGETED_CRATES,
   combinedArtifactEvidenceIsComplete,
 } from './platform-source-probe-evidence.mjs';
+import { canonicalSkiffSourceTestRegistry } from './skiff-source-test-registry.mjs';
 import { probeDigest } from './platform-source-probe-support.mjs';
 
 export const PROBE_LEDGER_SCHEMA = 'skiff-platform-source-shared-target-probe-v6';
@@ -142,7 +143,7 @@ export function assertCombinedLedger(ledger, input) {
     || JSON.stringify(ledger.targetedCleanCrates) !== JSON.stringify(PROBE_TARGETED_CRATES)
     || JSON.stringify(ledger.rounds?.map((round) => round.label))
       !== JSON.stringify(['A-origin', 'B-origin', 'final-A-origin'])
-    || JSON.stringify(ledger.registry) !== JSON.stringify([{ id: 'std', root: 'std' }])
+    || JSON.stringify(ledger.registry) !== JSON.stringify(canonicalSkiffSourceTestRegistry)
     || ledger.sourceSuite !== null
     || ledger.hostAttempt !== null
   ) {

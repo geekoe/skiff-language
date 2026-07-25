@@ -1462,6 +1462,7 @@ fn implementation_package(
             package_id: package.package_id,
             exact_version: package.package_version,
             expected_local_abi: package.package_local_abi_identity,
+            expected_package_build: None,
         })
         .collect();
     let schema_types = schema_records

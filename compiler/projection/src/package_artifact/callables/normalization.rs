@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     CallableProvenanceSummary, CallableSemanticFacts, ContractTypeRef, FileIrUnit,
-    PackageCallableSignature, PackageTypeRef, TypeRefIr, ValueProjectionStep, ValueProvenance,
+    FunctionTypeParamIr, InterfaceInstantiationRef, PackageCallableSignature, PackageRefIr,
+    PackageSymbolRef, PackageTypeRef, TypeDescriptorIr, TypeRefIr, ValueProjectionStep,
+    ValueProvenance,
 };
 
 use crate::package_artifact::boundary::ordering::escape_lane_rank;
@@ -48,6 +50,199 @@ pub(super) fn normalize_public_signature(
         .iter()
         .map(|ty| normalize_package_type(owner_module, ty, file_ir_units, public_type_ids))
         .collect();
+}
+
+pub(super) fn normalize_implementation_type(
+    package_id: &str,
+    owner_module: &str,
+    ty: &TypeRefIr,
+    file_ir_units: &[FileIrUnit],
+) -> Result<TypeRefIr, String> {
+    let normalize =
+        |ty: &TypeRefIr| normalize_implementation_type(package_id, owner_module, ty, file_ir_units);
+    match ty {
+        TypeRefIr::LocalType { type_index } => {
+            implementation_type_symbol(package_id, file_ir_units, owner_module, *type_index)
+        }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => implementation_type_symbol(package_id, file_ir_units, module_path, *type_index),
+        TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
+            let source_path = format!("{}.{}", symbol.module_path, symbol.symbol);
+            if implementation_type_location(file_ir_units, &symbol.module_path, &symbol.symbol)
+                .is_some()
+            {
+                Ok(package_symbol_type(package_id, source_path))
+            } else {
+                Ok(ty.clone())
+            }
+        }
+        TypeRefIr::Builtin { name, args } => Ok(TypeRefIr::Builtin {
+            name: name.clone(),
+            args: args.iter().map(normalize).collect::<Result<_, _>>()?,
+        }),
+        TypeRefIr::PackageSymbol { symbol } => {
+            let mut symbol = symbol.clone();
+            if matches!(
+                &symbol.package,
+                PackageRefIr::PackageId { package_id: owner } if owner == package_id
+            ) {
+                symbol.abi_expectation = None;
+            }
+            Ok(TypeRefIr::PackageSymbol { symbol })
+        }
+        TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => Ok(ty.clone()),
+        TypeRefIr::Record { fields } => Ok(TypeRefIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, field)| Ok((name.clone(), normalize(field)?)))
+                .collect::<Result<_, String>>()?,
+        }),
+        TypeRefIr::Union { items } => Ok(TypeRefIr::Union {
+            items: items.iter().map(normalize).collect::<Result<_, _>>()?,
+        }),
+        TypeRefIr::Nullable { inner } => Ok(TypeRefIr::Nullable {
+            inner: Box::new(normalize(inner)?),
+        }),
+        TypeRefIr::AnyInterface { interface } => {
+            let identity = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).map_err(
+                |error| {
+                    format!(
+                        "implementation interface identity is not a canonical TypeRefIr: {error}"
+                    )
+                },
+            )?;
+            let identity = normalize(&identity)?;
+            Ok(TypeRefIr::AnyInterface {
+                interface: InterfaceInstantiationRef {
+                    interface_abi_id: serde_json::to_string(&identity)
+                        .map_err(|error| error.to_string())?,
+                    canonical_type_args: interface
+                        .canonical_type_args
+                        .iter()
+                        .map(normalize)
+                        .collect::<Result<_, _>>()?,
+                },
+            })
+        }
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => Ok(TypeRefIr::Function {
+            params: params
+                .iter()
+                .map(|param| {
+                    Ok(FunctionTypeParamIr {
+                        name: param.name.clone(),
+                        ty: normalize(&param.ty)?,
+                    })
+                })
+                .collect::<Result<_, String>>()?,
+            return_type: Box::new(normalize(return_type)?),
+        }),
+    }
+}
+
+pub(super) fn normalize_implementation_descriptor(
+    package_id: &str,
+    owner_module: &str,
+    descriptor: &TypeDescriptorIr,
+    file_ir_units: &[FileIrUnit],
+) -> Result<TypeDescriptorIr, String> {
+    match descriptor {
+        TypeDescriptorIr::Record { fields } => Ok(TypeDescriptorIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| {
+                    Ok((
+                        name.clone(),
+                        normalize_implementation_type(package_id, owner_module, ty, file_ir_units)?,
+                    ))
+                })
+                .collect::<Result<_, String>>()?,
+        }),
+        TypeDescriptorIr::Alias { target } => Ok(TypeDescriptorIr::Alias {
+            target: normalize_implementation_type(package_id, owner_module, target, file_ir_units)?,
+        }),
+        TypeDescriptorIr::Union { variants } => Ok(TypeDescriptorIr::Union {
+            variants: variants
+                .iter()
+                .map(|variant| {
+                    normalize_implementation_type(package_id, owner_module, variant, file_ir_units)
+                })
+                .collect::<Result<_, _>>()?,
+        }),
+    }
+}
+
+fn implementation_type_symbol(
+    package_id: &str,
+    units: &[FileIrUnit],
+    module_path: &str,
+    type_index: u32,
+) -> Result<TypeRefIr, String> {
+    let (module_path, symbol) =
+        implementation_type_location_by_index(units, module_path, type_index).ok_or_else(|| {
+            format!(
+                "implementation type {module_path}#{type_index} has no exact top-level declaration"
+            )
+        })?;
+    Ok(package_symbol_type(
+        package_id,
+        format!("{module_path}.{symbol}"),
+    ))
+}
+
+fn package_symbol_type(package_id: &str, symbol_path: String) -> TypeRefIr {
+    TypeRefIr::PackageSymbol {
+        symbol: PackageSymbolRef {
+            package: PackageRefIr::PackageId {
+                package_id: package_id.to_string(),
+            },
+            symbol_path,
+            abi_expectation: None,
+        },
+    }
+}
+
+fn implementation_type_location<'a>(
+    units: &'a [FileIrUnit],
+    module_path: &str,
+    symbol: &str,
+) -> Option<(&'a str, &'a str)> {
+    let mut matches = units.iter().filter_map(|unit| {
+        if unit.module_path != module_path {
+            return None;
+        }
+        unit.declarations
+            .types
+            .get_key_value(symbol)
+            .map(|(name, _)| (unit.module_path.as_str(), name.as_str()))
+    });
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn implementation_type_location_by_index<'a>(
+    units: &'a [FileIrUnit],
+    module_path: &str,
+    type_index: u32,
+) -> Option<(&'a str, &'a str)> {
+    let mut matches = units.iter().filter_map(|unit| {
+        if unit.module_path != module_path {
+            return None;
+        }
+        unit.declarations
+            .types
+            .iter()
+            .find(|(_, declaration)| declaration.type_index == type_index)
+            .map(|(symbol, _)| (unit.module_path.as_str(), symbol.as_str()))
+    });
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
 }
 
 fn normalize_package_type(

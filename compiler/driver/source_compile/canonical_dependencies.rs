@@ -1,12 +1,15 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_identity::validate_package_artifact_identities;
-use skiff_artifact_model::{PackageArtifact, PackageLocalAbiSymbol};
+use skiff_artifact_model::{
+    InterfaceInstantiationRef, PackageArtifact, PackageCallableSignature, PackageLocalAbiSymbol,
+    PackageRefIr, PackageTypeRef, TypeRefIr,
+};
 use skiff_compiler_input::{PackageDependencyAccess, ResolvedContractDependency};
 use skiff_compiler_projection_input::ResolvedPackageSchema;
 use skiff_compiler_source::{
     PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis,
-    SourceDependencyAnalysisInput,
+    PackageDependencyConstantAnalysis, SourceDependencyAnalysisInput,
 };
 
 use crate::{
@@ -93,7 +96,8 @@ fn package_analysis(
             artifact.package_build_id.clone(),
             artifact.package_local_abi.local_abi_identity.clone(),
             callables,
-        );
+        )
+        .with_constants(package_constant_analysis(dependency, artifact));
         if let Some(schema) = resolved_package_schemas.iter().find(|schema| {
             schema.alias() == alias
                 && schema.package_id() == dependency.id
@@ -117,15 +121,32 @@ fn package_analysis(
     Ok(facts)
 }
 
+fn package_constant_analysis(
+    dependency: &PackageDependency,
+    artifact: &PackageArtifact,
+) -> BTreeMap<String, PackageDependencyConstantAnalysis> {
+    selected_package_symbols(dependency, artifact)
+        .iter()
+        .filter_map(|(selected_path, symbol)| {
+            let PackageLocalAbiSymbol::Constant { const_id, ty } = symbol else {
+                return None;
+            };
+            Some((
+                dependency_member_path(dependency, selected_path),
+                PackageDependencyConstantAnalysis::new(
+                    const_id.clone(),
+                    bind_package_type_identity(ty, artifact),
+                ),
+            ))
+        })
+        .collect()
+}
+
 fn package_callable_analysis(
     dependency: &PackageDependency,
     artifact: &PackageArtifact,
 ) -> Result<BTreeMap<String, PackageDependencyCallableAnalysis>, PackageCompileError> {
-    let symbols = match dependency.access {
-        PackageDependencyAccess::Public => &artifact.package_local_abi.public_symbols,
-        PackageDependencyAccess::TopLevel => &artifact.package_local_abi.implementation_symbols,
-    };
-    symbols
+    selected_package_symbols(dependency, artifact)
         .iter()
         .filter_map(|(selected_path, symbol)| {
             let PackageLocalAbiSymbol::Callable {
@@ -149,12 +170,144 @@ fn package_callable_analysis(
                     (
                         dependency_member_path(dependency, selected_path),
                         PackageDependencyCallableAnalysis::new(callable_id.clone(), semantic_facts)
-                            .with_signature(signature.clone()),
+                            .with_signature(bind_callable_signature_identity(signature, artifact)),
                     )
                 });
             Some(result)
         })
         .collect()
+}
+
+fn bind_callable_signature_identity(
+    signature: &PackageCallableSignature,
+    artifact: &PackageArtifact,
+) -> PackageCallableSignature {
+    PackageCallableSignature {
+        parameters: signature
+            .parameters
+            .iter()
+            .map(|parameter| skiff_artifact_model::PackageCallableParameter {
+                name: parameter.name.clone(),
+                ty: bind_package_type_identity(&parameter.ty, artifact),
+            })
+            .collect(),
+        return_type: bind_package_type_identity(&signature.return_type, artifact),
+        throw_types: signature
+            .throw_types
+            .iter()
+            .map(|ty| bind_package_type_identity(ty, artifact))
+            .collect(),
+        may_suspend: signature.may_suspend,
+    }
+}
+
+fn bind_package_type_identity(ty: &PackageTypeRef, artifact: &PackageArtifact) -> PackageTypeRef {
+    match ty {
+        PackageTypeRef::Local { local_type } => PackageTypeRef::Local {
+            local_type: bind_type_identity(local_type, artifact),
+        },
+        PackageTypeRef::PackageSchema { .. } => ty.clone(),
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => PackageTypeRef::AnyInterface {
+            interface: Box::new(bind_package_type_identity(interface, artifact)),
+            arguments: arguments
+                .iter()
+                .map(|argument| bind_package_type_identity(argument, artifact))
+                .collect(),
+        },
+        PackageTypeRef::Container { name, arguments } => PackageTypeRef::Container {
+            name: name.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| bind_package_type_identity(argument, artifact))
+                .collect(),
+        },
+        PackageTypeRef::Nullable { inner } => PackageTypeRef::Nullable {
+            inner: Box::new(bind_package_type_identity(inner, artifact)),
+        },
+    }
+}
+
+fn bind_type_identity(ty: &TypeRefIr, artifact: &PackageArtifact) -> TypeRefIr {
+    let bind = |ty: &TypeRefIr| bind_type_identity(ty, artifact);
+    match ty {
+        TypeRefIr::PackageSymbol { symbol } => {
+            let mut symbol = symbol.clone();
+            if matches!(
+                &symbol.package,
+                PackageRefIr::PackageId { package_id } if package_id == &artifact.package_id
+            ) {
+                symbol.abi_expectation = Some(
+                    artifact
+                        .package_local_abi
+                        .local_abi_identity
+                        .as_str()
+                        .to_string(),
+                );
+            }
+            TypeRefIr::PackageSymbol { symbol }
+        }
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
+            name: name.clone(),
+            args: args.iter().map(bind).collect(),
+        },
+        TypeRefIr::Record { fields } => TypeRefIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), bind(ty)))
+                .collect(),
+        },
+        TypeRefIr::Union { items } => TypeRefIr::Union {
+            items: items.iter().map(bind).collect(),
+        },
+        TypeRefIr::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(bind(inner)),
+        },
+        TypeRefIr::AnyInterface { interface } => {
+            let identity = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+                .map(|identity| bind(&identity))
+                .and_then(|identity| serde_json::to_string(&identity))
+                .unwrap_or_else(|_| interface.interface_abi_id.clone());
+            TypeRefIr::AnyInterface {
+                interface: InterfaceInstantiationRef {
+                    interface_abi_id: identity,
+                    canonical_type_args: interface.canonical_type_args.iter().map(bind).collect(),
+                },
+            }
+        }
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => TypeRefIr::Function {
+            params: params
+                .iter()
+                .map(|parameter| skiff_artifact_model::FunctionTypeParamIr {
+                    name: parameter.name.clone(),
+                    ty: bind(&parameter.ty),
+                })
+                .collect(),
+            return_type: Box::new(bind(return_type)),
+        },
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => ty.clone(),
+    }
+}
+
+fn selected_package_symbols<'a>(
+    dependency: &PackageDependency,
+    artifact: &'a PackageArtifact,
+) -> &'a BTreeMap<String, PackageLocalAbiSymbol> {
+    match dependency.access {
+        PackageDependencyAccess::Public => &artifact.package_local_abi.public_symbols,
+        PackageDependencyAccess::TopLevel => &artifact.package_local_abi.implementation_symbols,
+    }
 }
 
 fn dependency_member_path(dependency: &PackageDependency, public_path: &str) -> String {

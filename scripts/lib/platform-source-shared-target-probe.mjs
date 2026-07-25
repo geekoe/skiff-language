@@ -31,6 +31,7 @@ import {
   finalizeProbeDigest,
   ledgerTemporaryPath,
 } from './platform-source-probe-support.mjs';
+import { canonicalSkiffSourceTestRegistry } from './skiff-source-test-registry.mjs';
 
 const PRELUDE_LABEL = 'PLATFORM_SOURCE_PRELUDE_IDENTITY';
 const STD_LABEL = 'PLATFORM_SOURCE_STD_PACKAGE_BUILD_ID';
@@ -267,7 +268,7 @@ async function runCombined(state) {
   ledger.identityProbes = probes.map(({ output, ...probe }) => probe);
   ledger.structure = await inspectStructure(state, artifacts);
   const registry = await deps.loadRegistry(input.aWorktree, input.candidate);
-  if (JSON.stringify(registry) !== JSON.stringify([{ id: 'std', root: 'std' }])) {
+  if (JSON.stringify(registry) !== JSON.stringify(canonicalSkiffSourceTestRegistry)) {
     throw new Error('canonical Skiff source test registry changed');
   }
   ledger.registry = registry;
@@ -313,7 +314,7 @@ async function runFull(state) {
     'test-runner',
     'fixtures',
     'package-service-host',
-    'consumer',
+    'consumer-tests',
     'main.test.skiff',
   );
   const hostSource = await deps.readText(hostAssertionPath);

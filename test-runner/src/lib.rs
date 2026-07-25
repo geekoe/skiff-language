@@ -51,7 +51,6 @@ pub struct SkiffTestOptions {
     /// Harness-owned writable canonical root. It has no public CLI spelling.
     pub runtime_artifact_root: Option<PathBuf>,
     pub base_assembly: Option<String>,
-    pub test_config_literals: Vec<package_test_assembly::PackageTestConfigLiteral>,
     pub activation_url: Option<String>,
     pub ingress_url: Option<String>,
     pub environment: String,
@@ -144,10 +143,11 @@ pub fn run_skiff_tests_with_options(
         .artifact_root
         .as_deref()
         .ok_or(SkiffTestError::MissingCanonicalRuntime)?;
-    let project = canonical_package::compile_package_project(
+    let project = canonical_package::compile_package_project_for_test(
         &options.platform_sources,
         &package_root,
         artifact_root,
+        &options.environment,
     )?;
     let cases =
         canonical_fixture::discover_package_test_cases(input, &package_root, metadata.is_file())?;

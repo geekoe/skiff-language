@@ -358,6 +358,42 @@ fn assembly_execution_wrong_expected_local_abi_is_rejected_before_image_is_retur
 }
 
 #[test]
+fn assembly_execution_wrong_expected_implementation_build_is_rejected_before_image_is_returned() {
+    let caller_file = file("file:caller", "caller.main");
+    let dependency_file = file("file:dependency", "dependency.main");
+    let mut caller = artifact("caller", "caller", "caller-abi", &caller_file);
+    let mut requirement = package_requirement("tools", "dependency", "dependency-abi");
+    requirement.expected_package_build = Some(build_id("stale-dependency-build"));
+    caller.package_requirements.push(requirement);
+    let dependency = artifact(
+        "dependency",
+        "current-dependency-build",
+        "dependency-abi",
+        &dependency_file,
+    );
+    let assembly = assembly(
+        vec![artifact_ref(&caller), artifact_ref(&dependency)],
+        vec![package_binding(&caller, "tools", &dependency)],
+    );
+
+    assert!(matches!(
+        SharedPackageLinkedImage::from_runtime_assembly(
+            &assembly,
+            vec![
+                hydration(caller, caller_file),
+                hydration(dependency, dependency_file),
+            ],
+        ),
+        Err(SharedPackageImageError::PackageRequirementBuildMismatch {
+            expected,
+            actual,
+            ..
+        }) if expected == build_id("stale-dependency-build")
+            && actual == build_id("current-dependency-build")
+    ));
+}
+
+#[test]
 fn assembly_execution_missing_callable_is_rejected_while_validating_linked_call_sites() {
     let missing = callable_id("missing");
     let mut caller_file = file("file:caller", "caller.main");
@@ -748,6 +784,7 @@ fn package_requirement(
         package_id: package_id.to_string(),
         exact_version: "1.0.0".to_string(),
         expected_local_abi: local_abi(local_abi_identity),
+        expected_package_build: None,
     }
 }
 

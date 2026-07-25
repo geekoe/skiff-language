@@ -558,6 +558,7 @@ fn base_package(
             package_id: dependency.package_id.clone(),
             exact_version: dependency.package_version.clone(),
             expected_local_abi: dependency.package_local_abi.local_abi_identity.clone(),
+            expected_package_build: None,
         })
         .collect();
     let contract_requirements = service_dependencies

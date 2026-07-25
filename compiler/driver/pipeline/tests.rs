@@ -74,6 +74,52 @@ fn callable_only_std_reference_adds_exact_requirement() {
 }
 
 #[test]
+fn native_signature_package_type_adds_exact_std_requirement() {
+    let std_artifact = canonical_artifact(SKIFF_STD_PUBLICATION_ID, "2.1.0");
+    let mut file = FileIrUnit::empty("main", "source");
+    file.external_refs.native_targets.push(NativeTarget {
+        namespace: "std.time".to_string(),
+        symbol: "sleep".to_string(),
+        binding_key: Some("std.time.sleep".to_string()),
+        metadata: BTreeMap::new(),
+    });
+
+    let requirements = complete_package_requirement_closure(
+        "example.com/app",
+        Vec::new(),
+        std::slice::from_ref(&file),
+        std::slice::from_ref(&std_artifact),
+    )
+    .unwrap();
+
+    assert_eq!(requirements.len(), 1);
+    assert_eq!(requirements[0].alias, "std");
+    assert_eq!(requirements[0].package_id, SKIFF_STD_PUBLICATION_ID);
+    assert_eq!(requirements[0].exact_version, "2.1.0");
+    assert_eq!(
+        requirements[0].expected_local_abi,
+        std_artifact.package_local_abi.local_abi_identity
+    );
+}
+
+#[test]
+fn native_signature_without_package_types_does_not_add_std_requirement() {
+    let mut file = FileIrUnit::empty("main", "source");
+    file.external_refs.native_targets.push(NativeTarget {
+        namespace: "std.crypto".to_string(),
+        symbol: "uuid".to_string(),
+        binding_key: Some("std.crypto.uuid".to_string()),
+        metadata: BTreeMap::new(),
+    });
+
+    assert!(
+        complete_package_requirement_closure("example.com/app", Vec::new(), &[file], &[])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn unused_std_and_std_self_do_not_add_requirements() {
     let unused = FileIrUnit::empty("main", "source");
     assert!(
@@ -178,6 +224,7 @@ fn exact_package_schema_batch_rejects_missing_version_build_and_abi_mismatch() {
         package_id: artifact.package_id.clone(),
         exact_version: artifact.package_version.clone(),
         expected_local_abi: artifact.package_local_abi.local_abi_identity.clone(),
+        expected_package_build: None,
     };
     let schema = ResolvedPackageSchema::new(
         requirement.alias.clone(),

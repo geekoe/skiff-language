@@ -1213,6 +1213,13 @@ impl<'a> FunctionLowerer<'a> {
         expected_target: Option<&TypeRefIr>,
     ) -> Result<ExprRefIr> {
         let expression_key = self.next_expression_key();
+        if let Some(symbol) = expr_path(expr)
+            .and_then(|path| self.type_resolution.resolve_package_constant(&path))
+            .map(|constant| constant.symbol.clone())
+        {
+            self.consume_static_package_value_descendants(expr)?;
+            return Ok(self.push_expr(ExprIr::LoadPackageConst { symbol }));
+        }
         let lowered = match expr {
             Expr::Literal(literal) => ExprIr::Literal {
                 value: lower_literal(literal)?,
@@ -1336,6 +1343,17 @@ impl<'a> FunctionLowerer<'a> {
             Expr::DbLeaseRead(read) => self.lower_db_lease_read(read)?,
         };
         Ok(self.push_expr(lowered))
+    }
+
+    fn consume_static_package_value_descendants(&mut self, expr: &Expr) -> Result<()> {
+        match expr {
+            Expr::Field { object, .. } => self.consume_static_callee_expression_keys(object),
+            Expr::Generic { callee, .. } => self.consume_static_callee_expression_keys(callee),
+            Expr::Identifier(_) | Expr::DependencySourceAddress(_) => Ok(()),
+            _ => Err(CompileError::Semantic(
+                "package constant does not have a static dependency source path".to_string(),
+            )),
+        }
     }
 
     fn lower_patch_expr(

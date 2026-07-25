@@ -341,8 +341,6 @@ impl<'a> EvalContext<'a> {
                     }
                     LinkedCallTarget::ActivationRelativeService { instruction } => {
                         TestEffectTarget::contract_operation(
-                            instruction.caller_package_build_id().clone(),
-                            instruction.service_requirement_slot(),
                             instruction.operation_id().clone(),
                             instruction.expected_protocol_identity().clone(),
                         )
@@ -634,6 +632,14 @@ impl<'a> EvalContext<'a> {
                     )
                     .await
             }
+            LinkedExprIr::LoadConstAddress { const_addr } => {
+                self.interpreter
+                    .eval_program_const_addr(self.context.clone(), self.heap, self.env, const_addr)
+                    .await
+            }
+            LinkedExprIr::LoadPackageConst { .. } => Err(RuntimeError::InvalidArtifact(
+                "unlinked package constant reached evaluation".to_string(),
+            )),
             LinkedExprIr::Throw {
                 value,
                 payload_type,
@@ -1188,8 +1194,6 @@ impl<'a> EvalContext<'a> {
             LinkedCallTarget::ActivationRelativeService { instruction } => {
                 if self.interpreter.test_effects_enabled {
                     let effect_target = TestEffectTarget::contract_operation(
-                        instruction.caller_package_build_id().clone(),
-                        instruction.service_requirement_slot(),
                         instruction.operation_id().clone(),
                         instruction.expected_protocol_identity().clone(),
                     );

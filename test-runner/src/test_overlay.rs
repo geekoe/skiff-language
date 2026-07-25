@@ -35,8 +35,9 @@ use thiserror::Error;
 use crate::{
     canonical_fixture::PackageTestCase,
     canonical_package::{
-        compile_package_artifact_with_store, package_aliases, read_root_package_manifest,
-        CanonicalPackageProject, CanonicalPackageProjectError,
+        compile_package_artifact_with_store, package_aliases, read_compiled_dependency_closure,
+        read_optional_platform_std, read_root_package_manifest, CanonicalPackageProject,
+        CanonicalPackageProjectError,
     },
 };
 
@@ -51,6 +52,7 @@ pub struct PackageTestOverlayBinding {
 pub struct PublishedPackageTestOverlay {
     pub production: PackageArtifactRef,
     pub overlay: PublishedPackageArtifact,
+    pub dependency_packages: Vec<skiff_artifact_model::PackageArtifact>,
     pub bindings: Vec<PackageTestOverlayBinding>,
 }
 
@@ -88,6 +90,7 @@ pub fn compile_package_test_overlay(
         build_overlay_source(platform_sources, package_root, cases, production.clone())?;
     let store = CanonicalArtifactStore::open(artifact_root)?;
     let overlay = compile_overlay_artifact(platform_sources, project, &manifest, &source, &store)?;
+    let dependency_packages = read_compiled_dependency_closure(&store, &overlay.artifact)?;
     let bindings = overlay_bindings(cases, &overlay)?;
     if package_artifact_ref(&project.package.artifact)
         .map_err(|error| PackageTestOverlayError::Invalid(error.to_string()))?
@@ -100,6 +103,7 @@ pub fn compile_package_test_overlay(
     Ok(PublishedPackageTestOverlay {
         production,
         overlay,
+        dependency_packages,
         bindings,
     })
 }
@@ -215,7 +219,8 @@ fn compile_overlay_artifact(
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let available = project.artifacts().cloned().collect::<Vec<_>>();
+    let mut available = project.artifacts().cloned().collect::<Vec<_>>();
+    read_optional_platform_std(store, &mut available)?;
     Ok(compile_package_artifact_with_store(
         platform_sources,
         source,
@@ -224,6 +229,7 @@ fn compile_overlay_artifact(
         &available,
         &project.contract_dependencies,
         Some(store),
+        project.test_service_profile.is_some(),
     )?)
 }
 

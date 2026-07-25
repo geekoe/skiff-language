@@ -57,6 +57,10 @@ fn validate_package_links(
             if provider.package_id != requirement.package_id
                 || provider.package_version != requirement.exact_version
                 || provider.package_local_abi_identity != requirement.expected_local_abi
+                || requirement
+                    .expected_package_build
+                    .as_ref()
+                    .is_some_and(|expected| expected != &provider.package_build_id)
             {
                 anyhow::bail!(
                     "package {} requirement {} link-plan target mismatches coordinate/local ABI",
@@ -351,6 +355,10 @@ fn activation_package_closure(
             if provider.package_id != requirement.package_id
                 || provider.package_version != requirement.exact_version
                 || provider.package_local_abi_identity != requirement.expected_local_abi
+                || requirement
+                    .expected_package_build
+                    .as_ref()
+                    .is_some_and(|expected| expected != &provider.package_build_id)
             {
                 anyhow::bail!(
                     "activation {activation:?} package requirement {key:?} binding mismatches coordinate/local ABI"

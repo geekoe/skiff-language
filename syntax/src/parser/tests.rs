@@ -1888,6 +1888,23 @@ interface ToolProvider {
   function list(self: Self) -> Array<string>
 }
 
+#[test]
+fn parses_dependency_source_type_annotations_with_slash() {
+    let source = parse_source(
+        "function roundTrip(value: widget/internal.codec.Private) -> widget/internal.codec.Private { return value }",
+    )
+    .unwrap();
+    let function = &source.functions[0];
+    assert_eq!(
+        function.params[0].ty.name,
+        "widget/internal.codec.Private"
+    );
+    assert_eq!(
+        function.return_type.name,
+        "widget/internal.codec.Private"
+    );
+}
+
 function useProvider(
   provider: any ToolProvider,
   mapper: fn(input: any ToolProvider) -> any ToolProvider

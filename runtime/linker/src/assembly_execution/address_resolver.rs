@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use skiff_artifact_model::{PackageBuildId, PackageRefIr};
 use skiff_runtime_linked_program::{
-    ExecutableAddr, FileAddr, LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedFileUnit,
-    PackageCodeSlotIndex, ServiceSymbolRef, TypeAddr, UnitAddr,
+    ConstAddr, ExecutableAddr, FileAddr, LinkedActorDeclaration, LinkedActorDeclarationOwner,
+    LinkedFileUnit, PackageCodeSlotIndex, ServiceSymbolRef, TypeAddr, UnitAddr,
 };
 
 pub(super) struct AssemblyAddressResolver<'a> {
@@ -229,6 +229,34 @@ impl<'a> AssemblyAddressResolver<'a> {
         self.type_export_addr(dependency_slot, &export.file, export.type_index as usize)
     }
 
+    pub(super) fn package_symbol_const_addr(
+        &self,
+        caller_slot: usize,
+        symbol: &skiff_runtime_linked_program::PackageSymbolRef,
+    ) -> anyhow::Result<ConstAddr> {
+        let dependency_slot = self.resolve_package_ref(caller_slot, &symbol.package)?;
+        let code = self
+            .shared
+            .code_by_slot(PackageCodeSlotIndex::new(dependency_slot))
+            .expect("resolved package ref returns a loaded code slot");
+        if symbol
+            .abi_expectation
+            .as_deref()
+            .is_some_and(|expected| expected != code.local_abi_identity().as_str())
+        {
+            anyhow::bail!("package symbol local ABI expectation mismatches linked package");
+        }
+        let export = code
+            .artifact()
+            .implementation_links
+            .constants
+            .get(&symbol.symbol_path)
+            .ok_or_else(|| {
+                anyhow::anyhow!("package constant {} is not exported", symbol.symbol_path)
+            })?;
+        self.const_export_addr(dependency_slot, &export.file, export.const_index as usize)
+    }
+
     pub(super) fn validate_executable_addr(&self, addr: &ExecutableAddr) -> anyhow::Result<()> {
         let UnitAddr::Package(code_slot) = addr.unit else {
             anyhow::bail!("assembly execution address cannot use a service unit");
@@ -378,6 +406,38 @@ impl<'a> AssemblyAddressResolver<'a> {
             anyhow::bail!("type export File IR ref does not exactly match loaded code");
         }
         self.type_addr(code_slot, file_index, type_index)
+    }
+
+    fn const_export_addr(
+        &self,
+        code_slot: usize,
+        file_ref: &skiff_artifact_model::FileIrRef,
+        const_index: usize,
+    ) -> anyhow::Result<ConstAddr> {
+        let files = self.package_files(code_slot)?;
+        let mut matches = files
+            .iter()
+            .enumerate()
+            .filter(|(_, file)| file.file_ir_identity == file_ref.file_ir_identity);
+        let (file_index, file) = matches
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("constant export file is not loaded"))?;
+        if matches.next().is_some()
+            || file.module_path != file_ref.module_path
+            || file_ref
+                .source_ast_hash
+                .as_deref()
+                .is_some_and(|hash| hash != file.source_ast_hash)
+        {
+            anyhow::bail!("constant export File IR ref does not exactly match loaded code");
+        }
+        let addr = ConstAddr {
+            unit: UnitAddr::Package(code_slot),
+            file: FileAddr::LoadedFileIndex(file_index),
+            const_index,
+        };
+        self.validate_const_addr(&addr)?;
+        Ok(addr)
     }
 
     fn unique_module_file(

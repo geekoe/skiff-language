@@ -8,13 +8,13 @@ import {
   inspectHostFixture,
 } from '../lib/platform-source-probe-host-evidence.mjs';
 
-const assertionPath = '/owned/b/test-runner/fixtures/package-service-host/consumer/main.test.skiff';
+const assertionPath = '/owned/b/test-runner/fixtures/package-service-host/consumer-tests/main.test.skiff';
 const testName = 'provider observes helper mutation';
 const finalValue = 'provider-observed-helper-mutated';
 const actualPassLine = `PASS main.__test::${testName}`;
 const validFixtureSource = [
   `test "${testName}" {`,
-  `  assert root.main.run() == "${finalValue}"`,
+  `  assert subject/main.run() == "${finalValue}"`,
   '}',
   '',
 ].join('\n');
@@ -49,7 +49,7 @@ const v6HostAttemptFields = [
 test('fixture guard owns the exact test and sole reachable final-value assertion', () => {
   assert.deepEqual(inspectHostFixture(validFixtureSource, assertionPath), {
     assertionPath,
-    assertion: `assert root.main.run() == "${finalValue}"`,
+    assertion: `assert subject/main.run() == "${finalValue}"`,
     testName,
     expectedFinalValue: finalValue,
   });
@@ -58,7 +58,7 @@ test('fixture guard owns the exact test and sole reachable final-value assertion
     validFixtureSource.replace(testName, 'wrong observation'),
     validFixtureSource.replace(finalValue, 'wrong-value'),
     validFixtureSource.replace('}', '  assert true\n}'),
-    validFixtureSource.replace('assert root.main.run()', 'if false { assert root.main.run()'),
+    validFixtureSource.replace('assert subject/main.run()', 'if false { assert subject/main.run()'),
   ]) {
     assert.throws(() => inspectHostFixture(source, assertionPath));
   }
@@ -77,12 +77,13 @@ test('actual runtime PASS identity and fixture assertion jointly project final v
   assert.equal(completed.exactPassLineCount, 1);
   assert.deepEqual(completed.sourceSuite, {
     std: { passed: 11, total: 11 },
-    host: { passed: 1, total: 1 },
+    aliasReturnCatchOnce: { passed: 6, total: 6 },
+    host: { passed: 4, total: 4 },
     finalValue,
     finalValueEvidence: {
       passLine: actualPassLine,
       assertionPath,
-      assertion: `assert root.main.run() == "${finalValue}"`,
+      assertion: `assert subject/main.run() == "${finalValue}"`,
     },
   });
   assert.deepEqual(completed.passLines, [
@@ -170,7 +171,8 @@ test('command outcome, exact result counts, process evidence, and port evidence 
     ['nonzero', { outcome: { code: 7 }, evidence: evidencePresent }, 'command-outcome'],
     ['signal', { outcome: { code: null, signal: 'SIGTERM' }, evidence: evidencePresent }, 'command-outcome'],
     ['wrong std count', { outcome: { std: 'test result: ok. 10 passed; 0 failed' }, evidence: evidencePresent }, 'result-counts'],
-    ['wrong Host count', { outcome: { host: 'test result: ok. 0 passed; 1 failed' }, evidence: evidencePresent }, 'result-counts'],
+    ['wrong alias count', { outcome: { alias: 'test result: ok. 5 passed; 0 failed' }, evidence: evidencePresent }, 'result-counts'],
+    ['wrong Host count', { outcome: { host: 'test result: ok. 0 passed; 4 failed' }, evidence: evidencePresent }, 'result-counts'],
     ['extra result', { outcome: { extra: 'test result: ok. 1 passed; 0 failed' }, evidence: evidencePresent }, 'result-counts'],
     ['missing process', { outcome: {}, evidence: { ...evidencePresent, processEvidencePresent: false } }, 'missing-process-evidence'],
     ['missing port', { outcome: {}, evidence: { ...evidencePresent, portEvidencePresent: false } }, 'missing-port-evidence'],
@@ -198,7 +200,8 @@ function hostOutcome(passLines, {
   code = 0,
   signal = null,
   std = 'test result: ok. 11 passed; 0 failed',
-  host = 'test result: ok. 1 passed; 0 failed',
+  alias = 'test result: ok. 6 passed; 0 failed',
+  host = 'test result: ok. 4 passed; 0 failed',
   extra = null,
   beforeStd = [],
   afterHost = [],
@@ -211,6 +214,7 @@ function hostOutcome(passLines, {
     stdout: [
       ...beforeStd,
       std,
+      alias,
       ...passLines,
       host,
       ...afterHost,

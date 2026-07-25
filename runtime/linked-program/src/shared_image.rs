@@ -854,6 +854,15 @@ fn validate_requirement_binding(
             },
         );
     }
+    if let Some(expected) = &requirement.expected_package_build {
+        if expected != &dependency.package_build_id {
+            return Err(SharedPackageImageError::PackageRequirementBuildMismatch {
+                key,
+                expected: expected.clone(),
+                actual: dependency.package_build_id.clone(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -995,6 +1004,11 @@ pub enum SharedPackageImageError {
         key: PackageRequirementKey,
         expected: PackageLocalAbiIdentity,
         actual: PackageLocalAbiIdentity,
+    },
+    PackageRequirementBuildMismatch {
+        key: PackageRequirementKey,
+        expected: PackageBuildId,
+        actual: PackageBuildId,
     },
     PackageLinkTargetRefMismatch {
         key: PackageRequirementKey,

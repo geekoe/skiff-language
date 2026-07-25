@@ -4,14 +4,15 @@ use std::{
     time::SystemTime,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{package_artifact_ref, service_contract_ref, service_deployment_ref};
 use skiff_artifact_model::{
     ActivationPolicy, BoundaryCallableProjection, ConfigLiteralBinding, DeploymentDiagnosticText,
     DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision, IngressProtocol,
     IngressSelector, MetadataValue, PackageArtifact, PackageArtifactRef, PackageBinding,
-    PackageRequirementKey, ResourcePolicy, ServiceContract, ServiceContractRef, ServiceDeployment,
+    PackageRequirementKey, ResourceBinding, ResourcePolicy, RuntimeCapabilityBinding,
+    SecretRefBinding, ServiceContract, ServiceContractRef, ServiceDeployment,
     ServiceDeploymentInput, ServiceDeploymentOperationInput, ServiceRequirementKey,
     ServiceSelectorBinding, StateBinding, StateBindingKind,
     SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
@@ -51,12 +52,12 @@ pub struct CanonicalPackageTestFixture {
     pub entrypoints: Vec<CanonicalPackageTestEntrypoint>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PackageTestConfigLiteral {
-    pub package: PackageArtifactRef,
-    pub key: String,
-    pub value: MetadataValue,
+#[derive(Debug, Clone)]
+struct SelectedProfileBindings {
+    config_literals: Vec<ConfigLiteralBinding>,
+    secret_refs: Vec<SecretRefBinding>,
+    resource_bindings: Vec<ResourceBinding>,
+    policy: DeploymentPolicy,
 }
 
 pub fn assemble_package_test_fixture(
@@ -64,30 +65,14 @@ pub fn assemble_package_test_fixture(
     overlay: PublishedPackageTestOverlay,
     base: CanonicalBaseAssembly,
 ) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
-    assemble_package_test_fixture_with_config(project, overlay, base, &[])
-}
-
-pub fn assemble_package_test_fixture_with_config(
-    project: &CanonicalPackageProject,
-    overlay: PublishedPackageTestOverlay,
-    base: CanonicalBaseAssembly,
-    test_config_literals: &[PackageTestConfigLiteral],
-) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
     let scope = format!("fixture:{}", overlay.overlay.artifact.package_build_id);
-    assemble_package_test_fixture_for_run_with_config(
-        project,
-        overlay,
-        base,
-        test_config_literals,
-        &scope,
-    )
+    assemble_package_test_fixture_for_run(project, overlay, base, &scope)
 }
 
-pub fn assemble_package_test_fixture_for_run_with_config(
+pub fn assemble_package_test_fixture_for_run(
     project: &CanonicalPackageProject,
     overlay: PublishedPackageTestOverlay,
     base: CanonicalBaseAssembly,
-    test_config_literals: &[PackageTestConfigLiteral],
     run_scope: &str,
 ) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
     let assembly_nonce = package_test_assembly_nonce()?;
@@ -97,17 +82,14 @@ pub fn assemble_package_test_fixture_for_run_with_config(
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
 
     let mut deployment_packages = vec![overlay.overlay.artifact.clone()];
-    deployment_packages.extend(project.dependency_packages.iter().cloned());
+    deployment_packages.extend(overlay.dependency_packages.iter().cloned());
     let package_bindings = canonical_package_bindings(&deployment_packages)?;
     let service_selectors = package_test_service_selectors(&deployment_packages, &base)?;
     let owner = binding_owner(&base, &production_ref)?;
-    let config_literals = package_test_config_literals(
-        &deployment_packages,
-        &production_ref,
-        &overlay_ref,
-        owner,
-        test_config_literals,
-    )?;
+    let state_requirements = package_test_state_requirements(&deployment_packages)?;
+    let profile_bindings = selected_profile_bindings(project, &state_requirements, owner)?;
+    let runtime_capability_bindings =
+        selected_runtime_capability_bindings(project, &deployment_packages, owner);
     let mut contracts = Vec::with_capacity(overlay.bindings.len());
     let mut deployments = Vec::with_capacity(overlay.bindings.len());
     let mut entrypoints = Vec::with_capacity(overlay.bindings.len());
@@ -119,7 +101,7 @@ pub fn assemble_package_test_fixture_for_run_with_config(
         let (operation_bindings, ingress) =
             package_test_operation_inputs(&contract, index, binding)?;
         let case_scope = package_test_case_scope(run_scope, &assembly_nonce, index, &binding.case);
-        let state_bindings = package_test_state_bindings(&deployment_packages, &case_scope)?;
+        let state_bindings = package_test_state_bindings(&state_requirements, &case_scope)?;
         let deployment = project_service_deployment(
             package_test_deployment_input(
                 &overlay,
@@ -129,9 +111,9 @@ pub fn assemble_package_test_fixture_for_run_with_config(
                 package_bindings.clone(),
                 service_selectors.clone(),
                 ingress.clone(),
-                owner,
-                config_literals.clone(),
+                profile_bindings.clone(),
                 state_bindings,
+                runtime_capability_bindings.clone(),
             ),
             &contract,
             &deployment_packages,
@@ -409,9 +391,9 @@ fn package_test_deployment_input(
     package_bindings: Vec<PackageBinding>,
     service_selectors: Vec<ServiceSelectorBinding>,
     ingress: Vec<DeploymentIngressBinding>,
-    owner: Option<&ServiceDeployment>,
-    config_literals: Vec<ConfigLiteralBinding>,
+    profile_bindings: SelectedProfileBindings,
     state_bindings: Vec<StateBinding>,
+    runtime_capability_bindings: Vec<RuntimeCapabilityBinding>,
 ) -> ServiceDeploymentInput {
     let revision = implementation
         .package_build_id
@@ -419,6 +401,12 @@ fn package_test_deployment_input(
         .rsplit(':')
         .next()
         .unwrap_or("overlay");
+    let SelectedProfileBindings {
+        config_literals,
+        secret_refs,
+        resource_bindings,
+        policy,
+    } = profile_bindings;
     ServiceDeploymentInput {
         schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
         contract,
@@ -429,28 +417,11 @@ fn package_test_deployment_input(
         service_selectors,
         ingress,
         config_literals,
-        secret_refs: owner
-            .map(|value| value.secret_refs.clone())
-            .unwrap_or_default(),
+        secret_refs,
         state_bindings,
-        resource_bindings: owner
-            .map(|value| value.resource_bindings.clone())
-            .unwrap_or_default(),
-        runtime_capability_bindings: owner
-            .map(|value| value.runtime_capability_bindings.clone())
-            .unwrap_or_default(),
-        policy: DeploymentPolicy {
-            timeout_ms: Some(30_000),
-            resources: ResourcePolicy {
-                cpu_millis: 100,
-                memory_bytes: 64 * 1024 * 1024,
-            },
-            activation: ActivationPolicy {
-                max_concurrency: 1,
-                idle_timeout_ms: None,
-            },
-            principal: "test:package-runner".to_string(),
-        },
+        resource_bindings,
+        runtime_capability_bindings,
+        policy,
         diagnostic_text: DeploymentDiagnosticText {
             display_name: format!("package tests for {}", overlay.production.package_id),
             notes: BTreeMap::from([
@@ -462,15 +433,9 @@ fn package_test_deployment_input(
     }
 }
 
-fn package_test_state_bindings(
+fn package_test_state_requirements(
     packages: &[PackageArtifact],
-    run_scope: &str,
-) -> Result<Vec<StateBinding>, CanonicalFixtureError> {
-    if run_scope.is_empty() {
-        return Err(CanonicalFixtureError::InvalidInput(
-            "package-test state run scope must be non-empty".to_string(),
-        ));
-    }
+) -> Result<BTreeMap<String, StateBindingKind>, CanonicalFixtureError> {
     let mut requirements = BTreeMap::<String, StateBindingKind>::new();
     for package in packages {
         for requirement in &package.runtime_requirements.state {
@@ -488,12 +453,24 @@ fn package_test_state_bindings(
             }
         }
     }
+    Ok(requirements)
+}
+
+fn package_test_state_bindings(
+    requirements: &BTreeMap<String, StateBindingKind>,
+    run_scope: &str,
+) -> Result<Vec<StateBinding>, CanonicalFixtureError> {
+    if run_scope.is_empty() {
+        return Err(CanonicalFixtureError::InvalidInput(
+            "package-test state run scope must be non-empty".to_string(),
+        ));
+    }
     Ok(requirements
-        .into_iter()
+        .iter()
         .map(|(requirement_key, kind)| StateBinding {
-            namespace: package_test_state_namespace(run_scope, &requirement_key, kind),
-            requirement_key,
-            kind,
+            namespace: package_test_state_namespace(run_scope, requirement_key, *kind),
+            requirement_key: requirement_key.clone(),
+            kind: *kind,
         })
         .collect())
 }
@@ -541,133 +518,229 @@ fn package_test_state_namespace(
     format!("skiff_pt_{}", &hash[..40])
 }
 
-fn package_test_config_literals(
-    packages: &[PackageArtifact],
-    production: &PackageArtifactRef,
-    overlay: &PackageArtifactRef,
+/// Project the ordinary profile bindings that may be shared by every case.
+///
+/// State keys/kinds are validated separately; the runner replaces authored
+/// namespaces with fresh per-case namespaces after that validation.
+fn selected_profile_bindings(
+    project: &CanonicalPackageProject,
+    state_requirements: &BTreeMap<String, StateBindingKind>,
     owner: Option<&ServiceDeployment>,
-    supplied: &[PackageTestConfigLiteral],
-) -> Result<Vec<ConfigLiteralBinding>, CanonicalFixtureError> {
-    let package_by_ref = packages
-        .iter()
-        .map(|package| {
-            package_artifact_ref(package)
-                .map(|reference| (reference, package))
-                .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let mut supplied_by_key = BTreeMap::new();
-    for literal in supplied {
-        let effective_package = if &literal.package == production {
-            overlay.clone()
-        } else {
-            literal.package.clone()
-        };
-        let exact_key = (effective_package.clone(), literal.key.clone());
-        if supplied_by_key.insert(exact_key, literal).is_some() {
-            return Err(CanonicalFixtureError::InvalidInput(format!(
-                "test config literal repeats exact package requirement {} {}",
-                effective_package.package_build_id, literal.key
-            )));
-        }
-        let package = package_by_ref.get(&effective_package).ok_or_else(|| {
-            CanonicalFixtureError::InvalidInput(format!(
-                "test config literal names package {} outside the exact deployment closure",
-                literal.package.package_build_id
-            ))
-        })?;
-        let requirement = package
-            .runtime_requirements
-            .config
-            .iter()
-            .find(|requirement| requirement.path == literal.key)
-            .ok_or_else(|| {
-                CanonicalFixtureError::InvalidInput(format!(
-                    "test config literal names unknown requirement {} for package {}",
-                    literal.key, effective_package.package_build_id
-                ))
-            })?;
-        validate_test_literal_type(requirement.value_type.as_str(), &literal.value).map_err(
-            |actual| {
-                CanonicalFixtureError::InvalidInput(format!(
-                    "test config literal {} for package {} must be {}, got {actual}",
-                    literal.key, effective_package.package_build_id, requirement.value_type
-                ))
-            },
-        )?;
-    }
-
-    let mut projected = owner
-        .map(|deployment| deployment.config_literals.clone())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|literal| (literal.path.clone(), literal))
-        .collect::<BTreeMap<_, _>>();
-    let inherited_secret_paths = owner
-        .into_iter()
-        .flat_map(|deployment| &deployment.secret_refs)
-        .map(|binding| binding.path.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    for literal in supplied {
-        if inherited_secret_paths.contains(literal.key.as_str()) {
-            return Err(CanonicalFixtureError::InvalidInput(format!(
-                "test config literal {} conflicts with the exact base-assembly secret binding",
-                literal.key
-            )));
-        }
-        match projected.get(&literal.key) {
-            Some(inherited) if inherited.value != literal.value => {
-                return Err(CanonicalFixtureError::InvalidInput(format!(
-                    "test config literal {} conflicts with the exact base-assembly binding",
-                    literal.key
-                )));
-            }
-            Some(_) => {}
-            None => {
-                projected.insert(
-                    literal.key.clone(),
-                    ConfigLiteralBinding {
-                        path: literal.key.clone(),
-                        value: literal.value.clone(),
-                    },
-                );
-            }
-        }
-    }
-    for (package_ref, package) in &package_by_ref {
-        for requirement in &package.runtime_requirements.config {
-            if requirement.required
-                && !projected.contains_key(&requirement.path)
-                && !inherited_secret_paths.contains(requirement.path.as_str())
-            {
-                return Err(CanonicalFixtureError::InvalidInput(format!(
-                    "required test config literal {} for package {} is missing",
-                    requirement.path, package_ref.package_build_id
-                )));
-            }
-        }
-    }
-    Ok(projected.into_values().collect())
+) -> Result<SelectedProfileBindings, CanonicalFixtureError> {
+    let Some(test_service) = &project.test_service_profile else {
+        return Ok(owner
+            .map(|deployment| SelectedProfileBindings {
+                config_literals: deployment.config_literals.clone(),
+                secret_refs: deployment.secret_refs.clone(),
+                resource_bindings: deployment.resource_bindings.clone(),
+                policy: deployment.policy.clone(),
+            })
+            .unwrap_or_else(default_package_test_policy));
+    };
+    let config = profile_map::<serde_json::Value>(test_service, "config")?;
+    let secrets = profile_map::<String>(test_service, "secrets")?;
+    let resources = profile_map::<TestResourceAuthoring>(test_service, "resources")?;
+    let states = profile_map::<TestStateAuthoring>(test_service, "state")?;
+    validate_test_service_states(test_service, state_requirements, &states)?;
+    Ok(SelectedProfileBindings {
+        config_literals: config
+            .into_iter()
+            .map(|(path, value)| ConfigLiteralBinding {
+                path,
+                value: MetadataValue::from_json(value),
+            })
+            .collect(),
+        secret_refs: secrets
+            .into_iter()
+            .map(|(path, secret_ref)| SecretRefBinding { path, secret_ref })
+            .collect(),
+        resource_bindings: resources
+            .into_iter()
+            .map(|(requirement_key, binding)| ResourceBinding {
+                requirement_key,
+                capability: binding.capability,
+                resource_ref: binding.resource_ref,
+            })
+            .collect(),
+        policy: test_service_policy(test_service)?,
+    })
 }
 
-fn validate_test_literal_type(value_type: &str, value: &MetadataValue) -> Result<(), &'static str> {
-    let actual = match value {
-        MetadataValue::String(_) => "string",
-        MetadataValue::Number(_) => "number",
-        MetadataValue::Bool(_) => "bool",
-        MetadataValue::Array(_) => "json",
-        MetadataValue::Object(_) => "jsonObject",
-        MetadataValue::Null => "json",
+fn default_package_test_policy() -> SelectedProfileBindings {
+    SelectedProfileBindings {
+        config_literals: Vec::new(),
+        secret_refs: Vec::new(),
+        resource_bindings: Vec::new(),
+        policy: DeploymentPolicy {
+            timeout_ms: Some(30_000),
+            resources: ResourcePolicy {
+                cpu_millis: 100,
+                memory_bytes: 64 * 1024 * 1024,
+            },
+            activation: ActivationPolicy {
+                max_concurrency: 1,
+                idle_timeout_ms: None,
+            },
+            principal: "test:package-runner".to_string(),
+        },
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TestStateAuthoring {
+    kind: StateBindingKind,
+    namespace: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TestResourceAuthoring {
+    capability: String,
+    resource_ref: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TestQuotaAuthoring {
+    cpu_millis: u32,
+    memory_bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TestLifecycleAuthoring {
+    max_concurrency: u32,
+    #[serde(default)]
+    idle_timeout_ms: Option<u64>,
+}
+
+fn profile_map<T: for<'de> Deserialize<'de>>(
+    test_service: &crate::canonical_package::CanonicalTestServiceProfile,
+    field: &'static str,
+) -> Result<BTreeMap<String, T>, CanonicalFixtureError> {
+    let value = match field {
+        "config" => &test_service.authoring.config,
+        "secrets" => &test_service.authoring.secrets,
+        "state" => &test_service.authoring.state,
+        "resources" => &test_service.authoring.resources,
+        _ => unreachable!("profile map field is compiler-owned"),
     };
-    let valid = match value_type {
-        "string" => matches!(value, MetadataValue::String(_)),
-        "number" => matches!(value, MetadataValue::Number(_)),
-        "bool" => matches!(value, MetadataValue::Bool(_)),
-        "json" => true,
-        "jsonObject" => matches!(value, MetadataValue::Object(_)),
-        _ => false,
+    if value.is_null() {
+        return Ok(BTreeMap::new());
+    }
+    serde_json::from_value(value.clone()).map_err(|error| {
+        CanonicalFixtureError::InvalidInput(format!(
+            "test service {} config.{}.yml field {field} must be a path-keyed object: {error}",
+            test_service.service_id, test_service.profile_name
+        ))
+    })
+}
+
+fn validate_test_service_states(
+    test_service: &crate::canonical_package::CanonicalTestServiceProfile,
+    expected: &BTreeMap<String, StateBindingKind>,
+    authored: &BTreeMap<String, TestStateAuthoring>,
+) -> Result<(), CanonicalFixtureError> {
+    for (key, kind) in expected {
+        let binding = authored.get(key).ok_or_else(|| {
+            CanonicalFixtureError::InvalidInput(format!(
+                "test service {} config.{}.yml is missing state binding {key}",
+                test_service.service_id, test_service.profile_name
+            ))
+        })?;
+        if &binding.kind != kind {
+            return Err(CanonicalFixtureError::InvalidInput(format!(
+                "test service {} config.{}.yml state binding {key} must be {kind:?}, got {:?}",
+                test_service.service_id, test_service.profile_name, binding.kind
+            )));
+        }
+        if binding.namespace.trim().is_empty() {
+            return Err(CanonicalFixtureError::InvalidInput(format!(
+                "test service {} config.{}.yml state binding {key} namespace must not be empty",
+                test_service.service_id, test_service.profile_name
+            )));
+        }
+    }
+    if let Some(key) = authored.keys().find(|key| !expected.contains_key(*key)) {
+        return Err(CanonicalFixtureError::InvalidInput(format!(
+            "test service {} config.{}.yml has extra state binding {key}",
+            test_service.service_id, test_service.profile_name
+        )));
+    }
+    Ok(())
+}
+
+fn test_service_policy(
+    test_service: &crate::canonical_package::CanonicalTestServiceProfile,
+) -> Result<DeploymentPolicy, CanonicalFixtureError> {
+    let quota = profile_value::<TestQuotaAuthoring>(test_service, "quota")?;
+    let lifecycle = profile_value::<TestLifecycleAuthoring>(test_service, "lifecycle")?;
+    let principal = profile_value::<String>(test_service, "principal")?;
+    let timeout_ms = if test_service.authoring.timeout.is_null() {
+        None
+    } else {
+        Some(profile_value::<u64>(test_service, "timeout")?)
     };
-    valid.then_some(()).ok_or(actual)
+    Ok(DeploymentPolicy {
+        timeout_ms,
+        resources: ResourcePolicy {
+            cpu_millis: quota.cpu_millis,
+            memory_bytes: quota.memory_bytes,
+        },
+        activation: ActivationPolicy {
+            max_concurrency: lifecycle.max_concurrency,
+            idle_timeout_ms: lifecycle.idle_timeout_ms,
+        },
+        principal,
+    })
+}
+
+fn profile_value<T: for<'de> Deserialize<'de>>(
+    test_service: &crate::canonical_package::CanonicalTestServiceProfile,
+    field: &'static str,
+) -> Result<T, CanonicalFixtureError> {
+    let value = match field {
+        "timeout" => &test_service.authoring.timeout,
+        "quota" => &test_service.authoring.quota,
+        "principal" => &test_service.authoring.principal,
+        "lifecycle" => &test_service.authoring.lifecycle,
+        _ => unreachable!("profile scalar field is compiler-owned"),
+    };
+    serde_json::from_value(value.clone()).map_err(|error| {
+        CanonicalFixtureError::InvalidInput(format!(
+            "test service {} config.{}.yml field {field} is invalid: {error}",
+            test_service.service_id, test_service.profile_name
+        ))
+    })
+}
+
+fn selected_runtime_capability_bindings(
+    project: &CanonicalPackageProject,
+    packages: &[PackageArtifact],
+    owner: Option<&ServiceDeployment>,
+) -> Vec<RuntimeCapabilityBinding> {
+    if project.test_service_profile.is_none() {
+        return owner
+            .map(|deployment| deployment.runtime_capability_bindings.clone())
+            .unwrap_or_default();
+    }
+    packages
+        .iter()
+        .flat_map(|package| &package.runtime_requirements.runtime_capabilities)
+        .map(|requirement| {
+            (
+                requirement.capability.clone(),
+                requirement.required_version.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>()
+        .into_iter()
+        .map(|(capability, version)| RuntimeCapabilityBinding {
+            capability,
+            version,
+        })
+        .collect()
 }
 
 fn unique_packages(

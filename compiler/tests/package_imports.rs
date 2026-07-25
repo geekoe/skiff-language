@@ -228,7 +228,19 @@ packages:
     .unwrap();
     fs::write(
         temp.path().join("main.skiff"),
-        "import widget\nfunction run() -> string { return widget/internal.codec.codec() }\n",
+        r#"
+import widget
+
+function run() -> string {
+  const seed: widget/internal.codec.PrivateValue = widget/internal.codec.PRIVATE_VALUE
+  const revealed: widget/internal.codec.PrivateValue = widget/internal.codec.reveal(seed)
+  return revealed.value
+}
+
+function construct() -> widget/internal.codec.PrivateValue {
+  return widget/internal.codec.PrivateValue { value: "constructed" }
+}
+"#,
     )
     .unwrap();
     let dependency = temp
@@ -243,12 +255,26 @@ packages:
     // The same path deliberately points at another implementation in api.yml.
     fs::write(
         dependency.join("api.yml"),
-        "internal:\n  codec:\n    codec: public_api.decoy\npublicOnly: public_api.decoy\n",
+        "internal:\n  codec:\n    reveal: public_api.decoy\npublicOnly: public_api.decoy\n",
     )
     .unwrap();
     fs::write(
         dependency.join("internal/codec.skiff"),
-        "function codec() -> string { return \"private\" }\n",
+        r#"
+type PrivateValue {
+  value: string
+}
+
+const PRIVATE_VALUE: PrivateValue = PrivateValue { value: "private" }
+
+function reveal(value: PrivateValue) -> PrivateValue {
+  return value
+}
+
+function privateOnly() -> string {
+  return "private-only"
+}
+"#,
     )
     .unwrap();
     fs::write(
@@ -258,6 +284,36 @@ packages:
     .unwrap();
 
     let project = compile_package_project(temp.path()).expect("top-level test service compiles");
+    let dependency_artifact = project
+        .dependency("example.com/widget", "1.0.0")
+        .expect("exact dependency artifact should be retained");
+    assert!(matches!(
+        dependency_artifact
+            .artifact
+            .package_local_abi
+            .implementation_symbols
+            .get("internal.codec.PrivateValue"),
+        Some(skiff_artifact_model::PackageLocalAbiSymbol::Type { .. })
+    ));
+    assert!(matches!(
+        dependency_artifact
+            .artifact
+            .package_local_abi
+            .implementation_symbols
+            .get("internal.codec.PRIVATE_VALUE"),
+        Some(skiff_artifact_model::PackageLocalAbiSymbol::Constant { .. })
+    ));
+    let requirement = project
+        .package
+        .artifact
+        .package_requirements
+        .iter()
+        .find(|requirement| requirement.alias == "widget")
+        .expect("top-level dependency requirement should exist");
+    assert_eq!(
+        requirement.expected_package_build.as_ref(),
+        Some(&dependency_artifact.artifact.package_build_id)
+    );
     let file = module_artifact(&project.package, "main");
     assert!(file
         .unit
@@ -266,8 +322,49 @@ packages:
         .iter()
         .any(|callable| {
             callable.package_callable_id.as_str()
-                == "pkg-callable:example.com/widget:top-level:internal.codec.codec"
+                == "pkg-callable:example.com/widget:top-level:internal.codec.reveal"
         }));
+    assert!(file.unit.executables.iter().any(|executable| {
+        executable.body.expressions.iter().any(|expression| {
+            matches!(
+                expression,
+                skiff_artifact_model::ExprIr::LoadPackageConst { symbol }
+                    if symbol.symbol_path == "internal.codec.PRIVATE_VALUE"
+                        && symbol.abi_expectation.as_deref()
+                            == Some(
+                                dependency_artifact
+                                    .artifact
+                                    .package_local_abi
+                                    .local_abi_identity
+                                    .as_str()
+                            )
+            )
+        })
+    }));
+    let construct = file
+        .unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol.ends_with(".construct"))
+        .expect("construct executable should be lowered");
+    assert!(matches!(
+        &construct.return_type,
+        skiff_artifact_model::TypeRefIr::PackageSymbol { symbol }
+            if matches!(
+                &symbol.package,
+                skiff_artifact_model::PackageRefIr::Dependency { dependency_ref }
+                    if dependency_ref == "widget"
+            )
+                && symbol.symbol_path == "internal.codec.PrivateValue"
+                && symbol.abi_expectation.as_deref()
+                    == Some(
+                        dependency_artifact
+                            .artifact
+                            .package_local_abi
+                            .local_abi_identity
+                            .as_str()
+                    )
+    ));
 
     fs::write(
         temp.path().join("main.skiff"),
@@ -279,6 +376,43 @@ packages:
         .to_string();
     assert!(
         error.contains("has no callable public path `publicOnly`"),
+        "{error}"
+    );
+
+    fs::write(
+        temp.path().join("main.skiff"),
+        "import widget\nfunction bad(value: widget.internal.codec.PrivateValue) -> string { return value.value }\n",
+    )
+    .unwrap();
+    let error = compile_package_project(temp.path())
+        .expect_err("top-level type access must require slash syntax")
+        .to_string();
+    assert!(
+        error.contains("uses top-level type syntax `widget/<source-module>.<name>`"),
+        "{error}"
+    );
+
+    fs::write(
+        temp.path().join("package.yml"),
+        r#"id: example.com/widget-tests
+version: 1.0.0
+packages:
+  - id: example.com/widget
+    version: 1.0.0
+    alias: widget
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("main.skiff"),
+        "import widget\nfunction bad() -> string { return widget/internal.codec.privateOnly() }\n",
+    )
+    .unwrap();
+    let error = compile_package_project(temp.path())
+        .expect_err("public mode must not fall back to private source symbols")
+        .to_string();
+    assert!(
+        error.contains("has no callable public path `internal.codec.privateOnly`"),
         "{error}"
     );
 }

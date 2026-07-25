@@ -14,10 +14,12 @@
 - Artifact IR carries the exact immutable package reference and
   `PackageCallableId`. Runtime dispatch is keyed by
   `(PackageBuildId, PackageCallableId)`, not source spelling.
-- Service effects carry the owner-local `ServiceCallRefIndex`, link to an
-  `ActivationRelativeServiceCall`, and dispatch by caller package build,
-  requirement slot, `ContractOperationId` and protocol identity before the
-  real service call can suspend.
+- Service effects carry the owner-local `ServiceCallRefIndex` and link to an
+  `ActivationRelativeServiceCall`. Runtime matching uses the exact
+  `ServiceProtocolIdentity` plus `ContractOperationId`, so a test service can
+  intercept the same contract operation when it is called transitively by the
+  subject package. Caller-relative package build and requirement slot remain
+  enforced by normal service binding, but are not part of the test-effect key.
 - Public package callable signatures now normalize exported nominal types,
   including nested parameter, return and throw positions, to exact
   `PackageSchema` identities at artifact projection time. Private/local-only

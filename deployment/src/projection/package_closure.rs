@@ -186,6 +186,19 @@ fn validate_requirement_target(
             "packageLocalAbiIdentity must be {}, got {}",
             requirement.expected_local_abi, target.package_local_abi_identity
         ))
+    } else if requirement
+        .expected_package_build
+        .as_ref()
+        .is_some_and(|expected| expected != &target.package_build_id)
+    {
+        Some(format!(
+            "packageBuildId must be {}, got {}",
+            requirement
+                .expected_package_build
+                .as_ref()
+                .expect("checked above"),
+            target.package_build_id
+        ))
     } else {
         None
     };

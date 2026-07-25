@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   canonicalSkiffSourceTestRegistry,
@@ -13,17 +14,60 @@ import {
   packageServiceHostFixturePaths,
   packageServiceHostFixturePrepareCargoArgs,
   readPackageServiceHostFixtureReceipt,
+  skiffSourceArtifactBootstrapCargoArgs,
   skiffSourceTestRunnerCargoArgs,
+  skiffSourceSubjectPublishArgs,
 } from '../lib/skiff-source-test-suite.mjs';
 
 const assemblyIdentity = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
 
+test('F270 legacy overlay smoke debt remains an exact closed inventory', async () => {
+  const fixtureRoot = fileURLToPath(
+    new URL('../../test-runner/fixtures/', import.meta.url),
+  );
+  const discovered = (await collectTestFiles(fixtureRoot))
+    .map((path) => relative(fixtureRoot, path).split('\\').join('/'))
+    .sort();
+  const migrated = [
+    'alias-return-catch-once-tests/main.test.skiff',
+    'package-service-host/consumer-tests/main.test.skiff',
+  ];
+  const f270Owned = [
+    'actor-full-chain-acceptance/main.test.skiff',
+    'package-service-i02-spawn-submit/main.test.skiff',
+    'package-service-websocket-generation-a/main.test.skiff',
+    'package-service-websocket-generation-b/main.test.skiff',
+    'package-service-websocket-smoke/main.test.skiff',
+  ];
+  assert.deepEqual(discovered, [...migrated, ...f270Owned].sort());
+
+  const rootPrivateReferences = [];
+  for (const relativePath of discovered) {
+    const source = await readFile(join(fixtureRoot, relativePath), 'utf8');
+    if (/\broot\./.test(source)) rootPrivateReferences.push(relativePath);
+  }
+  assert.deepEqual(rootPrivateReferences.sort(), [
+    'package-service-websocket-generation-a/main.test.skiff',
+    'package-service-websocket-generation-b/main.test.skiff',
+    'package-service-websocket-smoke/main.test.skiff',
+  ]);
+
+  for (const relativePath of migrated) {
+    const service = await readFile(
+      join(fixtureRoot, relativePath, '..', 'service.yml'),
+      'utf8',
+    );
+    assert.match(service, /^kind: test$/m);
+  }
+});
+
 test('canonical registry contains the checked-in source test roots', () => {
   assert.deepEqual(canonicalSkiffSourceTestRegistry, [
-    { id: 'std', root: 'std' },
+    { id: 'std', root: 'test-services/std' },
     {
       id: 'alias-return-catch-once',
-      root: 'test-runner/fixtures/alias-return-catch-once',
+      root: 'test-runner/fixtures/alias-return-catch-once-tests',
+      subjectRoot: 'test-runner/fixtures/alias-return-catch-once',
     },
   ]);
   assert.deepEqual(
@@ -31,13 +75,16 @@ test('canonical registry contains the checked-in source test roots', () => {
     [
       {
         id: 'std',
-        root: 'std',
-        absoluteRoot: '/checkout/skiff/std',
+        root: 'test-services/std',
+        absoluteRoot: '/checkout/skiff/test-services/std',
       },
       {
         id: 'alias-return-catch-once',
-        root: 'test-runner/fixtures/alias-return-catch-once',
+        root: 'test-runner/fixtures/alias-return-catch-once-tests',
         absoluteRoot:
+          '/checkout/skiff/test-runner/fixtures/alias-return-catch-once-tests',
+        subjectRoot: 'test-runner/fixtures/alias-return-catch-once',
+        absoluteSubjectRoot:
           '/checkout/skiff/test-runner/fixtures/alias-return-catch-once',
       },
     ],
@@ -102,16 +149,32 @@ test('one isolated runtime owner executes every registry entry with strict non-l
   assert.equal(ownerCalls.length, 1);
   assert.equal(ownerCalls[0].skiffRoot, '/checkout/skiff');
   assert.deepEqual(plan.map((entry) => entry.id), ['first', 'second']);
-  assert.deepEqual(commands.map((entry) => entry.command), ['cargo', 'cargo', 'cargo', 'cargo']);
   assert.deepEqual(
-    [commands[0].args.at(7), commands[1].args.at(7), commands[3].args.at(7)],
+    commands.map((entry) => entry.command),
+    ['cargo', 'cargo', 'cargo', 'cargo', 'cargo'],
+  );
+  assert.deepEqual(
+    [commands[1].args.at(7), commands[2].args.at(7), commands[4].args.at(7)],
     [
       '/checkout/skiff/fixtures/first',
       '/checkout/skiff/fixtures/second',
-      '/checkout/skiff/test-runner/fixtures/package-service-host/consumer',
+      '/checkout/skiff/test-runner/fixtures/package-service-host/consumer-tests',
     ],
   );
-  for (const [index, command] of commands.slice(0, 2).entries()) {
+  assert.deepEqual(commands[0], {
+    command: 'cargo',
+    args: skiffSourceArtifactBootstrapCargoArgs({
+      skiffRoot: '/checkout/skiff',
+      artifactRoot: '/tmp/isolated/source-artifacts',
+      environment: 'skiff-test',
+    }),
+    options: {
+      cwd: '/checkout/skiff',
+      env: environment,
+      signal,
+    },
+  });
+  for (const [index, command] of commands.slice(1, 3).entries()) {
     assert.equal(command.options.cwd, '/checkout/skiff');
     assert.deepEqual(command.options.env, {
       ...environment,
@@ -134,13 +197,13 @@ test('one isolated runtime owner executes every registry entry with strict non-l
       ['--platform-source-root', '/checkout/skiff'],
     );
   }
-  assert.deepEqual(commands[2].options, {
+  assert.deepEqual(commands[3].options, {
     cwd: '/checkout/skiff',
     env: environment,
     signal,
   });
   assert.deepEqual(
-    commands[2].args,
+    commands[3].args,
     packageServiceHostFixturePrepareCargoArgs({
       skiffRoot: '/checkout/skiff',
       fixtureRoot: '/checkout/skiff/test-runner/fixtures/package-service-host',
@@ -150,17 +213,18 @@ test('one isolated runtime owner executes every registry entry with strict non-l
       environment: 'skiff-test',
     }),
   );
-  assert.equal(commands[3].args.includes('--base-assembly'), true);
-  assert.deepEqual(commands[3].options.env, {
+  assert.equal(commands[4].args.includes('--base-assembly'), true);
+  assert.deepEqual(commands[4].options.env, {
     ...environment,
     SKIFF_TEST_EXPECTED_GENERATION: '2',
   });
   assert.deepEqual(logs, [
     '[skiff-tests] phase startup: isolated-runtime',
+    '[skiff-tests] bootstrapping source artifacts: /tmp/isolated/source-artifacts',
     '[skiff-tests] running first: fixtures/first',
     '[skiff-tests] running second: fixtures/second',
     '[skiff-tests] preparing package-service-host: /checkout/skiff/test-runner/fixtures/package-service-host',
-    '[skiff-tests] running package-service-host: test-runner/fixtures/package-service-host/consumer',
+    '[skiff-tests] running package-service-host: test-runner/fixtures/package-service-host/consumer-tests',
   ]);
 });
 
@@ -202,14 +266,22 @@ test('runner failure stops later entries while the isolated runtime owner retain
       runtimeOwner: async ({ runTest }) => {
         actions.push('runtime-start');
         try {
-          await runTest({}, new AbortController().signal, {
-            sourceArtifactRoot: '/tmp/isolated/source-artifacts',
-          });
+          await runTest(
+            { SKIFF_TEST_ENVIRONMENT: 'skiff-test' },
+            new AbortController().signal,
+            {
+              sourceArtifactRoot: '/tmp/isolated/source-artifacts',
+            },
+          );
         } finally {
           actions.push('runtime-cleanup');
         }
       },
       runCommand: async (_command, args) => {
+        if (args.includes('--bootstrap-only')) {
+          actions.push('source-bootstrap');
+          return;
+        }
         const root = args.at(7);
         actions.push(root);
         if (root.endsWith('/failing')) {
@@ -222,6 +294,7 @@ test('runner failure stops later entries while the isolated runtime owner retain
   );
   assert.deepEqual(actions, [
     'runtime-start',
+    'source-bootstrap',
     '/checkout/skiff/fixtures/first',
     '/checkout/skiff/fixtures/failing',
     'runtime-cleanup',
@@ -271,9 +344,28 @@ test('package-service host paths are fixed inside the checkout and temp runtime 
     {
       fixtureRoot: '/checkout/skiff/test-runner/fixtures/package-service-host',
       consumerRoot: '/checkout/skiff/test-runner/fixtures/package-service-host/consumer',
+      testRoot: '/checkout/skiff/test-runner/fixtures/package-service-host/consumer-tests',
       workRoot: '/tmp/isolated/package-service-host-work',
       receipt: '/tmp/isolated/package-service-host-receipt.json',
     },
+  );
+});
+
+test('subject publish command writes an exact package pointer into the shared artifact root', () => {
+  assert.deepEqual(
+    skiffSourceSubjectPublishArgs({
+      skiffRoot: '/checkout/skiff',
+      subjectRoot: '/checkout/skiff/fixtures/subject',
+      artifactRoot: '/tmp/isolated/source-artifacts',
+    }),
+    [
+      '/checkout/skiff/scripts/skiff.mjs',
+      'package',
+      'publish',
+      '/checkout/skiff/fixtures/subject',
+      '--artifact-root',
+      '/tmp/isolated/source-artifacts',
+    ],
   );
 });
 
@@ -327,6 +419,22 @@ function hostFixtureReceipt() {
     },
     baseAssembly: { assemblyIdentity },
   };
+}
+
+async function collectTestFiles(root) {
+  const files = [];
+  async function visit(directory) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(path);
+      } else if (entry.isFile() && entry.name.endsWith('.test.skiff')) {
+        files.push(path);
+      }
+    }
+  }
+  await visit(root);
+  return files;
 }
 
 function contractRef(name) {

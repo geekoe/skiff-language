@@ -22,6 +22,7 @@ import {
   HOST_DIAGNOSTIC_EXCERPT_MAX_BYTES,
   assertHostDiagnosticMatchesOutcome,
 } from '../lib/platform-source-probe-diagnostic.mjs';
+import { canonicalSkiffSourceTestRegistry } from '../lib/skiff-source-test-registry.mjs';
 import { probeDigest } from '../lib/platform-source-probe-support.mjs';
 
 const candidate = '1'.repeat(40);
@@ -97,7 +98,8 @@ test('combined and full modes remain disjoint command-double orchestrations', as
     assert.equal(full.fullProbeRuns, 1);
     assert.deepEqual(full.sourceSuite, {
       std: { passed: 11, total: 11 },
-      host: { passed: 1, total: 1 },
+      aliasReturnCatchOnce: { passed: 6, total: 6 },
+      host: { passed: 4, total: 4 },
       finalValue: 'provider-observed-helper-mutated',
       finalValueEvidence: {
         passLine: 'PASS main.__test::provider observes helper mutation',
@@ -106,10 +108,10 @@ test('combined and full modes remain disjoint command-double orchestrations', as
           'test-runner',
           'fixtures',
           'package-service-host',
-          'consumer',
+          'consumer-tests',
           'main.test.skiff',
         ),
-        assertion: 'assert root.main.run() == "provider-observed-helper-mutated"',
+        assertion: 'assert subject/main.run() == "provider-observed-helper-mutated"',
       },
     });
     assert.equal(fullDouble.commands.filter(isMergeOnlyFixture).length, 0);
@@ -615,7 +617,7 @@ test('unreachable expected assertion plus assert true is rejected before Host', 
       hostSource: [
         'test "provider observes helper mutation" {',
         '  if false {',
-        '    assert root.main.run() == "provider-observed-helper-mutated"',
+        '    assert subject/main.run() == "provider-observed-helper-mutated"',
         '  }',
         '  assert true',
         '}',
@@ -730,10 +732,10 @@ async function gateFixture() {
         availableBytes: async () => 16 * (1024 ** 3),
         allocatedBytes: async () => undefined,
         snapshotArtifacts: artifactSnapshotDouble(commandDouble),
-        loadRegistry: async () => [{ id: 'std', root: 'std' }],
+        loadRegistry: async () => canonicalSkiffSourceTestRegistry,
         readText: async () => commandDouble.hostSource ?? [
           'test "provider observes helper mutation" {',
-          '  assert root.main.run() == "provider-observed-helper-mutated"',
+          '  assert subject/main.run() == "provider-observed-helper-mutated"',
           '}',
           '',
         ].join('\n'),
@@ -874,9 +876,9 @@ function applyHostCommandScenario(outcome, scenario, diagnosticPaths) {
     const phase = scenario.slice('diagnostic-'.length);
     const phaseMarkers = {
       startup: `[skiff-test] isolated runtime workspace: ${diagnosticPaths[4]}`,
-      std: `[skiff-tests] running std: ${join(diagnosticPaths[0], 'std')}`,
+      std: `[skiff-tests] running std: ${join(diagnosticPaths[0], 'test-services', 'std')}`,
       'host-prepare': `[skiff-tests] preparing package-service-host: ${join(diagnosticPaths[2], 'test-runner', 'fixtures', 'package-service-host')}`,
-      'host-runner': '[skiff-tests] running package-service-host: test-runner/fixtures/package-service-host/consumer',
+      'host-runner': '[skiff-tests] running package-service-host: test-runner/fixtures/package-service-host/consumer-tests',
       unknown: '[skiff-tests] unclassified source-suite output',
     };
     outcome.code = 1;
@@ -898,10 +900,11 @@ function applyHostCommandScenario(outcome, scenario, diagnosticPaths) {
       (_unused, index) => `PASS std.case_${index}.__test::unrelated std case ${index}`,
     ),
     'test result: ok. 11 passed; 0 failed',
+    'test result: ok. 6 passed; 0 failed',
     'PASS main.__test::provider observes helper mutation',
-    'test result: ok. 1 passed; 0 failed',
+    'test result: ok. 4 passed; 0 failed',
   ];
-  const targetIndex = 12;
+  const targetIndex = 13;
   if (scenario === 'nonzero') {
     outcome.code = 9;
     outcome.stderr = 'Host command failed after launch';

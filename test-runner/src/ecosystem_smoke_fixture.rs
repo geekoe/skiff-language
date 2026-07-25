@@ -59,6 +59,7 @@ pub fn assemble_ecosystem_smoke_fixture(
     project: &CanonicalPackageProject,
     overlay: PublishedPackageTestOverlay,
 ) -> Result<CanonicalEcosystemSmokeFixture, CanonicalFixtureError> {
+    let overlay_dependencies = overlay.dependency_packages.clone();
     let test_fixture = assemble_package_test_fixture(project, overlay, Default::default())?;
     if test_fixture.entrypoints.len() != 1 {
         return Err(CanonicalFixtureError::InvalidInput(format!(
@@ -110,6 +111,7 @@ pub fn assemble_ecosystem_smoke_fixture(
         .iter()
         .map(|package| package.artifact.clone())
         .chain(project.dependency_packages.iter().cloned())
+        .chain(overlay_dependencies)
         .collect::<Vec<_>>();
     records.assembly = resolve_runtime_assembly(
         &roots,

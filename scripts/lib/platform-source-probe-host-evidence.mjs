@@ -8,7 +8,7 @@ import { commandText, errorMessage } from './platform-source-probe-support.mjs';
 
 const HOST_TEST_NAME = 'provider observes helper mutation';
 const HOST_EXPECTED_FINAL_VALUE = 'provider-observed-helper-mutated';
-const HOST_ASSERTION_PATTERN = /^assert root\.main\.run\(\) == "([^"]+)"$/;
+const HOST_ASSERTION_PATTERN = /^assert subject\/main\.run\(\) == "([^"]+)"$/;
 const HOST_RESULT_PATTERN = /^test result: ok\. (\d+) passed; (\d+) failed$/;
 const HOST_PASS_LINE_MAX_BYTES = 512;
 const HOST_MODULE_PATTERN = '[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*';
@@ -151,9 +151,9 @@ function parseHostOutput(stdout, stderr, testName) {
     return match === null ? null : { passed: Number(match[1]), failed: Number(match[2]) };
   });
   const inHostResultSegment = (stream, index) => stream === 'stdout'
-    && resultEntries.length === 2
-    && index > resultEntries[0].index
-    && index < resultEntries[1].index;
+    && resultEntries.length === 3
+    && index > resultEntries[1].index
+    && index < resultEntries[2].index;
   const passLines = [
     ...stdoutLines.map((line, index) => ({ line, index, stream: 'stdout' })),
     ...stderr.split(/\r?\n/).map((line, index) => ({ line, index, stream: 'stderr' })),
@@ -207,7 +207,7 @@ function hostEvidenceIssues(outcome, parsed, testName, evidence) {
   if (!hasExactResultCounts(parsed)) {
     issues.push({
       kind: 'result-counts',
-      message: `full gate must report exact std 11/11 and Host 1/1; observed ${parsed.resultLines.length} result line(s)`,
+      message: `full gate must report exact std 11/11, alias 6/6 and Host 4/4; observed ${parsed.resultLines.length} result line(s)`,
     });
   }
   const invalidPassLineCount = parsed.passLines.filter((entry) => !entry.valid).length;
@@ -227,17 +227,23 @@ function hostEvidenceIssues(outcome, parsed, testName, evidence) {
 }
 
 function hasExactResultCounts(parsed) {
-  return parsed.resultLines.length === 2
+  return parsed.resultLines.length === 3
     && parsed.counts[0]?.passed === 11
     && parsed.counts[0]?.failed === 0
-    && parsed.counts[1]?.passed === 1
-    && parsed.counts[1]?.failed === 0;
+    && parsed.counts[1]?.passed === 6
+    && parsed.counts[1]?.failed === 0
+    && parsed.counts[2]?.passed === 4
+    && parsed.counts[2]?.failed === 0;
 }
 
 function projectSourceSuite(parsed, fixture) {
   return {
     std: { passed: parsed.counts[0].passed, total: parsed.counts[0].passed },
-    host: { passed: parsed.counts[1].passed, total: parsed.counts[1].passed },
+    aliasReturnCatchOnce: {
+      passed: parsed.counts[1].passed,
+      total: parsed.counts[1].passed,
+    },
+    host: { passed: parsed.counts[2].passed, total: parsed.counts[2].passed },
     finalValue: fixture.expectedFinalValue,
     finalValueEvidence: {
       passLine: parsed.observedPassLine,

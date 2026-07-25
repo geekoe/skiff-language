@@ -1,7 +1,7 @@
 use skiff_artifact_identity::validate_package_artifact_identities;
 use skiff_artifact_model::{
-    ContractRequirement, FileIrUnit, PackageArtifact, PackageRefIr, PackageRequirement,
-    ServiceContract,
+    ContractRequirement, FileIrUnit, NativeSignatureTypeExpr, NativeTarget, PackageArtifact,
+    PackageRefIr, PackageRequirement, ServiceContract, STD_NATIVE_SIGNATURES,
 };
 use skiff_compiler_contract::{
     compile_service_contract_definition, project_service_api, ContractDefinitionError,
@@ -272,6 +272,7 @@ fn validate_pre_source_schema(
         package_id: artifact.package_id.clone(),
         exact_version: artifact.package_version.clone(),
         expected_local_abi: artifact.package_local_abi.local_abi_identity.clone(),
+        expected_package_build: None,
     };
     validate_package_artifact_identities(artifact).map_err(|error| {
         package_schema_input_error(format!(
@@ -477,6 +478,7 @@ fn complete_package_requirement_closure(
         package_id: std_artifact.package_id.clone(),
         exact_version: std_artifact.package_version.clone(),
         expected_local_abi: std_artifact.package_local_abi.local_abi_identity.clone(),
+        expected_package_build: None,
     });
     Ok(requirements)
 }
@@ -493,12 +495,60 @@ fn file_ir_unit_references_platform_std(file: &FileIrUnit) -> bool {
                 .map(|callable| &callable.package_ref),
         )
         .any(package_ref_references_platform_std)
+        || file
+            .external_refs
+            .native_targets
+            .iter()
+            .any(native_target_signature_references_platform_std)
 }
 
 fn package_ref_references_platform_std(package_ref: &PackageRefIr) -> bool {
     match package_ref {
         PackageRefIr::PackageId { package_id } => package_id == SKIFF_STD_PUBLICATION_ID,
         PackageRefIr::Dependency { dependency_ref } => dependency_ref == "std",
+    }
+}
+
+fn native_target_signature_references_platform_std(target: &NativeTarget) -> bool {
+    let target_path = if target.namespace.is_empty() {
+        target.symbol.clone()
+    } else {
+        format!("{}.{}", target.namespace, target.symbol)
+    };
+    STD_NATIVE_SIGNATURES
+        .iter()
+        .filter(|signature| {
+            target
+                .binding_key
+                .as_deref()
+                .is_some_and(|binding_key| binding_key == signature.binding_key)
+                || target_path == signature.target
+                || signature.aliases.contains(&target_path.as_str())
+        })
+        .any(|signature| {
+            signature
+                .params
+                .iter()
+                .chain(std::iter::once(&signature.return_type))
+                .any(native_signature_type_references_platform_std)
+        })
+}
+
+fn native_signature_type_references_platform_std(ty: &NativeSignatureTypeExpr) -> bool {
+    match ty {
+        NativeSignatureTypeExpr::TypeParam(_) | NativeSignatureTypeExpr::Builtin(_) => false,
+        NativeSignatureTypeExpr::Package { package_id, .. } => {
+            *package_id == SKIFF_STD_PUBLICATION_ID
+        }
+        NativeSignatureTypeExpr::Array(inner)
+        | NativeSignatureTypeExpr::Nullable(inner)
+        | NativeSignatureTypeExpr::Stream(inner) => {
+            native_signature_type_references_platform_std(inner)
+        }
+        NativeSignatureTypeExpr::Map(key, value) => {
+            native_signature_type_references_platform_std(key)
+                || native_signature_type_references_platform_std(value)
+        }
     }
 }
 
@@ -523,6 +573,9 @@ fn package_requirement(
         package_id: dependency.id.clone(),
         exact_version: dependency.version.clone(),
         expected_local_abi: artifact.package_local_abi.local_abi_identity.clone(),
+        expected_package_build: (dependency.access
+            == skiff_compiler_input::PackageDependencyAccess::TopLevel)
+            .then(|| artifact.package_build_id.clone()),
     })
 }
 

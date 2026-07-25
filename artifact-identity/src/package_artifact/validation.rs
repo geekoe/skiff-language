@@ -172,25 +172,90 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
                 "package implementation symbol must use a non-empty source module/name path",
             );
         }
-        let PackageLocalAbiSymbol::Callable {
-            callable_id,
-            signature: _,
-        } = symbol
-        else {
-            return invalid_artifact(format!(
-                "package implementation symbol {source_path} is not callable"
-            ));
-        };
-        if public_callables.contains(callable_id)
-            || !implementation_callables.insert(callable_id.clone())
-        {
-            return invalid_artifact(format!(
-                "package implementation surface repeats callable id {callable_id}"
-            ));
+        match symbol {
+            PackageLocalAbiSymbol::Callable {
+                callable_id,
+                signature,
+            } => {
+                if public_callables.contains(callable_id)
+                    || !implementation_callables.insert(callable_id.clone())
+                {
+                    return invalid_artifact(format!(
+                        "package implementation surface repeats callable id {callable_id}"
+                    ));
+                }
+                for parameter in &signature.parameters {
+                    validate_package_type_ref(
+                        artifact,
+                        &parameter.ty,
+                        &format!(
+                            "implementation callable {source_path} parameter {}",
+                            parameter.name
+                        ),
+                    )?;
+                }
+                validate_package_type_ref(
+                    artifact,
+                    &signature.return_type,
+                    &format!("implementation callable {source_path} return type"),
+                )?;
+            }
+            PackageLocalAbiSymbol::Type {
+                local_type_id,
+                descriptor: _,
+                is_alias: _,
+                is_interface,
+                type_params,
+                interface_methods,
+            } => {
+                if local_type_id != &format!("type:{}:top-level:{source_path}", artifact.package_id)
+                {
+                    return invalid_artifact(format!(
+                        "package implementation type {source_path} has mismatched identity {local_type_id}"
+                    ));
+                }
+                let Some(link) = artifact.implementation_links.types.get(source_path) else {
+                    return invalid_artifact(format!(
+                        "package implementation type {source_path} has no exact implementation link"
+                    ));
+                };
+                if link.is_interface != *is_interface
+                    || link.type_params != *type_params
+                    || link.interface_methods != *interface_methods
+                {
+                    return invalid_artifact(format!(
+                        "package implementation type {source_path} descriptor/signature disagrees with its link"
+                    ));
+                }
+            }
+            PackageLocalAbiSymbol::Constant { const_id, ty } => {
+                if const_id != &format!("pkg-const:{}:top-level:{source_path}", artifact.package_id)
+                {
+                    return invalid_artifact(format!(
+                        "package implementation constant {source_path} has mismatched identity {const_id}"
+                    ));
+                }
+                validate_package_type_ref(
+                    artifact,
+                    ty,
+                    &format!("implementation constant {source_path}"),
+                )?;
+                if !artifact
+                    .implementation_links
+                    .constants
+                    .contains_key(source_path)
+                {
+                    return invalid_artifact(format!(
+                        "package implementation constant {source_path} has no exact implementation link"
+                    ));
+                }
+            }
+            PackageLocalAbiSymbol::PublicInstance { .. } => {
+                return invalid_artifact(format!(
+                    "package implementation symbol {source_path} cannot be a public instance"
+                ));
+            }
         }
-        // Implementation signatures are exact File IR types, not a public
-        // package schema surface. Their nested references are validated with
-        // the owning File IR and package requirement closure.
     }
 
     let link_keys = artifact
