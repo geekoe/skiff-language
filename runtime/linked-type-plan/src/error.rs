@@ -1,5 +1,8 @@
 use serde_json::json;
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -35,10 +38,10 @@ impl WirePayload for Error {
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
         match self {
             Self::Protocol { target, message } => Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 json!({
                     "target": target,
                     "message": message,
@@ -77,7 +80,7 @@ mod tests {
         assert_eq!(
             error.catch_projection(),
             Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 json!({
                     "target": "svc.account",
                     "message": "bad request payload",
@@ -95,5 +98,16 @@ mod tests {
 
         assert_eq!(error.payload(), expected_payload);
         assert_eq!(error.catch_projection(), expected_catch_projection);
+    }
+
+    #[test]
+    fn linked_type_plan_diagnostics_remain_uncatchable() {
+        let invalid_artifact = Error::InvalidArtifact("missing linked type".to_string());
+        assert_eq!(invalid_artifact.catch_projection(), None);
+
+        let diagnostic = Error::Boundary(skiff_runtime_boundary::error::RuntimeError::Decode(
+            "ordinary boundary diagnostic".to_string(),
+        ));
+        assert_eq!(diagnostic.catch_projection(), None);
     }
 }
