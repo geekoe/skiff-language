@@ -1,6 +1,7 @@
 # P5-F309 Capability-context platform catch consumer
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F309-capability-platform-catch-consumer-result.md`。
 
 ## 直接父节点
 
@@ -41,4 +42,3 @@ selector非零。不运行eval/downstream/workspace/stable/live。
 - branch：`codex/p5-f309-capability-catch`
 - 一次性开发Agent，5分钟内修改；提交并返回mapping/forwarding矩阵与验证；
 - 不push、不承接native/service-db。
-
