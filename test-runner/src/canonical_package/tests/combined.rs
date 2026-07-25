@@ -25,9 +25,9 @@ use crate::{
 // Explicit F18 identity probe pins refreshed with the current canonical std
 // source; the production seed consumes the F27A typed receipt instead.
 const EXPECTED_PRELUDE_IDENTITY: &str =
-    "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699";
+    "skiff-prelude-v1:sha256:2ebbd0569d4baf3d7dccf07c4326ec62deb5707c11a8d0eb0ac0722d1ee9d3bd";
 const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
-    "skiff-package-build-v4:sha256:62177ac4e6d764166e2387c52847f97565ad38836d0631845af9a73e9f2512d1";
+    "skiff-package-build-v4:sha256:18adfaaf021770af47aafddff46e9e9876df0843700f260cea77651eefcb810d";
 
 #[test]
 #[ignore = "merge-only F18A/F18B compiler repair probe"]
@@ -192,11 +192,7 @@ impl EscapedPlatformFixture {
             "id: skiff.run/std\nversion: 1.0.0\n",
         )
         .unwrap();
-        fs::write(
-            root.join("prelude/error.skiff"),
-            "native type ErrorPayload\n",
-        )
-        .unwrap();
+        fs::write(root.join("prelude/error.skiff"), "").unwrap();
         let outside = base.join("escaped.skiff");
         fs::write(&outside, "type EscapedArtifactType {}\n").unwrap();
         symlink(&outside, root.join("prelude/escaped.skiff")).unwrap();

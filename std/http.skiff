@@ -53,7 +53,7 @@ type HttpSseEvent discriminator "tag" =
   | { tag: "body", value: bytes }
   | { tag: "event", event: string?, id: string?, data: string }
 
-type HttpError implements ErrorPayload {
+type HttpError {
   message: string,
   detail: Json?,
 }

@@ -127,11 +127,7 @@ impl PlatformFixture {
         )
         .unwrap();
         fs::write(root.join("std/api.yml"), "http:\n  request: http.request\n").unwrap();
-        fs::write(
-            root.join("prelude/error.skiff"),
-            "native type ErrorPayload\n",
-        )
-        .unwrap();
+        fs::write(root.join("prelude/error.skiff"), "").unwrap();
         Self { root }
     }
 

@@ -17,9 +17,6 @@ use crate::{
 
 use super::SemanticPublication;
 
-const ERROR_PAYLOAD_INTERFACE_MODULE: &str = "std.error";
-const ERROR_PAYLOAD_INTERFACE_SYMBOL: &str = "ErrorPayload";
-
 #[derive(Debug, Clone)]
 pub struct InterfaceDeclFact {
     pub symbol: SourceSymbolKey,
@@ -519,14 +516,6 @@ impl InterfaceIndex {
             interfaces_by_bare: BTreeMap::new(),
             types_by_bare: BTreeMap::new(),
         };
-        index.insert_compiler_known_interface(
-            SourceSymbolKey::new(
-                ERROR_PAYLOAD_INTERFACE_MODULE,
-                ERROR_PAYLOAD_INTERFACE_SYMBOL,
-            ),
-            Vec::new(),
-        )?;
-
         for source in &publication.sources {
             index.index_source_types(source.module_path, source.ast);
             for interface in &source.ast.interfaces {

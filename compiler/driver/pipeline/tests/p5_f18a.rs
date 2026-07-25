@@ -111,11 +111,7 @@ impl CompilerFixture {
             "id: skiff.run/std\nversion: 1.0.0\n",
         )
         .unwrap();
-        fs::write(
-            root.join("prelude/error.skiff"),
-            "native type ErrorPayload\n",
-        )
-        .unwrap();
+        fs::write(root.join("prelude/error.skiff"), "").unwrap();
         let outside = base.join("escaped.skiff");
         fs::write(&outside, "type EscapedArtifactType {}\n").unwrap();
         symlink(&outside, root.join("prelude/escaped.skiff")).unwrap();

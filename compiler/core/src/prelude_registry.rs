@@ -79,12 +79,6 @@ pub const COMPILER_BUILTIN_TYPES: &[CompilerBuiltinType] = &[
         kind: CompilerBuiltinTypeKind::OpaqueHandle,
     },
     CompilerBuiltinType {
-        name: "ErrorPayload",
-        symbol: "std.error.ErrorPayload",
-        arity: 0,
-        kind: CompilerBuiltinTypeKind::Error,
-    },
-    CompilerBuiltinType {
         name: "Exception",
         symbol: "std.error.Exception",
         arity: 1,
@@ -123,12 +117,6 @@ pub const COMPILER_BUILTIN_TYPES: &[CompilerBuiltinType] = &[
     CompilerBuiltinType {
         name: "CancelError",
         symbol: "std.error.CancelError",
-        arity: 0,
-        kind: CompilerBuiltinTypeKind::Error,
-    },
-    CompilerBuiltinType {
-        name: "InternalError",
-        symbol: "std.error.InternalError",
         arity: 0,
         kind: CompilerBuiltinTypeKind::Error,
     },

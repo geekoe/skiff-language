@@ -46,7 +46,6 @@ async function checkManifests() {
     'Json',
     'JsonObject',
     'Stream',
-    'ErrorPayload',
     'Exception',
     'CatchResult',
     'SourceLocation',
@@ -54,7 +53,6 @@ async function checkManifests() {
     'StackFrame',
     'TimeoutError',
     'CancelError',
-    'InternalError',
     'ClientSessionRef',
     'ClientCapability',
   ]) {

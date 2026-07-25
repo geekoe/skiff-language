@@ -12,7 +12,9 @@ use skiff_artifact_identity::{
     assign_package_artifact_identities, PackageArtifactRecordPath, PackageFileIrRecordPath,
     PackageResourceRecordPath,
 };
-use skiff_artifact_model::PublicationResourceRef;
+use skiff_artifact_model::{
+    ContractTypeDescriptor, ContractTypeNameability, PublicationResourceRef,
+};
 use skiff_compiler_core::json_utils::sha256_hex;
 use skiff_compiler_emission::artifact::PublishedResourceArtifact;
 use skiff_compiler_input::CompilerPlatformSources;
@@ -23,9 +25,9 @@ use super::*;
 use crate::authoring::{build_authoring_object, AuthoringObject};
 
 const EXPECTED_STD_BUILD_ID: &str =
-    "skiff-package-build-v4:sha256:62177ac4e6d764166e2387c52847f97565ad38836d0631845af9a73e9f2512d1";
+    "skiff-package-build-v4:sha256:18adfaaf021770af47aafddff46e9e9876df0843700f260cea77651eefcb810d";
 const EXPECTED_PRELUDE_ID: &str =
-    "skiff-prelude-v1:sha256:06b874079b74b70aab0092e4e2ffb9781fb34cd57238f3ee90d2789f5eb6019c";
+    "skiff-prelude-v1:sha256:2ebbd0569d4baf3d7dccf07c4326ec62deb5707c11a8d0eb0ac0722d1ee9d3bd";
 
 #[test]
 fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
@@ -42,6 +44,32 @@ fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
         .package_local_abi
         .public_symbols
         .contains_key("std.websocket.WebSocketIngressEvent"));
+    assert!(published
+        .artifact
+        .package_local_abi
+        .public_symbols
+        .contains_key("std.service.InternalError"));
+    let internal_error_entry =
+        &published.package_schema_index.types["std.service.InternalError"];
+    assert_eq!(
+        internal_error_entry.public_path.as_deref(),
+        Some("std.service.InternalError")
+    );
+    assert_eq!(
+        internal_error_entry.nameability,
+        ContractTypeNameability::PublicNameable
+    );
+    let internal_error_record =
+        &published.package_schema_type_records[&internal_error_entry.package_schema_type_id];
+    let ContractTypeDescriptor::Record { fields } =
+        &internal_error_record.canonical_descriptor.descriptor
+    else {
+        panic!("std.service.InternalError must remain a nominal record");
+    };
+    assert_eq!(
+        fields.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["errorId", "message", "traceId"]
+    );
     let websocket_file_ir = published
         .file_ir_units
         .iter()
@@ -346,11 +374,7 @@ impl MinimalPlatformFixture {
             "function request() -> string { return \"ok\" }\n",
         )
         .unwrap();
-        fs::write(
-            root.join("prelude/error.skiff"),
-            "native type ErrorPayload\n",
-        )
-        .unwrap();
+        fs::write(root.join("prelude/error.skiff"), "").unwrap();
         Self { base, root }
     }
 

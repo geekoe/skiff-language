@@ -9,7 +9,7 @@ type RuntimeLiveDoc {
   rank: number,
 }
 
-type RuntimeLiveRollbackError implements ErrorPayload {
+type RuntimeLiveRollbackError {
   message: string,
 }
 
