@@ -1,6 +1,7 @@
 # P5-F343 Host error-model test fixture closure
 
-状态：Ready（test-only）。
+状态：Completed（PASS）。结果见
+`P5-F343-host-error-model-test-fixture-closure-result.md`。
 
 ## 直接父节点
 
