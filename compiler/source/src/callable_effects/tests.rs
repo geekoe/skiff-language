@@ -1991,6 +1991,83 @@ fn exact_json_object_has_target_is_read_only_detached_and_non_suspending() {
 }
 
 #[test]
+fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detached() {
+    let model = analyze_named(
+        r#"
+            function direct(value: JsonObject, key: string) -> Json {
+              return value.get(key)
+            }
+
+            function jsonObject(value: Json?) -> JsonObject? {
+              if value == null { return null }
+              const parsed = catch<std.json.DecodeError>(
+                std.json.decode<JsonObject>(std.json.encode<Json>(value))
+              )
+              if parsed.tag == "ok" { return parsed.value }
+              return null
+            }
+
+            function jsonField(value: Json?, key: string) -> Json? {
+              const object = jsonObject(value)
+              if object == null { return null }
+              return object.get(key)
+            }
+
+            function claimsFromJwt(payload: Json?) -> Json? {
+              return jsonField(payload, "https://api.openai.com/profile")
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "chatgpt_plan.codec",
+        "skiff.run/llm-providers",
+    );
+
+    assert_eq!(
+        effects_in(&model, "chatgpt_plan.codec", "direct"),
+        CallableMayEffects {
+            returns_caller_alias: true,
+            requires_same_heap_identity: true,
+            ..no_effects()
+        }
+    );
+    assert!(matches!(
+        provenance_in(&model, "chatgpt_plan.codec", "direct"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins == &vec![ValueProvenance::CallerParameter { index: 0 }]
+    ));
+
+    for callable in ["jsonObject", "jsonField", "claimsFromJwt"] {
+        assert_eq!(
+            effects_in(&model, "chatgpt_plan.codec", callable),
+            no_effects(),
+            "{callable}"
+        );
+        let CallableProvenanceSummary::Analyzed { return_origins, .. } =
+            provenance_in(&model, "chatgpt_plan.codec", callable)
+        else {
+            panic!("{callable} must keep analyzed detached provenance")
+        };
+        assert!(
+            return_origins.contains(&ValueProvenance::Fresh),
+            "{callable}: {return_origins:?}"
+        );
+        assert!(
+            !return_origins
+                .iter()
+                .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. })),
+            "{callable}: {return_origins:?}"
+        );
+    }
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::ReceiverBuiltin { op }
+                if op.canonical_key == "receiver:JsonObject.get@1"
+        )
+    }));
+}
+
+#[test]
 fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
     let model = analyze_named(
         r#"

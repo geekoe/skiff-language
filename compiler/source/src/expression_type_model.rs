@@ -2824,9 +2824,9 @@ impl<'a> OwnerChecker<'a> {
                 arg_types,
             );
         }
-        if receiver_root.as_deref() == Some("JsonObject") && method_name == "has" {
+        if receiver_root.as_deref() == Some("JsonObject") && matches!(method_name, "get" | "has") {
             self.validate_resolved_call_params(
-                "JsonObject.has",
+                &format!("JsonObject.{method_name}"),
                 vec![(
                     "field".to_string(),
                     resolved_type_from_ir(&builtin_type("string")),

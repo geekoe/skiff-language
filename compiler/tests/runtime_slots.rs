@@ -622,6 +622,66 @@ fn json_object_receiver_call_lowers_to_receiver_builtin() {
 }
 
 #[test]
+fn json_object_get_enforces_exact_receiver_arity_key_and_return_type() {
+    for (name, source, expected) in [
+        (
+            "wrong_receiver",
+            r#"
+                function run(value: string) -> Json {
+                    return value.get("field")
+                }
+            "#,
+            "receiver method `get`",
+        ),
+        (
+            "missing_argument",
+            r#"
+                function run(value: JsonObject) -> Json {
+                    return value.get()
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run(value: JsonObject) -> Json {
+                    return value.get("field", "other")
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "wrong_key",
+            r#"
+                function run(value: JsonObject) -> Json {
+                    return value.get(1)
+                }
+            "#,
+            "call `JsonObject.get` argument 1",
+        ),
+        (
+            "wrong_return",
+            r#"
+                function run(value: JsonObject) -> bool {
+                    return value.get("field")
+                }
+            "#,
+            "return type mismatch",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/json_object_get_{name}.skiff"),
+            format!("internal.json_object_get_{name}"),
+        )
+        .expect_err("invalid JsonObject.get call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
 fn json_object_has_enforces_exact_receiver_and_arity() {
     let artifact = compile_package_file_ir(
         r#"

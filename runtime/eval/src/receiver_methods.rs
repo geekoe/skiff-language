@@ -673,6 +673,53 @@ mod json_object_receiver_tests {
             RuntimeValue::Bool(true)
         );
     }
+
+    #[test]
+    fn json_object_get_returns_null_for_missing_and_preserves_nested_heap_identity() {
+        let mut heap = RequestHeap::default();
+        let nested_object = heap
+            .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
+                "value".to_string(),
+                RuntimeValue::Number(1.0),
+            )])))
+            .unwrap();
+        let nested_array = heap.alloc_array(vec![RuntimeValue::Number(2.0)]).unwrap();
+        let receiver = RuntimeValue::Heap(
+            heap.alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([
+                (
+                    "scalar".to_string(),
+                    RuntimeValue::String("text".to_string()),
+                ),
+                ("object".to_string(), RuntimeValue::Heap(nested_object)),
+                ("array".to_string(), RuntimeValue::Heap(nested_array)),
+            ])))
+            .unwrap(),
+        );
+
+        for (key, expected) in [
+            ("missing", RuntimeValue::Null),
+            ("scalar", RuntimeValue::String("text".to_string())),
+            ("object", RuntimeValue::Heap(nested_object)),
+            ("array", RuntimeValue::Heap(nested_array)),
+        ] {
+            assert_eq!(
+                ReceiverMethodDispatch::new(&mut heap)
+                    .dispatch_op(
+                        &receiver_op("JsonObject", "get"),
+                        receiver.clone(),
+                        vec![RuntimeValue::String(key.to_string())],
+                    )
+                    .unwrap(),
+                expected,
+                "{key}"
+            );
+        }
+
+        assert!(
+            heap.get(nested_object).is_ok() && heap.get(nested_array).is_ok(),
+            "returned handles must still resolve to the receiver's original nested values"
+        );
+    }
 }
 
 #[cfg(test)]

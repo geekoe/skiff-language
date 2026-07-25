@@ -320,6 +320,31 @@ const fn mutating_json_object_set() -> BuiltinReceiverCallableSemantics {
     }
 }
 
+const fn json_object_get() -> BuiltinReceiverCallableSemantics {
+    BuiltinReceiverCallableSemantics {
+        op: BuiltinReceiverOp {
+            receiver: BuiltinReceiverRoot::JsonObject,
+            method: BuiltinReceiverMethod::Get,
+            signature_version: 1,
+            canonical_key: canonical_key(
+                BuiltinReceiverRoot::JsonObject,
+                BuiltinReceiverMethod::Get,
+                1,
+            ),
+        },
+        effects: CallableMayEffects {
+            writes_caller_reachable: false,
+            returns_caller_alias: true,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: true,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        },
+        return_provenance: ValueProvenance::CallerParameter { index: 0 },
+    }
+}
+
 pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantics] = &[
     detached_scalar_receiver(BuiltinReceiverRoot::Array, BuiltinReceiverMethod::Length),
     mutating_array_push(),
@@ -346,6 +371,7 @@ pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantic
         BuiltinReceiverRoot::StringText,
         BuiltinReceiverMethod::StartsWith,
     ),
+    json_object_get(),
     detached_scalar_receiver(BuiltinReceiverRoot::JsonObject, BuiltinReceiverMethod::Has),
     detached_scalar_receiver(BuiltinReceiverRoot::Date, BuiltinReceiverMethod::Compare),
     detached_scalar_receiver(
@@ -993,6 +1019,7 @@ mod tests {
             "receiver:Date.isBefore@1",
             "receiver:Date.toEpochMilliseconds@1",
             "receiver:Duration.toMilliseconds@1",
+            "receiver:JsonObject.get@1",
             "receiver:JsonObject.has@1",
             "receiver:JsonObject.set@1",
             "receiver:bytes.length@1",
@@ -1022,21 +1049,24 @@ mod tests {
                 semantics.op.canonical_key,
                 "receiver:Array.push@1" | "receiver:JsonObject.set@1"
             );
+            let aliases_receiver = semantics.op.canonical_key == "receiver:JsonObject.get@1";
             assert_eq!(
                 semantics.effects,
                 CallableMayEffects {
                     writes_caller_reachable: mutates_receiver,
-                    returns_caller_alias: false,
+                    returns_caller_alias: aliases_receiver,
                     throws_caller_alias: false,
                     escapes_caller_value: false,
-                    requires_same_heap_identity: mutates_receiver,
+                    requires_same_heap_identity: mutates_receiver || aliases_receiver,
                     invokes_unknown_target: false,
                     may_suspend: false,
                 }
             );
             assert_eq!(
                 semantics.return_provenance,
-                if mutates_receiver {
+                if aliases_receiver {
+                    ValueProvenance::CallerParameter { index: 0 }
+                } else if mutates_receiver {
                     ValueProvenance::Constant
                 } else {
                     ValueProvenance::Fresh
@@ -1052,7 +1082,6 @@ mod tests {
         assert!(builtin_receiver_callable_semantics(mutable_json_object).is_some());
 
         for missing in [
-            builtin_receiver_op_by_name("JsonObject", "get").unwrap(),
             builtin_receiver_op_by_name("JsonObject", "delete").unwrap(),
             builtin_receiver_op_by_name("string", "replaceAll").unwrap(),
         ] {

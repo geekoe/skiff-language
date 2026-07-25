@@ -444,10 +444,6 @@ fn receiver_callable_callee(op: BuiltinReceiverOp) -> Option<CallableState> {
         "receiver:bytes.toUtf8String@1" => {
             state.return_origins.insert(Origin::Fresh);
         }
-        "receiver:JsonObject.get@1" => {
-            state.effects.returns_caller_alias = true;
-            state.return_origins.insert(Origin::CallerParameter(0));
-        }
         _ => return None,
     }
     Some(state)
