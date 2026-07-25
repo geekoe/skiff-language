@@ -706,7 +706,9 @@ impl<'a> OwnerChecker<'a> {
     fn check_stmt(&mut self, stmt: &Stmt) -> bool {
         match stmt {
             Stmt::Assert { condition, .. } => {
+                let narrowings = self.condition_narrowings(condition);
                 self.check_condition(condition, "condition");
+                self.apply_narrowing(&narrowings.when_true);
                 false
             }
             Stmt::Let {
@@ -4331,6 +4333,19 @@ mod tests {
     fn expression_type_result(
         source_text: &str,
     ) -> Result<ExpressionTypeModel, ExpressionTypeModelBuildError> {
+        expression_type_result_with_source_role(source_text, false)
+    }
+
+    fn test_expression_type_result(
+        source_text: &str,
+    ) -> Result<ExpressionTypeModel, ExpressionTypeModelBuildError> {
+        expression_type_result_with_source_role(source_text, true)
+    }
+
+    fn expression_type_result_with_source_role(
+        source_text: &str,
+        is_test_file: bool,
+    ) -> Result<ExpressionTypeModel, ExpressionTypeModelBuildError> {
         let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .canonicalize()
@@ -4338,13 +4353,23 @@ mod tests {
         let platform_sources =
             CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load");
         initialize_prelude_registry(&platform_sources).expect("prelude registry initializes");
+        let relative_path = if is_test_file {
+            "internal/any_interface.test.skiff"
+        } else {
+            "internal/any_interface.skiff"
+        };
+        let module_path = if is_test_file {
+            "internal.any_interface.__test"
+        } else {
+            ANY_INTERFACE_MODULE
+        };
         let source = CompilerSourceFile::parse(
-            PathBuf::from("internal/any_interface.skiff"),
-            ANY_INTERFACE_MODULE.to_string(),
+            PathBuf::from(relative_path),
+            module_path.to_string(),
             false,
-            false,
+            is_test_file,
             source_text.to_string(),
-            "internal/any_interface.skiff",
+            relative_path,
         )
         .expect("test source should parse");
         let parsed_sources = parse_publication_sources(&PathBuf::from("/test"), &[source])
@@ -4576,6 +4601,117 @@ mod tests {
             error_branch.contains("unknown field `value`"),
             "{error_branch}"
         );
+    }
+
+    #[test]
+    fn test_assertion_true_flow_narrows_stable_bindings() {
+        test_expression_type_result(
+            r#"
+              type Payload { value: string }
+
+              function make() -> Payload {
+                return Payload { value: "ok" }
+              }
+
+              function maybe() -> Payload? {
+                return make()
+              }
+
+              test "nullable local" {
+                const value: Payload? = maybe()
+                assert value != null
+                assert value.value == "ok"
+              }
+
+              test "tagged catch result" {
+                const attempted = catch<string>(make())
+                assert attempted.tag == "ok"
+                assert attempted.value.value == "ok"
+              }
+
+              test "conjunction" {
+                const value: Payload? = maybe()
+                const attempted = catch<string>(make())
+                assert value != null && attempted.tag == "ok"
+                assert value.value == attempted.value.value
+              }
+
+              test "nested test block" {
+                const value: Payload? = maybe()
+                if true {
+                  assert value != null
+                  assert value.value == "ok"
+                }
+              }
+            "#,
+        )
+        .expect("assertions in tests must carry their true-flow narrowing forward");
+    }
+
+    #[test]
+    fn test_assertion_narrowing_fails_closed_for_invalidated_or_unstable_values() {
+        let cases = [
+            (
+                r#"
+                  type Payload { value: string }
+                  function maybe() -> Payload? { return Payload { value: "ok" } }
+                  test "opposite null assertion" {
+                    const value: Payload? = maybe()
+                    assert value == null
+                    assert value.value == "ok"
+                  }
+                "#,
+                "opposite null assertion",
+            ),
+            (
+                r#"
+                  type Payload { value: string }
+                  function maybe() -> Payload? { return Payload { value: "ok" } }
+                  test "unstable call" {
+                    assert maybe() != null
+                    assert maybe().value == "ok"
+                  }
+                "#,
+                "unstable call expression",
+            ),
+            (
+                r#"
+                  type Payload { value: string }
+                  function maybe() -> Payload? { return Payload { value: "ok" } }
+                  test "reassignment" {
+                    let value: Payload? = maybe()
+                    assert value != null
+                    value = null
+                    assert value.value == "ok"
+                  }
+                "#,
+                "reassignment",
+            ),
+            (
+                r#"
+                  type Payload { value: string }
+                  function maybe() -> Payload? { return Payload { value: "ok" } }
+                  test "branch merge" {
+                    const value: Payload? = maybe()
+                    if true {
+                      assert value != null
+                    }
+                    assert value.value == "ok"
+                  }
+                "#,
+                "branch merge",
+            ),
+        ];
+
+        for (source, label) in cases {
+            let error = test_expression_type_result(source)
+                .expect_err("invalid assert narrowing must fail closed")
+                .message();
+            assert!(
+                error.contains("nullable") || error.contains("unknown field"),
+                "{label} should retain the unsafe optional type, got:\n{error}"
+            );
+        }
     }
 
     #[test]
