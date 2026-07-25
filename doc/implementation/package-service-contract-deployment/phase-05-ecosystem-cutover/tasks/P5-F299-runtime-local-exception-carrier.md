@@ -1,6 +1,7 @@
 # P5-F299 Runtime local value and exception carrier
 
-状态：Ready after prerequisite。
+状态：Implemented checkpoint with upstream gaps。结果见
+`P5-F299-runtime-local-exception-carrier-implementation-result.md`。
 
 第一次执行发现required instruction site与required catch type在linked IR转换时被丢弃；精确事实记录在
 `P5-F299-runtime-local-exception-carrier-result.md`。前置
