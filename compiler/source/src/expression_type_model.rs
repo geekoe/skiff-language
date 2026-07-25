@@ -2981,18 +2981,34 @@ impl<'a> OwnerChecker<'a> {
                 arg_types,
             );
         }
-        if receiver_root.as_deref() == Some("JsonObject")
-            && matches!(method_name, "get" | "has" | "delete")
-        {
-            self.validate_resolved_call_params(
-                &format!("JsonObject.{method_name}"),
-                vec![(
-                    "field".to_string(),
-                    resolved_type_from_ir(&builtin_type("string")),
-                )],
-                args,
-                arg_types,
-            );
+        if receiver_root.as_deref() == Some("JsonObject") {
+            match method_name {
+                "get" | "has" | "delete" => self.validate_resolved_call_params(
+                    &format!("JsonObject.{method_name}"),
+                    vec![(
+                        "field".to_string(),
+                        resolved_type_from_ir(&builtin_type("string")),
+                    )],
+                    args,
+                    arg_types,
+                ),
+                "set" => self.validate_resolved_call_params(
+                    "JsonObject.set",
+                    vec![
+                        (
+                            "field".to_string(),
+                            resolved_type_from_ir(&builtin_type("string")),
+                        ),
+                        (
+                            "value".to_string(),
+                            resolved_type_from_ir(&builtin_type("Json")),
+                        ),
+                    ],
+                    args,
+                    arg_types,
+                ),
+                _ => {}
+            }
         }
         if receiver_root.as_deref() == Some("Map") && matches!(method_name, "has" | "set") {
             self.validate_map_has_or_set_args(&receiver_ty, method_name, args, arg_types);

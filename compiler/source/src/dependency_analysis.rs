@@ -194,6 +194,15 @@ impl SourceDependencyAnalysisInput {
     ) -> Option<&PackageSchemaTypeRecord> {
         self.contracts
             .package_type_by_owner_and_stable_key(package_id, stable_key)
+            .or_else(|| {
+                self.packages
+                    .values()
+                    .flat_map(|facts| facts.schema_records.values())
+                    .find(|record| {
+                        record.package_id == package_id
+                            && record.stable_schema_key == stable_key
+                    })
+            })
     }
 
     pub fn direct_package_type(

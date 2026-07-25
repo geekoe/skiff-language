@@ -371,6 +371,13 @@ pub(super) fn package_type_target_assignable(
     if package_type_assignable(actual, expected) {
         return true;
     }
+    if package_type_is_json_target(expected) {
+        return package_type_json_compatible(
+            actual,
+            dependency_analysis,
+            package_type_is_json_object_target(expected),
+        );
+    }
     match (actual, expected) {
         (PackageTypeRef::PackageSchema { .. }, PackageTypeRef::PackageSchema { .. }) => false,
         (
@@ -433,6 +440,138 @@ pub(super) fn package_type_target_assignable(
                     .collect(),
             },
         ),
+        _ => false,
+    }
+}
+
+fn package_type_is_json_target(ty: &PackageTypeRef) -> bool {
+    matches!(
+        ty,
+        PackageTypeRef::Container { name, arguments }
+            if arguments.is_empty() && matches!(name.as_str(), "Json" | "JsonObject")
+    )
+}
+
+fn package_type_is_json_object_target(ty: &PackageTypeRef) -> bool {
+    matches!(
+        ty,
+        PackageTypeRef::Container { name, arguments }
+            if arguments.is_empty() && name == "JsonObject"
+    )
+}
+
+fn package_type_json_compatible(
+    ty: &PackageTypeRef,
+    dependency_analysis: &SourceDependencyAnalysisInput,
+    object_only: bool,
+) -> bool {
+    match ty {
+        PackageTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => dependency_analysis
+            .exact_package_type(package_id, stable_schema_key, package_schema_type_id)
+            .and_then(package_schema_representation)
+            .is_some_and(|representation| {
+                package_type_json_compatible(&representation, dependency_analysis, object_only)
+            }),
+        PackageTypeRef::Container { name, arguments } => match name.as_str() {
+            "JsonObject" if arguments.is_empty() => true,
+            "Json" if arguments.is_empty() => !object_only,
+            "string" | "integer" | "number" | "bool" | "null"
+                if arguments.is_empty() =>
+            {
+                !object_only
+            }
+            "Array" if arguments.len() == 1 => {
+                !object_only
+                    && package_type_json_compatible(
+                        &arguments[0],
+                        dependency_analysis,
+                        false,
+                    )
+            }
+            "Map" if arguments.len() == 2 => {
+                let string_key = matches!(
+                    &arguments[0],
+                    PackageTypeRef::Container { name, arguments }
+                        if name == "string" && arguments.is_empty()
+                );
+                string_key
+                    && package_type_json_compatible(
+                        &arguments[1],
+                        dependency_analysis,
+                        false,
+                    )
+            }
+            _ => false,
+        },
+        PackageTypeRef::Nullable { inner } => {
+            !object_only && package_type_json_compatible(inner, dependency_analysis, false)
+        }
+        PackageTypeRef::Local { local_type } => {
+            local_ir_json_compatible(local_type, dependency_analysis, object_only)
+        }
+    }
+}
+
+fn local_ir_json_compatible(
+    ty: &TypeRefIr,
+    dependency_analysis: &SourceDependencyAnalysisInput,
+    object_only: bool,
+) -> bool {
+    match ty {
+        TypeRefIr::Literal {
+            value:
+                skiff_artifact_model::LiteralIr::String { .. }
+                | skiff_artifact_model::LiteralIr::Bool { .. }
+                | skiff_artifact_model::LiteralIr::Number { .. }
+                | skiff_artifact_model::LiteralIr::Null,
+        } => !object_only,
+        TypeRefIr::Builtin { name, args } => package_type_json_compatible(
+            &PackageTypeRef::Container {
+                name: name.clone(),
+                arguments: args
+                    .iter()
+                    .cloned()
+                    .map(|local_type| PackageTypeRef::Local { local_type })
+                    .collect(),
+            },
+            dependency_analysis,
+            object_only,
+        ),
+        TypeRefIr::Nullable { inner } => {
+            !object_only && local_ir_json_compatible(inner, dependency_analysis, false)
+        }
+        TypeRefIr::Union { items } => {
+            !object_only
+                && !items.is_empty()
+                && items
+                    .iter()
+                    .all(|item| local_ir_json_compatible(item, dependency_analysis, false))
+        }
+        TypeRefIr::Record { fields } => fields
+            .values()
+            .all(|field| local_ir_json_compatible(field, dependency_analysis, false)),
+        TypeRefIr::PackageSymbol { symbol } => match &symbol.package {
+            PackageRefIr::PackageId { package_id } => dependency_analysis
+                .package_type_by_owner_and_stable_key(package_id, &symbol.symbol_path),
+            PackageRefIr::Dependency { dependency_ref } => {
+                dependency_analysis.direct_package_type(dependency_ref, &symbol.symbol_path)
+            }
+        }
+        .and_then(package_schema_representation)
+        .is_some_and(|representation| {
+            package_type_json_compatible(&representation, dependency_analysis, object_only)
+        }),
+        TypeRefIr::ServiceSymbol { symbol } => dependency_analysis
+            .public_package_type_by_stable_key(&symbol.module_path, &symbol.symbol)
+            .ok()
+            .and_then(package_schema_representation)
+            .is_some_and(|representation| {
+                package_type_json_compatible(&representation, dependency_analysis, object_only)
+            }),
         _ => false,
     }
 }

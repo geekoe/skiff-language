@@ -277,6 +277,11 @@ fn map_and_json_targets_keep_map_materialization_facts() {
           function jsonObject() -> JsonObject {
             return { count: 2 }
           }
+
+          function setNestedJson(body: JsonObject) -> null {
+            body.set("reasoning", { effort: "high" })
+            return null
+          }
         "#,
     )
     .expect("Map/Json object branches should type-check");
@@ -304,6 +309,10 @@ fn map_and_json_targets_keep_map_materialization_facts() {
     ));
     assert!(matches!(
         built.materialization(r#"{ count: 2 }"#).kind,
+        ObjectMaterializationKind::Map
+    ));
+    assert!(matches!(
+        built.materialization(r#"{ effort: "high" }"#).kind,
         ObjectMaterializationKind::Map
     ));
 }

@@ -136,6 +136,90 @@ fn package_nominal_target_typing_recurses_through_records_and_iterables() {
     ));
 }
 
+#[test]
+fn json_target_accepts_only_json_compatible_package_nominal_representations() {
+    let json = PackageTypeRef::Container {
+        name: "Json".to_string(),
+        arguments: Vec::new(),
+    };
+    for (stable_key, type_id, target) in [
+        (
+            "Scalar",
+            "type:scalar",
+            ContractTypeRef::builtin("string"),
+        ),
+        (
+            "Union",
+            "type:union",
+            ContractTypeRef::StructuralUnion {
+                variants: vec![
+                    ContractTypeRef::builtin("string"),
+                    ContractTypeRef::builtin("null"),
+                ],
+            },
+        ),
+        (
+            "Record",
+            "type:record",
+            ContractTypeRef::Record {
+                fields: BTreeMap::from([(
+                    "enabled".to_string(),
+                    ContractTypeRef::builtin("bool"),
+                )]),
+            },
+        ),
+        (
+            "Container",
+            "type:container",
+            ContractTypeRef::Builtin {
+                name: "Array".to_string(),
+                arguments: vec![ContractTypeRef::builtin("number")],
+            },
+        ),
+    ] {
+        let dependency_analysis =
+            dependency_analysis_with_alias("example.types", stable_key, type_id, target);
+        assert!(
+            package_type_target_assignable(
+                &package_type("example.types", stable_key, type_id),
+                &json,
+                &dependency_analysis,
+            ),
+            "{stable_key} should cross only the explicit JSON target"
+        );
+    }
+
+    let non_json = dependency_analysis_with_alias(
+        "example.types",
+        "Binary",
+        "type:binary",
+        ContractTypeRef::builtin("bytes"),
+    );
+    assert!(!package_type_target_assignable(
+        &package_type("example.types", "Binary", "type:binary"),
+        &json,
+        &non_json,
+    ));
+    assert!(!package_type_target_assignable(
+        &package_type("example.types", "Missing", "type:missing"),
+        &json,
+        &non_json,
+    ));
+
+    let exact_scalar = package_type("example.types", "Scalar", "type:scalar");
+    let scalar = dependency_analysis_with_alias(
+        "example.types",
+        "Scalar",
+        "type:scalar",
+        ContractTypeRef::builtin("string"),
+    );
+    assert!(!package_type_target_assignable(
+        &exact_scalar,
+        &package_type("other.types", "Scalar", "type:scalar"),
+        &scalar,
+    ));
+}
+
 fn dependency_analysis_with_alias(
     package_id: &str,
     stable_key: &str,
