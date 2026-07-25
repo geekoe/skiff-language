@@ -4095,12 +4095,7 @@ fn exact_contract_field_callee_uses_detached_descriptor() {
         SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap(),
     );
 
-    assert_eq!(effects(&model, "wrapper"), no_effects());
-    let CallableProvenanceSummary::Analyzed { return_origins, .. } = provenance(&model, "wrapper")
-    else {
-        panic!("exact contract field callee must retain analyzed provenance");
-    };
-    assert_eq!(return_origins, &vec![ValueProvenance::Fresh]);
+    assert_detached_contract_summary(&model, "wrapper", false);
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
             target,
@@ -4169,12 +4164,7 @@ fn detached_contract_target_uses_descriptor_effect_guarantees() {
         dependency_input,
     );
 
-    assert_eq!(effects(&model, "wrapper"), suspend_only_effects());
-    let CallableProvenanceSummary::Analyzed { return_origins, .. } = provenance(&model, "wrapper")
-    else {
-        panic!("detached contract target must retain analyzed provenance");
-    };
-    assert_eq!(return_origins, &vec![ValueProvenance::Fresh]);
+    assert_detached_contract_summary(&model, "wrapper", true);
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
             target,
@@ -4188,43 +4178,58 @@ fn detached_contract_target_uses_descriptor_effect_guarantees() {
 }
 
 #[test]
-fn non_detached_or_unsupported_contract_remains_fail_closed() {
-    let (mut contract, schema) =
-        contract_and_schema("example.echo", "1.0.0", "send", "payload", "payloadClosure");
-    contract
-        .operations
-        .values_mut()
-        .next()
-        .unwrap()
-        .contract
-        .effect_guarantee
-        .no_caller_value_escape = false;
-    assign_service_contract_identities(&mut contract).unwrap();
-    let dependency =
-        ResolvedContractDependency::validated(requirement("echo", &contract), contract, &[schema])
-            .unwrap();
-    let model = analyze(
-        r#"
-            function wrapper(input: echo.payload) -> void {
-              echo/send(input)
-            }
-        "#,
-        SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap(),
-    );
-
-    let effects = effects(&model, "wrapper");
-    assert!(effects.writes_caller_reachable);
-    assert!(effects.throws_caller_alias);
-    assert!(effects.escapes_caller_value);
-    assert!(!effects.requires_same_heap_identity);
-    assert!(effects.invokes_unknown_target);
-    assert!(effects.may_suspend);
-    assert!(matches!(
-        provenance(&model, "wrapper"),
-        CallableProvenanceSummary::Unknown {
-            reason: CallableProvenanceUnknownReason::UnknownCallTarget
+fn missing_detached_error_or_other_guarantee_remains_fail_closed() {
+    for missing_guarantee in ["detached_error", "no_caller_value_escape"] {
+        let (mut contract, schema) =
+            contract_and_schema("example.echo", "1.0.0", "send", "payload", "payloadClosure");
+        let guarantee = &mut contract
+            .operations
+            .values_mut()
+            .next()
+            .unwrap()
+            .contract
+            .effect_guarantee;
+        match missing_guarantee {
+            "detached_error" => guarantee.detached_error = false,
+            "no_caller_value_escape" => guarantee.no_caller_value_escape = false,
+            _ => unreachable!(),
         }
-    ));
+        assign_service_contract_identities(&mut contract).unwrap();
+        let dependency = ResolvedContractDependency::validated(
+            requirement("echo", &contract),
+            contract,
+            &[schema],
+        )
+        .unwrap();
+        let model = analyze(
+            r#"
+                function wrapper(input: echo.payload) -> void {
+                  echo/send(input)
+                }
+            "#,
+            SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap(),
+        );
+
+        let effects = effects(&model, "wrapper");
+        assert!(effects.writes_caller_reachable, "{missing_guarantee}");
+        assert!(effects.throws_caller_alias, "{missing_guarantee}");
+        assert!(effects.escapes_caller_value, "{missing_guarantee}");
+        assert!(
+            !effects.requires_same_heap_identity,
+            "{missing_guarantee}: fail-closed must not invent identity observation"
+        );
+        assert!(effects.invokes_unknown_target, "{missing_guarantee}");
+        assert!(effects.may_suspend, "{missing_guarantee}");
+        assert!(
+            matches!(
+                provenance(&model, "wrapper"),
+                CallableProvenanceSummary::Unknown {
+                    reason: CallableProvenanceUnknownReason::UnknownCallTarget
+                }
+            ),
+            "{missing_guarantee}"
+        );
+    }
 }
 
 #[test]
@@ -4551,6 +4556,32 @@ fn is_caller_parameter_provenance(origin: &ValueProvenance) -> bool {
         origin,
         ValueProvenance::CallerParameter { .. } | ValueProvenance::CallerParameterProjection { .. }
     )
+}
+
+fn assert_detached_contract_summary(model: &PackageSourceModel, symbol: &str, may_suspend: bool) {
+    let expected_effects = if may_suspend {
+        suspend_only_effects()
+    } else {
+        no_effects()
+    };
+    assert_eq!(effects(model, symbol), expected_effects, "{symbol}");
+    let CallableProvenanceSummary::Analyzed {
+        return_origins,
+        direct_return_origins,
+        throw_origins,
+        escape_lanes,
+    } = provenance(model, symbol)
+    else {
+        panic!("{symbol} must retain detached contract provenance");
+    };
+    assert_eq!(return_origins, &vec![ValueProvenance::Fresh], "{symbol}");
+    assert_eq!(
+        direct_return_origins,
+        &vec![ValueProvenance::Fresh],
+        "{symbol}"
+    );
+    assert_eq!(throw_origins, &vec![ValueProvenance::Fresh], "{symbol}");
+    assert!(escape_lanes.is_empty(), "{symbol}");
 }
 
 fn no_effects() -> CallableMayEffects {
