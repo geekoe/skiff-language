@@ -1,6 +1,7 @@
 # P5-F302 Applied nominal compiler combined integration probe
 
-状态：Ready。
+状态：FAIL。结果见
+`P5-F302-applied-nominal-compiler-combined-probe-result.md`。
 
 ## 输入与父节点
 
@@ -37,4 +38,3 @@ git status --short
 
 每个selector必须非零。PASS后解除`A2-language`独立验收，并允许F269基于该精确compiler checkpoint
 重新运行生态消费任务。
-
