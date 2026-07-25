@@ -35,6 +35,50 @@ pub(crate) fn resolved_contract_fixture(
         .unwrap()
 }
 
+pub(crate) fn resolved_nullable_field_contract_fixture(
+    alias: &str,
+    service_id: &str,
+    operation_key: &str,
+    outer_type_key: &str,
+    nullable_field: &str,
+    inner_type_key: &str,
+) -> ResolvedContractDependency {
+    let version = "1.0.0";
+    let package_id = format!("{service_id}.package");
+    let inner_descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([("code".to_string(), ContractTypeRef::builtin("string"))]),
+        },
+    };
+    let inner_record = schema_record(&package_id, inner_type_key, inner_descriptor);
+    let outer_descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([(
+                nullable_field.to_string(),
+                ContractTypeRef::Nullable {
+                    inner: Box::new(ContractTypeRef::package_schema(
+                        &package_id,
+                        inner_type_key,
+                        inner_record.package_schema_type_id.clone(),
+                    )),
+                },
+            )]),
+        },
+    };
+    let outer_record = schema_record(&package_id, outer_type_key, outer_descriptor);
+    let (contract, schema) = contract_and_schema_from_records(
+        service_id,
+        version,
+        operation_key,
+        outer_record,
+        inner_record,
+    );
+    ResolvedContractDependency::validated(requirement(alias, &contract), contract, &[schema])
+        .unwrap()
+}
+
 pub(crate) fn requirement(alias: &str, contract: &ServiceContract) -> ContractRequirement {
     ContractRequirement {
         alias: alias.to_string(),
@@ -58,25 +102,56 @@ pub(crate) fn contract_and_schema(
             fields: BTreeMap::from([("value".to_string(), ContractTypeRef::builtin("string"))]),
         },
     };
-    let public_type_id = package_schema_type_id(&package_id, public_type_key, &descriptor).unwrap();
-    let second_type_id = package_schema_type_id(&package_id, second_type_key, &descriptor).unwrap();
-    let records = [
-        (public_type_key, public_type_id.clone()),
-        (second_type_key, second_type_id.clone()),
-    ]
-    .into_iter()
-    .map(|(key, id)| {
-        (
-            id.clone(),
-            PackageSchemaTypeRecord {
-                package_id: package_id.clone(),
-                stable_schema_key: key.to_string(),
-                package_schema_type_id: id,
-                canonical_descriptor: descriptor.clone(),
-            },
+    contract_and_schema_from_records(
+        service_id,
+        version,
+        operation_key,
+        schema_record(&package_id, public_type_key, descriptor.clone()),
+        schema_record(&package_id, second_type_key, descriptor),
+    )
+}
+
+fn schema_record(
+    package_id: &str,
+    stable_schema_key: &str,
+    canonical_descriptor: PackageSchemaCanonicalDescriptor,
+) -> PackageSchemaTypeRecord {
+    PackageSchemaTypeRecord {
+        package_id: package_id.to_string(),
+        stable_schema_key: stable_schema_key.to_string(),
+        package_schema_type_id: package_schema_type_id(
+            package_id,
+            stable_schema_key,
+            &canonical_descriptor,
         )
-    })
-    .collect::<BTreeMap<_, _>>();
+        .unwrap(),
+        canonical_descriptor,
+    }
+}
+
+fn contract_and_schema_from_records(
+    service_id: &str,
+    version: &str,
+    operation_key: &str,
+    parameter_record: PackageSchemaTypeRecord,
+    return_record: PackageSchemaTypeRecord,
+) -> (ServiceContract, ResolvedPackageSchema) {
+    let package_id = parameter_record.package_id.clone();
+    assert_eq!(return_record.package_id, package_id);
+    let parameter_type = ContractTypeRef::package_schema(
+        &package_id,
+        &parameter_record.stable_schema_key,
+        parameter_record.package_schema_type_id.clone(),
+    );
+    let return_type = ContractTypeRef::package_schema(
+        &package_id,
+        &return_record.stable_schema_key,
+        return_record.package_schema_type_id.clone(),
+    );
+    let records = [parameter_record, return_record]
+        .into_iter()
+        .map(|record| (record.package_schema_type_id.clone(), record))
+        .collect::<BTreeMap<_, _>>();
     let index_types = records
         .values()
         .map(|record| {
@@ -96,6 +171,7 @@ pub(crate) fn contract_and_schema(
             .unwrap(),
         types: index_types,
     };
+    let required_type_ids = records.keys().cloned().collect();
     let schema = ResolvedPackageSchema::new(
         "schema".to_string(),
         package_id.clone(),
@@ -113,19 +189,11 @@ pub(crate) fn contract_and_schema(
         contract: BoundaryOperationContract {
             parameters: vec![BoundaryParameter {
                 name: "input".to_string(),
-                ty: ContractTypeRef::package_schema(
-                    &package_id,
-                    public_type_key,
-                    public_type_id.clone(),
-                ),
+                ty: parameter_type,
                 value_plan: linkable(BoundaryValueOwner::Caller),
             }],
             return_value: BoundaryReturn {
-                ty: ContractTypeRef::package_schema(
-                    &package_id,
-                    second_type_key,
-                    second_type_id.clone(),
-                ),
+                ty: return_type,
                 value_plan: linkable(BoundaryValueOwner::Provider),
             },
             errors: BoundaryErrorContract::None,
@@ -151,11 +219,7 @@ pub(crate) fn contract_and_schema(
         operations: BTreeMap::from([(operation_id, operation)]),
         package_type_requirements: vec![PackageTypeRequirement {
             package_id,
-            required_type_ids: vec![public_type_id, second_type_id]
-                .into_iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect(),
+            required_type_ids,
         }],
         diagnostic_text: ContractDiagnosticText {
             service: service_id.to_string(),

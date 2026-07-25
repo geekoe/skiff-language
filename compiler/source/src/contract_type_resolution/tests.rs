@@ -13,8 +13,11 @@ use skiff_compiler_input::CompilerPlatformSources;
 
 use crate::{
     build_package_from_parsed_sources_with_dependency_analysis,
-    contract_dependency_test_fixture::resolved_contract_fixture,
-    parsed_sources::parse_publication_sources, source_graph::CompilerSourceFile,
+    contract_dependency_test_fixture::{
+        resolved_contract_fixture, resolved_nullable_field_contract_fixture,
+    },
+    parsed_sources::parse_publication_sources,
+    source_graph::CompilerSourceFile,
     CompileParsedPackageSourcesInput, PackageSourceModel, SourceCompileError,
     SourceCompilePackageFacts,
 };
@@ -175,6 +178,141 @@ fn service_api_nominal_record_rejects_unknown_constructor_and_read_fields() {
             "unexpected error: {error}"
         );
     }
+}
+
+#[test]
+fn stable_nullable_field_paths_narrow_local_and_imported_nominal_records() {
+    build_model(
+        r#"
+            type ToolError { code: string }
+            type ToolResult { error: ToolError? }
+
+            function consume(error: ToolError) -> string { return error.code }
+
+            function submit(result: ToolResult) -> string {
+                if result.error != null {
+                    return consume(result.error)
+                }
+                return ""
+            }
+        "#,
+        &SourceDependencyAnalysisInput::default(),
+        &BTreeMap::new(),
+    )
+    .expect("a stable local nominal field must carry its non-null refinement to the read");
+
+    let dependency_analysis = nullable_field_contract_dependencies();
+    build_model(
+        r#"
+            function consume(error: agent.ToolError) -> string { return error.code }
+
+            function submit(result: agent.ToolResult) -> string {
+                if result.error != null {
+                    return consume(result.error)
+                }
+                return ""
+            }
+        "#,
+        &dependency_analysis,
+        &BTreeMap::new(),
+    )
+    .expect("an imported PackageSchema field must carry its exact non-null projection to the read");
+}
+
+#[test]
+fn stable_nullable_field_path_narrowing_fails_closed_after_invalidation_or_for_other_paths() {
+    let cases = [
+        (
+            r#"
+                type ToolError { code: string }
+                type ToolResult { error: ToolError? }
+                type State { current: ToolResult }
+
+                function consume(error: ToolError) -> string { return error.code }
+
+                function submit(state: State) -> string {
+                    if state.current.error != null {
+                        state.current = ToolResult { error: null }
+                        return consume(state.current.error)
+                    }
+                    return ""
+                }
+            "#,
+            "a write to the stable path prefix must invalidate its child refinement",
+        ),
+        (
+            r#"
+                type ToolError { code: string }
+                type ToolResult { error: ToolError? }
+
+                function maybe() -> ToolResult {
+                    return ToolResult { error: null }
+                }
+                function consume(error: ToolError) -> string { return error.code }
+
+                function submit() -> string {
+                    if maybe().error != null {
+                        return consume(maybe().error)
+                    }
+                    return ""
+                }
+            "#,
+            "a call result is not a stable path",
+        ),
+        (
+            r#"
+                type ToolError { code: string }
+                type ToolResult { error: ToolError? }
+
+                function consume(error: ToolError) -> string { return error.code }
+
+                function submit(left: ToolResult, right: ToolResult) -> string {
+                    if left.error != null {
+                        return consume(right.error)
+                    }
+                    return ""
+                }
+            "#,
+            "a refinement must not leak to an unrelated path",
+        ),
+    ];
+
+    for (source, label) in cases {
+        let error = build_model(
+            source,
+            &SourceDependencyAnalysisInput::default(),
+            &BTreeMap::new(),
+        )
+        .expect_err(label)
+        .to_string();
+        assert!(
+            error.contains("type mismatch") || error.contains("nullable"),
+            "{label}: unexpected diagnostic:\n{error}"
+        );
+    }
+
+    let dependency_analysis = nullable_field_contract_dependencies();
+    let error = build_model(
+        r#"
+            function consume(error: agent.ToolError) -> string { return error.code }
+
+            function submit(result: agent.ToolResult) -> string {
+                if result.error != null {
+                    result.error = null
+                    return consume(result.error)
+                }
+                return ""
+            }
+        "#,
+        &dependency_analysis,
+        &BTreeMap::new(),
+    )
+    .expect_err("a write must invalidate an imported PackageSchema field refinement")
+    .to_string();
+    assert!(
+        error.contains("canonical type identity mismatch"),
+        "unexpected imported invalidation diagnostic:\n{error}"
+    );
 }
 
 #[test]
@@ -505,6 +643,21 @@ fn contract_dependencies() -> SourceDependencyAnalysisInput {
             "submit",
             "User",
             "Secret",
+        )],
+    )
+    .unwrap()
+}
+
+fn nullable_field_contract_dependencies() -> SourceDependencyAnalysisInput {
+    SourceDependencyAnalysisInput::new(
+        Vec::new(),
+        [resolved_nullable_field_contract_fixture(
+            "agent",
+            "example.agent",
+            "run",
+            "ToolResult",
+            "error",
+            "ToolError",
         )],
     )
     .unwrap()

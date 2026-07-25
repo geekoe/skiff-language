@@ -999,6 +999,7 @@ impl<'a> OwnerChecker<'a> {
                         .cloned();
                     self.contract_projection.bind(name, projected);
                 }
+                self.invalidate_path_refinements_for_write(target);
                 false
             }
             Stmt::If {
@@ -2019,7 +2020,26 @@ impl<'a> OwnerChecker<'a> {
                 Some(db_lease_read_type())
             }
         };
-        let ty = refined_ty.or(ty);
+        let ty = refined_ty.clone().or(ty);
+        if let (Some(refined_ty), Some(dependency_analysis)) =
+            (refined_ty.as_ref(), self.dependency_analysis)
+        {
+            match ContractProjectionState::project_resolved_type(
+                refined_ty,
+                self.type_resolution,
+                dependency_analysis,
+                &self.type_context,
+            ) {
+                Ok(projected) => self
+                    .contract_projection
+                    .record_expression_type(key.clone(), projected),
+                Err(error) => self.diagnostics.push(format!(
+                    "{}: refined expression exact type projection failed at {}: {error}",
+                    self.module_path,
+                    self.expression_span_label(&key)
+                )),
+            }
+        }
         if let Expr::Identifier(name) = expr {
             self.contract_projection.inherit_identifier(&key, name);
         }
@@ -2397,6 +2417,16 @@ impl<'a> OwnerChecker<'a> {
             self.path_refinements.insert(path, ty);
         }
         ty
+    }
+
+    fn invalidate_path_refinements_for_write(&mut self, target: &Expr) {
+        let Some(path) = expr_path(target) else {
+            self.path_refinements.clear();
+            return;
+        };
+        let descendant_prefix = format!("{path}.");
+        self.path_refinements
+            .retain(|refined, _| refined != &path && !refined.starts_with(&descendant_prefix));
     }
 
     fn is_db_field_operand(expr: &Expr, fields: &BTreeMap<String, ResolvedTypeRef>) -> bool {
