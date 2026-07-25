@@ -1,6 +1,7 @@
 # P5-F313 Linked-type-plan service error index fixture migration
 
-状态：Ready。
+状态：Completed。结果见
+`P5-F313-linked-type-plan-index-fixture-result.md`。
 
 ## 直接父节点
 
@@ -33,4 +34,3 @@ selector非零。不得修改其它crate或处理其它遮挡。
 - branch：`codex/p5-f313-linked-type-plan-fixture`
 - 一次性Agent，5分钟内修改，提交并返回测试；
 - 不push、不操作stable、不承接其它节点。
-
