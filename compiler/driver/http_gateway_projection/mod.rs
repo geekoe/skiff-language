@@ -388,14 +388,10 @@ fn project_handler_return(
         stream_item(return_type).map_err(|message| invalid(key, "handler", message))?
     {
         return match kind {
-            GatewayAdapterKind::TypedJson => Ok((
-                GatewayDispatchMode::ServerStream,
-                None,
-                Some(
-                    classifier
-                        .project_exact(item)
-                        .map_err(|message| invalid(key, "handler", message))?,
-                ),
+            GatewayAdapterKind::TypedJson => Err(invalid(
+                key,
+                "handler",
+                "typedJson supports only unary handler returns; HTTP streaming requires rawHttp + Stream<std.http.HttpResponseStreamEvent>",
             )),
             GatewayAdapterKind::RawHttp => {
                 classifier
