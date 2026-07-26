@@ -1,6 +1,7 @@
 # P5-F349 Public generic boundary availability audit
 
-状态：Ready（只读）。
+状态：Completed（只读审计已合入；result：
+`P5-F349-public-generic-boundary-availability-audit-result.md`）。
 
 ## 直接父节点
 
@@ -40,4 +41,3 @@ result记录exact commit/tree、唯一first-loss owner、最小修复范围、�
 
 - `/Users/geek/workspace/skiff-p5-f349-public-generic-audit`
 - `codex/p5-f349-public-generic-audit`
-

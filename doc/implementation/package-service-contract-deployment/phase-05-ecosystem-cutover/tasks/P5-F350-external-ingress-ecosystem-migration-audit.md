@@ -1,6 +1,7 @@
 # P5-F350 External ingress ecosystem migration audit
 
-状态：Ready（只读，跨仓库）。
+状态：Completed（只读跨仓库审计已合入；result：
+`P5-F350-external-ingress-ecosystem-migration-audit-result.md`）。
 
 ## 直接父节点
 

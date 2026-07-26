@@ -1,6 +1,7 @@
 # P5-F347 External ingress compiler / artifact audit
 
-状态：Ready（只读）。
+状态：Completed（只读审计已合入；result：
+`P5-F347-external-ingress-compiler-artifact-audit-result.md`）。
 
 ## 直接父节点
 
@@ -42,4 +43,3 @@ result记录exact commit/tree、关键跳点、首次损失、可复用owner、�
 
 - `/Users/geek/workspace/skiff-p5-f347-ingress-compiler-audit`
 - `codex/p5-f347-ingress-compiler-audit`
-

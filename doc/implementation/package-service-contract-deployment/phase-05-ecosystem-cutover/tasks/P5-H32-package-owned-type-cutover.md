@@ -17,7 +17,7 @@ closure-only内部命名类型进入boundary。compiler必须拒绝它，不能�
 
 完整规范见：
 
-- `../../../../../architecture/package-service-contract-deployment.md`
+- `../../../../architecture/package-service-contract-deployment.md`
 - `../../../../../reference/api-yml.md`
 - `../../../../../reference/static-semantics.md`
 - `../../../../../reference/std-surface.md`

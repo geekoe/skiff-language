@@ -1,6 +1,7 @@
 # P5-F348 External ingress runtime / Router audit
 
-状态：Ready（只读）。
+状态：Completed（只读审计已合入；result：
+`P5-F348-external-ingress-runtime-router-audit-result.md`）。
 
 ## 直接父节点
 
@@ -40,4 +41,3 @@ result记录exact commit/tree、关键跳点、重复owner、首次损失、依�
 
 - `/Users/geek/workspace/skiff-p5-f348-ingress-runtime-audit`
 - `codex/p5-f348-ingress-runtime-audit`
-
