@@ -1,6 +1,6 @@
 # P5-F346 Service error wire / observability independent acceptance
 
-状态：Ready（W2-W / C1 / S1 高风险边界只读验收）。
+状态：Completed（W2-W / C1 / S1 高风险边界独立验收 PASS）。
 
 ## 直接父节点
 
