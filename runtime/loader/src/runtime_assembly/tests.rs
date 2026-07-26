@@ -17,13 +17,12 @@ use skiff_artifact_model::{
     PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageLocalAbiSymbol, PackageRuntimeRequirements, PackageSchemaCanonicalDescriptor,
     PackageSchemaIndex, PackageSchemaIndexEntry, PackageSchemaIndexRef, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, PackageServiceCallRoot, PackageTypeRef,
-    PackageTypeRequirement, PublicationResourceRef, ResourcePolicy, RuntimeAssembly,
-    ServiceBindingTemplate, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, ServiceProtocolIdentity, SlotLayout, TypeRefIr,
-    GATEWAY_ENTRY_IDENTITY_PREFIX, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, PackageTypeRef, PackageTypeRequirement,
+    PublicationResourceRef, ResourcePolicy, RuntimeAssembly, ServiceBindingTemplate,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceProtocolIdentity, SlotLayout, TypeRefIr, GATEWAY_ENTRY_IDENTITY_PREFIX,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -361,10 +360,6 @@ impl Fixture {
                     },
                 },
             )]),
-            service_call_roots: vec![PackageServiceCallRoot::Function {
-                public_path: "health".to_string(),
-                callable_id: callable_id.clone(),
-            }],
             service_call_refs: Vec::new(),
         };
         skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();

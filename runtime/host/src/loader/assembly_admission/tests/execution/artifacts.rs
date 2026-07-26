@@ -454,10 +454,12 @@ impl ProjectedFixture {
         );
         let consumer_file_ref = file_ref(&consumer_file);
         let consumer_file_ir_identity = consumer_file_ref.file_ir_identity.clone();
+        let consumer_callable =
+            PackageCallableId::new("pkg-callable:example.phase-four-consumer:consume");
         let consumer_package = implementation_package(
             "example.phase-four-consumer",
             "consume",
-            PackageCallableId::new("pkg-callable:example.phase-four-consumer:consume"),
+            consumer_callable.clone(),
             &consumer_file,
             consumer_operation_contract,
             &consumer_schema_records,
@@ -472,7 +474,7 @@ impl ProjectedFixture {
                 DeploymentRevision::new("phase-four-provider-r1"),
                 provider_package_ref.clone(),
                 provider_operation.clone(),
-                "provide",
+                provider_callable.clone(),
                 Vec::new(),
                 Vec::new(),
                 BTreeMap::new(),
@@ -491,7 +493,7 @@ impl ProjectedFixture {
                 DeploymentRevision::new("phase-four-consumer-r1"),
                 consumer_package_ref.clone(),
                 consumer_operation,
-                "consume",
+                consumer_callable,
                 vec![PackageBinding {
                     key: PackageRequirementKey {
                         caller_package_build_id: consumer_package_ref.package_build_id.clone(),
@@ -589,7 +591,7 @@ fn deployment_input(
     deployment_revision: DeploymentRevision,
     implementation: PackageArtifactRef,
     operation: ContractOperationId,
-    public_path: &str,
+    package_callable_id: PackageCallableId,
     package_bindings: Vec<PackageBinding>,
     service_selectors: Vec<ServiceSelectorBinding>,
     gateway_entries: BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
@@ -602,7 +604,7 @@ fn deployment_input(
         implementation,
         operation_bindings: vec![ServiceDeploymentOperationInput {
             contract_operation_id: operation,
-            package_public_path: public_path.to_string(),
+            package_callable_id,
         }],
         package_bindings,
         service_selectors,
@@ -1729,7 +1731,6 @@ fn implementation_package(
                 },
             },
         )]),
-        service_call_roots: Vec::new(),
         service_call_refs,
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut package)

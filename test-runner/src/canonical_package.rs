@@ -107,37 +107,73 @@ pub fn compile_package_artifact(
     available_packages: &[PackageArtifact],
     contract_dependencies: &[PackageContractCompileDependency],
 ) -> Result<PublishedPackageArtifact, PackageCompileError> {
-    compile_package_artifact_with_store(
+    compile_package_artifact_with_context(
         platform_sources,
         package,
-        package_aliases,
-        dependency_packages,
-        available_packages,
-        contract_dependencies,
-        None,
-        false,
+        CanonicalPackageCompileContext::new(
+            package_aliases,
+            dependency_packages,
+            available_packages,
+            contract_dependencies,
+        ),
     )
 }
 
-pub(crate) fn compile_package_artifact_with_store(
+pub(crate) struct CanonicalPackageCompileContext<'a> {
+    package_aliases: &'a BTreeMap<String, Vec<String>>,
+    dependency_packages: &'a [PackageArtifact],
+    available_packages: &'a [PackageArtifact],
+    contract_dependencies: &'a [PackageContractCompileDependency],
+    canonical_artifact_store: Option<&'a CanonicalArtifactStore>,
+    test_service: bool,
+}
+
+impl<'a> CanonicalPackageCompileContext<'a> {
+    pub(crate) fn new(
+        package_aliases: &'a BTreeMap<String, Vec<String>>,
+        dependency_packages: &'a [PackageArtifact],
+        available_packages: &'a [PackageArtifact],
+        contract_dependencies: &'a [PackageContractCompileDependency],
+    ) -> Self {
+        Self {
+            package_aliases,
+            dependency_packages,
+            available_packages,
+            contract_dependencies,
+            canonical_artifact_store: None,
+            test_service: false,
+        }
+    }
+
+    pub(crate) fn with_store(mut self, store: &'a CanonicalArtifactStore) -> Self {
+        self.canonical_artifact_store = Some(store);
+        self
+    }
+
+    pub(crate) fn with_test_service(mut self, test_service: bool) -> Self {
+        self.test_service = test_service;
+        self
+    }
+}
+
+pub(crate) fn compile_package_artifact_with_context(
     platform_sources: &CompilerPlatformSources,
     package: &PackageSourceInput,
-    package_aliases: &BTreeMap<String, Vec<String>>,
-    dependency_packages: &[PackageArtifact],
-    available_packages: &[PackageArtifact],
-    contract_dependencies: &[PackageContractCompileDependency],
-    canonical_artifact_store: Option<&CanonicalArtifactStore>,
-    test_service: bool,
+    context: CanonicalPackageCompileContext<'_>,
 ) -> Result<PublishedPackageArtifact, PackageCompileError> {
     let package_id = package.manifest().id.to_string();
-    let mut input =
-        PackageCompileInput::new(platform_sources, package, package_aliases, &package_id)
-            .with_canonical_dependencies(dependency_packages, contract_dependencies)
-            .with_available_canonical_packages(available_packages);
-    if let Some(store) = canonical_artifact_store {
+    let mut input = PackageCompileInput::new(
+        platform_sources,
+        package,
+        context.package_aliases,
+        &package_id,
+    )
+    .with_canonical_dependencies(context.dependency_packages, context.contract_dependencies)
+    .with_available_canonical_packages(context.available_packages);
+    if let Some(store) = context.canonical_artifact_store {
         input = input.with_canonical_artifact_store(store);
     }
-    if test_service {
+    if context.test_service {
         input = input.for_test_service();
     }
     compile_package(input)
@@ -227,15 +263,17 @@ fn compile_package_project_after_platform_context_guard(
     let mut available = manifest_dependencies.clone();
     read_optional_platform_std(&store, &mut available)?;
     let source = read_package_source_input(platform_sources, &manifest)?;
-    let package = compile_package_artifact_with_store(
+    let package = compile_package_artifact_with_context(
         platform_sources,
         &source,
-        &aliases,
-        &direct_dependencies,
-        &available,
-        &contract_dependencies,
-        Some(&store),
-        is_test_service,
+        CanonicalPackageCompileContext::new(
+            &aliases,
+            &direct_dependencies,
+            &available,
+            &contract_dependencies,
+        )
+        .with_store(&store)
+        .with_test_service(is_test_service),
     )?;
     let dependency_packages = read_compiled_dependency_closure(&store, &package.artifact)?;
     Ok(CanonicalPackageProject {

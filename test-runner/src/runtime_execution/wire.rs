@@ -47,6 +47,16 @@ pub(super) enum ReplicaState {
     Disconnected,
 }
 
+pub(super) fn decode_package_test_dispatch_response(
+    body: &str,
+) -> Result<(), CanonicalFixtureError> {
+    decode_package_test_dispatch_response_inner(body).map_err(|message| {
+        CanonicalFixtureError::InvalidInput(format!(
+            "invalid runtime test dispatch response: {message}"
+        ))
+    })
+}
+
 pub(super) fn decode_activation_receipt(
     body: &str,
 ) -> Result<ActivationReceipt, CanonicalFixtureError> {
@@ -57,6 +67,119 @@ pub(super) fn decode_activation_receipt(
 pub(super) fn decode_health_snapshot(body: &str) -> Result<HealthSnapshot, CanonicalFixtureError> {
     decode_health_snapshot_inner(body)
         .map_err(|message| wire_error(format!("invalid router health response: {message}")))
+}
+
+fn decode_package_test_dispatch_response_inner(body: &str) -> Result<(), String> {
+    let value = decode_json(body, "runtime test dispatch response")?;
+    let root = exact_object(
+        &value,
+        &["ok", "header", "payloadBase64"],
+        &[],
+        "runtime test dispatch response",
+    )?;
+    require_true(root, "ok", "runtime test dispatch response")?;
+    let header = exact_object(
+        field(root, "header", "runtime test dispatch response")?,
+        &[
+            "schemaVersion",
+            "type",
+            "requestId",
+            "payloadPresent",
+            "httpResponse",
+        ],
+        &[],
+        "runtime test dispatch response.header",
+    )?;
+    if string_field(
+        header,
+        "schemaVersion",
+        "runtime test dispatch response.header",
+    )? != "skiff-runtime-frame-v1"
+    {
+        return Err("header.schemaVersion must be skiff-runtime-frame-v1".to_string());
+    }
+    if string_field(header, "type", "runtime test dispatch response.header")? != "response.end" {
+        return Err("header.type must be response.end".to_string());
+    }
+    let request_id = string_field(header, "requestId", "runtime test dispatch response.header")?;
+    if request_id.is_empty()
+        || request_id.trim() != request_id
+        || request_id
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return Err("header.requestId must be a non-empty canonical token".to_string());
+    }
+    if !bool_field(
+        header,
+        "payloadPresent",
+        "runtime test dispatch response.header",
+    )? {
+        return Err("header.payloadPresent must be true for the null payload".to_string());
+    }
+    validate_dispatch_http_response(header)?;
+    if string_field(root, "payloadBase64", "runtime test dispatch response")? != "bnVsbA==" {
+        return Err(
+            "payloadBase64 must be the canonical Base64 encoding of exact null".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_dispatch_http_response(header: &Map<String, Value>) -> Result<(), String> {
+    let http_response = exact_object(
+        field(
+            header,
+            "httpResponse",
+            "runtime test dispatch response.header",
+        )?,
+        &["status", "headers"],
+        &[],
+        "runtime test dispatch response.header.httpResponse",
+    )?;
+    if u64_field(
+        http_response,
+        "status",
+        "runtime test dispatch response.header.httpResponse",
+    )? != 200
+    {
+        return Err("inner HTTP response status must be 200".to_string());
+    }
+    let headers = array(
+        field(
+            http_response,
+            "headers",
+            "runtime test dispatch response.header.httpResponse",
+        )?,
+        "runtime test dispatch response.header.httpResponse.headers",
+    )?;
+    let [content_type] = headers else {
+        return Err(
+            "inner HTTP response must have exactly one canonical content-type header".to_string(),
+        );
+    };
+    let content_type = exact_object(
+        content_type,
+        &["name", "value"],
+        &[],
+        "runtime test dispatch response.header.httpResponse.headers[0]",
+    )?;
+    if string_field(
+        content_type,
+        "name",
+        "runtime test dispatch response.header.httpResponse.headers[0]",
+    )? != "content-type"
+        || string_field(
+            content_type,
+            "value",
+            "runtime test dispatch response.header.httpResponse.headers[0]",
+        )? != "application/json; charset=utf-8"
+    {
+        return Err(
+            "inner HTTP response content-type must be application/json; charset=utf-8".to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn decode_activation_receipt_inner(body: &str) -> Result<ActivationReceipt, String> {

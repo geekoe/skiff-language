@@ -143,10 +143,13 @@ test('service package build returns one stable API receipt with operation identi
   const root = join(temp, 'service');
   await writePackageRoot(root, {
     packageId: 'example.com/ping-implementation',
-    api: 'ping:\n  source: main.ping\n  serviceCall: true\n',
+    api: 'ping: main.ping\n',
     source: 'function ping() -> string { return "pong" }\n',
   });
-  await writeFile(join(root, 'service.yml'), 'id: example.com/ping\n');
+  await writeFile(
+    join(root, 'service.yml'),
+    'id: example.com/ping\nserviceCalls: [ping]\n',
+  );
   await writeFile(join(root, 'config.dev.yml'), [
     'timeout: 1000',
     'quota:',

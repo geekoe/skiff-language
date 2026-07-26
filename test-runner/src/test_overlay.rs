@@ -27,17 +27,18 @@ use skiff_compiler_source::{
 use skiff_deployment::storage::{CanonicalArtifactStore, EcosystemStorageError};
 use skiff_syntax::ast::{
     Block, BlockSourceSpans, DependencySourceAddress, ExecutableSourceSpans, Expr, ExprSourceSpans,
-    FunctionDecl, SourceFile, Stmt, StmtSourceSpans, TestEffectOutcome,
-    TestEffectOutcomeSourceSpans, TestEffectStepOutcome, TestEffectStepOutcomeSourceSpans, TypeRef,
+    FunctionDecl, Literal, Param, SourceFile, Stmt, StmtSourceSpans, TestDeclaration,
+    TestEffectOutcome, TestEffectOutcomeSourceSpans, TestEffectStepOutcome,
+    TestEffectStepOutcomeSourceSpans, TypeRef,
 };
 use thiserror::Error;
 
 use crate::{
     canonical_fixture::PackageTestCase,
     canonical_package::{
-        compile_package_artifact_with_store, package_aliases, read_compiled_dependency_closure,
-        read_optional_platform_std, read_root_package_manifest, CanonicalPackageProject,
-        CanonicalPackageProjectError,
+        compile_package_artifact_with_context, package_aliases, read_compiled_dependency_closure,
+        read_optional_platform_std, read_root_package_manifest, CanonicalPackageCompileContext,
+        CanonicalPackageProject, CanonicalPackageProjectError,
     },
 };
 
@@ -46,6 +47,8 @@ pub struct PackageTestOverlayBinding {
     pub case: PackageTestCase,
     pub public_path: String,
     pub callable_id: PackageCallableId,
+    pub gateway_selector: String,
+    pub gateway_callable_id: PackageCallableId,
 }
 
 #[derive(Debug, Clone)]
@@ -221,15 +224,17 @@ fn compile_overlay_artifact(
         .collect::<Result<Vec<_>, _>>()?;
     let mut available = project.artifacts().cloned().collect::<Vec<_>>();
     read_optional_platform_std(store, &mut available)?;
-    Ok(compile_package_artifact_with_store(
+    Ok(compile_package_artifact_with_context(
         platform_sources,
         source,
-        &aliases,
-        &dependencies,
-        &available,
-        &project.contract_dependencies,
-        Some(store),
-        project.test_service_profile.is_some(),
+        CanonicalPackageCompileContext::new(
+            &aliases,
+            &dependencies,
+            &available,
+            &project.contract_dependencies,
+        )
+        .with_store(store)
+        .with_test_service(project.test_service_profile.is_some()),
     )?)
 }
 
@@ -256,10 +261,44 @@ fn overlay_bindings(
                     "overlay public path {public_path} is not callable"
                 )));
             };
+            let body_link = overlay
+                .artifact
+                .callable_links
+                .get(callable_id)
+                .ok_or_else(|| {
+                    PackageTestOverlayError::Invalid(format!(
+                        "overlay test callable {callable_id} has no exact callable link"
+                    ))
+                })?;
+            let gateway_selector = format!(
+                "{}.{}Gateway",
+                body_link.target.file_ref.module_path, case.function_name
+            );
+            let gateway_symbol = overlay
+                .artifact
+                .package_local_abi
+                .implementation_symbols
+                .get(&gateway_selector)
+                .ok_or_else(|| {
+                    PackageTestOverlayError::Invalid(format!(
+                        "overlay private gateway handler {gateway_selector} was not emitted"
+                    ))
+                })?;
+            let PackageLocalAbiSymbol::Callable {
+                callable_id: gateway_callable_id,
+                ..
+            } = gateway_symbol
+            else {
+                return Err(PackageTestOverlayError::Invalid(format!(
+                    "overlay private gateway handler {gateway_selector} is not callable"
+                )));
+            };
             Ok(PackageTestOverlayBinding {
                 case: case.clone(),
                 public_path,
                 callable_id: callable_id.clone(),
+                gateway_selector,
+                gateway_callable_id: gateway_callable_id.clone(),
             })
         })
         .collect()
@@ -330,171 +369,14 @@ fn package_test_ast_for_cases<'a>(
     let functions = tests
         .into_iter()
         .map(|(test_index, function_name)| {
-            let test = ast
-                .tests
-                .get(test_index)
-                .expect("discovered package test case belongs to this AST");
-            let source_spans = ast.source_spans.tests.get(test_index).cloned();
-            let setup_name = format!("{function_name}Setup");
-            let mut setup_statements = Vec::new();
-            let mut setup_statement_spans = Vec::new();
-            for (effect_index, effect) in test.effects.iter().enumerate() {
-                let effect_spans = source_spans
-                    .as_ref()
-                    .and_then(|spans| spans.effects.get(effect_index));
-                let steps = flattened_test_effect_steps(&effect.outcome);
-                let step_spans = effect_spans
-                    .map(|spans| flattened_test_effect_step_spans(&spans.outcome))
-                    .unwrap_or_default();
-                for (step_index, (step_expect, outcome)) in steps.into_iter().enumerate() {
-                    let target_probe = Expr::Call {
-                        callee: Box::new(match effect.target.split_once('/') {
-                            Some((dependency_ref, public_path)) => {
-                                Expr::DependencySourceAddress(DependencySourceAddress {
-                                    dependency_ref: dependency_ref.to_string(),
-                                    public_path: public_path.to_string(),
-                                })
-                            }
-                            None => Expr::Identifier(effect.target.clone()),
-                        }),
-                        args: Vec::new(),
-                    };
-                    setup_statements.push(Stmt::CompilerTestEffectRegister {
-                        target: effect.target.clone(),
-                        target_probe,
-                        declaration_start: step_index == 0,
-                        // The target-level expression is evaluated once. The
-                        // runtime registry snapshots it on the first
-                        // registration and applies that snapshot to every
-                        // later step in the same sequence.
-                        expect: (step_index == 0).then(|| effect.expect.clone()).flatten(),
-                        step_expect,
-                        outcome,
-                    });
-                    if let Some(effect_spans) = effect_spans {
-                        let mut expressions = Vec::new();
-                        expressions.push(ExprSourceSpans {
-                            span: effect.span,
-                            children: vec![ExprSourceSpans {
-                                span: effect.span,
-                                children: Vec::new(),
-                                blocks: Vec::new(),
-                                record_fields: Vec::new(),
-                            }],
-                            blocks: Vec::new(),
-                            record_fields: Vec::new(),
-                        });
-                        if step_index == 0 {
-                            if let Some(expect) = &effect_spans.expect {
-                                expressions.push(expect.clone());
-                            }
-                        }
-                        let step_spans = step_spans
-                            .get(step_index)
-                            .expect("effect AST and source span steps stay aligned");
-                        if let Some(step_expect) = &step_spans.0 {
-                            expressions.push(step_expect.clone());
-                        }
-                        match &step_spans.1 {
-                            TestEffectStepOutcomeSourceSpans::Respond(span)
-                            | TestEffectStepOutcomeSourceSpans::Throw(span) => {
-                                expressions.push(span.clone())
-                            }
-                            TestEffectStepOutcomeSourceSpans::Stream(spans) => {
-                                expressions.extend(spans.iter().cloned())
-                            }
-                        }
-                        setup_statement_spans.push(StmtSourceSpans {
-                            span: effect.span,
-                            expressions,
-                            blocks: Vec::new(),
-                        });
-                    }
-                }
-            }
-            let setup = FunctionDecl {
-                exported: false,
-                name: setup_name.clone(),
-                type_params: Vec::new(),
-                params: Vec::new(),
-                return_type: TypeRef {
-                    name: "void".to_string(),
-                },
-                body: Block {
-                    statements: setup_statements,
-                },
-                is_native: false,
-                is_provider: false,
-                is_static: false,
-                implicit_self: None,
-                span: test.span,
-            };
-            let setup_spans = source_spans.as_ref().map(|_| ExecutableSourceSpans {
-                effects: Vec::new(),
-                body: BlockSourceSpans {
-                    span: test.span,
-                    statements: setup_statement_spans,
-                },
-            });
-            let setup_call = Expr::Call {
-                callee: Box::new(Expr::Identifier(setup_name)),
-                args: Vec::new(),
-            };
-            let mut body_statements = Vec::with_capacity(test.body.statements.len() + 1);
-            body_statements.push(Stmt::Expr(setup_call));
-            body_statements.extend(test.body.statements.clone());
-            let body = FunctionDecl {
-                exported: false,
-                name: function_name.to_string(),
-                type_params: Vec::new(),
-                params: Vec::new(),
-                return_type: TypeRef {
-                    name: "void".to_string(),
-                },
-                body: Block {
-                    statements: body_statements,
-                },
-                is_native: false,
-                is_provider: false,
-                is_static: false,
-                implicit_self: None,
-                span: test.span,
-            };
-            let body_spans = source_spans.map(|spans| {
-                let call_span = ExprSourceSpans {
-                    span: test.span,
-                    children: vec![ExprSourceSpans {
-                        span: test.span,
-                        children: Vec::new(),
-                        blocks: Vec::new(),
-                        record_fields: Vec::new(),
-                    }],
-                    blocks: Vec::new(),
-                    record_fields: Vec::new(),
-                };
-                let mut statements = Vec::with_capacity(spans.body.statements.len() + 1);
-                statements.push(StmtSourceSpans {
-                    span: test.span,
-                    expressions: vec![call_span],
-                    blocks: Vec::new(),
-                });
-                statements.extend(spans.body.statements);
-                ExecutableSourceSpans {
-                    effects: Vec::new(),
-                    body: BlockSourceSpans {
-                        span: spans.body.span,
-                        statements,
-                    },
-                }
-            });
-            ((setup_spans, setup), (body_spans, body))
+            package_test_functions_for_case(ast, test_index, function_name)
         })
         .collect::<Vec<_>>();
     let mut overlay = ast.clone();
     overlay.tests.clear();
     overlay.test_default_run = None;
     overlay.source_spans.tests.clear();
-    for ((setup_spans, setup), (body_spans, body)) in functions {
+    for ((setup_spans, setup), (body_spans, body), (gateway_spans, gateway)) in functions {
         if let Some(spans) = setup_spans {
             overlay.source_spans.functions.push(spans);
         }
@@ -503,8 +385,254 @@ fn package_test_ast_for_cases<'a>(
             overlay.source_spans.functions.push(spans);
         }
         overlay.functions.push(body);
+        if let Some(spans) = gateway_spans {
+            overlay.source_spans.functions.push(spans);
+        }
+        overlay.functions.push(gateway);
     }
     overlay
+}
+
+type GeneratedPackageTestFunction = (Option<ExecutableSourceSpans>, FunctionDecl);
+type GeneratedPackageTestFunctions = (
+    GeneratedPackageTestFunction,
+    GeneratedPackageTestFunction,
+    GeneratedPackageTestFunction,
+);
+
+fn package_test_functions_for_case(
+    ast: &SourceFile,
+    test_index: usize,
+    function_name: &str,
+) -> GeneratedPackageTestFunctions {
+    let test = ast
+        .tests
+        .get(test_index)
+        .expect("discovered package test case belongs to this AST");
+    let source_spans = ast.source_spans.tests.get(test_index);
+    (
+        package_test_setup(test, source_spans, function_name),
+        package_test_body(test, source_spans, function_name),
+        package_test_gateway(test, source_spans, function_name),
+    )
+}
+
+fn package_test_setup(
+    test: &TestDeclaration,
+    source_spans: Option<&ExecutableSourceSpans>,
+    function_name: &str,
+) -> GeneratedPackageTestFunction {
+    let (statements, statement_spans) = package_test_setup_statements(test, source_spans);
+    let function = FunctionDecl {
+        exported: false,
+        name: format!("{function_name}Setup"),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRef {
+            name: "void".to_string(),
+        },
+        body: Block { statements },
+        is_native: false,
+        is_provider: false,
+        is_static: false,
+        implicit_self: None,
+        span: test.span,
+    };
+    let spans = source_spans.map(|_| ExecutableSourceSpans {
+        effects: Vec::new(),
+        body: BlockSourceSpans {
+            span: test.span,
+            statements: statement_spans,
+        },
+    });
+    (spans, function)
+}
+
+fn package_test_setup_statements(
+    test: &TestDeclaration,
+    source_spans: Option<&ExecutableSourceSpans>,
+) -> (Vec<Stmt>, Vec<StmtSourceSpans>) {
+    let mut statements = Vec::new();
+    let mut statement_spans = Vec::new();
+    for (effect_index, effect) in test.effects.iter().enumerate() {
+        let effect_spans = source_spans.and_then(|spans| spans.effects.get(effect_index));
+        let steps = flattened_test_effect_steps(&effect.outcome);
+        let step_spans = effect_spans
+            .map(|spans| flattened_test_effect_step_spans(&spans.outcome))
+            .unwrap_or_default();
+        for (step_index, (step_expect, outcome)) in steps.into_iter().enumerate() {
+            statements.push(Stmt::CompilerTestEffectRegister {
+                target: effect.target.clone(),
+                target_probe: package_test_effect_target_probe(&effect.target),
+                declaration_start: step_index == 0,
+                // The target-level expression is evaluated once. The runtime
+                // registry snapshots it on the first registration and applies
+                // that snapshot to every later step in the same sequence.
+                expect: (step_index == 0).then(|| effect.expect.clone()).flatten(),
+                step_expect,
+                outcome,
+            });
+            if let Some(effect_spans) = effect_spans {
+                let mut expressions = vec![package_test_effect_target_span(effect.span)];
+                if step_index == 0 {
+                    expressions.extend(effect_spans.expect.iter().cloned());
+                }
+                let step_spans = step_spans
+                    .get(step_index)
+                    .expect("effect AST and source span steps stay aligned");
+                expressions.extend(step_spans.0.iter().cloned());
+                match &step_spans.1 {
+                    TestEffectStepOutcomeSourceSpans::Respond(span)
+                    | TestEffectStepOutcomeSourceSpans::Throw(span) => {
+                        expressions.push(span.clone());
+                    }
+                    TestEffectStepOutcomeSourceSpans::Stream(spans) => {
+                        expressions.extend(spans.iter().cloned());
+                    }
+                }
+                statement_spans.push(StmtSourceSpans {
+                    span: effect.span,
+                    expressions,
+                    blocks: Vec::new(),
+                });
+            }
+        }
+    }
+    (statements, statement_spans)
+}
+
+fn package_test_effect_target_probe(target: &str) -> Expr {
+    Expr::Call {
+        callee: Box::new(match target.split_once('/') {
+            Some((dependency_ref, public_path)) => {
+                Expr::DependencySourceAddress(DependencySourceAddress {
+                    dependency_ref: dependency_ref.to_string(),
+                    public_path: public_path.to_string(),
+                })
+            }
+            None => Expr::Identifier(target.to_string()),
+        }),
+        args: Vec::new(),
+    }
+}
+
+fn package_test_effect_target_span(span: skiff_syntax::error::SourceSpan) -> ExprSourceSpans {
+    ExprSourceSpans {
+        span,
+        children: vec![ExprSourceSpans {
+            span,
+            children: Vec::new(),
+            blocks: Vec::new(),
+            record_fields: Vec::new(),
+        }],
+        blocks: Vec::new(),
+        record_fields: Vec::new(),
+    }
+}
+
+fn package_test_body(
+    test: &TestDeclaration,
+    source_spans: Option<&ExecutableSourceSpans>,
+    function_name: &str,
+) -> GeneratedPackageTestFunction {
+    let setup_call = Expr::Call {
+        callee: Box::new(Expr::Identifier(format!("{function_name}Setup"))),
+        args: Vec::new(),
+    };
+    let mut statements = Vec::with_capacity(test.body.statements.len() + 1);
+    statements.push(Stmt::Expr(setup_call));
+    statements.extend(test.body.statements.clone());
+    let function = FunctionDecl {
+        exported: false,
+        name: function_name.to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRef {
+            name: "void".to_string(),
+        },
+        body: Block { statements },
+        is_native: false,
+        is_provider: false,
+        is_static: false,
+        implicit_self: None,
+        span: test.span,
+    };
+    let spans = source_spans.map(|spans| {
+        let mut statements = Vec::with_capacity(spans.body.statements.len() + 1);
+        statements.push(StmtSourceSpans {
+            span: test.span,
+            expressions: vec![package_test_effect_target_span(test.span)],
+            blocks: Vec::new(),
+        });
+        statements.extend(spans.body.statements.iter().cloned());
+        ExecutableSourceSpans {
+            effects: Vec::new(),
+            body: BlockSourceSpans {
+                span: spans.body.span,
+                statements,
+            },
+        }
+    });
+    (spans, function)
+}
+
+fn package_test_gateway(
+    test: &TestDeclaration,
+    source_spans: Option<&ExecutableSourceSpans>,
+    function_name: &str,
+) -> GeneratedPackageTestFunction {
+    let function = FunctionDecl {
+        exported: false,
+        name: format!("{function_name}Gateway"),
+        type_params: Vec::new(),
+        params: vec![Param {
+            name: "body".to_string(),
+            ty: TypeRef {
+                name: "null".to_string(),
+            },
+        }],
+        return_type: TypeRef {
+            name: "null".to_string(),
+        },
+        body: Block {
+            statements: vec![
+                Stmt::Expr(Expr::Call {
+                    callee: Box::new(Expr::Identifier(function_name.to_string())),
+                    args: Vec::new(),
+                }),
+                Stmt::Return(Some(Expr::Literal(Literal::Null))),
+            ],
+        },
+        is_native: false,
+        is_provider: false,
+        is_static: false,
+        implicit_self: None,
+        span: test.span,
+    };
+    let spans = source_spans.map(|spans| ExecutableSourceSpans {
+        effects: Vec::new(),
+        body: BlockSourceSpans {
+            span: spans.body.span,
+            statements: vec![
+                StmtSourceSpans {
+                    span: test.span,
+                    expressions: vec![package_test_effect_target_span(test.span)],
+                    blocks: Vec::new(),
+                },
+                StmtSourceSpans {
+                    span: test.span,
+                    expressions: vec![ExprSourceSpans {
+                        span: test.span,
+                        children: Vec::new(),
+                        blocks: Vec::new(),
+                        record_fields: Vec::new(),
+                    }],
+                    blocks: Vec::new(),
+                },
+            ],
+        },
+    });
+    (spans, function)
 }
 
 fn flattened_test_effect_steps(
@@ -581,7 +709,7 @@ test "uses dependency" effects {
         .expect("test source parses");
         let overlay = package_test_ast_for_cases(&ast, [(0, "skiffTestCase0")]);
         assert!(overlay.tests.is_empty());
-        assert_eq!(overlay.functions.len(), 2);
+        assert_eq!(overlay.functions.len(), 3);
         assert_eq!(overlay.functions[0].name, "skiffTestCase0Setup");
         let [Stmt::CompilerTestEffectRegister {
             target,
@@ -601,7 +729,26 @@ test "uses dependency" effects {
             callee.as_ref(),
             &Expr::Identifier("skiffTestCase0Setup".into())
         );
-        assert_eq!(overlay.source_spans.functions.len(), 2);
+        let gateway = &overlay.functions[2];
+        assert!(!gateway.exported);
+        assert_eq!(gateway.name, "skiffTestCase0Gateway");
+        assert_eq!(gateway.params.len(), 1);
+        assert_eq!(gateway.params[0].name, "body");
+        assert_eq!(gateway.params[0].ty.name, "null");
+        assert_eq!(gateway.return_type.name, "null");
+        let [Stmt::Expr(Expr::Call {
+            callee: gateway_callee,
+            args,
+        }), Stmt::Return(Some(Expr::Literal(Literal::Null)))] = gateway.body.statements.as_slice()
+        else {
+            panic!("private HTTP wrapper must call the test body and return exact null");
+        };
+        assert!(args.is_empty());
+        assert_eq!(
+            gateway_callee.as_ref(),
+            &Expr::Identifier("skiffTestCase0".into())
+        );
+        assert_eq!(overlay.source_spans.functions.len(), 3);
     }
 
     #[test]

@@ -4,6 +4,10 @@ function marker() -> string {
   return "P5-R05-GENERATION-B-MARKER"
 }
 
+function __skiffHttpProbe(body: null) -> string {
+  return marker()
+}
+
 function acceptConnection() -> std.websocket.WebSocketConnectResult<null> {
   return {
     tag: "accept",

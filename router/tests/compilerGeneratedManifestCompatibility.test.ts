@@ -16,9 +16,9 @@ describe('compiler generated HTTP gateway compatibility', () => {
       const root = await mkdtemp(join(tmpdir(), 'skiff-router-authoring-'));
       try {
         const generated = await writeCompilerGeneratedFixtureArtifactRoot(root);
-        expect(generated.packageValue.schemaVersion).toBe('skiff-package-artifact-v7');
+        expect(generated.packageValue.schemaVersion).toBe('skiff-package-artifact-v8');
         expect(generated.packageArtifact.artifact.packageBuildId).toMatch(
-          /^skiff-package-build-v8:sha256:[0-9a-f]{64}$/
+          /^skiff-package-build-v9:sha256:[0-9a-f]{64}$/
         );
         expect(generated.packageValue.files).toEqual([
           expect.objectContaining({
@@ -27,7 +27,7 @@ describe('compiler generated HTTP gateway compatibility', () => {
             ),
           }),
         ]);
-        expect(generated.packageValue.serviceCallRoots).toEqual([]);
+        expect(generated.packageValue).not.toHaveProperty('serviceCallRoots');
         const packageLocalAbi = recordField(
           generated.packageValue,
           'packageLocalAbi'

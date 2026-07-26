@@ -194,7 +194,7 @@ impl FullChainFixture {
         let consumer_package = implementation_package(
             "example.phase-three-consumer",
             "check",
-            consumer_callable_id,
+            consumer_callable_id.clone(),
             &consumer_file,
             operation_contract,
             Some((provider_requirement, provider_call)),
@@ -209,7 +209,7 @@ impl FullChainFixture {
                 implementation: provider_package_ref.clone(),
                 operation_bindings: vec![ServiceDeploymentOperationInput {
                     contract_operation_id: provider_operation_id.clone(),
-                    package_public_path: "health".to_string(),
+                    package_callable_id: provider_callable_id.clone(),
                 }],
                 package_bindings: Vec::new(),
                 service_selectors: Vec::new(),
@@ -241,7 +241,7 @@ impl FullChainFixture {
                 implementation: consumer_package_ref.clone(),
                 operation_bindings: vec![ServiceDeploymentOperationInput {
                     contract_operation_id: consumer_operation_id.clone(),
-                    package_public_path: "check".to_string(),
+                    package_callable_id: consumer_callable_id,
                 }],
                 package_bindings: Vec::new(),
                 service_selectors: vec![ServiceSelectorBinding {
@@ -692,7 +692,6 @@ fn implementation_package(
                 },
             },
         )]),
-        service_call_roots: Vec::new(),
         service_call_refs,
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();

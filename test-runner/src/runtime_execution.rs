@@ -6,6 +6,7 @@ use std::{
 };
 
 use skiff_artifact_identity::runtime_assembly_ref;
+use skiff_artifact_model::{IngressProtocol, RuntimeAssemblyRef};
 
 use crate::{
     canonical_fixture::CanonicalFixtureError,
@@ -94,6 +95,8 @@ pub fn run_package_cases(
         )));
     }
     let receipt = wire::decode_activation_receipt(&activation.response.body)?;
+    let active_assembly = receipt.assembly.clone();
+    let active_generation = receipt.generation;
     let target = readiness::target_from_receipt(
         receipt,
         &options.environment,
@@ -118,7 +121,12 @@ pub fn run_package_cases(
             "canonical execution requires --ingress-url".to_string(),
         )
     })?;
-    Ok(execute_entrypoints(fixture.entrypoints, activation_url))
+    Ok(execute_entrypoints(
+        fixture.entrypoints,
+        activation_url,
+        &active_assembly,
+        active_generation,
+    ))
 }
 
 fn package_test_run_scope() -> Result<String, CanonicalFixtureError> {
@@ -137,11 +145,13 @@ fn package_test_run_scope() -> Result<String, CanonicalFixtureError> {
 fn execute_entrypoints(
     entrypoints: Vec<CanonicalPackageTestEntrypoint>,
     activation_url: &str,
+    assembly: &RuntimeAssemblyRef,
+    generation: u64,
 ) -> SkiffTestSummary {
     let mut results = Vec::with_capacity(entrypoints.len());
     for entrypoint in entrypoints {
         let (passed, message) = execute_business_request_once(|| {
-            execute_control_test_dispatch(activation_url, &entrypoint)
+            execute_control_test_dispatch(activation_url, assembly, generation, &entrypoint)
         });
         results.push(SkiffTestResult {
             module_path: entrypoint.case.module_path,
@@ -163,6 +173,8 @@ fn execute_entrypoints(
 
 fn execute_control_test_dispatch(
     activation_url: &str,
+    assembly: &RuntimeAssemblyRef,
+    generation: u64,
     entrypoint: &CanonicalPackageTestEntrypoint,
 ) -> Result<http::HttpResponse, CanonicalFixtureError> {
     let control_url = activation_url
@@ -172,25 +184,64 @@ fn execute_control_test_dispatch(
                 "activation URL is not canonical for test dispatch".to_string(),
             )
         })?;
-    let body = serde_json::to_vec(&serde_json::json!({
-        "kind": "runtimeAssembly",
-        "contractOperationId": entrypoint.operation,
-        "ingress": entrypoint.selector,
-        "payloadBase64": "",
-        "testEffectsEnabled": true,
-        "testEffectDoubles": {},
-        "timeoutMs": 30_000,
-    }))
-    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    http::request_url(
+    let body = package_test_dispatch_body(assembly, generation, entrypoint)?;
+    let connected = http::request_url(
         &format!("{control_url}/__skiff/test-dispatch"),
         "POST",
         None,
         &body,
         deadline_after(HTTP_TIMEOUT)?,
         MAX_HTTP_RESPONSE_BYTES,
-    )
-    .map(|connected| connected.response)
+    )?;
+    if (200..300).contains(&connected.response.status) {
+        wire::decode_package_test_dispatch_response(&connected.response.body)?;
+    }
+    Ok(connected.response)
+}
+
+fn package_test_dispatch_body(
+    assembly: &RuntimeAssemblyRef,
+    generation: u64,
+    entrypoint: &CanonicalPackageTestEntrypoint,
+) -> Result<Vec<u8>, CanonicalFixtureError> {
+    if entrypoint.selector.protocol != IngressProtocol::Http {
+        return Err(CanonicalFixtureError::InvalidInput(
+            "package-test gateway selector must use HTTP".to_string(),
+        ));
+    }
+    let method = entrypoint.selector.method.as_deref().ok_or_else(|| {
+        CanonicalFixtureError::InvalidInput(
+            "package-test gateway selector must have an exact HTTP method".to_string(),
+        )
+    })?;
+    let url = format!(
+        "http://{}{}",
+        entrypoint.selector.host, entrypoint.selector.path
+    );
+    serde_json::to_vec(&serde_json::json!({
+        "kind": "test",
+        "routing": {
+            "kind": "runtimeAssembly",
+            "assemblyIdentity": assembly.assembly_identity,
+            "assemblyGeneration": generation,
+            "gatewayEntryIdentity": entrypoint.gateway_entry_identity,
+            "ingress": entrypoint.selector,
+        },
+        "mode": entrypoint.mode,
+        "httpRequest": {
+            "method": method,
+            "url": url,
+            "path": entrypoint.selector.path,
+            "query": [],
+            "headers": [{
+                "name": "content-type",
+                "value": "application/json",
+            }],
+        },
+        "payloadBase64": "bnVsbA==",
+        "timeoutMs": 30_000,
+    }))
+    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))
 }
 
 fn execute_business_request_once(

@@ -1,3 +1,8 @@
+// These end-to-end contract scenarios intentionally keep each setup, mutation
+// matrix, and assertion receipt together so failures retain their full owner
+// context.
+#![allow(clippy::too_many_lines)]
+
 use std::{
     collections::BTreeMap,
     fs,
@@ -8,9 +13,11 @@ use std::{
 
 use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryCancellationContract, BoundaryUnavailableReason,
-    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, IngressProtocol,
-    PackageArtifactRef, PackageLocalAbiSymbol, RuntimeAssemblyRef, ServiceContractRef,
-    ServiceDeploymentRef, StateBindingKind,
+    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, GatewayAdapterKind,
+    GatewayAdapterSource, GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey,
+    GatewayExternalSchema, GatewayProtocolSurface, IngressProtocol, PackageArtifactRef,
+    PackageLocalAbiSymbol, RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
+    StateBindingKind,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -41,7 +48,7 @@ use skiff_test_runner::{
 const EXPECTED_PRELUDE_IDENTITY: &str =
     "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699";
 const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
-    "skiff-package-build-v4:sha256:62177ac4e6d764166e2387c52847f97565ad38836d0631845af9a73e9f2512d1";
+    "skiff-package-build-v9:sha256:8ac1d3ee235fb3f543df52430f1539610ca05c5631a09df22f7c4f4a7b6a8e17";
 
 #[test]
 fn platform_source_context_contract() {
@@ -427,6 +434,7 @@ fn official_platform_package_is_compiled_as_the_selected_source_root() {
         fake_root.join("package.yml"),
     )
     .unwrap();
+    fs::copy(platform_root.join("api.yml"), fake_root.join("api.yml")).unwrap();
     let error = compile_package_project(&platform_sources, &fake_root, &artifacts).unwrap_err();
     assert!(error
         .to_string()
@@ -762,12 +770,12 @@ test "stream target cannot use unary response outcome" effects {
 test "undeclared throw" effects {
   helper/tools.events {
     sequence: [{
-      throw: helper.EffectResponse { value: "not-an-error" },
+      throw: "not-a-nominal-error",
     }],
   }
 } { assert true }
 "#,
-            "must match exactly one declared payload type",
+            "throw has invalid catch payload",
         ),
     ];
 
@@ -915,7 +923,7 @@ packages:
     alias: subject
     access: topLevel
 "#,
-        Some(""),
+        Some("{}\n"),
         Some(
             "function ownConfig() -> string {\n\
                return config.require<string>(\"test.token\")\n\
@@ -1147,6 +1155,195 @@ fn overlay_is_a_separate_build_and_external_store_remains_read_only() {
 }
 
 #[test]
+fn package_test_http_fixture_is_zero_operation_reference_closed_and_fail_closed() {
+    const NULL_GATEWAY_IDENTITY: &str = concat!(
+        "skiff-gateway-entry-v1:sha256:",
+        "cfcfced94f984612809ce837f81e975016b09f206925389d95e925e087fc32d4"
+    );
+
+    let root = TestRoot::new("package-test-http-gateway");
+    let artifacts = root.child("artifacts");
+    let package = root.child("package");
+    create_store(&artifacts);
+    write_package(
+        &package,
+        "id: example.com/package-test-http\nversion: 1.0.0\n",
+        None,
+        Some("function privateHelper() -> bool { return true }\n"),
+    );
+    fs::write(
+        package.join("main.test.skiff"),
+        "test \"HTTP gateway case\" { assert root.main.privateHelper() }\n",
+    )
+    .unwrap();
+
+    let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
+    let cases = discover_package_test_cases(&package, &package, false).unwrap();
+    let overlay =
+        compile_package_test_overlay(&platform_sources(), &package, &artifacts, &project, &cases)
+            .unwrap();
+    let binding = overlay.bindings[0].clone();
+
+    let mut missing = overlay.clone();
+    missing
+        .overlay
+        .artifact
+        .package_local_abi
+        .implementation_symbols
+        .remove(&binding.gateway_selector);
+    assert!(
+        assemble_package_test_fixture(&project, missing, CanonicalBaseAssembly::default())
+            .unwrap_err()
+            .to_string()
+            .contains("has no exact private gateway handler")
+    );
+
+    let mut wrong_signature = overlay.clone();
+    let PackageLocalAbiSymbol::Callable { signature, .. } = wrong_signature
+        .overlay
+        .artifact
+        .package_local_abi
+        .implementation_symbols
+        .get_mut(&binding.gateway_selector)
+        .expect("generated gateway implementation symbol")
+    else {
+        panic!("generated gateway must be callable")
+    };
+    signature.parameters.clear();
+    assert!(assemble_package_test_fixture(
+        &project,
+        wrong_signature,
+        CanonicalBaseAssembly::default()
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("must have exact signature"));
+
+    let mut public_handler = overlay.clone();
+    let leaked = public_handler
+        .overlay
+        .artifact
+        .package_local_abi
+        .implementation_symbols[&binding.gateway_selector]
+        .clone();
+    public_handler
+        .overlay
+        .artifact
+        .package_local_abi
+        .public_symbols
+        .insert("leakedGateway".to_string(), leaked);
+    assert!(assemble_package_test_fixture(
+        &project,
+        public_handler,
+        CanonicalBaseAssembly::default()
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("must not enter the package public API"));
+
+    let fixture =
+        assemble_package_test_fixture(&project, overlay, CanonicalBaseAssembly::default()).unwrap();
+    let [contract] = fixture.records.contracts.as_slice() else {
+        panic!("one case must produce one zero-operation contract")
+    };
+    let [deployment] = fixture.records.deployments.as_slice() else {
+        panic!("one case must produce one deployment")
+    };
+    let [entrypoint] = fixture.entrypoints.as_slice() else {
+        panic!("one case must produce one HTTP entrypoint")
+    };
+    assert!(contract.operations.is_empty());
+    assert!(contract.package_type_requirements.is_empty());
+    assert!(deployment.operation_bindings.is_empty());
+    assert_eq!(deployment.gateway_entries.len(), 1);
+    assert_eq!(deployment.ingress.len(), 1);
+    assert_eq!(entrypoint.gateway_entry_key.as_str(), "run");
+    assert_eq!(
+        entrypoint.gateway_entry_identity.as_str(),
+        NULL_GATEWAY_IDENTITY
+    );
+    assert_eq!(entrypoint.mode, GatewayDispatchMode::Unary);
+    assert_eq!(entrypoint.selector.protocol, IngressProtocol::Http);
+    assert_eq!(
+        entrypoint.selector.host,
+        "case-0.package-test.skiff.localhost"
+    );
+    assert_eq!(entrypoint.selector.method.as_deref(), Some("POST"));
+    assert_eq!(entrypoint.selector.path, "/__skiff/package-test/0");
+    let entry = &deployment.gateway_entries[&entrypoint.gateway_entry_key];
+    assert_eq!(
+        entry.gateway_entry_identity,
+        entrypoint.gateway_entry_identity
+    );
+    assert_eq!(entry.handler, binding.gateway_callable_id);
+    assert_eq!(entry.pre, None);
+    assert_eq!(entry.guard, None);
+    assert_eq!(entry.adapter_plan.kind, GatewayAdapterKind::TypedJson);
+    assert_eq!(entry.adapter_plan.args.len(), 1);
+    assert_eq!(entry.adapter_plan.args[0].param, "body");
+    assert_eq!(
+        entry.adapter_plan.args[0].source,
+        GatewayAdapterSource::HttpBody
+    );
+    let GatewayProtocolSurface::Http(surface) = &entry.protocol_surface.protocol;
+    assert_eq!(surface.adapter_kind, GatewayAdapterKind::TypedJson);
+    assert_eq!(surface.dispatch_mode, GatewayDispatchMode::Unary);
+    assert_eq!(surface.external_sources, [GatewayAdapterSource::HttpBody]);
+    assert_eq!(
+        surface.request_body_schema,
+        Some(GatewayExternalSchema::Null)
+    );
+    assert_eq!(surface.response_schema, Some(GatewayExternalSchema::Null));
+    assert_eq!(surface.stream_item_schema, None);
+    assert_eq!(
+        deployment.ingress[0].gateway_entry_key,
+        entrypoint.gateway_entry_key
+    );
+    assert_eq!(deployment.ingress[0].selector, entrypoint.selector);
+    let [assembly_ingress] = fixture.records.assembly.gateway_ingress.as_slice() else {
+        panic!("one case must project one assembly gateway ingress")
+    };
+    assert_eq!(assembly_ingress.selector, entrypoint.selector);
+    assert_eq!(assembly_ingress.deployment, entrypoint.deployment);
+    assert_eq!(
+        assembly_ingress.gateway_entry_key,
+        entrypoint.gateway_entry_key
+    );
+    assert_eq!(
+        assembly_ingress.gateway_entry_identity,
+        entrypoint.gateway_entry_identity
+    );
+
+    let mut wrong_key = deployment.clone();
+    wrong_key.ingress[0].gateway_entry_key = GatewayEntryKey::parse("wrong").unwrap();
+    assert!(skiff_artifact_identity::validate_service_deployment_surface(&wrong_key).is_err());
+
+    let mut wrong_identity = deployment.clone();
+    wrong_identity
+        .gateway_entries
+        .get_mut(&entrypoint.gateway_entry_key)
+        .unwrap()
+        .gateway_entry_identity =
+        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v1:sha256:{}", "a".repeat(64)))
+            .unwrap();
+    assert!(skiff_artifact_identity::validate_service_deployment_surface(&wrong_identity).is_err());
+
+    let mut orphan = deployment.clone();
+    orphan
+        .gateway_entries
+        .insert(GatewayEntryKey::parse("orphan").unwrap(), entry.clone());
+    assert!(skiff_artifact_identity::validate_service_deployment_surface(&orphan).is_err());
+
+    let mut duplicate_selector = deployment.clone();
+    duplicate_selector
+        .ingress
+        .push(duplicate_selector.ingress[0].clone());
+    assert!(
+        skiff_artifact_identity::validate_service_deployment_surface(&duplicate_selector).is_err()
+    );
+}
+
+#[test]
 fn package_test_generates_typed_state_bindings_in_run_isolated_namespaces() {
     let root = TestRoot::new("package-test-state-bindings");
     let artifacts = root.child("artifacts");
@@ -1260,14 +1457,28 @@ state:
         run_a
             .entrypoints
             .iter()
-            .map(|entrypoint| &entrypoint.contract)
+            .map(|entrypoint| {
+                (
+                    &entrypoint.gateway_entry_key,
+                    &entrypoint.gateway_entry_identity,
+                    &entrypoint.selector,
+                    entrypoint.mode,
+                )
+            })
             .collect::<Vec<_>>(),
         run_a_repeat
             .entrypoints
             .iter()
-            .map(|entrypoint| &entrypoint.contract)
+            .map(|entrypoint| {
+                (
+                    &entrypoint.gateway_entry_key,
+                    &entrypoint.gateway_entry_identity,
+                    &entrypoint.selector,
+                    entrypoint.mode,
+                )
+            })
             .collect::<Vec<_>>(),
-        "case contract identity remains deterministic for diagnostics"
+        "case gateway key, identity, selector and mode remain deterministic"
     );
 }
 
@@ -1630,7 +1841,16 @@ fn fresh_helper_mutation_then_detached_service_call_projects_and_assembles() {
 }
 
 #[test]
-fn ecosystem_fixture_has_no_artifact_rewrite_or_synthetic_stream_bridge() {
+fn ecosystem_http_fixture_uses_two_gateway_entries_without_ws_compat() {
+    const PACKAGE_TEST_IDENTITY: &str = concat!(
+        "skiff-gateway-entry-v1:sha256:",
+        "cfcfced94f984612809ce837f81e975016b09f206925389d95e925e087fc32d4"
+    );
+    const PROBE_IDENTITY: &str = concat!(
+        "skiff-gateway-entry-v1:sha256:",
+        "adfaa17c077af0388f2b5751bbe4b9ba392ec647f5ce33022c8e8ec83eaf6653"
+    );
+
     let root = TestRoot::new("smoke-unary");
     let artifacts = root.child("artifacts");
     let package = root.child("package");
@@ -1643,6 +1863,10 @@ fn ecosystem_fixture_has_no_artifact_rewrite_or_synthetic_stream_bridge() {
             r#"import std
 
 function marker() -> string { return "A" }
+
+function __skiffHttpProbe(body: null) -> string {
+  return marker()
+}
 
 function acceptConnection() -> std.websocket.WebSocketConnectResult<null> {
   return {
@@ -1692,16 +1916,45 @@ function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.webs
             .unwrap();
     let fixture = assemble_ecosystem_smoke_fixture(&project, overlay).unwrap();
     assert_eq!(fixture.production, production);
+    assert_eq!(fixture.package_test.gateway_entry_key.as_str(), "run");
+    assert_eq!(
+        fixture.package_test.gateway_entry_identity.as_str(),
+        PACKAGE_TEST_IDENTITY
+    );
     assert_eq!(fixture.unary.selector.path, "/probe");
-    let websocket = fixture
-        .websocket
-        .as_ref()
-        .expect("canonical websocket public ABI should enter the real smoke fixture");
-    assert_eq!(websocket.selector.protocol, IngressProtocol::WebSocket);
-    assert_eq!(websocket.selector.path, "/socket");
+    assert_eq!(fixture.unary.gateway_entry_key.as_str(), "probe");
+    assert_eq!(
+        fixture.unary.gateway_entry_identity.as_str(),
+        PROBE_IDENTITY
+    );
+    assert_eq!(fixture.unary.mode, GatewayDispatchMode::Unary);
     assert_eq!(fixture.records.assembly.roots.len(), 2);
     assert_eq!(fixture.records.deployments.len(), 2);
     assert_eq!(fixture.records.contracts.len(), 2);
+    assert_eq!(fixture.records.assembly.gateway_ingress.len(), 2);
+    assert!(fixture
+        .records
+        .contracts
+        .iter()
+        .all(|contract| contract.operations.is_empty()
+            && contract.package_type_requirements.is_empty()));
+    assert!(fixture.records.deployments.iter().all(|deployment| {
+        deployment.operation_bindings.is_empty()
+            && deployment.gateway_entries.len() == 1
+            && deployment.ingress.len() == 1
+    }));
+    assert!(fixture
+        .records
+        .assembly
+        .gateway_ingress
+        .iter()
+        .all(|binding| binding.selector.protocol == IngressProtocol::Http));
+    assert!(!fixture
+        .records
+        .assembly
+        .gateway_ingress
+        .iter()
+        .any(|binding| binding.selector.path == "/socket"));
     assert_eq!(fixture.records.assembly.resolved_packages.len(), 3);
     assert!(fixture
         .records
@@ -1711,14 +1964,31 @@ function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.webs
 }
 
 #[test]
-fn i02_spawn_submit_fixture_splits_unary_and_websocket_effects() {
+fn i02_submit_probe_is_private_http_gateway_not_service_operation() {
+    const PROBE_IDENTITY: &str = concat!(
+        "skiff-gateway-entry-v1:sha256:",
+        "adfaa17c077af0388f2b5751bbe4b9ba392ec647f5ce33022c8e8ec83eaf6653"
+    );
+
     let root = TestRoot::new("i02-spawn-submit-effects");
     let artifacts = root.child("artifacts");
     create_store(&artifacts);
     seed_canonical_std(&platform_sources(), &artifacts).unwrap();
     let package =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/package-service-i02-spawn-submit");
+    let source = fs::read_to_string(package.join("main.skiff")).unwrap();
+    assert!(
+        source.contains(
+            "function __skiffHttpProbe(body: null) -> string {\n  return submitSpawnReceipt()\n}"
+        ),
+        "I02 private HTTP wrapper must call the callable selected by marker: main.submitSpawnReceipt"
+    );
+    assert!(!fs::read_to_string(package.join("api.yml"))
+        .unwrap()
+        .contains("__skiffHttpProbe"));
     let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
+    let production =
+        skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
 
     assert_eq!(
         project
@@ -1735,12 +2005,6 @@ fn i02_spawn_submit_fixture_splits_unary_and_websocket_effects() {
         marker.cancellation,
         BoundaryCancellationContract::Cooperative
     );
-    let websocket = public_operation_projection(&project, "websocket");
-    assert!(!websocket.may_suspend);
-    assert_eq!(
-        websocket.cancellation,
-        BoundaryCancellationContract::NotCancellable
-    );
 
     let cases = discover_package_test_cases(&package, &package, false).unwrap();
     assert_eq!(cases.len(), 1);
@@ -1748,30 +2012,130 @@ fn i02_spawn_submit_fixture_splits_unary_and_websocket_effects() {
         compile_package_test_overlay(&platform_sources(), &package, &artifacts, &project, &cases)
             .unwrap();
     let fixture = assemble_ecosystem_smoke_fixture(&project, overlay).unwrap();
-    let websocket = fixture
-        .websocket
-        .as_ref()
-        .expect("I02 websocket entrypoint");
-    assert_eq!(fixture.unary.contract, websocket.contract);
-    assert_eq!(fixture.unary.deployment, websocket.deployment);
+    assert_eq!(fixture.production, production);
+    assert_eq!(fixture.unary.gateway_entry_key.as_str(), "probe");
+    assert_eq!(
+        fixture.unary.gateway_entry_identity.as_str(),
+        PROBE_IDENTITY
+    );
+    assert_eq!(fixture.records.assembly.gateway_ingress.len(), 2);
+    assert!(fixture
+        .records
+        .assembly
+        .gateway_ingress
+        .iter()
+        .all(|binding| binding.selector.protocol == IngressProtocol::Http));
+    let smoke_deployment = fixture
+        .records
+        .deployments
+        .iter()
+        .find(|deployment| {
+            skiff_artifact_identity::service_deployment_ref(deployment) == fixture.unary.deployment
+        })
+        .expect("I02 smoke deployment");
+    assert!(smoke_deployment.operation_bindings.is_empty());
+    assert_eq!(smoke_deployment.gateway_entries.len(), 1);
+    let handler = &smoke_deployment.gateway_entries[&fixture.unary.gateway_entry_key].handler;
+    let PackageLocalAbiSymbol::Callable {
+        callable_id: wrapper,
+        ..
+    } = &project
+        .package
+        .artifact
+        .package_local_abi
+        .implementation_symbols["main.__skiffHttpProbe"]
+    else {
+        panic!("I02 private HTTP wrapper must compile as a callable")
+    };
+    assert_eq!(handler, wrapper);
+    assert!(!project
+        .package
+        .artifact
+        .package_local_abi
+        .public_symbols
+        .values()
+        .any(|symbol| matches!(
+            symbol,
+            PackageLocalAbiSymbol::Callable { callable_id, .. } if callable_id == wrapper
+        )));
     let smoke_contract = fixture
         .records
         .contracts
         .iter()
         .find(|contract| {
             skiff_artifact_identity::service_contract_ref(contract).unwrap()
-                == fixture.unary.contract
+                == smoke_deployment.contract
         })
-        .expect("I02 smoke contract");
-    assert_eq!(smoke_contract.operations.len(), 2);
-    assert_eq!(
-        smoke_contract
-            .operations
-            .values()
-            .filter(|descriptor| descriptor.contract.may_suspend)
-            .count(),
-        1
-    );
+        .expect("I02 zero-operation smoke contract");
+    assert!(smoke_contract.operations.is_empty());
+    assert!(smoke_contract.package_type_requirements.is_empty());
+}
+
+#[test]
+fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
+    let root = TestRoot::new("ecosystem-http-source-wrappers");
+    let artifacts = root.child("artifacts");
+    create_store(&artifacts);
+    seed_canonical_std(&platform_sources(), &artifacts).unwrap();
+
+    for (fixture_name, expected_call) in [
+        ("package-service-websocket-smoke", "return marker()"),
+        ("package-service-websocket-generation-a", "return marker()"),
+        ("package-service-websocket-generation-b", "return marker()"),
+        (
+            "package-service-i02-spawn-submit",
+            "return submitSpawnReceipt()",
+        ),
+    ] {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures")
+            .join(fixture_name);
+        let source = fs::read_to_string(package.join("main.skiff")).unwrap();
+        assert!(
+            source.contains("function __skiffHttpProbe(body: null) -> string")
+                && source.contains(expected_call),
+            "{fixture_name} must carry the exact private HTTP wrapper"
+        );
+        assert!(
+            !fs::read_to_string(package.join("api.yml"))
+                .unwrap()
+                .contains("__skiffHttpProbe"),
+            "{fixture_name} must not publish the private HTTP wrapper"
+        );
+        let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
+        let production =
+            skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
+        assert!(project
+            .package
+            .artifact
+            .package_local_abi
+            .implementation_symbols
+            .contains_key("main.__skiffHttpProbe"));
+        assert!(!project
+            .package
+            .artifact
+            .package_local_abi
+            .public_symbols
+            .contains_key("__skiffHttpProbe"));
+        let cases = discover_package_test_cases(&package, &package, false).unwrap();
+        let overlay = compile_package_test_overlay(
+            &platform_sources(),
+            &package,
+            &artifacts,
+            &project,
+            &cases,
+        )
+        .unwrap();
+        let fixture = assemble_ecosystem_smoke_fixture(&project, overlay).unwrap();
+        assert_eq!(fixture.production, production);
+        assert_eq!(
+            fixture.unary.gateway_entry_identity.as_str(),
+            concat!(
+                "skiff-gateway-entry-v1:sha256:",
+                "adfaa17c077af0388f2b5751bbe4b9ba392ec647f5ce33022c8e8ec83eaf6653"
+            )
+        );
+    }
 }
 
 fn public_operation_projection<'a>(
@@ -1815,7 +2179,8 @@ fn create_base_assembly_scenario() -> BaseAssemblyScenario {
     let root = TestRoot::new("base-assembly");
     let artifacts = root.child("artifacts");
     let runtime = root.child("runtime-artifacts");
-    let fixture_root = package_service_host_fixture_root();
+    let fixture_root = root.child("package-service-host");
+    copy_tree(&package_service_host_fixture_root(), &fixture_root);
     let consumer = fixture_root.join("consumer");
     let test_service = fixture_root.join("consumer-tests");
     let receipt = prepare_package_service_host_fixture(
@@ -1856,6 +2221,28 @@ fn create_base_assembly_scenario() -> BaseAssemblyScenario {
     assert_eq!(
         receipt.payments_contract.service_id, "example.com/payments",
         "the provider package and its service contract must share their canonical id"
+    );
+    let payments_contract = CanonicalArtifactStore::open(&artifacts)
+        .unwrap()
+        .read_service_contract(&receipt.payments_contract)
+        .unwrap();
+    assert_eq!(
+        payments_contract.operations.len(),
+        1,
+        "the direct provider fixture must publish exactly one contract operation"
+    );
+    let operation_id = payments_contract
+        .operations
+        .keys()
+        .next()
+        .expect("the exact echo contract operation");
+    assert_eq!(
+        payments_contract
+            .diagnostic_text
+            .operations
+            .get(operation_id)
+            .map(String::as_str),
+        Some("echo")
     );
     let base = CanonicalBaseAssembly::load(
         &artifacts,
@@ -1963,9 +2350,7 @@ fn assert_json_keys(value: &serde_json::Value, expected: &[&str]) {
 fn write_package(root: &Path, manifest: &str, api: Option<&str>, source: Option<&str>) {
     fs::create_dir_all(root).unwrap();
     fs::write(root.join("package.yml"), manifest).unwrap();
-    if let Some(api) = api {
-        fs::write(root.join("api.yml"), api).unwrap();
-    }
+    fs::write(root.join("api.yml"), api.unwrap_or("{}\n")).unwrap();
     if let Some(source) = source {
         fs::write(root.join("main.skiff"), source).unwrap();
     }

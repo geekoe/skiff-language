@@ -226,44 +226,26 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
     let assembly = runtime_assembly_ref(&fixture.records.assembly)?;
     let overlay_record_path = PackageArtifactRecordPath::new(&fixture.overlay)?.to_string();
     let production = package_artifact_ref(&project.package.artifact)?;
-    let mut entrypoints = vec![
+    let entrypoints = vec![
         json!({
-            "kind": "packageTest",
-            "name": fixture.package_test.case.name,
-            "host": fixture.package_test.selector.host,
-            "method": fixture.package_test.selector.method,
-            "path": fixture.package_test.selector.path,
             "deployment": fixture.package_test.deployment,
-            "contract": fixture.package_test.contract,
-            "operation": fixture.package_test.operation,
+            "gatewayEntryKey": fixture.package_test.gateway_entry_key,
+            "gatewayEntryIdentity": fixture.package_test.gateway_entry_identity,
+            "mode": fixture.package_test.mode,
+            "selector": fixture.package_test.selector,
         }),
         json!({
-            "kind": "unary",
-            "name": "marker",
-            "host": fixture.unary.selector.host,
-            "method": fixture.unary.selector.method,
-            "path": fixture.unary.selector.path,
             "deployment": fixture.unary.deployment,
-            "contract": fixture.unary.contract,
-            "operation": fixture.unary.operation,
+            "gatewayEntryKey": fixture.unary.gateway_entry_key,
+            "gatewayEntryIdentity": fixture.unary.gateway_entry_identity,
+            "mode": fixture.unary.mode,
+            "selector": fixture.unary.selector,
         }),
     ];
-    if let Some(websocket) = fixture.websocket.as_ref() {
-        entrypoints.push(json!({
-            "kind": "websocket",
-            "name": "websocket",
-            "host": websocket.selector.host,
-            "method": websocket.selector.method,
-            "path": websocket.selector.path,
-            "deployment": websocket.deployment,
-            "contract": websocket.contract,
-            "operation": websocket.operation,
-        }));
-    }
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "schemaVersion": "skiff-package-service-smoke-fixture-v1",
+            "schemaVersion": "skiff-package-service-smoke-fixture-v2",
             "environment": args.environment,
             "bootstrap": bootstrap,
             "candidate": {

@@ -1660,7 +1660,6 @@ fn private_package(package_id: &str, file: &FileIrUnit) -> PackageArtifact {
         },
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
-        service_call_roots: Vec::new(),
         service_call_refs: Vec::new(),
     }
 }

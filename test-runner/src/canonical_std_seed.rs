@@ -41,8 +41,8 @@ pub enum CanonicalStdSeedError {
     Storage(#[from] EcosystemStorageError),
     #[error("canonical std pointer already selects {actual:?}; exact candidate is {candidate:?}")]
     ConflictingPointer {
-        actual: PackageArtifactPointer,
-        candidate: PackageArtifactPointer,
+        actual: Box<PackageArtifactPointer>,
+        candidate: Box<PackageArtifactPointer>,
     },
 }
 
@@ -67,8 +67,8 @@ pub fn seed_canonical_std(
     if let Some(actual) = current.as_ref() {
         if actual != &candidate {
             return Err(CanonicalStdSeedError::ConflictingPointer {
-                actual: actual.clone(),
-                candidate,
+                actual: Box::new(actual.clone()),
+                candidate: Box::new(candidate),
             });
         }
     }
@@ -90,7 +90,10 @@ pub fn seed_canonical_std(
                             .to_string(),
                     })?;
                 if actual != candidate {
-                    return Err(CanonicalStdSeedError::ConflictingPointer { actual, candidate });
+                    return Err(CanonicalStdSeedError::ConflictingPointer {
+                        actual: Box::new(actual),
+                        candidate: Box::new(candidate),
+                    });
                 }
             }
             Err(error) => return Err(error.into()),

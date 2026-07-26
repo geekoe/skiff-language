@@ -6,18 +6,20 @@ use std::{
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use skiff_artifact_identity::{package_artifact_ref, service_contract_ref, service_deployment_ref};
-use skiff_artifact_model::{
-    ActivationPolicy, BoundaryCallableProjection, ConfigLiteralBinding, DeploymentDiagnosticText,
-    DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision, IngressSelector, MetadataValue,
-    PackageArtifact, PackageArtifactRef, PackageBinding, PackageRequirementKey, ResourceBinding,
-    ResourcePolicy, RuntimeCapabilityBinding, SecretRefBinding, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentOperationInput,
-    ServiceRequirementKey, ServiceSelectorBinding, StateBinding, StateBindingKind,
-    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+use skiff_artifact_identity::{
+    assign_service_contract_identities, package_artifact_ref, service_contract_ref,
+    service_deployment_ref,
 };
-use skiff_compiler::{
-    compile_contract, ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
+use skiff_artifact_model::{
+    ActivationPolicy, ConfigLiteralBinding, ContractDiagnosticText, DeploymentDiagnosticText,
+    DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision,
+    GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayExternalSchema,
+    IngressProtocol, IngressSelector, MetadataValue, PackageArtifact, PackageArtifactRef,
+    PackageBinding, PackageRequirementKey, ResourceBinding, ResourcePolicy,
+    RuntimeCapabilityBinding, SecretRefBinding, ServiceContract, ServiceDeployment,
+    ServiceDeploymentInput, ServiceProtocolIdentity, ServiceRequirementKey, ServiceSelectorBinding,
+    StateBinding, StateBindingKind, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_deployment::{
     assembly::resolve_runtime_assembly, projection::project_service_deployment,
@@ -27,7 +29,7 @@ use crate::{
     canonical_fixture::CanonicalFixtureError,
     canonical_package::CanonicalPackageProject,
     canonical_store::{CanonicalBaseAssembly, CanonicalTestRecords},
-    package_schema_contract::schema_closure,
+    canonical_test_gateway::canonical_typed_null_gateway,
     test_discovery::PackageTestCase,
     test_overlay::PublishedPackageTestOverlay,
 };
@@ -39,8 +41,9 @@ pub struct CanonicalPackageTestEntrypoint {
     pub case: PackageTestCase,
     pub selector: IngressSelector,
     pub deployment: skiff_artifact_model::ServiceDeploymentRef,
-    pub contract: ServiceContractRef,
-    pub operation: skiff_artifact_model::ContractOperationId,
+    pub gateway_entry_key: GatewayEntryKey,
+    pub gateway_entry_identity: GatewayEntryIdentity,
+    pub mode: GatewayDispatchMode,
 }
 
 #[derive(Debug, Clone)]
@@ -74,12 +77,13 @@ pub fn assemble_package_test_fixture_for_run(
     base: CanonicalBaseAssembly,
     run_scope: &str,
 ) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
-    if !overlay.bindings.is_empty() {
-        return Err(CanonicalFixtureError::InvalidInput(
-            "package-test ingress is not yet migrated to deployment gateway entries".to_string(),
-        ));
-    }
     let assembly_nonce = package_test_assembly_nonce()?;
+    let gateway_inputs = overlay
+        .bindings
+        .iter()
+        .enumerate()
+        .map(|(index, binding)| package_test_gateway_inputs(&overlay, index, binding))
+        .collect::<Result<Vec<_>, _>>()?;
     let overlay_ref = package_artifact_ref(&overlay.overlay.artifact)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     let production_ref = package_artifact_ref(&project.package.artifact)
@@ -97,13 +101,12 @@ pub fn assemble_package_test_fixture_for_run(
     let mut contracts = Vec::with_capacity(overlay.bindings.len());
     let mut deployments = Vec::with_capacity(overlay.bindings.len());
     let mut entrypoints = Vec::with_capacity(overlay.bindings.len());
-    for (index, binding) in overlay.bindings.iter().enumerate() {
-        let (contract, package_schema_records) =
-            compile_package_test_contract(&overlay, index, binding)?;
+    for (index, (binding, (gateway_entry_key, gateway_entry, ingress))) in
+        overlay.bindings.iter().zip(gateway_inputs).enumerate()
+    {
+        let contract = compile_package_test_contract(&overlay, index)?;
         let contract_ref = service_contract_ref(&contract)
             .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-        let (operation_bindings, ingress) =
-            package_test_operation_inputs(&contract, index, binding)?;
         let case_scope = package_test_case_scope(run_scope, &assembly_nonce, index, &binding.case);
         let state_bindings = package_test_state_bindings(&state_requirements, &case_scope)?;
         let deployment = project_service_deployment(
@@ -111,9 +114,9 @@ pub fn assemble_package_test_fixture_for_run(
                 &overlay,
                 contract_ref.clone(),
                 overlay_ref.clone(),
-                operation_bindings,
                 package_bindings.clone(),
                 service_selectors.clone(),
+                BTreeMap::from([(gateway_entry_key.clone(), gateway_entry.clone())]),
                 ingress.clone(),
                 profile_bindings.clone(),
                 state_bindings,
@@ -121,7 +124,7 @@ pub fn assemble_package_test_fixture_for_run(
             ),
             &contract,
             &deployment_packages,
-            &package_schema_records,
+            &BTreeMap::new(),
         )
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
         let deployment_ref = service_deployment_ref(&deployment);
@@ -131,13 +134,12 @@ pub fn assemble_package_test_fixture_for_run(
             ));
         };
         entrypoints.push(CanonicalPackageTestEntrypoint {
-            operation: deployment.operation_bindings[0]
-                .contract_operation_id
-                .clone(),
             selector: ingress.selector.clone(),
             case: binding.case.clone(),
             deployment: deployment_ref,
-            contract: contract_ref,
+            gateway_entry_key,
+            gateway_entry_identity: gateway_entry.gateway_entry_identity,
+            mode: GatewayDispatchMode::Unary,
         });
         contracts.push(contract);
         deployments.push(deployment);
@@ -179,76 +181,78 @@ pub fn assemble_package_test_fixture_for_run(
 fn compile_package_test_contract(
     overlay: &PublishedPackageTestOverlay,
     index: usize,
-    binding: &crate::test_overlay::PackageTestOverlayBinding,
-) -> Result<
-    (
-        ServiceContract,
-        BTreeMap<
-            skiff_artifact_model::PackageSchemaTypeId,
-            skiff_artifact_model::PackageSchemaTypeRecord,
-        >,
-    ),
-    CanonicalFixtureError,
-> {
-    let projection = overlay
-        .overlay
-        .artifact
-        .boundary_projections
-        .get(&binding.callable_id)
-        .ok_or_else(|| {
-            CanonicalFixtureError::InvalidInput(format!(
-                "test callable {} has no boundary projection",
-                binding.callable_id
-            ))
-        })?;
-    let operation_contract = match projection {
-        BoundaryCallableProjection::Available {
-            operation_contract, ..
-        } => operation_contract,
-        BoundaryCallableProjection::Unavailable { reasons } => {
-            return Err(CanonicalFixtureError::InvalidInput(format!(
-                "test callable {} cannot cross the canonical test boundary: {reasons:?}",
-                binding.callable_id
-            )));
-        }
-    };
-    let operations = BTreeMap::from([("run".to_string(), operation_contract.clone())]);
-    let (package_type_requirements, package_schema_records) = schema_closure(
-        &operations,
-        &overlay.overlay.resolved_package_schema_type_records,
-    )
-    .map_err(CanonicalFixtureError::InvalidInput)?;
-    let contract = compile_contract(ServiceContractDefinition {
-        service_id: format!(
+) -> Result<ServiceContract, CanonicalFixtureError> {
+    canonical_zero_operation_contract(
+        format!(
             "test.skiff/package/{}/case-{index}",
             safe_coordinate(&overlay.production.package_id),
         ),
-        contract_version: overlay.production.package_version.clone(),
-        operations,
-        package_type_requirements,
-        diagnostic_text: ServiceContractDefinitionDiagnosticText {
-            service: format!("package tests for {}", overlay.production.package_id),
+        overlay.production.package_version.clone(),
+        format!("package tests for {}", overlay.production.package_id),
+    )
+}
+
+pub(crate) fn canonical_zero_operation_contract(
+    service_id: String,
+    contract_version: String,
+    diagnostic_service: String,
+) -> Result<ServiceContract, CanonicalFixtureError> {
+    let mut contract = ServiceContract {
+        schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
+        service_id,
+        contract_version,
+        service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
+        operations: BTreeMap::new(),
+        package_type_requirements: Vec::new(),
+        diagnostic_text: ContractDiagnosticText {
+            service: diagnostic_service,
             operations: BTreeMap::new(),
             types: BTreeMap::new(),
         },
-    })
-    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    Ok((contract, package_schema_records))
+    };
+    assign_service_contract_identities(&mut contract)
+        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    Ok(contract)
 }
 
-fn package_test_operation_inputs(
-    _contract: &ServiceContract,
-    _index: usize,
-    _binding: &crate::test_overlay::PackageTestOverlayBinding,
+fn package_test_gateway_inputs(
+    overlay: &PublishedPackageTestOverlay,
+    index: usize,
+    binding: &crate::test_overlay::PackageTestOverlayBinding,
 ) -> Result<
     (
-        Vec<ServiceDeploymentOperationInput>,
+        GatewayEntryKey,
+        DeploymentGatewayEntry,
         Vec<DeploymentIngressBinding>,
     ),
     CanonicalFixtureError,
 > {
-    Err(CanonicalFixtureError::InvalidInput(
-        "package-test ingress is not yet migrated to deployment gateway entries".to_string(),
+    let key = GatewayEntryKey::parse("run")
+        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    let entry = canonical_typed_null_gateway(
+        &overlay.overlay.artifact,
+        &binding.gateway_selector,
+        GatewayExternalSchema::Null,
+    )
+    .map_err(CanonicalFixtureError::InvalidInput)?;
+    if entry.handler != binding.gateway_callable_id {
+        return Err(CanonicalFixtureError::InvalidInput(format!(
+            "package-test gateway handler {} does not match overlay binding {}",
+            entry.handler, binding.gateway_callable_id
+        )));
+    }
+    Ok((
+        key.clone(),
+        entry,
+        vec![DeploymentIngressBinding {
+            selector: IngressSelector {
+                protocol: IngressProtocol::Http,
+                host: format!("case-{index}.package-test.skiff.localhost"),
+                method: Some("POST".to_string()),
+                path: format!("/__skiff/package-test/{index}"),
+            },
+            gateway_entry_key: key,
+        }],
     ))
 }
 
@@ -364,11 +368,11 @@ fn binding_owner<'a>(
 #[allow(clippy::too_many_arguments)]
 fn package_test_deployment_input(
     overlay: &PublishedPackageTestOverlay,
-    contract: ServiceContractRef,
+    contract: skiff_artifact_model::ServiceContractRef,
     implementation: PackageArtifactRef,
-    operation_bindings: Vec<ServiceDeploymentOperationInput>,
     package_bindings: Vec<PackageBinding>,
     service_selectors: Vec<ServiceSelectorBinding>,
+    gateway_entries: BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     ingress: Vec<DeploymentIngressBinding>,
     profile_bindings: SelectedProfileBindings,
     state_bindings: Vec<StateBinding>,
@@ -391,10 +395,10 @@ fn package_test_deployment_input(
         contract,
         deployment_revision: DeploymentRevision::new(format!("test-{revision}")),
         implementation,
-        operation_bindings,
+        operation_bindings: Vec::new(),
         package_bindings,
         service_selectors,
-        gateway_entries: BTreeMap::new(),
+        gateway_entries,
         ingress,
         config_literals,
         secret_refs,
