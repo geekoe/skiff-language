@@ -34,6 +34,21 @@ fn generates_exact_operations_and_profile_bindings() {
     assert!(deployment.ingress.is_empty());
     assert_eq!(deployment.config_literals[0].path, "registry.token");
     assert_eq!(deployment.policy.principal, "service:registry");
+
+    let mut explicit_empty_http = service.clone();
+    explicit_empty_http.http = Some(Default::default());
+    let explicit_empty = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &explicit_empty_http,
+        profile_name: "prod",
+        profile: &profile,
+        service_api: &service_api,
+        implementation: &project.package.artifact,
+        package_closure: &[],
+        package_schema_records: &project.package.resolved_package_schema_type_records,
+    })
+    .unwrap();
+    assert!(explicit_empty.gateway_entries.is_empty());
+    assert!(explicit_empty.ingress.is_empty());
 }
 
 #[test]
@@ -182,33 +197,63 @@ fn automatic_service_api_mapping_fails_closed() {
 }
 
 #[test]
-fn generated_service_deployment_refuses_named_http_entries_instead_of_reinterpreting_operations() {
-    let (project, service_api) = compile_fixture("generated-http-fail-closed", "\"ok\"");
+fn generated_service_deployment_projects_named_http_without_contract_operation() {
+    let root = TestDir::new("skiff-compiler", "generated-http-gateway");
+    root.write(
+        "package.yml",
+        "id: example.com/http-package\nversion: 7.4.0\n",
+    );
+    root.write("service.yml", "id: example.com/http\n");
+    root.write("api.yml", "health: main.health\n");
+    root.write(
+        "main.skiff",
+        r#"import std
+
+function raw(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return std.http.noContent()
+}
+
+function health() -> string {
+  return "ok"
+}
+"#,
+    );
+    let (project, service_api) = compile_service_package_project(root.path()).unwrap();
     let service = serde_yaml::from_str::<ServiceManifestAuthoring>(
         r#"
-id: example.com/registry
+id: example.com/http
 http:
-  read:
+  raw:
     method: GET
     path: /artifacts
-    kind: typedJson
-    handler: main.read
+    kind: rawHttp
+    handler: main.raw
+    adapterArgs:
+      - param: request
+        source: { kind: http.request }
 "#,
     )
     .unwrap();
-    let error = generate_service_deployment(GeneratedServiceDeploymentInput {
+    let closure = project
+        .dependency_packages
+        .iter()
+        .map(|package| package.artifact.clone())
+        .collect::<Vec<_>>();
+    let mut http_profile = profile();
+    http_profile.config = json!({});
+    let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &service,
         profile_name: "prod",
-        profile: &profile(),
+        profile: &http_profile,
         service_api: &service_api,
         implementation: &project.package.artifact,
-        package_closure: &[],
+        package_closure: &closure,
         package_schema_records: &project.package.resolved_package_schema_type_records,
     })
-    .unwrap_err();
-    let message = error.to_string();
-    assert!(message.contains("named HTTP gateway entries"));
-    assert!(message.contains("refusing to reinterpret them as service operations"));
+    .unwrap();
+    assert!(deployment.operation_bindings.is_empty());
+    assert_eq!(deployment.gateway_entries.len(), 1);
+    assert_eq!(deployment.ingress.len(), 1);
 }
 
 #[test]

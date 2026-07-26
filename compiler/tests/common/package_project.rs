@@ -139,8 +139,10 @@ pub fn compile_service_package_project(
         &contract_dependencies,
         &resolved_package_schemas,
     );
-    // Match the authoring driver: compiler-owned std is admitted only when the
-    // root's File IR actually closes over it, rather than being compiled eagerly.
+    // The compiler-owned std artifact must be available for exact source type
+    // resolution. It enters the returned dependency closure only when the
+    // compiled service actually records the std requirement.
+    graph.compile_platform_std()?;
     let compiled = graph.compile_service(&root_key, &service_root)?;
     let dependency_packages = graph.compiled_dependency_closure(&compiled.package)?;
     Ok((

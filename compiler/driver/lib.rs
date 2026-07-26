@@ -1,5 +1,6 @@
 pub mod authoring;
 mod generated_deployment;
+mod http_gateway_projection;
 pub(crate) mod input;
 pub(crate) mod pipeline;
 pub(crate) mod shared;

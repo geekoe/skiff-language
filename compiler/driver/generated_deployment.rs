@@ -16,6 +16,10 @@ use skiff_compiler_contract::ServiceApiProjection;
 use skiff_deployment::projection::{project_service_deployment, ProjectionError};
 use thiserror::Error;
 
+use crate::http_gateway_projection::{
+    project_http_gateway, HttpGatewayProjectionError, ProjectedHttpGateway,
+};
+
 /// Exact typed inputs used to generate one deployment. There is deliberately no
 /// `deployment.yml` or manually-authored operation map in this seam.
 pub struct GeneratedServiceDeploymentInput<'a> {
@@ -46,13 +50,24 @@ pub enum GeneratedServiceDeploymentError {
     Identity(#[from] skiff_artifact_identity::ArtifactIdentityError),
     #[error(transparent)]
     Projection(#[from] ProjectionError),
+    #[error(transparent)]
+    HttpGateway(#[from] HttpGatewayProjectionError),
 }
 
 pub fn generate_service_deployment(
     input: GeneratedServiceDeploymentInput<'_>,
 ) -> Result<ServiceDeployment, GeneratedServiceDeploymentError> {
-    reject_unwired_gateway_authoring(input.service)?;
+    reject_unwired_websocket_authoring(input.service)?;
     validate_exact_api(&input)?;
+    let ProjectedHttpGateway {
+        gateway_entries,
+        ingress,
+    } = project_http_gateway(
+        input.service,
+        input.implementation,
+        input.package_closure,
+        input.package_schema_records,
+    )?;
     let typed = ServiceDeploymentInput {
         schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
         contract: service_contract_ref(&input.service_api.contract)?,
@@ -61,8 +76,8 @@ pub fn generate_service_deployment(
         operation_bindings: operation_bindings(&input)?,
         package_bindings: package_bindings(&input)?,
         service_selectors: service_selectors(&input),
-        gateway_entries: BTreeMap::new(),
-        ingress: Vec::new(),
+        gateway_entries,
+        ingress,
         config_literals: keyed_values("config", &input.profile.config)?
             .into_iter()
             .map(|(path, value)| ConfigLiteralBinding {
@@ -93,23 +108,19 @@ pub fn generate_service_deployment(
     {
         artifacts.push(input.implementation.clone());
     }
+    let contract_schema_records =
+        contract_package_schema_records(&input, input.package_schema_records)?;
     Ok(project_service_deployment(
         typed,
         &input.service_api.contract,
         &artifacts,
-        input.package_schema_records,
+        &contract_schema_records,
     )?)
 }
 
-fn reject_unwired_gateway_authoring(
+fn reject_unwired_websocket_authoring(
     service: &ServiceManifestAuthoring,
 ) -> Result<(), GeneratedServiceDeploymentError> {
-    if service.http.is_some() {
-        return Err(GeneratedServiceDeploymentError::InvalidManifest {
-            field: "http",
-            message: "named HTTP gateway entries are not yet supported by generated deployment; refusing to reinterpret them as service operations".to_string(),
-        });
-    }
     if service.websocket.is_some() {
         return Err(GeneratedServiceDeploymentError::InvalidManifest {
             field: "websocket",
@@ -117,6 +128,39 @@ fn reject_unwired_gateway_authoring(
         });
     }
     Ok(())
+}
+
+fn contract_package_schema_records(
+    input: &GeneratedServiceDeploymentInput<'_>,
+    available: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+) -> Result<BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>, GeneratedServiceDeploymentError>
+{
+    input
+        .service_api
+        .contract
+        .package_type_requirements
+        .iter()
+        .flat_map(|requirement| {
+            requirement
+                .required_type_ids
+                .iter()
+                .map(move |type_id| (&requirement.package_id, type_id))
+        })
+        .map(|(expected_owner, type_id)| {
+            let record = available.get(type_id).ok_or_else(|| {
+                invalid(format!(
+                    "service contract requires unavailable Package schema record {type_id}"
+                ))
+            })?;
+            if &record.package_id != expected_owner {
+                return Err(invalid(format!(
+                    "service contract Package schema record {type_id} expected owner {expected_owner}, got {}",
+                    record.package_id
+                )));
+            }
+            Ok((type_id.clone(), record.clone()))
+        })
+        .collect()
 }
 
 fn validate_exact_api(
@@ -454,23 +498,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_service_deployment_rejects_named_http_entries_before_legacy_resolution() {
+    fn generated_service_deployment_accepts_empty_named_http_mapping() {
         let service = serde_yaml::from_str::<ServiceManifestAuthoring>(
             r#"
 id: example.com/users
-http:
-  createUser:
-    method: POST
-    path: /users
-    kind: typedJson
-    handler: users.create
+http: {}
 "#,
         )
         .unwrap();
-        let error = reject_unwired_gateway_authoring(&service).unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("named HTTP gateway entries"));
-        assert!(message.contains("refusing to reinterpret them as service operations"));
+        reject_unwired_websocket_authoring(&service).unwrap();
     }
 
     #[test]
@@ -485,7 +521,7 @@ websocket:
 "#,
         )
         .unwrap();
-        let error = reject_unwired_gateway_authoring(&service).unwrap_err();
+        let error = reject_unwired_websocket_authoring(&service).unwrap_err();
         let message = error.to_string();
         assert!(message.contains("WebSocket business gateway entries are not defined"));
         assert!(message.contains("refusing legacy operation ingress"));

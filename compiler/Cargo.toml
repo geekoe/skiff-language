@@ -111,6 +111,10 @@ name = "generated_service_deployment"
 path = "tests/generated_service_deployment.rs"
 
 [[test]]
+name = "http_gateway_projection"
+path = "tests/http_gateway_projection.rs"
+
+[[test]]
 name = "service_call_roots"
 path = "tests/service_call_roots.rs"
 
