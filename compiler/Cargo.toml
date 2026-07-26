@@ -59,6 +59,10 @@ name = "prelude_std_schema"
 path = "tests/prelude_std_schema.rs"
 
 [[test]]
+name = "builtin_canonical_spelling"
+path = "tests/builtin_canonical_spelling.rs"
+
+[[test]]
 name = "publication_resources"
 path = "tests/publication_resources.rs"
 

@@ -8,7 +8,10 @@ use skiff_artifact_model::{
     PackageSchemaTypeRecord, PackageSymbolRef, PackageTypeRef, ServiceSymbolRef, TypeDescriptorIr,
     TypeRefIr,
 };
-use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref;
+use skiff_compiler_core::{
+    prelude_registry::canonical_file_ir_builtin_name,
+    type_ref::substitute_type_params_in_type_ref_ref,
+};
 
 use crate::{
     package_export_resolver::{PackageExportResolver, ResolvedPackageSymbol},
@@ -2178,7 +2181,7 @@ impl TypeResolutionModel {
                 "interface selector `{selector_text}` targets type parameter `{service_name}`, not an interface"
             ));
         }
-        if let Some(canonical_name) = builtin_type_name(name) {
+        if let Some(canonical_name) = canonical_file_ir_builtin_name(name) {
             return Err(format!(
                 "interface selector `{selector_text}` targets primitive/builtin type `{canonical_name}`, not an interface"
             ));
@@ -2595,7 +2598,7 @@ impl TypeResolutionModel {
         }
         let source_type_key = self.resolve_source_type_key(name, context);
         if source_type_key.is_none() {
-            if let Some(canonical_name) = builtin_type_name(name) {
+            if let Some(canonical_name) = canonical_file_ir_builtin_name(name) {
                 if canonical_name == "Map"
                     && resolved_args.len() == 2
                     && type_ref_contains_any_interface(&resolved_args[0])
@@ -2606,7 +2609,7 @@ impl TypeResolutionModel {
                     ));
                 }
                 return Ok(TypeRefIr::Builtin {
-                    name: canonical_name,
+                    name: canonical_name.to_string(),
                     args: resolved_args,
                 });
             }
@@ -4487,8 +4490,11 @@ fn resolve_package_fact_alias_expr(
                 .iter()
                 .map(|arg| resolve_package_fact_alias_expr(package, source_module, arg))
                 .collect::<Result<Vec<_>, _>>()?;
-            if let Some(name) = builtin_type_name(name) {
-                return Ok(TypeRefIr::Builtin { name, args });
+            if let Some(name) = canonical_file_ir_builtin_name(name) {
+                return Ok(TypeRefIr::Builtin {
+                    name: name.to_string(),
+                    args,
+                });
             }
             if let Some((dependency_alias, symbol_path)) = name.split_once('.') {
                 if let Some(dependency) = package
@@ -5707,25 +5713,6 @@ fn type_ref_contains_any_interface(ty: &TypeRefIr) -> bool {
     }
 }
 
-fn builtin_type_name(name: &str) -> Option<String> {
-    let name = name.trim();
-    match name {
-        "boolean" => return Some("bool".to_string()),
-        "String" => return Some("string".to_string()),
-        "string" | "integer" | "number" | "bool" | "null" | "unknown" | "void" | "never"
-        | "Json" | "JsonObject" | "Date" | "Config" | "bytes" | "Array" | "Map" | "Stream"
-        | "Exception" | "CatchResult" | "DbInsertManyResult" | "DbUpdateManyResult"
-        | "DbDeleteManyResult" | "DbUpsertResult" => return Some(name.to_string()),
-        _ => {}
-    }
-    if name.contains('.') {
-        let symbol = prelude_registry().known_type_symbol(name)?;
-        let canonical = canonical_native_prelude_type_symbol(&symbol)?;
-        return Some(canonical);
-    }
-    None
-}
-
 fn prelude_known_type_ref(name: &str, args: Vec<TypeRefIr>) -> Option<TypeRefIr> {
     if !name.contains('.')
         && !prelude_registry().is_prelude_type_name(name)
@@ -5748,8 +5735,14 @@ fn contextual_prelude_type_ref(
 }
 
 fn prelude_symbol_type_ref(symbol: String, args: Vec<TypeRefIr>) -> TypeRefIr {
-    if let Some(name) = canonical_native_prelude_type_symbol(&symbol) {
-        return TypeRefIr::Builtin { name, args };
+    if let Some(name) = canonical_file_ir_builtin_name(&symbol) {
+        return TypeRefIr::Builtin {
+            name: name.to_string(),
+            args,
+        };
+    }
+    if symbol == "config.DecodeError" {
+        return TypeRefIr::Builtin { name: symbol, args };
     }
     if is_std_abi_generic_type_symbol(&symbol) {
         return TypeRefIr::Builtin { name: symbol, args };
@@ -5836,22 +5829,6 @@ fn nominal_base_type_ref(base: &NominalTypeRefBaseIr) -> TypeRefIr {
             stable_schema_key: stable_schema_key.clone(),
             package_schema_type_id: package_schema_type_id.clone(),
         },
-    }
-}
-
-fn canonical_native_prelude_type_symbol(symbol: &str) -> Option<String> {
-    match symbol {
-        "std.collection.Array" => Some("Array".to_string()),
-        "std.collection.Map" => Some("Map".to_string()),
-        "std.stream.Stream" => Some("Stream".to_string()),
-        "std.bytes.bytes" => Some("bytes".to_string()),
-        "std.date.Date" | "Date" => Some("Date".to_string()),
-        "Json" => Some("Json".to_string()),
-        "JsonObject" => Some("JsonObject".to_string()),
-        "Config" => Some("Config".to_string()),
-        "config.DecodeError" => Some("config.DecodeError".to_string()),
-        other if prelude_registry().is_builtin_type_name(other) => Some(other.to_string()),
-        _ => None,
     }
 }
 
@@ -6054,6 +6031,49 @@ mod tests {
             .expect("platform sources load");
         crate::prelude_registry::initialize_prelude_registry(&platform_sources)
             .expect("prelude registry initializes");
+    }
+
+    #[test]
+    fn prelude_registry_is_the_only_source_builtin_spelling_owner() {
+        initialize_test_prelude();
+        let (_parsed, model) = type_resolution("");
+
+        for builtin in skiff_compiler_core::prelude_registry::file_ir_builtin_source_spellings() {
+            let arguments = std::iter::repeat_n("string", builtin.arity)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let source = if arguments.is_empty() {
+                builtin.source_spelling.to_string()
+            } else {
+                format!("{}<{arguments}>", builtin.source_spelling)
+            };
+            let expected_args =
+                std::iter::repeat_n(TypeRefIr::builtin("string"), builtin.arity).collect();
+            let resolved = model
+                .resolve_type_text(&source, &context())
+                .unwrap_or_else(|error| panic!("{source} should resolve: {error}"));
+            assert_eq!(
+                resolved.ir,
+                TypeRefIr::Builtin {
+                    name: builtin.canonical_name.to_string(),
+                    args: expected_args,
+                },
+                "{source} must use its canonical FileIR builtin spelling"
+            );
+        }
+
+        for undeclared in ["String", "Bytes", "std.date.Date"] {
+            match model.resolve_type_text(undeclared, &context()) {
+                Ok(resolved) => assert!(
+                    !matches!(resolved.ir, TypeRefIr::Builtin { .. }),
+                    "{undeclared} must not become an implicit FileIR builtin alias"
+                ),
+                Err(error) => assert!(
+                    error.contains("unresolved type"),
+                    "{undeclared} should fail as unresolved: {error}"
+                ),
+            }
+        }
     }
 
     #[test]

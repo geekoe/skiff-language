@@ -616,6 +616,32 @@ mod tests {
     }
 
     #[test]
+    fn builtin_schema_matching_remains_exact_without_alias_tolerance() {
+        let public_identities = HashMap::new();
+        let schema = ContractTypeRef::builtin("bool");
+        validate_type_matches_schema(
+            &LinkedTypeRef::Native {
+                name: "bool".to_string(),
+                args: Vec::new(),
+            },
+            &schema,
+            &public_identities,
+        )
+        .expect("canonical builtin names should match exactly");
+
+        let error = validate_type_matches_schema(
+            &LinkedTypeRef::Native {
+                name: "boolean".to_string(),
+                args: Vec::new(),
+            },
+            &schema,
+            &public_identities,
+        )
+        .expect_err("linker must reject an artificially noncanonical builtin pair");
+        assert!(error.to_string().contains("differ"));
+    }
+
+    #[test]
     fn full_owner_indexes_build_without_operation_error_roots() {
         let own = record_package("example/service", "api.ServiceFault");
         let dependency = record_package("example/dependency", "api.DependencyFault");
