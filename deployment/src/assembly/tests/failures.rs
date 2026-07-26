@@ -321,7 +321,7 @@ fn selectors_and_operations_must_describe_exact_template_edges() {
 }
 
 #[test]
-fn global_ingress_collision_fails_instead_of_last_wins() {
+fn deployment_gateway_ingress_fails_until_runtime_assembly_linking_exists() {
     let contract_a = contract("service.ingress-a");
     let contract_b = contract("service.ingress-b");
     let package_a = package("package.ingress-a", &[], &[]);
@@ -352,7 +352,7 @@ fn global_ingress_collision_fails_instead_of_last_wins() {
     .unwrap_err();
     assert!(matches!(
         error,
-        AssemblyResolutionError::IngressCollision { .. }
+        AssemblyResolutionError::GatewayIngressNotLinked { .. }
     ));
 }
 

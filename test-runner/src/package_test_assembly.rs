@@ -9,12 +9,11 @@ use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{package_artifact_ref, service_contract_ref, service_deployment_ref};
 use skiff_artifact_model::{
     ActivationPolicy, BoundaryCallableProjection, ConfigLiteralBinding, DeploymentDiagnosticText,
-    DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision, IngressProtocol,
-    IngressSelector, MetadataValue, PackageArtifact, PackageArtifactRef, PackageBinding,
-    PackageRequirementKey, ResourceBinding, ResourcePolicy, RuntimeCapabilityBinding,
-    SecretRefBinding, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentInput, ServiceDeploymentOperationInput, ServiceRequirementKey,
-    ServiceSelectorBinding, StateBinding, StateBindingKind,
+    DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision, IngressSelector, MetadataValue,
+    PackageArtifact, PackageArtifactRef, PackageBinding, PackageRequirementKey, ResourceBinding,
+    ResourcePolicy, RuntimeCapabilityBinding, SecretRefBinding, ServiceContract,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentOperationInput,
+    ServiceRequirementKey, ServiceSelectorBinding, StateBinding, StateBindingKind,
     SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
@@ -75,6 +74,11 @@ pub fn assemble_package_test_fixture_for_run(
     base: CanonicalBaseAssembly,
     run_scope: &str,
 ) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
+    if !overlay.bindings.is_empty() {
+        return Err(CanonicalFixtureError::InvalidInput(
+            "package-test ingress is not yet migrated to deployment gateway entries".to_string(),
+        ));
+    }
     let assembly_nonce = package_test_assembly_nonce()?;
     let overlay_ref = package_artifact_ref(&overlay.overlay.artifact)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
@@ -127,7 +131,9 @@ pub fn assemble_package_test_fixture_for_run(
             ));
         };
         entrypoints.push(CanonicalPackageTestEntrypoint {
-            operation: ingress.contract_operation_id.clone(),
+            operation: deployment.operation_bindings[0]
+                .contract_operation_id
+                .clone(),
             selector: ingress.selector.clone(),
             case: binding.case.clone(),
             deployment: deployment_ref,
@@ -231,9 +237,9 @@ fn compile_package_test_contract(
 }
 
 fn package_test_operation_inputs(
-    contract: &ServiceContract,
-    index: usize,
-    binding: &crate::test_overlay::PackageTestOverlayBinding,
+    _contract: &ServiceContract,
+    _index: usize,
+    _binding: &crate::test_overlay::PackageTestOverlayBinding,
 ) -> Result<
     (
         Vec<ServiceDeploymentOperationInput>,
@@ -241,35 +247,8 @@ fn package_test_operation_inputs(
     ),
     CanonicalFixtureError,
 > {
-    let operations = contract
-        .operations
-        .values()
-        .map(|descriptor| {
-            (
-                descriptor.stable_key.as_str(),
-                descriptor.operation_id.clone(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    let operation = operations.get("run").cloned().ok_or_else(|| {
-        CanonicalFixtureError::InvalidInput(
-            "compiled test contract omitted stable key run".to_string(),
-        )
-    })?;
-    Ok((
-        vec![ServiceDeploymentOperationInput {
-            contract_operation_id: operation.clone(),
-            package_public_path: binding.public_path.clone(),
-        }],
-        vec![DeploymentIngressBinding {
-            selector: IngressSelector {
-                protocol: IngressProtocol::Http,
-                host: format!("case-{index}.package-test.skiff.localhost"),
-                method: Some("POST".to_string()),
-                path: format!("/__skiff/package-test/{index}"),
-            },
-            contract_operation_id: operation,
-        }],
+    Err(CanonicalFixtureError::InvalidInput(
+        "package-test ingress is not yet migrated to deployment gateway entries".to_string(),
     ))
 }
 
@@ -415,6 +394,7 @@ fn package_test_deployment_input(
         operation_bindings,
         package_bindings,
         service_selectors,
+        gateway_entries: BTreeMap::new(),
         ingress,
         config_literals,
         secret_refs,

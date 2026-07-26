@@ -61,7 +61,7 @@ const binding: RuntimeAssemblyIngressBinding = {
     serviceId: SERVICE,
     contractVersion: '1.0.0',
     deploymentRevision: 'component-a',
-    deploymentArtifactIdentity: `skiff-deployment-artifact-v1:sha256:${'e'.repeat(64)}`
+    deploymentArtifactIdentity: `skiff-deployment-artifact-v2:sha256:${'e'.repeat(64)}`
   },
   contract: {
     serviceId: SERVICE,

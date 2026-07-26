@@ -13,15 +13,16 @@ use skiff_artifact_model::{
     ContractDiagnosticText, ContractOperationId, ContractRequirement, DeploymentArtifactIdentity,
     DeploymentDiagnosticText, DeploymentIngressBinding, DeploymentOperationBinding,
     DeploymentPolicy, DeploymentRevision, ExecutableBody, ExecutableIr, ExecutableKind, ExprIr,
-    FileIrRef, FileIrUnit, IngressProtocol, IngressSelector, OperationCallableKind,
-    OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
-    PackageCallableId, PackageCallableLinkFact, PackageCallableRef, PackageCallableSignature,
-    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
-    PackageRefIr, PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
-    PackageSchemaIndexRef, PackageTypeRef, PublicationResourceRef, ResourcePolicy, RuntimeAssembly,
-    ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
-    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
-    SlotLayout, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    FileIrRef, FileIrUnit, GatewayEntryKey, IngressProtocol, IngressSelector,
+    OperationCallableKind, OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBinding,
+    PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableRef,
+    PackageCallableSignature, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageLocalAbiSymbol, PackageRefIr, PackageRequirement, PackageRequirementKey,
+    PackageRuntimeRequirements, PackageSchemaIndexRef, PackageTypeRef, PublicationResourceRef,
+    ResourcePolicy, RuntimeAssembly, ServiceCallRef, ServiceContract, ServiceContractRef,
+    ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirement,
+    ServiceRequirementKey, ServiceSelectorBinding, SlotLayout, TypeRefIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::RuntimeAssemblyContentResolver;
@@ -674,6 +675,7 @@ fn deployment(
         }],
         package_bindings,
         service_selectors,
+        gateway_entries: BTreeMap::new(),
         ingress: Vec::new(),
         config_literals: Vec::new(),
         secret_refs: Vec::new(),
@@ -712,6 +714,19 @@ fn add_http_ingress(
     host: &str,
     path: &str,
 ) {
+    let operation = operation(contract);
+    let handler = deployment
+        .operation_bindings
+        .iter()
+        .find(|binding| binding.contract_operation_id == operation)
+        .map(|binding| binding.package_callable_id.clone())
+        .expect("fixture ingress operation binding");
+    let gateway_entry_key =
+        GatewayEntryKey::parse("fixture-http").expect("fixture gateway entry key");
+    deployment.gateway_entries.insert(
+        gateway_entry_key.clone(),
+        skiff_deployment::fixtures::gateway_entry_fixture(handler),
+    );
     deployment.ingress.push(DeploymentIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::Http,
@@ -719,7 +734,7 @@ fn add_http_ingress(
             method: Some("POST".to_string()),
             path: path.to_string(),
         },
-        contract_operation_id: operation(contract),
+        gateway_entry_key,
     });
     skiff_artifact_identity::assign_service_deployment_identity(deployment)
         .expect("ServiceDeployment ingress identity");

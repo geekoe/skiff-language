@@ -11,12 +11,13 @@ use skiff_artifact_model::{
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
     BoundaryValuePlan, ContractDiagnosticText, ContractRequirement, DeploymentArtifactIdentity,
     DeploymentDiagnosticText, DeploymentIngressBinding, DeploymentOperationBinding,
-    DeploymentRevision, IngressProtocol, IngressSelector, PackageArtifact, PackageArtifactRef,
-    PackageBinding, PackageBuildId, PackageCallableId, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
-    PackageSchemaIndexRef, ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey,
-    ServiceSelectorBinding, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    DeploymentRevision, GatewayEntryKey, IngressProtocol, IngressSelector, PackageArtifact,
+    PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageRequirement,
+    PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndexRef, ServiceCallRef,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
@@ -223,6 +224,7 @@ pub fn deployment(
         }],
         package_bindings,
         service_selectors,
+        gateway_entries: BTreeMap::new(),
         ingress: Vec::new(),
         config_literals: Vec::new(),
         secret_refs: Vec::new(),
@@ -245,10 +247,15 @@ pub fn deployment_ref(deployment: &ServiceDeployment) -> ServiceDeploymentRef {
 
 pub fn add_http_ingress(
     deployment: &mut ServiceDeployment,
-    contract: &ServiceContract,
+    _contract: &ServiceContract,
     host: &str,
     path: &str,
 ) {
+    let key = GatewayEntryKey::parse("fixture-http").unwrap();
+    deployment.gateway_entries.insert(
+        key.clone(),
+        crate::fixtures::gateway_entry_fixture(PackageCallableId::new("callable.fixture")),
+    );
     deployment.ingress.push(DeploymentIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::Http,
@@ -256,7 +263,7 @@ pub fn add_http_ingress(
             method: Some("POST".to_string()),
             path: path.to_string(),
         },
-        contract_operation_id: operation(contract),
+        gateway_entry_key: key,
     });
     assign_service_deployment_identity(deployment).unwrap();
 }

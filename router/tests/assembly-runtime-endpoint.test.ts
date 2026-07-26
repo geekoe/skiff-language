@@ -802,7 +802,7 @@ function ingressBinding(deploymentRevision: string): RuntimeAssemblyIngressBindi
       contractVersion: SERVICE_VERSION,
       deploymentRevision,
       deploymentArtifactIdentity:
-        `skiff-deployment-artifact-v1:sha256:${'e'.repeat(64)}`
+        `skiff-deployment-artifact-v2:sha256:${'e'.repeat(64)}`
     },
     contract: {
       serviceId: SERVICE_ID,

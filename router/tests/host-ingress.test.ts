@@ -80,7 +80,7 @@ describe('RuntimeAssembly Host ingress', () => {
     const samePublicIngress = structuredClone(original);
     samePublicIngress.deployment.deploymentRevision = 'generation-B';
     samePublicIngress.deployment.deploymentArtifactIdentity =
-      `skiff-deployment-artifact-v1:sha256:${'8'.repeat(64)}`;
+      `skiff-deployment-artifact-v2:sha256:${'8'.repeat(64)}`;
     const changedAbi = structuredClone(original);
     changedAbi.contractOperationId = operationIdentity('9');
 
@@ -140,7 +140,7 @@ function binding(
       serviceId: `service/${host}`,
       contractVersion: '1.0.0',
       deploymentRevision: 'revision',
-      deploymentArtifactIdentity: `skiff-deployment-artifact-v1:sha256:${'f'.repeat(64)}`
+      deploymentArtifactIdentity: `skiff-deployment-artifact-v2:sha256:${'f'.repeat(64)}`
     },
     contract: {
       serviceId: `service/${host}`,

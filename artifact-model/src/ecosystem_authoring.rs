@@ -598,6 +598,7 @@ http:
             operation_bindings: Vec::new(),
             package_bindings: Vec::new(),
             service_selectors: Vec::new(),
+            gateway_entries: BTreeMap::new(),
             ingress: Vec::new(),
             config_literals: Vec::new(),
             secret_refs: Vec::new(),

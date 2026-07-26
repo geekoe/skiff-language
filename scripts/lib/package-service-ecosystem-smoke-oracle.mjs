@@ -18,7 +18,7 @@ const ASSEMBLY_IDENTITY = new RegExp(`^skiff-runtime-assembly-v1:sha256:${HASH}$
 const PACKAGE_BUILD_IDENTITY = new RegExp(`^skiff-package-build-v4:sha256:${HASH}$`);
 const PACKAGE_ABI_IDENTITY = new RegExp(`^skiff-package-local-abi-v3:sha256:${HASH}$`);
 const SERVICE_PROTOCOL_IDENTITY = new RegExp(`^skiff-service-protocol-v2:sha256:${HASH}$`);
-const DEPLOYMENT_IDENTITY = new RegExp(`^skiff-deployment-artifact-v1:sha256:${HASH}$`);
+const DEPLOYMENT_IDENTITY = new RegExp(`^skiff-deployment-artifact-v2:sha256:${HASH}$`);
 const OPERATION_IDENTITY = new RegExp(`^skiff-contract-operation-v1:sha256:${HASH}$`);
 
 const READINESS_TIMEOUT_MS = 30_000;

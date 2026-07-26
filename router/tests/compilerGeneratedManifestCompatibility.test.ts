@@ -19,7 +19,7 @@ describe('compiler generated RuntimeAssembly compatibility', () => {
         expect(generated.serviceContract.contract.serviceProtocolIdentity).toMatch(
           /^skiff-service-protocol-v3:sha256:[0-9a-f]{64}$/
         );
-        expect(generated.deploymentValue.schemaVersion).toBe('skiff-service-deployment-v1');
+        expect(generated.deploymentValue.schemaVersion).toBe('skiff-service-deployment-v2');
         expect(generated.assemblyValue.schemaVersion).toBe('skiff-runtime-assembly-v1');
 
         const loaded = await new FilesystemRuntimeAssemblySnapshotLoader(root).load(

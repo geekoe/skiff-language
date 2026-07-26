@@ -218,6 +218,7 @@ impl FullChainFixture {
                 }],
                 package_bindings: Vec::new(),
                 service_selectors: Vec::new(),
+                gateway_entries: BTreeMap::new(),
                 ingress: Vec::new(),
                 config_literals: Vec::new(),
                 secret_refs: Vec::new(),
@@ -255,9 +256,17 @@ impl FullChainFixture {
                     },
                     contract: provider_contract_ref.clone(),
                 }],
+                gateway_entries: BTreeMap::from([(
+                    GatewayEntryKey::parse("phase-three-consumer-http")
+                        .expect("fixture gateway entry key"),
+                    skiff_deployment::fixtures::gateway_entry_fixture(PackageCallableId::new(
+                        "callable:consumer-check",
+                    )),
+                )]),
                 ingress: vec![DeploymentIngressBinding {
                     selector: ingress.clone(),
-                    contract_operation_id: consumer_operation_id,
+                    gateway_entry_key: GatewayEntryKey::parse("phase-three-consumer-http")
+                        .expect("fixture gateway entry key"),
                 }],
                 config_literals: Vec::new(),
                 secret_refs: Vec::new(),

@@ -474,6 +474,7 @@ impl ProjectedFixture {
                 "provide",
                 Vec::new(),
                 Vec::new(),
+                BTreeMap::new(),
                 Vec::new(),
             ),
             &provider_contract,
@@ -483,6 +484,8 @@ impl ProjectedFixture {
         .expect("provider deployment should project from typed contract/package artifacts");
         let provider_deployment =
             skiff_artifact_identity::service_deployment_ref(&provider_deployment_artifact);
+        let gateway_entry_key =
+            GatewayEntryKey::parse("phase-four-consumer-http").expect("fixture gateway entry key");
         let ingress = DeploymentIngressBinding {
             selector: IngressSelector {
                 protocol: IngressProtocol::Http,
@@ -490,7 +493,7 @@ impl ProjectedFixture {
                 method: Some("POST".to_string()),
                 path: "/consume".to_string(),
             },
-            contract_operation_id: consumer_operation.clone(),
+            gateway_entry_key: gateway_entry_key.clone(),
         };
         let consumer_deployment_artifact = project_service_deployment(
             deployment_input(
@@ -513,6 +516,12 @@ impl ProjectedFixture {
                     },
                     contract: provider_contract_ref.clone(),
                 }],
+                BTreeMap::from([(
+                    gateway_entry_key,
+                    skiff_deployment::fixtures::gateway_entry_fixture(PackageCallableId::new(
+                        "callable:phase-four-consumer",
+                    )),
+                )]),
                 vec![ingress],
             ),
             &consumer_contract,
@@ -598,6 +607,7 @@ fn deployment_input(
     public_path: &str,
     package_bindings: Vec<PackageBinding>,
     service_selectors: Vec<ServiceSelectorBinding>,
+    gateway_entries: BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     ingress: Vec<DeploymentIngressBinding>,
 ) -> ServiceDeploymentInput {
     ServiceDeploymentInput {
@@ -611,6 +621,7 @@ fn deployment_input(
         }],
         package_bindings,
         service_selectors,
+        gateway_entries,
         ingress,
         config_literals: Vec::new(),
         secret_refs: Vec::new(),

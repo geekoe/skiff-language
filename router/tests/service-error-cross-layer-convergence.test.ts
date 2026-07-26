@@ -36,7 +36,7 @@ import {
 
 const ASSEMBLY = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
 const OPERATION = `skiff-contract-operation-v1:sha256:${'b'.repeat(64)}`;
-const DEPLOYMENT = `skiff-deployment-artifact-v1:sha256:${'c'.repeat(64)}`;
+const DEPLOYMENT = `skiff-deployment-artifact-v2:sha256:${'c'.repeat(64)}`;
 const PROTOCOL = `skiff-service-protocol-v3:sha256:${'d'.repeat(64)}`;
 const HTTP_HOST = 'p5-f345-http.example.test';
 const HTTP_PATH = '/convergence';

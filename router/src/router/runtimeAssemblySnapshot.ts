@@ -6,7 +6,7 @@ import type {
 const CONTRACT_OPERATION_IDENTITY_PATTERN =
   /^skiff-contract-operation-v1:sha256:[0-9a-f]{64}$/;
 const DEPLOYMENT_ARTIFACT_IDENTITY_PATTERN =
-  /^skiff-deployment-artifact-v1:sha256:[0-9a-f]{64}$/;
+  /^skiff-deployment-artifact-v2:sha256:[0-9a-f]{64}$/;
 const SERVICE_PROTOCOL_IDENTITY_PATTERN =
   /^skiff-service-protocol-v3:sha256:[0-9a-f]{64}$/;
 
