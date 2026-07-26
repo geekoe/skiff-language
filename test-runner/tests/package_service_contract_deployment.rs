@@ -2003,11 +2003,7 @@ fn i02_submit_probe_is_private_http_gateway_not_service_operation() {
     let PackageLocalAbiSymbol::Callable {
         callable_id: marker_callable_id,
         ..
-    } = &project
-        .package
-        .artifact
-        .package_local_abi
-        .public_symbols["marker"]
+    } = &project.package.artifact.package_local_abi.public_symbols["marker"]
     else {
         panic!("marker must be a concrete callable")
     };

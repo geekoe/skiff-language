@@ -7,6 +7,10 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { isolatedInstanceOperations } from '../lib/isolated-test-runtime-instance.mjs';
+import {
+  captureIsolatedTestConfig,
+  claimIsolatedTestWorkspace,
+} from '../lib/isolated-test-runtime-workspace.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const skiffCli = join(root, 'scripts', 'skiff.mjs');
@@ -101,19 +105,24 @@ test('isolated status checked adapter rejects nonzero and invalid JSON before cl
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-isolated-status-command-'));
   const scriptsRoot = join(fixture, 'scripts');
   const instancePath = join(scriptsRoot, 'skiff-instance.mjs');
+  const configPath = join(fixture, 'instance', 'config.yml');
   const operations = isolatedInstanceOperations({
     skiffRoot: fixture,
     baseEnv: process.env,
   });
   try {
+    let ownershipReceipt = await claimIsolatedTestWorkspace(fixture);
     await mkdir(scriptsRoot, { recursive: true });
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(configPath, 'environment: isolated-test\n');
+    ownershipReceipt = await captureIsolatedTestConfig(ownershipReceipt, configPath);
     await writeFile(instancePath, [
       "process.stdout.write('status stdout');",
       "process.stderr.write('status stderr');",
       'process.exit(9);',
     ].join('\n'));
     await assert.rejects(
-      operations.verifyInstanceStopped('/tmp/fake-config.yml'),
+      operations.verifyInstanceStopped(ownershipReceipt),
       (error) => {
         assert.match(error.message, /node exited with 9/);
         assert.match(error.message, /stderr:\nstatus stderr/);
@@ -125,7 +134,7 @@ test('isolated status checked adapter rejects nonzero and invalid JSON before cl
 
     await writeFile(instancePath, "process.stdout.write('not-json');\n");
     await assert.rejects(
-      operations.verifyInstanceStopped('/tmp/fake-config.yml'),
+      operations.verifyInstanceStopped(ownershipReceipt),
       SyntaxError,
     );
   } finally {
