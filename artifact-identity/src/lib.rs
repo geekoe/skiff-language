@@ -9,6 +9,7 @@ mod ecosystem_paths;
 mod error;
 mod file_ir;
 mod framing;
+mod gateway;
 mod identity_labels;
 mod legacy_service;
 mod operation;
@@ -41,6 +42,7 @@ pub use constants::{
     ASSEMBLY_IDENTITY_SCHEMA_MARKER, BUNDLE_IDENTITY_PREFIX, CONTRACT_OPERATION_IDENTITY_PREFIX,
     CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER, DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
     DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER, FILE_IR_IDENTITY_PREFIX,
+    GATEWAY_ENTRY_IDENTITY_PREFIX, GATEWAY_ENTRY_IDENTITY_SCHEMA_MARKER,
     OPERATION_ABI_IDENTITY_PREFIX, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
     PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER, PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
     PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER, PACKAGE_ASSEMBLY_IDENTITY_PREFIX,
@@ -84,6 +86,12 @@ pub use file_ir::{
     file_ir_hash, file_ir_identity, file_ir_with_identity, validate_file_ir_identity,
 };
 pub use framing::framed_identity;
+pub use gateway::{
+    canonical_gateway_entry_identity_bytes, gateway_entry_identity, gateway_entry_identity_hash,
+    gateway_entry_identity_projection, normalize_gateway_entry_protocol_surface,
+    normalize_gateway_external_schema, validate_gateway_entry_protocol_surface,
+    GatewayEntryIdentityProjection,
+};
 pub use legacy_service::{
     service_unit_hash, service_unit_identity, service_unit_identity_bytes,
     service_unit_identity_value,

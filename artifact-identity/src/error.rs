@@ -16,6 +16,14 @@ pub enum ArtifactIdentityError {
     SerializePackageSchemaIndexIdentity(serde_json::Error),
     #[error("failed to serialize contract operation identity payload: {0}")]
     SerializeContractOperationIdentity(serde_json::Error),
+    #[error("failed to serialize gateway entry identity payload: {0}")]
+    SerializeGatewayEntryIdentity(serde_json::Error),
+    #[error("gateway entry protocol surface is invalid: {message}")]
+    InvalidGatewayEntryProtocolSurface { message: String },
+    #[error(
+        "gateway entry identity {identity} must use skiff-gateway-entry-v1:sha256:<64 lowercase hex>"
+    )]
+    InvalidGatewayEntryIdentity { identity: String },
     #[error("failed to serialize service protocol identity payload: {0}")]
     SerializeServiceProtocolIdentity(serde_json::Error),
     #[error(
