@@ -8,8 +8,8 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
-    ContractOperationId, IngressSelector, OperationTargetRef, RuntimeAssembly, ServiceContractRef,
-    ServiceDeploymentRef,
+    GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayProtocolSurface,
+    IngressSelector, OperationTargetRef, RuntimeAssembly, ServiceDeploymentRef,
 };
 use skiff_runtime_linker::{link_runtime_assembly, AssemblyLinkedCandidate};
 use skiff_runtime_loader::{RuntimeAssemblyContentResolver, RuntimeAssemblyLoader};
@@ -18,8 +18,8 @@ use skiff_runtime_loader::{RuntimeAssemblyContentResolver, RuntimeAssemblyLoader
 pub struct PackageTestEntrypoint {
     pub id: String,
     pub deployment: ServiceDeploymentRef,
-    pub contract: ServiceContractRef,
-    pub operation: ContractOperationId,
+    pub gateway_entry_key: GatewayEntryKey,
+    pub gateway_entry_identity: GatewayEntryIdentity,
 }
 
 pub struct PackageTestRuntimeBuilder<'a, R: ?Sized> {
@@ -93,9 +93,9 @@ impl PackageTestRuntimeTemplate {
             .entrypoints
             .values()
             .find(|entrypoint| {
-                entrypoint.deployment == binding.deployment
-                    && entrypoint.contract == binding.contract
-                    && entrypoint.operation == binding.contract_operation_id
+                entrypoint.deployment == *binding.owner()
+                    && entrypoint.gateway_entry_key == *binding.gateway_entry_key()
+                    && entrypoint.gateway_entry_identity == *binding.gateway_entry_identity()
             })
             .cloned()
             .ok_or_else(|| {
@@ -123,14 +123,19 @@ impl LoadedPackageTestRuntimeProgram {
         &self.entrypoint
     }
 
-    pub fn operation_target(&self) -> anyhow::Result<&OperationTargetRef> {
+    pub fn handler_target(&self) -> anyhow::Result<&OperationTargetRef> {
         self.candidate
-            .activation(&self.entrypoint.deployment)
-            .and_then(|activation| activation.operation(&self.entrypoint.operation))
-            .map(|operation| operation.target())
+            .gateway_entry(
+                &self.entrypoint.deployment,
+                &self.entrypoint.gateway_entry_key,
+            )
+            .filter(|entry| {
+                entry.gateway_entry_identity() == &self.entrypoint.gateway_entry_identity
+            })
+            .map(|entry| entry.handler().target())
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "package-test entrypoint {} has no canonical operation target",
+                    "package-test entrypoint {} has no exact linked gateway handler target",
                     self.entrypoint.id
                 )
             })
@@ -146,7 +151,7 @@ fn validate_entrypoints(
         if entrypoint.id.trim().is_empty() {
             anyhow::bail!("package-test entrypoint id must not be empty");
         }
-        let activation = candidate
+        candidate
             .activation(&entrypoint.deployment)
             .ok_or_else(|| {
                 anyhow::anyhow!(
@@ -154,24 +159,33 @@ fn validate_entrypoints(
                     entrypoint.id
                 )
             })?;
-        if activation.contract() != &entrypoint.contract {
+        let linked_entry = candidate
+            .gateway_entry(&entrypoint.deployment, &entrypoint.gateway_entry_key)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "package-test entrypoint {} gateway entry is missing",
+                    entrypoint.id
+                )
+            })?;
+        if linked_entry.gateway_entry_identity() != &entrypoint.gateway_entry_identity {
             anyhow::bail!(
-                "package-test entrypoint {} contract does not match its deployment",
+                "package-test entrypoint {} gateway entry identity does not match",
                 entrypoint.id
             );
         }
-        if candidate
-            .operation_descriptor(&entrypoint.contract, &entrypoint.operation)
-            .is_none()
-        {
+        if linked_entry.owner() != &entrypoint.deployment {
             anyhow::bail!(
-                "package-test entrypoint {} contract operation is missing",
+                "package-test entrypoint {} gateway entry owner does not match its deployment",
                 entrypoint.id
             );
         }
-        if activation.operation(&entrypoint.operation).is_none() {
+        if !matches!(
+            linked_entry.protocol_surface().protocol,
+            GatewayProtocolSurface::Http(ref surface)
+                if surface.dispatch_mode == GatewayDispatchMode::Unary
+        ) {
             anyhow::bail!(
-                "package-test entrypoint {} implementation operation is missing",
+                "package-test entrypoint {} must reference an HTTP unary gateway entry",
                 entrypoint.id
             );
         }

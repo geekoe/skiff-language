@@ -5,24 +5,28 @@ use std::{
 
 use skiff_artifact_model::{
     ActivationPolicy, BoundaryCallableProjection, BoundaryCallbackContract,
-    BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryErrorContract,
-    BoundaryImplementationRequirements, BoundaryOperationContract, BoundaryOperationDescriptor,
-    BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallIr, CallTargetIr,
-    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
-    ContractDiagnosticText, ContractOperationId, ContractRequirement, DeploymentArtifactIdentity,
-    DeploymentDiagnosticText, DeploymentIngressBinding, DeploymentOperationBinding,
-    DeploymentPolicy, DeploymentRevision, ExecutableBody, ExecutableIr, ExecutableKind, ExprIr,
-    FileIrRef, FileIrUnit, GatewayEntryKey, IngressProtocol, IngressSelector,
-    OperationCallableKind, OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBinding,
-    PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableRef,
-    PackageCallableSignature, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageLocalAbiSymbol, PackageRefIr, PackageRequirement, PackageRequirementKey,
-    PackageRuntimeRequirements, PackageSchemaIndexRef, PackageTypeRef, PublicationResourceRef,
+    BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryImplementationRequirements,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, CallIr, CallTargetIr, CallableEffectSummary, CallableMayEffects,
+    CallableProvenanceSummary, CallableSemanticFacts, ContractDiagnosticText, ContractOperationId,
+    ContractRequirement, DeploymentArtifactIdentity, DeploymentDiagnosticText,
+    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
+    ExecutableBody, ExecutableExport, ExecutableIr, ExecutableKind, ExecutableSignatureIr, ExprIr,
+    FileIrRef, FileIrUnit, GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterPlan,
+    GatewayAdapterSource, GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey,
+    GatewayEntryProtocolSurface, GatewayExternalErrorProjection, GatewayExternalSchema,
+    GatewayHttpProtocolSurface, GatewayProtocolSurface, IngressProtocol, IngressSelector,
+    InstructionSourceSite, OperationCallableKind, OperationTargetRef, PackageArtifact,
+    PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId, PackageCallableLinkFact,
+    PackageCallableParameter, PackageCallableRef, PackageCallableSignature,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageRefIr, PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
+    PackageSchemaIndex, PackageSchemaIndexRef, PackageTypeRef, PublicationResourceRef,
     ResourcePolicy, RuntimeAssembly, ServiceCallRef, ServiceContract, ServiceContractRef,
     ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirement,
-    ServiceRequirementKey, ServiceSelectorBinding, SlotLayout, TypeRefIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    ServiceRequirementKey, ServiceSelectorBinding, SlotLayout, SyntheticInstructionSiteReason,
+    TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::RuntimeAssemblyContentResolver;
@@ -36,6 +40,8 @@ pub struct CanonicalFixture {
     pub root: ServiceDeploymentRef,
     pub root_contract: ServiceContractRef,
     pub root_operation: ContractOperationId,
+    pub gateway_entry_key: GatewayEntryKey,
+    pub gateway_entry_identity: GatewayEntryIdentity,
     pub ingress: IngressSelector,
     pub direct_caller: Option<PackageArtifactRef>,
     pub direct_dependency: Option<PackageArtifactRef>,
@@ -111,7 +117,7 @@ impl CanonicalFixture {
         );
         let direct_caller = package_ref(&caller);
         let direct_dependency = package_ref(&helper);
-        let direct_callable = Some(PackageCallableId::new("callable.fixture"));
+        let direct_callable = Some(callable_id(&helper.package_id));
         Self::finish(
             vec![package_contract, helper_contract],
             vec![caller, helper],
@@ -140,12 +146,18 @@ impl CanonicalFixture {
             &[],
             &[("provider", &provider_contract, 0)],
         );
-        let provider_deployment = deployment(
+        let mut provider_deployment = deployment(
             &provider_contract,
             &provider,
             "provider-r1",
             Vec::new(),
             Vec::new(),
+        );
+        add_http_ingress(
+            &mut provider_deployment,
+            &provider_contract,
+            "provider.test",
+            "/provide",
         );
         let provider_ref = deployment_ref(&provider_deployment);
         let mut consumer_deployment = deployment(
@@ -180,6 +192,59 @@ impl CanonicalFixture {
         )
     }
 
+    pub fn raw_http_server_stream() -> Self {
+        let contract = contract("test.skiff/package-stream");
+        let (package, file) = implementation_package(
+            "test.skiff/package-stream-implementation",
+            &contract,
+            &[],
+            &[],
+        );
+        let mut deployment = deployment(
+            &contract,
+            &package,
+            "package-stream-r1",
+            Vec::new(),
+            Vec::new(),
+        );
+        let ingress = IngressSelector {
+            protocol: IngressProtocol::Http,
+            host: "package-stream.test".to_string(),
+            method: Some("POST".to_string()),
+            path: "/run".to_string(),
+        };
+        add_http_ingress(&mut deployment, &contract, &ingress.host, &ingress.path);
+        let gateway_entry = deployment
+            .gateway_entries
+            .values_mut()
+            .next()
+            .expect("fixture gateway entry");
+        gateway_entry.protocol_surface = raw_http_server_stream_surface();
+        gateway_entry.gateway_entry_identity =
+            skiff_artifact_identity::gateway_entry_identity(&gateway_entry.protocol_surface)
+                .expect("raw HTTP server-stream gateway identity");
+        gateway_entry.adapter_plan = GatewayAdapterPlan {
+            kind: GatewayAdapterKind::RawHttp,
+            args: vec![GatewayAdapterArg {
+                param: "request".to_string(),
+                source: GatewayAdapterSource::HttpRequest,
+            }],
+        };
+        skiff_artifact_identity::assign_service_deployment_identity(&mut deployment)
+            .expect("server-stream ServiceDeployment identity");
+        Self::finish(
+            vec![contract],
+            vec![package],
+            vec![file],
+            vec![deployment],
+            ingress,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn finish(
         contracts: Vec<ServiceContract>,
@@ -195,6 +260,12 @@ impl CanonicalFixture {
         let root = deployment_ref(&deployments[0]);
         let root_contract = contract_ref(&contracts[0]);
         let root_operation = operation(&contracts[0]);
+        let (gateway_entry_key, gateway_entry) = deployments[0]
+            .gateway_entries
+            .first_key_value()
+            .expect("fixture root gateway entry");
+        let gateway_entry_key = gateway_entry_key.clone();
+        let gateway_entry_identity = gateway_entry.gateway_entry_identity.clone();
         let assembly = skiff_deployment::assembly::resolve_runtime_assembly(
             std::slice::from_ref(&root),
             &deployments,
@@ -216,6 +287,8 @@ impl CanonicalFixture {
             root,
             root_contract,
             root_operation,
+            gateway_entry_key,
+            gateway_entry_identity,
             ingress,
             direct_caller,
             direct_dependency,
@@ -226,6 +299,23 @@ impl CanonicalFixture {
 
     pub fn resolver(&self) -> FixtureResolver {
         FixtureResolver {
+            schema_indexes: self
+                .packages
+                .iter()
+                .map(|package| {
+                    (
+                        package.package_schema_index.clone(),
+                        Arc::new(PackageSchemaIndex {
+                            package_id: package.package_id.clone(),
+                            package_schema_index_identity: package
+                                .package_schema_index
+                                .package_schema_index_identity
+                                .clone(),
+                            types: BTreeMap::new(),
+                        }),
+                    )
+                })
+                .collect(),
             contracts: self
                 .contracts
                 .iter()
@@ -255,8 +345,23 @@ impl CanonicalFixture {
     }
 }
 
+fn raw_http_server_stream_surface() -> GatewayEntryProtocolSurface {
+    GatewayEntryProtocolSurface {
+        protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
+            adapter_kind: GatewayAdapterKind::RawHttp,
+            dispatch_mode: GatewayDispatchMode::ServerStream,
+            external_sources: vec![GatewayAdapterSource::HttpRequest],
+            request_body_schema: None,
+            response_schema: None,
+            stream_item_schema: Some(GatewayExternalSchema::Bytes),
+        }),
+        external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+    }
+}
+
 #[derive(Clone)]
 pub struct FixtureResolver {
+    pub schema_indexes: Vec<(PackageSchemaIndexRef, Arc<PackageSchemaIndex>)>,
     pub contracts: BTreeMap<ServiceContractRef, Arc<ServiceContract>>,
     pub packages: BTreeMap<PackageArtifactRef, Arc<PackageArtifact>>,
     pub files: BTreeMap<(PackageArtifactRef, String), Arc<FileIrUnit>>,
@@ -282,6 +387,17 @@ impl RuntimeAssemblyContentResolver for FixtureResolver {
             .get(reference)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("missing contract {reference:?}"))
+    }
+
+    fn resolve_package_schema_index(
+        &self,
+        reference: &PackageSchemaIndexRef,
+    ) -> anyhow::Result<Arc<PackageSchemaIndex>> {
+        self.schema_indexes
+            .iter()
+            .find(|(candidate, _)| candidate == reference)
+            .map(|(_, index)| Arc::clone(index))
+            .ok_or_else(|| anyhow::anyhow!("missing package schema index {reference:?}"))
     }
 
     fn resolve_package_schema_type(
@@ -341,7 +457,7 @@ fn implementation_package(
         source_span: None,
     });
     for (alias, dependency) in package_dependencies {
-        let callable_id = PackageCallableId::new("callable.fixture");
+        let callable_id = callable_id(&dependency.package_id);
         let package_ref = PackageRefIr::Dependency {
             dependency_ref: (*alias).to_string(),
         };
@@ -356,6 +472,9 @@ fn implementation_package(
                 target: CallTargetIr::PackageCallable {
                     package_ref,
                     package_callable_id: callable_id,
+                },
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                 },
                 args: Vec::new(),
                 type_args: BTreeMap::new(),
@@ -379,6 +498,9 @@ fn implementation_package(
                             .expect("fixture service call index"),
                     ),
                 },
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                },
                 args: Vec::new(),
                 type_args: BTreeMap::new(),
                 metadata: BTreeMap::new(),
@@ -386,7 +508,7 @@ fn implementation_package(
         });
     }
     skiff_artifact_identity::assign_file_ir_identity(&mut file).expect("File IR identity");
-    let callable_id = PackageCallableId::new("callable.fixture");
+    let callable_id = callable_id(package_id);
     let file_ref = file_ref(&file);
     let operation_contract = contract
         .operations
@@ -404,6 +526,20 @@ fn implementation_package(
     };
     let mut package = base_package(package_id, package_dependencies, service_dependencies);
     package.files = vec![file_ref.clone()];
+    package.implementation_links.functions.insert(
+        "call".to_string(),
+        ExecutableExport {
+            file: file_ref.clone(),
+            executable_index: 0,
+            symbol: "call".to_string(),
+            signature: ExecutableSignatureIr {
+                params: Vec::new(),
+                return_type: TypeRefIr::builtin("bool"),
+                self_type: None,
+                may_suspend: false,
+            },
+        },
+    );
     package.package_local_abi.public_symbols.insert(
         "call".to_string(),
         PackageLocalAbiSymbol::Callable {
@@ -414,7 +550,6 @@ fn implementation_package(
                 return_type: PackageTypeRef::Local {
                     local_type: TypeRefIr::builtin("bool"),
                 },
-                throw_types: Vec::new(),
                 may_suspend: false,
             },
         },
@@ -440,7 +575,7 @@ fn implementation_package(
         },
     );
     package.boundary_projections.insert(
-        callable_id,
+        callable_id.clone(),
         BoundaryCallableProjection::Available {
             operation_contract,
             implementation_requirements: BoundaryImplementationRequirements {
@@ -452,6 +587,40 @@ fn implementation_package(
                 provenance,
             },
         },
+    );
+    let gateway_callable_id = gateway_callable_id(package_id);
+    package.package_local_abi.implementation_symbols.insert(
+        format!("{}.gateway", file.module_path),
+        PackageLocalAbiSymbol::Callable {
+            callable_id: gateway_callable_id.clone(),
+            signature: PackageCallableSignature {
+                type_params: Vec::new(),
+                parameters: vec![PackageCallableParameter {
+                    name: "body".to_string(),
+                    ty: PackageTypeRef::Local {
+                        local_type: TypeRefIr::builtin("string"),
+                    },
+                }],
+                return_type: PackageTypeRef::Local {
+                    local_type: TypeRefIr::builtin("string"),
+                },
+                may_suspend: false,
+            },
+        },
+    );
+    let mut gateway_target = package.callable_links[&callable_id].target.clone();
+    gateway_target.callable_abi_id = gateway_callable_id.to_string();
+    gateway_target.callable_kind = OperationCallableKind::InternalFunction;
+    package.callable_links.insert(
+        gateway_callable_id.clone(),
+        PackageCallableLinkFact {
+            callable_id: gateway_callable_id.clone(),
+            target: gateway_target,
+        },
+    );
+    package.callable_semantic_facts.insert(
+        gateway_callable_id,
+        package.callable_semantic_facts[&callable_id].clone(),
     );
     skiff_artifact_identity::assign_package_artifact_identities(&mut package)
         .expect("PackageArtifact identities");
@@ -465,6 +634,14 @@ fn file_ref(file: &FileIrUnit) -> FileIrRef {
         artifact_path: None,
         source_ast_hash: Some(file.source_ast_hash.clone()),
     }
+}
+
+fn callable_id(package_id: &str) -> PackageCallableId {
+    PackageCallableId::new(format!("pkg-callable:{package_id}:call"))
+}
+
+fn gateway_callable_id(package_id: &str) -> PackageCallableId {
+    PackageCallableId::new(format!("pkg-callable:{package_id}:gateway"))
 }
 
 fn package_ref(package: &PackageArtifact) -> PackageArtifactRef {
@@ -516,7 +693,6 @@ fn operation_contract() -> BoundaryOperationContract {
                 lifetime: BoundaryValueLifetime::Call,
             },
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::Unary,
         cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,
@@ -624,6 +800,7 @@ fn base_package(
         },
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
+        service_call_roots: Vec::new(),
         service_call_refs,
     }
 }
@@ -671,7 +848,7 @@ fn deployment(
         implementation: package_ref(implementation),
         operation_bindings: vec![DeploymentOperationBinding {
             contract_operation_id: operation(contract),
-            package_callable_id: PackageCallableId::new("callable.fixture"),
+            package_callable_id: callable_id(&implementation.package_id),
         }],
         package_bindings,
         service_selectors,
@@ -714,13 +891,11 @@ fn add_http_ingress(
     host: &str,
     path: &str,
 ) {
-    let operation = operation(contract);
-    let handler = deployment
+    assert!(deployment
         .operation_bindings
         .iter()
-        .find(|binding| binding.contract_operation_id == operation)
-        .map(|binding| binding.package_callable_id.clone())
-        .expect("fixture ingress operation binding");
+        .any(|binding| binding.contract_operation_id == operation(contract)));
+    let handler = gateway_callable_id(&deployment.implementation.package_id);
     let gateway_entry_key =
         GatewayEntryKey::parse("fixture-http").expect("fixture gateway entry key");
     deployment.gateway_entries.insert(
