@@ -484,17 +484,6 @@ impl ProjectedFixture {
         .expect("provider deployment should project from typed contract/package artifacts");
         let provider_deployment =
             skiff_artifact_identity::service_deployment_ref(&provider_deployment_artifact);
-        let gateway_entry_key =
-            GatewayEntryKey::parse("phase-four-consumer-http").expect("fixture gateway entry key");
-        let ingress = DeploymentIngressBinding {
-            selector: IngressSelector {
-                protocol: IngressProtocol::Http,
-                host: "phase-four.test".to_string(),
-                method: Some("POST".to_string()),
-                path: "/consume".to_string(),
-            },
-            gateway_entry_key: gateway_entry_key.clone(),
-        };
         let consumer_deployment_artifact = project_service_deployment(
             deployment_input(
                 consumer_contract_ref.clone(),
@@ -516,13 +505,8 @@ impl ProjectedFixture {
                     },
                     contract: provider_contract_ref.clone(),
                 }],
-                BTreeMap::from([(
-                    gateway_entry_key,
-                    skiff_deployment::fixtures::gateway_entry_fixture(PackageCallableId::new(
-                        "callable:phase-four-consumer",
-                    )),
-                )]),
-                vec![ingress],
+                BTreeMap::new(),
+                Vec::new(),
             ),
             &consumer_contract,
             &[consumer_package.clone(), provider_package.clone()],
@@ -1726,6 +1710,7 @@ fn implementation_package(
                 },
             },
         )]),
+        service_call_roots: Vec::new(),
         service_call_refs,
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut package)

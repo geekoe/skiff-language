@@ -17,7 +17,6 @@ use super::RuntimeHost;
 
 mod assembly;
 mod assembly_wire;
-mod websocket_generation;
 
 impl RuntimeHost {
     pub(super) fn send_request_error_response(

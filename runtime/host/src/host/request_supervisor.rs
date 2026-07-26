@@ -16,6 +16,7 @@ use skiff_runtime_request::{
     execution_budget_trace_attrs, response_error_to_telemetry_map, RequestCancel, RequestEnvelope,
     ResponseError,
 };
+use skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestStartFrameHeader;
 use tokio::sync::Mutex;
 
 use crate::telemetry::RequestTelemetryContext;
@@ -85,8 +86,46 @@ impl RequestSupervisor {
         telemetry: RequestTelemetryContext,
         start_event: &'static str,
     ) -> SupervisedRequest {
+        self.begin_with_budget(
+            request.request_id.clone(),
+            Arc::new(ExecutionBudget::for_runtime_request(&request.extra)),
+            telemetry,
+            start_event,
+        )
+        .await
+    }
+
+    pub(crate) async fn begin_http_gateway(
+        &self,
+        header: &RuntimeAssemblyRequestStartFrameHeader,
+        telemetry: RequestTelemetryContext,
+        start_event: &'static str,
+    ) -> SupervisedRequest {
+        let mut extra = Map::new();
+        if let Some(deadline) = &header.deadline {
+            extra.insert(
+                "deadline".to_string(),
+                serde_json::to_value(deadline)
+                    .expect("typed HTTP gateway deadline remains serializable"),
+            );
+        }
+        self.begin_with_budget(
+            header.request_id.clone(),
+            Arc::new(ExecutionBudget::for_runtime_request(&extra)),
+            telemetry,
+            start_event,
+        )
+        .await
+    }
+
+    async fn begin_with_budget(
+        &self,
+        request_id: String,
+        execution_budget: Arc<ExecutionBudget>,
+        telemetry: RequestTelemetryContext,
+        start_event: &'static str,
+    ) -> SupervisedRequest {
         let cancellation = CancellationToken::new();
-        let execution_budget = Arc::new(ExecutionBudget::for_runtime_request(&request.extra));
         let active = ActiveRequest {
             cancellation,
             execution_budget,
@@ -99,10 +138,10 @@ impl RequestSupervisor {
         self.active
             .lock()
             .await
-            .insert(request.request_id.clone(), active.clone());
+            .insert(request_id.clone(), active.clone());
 
         SupervisedRequest {
-            request_id: request.request_id.clone(),
+            request_id,
             active,
         }
     }

@@ -139,7 +139,6 @@ struct FullChainFixture {
     consumer_deployment_ref: ServiceDeploymentRef,
     consumer_package_ref: PackageArtifactRef,
     consumer_file_ir_identity: String,
-    ingress: IngressSelector,
 }
 
 impl FullChainFixture {
@@ -200,12 +199,6 @@ impl FullChainFixture {
         );
         let consumer_package_ref = package_ref(&consumer_package);
 
-        let ingress = IngressSelector {
-            protocol: IngressProtocol::Http,
-            host: "phase-three.test".to_string(),
-            method: Some("GET".to_string()),
-            path: "/check".to_string(),
-        };
         let provider_deployment = project_service_deployment(
             ServiceDeploymentInput {
                 schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
@@ -256,18 +249,8 @@ impl FullChainFixture {
                     },
                     contract: provider_contract_ref.clone(),
                 }],
-                gateway_entries: BTreeMap::from([(
-                    GatewayEntryKey::parse("phase-three-consumer-http")
-                        .expect("fixture gateway entry key"),
-                    skiff_deployment::fixtures::gateway_entry_fixture(PackageCallableId::new(
-                        "callable:consumer-check",
-                    )),
-                )]),
-                ingress: vec![DeploymentIngressBinding {
-                    selector: ingress.clone(),
-                    gateway_entry_key: GatewayEntryKey::parse("phase-three-consumer-http")
-                        .expect("fixture gateway entry key"),
-                }],
+                gateway_entries: BTreeMap::new(),
+                ingress: Vec::new(),
                 config_literals: Vec::new(),
                 secret_refs: Vec::new(),
                 state_bindings: Vec::new(),
@@ -342,7 +325,6 @@ impl FullChainFixture {
             consumer_deployment_ref,
             consumer_package_ref,
             consumer_file_ir_identity,
-            ingress,
         }
     }
 }
@@ -487,13 +469,6 @@ async fn projected_nonempty_assembly_admits_and_active_lookup_is_io_free() {
 
     let reads_after_admit = fixture.resolver.reads.load(Ordering::SeqCst);
     assert!(reads_after_admit > 0);
-    let route = controller.route(&fixture.ingress).unwrap().unwrap();
-    assert_eq!(route.assembly_identity(), active.identity());
-    assert_eq!(
-        &route.activation().identity().deployment,
-        &fixture.consumer_deployment_ref
-    );
-    assert_eq!(route.operation_descriptor().stable_key, "check");
     let binding_wire =
         serde_json::to_string(&active.candidate().assembly().service_binding_templates).unwrap();
     assert!(!binding_wire.contains("stableKey"));
@@ -695,6 +670,7 @@ fn implementation_package(
                 },
             },
         )]),
+        service_call_roots: Vec::new(),
         service_call_refs,
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();

@@ -74,7 +74,7 @@ use outbound::{RetiredAssemblyOutboundServiceContext, RuntimeOutboundServiceCont
 use websocket::RuntimeWebsocketCapabilityContext;
 
 pub(crate) use assembly_request_adapter::{
-    assembly_request_eval_adapter, RuntimeAssemblyRequestEvalAdapterInput,
+    http_gateway_eval_adapter, RuntimeHttpGatewayEvalAdapterInput,
 };
 pub(crate) use error::root_error_into_eval;
 pub(crate) use factory::actor_from_request;
