@@ -53,9 +53,7 @@ use crate::{
     Interpreter, RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget,
 };
 
-use super::{
-    activation_context, execution_context, execution_context_with_trace, test_runtime, TestResolver,
-};
+use super::{activation_context, execution_context_with_trace, test_runtime, TestResolver};
 
 const ERROR_PACKAGE_ID: &str = "example.com/typed-effect-errors";
 const ERROR_PACKAGE_VERSION: &str = "1.0.0";
@@ -1030,13 +1028,13 @@ async fn source_inline_service_effect_sequence_typed_throw_is_caught_then_respon
     let error_schema = store
         .resolve_package_artifact_schema(&error_artifact)
         .expect("error package schema");
-    let failure_entry = error_schema
+    let _failure_entry = error_schema
         .index
         .types
         .get(ERROR_STABLE_SCHEMA_KEY)
         .expect("public Failure package schema");
 
-    publish_open_error_service_contract(&store, failure_entry.package_schema_type_id.clone());
+    publish_open_error_service_contract(&store);
 
     let consumer = fixture.child("consumer");
     write_consumer_package(&consumer);
@@ -1048,7 +1046,7 @@ async fn source_inline_service_effect_sequence_typed_throw_is_caught_then_respon
         compile_package_test_overlay(&platform_sources, &consumer, &artifacts, &project, &cases)
             .expect("source test overlay compile and lower");
     assert_throw_lowered_to_exact_package_symbol(&overlay);
-    execute_overlay_case(&store, &overlay, &project.dependency_packages).await;
+    execute_overlay_case(&store, &overlay, &project.dependency_packages);
 }
 
 #[tokio::test]
@@ -1123,10 +1121,32 @@ async fn source_inline_compiler_owned_std_effect_replaces_the_exact_package_call
     );
 
     let store = CanonicalArtifactStore::open(&artifacts).expect("canonical store");
-    execute_overlay_case(&store, &overlay, &project.dependency_packages).await;
+    execute_overlay_case(&store, &overlay, &project.dependency_packages);
 }
 
-async fn execute_overlay_case(
+fn execute_overlay_case(
+    store: &CanonicalArtifactStore,
+    overlay: &PublishedPackageTestOverlay,
+    dependencies: &[PackageArtifact],
+) {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("source-inline-overlay".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn_scoped(scope, || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("source inline overlay test runtime")
+                    .block_on(execute_hydrated_overlay_case(store, overlay, dependencies));
+            })
+            .expect("source inline overlay test thread")
+            .join()
+            .expect("source inline overlay test thread should finish");
+    });
+}
+
+async fn execute_hydrated_overlay_case(
     store: &CanonicalArtifactStore,
     overlay: &PublishedPackageTestOverlay,
     dependencies: &[PackageArtifact],
@@ -1144,7 +1164,9 @@ async fn execute_overlay_case(
         .get(&binding.callable_id)
         .expect("test callable link");
     let hydrated = hydrate_packages(store, overlay, dependencies);
-    let image = crate::test_support::link_package_fixture(assembly.clone(), hydrated);
+    let image =
+        skiff_runtime_linker::link_package_fixture_from_runtime_assembly(&assembly, hydrated)
+            .expect("fully hydrated source overlay packages should link");
     let caller_addr = image
         .shared_packages()
         .code_by_build(&overlay_ref.package_build_id)
@@ -1167,7 +1189,8 @@ async fn execute_overlay_case(
         Default::default(),
         test_runtime::runtime_factory(),
     );
-    let context = execution_context(&interpreter, eval_target);
+    let context =
+        execution_context_with_trace(&interpreter, eval_target, LINKED_SERVICE_EFFECT_TRACE_ID);
     let mut heap = RequestHeap::default();
 
     interpreter
@@ -1179,10 +1202,7 @@ async fn execute_overlay_case(
         .expect("both ordered service effect outcomes must be consumed");
 }
 
-fn publish_open_error_service_contract(
-    store: &CanonicalArtifactStore,
-    failure_type_id: skiff_artifact_model::PackageSchemaTypeId,
-) {
+fn publish_open_error_service_contract(store: &CanonicalArtifactStore) {
     let contract = compile_contract(ServiceContractDefinition {
         service_id: SERVICE_ID.to_string(),
         contract_version: SERVICE_VERSION.to_string(),
@@ -1210,10 +1230,7 @@ fn publish_open_error_service_contract(
                 },
             },
         )]),
-        package_type_requirements: vec![PackageTypeRequirement {
-            package_id: ERROR_PACKAGE_ID.to_string(),
-            required_type_ids: vec![failure_type_id],
-        }],
+        package_type_requirements: Vec::new(),
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
             service: "open error effect payments".to_string(),
             operations: BTreeMap::from([("echo".to_string(), "echo".to_string())]),
@@ -1243,6 +1260,11 @@ fn linkable(owner: BoundaryValueOwner) -> BoundaryValuePlan {
 }
 
 fn assert_throw_lowered_to_exact_package_symbol(overlay: &PublishedPackageTestOverlay) {
+    let error_dependency = overlay
+        .dependency_packages
+        .iter()
+        .find(|package| package.package_id == ERROR_PACKAGE_ID)
+        .expect("error dependency package");
     let payload_types = overlay
         .overlay
         .file_ir_units
@@ -1265,10 +1287,12 @@ fn assert_throw_lowered_to_exact_package_symbol(overlay: &PublishedPackageTestOv
         payload_types[0],
         TypeRefIr::PackageSymbol { symbol }
             if symbol.package
-                == (PackageRefIr::PackageId {
-                    package_id: ERROR_PACKAGE_ID.to_string(),
+                == (PackageRefIr::Dependency {
+                    dependency_ref: LINKED_ERROR_DEPENDENCY_ALIAS.to_string(),
                 })
                 && symbol.symbol_path == ERROR_STABLE_SCHEMA_KEY
+                && symbol.abi_expectation.as_deref()
+                    == Some(error_dependency.package_local_abi.local_abi_identity.as_str())
     ));
 }
 
@@ -1342,16 +1366,25 @@ fn hydrate_packages(
     store: &CanonicalArtifactStore,
     overlay: &PublishedPackageTestOverlay,
     dependencies: &[PackageArtifact],
-) -> Vec<(PackageArtifact, Vec<skiff_artifact_model::FileIrUnit>)> {
-    let mut hydrated = vec![(
-        overlay.overlay.artifact.clone(),
+) -> Vec<HydratedPackageCode> {
+    let overlay_schema_records = overlay
+        .overlay
+        .package_schema_type_records
+        .iter()
+        .map(|(type_id, record)| (type_id.clone(), Arc::new(record.clone())))
+        .collect();
+    let mut hydrated = vec![HydratedPackageCode::new(
+        Arc::new(overlay.overlay.artifact.clone()),
         overlay
             .overlay
             .file_ir_units
             .iter()
-            .map(|file| file.unit.clone())
+            .map(|file| Arc::new(file.unit.clone()))
             .collect(),
-    )];
+        PublicationResourceTable::default(),
+    )
+    .with_schema_index(Arc::new(overlay.overlay.package_schema_index.clone()))
+    .with_schema_records(overlay_schema_records)];
     hydrated.extend(dependencies.iter().map(|package| {
         let reference = package_artifact_ref(package).expect("dependency package reference");
         let files = package
@@ -1361,11 +1394,18 @@ fn hydrate_packages(
                 store
                     .read_file_ir(&reference, file)
                     .expect("dependency File IR")
-                    .as_ref()
-                    .clone()
             })
             .collect();
-        (package.clone(), files)
+        let schema = store
+            .resolve_package_artifact_schema(package)
+            .expect("dependency package schema");
+        HydratedPackageCode::new(
+            Arc::new(package.clone()),
+            files,
+            PublicationResourceTable::default(),
+        )
+        .with_schema_index(schema.index)
+        .with_schema_records(schema.records)
     }));
     hydrated
 }

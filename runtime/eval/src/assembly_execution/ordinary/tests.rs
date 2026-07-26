@@ -1419,7 +1419,11 @@ fn callable_package(
     callable_id: PackageCallableId,
     array_type: TypeRefIr,
 ) -> PackageArtifact {
-    let file_ref = file_ref(file);
+    let implementation = executable_export(file, 0);
+    let target = implementation.operation_target_ref(
+        callable_id.to_string(),
+        OperationCallableKind::PublicFunction,
+    );
     let contract = ordinary_array_contract();
     let effects = no_effects();
     let provenance = CallableProvenanceSummary::Analyzed {
@@ -1448,16 +1452,15 @@ fn callable_package(
             },
         },
     );
+    package
+        .implementation_links
+        .functions
+        .insert("mutate".to_string(), implementation);
     package.callable_links.insert(
         callable_id.clone(),
         PackageCallableLinkFact {
             callable_id: callable_id.clone(),
-            target: OperationTargetRef {
-                file_ref,
-                executable_index: 0,
-                callable_abi_id: callable_id.to_string(),
-                callable_kind: OperationCallableKind::PublicFunction,
-            },
+            target,
         },
     );
     package.callable_semantic_facts.insert(
@@ -1493,7 +1496,11 @@ fn stream_callable_package(
     callable_id: PackageCallableId,
     array_type: TypeRefIr,
 ) -> PackageArtifact {
-    let file_ref = file_ref(file);
+    let implementation = executable_export(file, 0);
+    let target = implementation.operation_target_ref(
+        callable_id.to_string(),
+        OperationCallableKind::PublicFunction,
+    );
     let mut effects = no_effects();
     effects.may_suspend = true;
     let provenance = CallableProvenanceSummary::Analyzed {
@@ -1555,16 +1562,15 @@ fn stream_callable_package(
             },
         },
     );
+    package
+        .implementation_links
+        .functions
+        .insert("mutate".to_string(), implementation);
     package.callable_links.insert(
         callable_id.clone(),
         PackageCallableLinkFact {
             callable_id: callable_id.clone(),
-            target: OperationTargetRef {
-                file_ref,
-                executable_index: 0,
-                callable_abi_id: callable_id.to_string(),
-                callable_kind: OperationCallableKind::PublicFunction,
-            },
+            target,
         },
     );
     package.callable_semantic_facts.insert(
@@ -1592,6 +1598,24 @@ fn stream_callable_package(
         },
     );
     package
+}
+
+fn executable_export(file: &FileIrUnit, executable_index: u32) -> ExecutableExport {
+    let executable = file
+        .executables
+        .get(executable_index as usize)
+        .expect("implementation export executable");
+    ExecutableExport {
+        file: file_ref(file),
+        executable_index,
+        symbol: executable.symbol.clone(),
+        signature: ExecutableSignatureIr {
+            params: executable.params.clone(),
+            return_type: executable.return_type.clone(),
+            self_type: executable.self_type.clone(),
+            may_suspend: executable.may_suspend,
+        },
+    }
 }
 
 fn private_package(package_id: &str, file: &FileIrUnit) -> PackageArtifact {
