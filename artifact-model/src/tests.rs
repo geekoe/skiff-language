@@ -41,7 +41,7 @@ use crate::{
 };
 
 #[test]
-fn interface_method_signature_requires_exact_suspend_flag() {
+fn interface_method_signature_excludes_suspend_flag_and_is_strict() {
     let method = InterfaceMethodSignature {
         name: "load".to_string(),
         type_params: vec!["T".to_string()],
@@ -54,22 +54,24 @@ fn interface_method_signature_requires_exact_suspend_flag() {
         return_type: TypeRefIr::TypeParam {
             name: "T".to_string(),
         },
-        may_suspend: true,
         is_native: false,
         is_provider: false,
         is_static: false,
         implicit_self: None,
     };
     let wire = serde_json::to_value(&method).unwrap();
-    assert_eq!(wire["maySuspend"], serde_json::json!(true));
+    assert!(wire.get("maySuspend").is_none());
     assert_eq!(
         serde_json::from_value::<InterfaceMethodSignature>(wire.clone()).unwrap(),
         method
     );
 
-    let mut missing = wire.clone();
-    missing.as_object_mut().unwrap().remove("maySuspend");
-    assert!(serde_json::from_value::<InterfaceMethodSignature>(missing).is_err());
+    let mut legacy = wire.clone();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .insert("maySuspend".to_string(), serde_json::json!(true));
+    assert!(serde_json::from_value::<InterfaceMethodSignature>(legacy).is_err());
     let mut unknown = wire;
     unknown
         .as_object_mut()
@@ -1146,7 +1148,7 @@ fn symbol_refs_round_trip_canonical_fields() {
 #[test]
 fn package_unit_rejects_unknown_fields_and_keeps_dependency_config_open() {
     let value = json!({
-        "schemaVersion": "skiff-package-unit-v1",
+        "schemaVersion": "skiff-package-unit-v2",
         "packageId": "example.com/mongo",
         "version": "1.0.0",
         "buildIdentity": "build:1",
@@ -1183,13 +1185,13 @@ fn package_unit_rejects_unknown_fields_and_keeps_dependency_config_open() {
 fn package_unit_empty_uses_canonical_defaults() {
     let unit = PackageUnit::empty("example.com/mongo", "1.0.0", "build:1", "abi:1");
 
-    assert_eq!(unit.schema_version, "skiff-package-unit-v1");
+    assert_eq!(unit.schema_version, "skiff-package-unit-v2");
     assert_eq!(unit.package_id, "example.com/mongo");
     assert!(unit.resources.is_empty());
     assert_eq!(
         serde_json::to_value(unit).unwrap(),
         json!({
-            "schemaVersion": "skiff-package-unit-v1",
+            "schemaVersion": "skiff-package-unit-v2",
             "packageId": "example.com/mongo",
             "version": "1.0.0",
             "buildIdentity": "build:1",
@@ -1256,7 +1258,7 @@ fn old_service_and_package_units_default_recoverable_metadata_to_empty() {
         .is_none());
 
     let old_package = json!({
-        "schemaVersion": "skiff-package-unit-v1",
+        "schemaVersion": "skiff-package-unit-v2",
         "packageId": "example.com/mongo",
         "version": "1.0.0",
         "buildIdentity": "build:1",
@@ -1353,7 +1355,7 @@ fn non_empty_recoverable_metadata_round_trips_on_service_and_package_units() {
 #[test]
 fn package_unit_rejects_legacy_top_level_exports() {
     assert_unknown_field_rejected::<PackageUnit>(json!({
-        "schemaVersion": "skiff-package-unit-v1",
+        "schemaVersion": "skiff-package-unit-v2",
         "packageId": "example.com/mongo",
         "version": "1.0.0",
         "buildIdentity": "build:1",
@@ -1367,7 +1369,7 @@ fn package_unit_rejects_legacy_top_level_exports() {
 #[test]
 fn package_unit_requires_publication_abi() {
     let error = serde_json::from_value::<PackageUnit>(json!({
-        "schemaVersion": "skiff-package-unit-v1",
+        "schemaVersion": "skiff-package-unit-v2",
         "packageId": "example.com/mongo",
         "version": "1.0.0",
         "buildIdentity": "build:1",
@@ -1560,7 +1562,7 @@ fn publication_abi_unit_round_trips_operation_ref() {
 #[test]
 fn package_unit_rejects_legacy_binding_requirements_field() {
     let without_binding_requirements = json!({
-        "schemaVersion": "skiff-package-unit-v1",
+        "schemaVersion": "skiff-package-unit-v2",
         "packageId": "example.com/agent",
         "version": "1.0.0",
         "buildIdentity": "build:1",

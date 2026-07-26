@@ -238,7 +238,7 @@ fn valid_package_unit() -> PackageUnit {
     let mut package = PackageUnit::empty(
         "example.com/pkg",
         "1.0.0",
-        "skiff-package-build-v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "skiff-package-build-v3:sha256:0000000000000000000000000000000000000000000000000000000000000000",
         "skiff-package-local-abi-v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
     );
     package.publication_abi.abi_identity =
@@ -250,7 +250,7 @@ fn package_unit_with_build_seed(seed: &str) -> PackageUnit {
     let mut package = PackageUnit::empty(
         "example.com/pkg",
         "1.0.0",
-        "skiff-package-build-v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "skiff-package-build-v3:sha256:0000000000000000000000000000000000000000000000000000000000000000",
         "skiff-package-local-abi-v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
     );
     package
@@ -304,7 +304,7 @@ fn write_service_closure(root: &Path, service: ServiceUnit, packages: Vec<Packag
         let path = format!("units/packages/example~com~~pkg/{hash}.json");
         write_json_artifact(root, &path, &package);
         package_refs.push(json!({
-            "schemaVersion": "skiff-package-unit-v1",
+            "schemaVersion": "skiff-package-unit-v2",
             "packageId": package.package_id,
             "version": package.version,
             "buildIdentity": package.build_identity,

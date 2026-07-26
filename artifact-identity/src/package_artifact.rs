@@ -197,7 +197,7 @@ mod tests {
         validate_package_artifact_identities(&artifact).unwrap();
 
         let mut stale_schema = artifact.clone();
-        stale_schema.schema_version = "skiff-package-artifact-v7".to_string();
+        stale_schema.schema_version = "skiff-package-artifact-v8".to_string();
         assert!(matches!(
             validate_package_artifact_identities(&stale_schema),
             Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
@@ -211,7 +211,7 @@ mod tests {
                 .as_str()
                 .replacen(
                     crate::PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
-                    "skiff-package-local-abi-v5:sha256",
+                    "skiff-package-local-abi-v6:sha256",
                     1,
                 ),
         );
@@ -224,7 +224,7 @@ mod tests {
         stale_build.package_build_id =
             PackageBuildId::new(stale_build.package_build_id.as_str().replacen(
                 crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-                "skiff-package-build-v8:sha256",
+                "skiff-package-build-v9:sha256",
                 1,
             ));
         assert!(matches!(
@@ -282,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn package_artifact_build_v9_preimage_excludes_service_selection() {
+    fn package_artifact_build_v10_preimage_excludes_service_selection() {
         let artifact = two_callable_fixture();
         let build =
             serde_json::to_value(package_artifact_build_identity_projection(&artifact).unwrap())
@@ -297,7 +297,7 @@ mod tests {
             build["schema"],
             crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER
         );
-        assert_eq!(build["schema"], "skiff-package-artifact-build-identity-v7");
+        assert_eq!(build["schema"], "skiff-package-artifact-build-identity-v8");
         assert!(build.get("serviceCallRoots").is_none());
         assert!(wire.get("serviceCallRoots").is_none());
         assert_eq!(build["serviceCallRefs"], serde_json::json!([]));
@@ -305,18 +305,18 @@ mod tests {
         assert!(artifact
             .package_build_id
             .as_str()
-            .starts_with("skiff-package-build-v9:sha256:"));
+            .starts_with("skiff-package-build-v10:sha256:"));
 
         assert_eq!(
             local["schema"],
-            "skiff-package-artifact-local-abi-identity-v4"
+            "skiff-package-artifact-local-abi-identity-v5"
         );
         assert!(local.get("serviceCallRoots").is_none());
         assert!(artifact
             .package_local_abi
             .local_abi_identity
             .as_str()
-            .starts_with("skiff-package-local-abi-v6:sha256:"));
+            .starts_with("skiff-package-local-abi-v7:sha256:"));
     }
 
     #[test]

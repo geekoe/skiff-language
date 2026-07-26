@@ -44,21 +44,6 @@ pub enum BoundaryStreamContract {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-pub enum BoundaryCancellationContract {
-    NotCancellable,
-    Cooperative,
-    Unsupported {
-        reason: BoundaryFeatureUnavailableReason,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
 pub enum BoundaryCallbackContract {
     None,
     RequestScoped {
@@ -114,9 +99,7 @@ pub struct BoundaryOperationContract {
     pub parameters: Vec<BoundaryParameter>,
     pub return_value: BoundaryReturn,
     pub stream: BoundaryStreamContract,
-    pub cancellation: BoundaryCancellationContract,
     pub callbacks: BoundaryCallbackContract,
-    pub may_suspend: bool,
     pub effect_guarantee: BoundaryEffectGuarantee,
 }
 

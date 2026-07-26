@@ -20,6 +20,8 @@ use crate::{
 };
 
 mod normalization;
+#[cfg(test)]
+mod suspension_tests;
 
 pub use normalization::{normalize_contract_operation_contract, normalize_contract_type_shape};
 
@@ -549,11 +551,10 @@ fn invalid_contract<T>(message: impl Into<String>) -> Result<T> {
 mod tests {
     use skiff_artifact_model::{
         BoundaryCallbackContract, BoundaryCallbackExpirationError, BoundaryCallbackLifetime,
-        BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryOperationContract,
-        BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
-        BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-        ContractDiagnosticText, ContractTypeDescriptor, PackageSchemaIndexEntry,
-        PackageSchemaTypeRef, PackageTypeRequirement,
+        BoundaryEffectGuarantee, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
+        BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+        BoundaryValueOwner, BoundaryValuePlan, ContractDiagnosticText, ContractTypeDescriptor,
+        PackageSchemaIndexEntry, PackageSchemaTypeRef, PackageTypeRequirement,
     };
 
     use super::*;
@@ -684,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn service_contract_wire_omits_closed_error_set() {
+    fn service_contract_wire_omits_closed_error_set_and_provider_execution_facts() {
         let type_id = package_schema_type_id("example.pkg", "User", &descriptor("string")).unwrap();
         let contract = service_contract(type_id);
         let wire = serde_json::to_value(&contract).unwrap();
@@ -694,14 +695,28 @@ mod tests {
             .expect("operation wire");
 
         assert!(operation["contract"].get("errors").is_none());
+        assert!(operation["contract"].get("maySuspend").is_none());
+        assert!(operation["contract"].get("cancellation").is_none());
 
-        let mut legacy = wire;
-        legacy["operations"]
-            .as_object_mut()
-            .and_then(|operations| operations.values_mut().next())
-            .and_then(|operation| operation.get_mut("contract"))
-            .expect("operation contract wire")["errors"] = serde_json::json!({"kind": "none"});
-        assert!(serde_json::from_value::<ServiceContract>(legacy).is_err());
+        for (field, value) in [
+            ("errors", serde_json::json!({"kind": "none"})),
+            ("maySuspend", serde_json::json!(false)),
+            (
+                "cancellation",
+                serde_json::json!({"kind": "notCancellable"}),
+            ),
+        ] {
+            let mut legacy = wire.clone();
+            legacy["operations"]
+                .as_object_mut()
+                .and_then(|operations| operations.values_mut().next())
+                .and_then(|operation| operation.get_mut("contract"))
+                .expect("operation contract wire")[field] = value;
+            assert!(
+                serde_json::from_value::<ServiceContract>(legacy).is_err(),
+                "legacy operation field {field} must fail strict decoding"
+            );
+        }
     }
 
     #[test]
@@ -740,7 +755,7 @@ mod tests {
     fn stale_service_contract_generation_and_identity_prefix_fail_closed() {
         let type_id = package_schema_type_id("example.pkg", "User", &descriptor("string")).unwrap();
         let mut stale_schema = service_contract(type_id.clone());
-        stale_schema.schema_version = "skiff-service-contract-v3".to_string();
+        stale_schema.schema_version = "skiff-service-contract-v4".to_string();
         assert!(matches!(
             service_protocol_identity(&stale_schema),
             Err(ArtifactIdentityError::InvalidServiceContract { .. })
@@ -751,7 +766,7 @@ mod tests {
         stale_identity.service_protocol_identity = ServiceProtocolIdentity::new(
             stale_identity.service_protocol_identity.as_str().replacen(
                 SERVICE_PROTOCOL_IDENTITY_PREFIX,
-                "skiff-service-protocol-v3:sha256",
+                "skiff-service-protocol-v4:sha256",
                 1,
             ),
         );
@@ -831,9 +846,7 @@ mod tests {
                     value_plan: value_plan(),
                 },
                 stream: BoundaryStreamContract::Unary,
-                cancellation: BoundaryCancellationContract::NotCancellable,
                 callbacks: BoundaryCallbackContract::None,
-                may_suspend: false,
                 effect_guarantee: BoundaryEffectGuarantee {
                     detached_parameters: true,
                     detached_return: true,

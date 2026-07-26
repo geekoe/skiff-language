@@ -1,11 +1,11 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn,
-    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractDiagnosticText, ContractOperationId,
-    ContractTypeDescriptor, ContractTypeRef, PackageSchemaCanonicalDescriptor, PackageSchemaTypeId,
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+    BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, ContractDiagnosticText, ContractOperationId, ContractTypeDescriptor,
+    ContractTypeRef, PackageSchemaCanonicalDescriptor, PackageSchemaTypeId,
     PackageSchemaTypeRecord, PackageSchemaTypeRef, PackageTypeRequirement, ServiceContract,
     ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
@@ -71,45 +71,6 @@ fn websocket_context_borrows_value_owned_publication_record() {
 }
 
 #[test]
-fn websocket_context_admits_suspending_unary_operation() {
-    let context_id = PackageSchemaTypeId::new("type:suspending-context");
-    let (mut contract, operation_id) = websocket_contract(ContractTypeRef::package_schema(
-        PACKAGE_ID,
-        "SuspendingContext",
-        context_id.clone(),
-    ));
-    contract
-        .operations
-        .get_mut(&operation_id)
-        .expect("fixture operation")
-        .contract
-        .may_suspend = true;
-
-    assert_eq!(
-        websocket_ingress_context(
-            &contract,
-            &operation_id,
-            &BTreeMap::from([(
-                context_id.clone(),
-                record(
-                    "SuspendingContext",
-                    context_id.clone(),
-                    ContractTypeDescriptor::Record {
-                        fields: BTreeMap::new(),
-                    },
-                ),
-            )]),
-        )
-        .expect("suspension does not change the WebSocket ingress ABI"),
-        WebSocketIngressContext::PackageSchema(PackageSchemaTypeRef {
-            package_id: PACKAGE_ID.to_string(),
-            stable_schema_key: "SuspendingContext".to_string(),
-            package_schema_type_id: context_id,
-        })
-    );
-}
-
-#[test]
 fn websocket_context_fails_closed_without_required_record() {
     let context_id = PackageSchemaTypeId::new("type:context");
     let (contract, operation_id) = websocket_contract(ContractTypeRef::package_schema(
@@ -159,9 +120,7 @@ fn websocket_contract(context: ContractTypeRef) -> (ServiceContract, ContractOpe
                 value_plan: value_plan(),
             },
             stream: BoundaryStreamContract::Unary,
-            cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,
-            may_suspend: false,
             effect_guarantee: BoundaryEffectGuarantee {
                 detached_parameters: true,
                 detached_return: true,

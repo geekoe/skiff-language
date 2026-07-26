@@ -127,7 +127,7 @@ mod tests {
         let ty = PackageTypeRef::PackageSchema {
             package_id: "example.pkg".to_string(),
             stable_schema_key: "User".to_string(),
-            package_schema_type_id: "skiff-package-schema-type-v1:sha256:abc".into(),
+            package_schema_type_id: "skiff-package-schema-type-v2:sha256:abc".into(),
         };
         assert_eq!(
             serde_json::to_value(ty).unwrap(),
@@ -135,7 +135,7 @@ mod tests {
                 "kind": "packageSchema",
                 "packageId": "example.pkg",
                 "stableSchemaKey": "User",
-                "packageSchemaTypeId": "skiff-package-schema-type-v1:sha256:abc"
+                "packageSchemaTypeId": "skiff-package-schema-type-v2:sha256:abc"
             })
         );
     }
@@ -171,7 +171,7 @@ mod tests {
                     interface: Box::new(PackageTypeRef::PackageSchema {
                         package_id: "example.llm-api".to_string(),
                         stable_schema_key: "LlmClient".to_string(),
-                        package_schema_type_id: "skiff-package-schema-type-v1:sha256:client".into(),
+                        package_schema_type_id: "skiff-package-schema-type-v2:sha256:client".into(),
                     }),
                     arguments: Vec::new(),
                 }],
@@ -192,7 +192,7 @@ mod tests {
                             "packageId": "example.llm-api",
                             "stableSchemaKey": "LlmClient",
                             "packageSchemaTypeId":
-                                "skiff-package-schema-type-v1:sha256:client"
+                                "skiff-package-schema-type-v2:sha256:client"
                         },
                         "arguments": []
                     }]
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn package_artifact_wire_rejects_legacy_aggregate_fields() {
         let value = json!({
-            "schemaVersion": "skiff-package-artifact-v8",
+            "schemaVersion": "skiff-package-artifact-v9",
             "packageId": "example.pkg",
             "packageVersion": "1.0.0",
             "packageBuildId": "build",

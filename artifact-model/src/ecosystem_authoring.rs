@@ -423,13 +423,13 @@ fn is_safe_token(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::{
-        ActivationPolicy, BoundaryCallbackContract, BoundaryCancellationContract,
-        BoundaryEffectGuarantee, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
-        BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-        ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentPolicy,
-        DeploymentRevision, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
-        ResourcePolicy, ServiceContractRef, ServiceProtocolIdentity,
-        SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+        ActivationPolicy, BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryReturn,
+        BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+        BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef, DeploymentArtifactIdentity,
+        DeploymentDiagnosticText, DeploymentPolicy, DeploymentRevision, PackageArtifactRef,
+        PackageBuildId, PackageLocalAbiIdentity, ResourcePolicy, ServiceContractRef,
+        ServiceProtocolIdentity, SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION,
+        SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -616,7 +616,7 @@ http:
         .is_err());
         assert!(parse_service_contract_definition_yml(&contract_yml.replace(
             SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION,
-            "skiff-service-contract-definition-v2"
+            "skiff-service-contract-definition-v3"
         ))
         .is_err());
 
@@ -703,9 +703,7 @@ http:
                 },
             },
             stream: BoundaryStreamContract::Unary,
-            cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,
-            may_suspend: false,
             effect_guarantee: BoundaryEffectGuarantee {
                 detached_parameters: true,
                 detached_return: true,

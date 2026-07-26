@@ -5,9 +5,10 @@ pub use projection::{PackageBuildIdentityProjection, PackageLocalAbiIdentityProj
 use serde_json::{Map, Value};
 use skiff_artifact_model::{
     PackageImplementationLinks, PackageOperationTarget, PackageUnit, PublicationAbiUnit,
+    PACKAGE_UNIT_SCHEMA_VERSION,
 };
 
-use crate::framing::{canonical_ir_bytes, framed_identity, sha256_hex};
+use crate::framing::{canonical_ir_bytes, framed_identity, is_lowercase_sha256, sha256_hex};
 use crate::publication::assign_publication_abi_identity;
 use crate::publication_validation::{
     validate_publication_abi_identity, validate_publication_operation_ref,
@@ -80,6 +81,19 @@ pub fn package_implementation_links_identity(links: &PackageImplementationLinks)
     ))
 }
 
+pub fn package_implementation_links_identity_hash(identity: &str) -> Result<&str> {
+    identity
+        .strip_prefix(PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX)
+        .and_then(|suffix| suffix.strip_prefix(':'))
+        .filter(|hash| is_lowercase_sha256(hash))
+        .ok_or_else(|| ArtifactIdentityError::InvalidPackageIdentityInput {
+            message: format!(
+                "implementation links identity must use \
+                 {PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX}:<64 lowercase hex>"
+            ),
+        })
+}
+
 /// Assigns the nested publication identity, package local ABI identity and
 /// package build identity in dependency order using the same projections as
 /// validation.
@@ -128,6 +142,14 @@ pub fn validate_package_unit_identities(unit: &PackageUnit) -> Result<()> {
 }
 
 fn validate_package_identity_inputs(unit: &PackageUnit) -> Result<()> {
+    if unit.schema_version != PACKAGE_UNIT_SCHEMA_VERSION {
+        return Err(ArtifactIdentityError::InvalidPackageIdentityInput {
+            message: format!(
+                "schemaVersion must be {PACKAGE_UNIT_SCHEMA_VERSION}, got {}",
+                unit.schema_version
+            ),
+        });
+    }
     validate_package_publication_coordinate(unit, &unit.publication_abi)?;
     validate_publication_abi_identity(&unit.publication_abi)?;
     validate_package_operation_targets(unit)

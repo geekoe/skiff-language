@@ -57,6 +57,46 @@ fn public_instance_complete_method_surface_remains_in_local_abi_links_and_bounda
 }
 
 #[test]
+fn interface_requirement_accepts_both_concrete_suspension_summaries() {
+    let non_suspending = public_instance_fixture();
+    let callable_id = callable_id_for_path(&non_suspending, "worker.run");
+    let non_suspending_local = super::package_artifact_local_abi_identity(&non_suspending).unwrap();
+    let non_suspending_build = package_artifact_build_identity(&non_suspending).unwrap();
+
+    let mut suspending = non_suspending.clone();
+    let PackageLocalAbiSymbol::Callable {
+        callable_id: suspending_callable_id,
+        signature,
+    } = suspending
+        .package_local_abi
+        .public_symbols
+        .get_mut("worker.run")
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    assert_eq!(suspending_callable_id, &callable_id);
+    signature.may_suspend = true;
+    suspending
+        .implementation_links
+        .impl_methods
+        .get_mut("Worker.run")
+        .unwrap()
+        .signature
+        .may_suspend = true;
+
+    let suspending_local = super::package_artifact_local_abi_identity(&suspending).unwrap();
+    let suspending_build = package_artifact_build_identity(&suspending).unwrap();
+    assert_ne!(suspending_local, non_suspending_local);
+    assert_ne!(suspending_build, non_suspending_build);
+    assert_eq!(
+        callable_id_for_path(&suspending, "worker.run"),
+        callable_id,
+        "PackageCallableId excludes the concrete suspension summary"
+    );
+}
+
+#[test]
 fn public_instance_surface_requires_exact_method_link_kinds_and_interfaces() {
     let selected = public_instance_fixture();
     package_artifact_build_identity(&selected).unwrap();

@@ -289,7 +289,6 @@ pub enum ContractTypeDescriptor {
 pub struct BoundaryCallbackOperation {
     pub parameters: Vec<ContractTypeRef>,
     pub return_type: ContractTypeRef,
-    pub may_suspend: bool,
 }
 
 /// Reusable canonical semantic body for a package schema entry.
@@ -359,6 +358,24 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn callback_operation_excludes_provider_suspension_and_rejects_legacy_wire() {
+        let operation = BoundaryCallbackOperation {
+            parameters: vec![ContractTypeRef::builtin("string")],
+            return_type: ContractTypeRef::builtin("void"),
+        };
+        let wire = serde_json::to_value(&operation).unwrap();
+        assert!(wire.get("maySuspend").is_none());
+        assert_eq!(
+            serde_json::from_value::<BoundaryCallbackOperation>(wire.clone()).unwrap(),
+            operation
+        );
+
+        let mut legacy = wire;
+        legacy["maySuspend"] = json!(true);
+        assert!(serde_json::from_value::<BoundaryCallbackOperation>(legacy).is_err());
+    }
 
     #[test]
     fn contract_any_interface_wire_preserves_exact_nominal_target() {

@@ -62,8 +62,8 @@ pub use assembly_activation_control::{
 };
 pub use boundary::{
     BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCallbackExpirationError,
-    BoundaryCallbackLifetime, BoundaryCancellationContract, BoundaryConfigRequirement,
-    BoundaryEffectGuarantee, BoundaryFeatureUnavailableReason, BoundaryImplementationRequirements,
+    BoundaryCallbackLifetime, BoundaryConfigRequirement, BoundaryEffectGuarantee,
+    BoundaryFeatureUnavailableReason, BoundaryImplementationRequirements,
     BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn,
     BoundaryStateKind, BoundaryStateRequirement, BoundaryStreamContract, BoundaryUnavailableReason,
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,

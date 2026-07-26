@@ -260,7 +260,6 @@ fn public_instance_interface_method(name: &str) -> InterfaceMethodSignature {
             },
         ],
         return_type: TypeRefIr::builtin("string"),
-        may_suspend: false,
         is_native: false,
         is_provider: false,
         is_static: false,

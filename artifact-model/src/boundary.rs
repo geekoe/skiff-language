@@ -228,6 +228,17 @@ mod tests {
             serde_json::from_value::<BoundaryOperationContract>(legacy_operation).is_err(),
             "operation-specific errors must not re-enter the open channel contract"
         );
+        for (field, value) in [
+            ("maySuspend", json!(false)),
+            ("cancellation", json!({ "kind": "notCancellable" })),
+        ] {
+            let mut legacy_operation = serde_json::to_value(&operation_contract).unwrap();
+            legacy_operation[field] = value;
+            assert!(
+                serde_json::from_value::<BoundaryOperationContract>(legacy_operation).is_err(),
+                "provider-owned {field} must not re-enter the operation contract"
+            );
+        }
 
         for forbidden in ["descriptor", "operationId", "stableKey"] {
             let mut invalid = wire.clone();
@@ -279,9 +290,7 @@ mod tests {
                 },
             },
             stream: BoundaryStreamContract::Unary,
-            cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,
-            may_suspend: false,
             effect_guarantee: BoundaryEffectGuarantee {
                 detached_parameters: true,
                 detached_return: true,

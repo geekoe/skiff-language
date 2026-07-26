@@ -82,7 +82,6 @@ pub(super) fn instantiate_interface_methods(
                     })
                     .collect::<Result<Vec<_>>>()?,
                 return_type: substitute_type_params(&method.return_type, &method_substitutions)?,
-                may_suspend: method.may_suspend,
                 is_native: method.is_native,
                 is_provider: method.is_provider,
                 is_static: method.is_static,

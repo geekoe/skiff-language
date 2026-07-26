@@ -593,7 +593,7 @@ mod tests {
     fn resolver_rejects_package_unit_schema_version_mismatch() {
         let root = TempArtifactRoot::new("schema-version");
         let mut unit = valid_package("example.com/pkg", "1.0.0", []);
-        unit.schema_version = "skiff-package-unit-v0".to_string();
+        unit.schema_version = "skiff-package-unit-v1".to_string();
         let unit_path = "units/packages/example~com~~pkg/1.0.0.json";
         write_json(root.path(), Path::new(unit_path), &unit);
         write_package_index(root.path(), "example.com/pkg", "1.0.0", unit_path);
@@ -611,7 +611,7 @@ mod tests {
                 actual,
             } if path == unit_path
                 && expected == PACKAGE_UNIT_SCHEMA_VERSION
-                && actual == "skiff-package-unit-v0"
+                && actual == "skiff-package-unit-v1"
         ));
     }
 

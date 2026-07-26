@@ -579,17 +579,16 @@ fn validate_public_instance_method_signature(
         &interface_method.return_type,
         Some(&normalized_self),
     )? != normalized_implementation_type(artifact, &method_link.signature.return_type, None)?
-        || interface_method.may_suspend != method_link.signature.may_suspend
         || !package_type_matches_implementation(
             artifact,
             &public_signature.return_type,
             &interface_method.return_type,
             Some(&normalized_self),
         )?
-        || public_signature.may_suspend != interface_method.may_suspend
+        || public_signature.may_suspend != method_link.signature.may_suspend
     {
         return invalid_artifact(format!(
-            "public instance {public_path} method {} return or suspension semantics disagree with its interface",
+            "public instance {public_path} method {} return shape or concrete suspension summary is inconsistent",
             interface_method.name
         ));
     }

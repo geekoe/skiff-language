@@ -38,36 +38,36 @@ mod runtime_program;
 mod semantic;
 
 #[test]
-fn canonical_generation_markers_bump_without_changing_legacy_package_domains() {
+fn suspension_generations_are_atomic_and_unrelated_domains_remain_stable() {
     assert_eq!(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v8:sha256");
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
-        "skiff-package-artifact-build-identity-v7"
+        "skiff-package-artifact-build-identity-v8"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-        "skiff-package-build-v9:sha256"
+        "skiff-package-build-v10:sha256"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
-        "skiff-package-artifact-local-abi-identity-v4"
+        "skiff-package-artifact-local-abi-identity-v5"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
-        "skiff-package-local-abi-v6:sha256"
+        "skiff-package-local-abi-v7:sha256"
     );
     assert_eq!(
         SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER,
-        "skiff-service-protocol-identity-v4"
+        "skiff-service-protocol-identity-v5"
     );
     assert_eq!(
         SERVICE_PROTOCOL_IDENTITY_PREFIX,
-        "skiff-service-protocol-v4:sha256"
+        "skiff-service-protocol-v5:sha256"
     );
 
     assert_eq!(
         PACKAGE_BUILD_IDENTITY_SCHEMA_MARKER,
-        "skiff-package-build-identity-v2"
+        "skiff-package-build-identity-v3"
     );
     assert_eq!(
         PACKAGE_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
@@ -75,7 +75,7 @@ fn canonical_generation_markers_bump_without_changing_legacy_package_domains() {
     );
     assert_eq!(
         PACKAGE_BUILD_IDENTITY_PREFIX,
-        "skiff-package-build-v2:sha256"
+        "skiff-package-build-v3:sha256"
     );
     assert_eq!(
         PACKAGE_LOCAL_ABI_IDENTITY_PREFIX,
@@ -83,11 +83,15 @@ fn canonical_generation_markers_bump_without_changing_legacy_package_domains() {
     );
     assert_eq!(
         PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER,
-        "skiff-package-schema-type-identity-v1"
+        "skiff-package-schema-type-identity-v2"
     );
     assert_eq!(
         PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX,
-        "skiff-package-schema-type-v1:sha256"
+        "skiff-package-schema-type-v2:sha256"
+    );
+    assert_eq!(
+        PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX,
+        "skiff-package-implementation-links-v2:sha256"
     );
     assert_eq!(
         PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER,
@@ -113,10 +117,23 @@ fn canonical_generation_markers_bump_without_changing_legacy_package_domains() {
         PUBLICATION_ABI_IDENTITY_PREFIX,
         "skiff-publication-abi-v1:sha256"
     );
+    assert_eq!(
+        DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER,
+        "skiff-deployment-artifact-identity-v2"
+    );
+    assert_eq!(
+        DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
+        "skiff-deployment-artifact-v2:sha256"
+    );
+    assert_eq!(
+        ASSEMBLY_IDENTITY_SCHEMA_MARKER,
+        "skiff-runtime-assembly-identity-v2"
+    );
+    assert_eq!(ASSEMBLY_IDENTITY_PREFIX, "skiff-runtime-assembly-v2:sha256");
 }
 
 #[test]
-fn service_protocol_identity_hash_accepts_only_canonical_v4_identity() {
+fn service_protocol_identity_hash_accepts_only_canonical_v5_identity() {
     let hash = "a".repeat(64);
     let identity = format!("{SERVICE_PROTOCOL_IDENTITY_PREFIX}:{hash}");
     assert_eq!(
@@ -126,6 +143,7 @@ fn service_protocol_identity_hash_accepts_only_canonical_v4_identity() {
 
     for invalid in [
         format!("skiff-protocol-v1:sha256:{hash}"),
+        format!("skiff-service-protocol-v4:sha256:{hash}"),
         SERVICE_PROTOCOL_IDENTITY_PREFIX.to_string(),
         format!("{SERVICE_PROTOCOL_IDENTITY_PREFIX}:{}", "a".repeat(63)),
         format!("{SERVICE_PROTOCOL_IDENTITY_PREFIX}:{}", "A".repeat(64)),
@@ -173,7 +191,7 @@ fn package_test_assembly_fixture() -> PackageTestAssembly {
         production_package_unit: PackageTestPackageUnitRef {
             package_id: "example.com/pkg".to_string(),
             version: "1.0.0".to_string(),
-            build_identity: "skiff-package-build-v2:sha256:prod".to_string(),
+            build_identity: "skiff-package-build-v3:sha256:prod".to_string(),
             unit_path: "units/packages/example.com/pkg/prod.json".to_string(),
             public_abi_identity: "skiff-package-local-abi-v2:sha256:prodabi".to_string(),
             implementation_links_identity: "sha256:prodlinks".to_string(),
@@ -182,7 +200,7 @@ fn package_test_assembly_fixture() -> PackageTestAssembly {
         dependency_package_units: vec![PackageTestPackageUnitRef {
             package_id: "example.com/dep".to_string(),
             version: "1.0.0".to_string(),
-            build_identity: "skiff-package-build-v2:sha256:dep".to_string(),
+            build_identity: "skiff-package-build-v3:sha256:dep".to_string(),
             unit_path: "units/packages/example.com/dep/dep.json".to_string(),
             public_abi_identity: "skiff-package-local-abi-v2:sha256:depabi".to_string(),
             implementation_links_identity: "sha256:deplinks".to_string(),
@@ -212,7 +230,7 @@ fn package_test_assembly_fixture() -> PackageTestAssembly {
             current_package_production: PackageProductionLinkScope {
                 package_id: "example.com/pkg".to_string(),
                 version: "1.0.0".to_string(),
-                build_identity: "skiff-package-build-v2:sha256:prod".to_string(),
+                build_identity: "skiff-package-build-v3:sha256:prod".to_string(),
                 files_digest: "sha256:prodfiles".to_string(),
                 implementation_links_digest: "sha256:prodlinks".to_string(),
                 allow_private: true,
@@ -227,7 +245,7 @@ fn package_test_assembly_fixture() -> PackageTestAssembly {
             dependency_public_scopes: vec![PackageDependencyPublicLinkScope {
                 package_id: "example.com/dep".to_string(),
                 version: "1.0.0".to_string(),
-                build_identity: "skiff-package-build-v2:sha256:dep".to_string(),
+                build_identity: "skiff-package-build-v3:sha256:dep".to_string(),
                 public_abi_identity: "skiff-package-local-abi-v2:sha256:depabi".to_string(),
                 public_export_digest: "sha256:depexports".to_string(),
                 implementation_links_digest: "sha256:deplinks".to_string(),

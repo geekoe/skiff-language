@@ -103,9 +103,9 @@ pub use operation::{
 pub use package::{
     assign_package_unit_identities, package_build_hash, package_build_identity,
     package_build_identity_projection, package_implementation_links_identity,
-    package_local_abi_hash, package_local_abi_identity, package_local_abi_identity_projection,
-    validate_package_unit_identities, PackageBuildIdentityProjection,
-    PackageLocalAbiIdentityProjection,
+    package_implementation_links_identity_hash, package_local_abi_hash, package_local_abi_identity,
+    package_local_abi_identity_projection, validate_package_unit_identities,
+    PackageBuildIdentityProjection, PackageLocalAbiIdentityProjection,
 };
 pub use package_artifact::{
     assign_package_artifact_identities, package_artifact_build_identity,

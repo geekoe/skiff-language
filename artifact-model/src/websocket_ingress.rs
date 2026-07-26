@@ -6,9 +6,9 @@ use std::{
 };
 
 use crate::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryStreamContract,
-    ContractOperationId, ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, PackageSchemaTypeRef, ServiceContract,
+    BoundaryCallbackContract, BoundaryStreamContract, ContractOperationId, ContractTypeDescriptor,
+    ContractTypeRef, PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSchemaTypeRef,
+    ServiceContract,
 };
 
 pub const WEBSOCKET_INGRESS_OPERATION_NAME: &str = "websocket";
@@ -536,13 +536,9 @@ where
             "WebSocket ingress operation must be unary",
         ));
     }
-    if !matches!(
-        operation.cancellation,
-        BoundaryCancellationContract::NotCancellable
-    ) || !matches!(operation.callbacks, BoundaryCallbackContract::None)
-    {
+    if !matches!(operation.callbacks, BoundaryCallbackContract::None) {
         return Err(WebSocketIngressContractError::new(
-            "WebSocket ingress operation must not declare cancellation or callbacks",
+            "WebSocket ingress operation must not declare callbacks",
         ));
     }
     Ok(context)

@@ -27,14 +27,27 @@ fn package_local_abi_is_distinct_from_the_nested_publication_identity() {
 }
 
 #[test]
-fn package_implementation_links_identity_preserves_v1_wire_golden() {
+fn package_implementation_links_identity_uses_v2_wire_golden() {
     let unit = package_fixture("hello");
 
+    let identity = package_implementation_links_identity(&unit.implementation_links)
+        .expect("implementation links identity");
     assert_eq!(
-        package_implementation_links_identity(&unit.implementation_links)
-            .expect("implementation links identity"),
+        identity,
         // Canonical implementation-link wire with File IR v5 target identity.
-        "skiff-package-implementation-links-v1:sha256:4fb0ad52def218e2c4e8433639758e77466e43cf88cb15e9051a918300ddcf90"
+        "skiff-package-implementation-links-v2:sha256:4fb0ad52def218e2c4e8433639758e77466e43cf88cb15e9051a918300ddcf90"
+    );
+    assert_eq!(
+        package_implementation_links_identity_hash(&identity).unwrap(),
+        "4fb0ad52def218e2c4e8433639758e77466e43cf88cb15e9051a918300ddcf90"
+    );
+    assert!(
+        package_implementation_links_identity_hash(&identity.replacen(
+            PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX,
+            "skiff-package-implementation-links-v1:sha256",
+            1,
+        ))
+        .is_err()
     );
 }
 
@@ -89,6 +102,29 @@ fn package_identity_validation_rejects_nested_and_outer_tampering() {
     outer_build.build_identity = "tampered-build".to_string();
     assert!(matches!(
         validate_package_unit_identities(&outer_build),
+        Err(ArtifactIdentityError::PackageBuildIdentityMismatch { .. })
+    ));
+}
+
+#[test]
+fn package_identity_validation_rejects_old_schema_and_build_generation() {
+    let assigned = package_fixture("hello");
+
+    let mut old_schema = assigned.clone();
+    old_schema.schema_version = "skiff-package-unit-v1".to_string();
+    assert!(matches!(
+        validate_package_unit_identities(&old_schema),
+        Err(ArtifactIdentityError::InvalidPackageIdentityInput { .. })
+    ));
+
+    let mut old_build = assigned;
+    old_build.build_identity = old_build.build_identity.replacen(
+        PACKAGE_BUILD_IDENTITY_PREFIX,
+        "skiff-package-build-v2:sha256",
+        1,
+    );
+    assert!(matches!(
+        validate_package_unit_identities(&old_build),
         Err(ArtifactIdentityError::PackageBuildIdentityMismatch { .. })
     ));
 }
