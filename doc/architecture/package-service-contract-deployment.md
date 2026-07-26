@@ -85,8 +85,8 @@ Package source由`.skiff`源码、`package.yml`、`api.yml`和静态资源组成
 
 Service仍走同一个package compiler入口；存在`service.yml`时，compiler/tooling再执行service projection。
 `service.yml`拥有service id、`serviceCalls` public-path选择与HTTP/WebSocket等外部ingress。HTTP包含route、handler/pre/guard source
-selector、adapter参数来源及外部协议metadata；WebSocket当前只冻结连接path与可选connect callback，业务
-消息handler部分待设计。External handler selector指向当前service package中的普通source callable，
+selector、adapter参数来源及外部协议metadata；第一版WebSocket是单一服务端下行entry，只包含连接path与
+可选connect callback，不存在用户receive或业务消息handler。External handler selector指向当前service package中的普通source callable，
 不要求该callable出现在`api.yml`。`serviceCalls`中的每个元素则必须精确解析到`api.yml`已有的public
 function或public-instance root；它不是source function映射。`service.yml`不含version、dependency、
 service-call API signature/type映射、与handler类型重复的业务JSON schema、实现artifact binding、平台组织角色或request/response大小
@@ -109,12 +109,10 @@ unary handler return；runtime wrapper把该单个值编码为一次JSON respons
 由handler显式控制status、headers和后续body chunks。Compiler不得把raw HTTP stream改投影成typed JSON
 chunks，也不得要求external caller理解Skiff的`Stream<T>`类型。
 
-`websocket`仍由`service.yml`拥有，连接path和可选`connect`回调也属于这里；但业务消息入口的authoring与
-identity层级尚未冻结。Raw frame `receive`是平台transport阶段，不是与HTTP业务handler对等的service
-入口，目标设计不得把单一用户`receive`回调当成整个WebSocket业务API。后续必须先定义平台如何从frame
-得到业务消息selector、如何选择typed message handler，以及unknown/binary/error策略，再决定
-WebSocket connection key与嵌套message entry key如何进入artifact。该设计冻结前，不从HTTP写法类推或
-实现新的WebSocket `receive` authoring。
+`websocket`仍由`service.yml`拥有。第一版每个service最多一个WebSocket entry，拥有连接path与可选
+`connect`回调；它只用于服务端下发。业务上行统一走HTTP，客户端text/binary data frame由gateway以
+close code `1003`拒绝，ping/pong/close由协议栈处理。不存在raw `receive`、消息selector/envelope、
+typed message handler、消息级entry或message identity；不得从HTTP route模型类推这些surface。
 
 PackageArtifact至少包含：
 
@@ -182,9 +180,9 @@ callable signature和专用gateway adapter plan编解码，不要求内部业务
 也不能反向成为runtime binary codec的事实源。
 
 Compiler只对adapter实际映射到external source/sink的值计算entry-local schema closure。已冻结部分包括
-HTTP body、query/path/header参数与HTTP response。未来typed WebSocket业务消息handler的输入/输出也应形成
-外部wire shape，但其消息路由模型尚未冻结，当前不得据raw `receive`回调提前投影。Pre/guard内部context、
-WebSocket connection context及其它只在runtime adapter与handler之间流动的值不进入该closure。
+HTTP body、query/path/header参数与HTTP response。WebSocket没有业务上行payload schema；connect只有
+平台request metadata和accept/reject metadata。Pre/guard内部context及其它只在runtime adapter与handler
+之间流动的值不进入该closure。
 私有named type可以贡献外部shape，但其source name、module path与Skiff nominal identity不得泄露为public
 type；只改私有名字而保持canonical external shape不改变`GatewayEntryIdentity`。
 
@@ -391,8 +389,8 @@ named route同时声明唯一selector与entry definition。该限制只简化aut
 
 `GatewayEntryIdentity`只标识external protocol surface。已冻结的HTTP canonical preimage覆盖entry kind、
 外部request/response/stream shape、HTTP adapter source映射、公开错误投影及其它会改变gateway wire
-兼容性的metadata。WebSocket identity必须在业务消息入口层级冻结后另行补齐；不能只对`connect/receive`
-两个transport回调做hash并把它误当成业务协议identity。Identity不包含source selector、
+兼容性的metadata。第一版WebSocket identity只覆盖connect request/result shape、允许的下行frame类别和
+connection policy shape；它不表示业务消息协议，因为第一版没有业务消息入口。Identity不包含source selector、
 handler/pre/guard `PackageCallableId`、内部名义类型identity、PackageArtifact/build或deployment policy。
 Compiler仍必须验证由linked handler signature导出的external schema和typed adapter plan与该surface逐项
 一致。HTTP stream mode只能来自`rawHttp`的精确
@@ -620,6 +618,11 @@ ServiceContract作为对外声明：
 `service.yml.http`引用为external handler，但这是两个显式surface：前者生成service-call operation，
 后者生成external gateway entry。Compiler必须分别验证并生成不同identity，不能因source target相同而把
 两者合并或互相推断。
+
+第一版WebSocket不接收业务请求，因此上述“外部请求”对WebSocket只指upgrade/connect。Agine、AIHub等
+service的浏览器或host业务上行必须声明HTTP entry；流式业务响应使用HTTP server stream，异步主动通知才
+使用WebSocket下行。`std.websocket`下行发送从当前`ActivationContext`解析当前service deployment中唯一的
+WebSocket entry，不能按path、display name或任意字符串猜entry；零entry或损坏的多entry状态fail closed。
 
 ## 7. Linkable、Recoverable 与 Callback Capability
 

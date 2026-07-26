@@ -2,11 +2,11 @@
 
 日期：2026-06-21
 
-更新：2026-07-26。WebSocket raw frame `receive`被重新归类为平台transport阶段，不再是用户可声明的
-service业务入口。本文关于连接生命周期、opaque context、generation pin、发送与队列的约束仍然有效；
-旧版把`websocketReceive`、`websocket.receiveEvent`或`websocket.messageBody`直接绑定到一个用户
-`receive` handler的设计已撤回。业务消息入口必须与HTTP业务route处于同一抽象层，其具体authoring、
-selector/envelope、typed handler与identity模型尚待单独冻结。
+更新：2026-07-27。第一版WebSocket明确为**服务端下行通道**：业务上行统一使用HTTP，WebSocket只负责
+连接建立、连接身份/policy和服务端主动发送。客户端text/binary业务frame不进入runtime，gateway以
+WebSocket close code `1003`关闭连接；ping、pong与close等协议control frame由WebSocket协议栈处理。
+因此第一版不存在用户可声明的`receive`、业务消息selector/envelope、typed message handler或消息级
+gateway identity。旧版相关设计已撤回，不保留兼容surface。
 
 本文定义 router 中 gateway、runtime 注册/调度和 gateway adapter 的长期内部边界。它是目标态架构契约，不是用户可见语言规范，也不是迁移 checklist。当前实现偏差和落地步骤见 `../implementation/gateway-runtime-adapter-refactor.md`。
 
@@ -18,7 +18,7 @@ Skiff 尚未发布，本文不要求兼容历史 manifest 字段、std.websocket
 
 - HTTP / WebSocket gateway 与 runtime 关系的模块边界。
 - HTTP adapter参数与WebSocket connect回调的目标模型。
-- WebSocket connection context、business identity 和 connection policy 的归属。
+- WebSocket business identity、connection policy和下行发送的归属。
 - router、runtime、compiler 在 payload codec 和 type/schema metadata 上的职责。
 - `RuntimeRegistry`、`RuntimeDispatcher`、runtime endpoint 的目标边界。
 
@@ -33,12 +33,12 @@ Skiff 尚未发布，本文不要求兼容历史 manifest 字段、std.websocket
 
 ### Gateway
 
-Gateway 是 router 的外部协议入口。HTTP gateway 处理 HTTP socket、route 选择、body 限制、CORS、HTTP response 写回。WebSocket gateway 处理 upgrade、物理连接生命周期、pending message buffer、close、下行写回和连接索引。
+Gateway 是 router 的外部协议入口。HTTP gateway 处理 HTTP socket、route 选择、body 限制、CORS、HTTP response 写回。WebSocket gateway 处理 upgrade、物理连接生命周期、close、下行写回和连接索引；它不为业务frame建立pending message buffer。
 
 Gateway 可以理解平台事实：
 
 - HTTP method、path、query、headers、cookies、body bytes。
-- WebSocket connection id、upgrade request、message frame、close 状态。
+- WebSocket connection id、upgrade request、control/data frame类别和close状态。
 - service id、deployment revision、WebSocket entry id、gateway entry key与gateway entry identity。
 - request id、deadline、trace、telemetry。
 - WebSocket `businessIdentity` 这个 opaque string 作为连接管理 key。
@@ -46,7 +46,6 @@ Gateway 可以理解平台事实：
 Gateway 不可以理解业务事实：
 
 - `user`、`host`、tenant、device、session principal 等业务 subject kind。
-- 业务 connection context 的字段。
 - 业务 request/response record、union、map、representation 的字段布局。
 - 某个业务 cookie/header 是否表示登录身份，除非它只是原样传给业务 connect/pre handler。
 
@@ -92,9 +91,8 @@ Gateway 依赖 `RuntimeDispatcher`，不直接依赖 `RuntimeRegistry` 做 dispa
 
 Gateway adapter 是 runtime 侧的入口适配逻辑。它把 gateway 提供的平台 metadata 和 payload bytes 组装成用户 handler 参数。
 
-HTTP typed JSON route、raw HTTP route和WebSocket connect是当前已确认的gateway adapter场景。Raw
-WebSocket frame receive由平台接收、排队和分派，不直接对应一个用户handler。未来选中的业务消息handler
-仍由runtime adapter构造typed参数，但不能把transport receive与业务入口混成同一个entry。
+HTTP typed JSON route、raw HTTP route和WebSocket connect是第一版全部gateway adapter场景。
+WebSocket data frame不会被分派为runtime request，也没有message adapter。
 
 这些external ingress entry由`service.yml`拥有，不是`serviceCalls`从`api.yml` public graph选择的
 service-call operation。Handler、
@@ -105,11 +103,11 @@ signature。External selector绑定owner-local `gatewayEntryKey`，entry另带�
 identity与校验。
 
 `gatewayEntryIdentity`只覆盖external protocol surface：entry kind、外部参数来源、公开
-request/response/stream shape与影响gateway wire兼容性的metadata。HTTP identity已经冻结；WebSocket
-identity必须等业务消息入口层级确定后再冻结，不能用`connect/receive`两个transport phase代替。Identity不包含
-handler/pre/guard callable identity、source selector、Package build或业务实现体。具体callable binding、
-内部类型与codec execution plan由ServiceDeployment及其revision覆盖；只替换实现不会伪装成external protocol
-变化。
+request/response/stream shape与影响gateway wire兼容性的metadata。HTTP identity覆盖HTTP wire surface；
+WebSocket identity覆盖connect request/result shape、允许的下行frame类别及connection policy shape，
+不包含任何业务消息协议。Identity不包含handler/pre/guard callable identity、source selector、Package
+build或业务实现体。具体callable binding和内部执行plan由ServiceDeployment及其revision覆盖；只替换实现
+不会伪装成external protocol变化。
 
 ### Business Identity
 
@@ -204,10 +202,8 @@ type WebSocketGatewayAdapterSource =
 - 不支持 `identity` 或 `connection.identity`。
 - 不支持 `query.foo`、`header.foo`、`cookie.foo` 作为 handler 参数绑定。业务需要这些值时，应接收完整 request 并在业务代码中解析。
 - `http.context` 是 HTTP `pre` 或 adapter pipeline 产生的业务对象，gateway 只能整体传递。
-- connect accept产生的业务connection context由gateway opaque保存；它不是connect handler输入，也不作为
-  authoring source逐字段暴露。
-- Raw WebSocket message、message body、business identity和connection context都不是当前用户
-  `adapterArgs` source。未来消息handler的参数模型必须随业务消息路由设计一起冻结。
+- Raw WebSocket message、message body和business identity都不是用户`adapterArgs` source；第一版没有
+  WebSocket message handler。
 
 Source 合法阶段：
 
@@ -235,8 +231,7 @@ handler 参数构造属于 runtime adapter。
 - HTTP `guard` 固定接收 `std.http.HttpRequest`，在 body decode 和 `pre` 前执行。
 - HTTP `pre` 固定接收 `std.http.HttpRequest`，返回 `http.context`。
 - HTTP handler 才使用 `adapterArgs` 接收 `http.request`、`http.body`、`http.context` 的组合。
-- WebSocket connect本轮没有`guard` / `pre`。未来业务消息入口若需要guard/pre或可配置参数，必须在其
-  抽象冻结时显式定义，不能复用connect的`adapterArgs`。
+- WebSocket connect没有`guard` / `pre`，也不存在可复用connect `adapterArgs`的消息阶段。
 
 ### 示例：HTTP typed JSON
 
@@ -323,12 +318,12 @@ type WebSocketConnectRequestMetadata = {
 Connect result：
 
 ```skiff
-type WebSocketConnectResult<Context> discriminator "tag" =
-  { tag: "accept", context: Context, businessIdentity: string?, connectionPolicy: WebSocketConnectionPolicy? }
+type WebSocketConnectResult discriminator "tag" =
+  { tag: "accept", businessIdentity: string?, connectionPolicy: WebSocketConnectionPolicy? }
   | { tag: "reject", code: integer, reason: string }
 ```
 
-Runtime WebSocket adapter 解码用户 connect result。Gateway 只接收平台 connect result metadata 和 opaque context bytes：
+Runtime WebSocket adapter解码用户connect result。Gateway只接收平台connect result metadata：
 
 ```ts
 type WebSocketConnectResponseMetadata =
@@ -336,98 +331,55 @@ type WebSocketConnectResponseMetadata =
       result: 'accept';
       businessIdentity?: string;
       connectionPolicy?: WebSocketConnectionPolicy;
-      contextCodec?: WebSocketContextCodec;
-      contextPayloadPresent: boolean;
     }
   | {
       result: 'reject';
       code: number;
       reason: string;
     };
-
-type WebSocketContextCodec = {
-  kind: 'skiff-runtime-payload';
-  contextCodecIdentity: string;
-};
 ```
 
-`contextCodec` 对 gateway 完全 opaque——gateway只把它原样保存，并在平台选中某个业务消息handler后随
-该次dispatch回传，从不读它的字段。它存在的唯一目的，是让runtime校验“这份context bytes确实由当前
-deployment中与该消息handler兼容的connect codec产生”。`contextCodecIdentity`由compiler生成的精确
-context type/codec plan计算，属于deployment adapter execution plan，不是`ContractOperationId`、
-service operation ABI或external `GatewayEntryIdentity`。
+没有connect handler时，**不向runtime发connect dispatch**：gateway直接合成accept（无
+`businessIdentity`、无`connectionPolicy`），省去一次runtime往返。需要business identity或connection
+policy的entry必须声明connect handler。
 
-WebSocket消息路由冻结后，deployment必须为每个需要context的业务消息entry记录与connect一致的
-`contextCodecIdentity`，runtime在decode前比较，不匹配fail closed；gateway不参与该比较。这个内部事实
-不要求现在冻结一个用户可见的receive manifest或`WebSocketContextExpectation` DTO。
+### WebSocket只下行
 
-Accept response 中，`contextPayloadPresent = true` 时 `response.end.payloadBytes` 是已编码 connection context，且 `contextCodec` 必填；否则 context 为 null，且 `contextCodec` 不出现。`contextPayloadPresent = false` 只在没有 connect handler、或 connect context 类型接受 null 时合法；非 nullable `Context` 必须产生 context bytes。这个 nullability 校验由 runtime WebSocket adapter 在投影 platform metadata 前完成。Gateway 只校验 `result`、`businessIdentity`、`connectionPolicy`、close code/reason、context byte presence 和 `contextCodec` presence 是否一致。Gateway 把 `contextBytes` 和 `contextCodec` 当作 opaque connection state 保存，绝不解码。
-
-没有connect handler时，gateway保存的connection context是null，不保存`contextCodec`。业务消息模型冻结
-后，compiler必须拒绝“没有connect handler但消息handler需要non-null context”的entry；runtime也必须在
-损坏artifact或frame下fail closed。
-
-没有 connect handler 时，**不向 runtime 发 connect dispatch**：gateway 直接合成 accept（context = null、无 `businessIdentity`、无 `connectionPolicy`、无 `contextCodec`），省去一次 runtime 往返。runtime 不存在的 connect 行为不应被 round-trip。需要 `businessIdentity` / connection policy / context 的 entry 必须声明 connect handler。
-
-### WebSocket业务消息入口：待冻结
-
-Raw frame receive是平台内部阶段。目标链路只能先冻结到：
+第一版业务方向固定为：
 
 ```text
-client frame
-  -> gateway接收、限流、排队并保持connection/generation
-  -> 平台消息层解码并选择一个业务消息entry
-  -> runtime按该entry的linked signature构造typed参数
-  -> 用户业务消息handler
+client / host business request
+  -> HTTP gateway
+  -> runtime HTTP adapter
+  -> user HTTP handler
+
+user code
+  -> std.websocket outbound send
+  -> runtime connection.send
+  -> WebSocket gateway
+  -> client / host
 ```
 
-用户不声明一个接收全部frame的`receive` handler。业务消息handler才与HTTP的`createUser`一类route对等。
-现有AIHub以`type`字段分发，Agine以`eventName`字段分发，证明平台若要接管这一步，必须先冻结消息协议，而
-不是简单隐藏原回调。
+客户端发来的text或binary data frame不产生runtime dispatch；gateway以close code `1003`关闭该连接。
+WebSocket ping、pong和close control frame由协议栈处理，不进入用户代码。由此：
 
-根因是HTTP已经标准化了每次请求的`method + path`，而WebSocket只在HTTP Upgrade握手时有path；连接建立后
-的frame没有标准业务route。`Sec-WebSocket-Protocol`只能为整条连接选择协议，不能选择单个frame对应的
-业务handler。因此平台若要提供业务级消息入口，就必须额外定义一层Skiff application-message routing
-protocol；没有这层约定时，单一raw `receive`是唯一不猜业务语义的通用接口。
-
-后续设计至少要同时回答：
-
-- 使用平台统一envelope，还是由entry显式声明discriminator字段/值，或从typed literal union派生；
-- text JSON、binary和无法decode的frame分别允许什么；
-- unknown message由平台关闭连接、发送固定错误，还是交给显式fallback entry；
-- connection context如何进入每个typed handler，以及各handler是否各自拥有key/identity；
-- requestId、ack和response correlation是否属于可选平台协议；下行主动push仍由显式send完成。
-
-这些问题冻结前，`service.yml`、shared artifact、compiler和runtime不得新增
-`websocketReceive`、`websocket.receiveEvent`、`websocket.message`或
-`websocket.messageBody`用户surface。旧实现可以作为迁移事实继续存在，但不是目标设计依据。
+- `service.yml`没有`receive`、message entry、selector、envelope或fallback authoring；
+- shared artifact、compiler、router和runtime没有WebSocket business-message operation；
+- WebSocket不拥有request/response correlation或typed message schema；
+- Agine、AIHub及其它service的业务上行必须使用HTTP；HTTP server stream仍可承担流式响应。
 
 ## WebSocket connection model
 
-WebSocket connect和未来的业务消息handler可以挂起；例如一个消息handler在处理期间顺序消费
-上游 stream，并通过非挂起的 `connection.send` 发送多个下行事件。挂起不改变 ingress 的
-unary 边界：每个入站 connect 或 message 仍只创建一次 dispatch，Runtime 等待该 handler
-完成后才结束本次 dispatch，不把它隐式拆成 detached work，也不重复执行。
-
-同一物理连接同时最多有一个业务消息dispatch处于active状态。后续消息按到达顺序进入
-有界队列，只有前一条 operation 完成后才开始下一条，从而使 operation 内的挂起不会改变
-消息顺序。连接关闭时 gateway 移除连接索引、丢弃尚未开始的排队消息，并终止与该连接绑定的
-active transport dispatch。该关闭属于整个 ingress request 的生命周期收尾，不是对 operation
-暴露独立 cancel handle；operation 仍声明 `NotCancellable`，active dispatch 只结算一次，也不会
-因为关闭而重新 dispatch。关闭后才到达 gateway 的下行发送会按已关闭连接正常失败。
+WebSocket connect handler可以按普通函数语义挂起；每次upgrade最多创建一次connect dispatch，runtime
+等待handler完成后才结束该dispatch，不把它隐式拆成detached work，也不重复执行。连接建立后没有业务
+message dispatch。连接关闭时gateway同步移除连接索引；关闭后到达的下行发送按已关闭连接正常失败。
 
 `std.websocket` 的 connection send 操作本身保持非挂起；它只尝试把 frame 交给 gateway，
 不等待客户端消费或为慢客户端提供 backpressure await。
 
-目标 std surface：
+目标std surface：
 
 ```skiff
-type WebSocketConnection<Context> {
-  id: string,
-  businessIdentity: string?,
-  context: Context,
-}
-
 type WebSocketConnectionPolicy {
   maxConnections: integer,
   overflow: "close-oldest" | "reject-new",
@@ -435,8 +387,8 @@ type WebSocketConnectionPolicy {
   closeReason: string?,
 }
 
-type WebSocketConnectResult<Context> discriminator "tag" =
-  { tag: "accept", context: Context, businessIdentity: string?, connectionPolicy: WebSocketConnectionPolicy? }
+type WebSocketConnectResult discriminator "tag" =
+  { tag: "accept", businessIdentity: string?, connectionPolicy: WebSocketConnectionPolicy? }
   | { tag: "reject", code: integer, reason: string }
 ```
 
@@ -462,16 +414,21 @@ type WebSocketBusinessDeliveryTarget = {
 };
 ```
 
-`std.websocket.sendTextToBusinessIdentity(...)` 由 runtime 填入当前 WebSocket entry id。若未来允许没有当前 WebSocket entry 上下文的后台任务发送到 business identity，compiler/runtime 必须要求显式 entry id，不能让 gateway 猜。
+第一版每个service最多声明一个WebSocket entry；即使只有一个entry，内部索引仍使用完整的
+`(serviceId, websocketEntryId, businessIdentity)` key。`std.websocket.sendTextToBusinessIdentity(...)`
+和binary等价操作从当前`ActivationContext`取得service deployment，并解析其唯一WebSocket entry id。
+没有active service、没有WebSocket entry或artifact损坏地产生多个entry时，发送fail closed。发送不要求
+当前执行起源于WebSocket connect，因此HTTP handler、service call、actor或其它携带同一
+`ActivationContext`的执行都可以下发。
 
 Runtime 获取当前 entry id 的规则：
 
-- Gateway dispatch WebSocket connect时必须在request header中携带当前connection entry key/identity。未来
-  business-message dispatch还必须携带选中的message entry key/identity；两层具体命名与identity组合待
-  消息路由设计冻结，不能只复用一个raw receive identity。
+- Gateway dispatch WebSocket connect时必须在request header中携带当前connection entry key/identity。
 - Runtime request context 保存当前 WebSocket entry id。
-- `std.websocket.sendTextToBusinessIdentity(...)` / `sendBinaryToBusinessIdentity(...)` 只能在有当前 WebSocket entry context 的 request 内省略 entry id。
-- 没有当前 WebSocket entry context 的后台任务、process 或普通 service call 需要显式 entry id API；否则编译或 runtime fail closed。
+- `std.websocket.sendTextToBusinessIdentity(...)` / `sendBinaryToBusinessIdentity(...)`优先使用connect
+  request中的entry id；其它执行从当前service deployment解析唯一entry。
+- 第一版不暴露字符串entry id参数，也不允许service声明多个WebSocket entry。以后确有多entry需求时，
+  必须先设计可静态校验的entry reference，而不是让gateway按path或字符串猜。
 
 Connection policy validation:
 
@@ -481,7 +438,8 @@ Connection policy validation:
 - `closeReason` 缺省时使用平台默认原因；存在时必须满足 WebSocket close reason 字节长度限制。
 - Reject-new 使用同一 close code/reason 返回给新 socket；close-oldest 使用同一 close code/reason 关闭被移除的旧 socket。
 
-Gateway 不定义 `ConnectionSubjectKind`。业务可以在自己的 `Context` 中放 `userId?`、`hostIdHash?`、`tenantId?` 等字段，并在业务代码中判断。
+Gateway不定义`ConnectionSubjectKind`。业务connect handler自行从完整request判断身份，只向gateway返回
+opaque `businessIdentity`；gateway不知道它表示user、host、tenant或其它主体。
 
 ## Payload 和 schema 边界
 
@@ -489,21 +447,20 @@ Gateway 不定义 `ConnectionSubjectKind`。业务可以在自己的 `Context` �
 
 - Runtime 拥有业务 payload encode/decode。
 - Router 转发 opaque bytes，**不解析任何业务类型表示**，既不用 JsonSchema 也不用单独的类型 descriptor。
-- 业务类型的权威表示是 compiler 产出、runtime 加载的 linked program 类型（`TypeRefIr` / `LinkedTypeRef`）。runtime adapter 从 linked program 取 handler 参数/响应类型构造 `RuntimeTypePlan` 做 payload codec——HTTP typed body 已经这样（`from_linked(&params[index].ty, …)`）；未来typed WebSocket业务消息handler也必须复用该机制。**runtime payload codec 不依赖 manifest。**
+- 业务类型的权威表示是 compiler 产出、runtime 加载的 linked program 类型（`TypeRefIr` / `LinkedTypeRef`）。runtime HTTP adapter 从 linked program 取 handler 参数/响应类型构造 `RuntimeTypePlan` 做 payload codec（`from_linked(&params[index].ty, …)`）。WebSocket connect只使用固定平台metadata，没有业务message payload codec。**runtime payload codec 不依赖 manifest。**
 - JsonSchema 保留给外部协议校验、文档、diagnostics 和 HTTP JSON contract，不作为 runtime 二进制 payload codec 的 source of truth，也不进入 router 的 dispatch 决策。
 
-Compiler只为adapter plan中真正连接external source/sink的值派生entry-local schema。当前冻结的是typed
-HTTP body、query/path/header参数和HTTP response；未来typed WebSocket业务消息也属于该闭包，但必须等
-消息路由模型冻结后再投影。Pre产生的业务context、guard内部值和WebSocket connection context不属于外部
-协议。私有named type可以贡献结构，但其Skiff
+Compiler只为adapter plan中真正连接external source/sink的值派生entry-local schema：typed HTTP body、
+query/path/header参数和HTTP response。WebSocket没有业务message schema。Pre产生的业务context和guard
+内部值不属于外部协议。私有named type可以贡献结构，但其Skiff
 source/public/nominal名字不自动出现在schema；entry-local component key必须由canonical external shape或显式
 external documentation metadata产生，不能借用Package public identity。
 
 关于"router 不理解业务类型"，这里要明确一个分界：
 
-- **External entry的协议身份是平台事实，router可以知道。** 例如某个route是`rawHttp`还是
-  `typedJson`、它的`gatewayEntryIdentity`以及opaque`contextCodecIdentity`。这些是字符串标签，router
-  用来寻址、分流或原样保存，不需要展开业务类型结构。
+- **External entry的协议身份是平台事实，router可以知道。** 例如某个entry是`rawHttp`、
+  `typedJson`还是`websocketConnect`，以及它的`gatewayEntryIdentity`。这些是字符串标签，router用来
+  寻址和分流，不需要展开业务类型结构。
 - **类型的字段布局是业务事实，router 不持有。** 某个业务 record 有哪些字段、union 有哪些分支、怎么编解码——只有 runtime 知道。router 看到的永远是 opaque bytes。
 
 因此 router 不需要、也不应引入一个能描述任意业务类型结构的 closed-vocabulary descriptor。早期方案里的 `RuntimeTypeDescriptor`（让 compiler/runtime/router 三处都 parse 同一份类型 JSON）是不必要的，并且会引入第三份必须逐字节对齐的类型编码，叠加到已有的 `TypeRefIr` 和 build-id 投影上。它不进入本契约。
@@ -533,8 +490,8 @@ type GatewayEntryProtocolManifest = {
   signature和adapter source生成，只供外部协议、文档与diagnostics；`service.yml`不得手写重复业务schema。
 - 因此router看到的entry参数只有name和display schema，二者都不用于选择业务callable。router不解析业务
   类型结构，也不需要`TypeRefIr`。
-- `GatewayEntryIdentity`只按external protocol surface计算；具体target、内部type/codec plan和
-  `contextCodecIdentity`由当前ServiceDeployment绑定并在runtime admission时精确校验。
+- `GatewayEntryIdentity`只按external protocol surface计算；具体target和内部type/codec plan由当前
+  ServiceDeployment绑定并在runtime admission时精确校验。
 
 目标态 router production code 不解析业务类型，也不引用 Skiff business payload codec。任何业务 payload 的 encode/decode 都在 runtime adapter 内完成。
 
@@ -582,17 +539,6 @@ client upgrade
   -> WebSocketGateway verifies connection
 ```
 
-业务消息：
-
-```text
-client frame
-  -> WebSocketGateway
-  -> platform message decode/select（authoring与协议待冻结）
-  -> RuntimeDispatcher business-message request
-  -> runtime typed message adapter
-  -> user business-message handler
-```
-
 Downlink：
 
 ```text
@@ -611,7 +557,7 @@ Authoring/deployment manifest readers must fail closed:
 
 - 旧 WebSocket `bind` field 非法。
 - 新authoring中的用户`receive`、`websocketReceive`、`websocket.receiveEvent`、
-  `websocket.message`与`websocket.messageBody`在消息路由设计冻结前非法。
+  `websocket.message`与`websocket.messageBody`非法。
 - 迁移后的旧 HTTP `handlerArgs` field 非法。
 - `adapterArgs[].source` unknown kind is invalid.
 - Any business context field binding is invalid.
@@ -624,11 +570,7 @@ Runtime connect response validation must fail closed:
 - `identity` and `connection.identity` are invalid field names.
 - `scope` inside `WebSocketConnectionPolicy` is invalid.
 - `maxConnections`、`overflow`、`closeCode`、`closeReason` must satisfy the connection policy rules above.
-- Accept response with `contextPayloadPresent = true` but missing context bytes is invalid.
-- Accept response with context bytes but `contextPayloadPresent = false` is invalid.
-- Accept response with `contextPayloadPresent = true` but missing `contextCodec` is invalid.
-- Accept response with `contextPayloadPresent = false` but present `contextCodec` is invalid.
-- Runtime adapter must reject `contextPayloadPresent = false` for a non-nullable Context type before gateway sees the response.
+- Connect accept payload containing legacy `context`、`contextCodec`或`contextPayloadPresent` fields is invalid.
 
 Because Skiff is unreleased, no compatibility aliases are required.
 
@@ -650,14 +592,15 @@ Target-state tests must prove:
 
 - HTTP adapter args和WebSocket connect adapter args使用同一种`param + source`结构。
 - Gateway 拒绝旧 `bind` / `handlerArgs` / `identity` / `scope` fields。
-- 用户raw `receive`以及尚未冻结的WebSocket message source不能进入新artifact。
-- Runtime adapter可以整体传递HTTP context；gateway可以opaque保存WebSocket connection context bytes；
-  gateway路径不检查业务字段。
+- 用户raw `receive`和任何WebSocket message source不能进入新artifact。
+- Runtime adapter可以整体传递HTTP context；WebSocket connect不产生或保存业务connection context。
 - `businessIdentity` fan-out works.
 - `maxConnections=1, close-oldest` removes old sockets from fan-out before closing them.
 - `maxConnections=1, reject-new` leaves old sockets active and rejects the new socket.
 - Fan-out 和 policy 按 `(serviceId, websocketEntryId, businessIdentity)` 建 key，并有意忽略 version/build。
-- Gateway opaque保存WebSocket context bytes，并在平台选中业务消息entry后不解码地送回runtime。
+- Client text/binary data frame closes with `1003` and produces no runtime request; ping/pong/close remains
+  protocol-owned.
 - Router production code does not import business payload codec, does not parse `parameters[].type` / `responseType`, and makes no dispatch decision from business type structure.
 - Runtime adapter tests cover typed HTTP body/context与WebSocket connect request arg construction。
-- Typed WebSocket业务消息参数构造测试在消息路由设计冻结后补充；当前不得用raw receive fixture替代。
+- Outbound send can resolve the sole WebSocket entry from a non-WebSocket execution carrying the current
+  service `ActivationContext`; zero/multiple entry states fail closed.
