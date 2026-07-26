@@ -2580,13 +2580,16 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-runtime-boundary",
  "skiff-runtime-capability-context",
  "skiff-runtime-eval",
  "skiff-runtime-linked-program",
+ "skiff-runtime-linker",
  "skiff-runtime-model",
  "skiff-runtime-request-contract",
+ "skiff-runtime-transport",
  "thiserror",
  "time",
 ]
