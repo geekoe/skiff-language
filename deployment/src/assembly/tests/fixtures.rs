@@ -6,10 +6,10 @@ use skiff_artifact_identity::{
     service_deployment_ref,
 };
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract,
-    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, ContractDiagnosticText, ContractRequirement, DeploymentArtifactIdentity,
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+    BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    ContractDiagnosticText, ContractRequirement, DeploymentArtifactIdentity,
     DeploymentDiagnosticText, DeploymentIngressBinding, DeploymentOperationBinding,
     DeploymentRevision, GatewayEntryKey, IngressProtocol, IngressSelector, PackageArtifact,
     PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId,
@@ -43,9 +43,7 @@ pub fn contract_with_stable_key(service_id: &str, stable_key: &str) -> ServiceCo
                 },
             },
             stream: BoundaryStreamContract::Unary,
-            cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,
-            may_suspend: false,
             effect_guarantee: BoundaryEffectGuarantee {
                 detached_parameters: true,
                 detached_return: true,

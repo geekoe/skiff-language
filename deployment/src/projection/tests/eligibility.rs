@@ -295,7 +295,31 @@ fn unknown_typed_facts_and_targets_cannot_forge_available() {
 }
 
 #[test]
-fn unsupported_callback_and_native_claims_cannot_forge_available() {
+fn unsupported_stream_callback_and_native_claims_cannot_forge_available() {
+    let mut stream = ProjectionFixture::new();
+    for descriptor in stream.contract.operations.values_mut() {
+        descriptor.contract.stream = BoundaryStreamContract::Unsupported {
+            reason: BoundaryFeatureUnavailableReason::LanguageUnsupported,
+        };
+    }
+    assign_service_contract_identities(&mut stream.contract).unwrap();
+    stream.input.contract = contract_ref(&stream.contract);
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = stream
+        .implementation
+        .boundary_projections
+        .get_mut(&stream.callable_id)
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    operation_contract.stream = BoundaryStreamContract::Unsupported {
+        reason: BoundaryFeatureUnavailableReason::LanguageUnsupported,
+    };
+    stream.refresh_implementation_ref();
+    assert_eligibility_reason(&stream, BoundaryUnavailableReason::UnsupportedStream);
+
     let mut callback = ProjectionFixture::new();
     for descriptor in callback.contract.operations.values_mut() {
         descriptor.contract.callbacks = BoundaryCallbackContract::Unsupported {

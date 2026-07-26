@@ -318,6 +318,49 @@ impl ProjectionFixture {
         assign_package_artifact_identities(&mut self.implementation).unwrap();
         self.input.implementation = package_ref(&self.implementation);
     }
+
+    fn set_provider_may_suspend(&mut self, may_suspend: bool) {
+        let PackageLocalAbiSymbol::Callable { signature, .. } = self
+            .implementation
+            .package_local_abi
+            .public_symbols
+            .get_mut("handle")
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        signature.may_suspend = may_suspend;
+        self.implementation
+            .implementation_links
+            .functions
+            .get_mut("handle")
+            .unwrap()
+            .signature
+            .may_suspend = may_suspend;
+        let CallableEffectSummary::Analyzed { effects } = &mut self
+            .implementation
+            .callable_semantic_facts
+            .get_mut(&self.callable_id)
+            .unwrap()
+            .effects
+        else {
+            unreachable!()
+        };
+        effects.may_suspend = may_suspend;
+        let BoundaryCallableProjection::Available {
+            implementation_requirements,
+            ..
+        } = self
+            .implementation
+            .boundary_projections
+            .get_mut(&self.callable_id)
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        implementation_requirements.complete_may_effects.may_suspend = may_suspend;
+        self.refresh_implementation_ref();
+    }
 }
 
 #[test]
@@ -346,6 +389,69 @@ fn projection_maps_every_operation_explicitly_and_emits_no_public_path() {
     assert!(wire.contains("packageCallableId"));
     assert!(!wire.contains("packagePublicPath"));
     skiff_artifact_identity::validate_service_deployment_identity(&deployment).unwrap();
+}
+
+#[test]
+fn code_free_contract_admits_both_provider_summaries_and_exact_refs_change_identity() {
+    let mut non_suspending = ProjectionFixture::new();
+    non_suspending.set_provider_may_suspend(false);
+    let mut suspending = ProjectionFixture::new();
+    suspending.set_provider_may_suspend(true);
+
+    assert_eq!(non_suspending.contract, suspending.contract);
+    assert_eq!(
+        non_suspending.contract.service_protocol_identity,
+        suspending.contract.service_protocol_identity
+    );
+    assert_eq!(
+        non_suspending.contract.operations,
+        suspending.contract.operations
+    );
+    assert_ne!(
+        non_suspending.implementation.package_build_id,
+        suspending.implementation.package_build_id
+    );
+
+    let non_suspending_deployment = non_suspending
+        .project()
+        .expect("a concrete non-suspending provider must be deployable");
+    let suspending_deployment = suspending
+        .project()
+        .expect("a concrete suspending provider must be deployable");
+    assert_ne!(
+        non_suspending_deployment.implementation,
+        suspending_deployment.implementation
+    );
+    assert_ne!(
+        non_suspending_deployment.deployment_artifact_identity,
+        suspending_deployment.deployment_artifact_identity
+    );
+
+    let non_suspending_root =
+        skiff_artifact_identity::service_deployment_ref(&non_suspending_deployment);
+    let non_suspending_assembly = crate::assembly::resolve_runtime_assembly(
+        std::slice::from_ref(&non_suspending_root),
+        std::slice::from_ref(&non_suspending_deployment),
+        std::slice::from_ref(&non_suspending.contract),
+        std::slice::from_ref(&non_suspending.implementation),
+    )
+    .expect("the non-suspending provider must assemble");
+    let suspending_root = skiff_artifact_identity::service_deployment_ref(&suspending_deployment);
+    let suspending_assembly = crate::assembly::resolve_runtime_assembly(
+        std::slice::from_ref(&suspending_root),
+        std::slice::from_ref(&suspending_deployment),
+        std::slice::from_ref(&suspending.contract),
+        std::slice::from_ref(&suspending.implementation),
+    )
+    .expect("the suspending provider must assemble");
+    assert_ne!(
+        non_suspending_assembly.resolved_packages,
+        suspending_assembly.resolved_packages
+    );
+    assert_ne!(
+        non_suspending_assembly.assembly_identity,
+        suspending_assembly.assembly_identity
+    );
 }
 
 #[test]
@@ -944,9 +1050,7 @@ fn operation_contract(payload_type: ContractTypeRef) -> BoundaryOperationContrac
             value_plan: linkable_plan(BoundaryValueOwner::Provider),
         },
         stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::Cooperative,
         callbacks: BoundaryCallbackContract::None,
-        may_suspend: true,
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,

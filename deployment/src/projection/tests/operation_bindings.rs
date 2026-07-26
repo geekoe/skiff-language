@@ -73,6 +73,33 @@ fn callable_facts_requirements_and_link_target_mismatches_fail_closed() {
         }) if message == "complete may-effects differ"
     ));
 
+    let mut provenance_mismatch = ProjectionFixture::new();
+    let BoundaryCallableProjection::Available {
+        implementation_requirements,
+        ..
+    } = provenance_mismatch
+        .implementation
+        .boundary_projections
+        .get_mut(&provenance_mismatch.callable_id)
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    implementation_requirements.provenance = CallableProvenanceSummary::Analyzed {
+        return_origins: vec![ValueProvenance::Constant],
+        direct_return_origins: vec![ValueProvenance::Constant],
+        throw_origins: Vec::new(),
+        escape_lanes: Vec::new(),
+    };
+    provenance_mismatch.refresh_implementation_ref();
+    assert!(matches!(
+        provenance_mismatch.project(),
+        Err(ProjectionError::CallableFactsMismatch {
+            message,
+            ..
+        }) if message == "provenance differs"
+    ));
+
     let mut link_mismatch = ProjectionFixture::new();
     link_mismatch
         .implementation
@@ -221,7 +248,6 @@ fn convert_callable_to_public_instance_method(fixture: &mut ProjectionFixture) {
         type_params: Vec::new(),
         params: interface_parameters,
         return_type: method_link.signature.return_type.clone(),
-        may_suspend: method_link.signature.may_suspend,
         is_native: false,
         is_provider: false,
         is_static: false,

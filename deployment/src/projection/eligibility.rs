@@ -1,9 +1,9 @@
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryImplementationRequirements,
-    BoundaryOperationContract, BoundaryStreamContract, BoundaryUnavailableReason,
-    BoundaryValuePlan, BoundaryValuePlanUnavailableReason, CallableEffectSummary,
-    CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, CallableTargetFact,
-    PackageCallableId, ValueEscapeLane, ValueProvenance,
+    BoundaryCallbackContract, BoundaryImplementationRequirements, BoundaryOperationContract,
+    BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValuePlan,
+    BoundaryValuePlanUnavailableReason, CallableEffectSummary, CallableMayEffects,
+    CallableProvenanceSummary, CallableSemanticFacts, CallableTargetFact, PackageCallableId,
+    ValueEscapeLane, ValueProvenance,
 };
 
 use super::{ProjectionError, ProjectionResult};
@@ -55,9 +55,6 @@ fn validate_effects(
         return;
     };
     effect_reasons(contract, *effects, provenance, reasons);
-    if effects.may_suspend != contract.may_suspend {
-        push_reason(reasons, BoundaryUnavailableReason::UnknownEffect);
-    }
 }
 
 fn effect_reasons(
@@ -297,12 +294,6 @@ fn validate_contract_features(
         BoundaryStreamContract::Unsupported { .. } => {
             push_reason(reasons, BoundaryUnavailableReason::UnsupportedStream);
         }
-    }
-    if matches!(
-        contract.cancellation,
-        BoundaryCancellationContract::Unsupported { .. }
-    ) {
-        push_reason(reasons, BoundaryUnavailableReason::UnsupportedBoundaryType);
     }
     if matches!(
         contract.callbacks,
