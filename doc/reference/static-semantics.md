@@ -1,6 +1,8 @@
 # Skiff Static Semantics Reference
 
-本文负责：稳定描述 Skiff 类型身份、名字解析、import 解析、target typing、错误捕获、match narrowing、服务 API 类型边界、schema closure 和 stream 静态边界。interface 专门语义见 `interface.md`。
+本文负责：稳定描述 Skiff 类型身份、名字解析、import 解析、target typing、错误捕获、match narrowing、
+函数 effect / suspension 推断、服务 API 类型边界、schema closure 和 stream 静态边界。interface
+专门语义见 `interface.md`。
 
 本文不负责：源码 token / AST 细节、运行时调度和取消算法、具体 wire 编码、manifest 字段表、标准库完整 API surface、测试 runner 发现规则。
 
@@ -229,7 +231,8 @@ callback 捕获外层变量时，其读写集合并入承载 API 调用的 lane�
 ## 12. Function Effect Metadata
 
 函数 effect metadata 至少描述 Skiff 可见 read / write path、external effect target 和 conflict-key、返回值
-provenance、boundary分析需要的throw payload provenance、callback profile 和 stream 生产 / 消费行为。
+provenance、boundary分析需要的throw payload provenance、callback profile、stream 生产 / 消费行为和
+推断的 suspension summary。
 它不包含对调用方公开的“可能抛出类型集合”；函数签名、Package ABI和ServiceContract都不声明或推导
 operation-specific throw set。
 
@@ -251,11 +254,47 @@ caller 参数的字段或容器元素投影必须保留为“参数序号 + 结�
 
 `returnOrigins`、`directReturnOrigins` 和结构化 path 都必须跨 Package artifact
 序列化，并参与 package build identity。它们是实现语义事实，不进入 Local ABI 或
-service protocol identity。
+service protocol identity。`maySuspend` 是下节规定的例外：它会被提升为 concrete public Package
+callable 的 Local ABI summary，但仍不进入 interface requirement 或 service protocol。
 
 `opaque` mutable root 不能在 `concurrent` sibling lane 中参与 mutation；若编译器无法证明 lane-local，必须报错。
 
-metadata 改变不改变 service protocol identity，但会改变 code revision、编译缓存和并发诊断结果。
+metadata 改变不改变 service protocol identity，但会改变 code revision、编译缓存和并发诊断结果；
+concrete public Package callable 的 `maySuspend` 改变还会改变其 Package Local ABI。
+
+### 12.1 Inferred Suspension Summary
+
+语言不提供 `async`、`suspending`、effect declaration 或显式 `yield` 关键字。每个有函数体的 concrete
+executable 都由 compiler 对函数体、调用图和内建等待点执行 sound may-analysis，得到
+`maySuspend`。递归与 mutual recursion 按固定点收敛；无法证明不会挂起的调用必须保守为
+`maySuspend=true`。
+
+调用传播规则是：
+
+- 同一 Package 内静态解析到 concrete function / method 时使用该 executable 的固定点 summary。
+- package dependency 的 concrete public callable 使用依赖 PackageArtifact 发布的精确 summary；
+  compiler 不读取依赖源码重新推断。
+- 已知 concrete 或 package-direct public-instance binding 使用其 concrete public callable summary。
+- `any I`、未知 interface dispatch 或其它无法确定 concrete target 的调用保守视为可能挂起。
+- service dependency call 无条件视为可能挂起，因为 service call 自身就是调用方的等待点；不得从
+  ServiceContract 读取或推测 callee implementation 的内部 summary。
+- compiler-known native / builtin 等 target 使用其 canonical callable summary；未知 target仍
+  fail closed 为可能挂起。
+
+interface method requirement不包含`maySuspend`，interface conformance也不比较该位。同一 requirement
+可以同时有 suspending 和 non-suspending implementation；这不会制造一个共享的 requirement summary。
+若 Host/runtime 需要 concrete callee summary选择内部执行、取消或调度机制，只能从
+PackageArtifact / deployment implementation metadata取得，不能写入interface或ServiceContract identity。
+
+concrete public Package callable 的 summary 是 Package Local ABI fact。从 non-suspending 变为
+suspending（或反向）保持 stable `PackageCallableId`，但改变 Local ABI与Package build，并要求直接
+package依赖方重编译。interface requirement / conformance不因此改变；service operation的请求、响应、
+stream/callback形状和开放错误通道不变时，callee内部summary改变也不改变stable
+`ContractOperationId`或`ServiceProtocolIdentity`。
+
+`maySuspend=true` 只表示执行可能到达真实等待，不表示 runtime 在函数入口、任意指令之间或 interface
+dispatch处主动切换。stream next、service call、timer等操作只有在执行到该点且实际需要等待时才释放
+actor执行权；保守分析本身不产生调度点。
 
 ## 13. Recursive Types
 

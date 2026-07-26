@@ -69,6 +69,10 @@ framing等叶子类型，但不能用共享DTO重新制造隐式父模型。
     name或legacy runtime registration补事实。
 13. 所有boundary命名类型由Package拥有；ServiceContract只能引用PackageSchemaTypeId，不能复制descriptor、
     展开为anonymous root或生成service-owned nominal identity。
+14. concrete executable的suspension summary由body、调用图和内建等待点推断。concrete public Package
+    callable保留该summary作为Local ABI fact；interface requirement与conformance不拥有或比较该位。
+    service call自身是caller的潜在挂起点，ServiceContract不携带provider内部summary，也不从它派生
+    protocol identity或operation级取消类别。
 
 ## 3. Package 与 PackageArtifact
 
@@ -127,8 +131,10 @@ PackageArtifact
 ```
 
 `PackageLocalAbi`描述同一linked program内的public symbol、canonical signature、nominal type、
-public instance、const与executable link信息。它允许同一heap引用、alias、原地mutation和其它只在
-local code composition中成立的值。
+public instance、const与executable link信息。concrete public callable的canonical signature包含其推断
+suspension summary，供依赖Package编译调用图；interface method requirement只包含调用形状，不复制该
+summary，conformance也不比较它。Local ABI允许同一heap引用、alias、原地mutation和其它只在local code
+composition中成立的值。
 
 所有能进入package或service边界的命名类型都由Package拥有，Service不重新拥有或复制一套类型。
 Package从public API graph和其schema closure生成逐类型content-addressed record，并为当前artifact生成
@@ -243,12 +249,25 @@ signature可以引用fully instantiated generic platform types。
 缺字段不表示不可用或尚未分析。PackageArtifact必须保存完成boundary判断所需的typed effect、
 provenance和link facts，使deployment无需读取源码。
 
-`BoundaryOperationContract`只承载boundary可观察的signature、stream/cancel/callback、value plan与
-公开effect保证；其中所有命名类型引用都保留`PackageSchemaTypeId`及其package owner。ServiceContract
-projection在该body外增加稳定operation key/id，不把Package类型重写成`ContractTypeId`。service operation
-统一拥有§6.3定义的开放错误通道，不在operation contract中列出可能抛出的类型集合。具体
-config/state/native capability requirement和完整may-effect属于
-`BoundaryImplementationRequirements`，不能泄漏进ServiceProtocolIdentity。
+`BoundaryOperationContract`只承载boundary可观察的signature、stream/callback、value plan与公开effect
+保证；其中所有命名类型引用都保留`PackageSchemaTypeId`及其package owner。ServiceContract projection
+在该body外增加稳定operation key/id，不把Package类型重写成`ContractTypeId`。service operation统一拥有
+§6.3定义的开放错误通道，不在operation contract中列出可能抛出的类型集合。
+
+Service call的pending wait统一参与caller request deadline与ancestor cancellation；这是调用种类本身的
+语义，不是operation descriptor从provider body推断出的承诺。`BoundaryOperationContract`不得携带
+provider concrete `maySuspend`，也不得保留由该位机械映射出的`NotCancellable`/`Cooperative`类别。
+caller停止等待后provider是否、何时观察cancel signal是runtime/deployment执行机制，不承诺callee业务
+工作已经停止。stream关闭等已由stream contract定义的结构化取消语义不依赖callee内部summary。
+
+具体config/state/native capability requirement和完整may-effect（包括concrete suspension summary）属于
+`BoundaryImplementationRequirements`或由deployment从PackageArtifact形成的implementation metadata，
+不能泄漏进ServiceProtocolIdentity。若external gateway需要独立取消policy，它归gateway
+entry/deployment owner，不能复用ServiceContract operation字段或从callable summary推导。
+
+callback-capable interface的Package schema operation同样只保存interface requirement的参数、返回与其它
+调用形状，不保存concrete implementation summary。interface schema type identity不得因某个implementor
+从non-suspending变为suspending而改变。
 
 同一个PackageArtifact可以同时：
 
@@ -275,9 +294,9 @@ ServiceContract
   packageSchemaRequirements
 ```
 
-每个operation descriptor包含canonical参数、返回、stream、cancel、callback与value plan契约，并统一使用
-开放错误通道；它不包含operation-specific throw set。ServiceContract不拥有第二套boundary类型，不内嵌或
-复制Package字段定义。它记录精确
+每个operation descriptor包含canonical参数、返回、stream、callback与value plan契约，并统一使用开放
+错误通道；它不包含operation-specific throw set、provider内部suspension summary或由该summary派生的
+取消类别。ServiceContract不拥有第二套boundary类型，不内嵌或复制Package字段定义。它记录精确
 `PackageTypeRequirement`：
 
 ```text
@@ -306,7 +325,9 @@ active revision而无需consumer同意；API内容变化必然产生新identity�
 
 operation引用的任一`PackageSchemaTypeId`或其闭包变化都属于API内容变化。反之，只要operation与所有引用
 类型identity不变，Package内部实现、无关public function、未被该contract引用的Package类型或version label
-变化都不能机械改变ServiceProtocolIdentity。
+变化都不能机械改变ServiceProtocolIdentity。尤其是callee concrete callable的`maySuspend`变化只影响
+Package Local ABI/build与implementation/deployment identity；request/response/stream/callback shape及
+开放错误通道不变时，`ContractOperationId`与`ServiceProtocolIdentity`都保持不变。
 
 第一版`package.yml.services`形成的service dependency graph必须是DAG。Compiler/tooling按拓扑顺序解析已生成
 的精确ServiceContract并编译consumer；同一编译批次或已解析dependency closure中出现环必须在编译
@@ -340,6 +361,11 @@ ServiceDeployment
 operation mapping由同一service package的ServiceContract projection与PackageArtifact public callable
 identity确定性生成。只有显式service-call roots进入；不得要求开发者在`service.yml`或`deployment.yml`
 重复映射。生成artifact必须写入稳定callable id，runtime禁止按display name猜target。
+
+deployment execution plan可以从绑定的PackageArtifact读取concrete callable suspension summary，用于选择
+provider内部执行lane、cancel signal投递或其它Host机制；该summary只验证implementation callable与其
+executable一致，不与ServiceContract对账。summary改变会因implementation build改变而产生新的deployment
+revision/identity，但不能倒灌成新的service protocol。
 
 Ingress不绑定`ContractOperationId`，也不进入ServiceContract。Compiler从`service.yml`的source selector
 解析当前implementation中的精确`PackageCallableId`，校验handler signature与adapter source，生成typed
@@ -394,7 +420,9 @@ deployment validation必须保证：
 - 不存在手工增加、遗漏或重复operation；
 - target callable的boundary projection是`Available`；
 - operation descriptor、schema closure与同一canonical API projection逐项精确匹配；
-- implementation may-effect满足contract公开effect保证，且所有implementation requirements得到binding；
+- implementation boundary-visible may-effect满足contract公开effect保证，且所有implementation
+  requirements得到binding；concrete suspension summary只与Package callable/executable事实对账，不与
+  interface requirement或ServiceContract比较；
 - 每个`service.yml` ingress selector恰好绑定一个canonical gateway entry；
 - gateway entry中的handler/pre/guard全部解析到当前implementation的精确callable，adapterArgs与其linked
   signature逐项匹配，且不会被加入ServiceContract；
@@ -458,8 +486,8 @@ ServiceContract operation
 ```
 
 进程内实现必须保留boundary语义：切换到provider ActivationContext，按value plan materialize参数，
-使用同一error/stream/cancel/callback contract，再materialize返回值。它不能因为地址可见就直接传递
-本地引用或method table。
+使用同一error/stream/callback contract与统一request cancellation语义，再materialize返回值。它不能因为
+地址可见就直接传递本地引用或method table。
 
 Consumer lowering不会链接provider executable，也不生成伪PackageArtifact。它保存结构化调用引用：
 
@@ -469,6 +497,11 @@ ServiceCallRef
   contractOperationId
   expectedProtocolIdentity
 ```
+
+source effect analysis只要解析到`ServiceCallRef`就把该call site视为`maySuspend=true`；ServiceContract
+operation不提供callee summary位。InProcessBoundary即使绑定到当前立即返回的provider executable，也不能
+把该调用重新分类成package direct call。caller只在response尚未就绪而实际等待时释放actor executor。
+provider runtime若需其concrete summary选择内部lane，只能从deployment绑定的PackageArtifact取得。
 
 linked instruction通过当前caller ActivationContext的service binding vector解析该slot。这样同一个
 PackageArtifact可以只链接一份代码，同时被多个deployments复用；每个deployment仍能把同一requirement
@@ -673,10 +706,12 @@ ServiceDeploymentInput
 ```
 
 PackageSourceModel拥有name/type resolution、public API graph、effect/provenance与dependency facts。
-它还为全部function/impl method拥有exact executable signature facts，并为全部interface operation拥有exact
-requirement facts；public callable signature只是executable事实表按public path产生的view。interface conformance
-只比较这两类exact facts。Lowering只消费typed source facts，把exact source type投影为File IR execution
-representation。package direct call降低为`PackageCallable` target；service call降低为`ServiceCallRef`。
+它还为全部function/impl method拥有exact executable signature facts（包括推断的suspension summary），并为
+全部interface operation拥有不含该summary的exact requirement facts；public callable signature只是
+executable事实表按public path产生的view。interface conformance只比较receiver、参数、返回及其它
+requirement-owned调用形状，不比较suspension。Lowering只消费typed source facts，把exact source type投影为
+File IR execution representation。package direct call降低为`PackageCallable` target；service call降低为
+`ServiceCallRef`。
 compiled/projection-input只转交source-validated interface binding/method key与execution target所需结构事实，
 不从File IR或`TypeResolutionModel`重算conformance。Package projection不读deployment配置，也不从File IR
 execution signature重做source conformance或ABI identity。
@@ -729,6 +764,18 @@ runtime binding slot。它不包含provider package、provider build、deploymen
 任何identity都不能因为display string相同而互换。ServiceProtocolIdentity包含operation实际引用的
 PackageSchemaTypeId/closure identity，但不包含provider implementation build或deployment字段；
 AssemblyIdentity可以记录最终选择的build作为复现事实，但不能回写consumer requirement。
+
+suspension变化的identity边界固定如下：
+
+- concrete public Package callable的`maySuspend`变化保持`PackageCallableId`稳定，但改变
+  `PackageLocalAbiIdentity`与`PackageBuildId`，直接package依赖方必须重编译；
+- interface requirement没有suspension位，implementor summary变化不改变interface requirement、
+  conformance或interface method stable identity；
+- service operation保持`ContractOperationId`稳定；request/response/stream/callback与公开错误语义不变时，
+  provider内部summary变化不改变`ServiceProtocolIdentity`；
+- provider build、ServiceDeployment revision/identity及包含它的RuntimeAssembly identity可以随实现变化；
+  这些implementation identity不得被解释为protocol变化；
+- callback interface的`PackageSchemaTypeId`不包含implementor suspension summary。
 
 ## 11. Config、State 与 Resource Owner
 

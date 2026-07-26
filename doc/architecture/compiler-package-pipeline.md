@@ -119,7 +119,8 @@ dependency kind。
 - name/type resolution、alias expansion与generic binding；
 - expression type、constructor、field、operator、control-flow narrowing facts；
 - Package API graph；
-- exact executable signature 与 interface requirement/conformance facts；
+- exact executable signature（包含推断的concrete suspension summary）与不含该summary的interface
+  requirement/conformance facts；
 - package/service dependency resolution；
 - callable effect、provenance、escape、write、alias 与 same-heap identity facts；
 - config/state/resource/runtime requirement 使用事实；
@@ -221,6 +222,8 @@ boundary-available的roots生成ServiceContract：
 - 只有显式`serviceCall: true`的public function或public-instance methods进入；
 - marker对应的boundary projection必须Available，否则以结构化原因失败；未标记callable只是Package API；
 - 每个 operation引用 canonical boundary descriptor 与 PackageSchemaTypeId closure；
+- service call的caller-side suspension由call target种类决定；operation descriptor不复制provider
+  callable的`maySuspend`或由它派生的取消类别；
 - 不读取 HTTP/WebSocket ingress；
 - 不绑定 implementation build、PackageCallableId、config 或 runtime route；
 - 不发布 operation-specific throw set。

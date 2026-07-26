@@ -177,6 +177,8 @@ dependency 调用路径（语法新、机制旧）。`const x = remoteLlm/manage
 
 - `I` 解析到 interface instantiation，不能是 concrete type、alias、primitive、anonymous record 或 `any I`。
 - 装箱源必须显式 implements 同一个 interface instantiation；不做 structural matching。
+- conformance只比较interface requirement拥有的调用形状，不比较concrete executable的推断
+  suspension summary；装箱plan也不得把该summary复制成interface fact。
 - 目标 interface 必须 object-safe。
 - marker interface 不允许装箱，因为没有可调用 method table，不能形成有意义的 dynamic dispatch value。
 - **`as I` 不能省略**，即使装箱源只 expose 一个 interface，也即使赋值/参数已有 `any I` 目标类型。理由是
@@ -320,7 +322,7 @@ struct InterfaceMethodTable {
 struct InterfaceMethodSlot {
     method_abi_id: String,
     source_method_name: String,
-    signature: CanonicalCallableSignature,
+    signature: InterfaceRequirementSignature,
     target: LinkedInterfaceMethodTarget,
     receiver_call_abi: ReceiverCallAbi,
 }
@@ -333,8 +335,11 @@ struct InterfaceMethodSlot {
   （论据不引用已退役的 binding projection——见 §Capability As Parameter；远程 `as I` 复用的是 binding 的 lock
   *数据形态*而非 binding 机制本身。）
   其余字段用结构化 ref，唯独这里是 string，原因即此；它必须包含 generic interface type args。
-- slot signature 是 interface requirement 完成 type substitution 后的 canonical signature。
-- target 是 conformance checker 选出的 concrete receiver method；linker 把 artifact target 解析为 executable address。
+- slot signature 是 interface requirement 完成 type substitution 后的 canonical调用形状，不包含
+  `maySuspend`。
+- target 是 conformance checker 选出的 concrete receiver method；linker 把 artifact target 解析为
+  executable address。concrete target自己的推断summary保留在executable/Package callable metadata，
+  不进入method table的requirement signature。
 - method-level generic requirement 第一版不允许进入 object-safe method table。
 - 同一 concrete type 对同一 interface symbol 第一版最多实现一次；若未来允许多 instantiation conformance，
   method table key 必须扩展为完整 receiver/interface instantiation，不得只按 symbol 名查表。
@@ -359,7 +364,7 @@ struct RemoteOperationTable {
 
 struct RemoteOperationSlot {
     method_abi_id: String,            // slot 身份，与本地 method table 同源
-    signature: CanonicalCallableSignature, // substituted requirement signature，对账 callee operation
+    signature: InterfaceRequirementSignature, // substituted requirement调用形状，对账callee operation
     contract_operation_id: ContractOperationId, // service寻址：callee公开的精确operation
     // 不带 source_method_name：远程 slot 不解析本地 receiver method，无需源方法名（与本地
     // InterfaceMethodSlot 的差异仅此一处，是有意省略而非遗漏）。
@@ -371,8 +376,9 @@ struct RemoteOperationSlot {
 - slot 顺序以 interface declaration method requirement 顺序为**唯一来源**，与本地 method table 完全一致；
   `method_abi_id` 用于校验 slot 身份和 artifact identity，不用于排序。同一个 `(interface, slot)` 在本地表和
   远程表里指向同一个 method requirement。
-- 每个slot的`signature`是requirement完成substitution后的canonical signature；verifier用它对账callee
-  ServiceContract中`ContractOperationId`对应的canonical signature（见§Boxing远程装箱verifier要求）。
+- 每个slot的`signature`是requirement完成substitution后的canonical调用形状，不含suspension summary；
+  verifier用它对账callee ServiceContract中`ContractOperationId`对应的canonical调用形状
+  （见§Boxing远程装箱verifier要求）。
 - `contract_operation_id`字段取自callee `ServiceContract`中该方法对应的operation；一个public instance expose
   多 interface 时，只填 `as I` 选定 interface 方法集对应的 operation 子集（见 §Boxing `as I` 顺带选投影）。
 - 远程表同样是 linked runtime plan / overlay（`RemoteOperationTableId`），不写回 ordinary artifact DTO；
@@ -424,6 +430,9 @@ enum CallTargetIr {
    这条只对本地装箱值成立。
 
 无论本地远程，调用 lowering 选 slot 的逻辑相同；只有 §3 的最终 target 解析按 `carrier` 分支分流。
+静态suspension分析不能从`any I` requirement取得concrete summary，因此所有`InterfaceMethod`调用都保守为
+`maySuspend=true`。`Remote`分支还因其本身是service call而必然属于caller-side suspension；两种分支都
+不会仅因保守summary在runtime自动插入`yield`。
 
 禁止路径：
 
@@ -453,11 +462,16 @@ fail-closed 语义：callee 改了选定 interface 方法签名、撤了 conform
 改变锁进 lock 的 `serviceProtocolIdentity`，consumer **编译失败**，不退化为运行时才炸。校验集中在
 `as I` 这一个可见点；同一个 `any I` 值后续在多处调用不重复锁定。
 
+callee只改变concrete implementation的内部suspension summary时，interface调用形状、conformance与
+ServiceProtocol identity都保持不变，因此不会使remote装箱lock失效。新的provider build/deployment仍由
+implementation identity精确选择。
+
 ## 远程性的可见性（无 effect）
 
-远程性**不**引入独立 effect。`carrier = Remote` 已经在值布局里携带"这是远程装箱值"这一事实，
+远程性**不**引入用户声明的独立 effect。`carrier = Remote` 已经在值布局里携带"这是远程装箱值"这一事实，
 工具/诊断要标注"此处发生跨 service 调用"直接读它即可，不需要在 `static-semantics.md` 的 effect 体系里
-挂一个空壳。
+挂一个空壳。尽管没有声明或protocol位，remote method call仍按service call种类推断为
+`maySuspend=true`；callee内部summary不参与这项判断。
 
 不强制并发上下文：对运行期变长 `any I` 集合的并发 fan-out 依赖 `concurrent`，而当前 `concurrent` 只接
 静态平铺 lane、不接 `for`（见 §Evolution 开放项）。在该缺口解决前，远程调用与现状 service dependency
