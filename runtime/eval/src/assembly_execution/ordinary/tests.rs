@@ -634,7 +634,7 @@ enum CallerFixtureKind {
 
 fn package_direct_fixture_with_caller(caller_kind: CallerFixtureKind) -> PackageDirectFixture {
     let array_type = array_type();
-    let callable_id = PackageCallableId::new("callable:package-direct-mutate");
+    let callable_id = PackageCallableId::new("pkg-callable:example.package-direct-callee:mutate");
     let real_callee_is_stream_producer = matches!(caller_kind, CallerFixtureKind::EffectStream);
 
     let mut callee_file = FileIrUnit::empty("package_direct.callee", "source:callee");

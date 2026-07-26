@@ -1407,7 +1407,7 @@ services:
         ),
     )
     .expect("consumer manifest");
-    fs::write(root.join("api.yml"), "").expect("consumer API");
+    fs::write(root.join("api.yml"), "{}\n").expect("consumer API");
     fs::write(
         root.join("main.skiff"),
         r#"import errors
@@ -1454,7 +1454,7 @@ fn write_std_effect_consumer_package(root: &Path) {
         "id: example.com/std-effect-consumer\nversion: 1.0.0\n",
     )
     .expect("std effect consumer manifest");
-    fs::write(root.join("api.yml"), "").expect("std effect consumer API");
+    fs::write(root.join("api.yml"), "{}\n").expect("std effect consumer API");
     fs::write(
         root.join("main.skiff"),
         r#"import std
