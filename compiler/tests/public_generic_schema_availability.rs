@@ -28,6 +28,8 @@ roundTrip: models.roundTrip
     temp.write(
         "models.skiff",
         r#"
+import std
+
 type GenericRecord<T> {
   value: T,
 }
@@ -51,11 +53,11 @@ type TransitiveEnvelope {
 }
 
 type Closed {
-  value: string,
+  error: std.service.InternalError,
 }
 
 function roundTrip(value: GenericRecord<string>) -> GenericRecord<string> {
-  return value
+  return { value: value.value }
 }
 "#,
     );

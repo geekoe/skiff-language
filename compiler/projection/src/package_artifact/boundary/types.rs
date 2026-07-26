@@ -744,6 +744,7 @@ mod tests {
             arguments: vec![TypeRefIr::builtin("string")],
         };
         let signature = PackageCallableSignature {
+            type_params: Vec::new(),
             parameters: vec![skiff_artifact_model::PackageCallableParameter {
                 name: "value".to_string(),
                 ty: PackageTypeRef::Local {
@@ -781,6 +782,7 @@ mod tests {
         };
         let cases = [
             PackageCallableSignature {
+                type_params: Vec::new(),
                 parameters: Vec::new(),
                 return_type: PackageTypeRef::Local {
                     local_type: applied(),
@@ -788,6 +790,7 @@ mod tests {
                 may_suspend: false,
             },
             PackageCallableSignature {
+                type_params: Vec::new(),
                 parameters: Vec::new(),
                 return_type: PackageTypeRef::Local {
                     local_type: TypeRefIr::Builtin {
@@ -798,6 +801,7 @@ mod tests {
                 may_suspend: true,
             },
             PackageCallableSignature {
+                type_params: Vec::new(),
                 parameters: vec![skiff_artifact_model::PackageCallableParameter {
                     name: "callback".to_string(),
                     ty: PackageTypeRef::Local {
@@ -886,6 +890,7 @@ mod tests {
             source_span: None,
         });
         let signature = PackageCallableSignature {
+            type_params: Vec::new(),
             parameters: vec![skiff_artifact_model::PackageCallableParameter {
                 name: "callback".to_string(),
                 ty: PackageTypeRef::Local {

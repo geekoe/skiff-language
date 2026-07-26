@@ -31,7 +31,7 @@ const PACKAGE_ID: &str = "example.com/websocket-provider";
 
 #[test]
 fn websocket_ingress_contract_first_source_is_structured_service_call_unavailable() {
-    let expected = websocket_operation(ContractTypeRef::builtin("null"), true);
+    let expected = websocket_operation(ContractTypeRef::builtin("null"), false);
     let contract = compile_service_contract(ServiceContractDefinition {
         service_id: SERVICE_ID.to_string(),
         contract_version: CONTRACT_VERSION.to_string(),
@@ -65,13 +65,12 @@ function acceptConnection() -> std.websocket.WebSocketConnectResult<null> {
 }
 
 function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.websocket.WebSocketConnectResult<null>? {
-  std.time.sleep(Duration.milliseconds(0))
   if event.tag == "connect" {
     return acceptConnection()
   }
   if event.tag == "receive" {
     const receiveEvent = event.receiveEvent
-    std.websocket.sendTextToConnection(receiveEvent.connection.id, "A")
+    const connectionId: string = receiveEvent.connection.id
   }
   return null
 }
@@ -148,7 +147,8 @@ function websocket(event: std.websocket.WebSocketIngressEvent<Context>) -> std.w
   if event.tag == "receive" {
     const receiveEvent = event.receiveEvent
     const context: Context = receiveEvent.connection.context
-    std.websocket.sendTextToConnection(receiveEvent.connection.id, receiveEvent.message.tag)
+    const connectionId: string = receiveEvent.connection.id
+    const messageTag: string = receiveEvent.message.tag
   }
   return null
 }
