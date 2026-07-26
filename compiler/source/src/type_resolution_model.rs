@@ -6356,7 +6356,7 @@ mod tests {
     }
 
     #[test]
-    fn package_signature_local_slots_rehydrate_to_dependency_owner() {
+    fn package_signature_exact_symbols_rehydrate_and_ownerless_slots_fail_closed() {
         let parsed_sources = parsed_sources("function noop() -> void {}");
         let mut dependency = PackageDependency::id("example.com/provider");
         dependency.alias = Some("provider".to_string());
@@ -6391,8 +6391,13 @@ mod tests {
             local_type: TypeRefIr::Function {
                 params: vec![
                     FunctionTypeParamIr {
-                        name: "local".to_string(),
-                        ty: TypeRefIr::LocalType { type_index: 0 },
+                        name: "service".to_string(),
+                        ty: TypeRefIr::ServiceSymbol {
+                            symbol: ServiceSymbolRef {
+                                module_path: "types".to_string(),
+                                symbol: "Bindings".to_string(),
+                            },
+                        },
                     },
                     FunctionTypeParamIr {
                         name: "publication".to_string(),
@@ -6558,11 +6563,7 @@ mod tests {
             "exact PackageSchema owner/key/type id must remain unchanged"
         );
 
-        let mut missing = model.clone();
-        missing
-            .package_type_slots
-            .remove(&("provider".to_string(), "types".to_string(), 0));
-        let error = missing
+        let error = model
             .rehydrate_package_signature_type_for_dependency(
                 "provider",
                 &PackageTypeRef::Local {
@@ -6571,7 +6572,7 @@ mod tests {
             )
             .unwrap_err();
         assert!(
-            error.contains("no public Local ABI type slot #0"),
+            error.contains("artifact producer wrote ownerless package signature LocalType slot #0"),
             "{error}"
         );
 
@@ -6588,7 +6589,10 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert!(error.contains("ambiguous owners"), "{error}");
+        assert!(
+            error.contains("artifact producer wrote ownerless package signature LocalType slot #0"),
+            "{error}"
+        );
 
         let error = model
             .rehydrate_package_signature_type_for_dependency(
@@ -6607,7 +6611,7 @@ mod tests {
     }
 
     #[test]
-    fn compiler_owned_package_owner_rehydrates_exact_local_abi_slots() {
+    fn compiler_owned_package_owner_rejects_ownerless_package_signature_slots() {
         let parsed_sources = parsed_sources("function noop() -> void {}");
         let artifact = signature_rehydration_artifact();
         let dependencies = compiler_owned_dependencies(&artifact);
@@ -6626,26 +6630,17 @@ mod tests {
             model.package_dependencies.get("std").map(String::as_str),
             Some("example.com/provider")
         );
-        assert_eq!(
-            model
-                .rehydrate_package_signature_type_for_dependency(
-                    "std",
-                    &PackageTypeRef::Local {
-                        local_type: TypeRefIr::LocalType { type_index: 0 },
-                    },
-                )
-                .unwrap(),
-            PackageTypeRef::Local {
-                local_type: TypeRefIr::PackageSymbol {
-                    symbol: PackageSymbolRef {
-                        package: PackageRefIr::Dependency {
-                            dependency_ref: "std".to_string(),
-                        },
-                        symbol_path: "Bindings".to_string(),
-                        abi_expectation: Some("provider-abi".to_string()),
-                    },
+        let error = model
+            .rehydrate_package_signature_type_for_dependency(
+                "std",
+                &PackageTypeRef::Local {
+                    local_type: TypeRefIr::LocalType { type_index: 0 },
                 },
-            }
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("artifact producer wrote ownerless package signature LocalType slot #0"),
+            "{error}"
         );
     }
 

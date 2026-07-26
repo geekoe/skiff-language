@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
     CallableProvenanceSummary, CallableSemanticFacts, ContractTypeRef, FileIrUnit,
     FunctionTypeParamIr, InterfaceInstantiationRef, NamedUnionBranchIr, NominalTypeRefBaseIr,
@@ -34,17 +35,18 @@ pub(super) fn normalize_public_signature(
     signature: &mut PackageCallableSignature,
     file_ir_units: &[FileIrUnit],
     public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
-) {
+) -> Result<(), String> {
     for parameter in &mut signature.parameters {
         parameter.ty =
-            normalize_package_type(owner_module, &parameter.ty, file_ir_units, public_type_ids);
+            normalize_package_type(owner_module, &parameter.ty, file_ir_units, public_type_ids)?;
     }
     signature.return_type = normalize_package_type(
         owner_module,
         &signature.return_type,
         file_ir_units,
         public_type_ids,
-    );
+    )?;
+    Ok(())
 }
 
 pub(super) fn normalize_implementation_type(
@@ -350,11 +352,11 @@ fn normalize_package_type(
     ty: &PackageTypeRef,
     file_ir_units: &[FileIrUnit],
     public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
-) -> PackageTypeRef {
-    match ty {
+) -> Result<PackageTypeRef, String> {
+    Ok(match ty {
         PackageTypeRef::Local { local_type } => {
             let local_type =
-                normalize_local_type(owner_module, local_type, file_ir_units, public_type_ids);
+                normalize_local_type(owner_module, local_type, file_ir_units, public_type_ids)?;
             lift_local_type(local_type)
         }
         PackageTypeRef::Container { name, arguments } => PackageTypeRef::Container {
@@ -364,7 +366,7 @@ fn normalize_package_type(
                 .map(|argument| {
                     normalize_package_type(owner_module, argument, file_ir_units, public_type_ids)
                 })
-                .collect(),
+                .collect::<Result<_, _>>()?,
         },
         PackageTypeRef::Nullable { inner } => PackageTypeRef::Nullable {
             inner: Box::new(normalize_package_type(
@@ -372,7 +374,7 @@ fn normalize_package_type(
                 inner,
                 file_ir_units,
                 public_type_ids,
-            )),
+            )?),
         },
         PackageTypeRef::AnyInterface {
             interface,
@@ -383,16 +385,16 @@ fn normalize_package_type(
                 interface,
                 file_ir_units,
                 public_type_ids,
-            )),
+            )?),
             arguments: arguments
                 .iter()
                 .map(|argument| {
                     normalize_package_type(owner_module, argument, file_ir_units, public_type_ids)
                 })
-                .collect(),
+                .collect::<Result<_, _>>()?,
         },
         exact @ PackageTypeRef::PackageSchema { .. } => exact.clone(),
-    }
+    })
 }
 
 fn normalize_local_type(
@@ -400,104 +402,96 @@ fn normalize_local_type(
     ty: &TypeRefIr,
     file_ir_units: &[FileIrUnit],
     public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
-) -> TypeRefIr {
+) -> Result<TypeRefIr, String> {
     if let Some((module_path, type_index)) = nominal_source(owner_module, ty) {
-        if let Some(binding_name) = local_type_binding(file_ir_units, module_path, type_index) {
-            if let Some(exact) =
-                public_type_ids.get(&(module_path.to_string(), binding_name.to_string()))
-            {
-                if let ContractTypeRef::PackageSchema {
-                    package_id,
-                    stable_schema_key,
-                    package_schema_type_id,
-                } = exact
-                {
-                    return TypeRefIr::PackageSchema {
-                        package_id: package_id.clone(),
-                        stable_schema_key: stable_schema_key.clone(),
-                        package_schema_type_id: package_schema_type_id.clone(),
-                    };
-                }
-            }
+        let symbol = exact_type_symbol(file_ir_units, module_path, type_index)?;
+        if let Some(ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        }) = public_type_ids.get(&(module_path.to_string(), symbol.symbol.clone()))
+        {
+            return Ok(TypeRefIr::PackageSchema {
+                package_id: package_id.clone(),
+                stable_schema_key: stable_schema_key.clone(),
+                package_schema_type_id: package_schema_type_id.clone(),
+            });
         }
-        return ty.clone();
+        return Ok(TypeRefIr::ServiceSymbol {
+            symbol: exact_public_type_symbol(file_ir_units, module_path, type_index)?,
+        });
     }
-    match ty {
+    let recurse =
+        |ty: &TypeRefIr| normalize_local_type(owner_module, ty, file_ir_units, public_type_ids);
+    Ok(match ty {
         TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
             name: name.clone(),
-            args: args
-                .iter()
-                .map(|arg| normalize_local_type(owner_module, arg, file_ir_units, public_type_ids))
-                .collect(),
+            args: args.iter().map(recurse).collect::<Result<_, _>>()?,
         },
         TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
-            base: normalize_public_nominal_base(owner_module, base, file_ir_units),
-            arguments: arguments
-                .iter()
-                .map(|argument| {
-                    normalize_local_type(owner_module, argument, file_ir_units, public_type_ids)
-                })
-                .collect(),
+            base: normalize_public_nominal_base(owner_module, base, file_ir_units)?,
+            arguments: arguments.iter().map(recurse).collect::<Result<_, _>>()?,
         },
         TypeRefIr::Record { fields } => TypeRefIr::Record {
             fields: fields
                 .iter()
-                .map(|(name, field)| {
-                    (
-                        name.clone(),
-                        normalize_local_type(owner_module, field, file_ir_units, public_type_ids),
-                    )
-                })
-                .collect(),
+                .map(|(name, field)| Ok((name.clone(), recurse(field)?)))
+                .collect::<Result<_, String>>()?,
         },
         TypeRefIr::Union { items } => TypeRefIr::Union {
-            items: items
-                .iter()
-                .map(|item| {
-                    normalize_local_type(owner_module, item, file_ir_units, public_type_ids)
-                })
-                .collect(),
+            items: items.iter().map(recurse).collect::<Result<_, _>>()?,
         },
         TypeRefIr::Nullable { inner } => TypeRefIr::Nullable {
-            inner: Box::new(normalize_local_type(
-                owner_module,
-                inner,
-                file_ir_units,
-                public_type_ids,
-            )),
+            inner: Box::new(recurse(inner)?),
         },
+        TypeRefIr::AnyInterface { interface } => {
+            let identity = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).map_err(
+                |error| format!("public signature any-interface identity is invalid: {error}"),
+            )?;
+            let identity = recurse(&identity)?;
+            TypeRefIr::AnyInterface {
+                interface: InterfaceInstantiationRef {
+                    interface_abi_id: type_ref_abi_key(&identity),
+                    canonical_type_args: interface
+                        .canonical_type_args
+                        .iter()
+                        .map(recurse)
+                        .collect::<Result<_, _>>()?,
+                },
+            }
+        }
         TypeRefIr::Function {
             params,
             return_type,
         } => TypeRefIr::Function {
             params: params
                 .iter()
-                .map(|param| skiff_artifact_model::FunctionTypeParamIr {
-                    name: param.name.clone(),
-                    ty: normalize_local_type(
-                        owner_module,
-                        &param.ty,
-                        file_ir_units,
-                        public_type_ids,
-                    ),
+                .map(|param| {
+                    Ok(skiff_artifact_model::FunctionTypeParamIr {
+                        name: param.name.clone(),
+                        ty: recurse(&param.ty)?,
+                    })
                 })
-                .collect(),
-            return_type: Box::new(normalize_local_type(
-                owner_module,
-                return_type,
-                file_ir_units,
-                public_type_ids,
-            )),
+                .collect::<Result<_, String>>()?,
+            return_type: Box::new(recurse(return_type)?),
         },
-        _ => ty.clone(),
-    }
+        TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => ty.clone(),
+        TypeRefIr::LocalType { .. } | TypeRefIr::PublicationType { .. } => {
+            unreachable!("direct nominal references returned before recursive normalization")
+        }
+    })
 }
 
 fn normalize_public_nominal_base(
     owner_module: &str,
     base: &NominalTypeRefBaseIr,
     file_ir_units: &[FileIrUnit],
-) -> NominalTypeRefBaseIr {
+) -> Result<NominalTypeRefBaseIr, String> {
     let source = match base {
         NominalTypeRefBaseIr::LocalType { type_index } => Some((owner_module, *type_index)),
         NominalTypeRefBaseIr::PublicationType {
@@ -507,17 +501,11 @@ fn normalize_public_nominal_base(
         _ => None,
     };
     let Some((module_path, type_index)) = source else {
-        return base.clone();
+        return Ok(base.clone());
     };
-    let Some(symbol) = local_type_binding(file_ir_units, module_path, type_index) else {
-        return base.clone();
-    };
-    NominalTypeRefBaseIr::ServiceSymbol {
-        symbol: ServiceSymbolRef {
-            module_path: module_path.to_string(),
-            symbol: symbol.to_string(),
-        },
-    }
+    Ok(NominalTypeRefBaseIr::ServiceSymbol {
+        symbol: exact_public_type_symbol(file_ir_units, module_path, type_index)?,
+    })
 }
 
 fn lift_local_type(ty: TypeRefIr) -> PackageTypeRef {
@@ -553,28 +541,60 @@ fn nominal_source<'a>(owner_module: &'a str, ty: &'a TypeRefIr) -> Option<(&'a s
     }
 }
 
-fn local_type_binding<'a>(
+fn exact_public_type_symbol(
+    file_ir_units: &[FileIrUnit],
+    module_path: &str,
+    type_index: u32,
+) -> Result<ServiceSymbolRef, String> {
+    let symbol = exact_type_symbol(file_ir_units, module_path, type_index)?;
+    let unit = exact_module_unit(file_ir_units, module_path, type_index)?;
+    let link = unit.link_targets.types.get(&symbol.symbol).ok_or_else(|| {
+        format!(
+            "public signature type {module_path}#{type_index} `{}` is private or nonexported",
+            symbol.symbol
+        )
+    })?;
+    if link.type_index != type_index {
+        return Err(format!(
+            "public signature type {module_path}#{type_index} `{}` has wrong exported owner slot {}",
+            symbol.symbol, link.type_index
+        ));
+    }
+    Ok(symbol)
+}
+
+fn exact_type_symbol(
+    file_ir_units: &[FileIrUnit],
+    module_path: &str,
+    type_index: u32,
+) -> Result<ServiceSymbolRef, String> {
+    let unit = exact_module_unit(file_ir_units, module_path, type_index)?;
+    let declaration = unit.type_table.get(type_index as usize).ok_or_else(|| {
+        format!("public signature type {module_path}#{type_index} has no type-table entry")
+    })?;
+    Ok(ServiceSymbolRef {
+        module_path: module_path.to_string(),
+        symbol: declaration.name.clone(),
+    })
+}
+
+fn exact_module_unit<'a>(
     file_ir_units: &'a [FileIrUnit],
     module_path: &str,
     type_index: u32,
-) -> Option<&'a str> {
+) -> Result<&'a FileIrUnit, String> {
     let mut units = file_ir_units
         .iter()
         .filter(|unit| unit.module_path == module_path);
-    let unit = units.next()?;
+    let unit = units.next().ok_or_else(|| {
+        format!("public signature type {module_path}#{type_index} has no source module")
+    })?;
     if units.next().is_some() {
-        return None;
+        return Err(format!(
+            "public signature type {module_path}#{type_index} has ambiguous source modules"
+        ));
     }
-    let mut declarations = unit
-        .declarations
-        .types
-        .iter()
-        .filter(|(_, declaration)| declaration.type_index == type_index);
-    let (binding_name, _) = declarations.next()?;
-    if declarations.next().is_some() {
-        return None;
-    }
-    Some(binding_name)
+    Ok(unit)
 }
 
 fn provenance_sort_key(origin: &ValueProvenance) -> (u8, String) {
@@ -602,11 +622,24 @@ fn provenance_sort_key(origin: &ValueProvenance) -> (u8, String) {
 mod tests {
     use super::*;
     use skiff_artifact_model::{
-        CallableEffectSummary, PackageCallableParameter, PackageSchemaTypeId, TypeDeclarationIr,
+        CallableEffectSummary, PackageCallableParameter, PackageSchemaTypeId, TypeDeclIr,
+        TypeDeclarationIr, TypeLinkTargetIr,
     };
 
     fn fixture() -> (Vec<FileIrUnit>, BTreeMap<(String, String), ContractTypeRef>) {
         let mut unit = FileIrUnit::empty("api", "source-hash");
+        unit.type_table
+            .extend(
+                ["PublicError", "LocalHandle", "PrivateDetail"].map(|name| TypeDeclIr {
+                    name: name.into(),
+                    descriptor: TypeDescriptorIr::Record {
+                        fields: BTreeMap::new(),
+                    },
+                    type_params: Vec::new(),
+                    implements: Vec::new(),
+                    source_span: None,
+                }),
+            );
         unit.declarations.types.insert(
             "PublicError".into(),
             TypeDeclarationIr {
@@ -616,13 +649,27 @@ mod tests {
             },
         );
         unit.declarations.types.insert(
-            "PrivateDetail".into(),
+            "LocalHandle".into(),
             TypeDeclarationIr {
                 type_index: 1,
+                symbol: "LocalHandle".into(),
+                source_span: None,
+            },
+        );
+        unit.declarations.types.insert(
+            "PrivateDetail".into(),
+            TypeDeclarationIr {
+                type_index: 2,
                 symbol: "PrivateDetail".into(),
                 source_span: None,
             },
         );
+        unit.link_targets
+            .types
+            .insert("PublicError".into(), TypeLinkTargetIr { type_index: 0 });
+        unit.link_targets
+            .types
+            .insert("LocalHandle".into(), TypeLinkTargetIr { type_index: 1 });
         let exact = ContractTypeRef::package_schema(
             "example.pkg",
             "errors.PublicError",
@@ -660,7 +707,7 @@ mod tests {
             may_suspend: false,
         };
 
-        normalize_public_signature("api", &mut signature, &units, &refs);
+        normalize_public_signature("api", &mut signature, &units, &refs).unwrap();
 
         let exact = PackageTypeRef::PackageSchema {
             package_id: "example.pkg".into(),
@@ -680,14 +727,37 @@ mod tests {
     }
 
     #[test]
-    fn private_or_unresolved_local_nominal_remains_local_only() {
+    fn private_or_unresolved_local_nominal_is_rejected() {
         let (units, refs) = fixture();
         let private = PackageTypeRef::Local {
-            local_type: TypeRefIr::LocalType { type_index: 1 },
+            local_type: TypeRefIr::LocalType { type_index: 2 },
         };
+        let error = normalize_package_type("api", &private, &units, &refs).unwrap_err();
+        assert!(
+            error.contains("PrivateDetail") && error.contains("private or nonexported"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn package_schema_promotion_precedes_service_symbol_export_validation() {
+        let (mut units, refs) = fixture();
+        units[0].link_targets.types.remove("PublicError");
         assert_eq!(
-            normalize_package_type("api", &private, &units, &refs),
-            private
+            normalize_package_type(
+                "api",
+                &PackageTypeRef::Local {
+                    local_type: TypeRefIr::LocalType { type_index: 0 },
+                },
+                &units,
+                &refs,
+            )
+            .unwrap(),
+            PackageTypeRef::PackageSchema {
+                package_id: "example.pkg".into(),
+                stable_schema_key: "errors.PublicError".into(),
+                package_schema_type_id: PackageSchemaTypeId::new("schema:public-error"),
+            }
         );
     }
 
@@ -702,13 +772,13 @@ mod tests {
         };
 
         assert_eq!(
-            normalize_package_type("api", &applied, &units, &refs),
+            normalize_package_type("api", &applied, &units, &refs).unwrap(),
             PackageTypeRef::Local {
                 local_type: TypeRefIr::AppliedNominal {
                     base: NominalTypeRefBaseIr::ServiceSymbol {
                         symbol: ServiceSymbolRef {
                             module_path: "api".to_string(),
-                            symbol: "PrivateDetail".to_string(),
+                            symbol: "LocalHandle".to_string(),
                         },
                     },
                     arguments: vec![TypeRefIr::PackageSchema {
@@ -718,6 +788,265 @@ mod tests {
                     }],
                 },
             }
+        );
+    }
+
+    #[test]
+    fn public_signature_normalization_covers_every_nested_package_and_local_shape() {
+        let (units, refs) = fixture();
+        let local_handle = TypeRefIr::LocalType { type_index: 1 };
+        let schema_type = TypeRefIr::LocalType { type_index: 0 };
+        let inner_any_interface = TypeRefIr::AnyInterface {
+            interface: InterfaceInstantiationRef {
+                interface_abi_id: type_ref_abi_key(&local_handle),
+                canonical_type_args: vec![schema_type.clone()],
+            },
+        };
+        let nested_function = TypeRefIr::Function {
+            params: vec![
+                FunctionTypeParamIr {
+                    name: "builtin".into(),
+                    ty: TypeRefIr::Builtin {
+                        name: "Array".into(),
+                        args: vec![local_handle.clone()],
+                    },
+                },
+                FunctionTypeParamIr {
+                    name: "record".into(),
+                    ty: TypeRefIr::Record {
+                        fields: BTreeMap::from([(
+                            "choice".into(),
+                            TypeRefIr::Union {
+                                items: vec![
+                                    TypeRefIr::PublicationType {
+                                        module_path: "api".into(),
+                                        type_index: 1,
+                                    },
+                                    TypeRefIr::Nullable {
+                                        inner: Box::new(schema_type.clone()),
+                                    },
+                                ],
+                            },
+                        )]),
+                    },
+                },
+                FunctionTypeParamIr {
+                    name: "applied".into(),
+                    ty: TypeRefIr::AppliedNominal {
+                        base: NominalTypeRefBaseIr::LocalType { type_index: 1 },
+                        arguments: vec![schema_type],
+                    },
+                },
+                FunctionTypeParamIr {
+                    name: "existential".into(),
+                    ty: inner_any_interface,
+                },
+            ],
+            return_type: Box::new(local_handle.clone()),
+        };
+        let mut signature = PackageCallableSignature {
+            type_params: Vec::new(),
+            parameters: vec![
+                PackageCallableParameter {
+                    name: "direct".into(),
+                    ty: PackageTypeRef::Local {
+                        local_type: local_handle.clone(),
+                    },
+                },
+                PackageCallableParameter {
+                    name: "nested".into(),
+                    ty: PackageTypeRef::Container {
+                        name: "Envelope".into(),
+                        arguments: vec![PackageTypeRef::Nullable {
+                            inner: Box::new(PackageTypeRef::AnyInterface {
+                                interface: Box::new(PackageTypeRef::Local {
+                                    local_type: local_handle.clone(),
+                                }),
+                                arguments: vec![PackageTypeRef::Local {
+                                    local_type: nested_function,
+                                }],
+                            }),
+                        }],
+                    },
+                },
+            ],
+            return_type: PackageTypeRef::Local {
+                local_type: local_handle,
+            },
+            may_suspend: false,
+        };
+
+        normalize_public_signature("api", &mut signature, &units, &refs).unwrap();
+
+        let value = serde_json::to_value(&signature).unwrap();
+        assert_eq!(count_json_kind(&value, "localType"), 0);
+        assert_eq!(count_json_kind(&value, "publicationType"), 0);
+        for required in [
+            "container",
+            "nullable",
+            "anyInterface",
+            "builtin",
+            "record",
+            "union",
+            "function",
+            "appliedNominal",
+            "serviceSymbol",
+            "packageSchema",
+        ] {
+            assert!(
+                count_json_kind(&value, required) > 0,
+                "normalized signature lost required `{required}` shape: {value}"
+            );
+        }
+        let exact_handle = PackageTypeRef::Local {
+            local_type: TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: "api".into(),
+                    symbol: "LocalHandle".into(),
+                },
+            },
+        };
+        assert_eq!(signature.parameters[0].ty, exact_handle);
+        assert_eq!(signature.return_type, exact_handle);
+    }
+
+    #[test]
+    fn public_signature_uses_source_module_slots_not_public_display_paths() {
+        let (mut units, mut refs) = fixture();
+        let mut display = FileIrUnit::empty("public.api", "display-source-hash");
+        display.type_table.extend([
+            TypeDeclIr {
+                name: "Unused".into(),
+                descriptor: TypeDescriptorIr::Record {
+                    fields: BTreeMap::new(),
+                },
+                type_params: Vec::new(),
+                implements: Vec::new(),
+                source_span: None,
+            },
+            TypeDeclIr {
+                name: "DisplayHandle".into(),
+                descriptor: TypeDescriptorIr::Record {
+                    fields: BTreeMap::new(),
+                },
+                type_params: Vec::new(),
+                implements: Vec::new(),
+                source_span: None,
+            },
+        ]);
+        display
+            .link_targets
+            .types
+            .insert("DisplayHandle".into(), TypeLinkTargetIr { type_index: 1 });
+        units.push(display);
+        refs.insert(
+            ("public.api".into(), "DisplayHandle".into()),
+            ContractTypeRef::package_schema(
+                "wrong.pkg",
+                "DisplayHandle",
+                PackageSchemaTypeId::new("schema:wrong-display"),
+            ),
+        );
+
+        assert_eq!(
+            normalize_package_type(
+                "api",
+                &PackageTypeRef::Local {
+                    local_type: TypeRefIr::LocalType { type_index: 1 },
+                },
+                &units,
+                &refs,
+            )
+            .unwrap(),
+            PackageTypeRef::Local {
+                local_type: TypeRefIr::ServiceSymbol {
+                    symbol: ServiceSymbolRef {
+                        module_path: "api".into(),
+                        symbol: "LocalHandle".into(),
+                    },
+                },
+            }
+        );
+
+        refs.remove(&("public.api".into(), "DisplayHandle".into()));
+        assert_eq!(
+            normalize_package_type(
+                "api",
+                &PackageTypeRef::Local {
+                    local_type: TypeRefIr::PublicationType {
+                        module_path: "public.api".into(),
+                        type_index: 1,
+                    },
+                },
+                &units,
+                &refs,
+            )
+            .unwrap(),
+            PackageTypeRef::Local {
+                local_type: TypeRefIr::ServiceSymbol {
+                    symbol: ServiceSymbolRef {
+                        module_path: "public.api".into(),
+                        symbol: "DisplayHandle".into(),
+                    },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn public_signature_owner_resolution_failures_are_closed() {
+        let (units, refs) = fixture();
+        let normalize = |owner_module: &str, type_index: u32, units: &[FileIrUnit]| {
+            normalize_package_type(
+                owner_module,
+                &PackageTypeRef::Local {
+                    local_type: TypeRefIr::LocalType { type_index },
+                },
+                units,
+                &refs,
+            )
+            .unwrap_err()
+        };
+
+        let missing_module = normalize("wrong.owner", 1, &units);
+        assert!(
+            missing_module.contains("has no source module"),
+            "{missing_module}"
+        );
+        let missing_slot = normalize("api", 99, &units);
+        assert!(
+            missing_slot.contains("has no type-table entry"),
+            "{missing_slot}"
+        );
+
+        let mut missing_symbol = units.clone();
+        missing_symbol[0].type_table[1].name = "MissingSymbol".into();
+        let missing_symbol = normalize("api", 1, &missing_symbol);
+        assert!(
+            missing_symbol.contains("MissingSymbol")
+                && missing_symbol.contains("private or nonexported"),
+            "{missing_symbol}"
+        );
+
+        let mut wrong_slot = units.clone();
+        wrong_slot[0]
+            .link_targets
+            .types
+            .get_mut("LocalHandle")
+            .unwrap()
+            .type_index = 0;
+        let wrong_slot = normalize("api", 1, &wrong_slot);
+        assert!(
+            wrong_slot.contains("wrong exported owner slot"),
+            "{wrong_slot}"
+        );
+
+        let mut ambiguous = units.clone();
+        ambiguous.push(units[0].clone());
+        let ambiguous = normalize("api", 1, &ambiguous);
+        assert!(
+            ambiguous.contains("ambiguous source modules"),
+            "{ambiguous}"
         );
     }
 
@@ -869,5 +1198,23 @@ mod tests {
                 },
             ]
         );
+    }
+
+    fn count_json_kind(value: &serde_json::Value, expected: &str) -> usize {
+        match value {
+            serde_json::Value::Array(items) => items
+                .iter()
+                .map(|item| count_json_kind(item, expected))
+                .sum(),
+            serde_json::Value::Object(fields) => {
+                usize::from(
+                    fields.get("kind").and_then(serde_json::Value::as_str) == Some(expected),
+                ) + fields
+                    .values()
+                    .map(|field| count_json_kind(field, expected))
+                    .sum::<usize>()
+            }
+            _ => 0,
+        }
     }
 }
