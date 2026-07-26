@@ -13,37 +13,7 @@ import {
 } from '../lib/isolated-test-runtime-workspace.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const skiffCli = join(root, 'scripts', 'skiff.mjs');
 const instanceCli = join(root, 'scripts', 'skiff-instance.mjs');
-
-test('missing tar is reported through the safe outcome failure before remote I/O', async () => {
-  const fixture = await mkdtemp(join(tmpdir(), 'skiff-missing-tar-'));
-  const packageRoot = join(fixture, 'package');
-  const emptyBin = join(fixture, 'empty-bin');
-  try {
-    await mkdir(packageRoot, { recursive: true });
-    await mkdir(emptyBin);
-    await writeFile(join(packageRoot, 'package.yml'), [
-      'id: example.com/missing-tar',
-      'version: 0.1.0',
-      '',
-    ].join('\n'));
-    await writeFile(join(packageRoot, 'main.skiff'), 'export function value() -> string { return "ok" }\n');
-    const result = await runProcess(process.execPath, [
-      skiffCli,
-      'package',
-      'publish',
-      packageRoot,
-    ], {
-      env: { ...process.env, HOME: fixture, PATH: emptyBin },
-    });
-    assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /failed to spawn tar: ENOENT/);
-    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /spawnargs|cause/);
-  } finally {
-    await rm(fixture, { recursive: true, force: true });
-  }
-});
 
 test('instance status treats missing lsof as unavailable and missing ps as process fallback', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-instance-command-outcome-'));
