@@ -86,6 +86,12 @@ adapter参数来源及外部协议metadata。handler selector指向当前service
 来源确定性生成。`config.*.yml`只绑定已经声明的
 config/secret/state/resource requirement，不改变package/service dependency graph。
 
+Authoring层不要求开发者分别维护entry表与route表。`http.routes`和`websocket.routes`都是以稳定名字为key的
+mapping；每个value把external selector与该entry的handler/adapter声明写在一起。Mapping key就是
+service-owner-local `GatewayEntryKey`。Compiler必须把这一个authoring record确定性拆成
+`IngressSelector -> GatewayEntryKey`和`GatewayEntryKey -> resolved gateway entry`两个artifact事实。
+第一版一个authoring route只定义一个entry，不提供多个selector复用同一entry定义的别名/引用语法。
+
 PackageArtifact至少包含：
 
 ```text
@@ -323,6 +329,10 @@ gateway entry并计算`GatewayEntryIdentity`。`gatewayEntryKey`只是`service.y
 键，使同一协议identity可以绑定不同implementation或被多个selector复用；它不是内容identity。
 Deployment只消费该typed projection并把external selector绑定到gateway entry；
 Router和Runtime不得按source path、display name或同名service operation猜handler。
+
+Artifact模型允许多个selector绑定同一个key，但第一版`service.yml`不暴露独立entry引用或复用语法：
+named route同时声明唯一selector与entry definition。该限制只简化authoring，不得把selector并入
+`GatewayEntryIdentity`，也不得让Router跳过上述两步查找。
 
 `GatewayEntryIdentity`只标识external protocol surface。它的canonical preimage覆盖entry kind、外部
 request/response/stream shape、HTTP path/query/header/body等adapter source映射、WebSocket context

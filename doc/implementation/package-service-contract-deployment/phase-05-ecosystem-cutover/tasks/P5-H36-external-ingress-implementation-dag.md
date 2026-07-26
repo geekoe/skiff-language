@@ -1,7 +1,7 @@
 # P5-H36 External ingress implementation DAG
 
-状态：Implementation parent ready；C0 shared model/identity leaf ready。`service.yml`最终YAML spelling等待
-用户选择，但不阻塞C0。
+状态：Implementation parent ready；C0 shared model/identity leaf running。`service.yml` named-route
+authoring已由用户冻结。
 
 ## 直接父节点
 
@@ -44,7 +44,7 @@
 6. 第一版拒绝generic function declaration作为handler/pre/guard；concrete signature可包含fully
    instantiated generic platform types。不得按`std.websocket`名称建立generic特例。
 7. `GatewayEntryKey`是service-owner-local稳定键，不是内容identity。Selector只绑定key，同一个entry可被
-   多个selector复用。
+   多个selector复用；第一版authoring不提供该复用语法。
 8. `GatewayEntryIdentity`只标识external protocol surface。其canonical preimage包含entry/protocol kind、
    unary/stream mode、外部request/response/message shape、影响wire的标准source选择、
    WebSocket context expectation、公开external error projection及其它wire兼容性metadata。
@@ -103,6 +103,8 @@ surface/identity模型。
    - marked unavailable聚合结构化错误，unmarked unavailable不阻断Package。
 2. `strict service.yml authoring`
    - 冻结用户YAML shape；
+   - `http.routes`/`websocket.routes`是named mapping；mapping key就是`GatewayEntryKey`；
+   - 每个named route把唯一selector与entry definition写在一起，compiler内部再拆成两个artifact事实；
    - 直接引用当前Package source callable；
    - 旧`operation`、旧`handlerArgs`、旧WebSocket `bind`和unknown fields全部fail closed。
 3. `deployment gateway model`
@@ -111,7 +113,7 @@ surface/identity模型。
    - exact handler/pre/guard `PackageCallableId`与execution plan由deployment拥有；
    - bump deployment input/artifact identity generation，无旧reader。
 
-第2项等待本parent“YAML authoring decision”；第1、3项只要F351通过即可准备独立leaf。
+三项只要F351通过即可准备独立leaf。
 
 ### C2：compiler projection convergence
 
@@ -166,17 +168,41 @@ production surface，最终验收必须按影响范围重跑。
    Router/Host exact admission、HTTP raw/typed/stream、WebSocket generation与fixed error evidence。
 4. 新独立agent做高风险只读验收；PASS后才能进入Phase 05总验收、main merge和worktree/临时分支清理。
 
-## `service.yml` authoring decision边界
+## `service.yml` named-route authoring checkpoint
 
-最高权威已经冻结`selector -> GatewayEntryKey -> entry`，但刻意没有冻结YAML spelling。目前只剩两个
-无兼容负担的候选：
+用户已经冻结合并写法，不维护独立`entries`与`routes`两张表：
 
-1. 独立`entries` mapping，route只写`entry` key；天然支持多个selector复用一个entry，也能让一个
-   WebSocket entry统一拥有connect/receive。
-2. entry内联在route并显式写`key`；文件较短，但复用时必须复制完整definition，容易形成同key不同内容。
+```yaml
+http:
+  routes:
+    createUser:
+      method: POST
+      path: /users
+      kind: typedJson
+      handler: users.create
+      adapterArgs:
+        - param: body
+          source: { kind: http.body }
 
-本parent推荐第1种。用户确认前，C0不得把任一候选写进authoring DTO；它只建立artifact级key、surface与
-identity owner。
+websocket:
+  routes:
+    chat:
+      path: /ws
+      connect:
+        handler: chat.connect
+        adapterArgs:
+          - param: request
+            source: { kind: websocket.connectRequest }
+      receive:
+        handler: chat.receive
+        adapterArgs:
+          - param: event
+            source: { kind: websocket.receiveEvent }
+```
+
+`createUser`和`chat`就是owner-local稳定key，不再重复写`id`。Compiler从每个value同时投影一个selector
+binding和一个resolved entry。第一版每个named route只有一个selector；多个route即使指向同一个handler也
+仍是独立entry。Artifact层仍保持selector/key/entry分离，且identity preimage绝不能读取selector。
 
 ## 验证与运行边界
 
