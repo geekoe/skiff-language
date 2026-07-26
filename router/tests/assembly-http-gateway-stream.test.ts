@@ -1,7 +1,9 @@
+import { EventEmitter } from 'node:events';
 import { request as httpRequest } from 'node:http';
+import type { ServerResponse } from 'node:http';
 
 import WebSocket from 'ws';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { encodeAssemblyActivationFrame } from '../src/protocol/assemblyActivationFrame.js';
 import {
@@ -13,7 +15,11 @@ import {
 import { runtimeFrameHeaderFixtures } from '../src/protocol/runtimeProtocol.js';
 import { AssemblyHttpGateway } from '../src/router/assemblyHttpGateway.js';
 import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
-import { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
+import { HttpStreamResponseWriter } from '../src/router/httpStreamResponseWriter.js';
+import {
+  RuntimeDispatcher,
+  type PendingTerminal
+} from '../src/router/runtimeDispatcher.js';
 import { RuntimeEndpoint } from '../src/router/runtimeEndpoint.js';
 import { RuntimeRegistry } from '../src/router/runtimeRegistry.js';
 import {
@@ -22,8 +28,9 @@ import {
   type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
 
-const ASSEMBLY = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
-const OPERATION = `skiff-contract-operation-v1:sha256:${'b'.repeat(64)}`;
+const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+const GATEWAY_ENTRY_IDENTITY =
+  `skiff-gateway-entry-v1:sha256:${'b'.repeat(64)}`;
 const RUNTIME_ID = 'runtime-assembly-stream';
 const HOST = 'stream.example.test';
 const PATH = '/events';
@@ -37,13 +44,9 @@ const binding: RuntimeAssemblyIngressBinding = {
     deploymentArtifactIdentity:
       `skiff-deployment-artifact-v2:sha256:${'c'.repeat(64)}`
   },
-  contract: {
-    serviceId: 'example.com/stream',
-    contractVersion: '1.0.0',
-    serviceProtocolIdentity:
-      `skiff-service-protocol-v3:sha256:${'d'.repeat(64)}`
-  },
-  contractOperationId: OPERATION,
+  gatewayEntryKey: 'events',
+  gatewayEntryIdentity: GATEWAY_ENTRY_IDENTITY,
+  adapterKind: 'rawHttp',
   operationMode: 'serverStream'
 };
 
@@ -56,7 +59,7 @@ afterEach(async () => {
 });
 
 describe('RuntimeAssembly HTTP serverStream ingress', () => {
-  it('selects the exact ServiceContract mode and preserves ordered binary chunks', async () => {
+  it('selects the exact gateway binding and preserves ordered binary chunks', async () => {
     const fixture = await createFixture();
     const response = sendHttp(fixture.url, Buffer.from([9, 8, 7]));
     const requestFrame = decodeBinaryFrame(await nextBinaryMessage(fixture.runtime));
@@ -67,7 +70,7 @@ describe('RuntimeAssembly HTTP serverStream ingress', () => {
         kind: 'runtimeAssembly',
         assemblyIdentity: ASSEMBLY,
         assemblyGeneration: 4,
-        contractOperationId: OPERATION,
+        gatewayEntryIdentity: GATEWAY_ENTRY_IDENTITY,
         ingress: {
           protocol: 'http',
           host: HOST,
@@ -169,6 +172,215 @@ describe('RuntimeAssembly HTTP serverStream ingress', () => {
     });
   });
 
+  it('fails closed on invalid start, chunk, and end ordering or payload metadata', async () => {
+    const cases: Array<{
+      name: string;
+      send(runtime: WebSocket, requestId: string): void;
+    }> = [
+      {
+        name: 'chunk before start',
+        send: (runtime, requestId) => runtime.send(encodeRuntimeFrame({
+          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+          type: 'response.chunk',
+          requestId,
+          seq: 0
+        }, Buffer.from([1])))
+      },
+      {
+        name: 'end before start',
+        send: (runtime, requestId) => runtime.send(encodeRuntimeFrame({
+          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+          type: 'response.end',
+          requestId,
+          payloadPresent: false
+        }))
+      },
+      {
+        name: 'duplicate start',
+        send: (runtime, requestId) => {
+          const start = encodeRuntimeFrame({
+            schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+            type: 'response.start',
+            requestId,
+            httpResponse: { status: 200, headers: [] }
+          });
+          runtime.send(start);
+          runtime.send(start);
+        }
+      },
+      {
+        name: 'start payload',
+        send: (runtime, requestId) => runtime.send(encodeRuntimeFrame({
+          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+          type: 'response.start',
+          requestId,
+          httpResponse: { status: 200, headers: [] }
+        }, Buffer.from([1])))
+      },
+      {
+        name: 'end payload',
+        send: (runtime, requestId) => {
+          runtime.send(encodeRuntimeFrame({
+            schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+            type: 'response.start',
+            requestId,
+            httpResponse: { status: 200, headers: [] }
+          }));
+          runtime.send(encodeRuntimeFrame({
+            schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+            type: 'response.end',
+            requestId,
+            payloadPresent: true
+          }, Buffer.from([1])));
+        }
+      },
+      {
+        name: 'end metadata',
+        send: (runtime, requestId) => {
+          runtime.send(encodeRuntimeFrame({
+            schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+            type: 'response.start',
+            requestId,
+            httpResponse: { status: 200, headers: [] }
+          }));
+          runtime.send(encodeRuntimeFrame({
+            schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+            type: 'response.end',
+            requestId,
+            payloadPresent: false,
+            httpResponse: { status: 200, headers: [] }
+          }));
+        }
+      }
+    ];
+
+    for (const invalidCase of cases) {
+      const fixture = await createFixture();
+      const response = sendHttp(fixture.url, Buffer.alloc(0));
+      const requestFrame = decodeBinaryFrame(
+        await nextBinaryMessage(fixture.runtime)
+      );
+      const requestId = String(requestFrame.header.requestId);
+      const cancelFrame = nextBinaryMessage(fixture.runtime);
+      invalidCase.send(fixture.runtime, requestId);
+
+      await expect(response, invalidCase.name).resolves.toMatchObject({
+        body: expect.any(Buffer)
+      });
+      expect(
+        decodeBinaryFrame(await cancelFrame).header,
+        invalidCase.name
+      ).toMatchObject({
+        type: 'request.cancel',
+        requestId
+      });
+      expect(
+        fixture.dispatcher.pendingLifecycleCounters(),
+        invalidCase.name
+      ).toEqual({
+        pendingUnary: 0,
+        pendingStream: 0
+      });
+    }
+  });
+
+  it('uses the effective timeout while waiting for response.start', async () => {
+    const fixture = await createFixture({ requestTimeoutMs: 40 });
+    const response = sendHttp(fixture.url, Buffer.alloc(0));
+    const requestFrame = decodeBinaryFrame(
+      await nextBinaryMessage(fixture.runtime)
+    );
+    const requestId = String(requestFrame.header.requestId);
+    const cancelFrame = nextBinaryMessage(fixture.runtime);
+
+    await expect(response).resolves.toMatchObject({ status: 504 });
+    expect(decodeBinaryFrame(await cancelFrame).header).toMatchObject({
+      type: 'request.cancel',
+      requestId
+    });
+    expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
+      pendingUnary: 0,
+      pendingStream: 0
+    });
+  });
+
+  it('cancels a streaming Runtime request when the HTTP client disconnects', async () => {
+    const fixture = await createFixture();
+    const pendingHttp = startHttp(fixture.url, Buffer.from([1, 2, 3]));
+    const responseOutcome = pendingHttp.response.catch((error: unknown) => error);
+    const requestFrame = decodeBinaryFrame(
+      await nextBinaryMessage(fixture.runtime)
+    );
+    const requestId = String(requestFrame.header.requestId);
+    const cancelFrame = nextBinaryMessage(fixture.runtime);
+    pendingHttp.request.destroy();
+
+    expect(await responseOutcome).toBeInstanceOf(Error);
+    expect(decodeBinaryFrame(await cancelFrame).header).toMatchObject({
+      type: 'request.cancel',
+      requestId
+    });
+    expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
+      pendingUnary: 0,
+      pendingStream: 0
+    });
+    expect(fixture.gateway.streamLifecycleCounters()).toEqual({
+      activeWriters: 0,
+      backpressureWaiters: 0,
+      backpressureCancels: 0
+    });
+  });
+
+  it('turns backpressure drain timeout into one terminal cancel', async () => {
+    const response = Object.assign(new EventEmitter(), {
+      destroyed: false,
+      headersSent: true,
+      writableEnded: false,
+      write: vi.fn(() => false),
+      end: vi.fn((callback?: () => void) => callback?.())
+    }) as unknown as ServerResponse;
+    const counters = {
+      activeWriters: 0,
+      backpressureWaiters: 0,
+      backpressureCancels: 0
+    };
+    const writer = new HttpStreamResponseWriter({
+      response,
+      clientDisconnectSignal: new AbortController().signal,
+      backpressureDrainTimeoutMs: 10,
+      counters,
+      maxResponseBytes: 100,
+      writeHeaders: () => undefined
+    });
+    const terminal = new Promise<PendingTerminal>((resolve) => {
+      writer.enqueueChunk(
+        {
+          header: {
+            schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+            type: 'response.chunk',
+            requestId: 'backpressure',
+            seq: 0
+          },
+          payloadBytes: new Uint8Array([1])
+        },
+        resolve
+      );
+    });
+
+    const result = await terminal;
+    expect(result).toMatchObject({
+      source: 'backpressure',
+      kind: 'cancelled'
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    writer.closeFromPendingTerminal(result);
+    expect(counters).toEqual({
+      activeWriters: 0,
+      backpressureWaiters: 0,
+      backpressureCancels: 1
+    });
+  });
+
   it('maps a fixed stream failure before response.start without exposing its payload', async () => {
     const fixture = await createFixture();
     const response = sendHttp(fixture.url, Buffer.alloc(0));
@@ -223,7 +435,11 @@ interface StreamFixture {
 }
 
 async function createFixture(
-  limits: { maxRequestBytes?: number; maxResponseBytes?: number } = {}
+  limits: {
+    maxRequestBytes?: number;
+    maxResponseBytes?: number;
+    requestTimeoutMs?: number;
+  } = {}
 ): Promise<StreamFixture> {
   const snapshots = new RouterActiveAssemblySnapshotStore();
   snapshots.replace({
@@ -254,7 +470,7 @@ async function createFixture(
     port: 0,
     maxRequestBytes: limits.maxRequestBytes ?? 67108864,
     maxResponseBytes: limits.maxResponseBytes ?? 67108864,
-    requestTimeoutMs: 1_000
+    requestTimeoutMs: limits.requestTimeoutMs ?? 1_000
   });
   const gatewayAddress = await gateway.listen();
   const runtime = await openSocket(endpointAddress.url);
@@ -295,9 +511,28 @@ async function sendHttp(
   headers: Record<string, string | string[] | undefined>;
   body: Buffer;
 }> {
+  return await startHttp(baseUrl, body).response;
+}
+
+function startHttp(
+  baseUrl: string,
+  body: Buffer
+): {
+  request: ReturnType<typeof httpRequest>;
+  response: Promise<{
+    status: number;
+    headers: Record<string, string | string[] | undefined>;
+    body: Buffer;
+  }>;
+} {
   const url = new URL(PATH, baseUrl);
-  return await new Promise((resolve, reject) => {
-    const request = httpRequest(url, {
+  let request: ReturnType<typeof httpRequest>;
+  const response = new Promise<{
+    status: number;
+    headers: Record<string, string | string[] | undefined>;
+    body: Buffer;
+  }>((resolve, reject) => {
+    request = httpRequest(url, {
       method: 'POST',
       headers: {
         Host: HOST,
@@ -315,6 +550,7 @@ async function sendHttp(
     request.once('error', reject);
     request.end(body);
   });
+  return { request: request!, response };
 }
 
 async function openSocket(url: string): Promise<WebSocket> {
