@@ -10,6 +10,7 @@ use skiff_artifact_identity::interface_instantiation_ref;
 use skiff_artifact_model::NominalTypeRefBaseIr;
 use skiff_compiler_core::{
     id::SKIFF_STD_PUBLICATION_ID, package_export_resolver::PackageExportResolver,
+    prelude_registry::canonical_file_ir_builtin_name,
 };
 use skiff_compiler_source::{
     prelude_registry::prelude_registry, LocalDbObjectIndex, PublicationDbMetadata,
@@ -248,8 +249,10 @@ pub(super) fn is_unknown_type_ref(ty: &TypeRefIr) -> bool {
 pub(super) fn prelude_field_type_text(raw: &str, module_path: &str) -> String {
     TypeExpr::parse_lossy(raw)
         .map_named_types(|name| {
+            if let Some(canonical_name) = canonical_builtin_std_type_name(name) {
+                return canonical_name;
+            }
             if name.contains('.')
-                || canonical_builtin_std_type_name(name).is_some()
                 || is_file_ir_builtin_type(name)
                 || is_file_ir_builtin_generic_type(name)
             {
@@ -267,10 +270,7 @@ pub(super) fn union_type_ir(mut items: Vec<TypeRefIr>) -> TypeRefIr {
     items.sort_by_key(type_ref_ir_type_text);
     items.dedup();
     match items.len() {
-        0 => TypeRefIr::Builtin {
-            name: "never".to_string(),
-            args: Vec::new(),
-        },
+        0 => source_builtin_type_ref("never", Vec::new()),
         1 => items.remove(0),
         _ => TypeRefIr::Union { items },
     }
@@ -530,9 +530,9 @@ pub(super) fn lower_type_text(
     if let Some(parts) = generic_parts(ty) {
         if let Some(name) = canonical_builtin_std_type_name(parts.root) {
             if is_file_ir_native_builtin_type(&name) || is_std_abi_generic_type_name(&name) {
-                return Ok(TypeRefIr::Builtin {
-                    name,
-                    args: parts
+                return Ok(source_builtin_type_ref(
+                    &name,
+                    parts
                         .args
                         .iter()
                         .map(|arg| {
@@ -548,7 +548,7 @@ pub(super) fn lower_type_text(
                             )
                         })
                         .collect::<Result<Vec<_>>>()?,
-                });
+                ));
             }
             return Ok(TypeRefIr::AppliedNominal {
                 base: NominalTypeRefBaseIr::PackageSymbol {
@@ -766,10 +766,7 @@ fn lower_generic_type_text(
         }
         return Err(unsupported_file_ir_generic_root(root));
     }
-    Ok(TypeRefIr::Builtin {
-        name: root.to_string(),
-        args: arguments,
-    })
+    Ok(source_builtin_type_ref(root, arguments))
 }
 
 pub(super) fn lower_named_type(
@@ -786,9 +783,9 @@ pub(super) fn lower_named_type(
     let name = name.trim();
     if let Some(canonical_name) = canonical_builtin_std_type_name(name) {
         if is_file_ir_native_builtin_type(&canonical_name) {
-            return Ok(TypeRefIr::Builtin {
-                name: canonical_name,
-                args: type_args
+            return Ok(source_builtin_type_ref(
+                &canonical_name,
+                type_args
                     .iter()
                     .map(|arg| {
                         lower_type_ref(
@@ -803,7 +800,7 @@ pub(super) fn lower_named_type(
                         )
                     })
                     .collect::<Result<Vec<_>>>()?,
-            });
+            ));
         }
         let symbol = std_package_symbol_ref(canonical_name);
         if type_args.is_empty() {
@@ -849,10 +846,7 @@ pub(super) fn lower_named_type(
             return Ok(TypeRefIr::LocalType { type_index: *index });
         }
         if is_file_ir_builtin_type(name) {
-            return Ok(TypeRefIr::Builtin {
-                name: service_name.to_string(),
-                args: Vec::new(),
-            });
+            return Ok(source_builtin_type_ref(service_name, Vec::new()));
         }
         if let Some(symbol) = package_type_symbol_ref(service_name, package_aliases) {
             return Ok(TypeRefIr::PackageSymbol { symbol });
@@ -945,21 +939,11 @@ pub(super) fn lower_named_type(
             "unresolved type `{name}` in File IR unit"
         )));
     }
-    Ok(TypeRefIr::Builtin {
-        name: service_name.to_string(),
-        args: arguments,
-    })
+    Ok(source_builtin_type_ref(service_name, arguments))
 }
 
 pub(super) fn is_file_ir_builtin_type(name: &str) -> bool {
-    let registry = prelude_registry();
-    if registry.is_builtin_type_name(name) {
-        return true;
-    }
-    matches!(
-        name,
-        "string" | "integer" | "number" | "bool" | "boolean" | "null" | "never" | "void"
-    )
+    canonical_file_ir_builtin_name(name).is_some()
 }
 
 fn std_package_symbol_ref(symbol_path: impl Into<String>) -> PackageSymbolRef {
@@ -974,42 +958,31 @@ fn std_package_symbol_ref(symbol_path: impl Into<String>) -> PackageSymbolRef {
 
 fn canonical_builtin_std_type_name(name: &str) -> Option<String> {
     let name = name.trim();
-    if prelude_registry().is_builtin_type_name(name) {
-        return Some(name.to_string());
-    }
-    if let Some(bare) = match name {
-        "std.collection.Array" => Some("Array"),
-        "std.collection.Map" => Some("Map"),
-        "std.stream.Stream" => Some("Stream"),
-        "std.bytes.bytes" => Some("bytes"),
-        "std.date.Date" => Some("Date"),
-        _ => None,
-    } {
-        return Some(bare.to_string());
+    if let Some(canonical_name) = canonical_file_ir_builtin_name(name) {
+        return Some(canonical_name.to_string());
     }
     let symbol = prelude_registry().known_type_symbol(name)?;
     if symbol == "config.DecodeError" {
         return Some(symbol);
     }
-    if let Some(bare) = match symbol.as_str() {
-        "std.collection.Array" => Some("Array"),
-        "std.collection.Map" => Some("Map"),
-        "std.stream.Stream" => Some("Stream"),
-        "std.bytes.bytes" => Some("bytes"),
-        "std.date.Date" => Some("Date"),
-        _ => None,
-    } {
-        return Some(bare.to_string());
-    }
     symbol.starts_with("std.").then_some(symbol)
 }
 
 fn is_file_ir_native_builtin_type(name: &str) -> bool {
-    prelude_registry().is_builtin_type_name(name) || name == "config.DecodeError"
+    canonical_file_ir_builtin_name(name).is_some() || name == "config.DecodeError"
 }
 
 pub(super) fn is_file_ir_builtin_generic_type(root: &str) -> bool {
-    prelude_registry().is_builtin_type_name(root) || matches!(root, "DbUpsertResult")
+    canonical_file_ir_builtin_name(root).is_some() || matches!(root, "DbUpsertResult")
+}
+
+fn source_builtin_type_ref(name: &str, args: Vec<TypeRefIr>) -> TypeRefIr {
+    TypeRefIr::Builtin {
+        name: canonical_file_ir_builtin_name(name)
+            .unwrap_or(name)
+            .to_string(),
+        args,
+    }
 }
 
 fn is_std_abi_generic_type_name(name: &str) -> bool {

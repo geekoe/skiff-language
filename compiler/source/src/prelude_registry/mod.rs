@@ -9,7 +9,7 @@ use skiff_compiler_core::prelude_registry::{
     compiler_builtin_type, compiler_owned_type_symbol, config_prelude_type,
     is_language_builtin_type_name, is_prelude_canonical_type, module_symbol_root,
     primitive_type_symbols, qualified_prelude_type, schema_primitive_type, NativeBindingShape,
-    COMPILER_BUILTIN_TYPES, LANGUAGE_PRIMITIVES, RESERVED_ROOT_NAMES,
+    COMPILER_BUILTIN_TYPES, LANGUAGE_PRIMITIVE_TYPES, RESERVED_ROOT_NAMES,
 };
 
 use crate::{
@@ -223,9 +223,9 @@ impl PreludeRegistry {
     }
 
     fn derive_prelude_types(&mut self) {
-        self.prelude_types = LANGUAGE_PRIMITIVES
+        self.prelude_types = LANGUAGE_PRIMITIVE_TYPES
             .iter()
-            .map(|s| s.to_string())
+            .map(|primitive| primitive.source_spelling.to_string())
             .chain(self.builtin_type_names.iter().cloned())
             .chain(["Duration"].into_iter().map(str::to_string))
             .collect();
