@@ -22,7 +22,7 @@ const PACKAGE_ID: &str = "example.com/http-gateway-package";
 const SERVICE_ID: &str = "example.com/http-gateway";
 
 #[test]
-fn private_http_entries_project_typed_raw_unary_and_stream_without_contract_operations() {
+fn private_http_entries_project_typed_and_raw_unary_plus_raw_stream_without_contract_operations() {
     let fixture = compile_fixture(
         "all-modes",
         "health: main.health\n",
@@ -79,11 +79,6 @@ function typed(
   return Output { accepted: true, status: body.status }
 }
 
-function typedStream(body: Input) -> Stream<Output> {
-  emit({ accepted: true, status: body.status })
-  return null
-}
-
 function boxed(body: Envelope<string>) -> Envelope<string> {
   return body
 }
@@ -117,14 +112,6 @@ function rawStream(
         source: { kind: http.body }
       - param: context
         source: { kind: http.context }
-  typedStream:
-    method: POST
-    path: /typed-stream
-    kind: typedJson
-    handler: main.typedStream
-    adapterArgs:
-      - param: body
-        source: { kind: http.body }
   boxed:
     method: POST
     path: /boxed
@@ -155,8 +142,8 @@ function rawStream(
 
     assert!(fixture.api.contract.operations.is_empty());
     assert!(deployment.operation_bindings.is_empty());
-    assert_eq!(deployment.gateway_entries.len(), 5);
-    assert_eq!(deployment.ingress.len(), 5);
+    assert_eq!(deployment.gateway_entries.len(), 4);
+    assert_eq!(deployment.ingress.len(), 4);
     assert_eq!(
         fixture
             .project
@@ -213,14 +200,6 @@ function rawStream(
         GatewayExternalSchema::Array { .. }
     ));
 
-    let typed_stream = http_surface(&deployment, "typedStream");
-    assert_eq!(
-        typed_stream.dispatch_mode,
-        GatewayDispatchMode::ServerStream
-    );
-    assert!(typed_stream.response_schema.is_none());
-    assert!(typed_stream.stream_item_schema.is_some());
-
     let boxed = http_surface(&deployment, "boxed");
     assert!(matches!(
         boxed.request_body_schema,
@@ -231,6 +210,25 @@ function rawStream(
                     if fields["value"] == GatewayExternalSchema::String
             )
     ));
+
+    let typed_surfaces = deployment
+        .gateway_entries
+        .values()
+        .filter_map(|entry| match &entry.protocol_surface.protocol {
+            GatewayProtocolSurface::Http(surface)
+                if surface.adapter_kind == GatewayAdapterKind::TypedJson =>
+            {
+                Some(surface)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(typed_surfaces.len(), 2);
+    for surface in typed_surfaces {
+        assert_eq!(surface.dispatch_mode, GatewayDispatchMode::Unary);
+        assert!(surface.response_schema.is_some());
+        assert!(surface.stream_item_schema.is_none());
+    }
 
     let raw = http_surface(&deployment, "raw");
     assert_eq!(raw.adapter_kind, GatewayAdapterKind::RawHttp);
@@ -243,6 +241,43 @@ function rawStream(
         raw_stream.stream_item_schema,
         Some(GatewayExternalSchema::ClosedUnion { .. })
     ));
+}
+
+#[test]
+fn typed_json_streams_fail_before_item_schema_projection() {
+    let fixture = compile_fixture(
+        "typed-stream-negative",
+        "health: main.health\n",
+        r#"function health() -> string { return "ok" }
+
+type Input { value: string }
+type Output { accepted: boolean }
+
+function eligible(body: Input) -> Stream<Output> {
+  emit({ accepted: true })
+  return null
+}
+
+function unprojectable(body: Input) -> Stream<Map<string, string>> {
+  return null
+}
+"#,
+        "http: {}\n",
+    );
+    let expected = "typedJson supports only unary handler returns; HTTP streaming requires rawHttp + Stream<std.http.HttpResponseStreamEvent>";
+    let errors = ["main.eligible", "main.unprojectable"].map(|handler| {
+        let service = parse_service(&typed_http(handler, "body"));
+        fixture
+            .generate_error(&service, &fixture.project.package.artifact)
+            .to_string()
+    });
+    for error in &errors {
+        assert!(error.contains(expected), "{error}");
+    }
+    assert_eq!(
+        errors[0], errors[1],
+        "typedJson stream rejection must depend on adapter kind and outer return, not item schema"
+    );
 }
 
 #[test]
