@@ -1,6 +1,8 @@
 # P5-H36 External ingress implementation DAG
 
-状态：Implementation in progress；C0–C2与C3 loader/linker已合流，C3 shared request wire正在执行。
+状态：Implementation in progress；C0–C2、C3 loader/linker、HTTP request wire、
+package-test entrypoint 与 Router v2 snapshot 已合流；C3 request/eval execution seam 与 Router HTTP
+dispatch 正在执行。
 HTTP `service.yml` named-route authoring已由用户冻结；WebSocket业务消息路由于2026-07-26撤回原raw
 `receive`方案并暂缓。
 
