@@ -91,7 +91,7 @@ fn router_bootstrap_shared_corpus_has_strict_parity() {
 fn activation_identity() -> ActivationIdentityFrameMetadata {
     ActivationIdentityFrameMetadata {
         assembly_identity:
-            "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_string(),
         generation: 7,
         runtime_replica_id: "runtime-replica-7".to_string(),

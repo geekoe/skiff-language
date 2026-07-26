@@ -1,7 +1,5 @@
-use std::collections::HashMap;
-
 use serde::{de, Deserialize, Deserializer, Serialize};
-use skiff_artifact_model::{AssemblyIdentity, ContractOperationId};
+use skiff_artifact_model::{AssemblyIdentity, GatewayEntryIdentity};
 
 use crate::{BinaryFrameError, TransportError};
 
@@ -10,139 +8,42 @@ mod metadata;
 mod strict_json;
 
 use lexical::{
-    deserialize_assembly_identity, deserialize_contract_operation_id, deserialize_dispatch_mode,
-    deserialize_gateway_caller_kind, deserialize_request_start_type,
-    deserialize_required_nullable_string, deserialize_runtime_assembly_routing_kind,
-    deserialize_runtime_frame_schema_version, deserialize_safe_activation_generation,
+    deserialize_assembly_identity, deserialize_dispatch_mode, deserialize_gateway_caller_kind,
+    deserialize_gateway_entry_identity, deserialize_request_start_type,
+    deserialize_runtime_assembly_routing_kind, deserialize_runtime_frame_schema_version,
+    deserialize_safe_activation_generation,
 };
+use metadata::deserialize_present_option;
 pub use metadata::*;
-use metadata::{
-    deserialize_optional_activation_identity, deserialize_optional_gateway_entry_identity,
-    deserialize_optional_http_adapter, deserialize_optional_websocket_adapter,
-    deserialize_present_option, deserialize_test_effect_doubles,
-};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(
-    rename_all = "camelCase",
-    deny_unknown_fields,
-    try_from = "RawRuntimeAssemblyRequestStartFrameHeader"
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeAssemblyRequestStartFrameHeader {
+    #[serde(deserialize_with = "deserialize_runtime_frame_schema_version")]
     pub schema_version: String,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", deserialize_with = "deserialize_request_start_type")]
     pub frame_type: String,
     pub request_id: String,
+    #[serde(deserialize_with = "deserialize_dispatch_mode")]
     pub mode: String,
     pub caller: RuntimeAssemblyRequestCallerFrameHeader,
     pub routing: RuntimeAssemblyRequestRoutingFrameHeader,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub activation_identity: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gateway_entry_identity: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub business_identity: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub websocket_entry_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_session: Option<RuntimeAssemblyRequestClientSessionFrameHeader>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deadline: Option<RuntimeAssemblyRequestDeadlineFrameHeader>,
-    pub trace: RuntimeAssemblyRequestTraceFrameHeader,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub http_request: Option<RuntimeAssemblyHttpRequestFrameHeader>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub http_adapter: Option<RuntimeAssemblyHttpAdapterFrameHeader>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub websocket_adapter: Option<RuntimeAssemblyWebSocketAdapterFrameHeader>,
-    #[serde(skip_serializing_if = "is_false")]
-    pub test_effects_enabled: bool,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub test_effect_doubles:
-        HashMap<String, Vec<RuntimeAssemblyRequestTestEffectDoubleFrameHeader>>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawRuntimeAssemblyRequestStartFrameHeader {
-    #[serde(deserialize_with = "deserialize_runtime_frame_schema_version")]
-    schema_version: String,
-    #[serde(rename = "type", deserialize_with = "deserialize_request_start_type")]
-    frame_type: String,
-    request_id: String,
-    #[serde(deserialize_with = "deserialize_dispatch_mode")]
-    mode: String,
-    caller: RuntimeAssemblyRequestCallerFrameHeader,
-    routing: RuntimeAssemblyRequestRoutingFrameHeader,
-    #[serde(default, deserialize_with = "deserialize_optional_activation_identity")]
-    activation_identity: Option<String>,
     #[serde(
         default,
-        deserialize_with = "deserialize_optional_gateway_entry_identity"
+        deserialize_with = "deserialize_present_option",
+        skip_serializing_if = "Option::is_none"
     )]
-    gateway_entry_identity: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_present_option")]
-    business_identity: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_present_option")]
-    websocket_entry_id: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_present_option")]
-    client_session: Option<RuntimeAssemblyRequestClientSessionFrameHeader>,
-    #[serde(default, deserialize_with = "deserialize_present_option")]
-    deadline: Option<RuntimeAssemblyRequestDeadlineFrameHeader>,
-    trace: RuntimeAssemblyRequestTraceFrameHeader,
-    #[serde(default, deserialize_with = "deserialize_present_option")]
-    http_request: Option<RuntimeAssemblyHttpRequestFrameHeader>,
-    #[serde(default, deserialize_with = "deserialize_optional_http_adapter")]
-    http_adapter: Option<RuntimeAssemblyHttpAdapterFrameHeader>,
-    #[serde(default, deserialize_with = "deserialize_optional_websocket_adapter")]
-    websocket_adapter: Option<RuntimeAssemblyWebSocketAdapterFrameHeader>,
-    #[serde(default)]
-    test_effects_enabled: bool,
-    #[serde(default, deserialize_with = "deserialize_test_effect_doubles")]
-    test_effect_doubles: HashMap<String, Vec<RuntimeAssemblyRequestTestEffectDoubleFrameHeader>>,
-}
-
-impl TryFrom<RawRuntimeAssemblyRequestStartFrameHeader> for RuntimeAssemblyRequestStartFrameHeader {
-    type Error = String;
-
-    fn try_from(raw: RawRuntimeAssemblyRequestStartFrameHeader) -> Result<Self, Self::Error> {
-        if raw.websocket_adapter.is_some()
-            && (raw.websocket_entry_id.is_none() || raw.gateway_entry_identity.is_none())
-        {
-            return Err(
-                "websocketAdapter requires websocketEntryId and gatewayEntryIdentity".to_string(),
-            );
-        }
-        match raw.routing.ingress.protocol {
-            RuntimeAssemblyRequestIngressProtocol::WebSocket => {
-                validate_canonical_websocket_ingress(&raw)?;
-            }
-            RuntimeAssemblyRequestIngressProtocol::Http if raw.websocket_adapter.is_some() => {
-                return Err("canonical HTTP ingress does not accept WebSocket metadata".to_string());
-            }
-            RuntimeAssemblyRequestIngressProtocol::Http => {}
-        }
-        Ok(Self {
-            schema_version: raw.schema_version,
-            frame_type: raw.frame_type,
-            request_id: raw.request_id,
-            mode: raw.mode,
-            caller: raw.caller,
-            routing: raw.routing,
-            activation_identity: raw.activation_identity,
-            gateway_entry_identity: raw.gateway_entry_identity,
-            business_identity: raw.business_identity,
-            websocket_entry_id: raw.websocket_entry_id,
-            client_session: raw.client_session,
-            deadline: raw.deadline,
-            trace: raw.trace,
-            http_request: raw.http_request,
-            http_adapter: raw.http_adapter,
-            websocket_adapter: raw.websocket_adapter,
-            test_effects_enabled: raw.test_effects_enabled,
-            test_effect_doubles: raw.test_effect_doubles,
-        })
-    }
+    pub client_session: Option<RuntimeAssemblyRequestClientSessionFrameHeader>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub deadline: Option<RuntimeAssemblyRequestDeadlineFrameHeader>,
+    pub trace: RuntimeAssemblyRequestTraceFrameHeader,
+    pub http_request: RuntimeAssemblyHttpRequestFrameHeader,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub test_effects_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,7 +51,6 @@ impl TryFrom<RawRuntimeAssemblyRequestStartFrameHeader> for RuntimeAssemblyReque
 pub struct RuntimeAssemblyRequestCallerFrameHeader {
     #[serde(deserialize_with = "deserialize_gateway_caller_kind")]
     pub kind: String,
-    pub target: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,8 +62,8 @@ pub struct RuntimeAssemblyRequestRoutingFrameHeader {
     pub assembly_identity: AssemblyIdentity,
     #[serde(deserialize_with = "deserialize_safe_activation_generation")]
     pub assembly_generation: u64,
-    #[serde(deserialize_with = "deserialize_contract_operation_id")]
-    pub contract_operation_id: ContractOperationId,
+    #[serde(deserialize_with = "deserialize_gateway_entry_identity")]
+    pub gateway_entry_identity: GatewayEntryIdentity,
     pub ingress: RuntimeAssemblyRequestIngressFrameHeader,
 }
 
@@ -172,7 +72,7 @@ pub struct RuntimeAssemblyRequestRoutingFrameHeader {
 pub struct RuntimeAssemblyRequestIngressFrameHeader {
     pub protocol: RuntimeAssemblyRequestIngressProtocol,
     pub host: String,
-    pub method: Option<String>,
+    pub method: String,
     pub path: String,
 }
 
@@ -180,8 +80,6 @@ pub struct RuntimeAssemblyRequestIngressFrameHeader {
 pub enum RuntimeAssemblyRequestIngressProtocol {
     #[serde(rename = "http")]
     Http,
-    #[serde(rename = "webSocket")]
-    WebSocket,
 }
 
 #[derive(Deserialize)]
@@ -189,8 +87,7 @@ pub enum RuntimeAssemblyRequestIngressProtocol {
 struct RawRuntimeAssemblyRequestIngressFrameHeader {
     protocol: RuntimeAssemblyRequestIngressProtocol,
     host: String,
-    #[serde(deserialize_with = "deserialize_required_nullable_string")]
-    method: Option<String>,
+    method: String,
     path: String,
 }
 
@@ -200,19 +97,20 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyRequestIngressFrameHeader {
         D: Deserializer<'de>,
     {
         let raw = RawRuntimeAssemblyRequestIngressFrameHeader::deserialize(deserializer)?;
-        if raw.host.is_empty() || !raw.path.starts_with('/') {
+        if raw.host.is_empty() {
             return Err(de::Error::custom(
-                "routing.ingress must carry a non-empty host and absolute path",
+                "routing.ingress.host must be a non-empty string",
             ));
         }
-        match (raw.protocol, raw.method.as_deref()) {
-            (RuntimeAssemblyRequestIngressProtocol::Http, Some(method)) if !method.is_empty() => {}
-            (RuntimeAssemblyRequestIngressProtocol::WebSocket, None) => {}
-            _ => {
-                return Err(de::Error::custom(
-                    "routing.ingress.method does not match protocol",
-                ))
-            }
+        if raw.method.is_empty() {
+            return Err(de::Error::custom(
+                "routing.ingress.method must be a non-empty string",
+            ));
+        }
+        if !raw.path.starts_with('/') {
+            return Err(de::Error::custom(
+                "routing.ingress.path must be an absolute path",
+            ));
         }
         Ok(Self {
             protocol: raw.protocol,
@@ -233,139 +131,7 @@ pub fn decode_runtime_assembly_request_start_frame(
                 "invalid skiff binary frame: header failed typed decode: {error}"
             ))
         })?;
-    validate_canonical_websocket_payload(&header, payload.len()).map_err(TransportError::decode)?;
     Ok((header, payload))
-}
-
-fn validate_canonical_websocket_ingress(
-    raw: &RawRuntimeAssemblyRequestStartFrameHeader,
-) -> Result<(), String> {
-    if raw.mode != "unary" {
-        return Err("canonical WebSocket ingress requires mode unary".to_string());
-    }
-    if raw.http_request.is_some() || raw.http_adapter.is_some() {
-        return Err("canonical WebSocket ingress does not accept HTTP metadata".to_string());
-    }
-    if raw.test_effects_enabled || !raw.test_effect_doubles.is_empty() {
-        return Err("canonical WebSocket ingress does not accept test effects".to_string());
-    }
-    let adapter = raw.websocket_adapter.as_ref().ok_or_else(|| {
-        "canonical WebSocket ingress requires websocketAdapter metadata".to_string()
-    })?;
-    if adapter.context_expectation.is_some() {
-        return Err(
-            "canonical WebSocket ingress derives Context from the pinned ServiceContract"
-                .to_string(),
-        );
-    }
-    let [arg] = adapter.adapter_args.as_slice() else {
-        return Err(
-            "canonical WebSocket ingress requires exactly one event adapter argument".to_string(),
-        );
-    };
-    if arg.param != "event"
-        || !matches!(
-            arg.source.kind,
-            RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader::IngressEvent
-        )
-    {
-        return Err(
-            "canonical WebSocket ingress adapterArgs must be event:websocket.ingressEvent"
-                .to_string(),
-        );
-    }
-    if let Some(receive) = adapter.receive_event.as_ref() {
-        let expected = if receive.context_codec.is_some() {
-            &[
-                RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Context,
-                RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Message,
-            ][..]
-        } else {
-            &[RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Message][..]
-        };
-        if receive.payload_segments.len() != expected.len() {
-            return Err(
-                "canonical WebSocket receive payload segments do not match Context presence"
-                    .to_string(),
-            );
-        }
-        let mut next = 0_u64;
-        for (segment, expected_kind) in receive.payload_segments.iter().zip(expected) {
-            if segment.kind != *expected_kind || segment.offset != next {
-                return Err(
-                    "canonical WebSocket receive payload segments must be ordered and contiguous"
-                        .to_string(),
-                );
-            }
-            next = next.checked_add(segment.length).ok_or_else(|| {
-                "canonical WebSocket receive payload segment range overflows".to_string()
-            })?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_canonical_websocket_payload(
-    header: &RuntimeAssemblyRequestStartFrameHeader,
-    payload_len: usize,
-) -> Result<(), String> {
-    if !matches!(
-        header.routing.ingress.protocol,
-        RuntimeAssemblyRequestIngressProtocol::WebSocket
-    ) {
-        return Ok(());
-    }
-    let adapter = header
-        .websocket_adapter
-        .as_ref()
-        .expect("canonical WebSocket metadata validated during typed decode");
-    if matches!(
-        adapter.kind,
-        RuntimeAssemblyWebSocketAdapterKindFrameHeader::Connect
-    ) {
-        return if payload_len == 0 {
-            Ok(())
-        } else {
-            Err("canonical WebSocket connect payload must be empty".to_string())
-        };
-    }
-    let receive = adapter
-        .receive_event
-        .as_ref()
-        .expect("receive metadata validated during typed decode");
-    let expected = if receive.context_codec.is_some() {
-        &[
-            RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Context,
-            RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Message,
-        ][..]
-    } else {
-        &[RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Message][..]
-    };
-    if receive.payload_segments.len() != expected.len() {
-        return Err(
-            "canonical WebSocket receive payload segments do not match Context presence"
-                .to_string(),
-        );
-    }
-    let mut next = 0_u64;
-    for (segment, expected_kind) in receive.payload_segments.iter().zip(expected) {
-        if segment.kind != *expected_kind || segment.offset != next {
-            return Err(
-                "canonical WebSocket receive payload segments must be ordered and contiguous"
-                    .to_string(),
-            );
-        }
-        next = next.checked_add(segment.length).ok_or_else(|| {
-            "canonical WebSocket receive payload segment range overflows".to_string()
-        })?;
-    }
-    if next != payload_len as u64 {
-        return Err(
-            "canonical WebSocket receive payload segments must cover the complete payload"
-                .to_string(),
-        );
-    }
-    Ok(())
 }
 
 fn is_false(value: &bool) -> bool {

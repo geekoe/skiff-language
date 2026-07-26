@@ -24,13 +24,10 @@ import { CONFIG_SHAPE_VALUE_TYPES, isConfigShapeValueType } from '../config/inde
 import { isPublicationId, publicationStorageSegment } from '../publicationId.js';
 import {
   hasRuntimeAssemblyRouting,
+  normalizeRuntimeAssemblyRequestStartHeader,
   type RuntimeAssemblyRequestStartFrameHeader,
-  validateRuntimeAssemblyRequestRouting
+  validateRuntimeAssemblyRequestStartHeader
 } from './runtimeAssemblyRequest.js';
-import {
-  normalizeRuntimeAssemblyRequestMetadata,
-  validateRuntimeAssemblyRequestMetadata
-} from './runtimeAssemblyRequestMetadata.js';
 import {
   activationGeneration,
   activationToken,
@@ -611,21 +608,21 @@ const requestStartFrameProperties = {
       'kind',
       'assemblyIdentity',
       'assemblyGeneration',
-      'contractOperationId',
+      'gatewayEntryIdentity',
       'ingress'
     ],
     properties: {
       kind: { type: 'string', enum: ['runtimeAssembly'] },
       assemblyIdentity: { type: 'string' },
       assemblyGeneration: { type: 'integer' },
-      contractOperationId: { type: 'string' },
+      gatewayEntryIdentity: { type: 'string' },
       ingress: {
         type: 'object',
         required: ['protocol', 'host', 'method', 'path'],
         properties: {
-          protocol: { type: 'string', enum: ['http', 'webSocket'] },
+          protocol: { type: 'string', enum: ['http'] },
           host: { type: 'string' },
-          method: { type: ['string', 'null'] },
+          method: { type: 'string' },
           path: { type: 'string' }
         },
         additionalProperties: false
@@ -1364,107 +1361,178 @@ export const runtimeFrameHeaderSchemas = {
     additionalProperties: false
   },
   'request.start': {
-    type: 'object',
-    required: [
-      'schemaVersion',
-      'type',
-      'requestId',
-      'mode',
-      'caller',
-      'trace'
-    ],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['request.start'] },
-      requestId: { type: 'string' },
-      mode: { type: 'string', enum: ['unary', 'serverStream'] },
-      caller: requestStartFrameProperties.caller,
-      target: { type: 'string' },
-      operationAbiId: { type: 'string' },
-      selector: { type: 'string' },
-      serviceId: { type: 'string' },
-      buildId: { type: 'string' },
-      serviceProtocolIdentity: { type: 'string' },
-      routing: requestStartFrameProperties.routing,
-      activationIdentity: { type: 'string' },
-      gatewayEntryIdentity: { type: 'string' },
-      businessIdentity: { type: 'string' },
-      websocketEntryId: { type: 'string' },
-      clientSession: requestStartFrameProperties.clientSession,
-      deadline: requestStartFrameProperties.deadline,
-      trace: requestStartFrameProperties.trace,
-      testEffectsEnabled: { type: 'boolean' },
-      testEffectDoubles: {
+    oneOf: [
+      {
         type: 'object',
-        additionalProperties: true
-      },
-      httpRequest: {
-        type: 'object',
-        required: ['method', 'url', 'path', 'query', 'headers'],
+        required: [
+          'schemaVersion',
+          'type',
+          'requestId',
+          'mode',
+          'caller',
+          'trace'
+        ],
         properties: {
-          method: { type: 'string' },
-          url: { type: 'string' },
-          path: { type: 'string' },
-          query: {
-            type: 'array',
-            items: {
-              type: 'object',
-              required: ['name', 'value'],
-              properties: {
-                name: { type: 'string' },
-                value: { type: 'string' }
-              },
-              additionalProperties: false
-            }
+          schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+          type: { type: 'string', enum: ['request.start'] },
+          requestId: { type: 'string' },
+          mode: { type: 'string', enum: ['unary', 'serverStream'] },
+          caller: requestStartFrameProperties.caller,
+          target: { type: 'string' },
+          operationAbiId: { type: 'string' },
+          selector: { type: 'string' },
+          serviceId: { type: 'string' },
+          version: { type: 'string' },
+          buildId: { type: 'string' },
+          serviceProtocolIdentity: { type: 'string' },
+          activationIdentity: { type: 'string' },
+          gatewayEntryIdentity: { type: 'string' },
+          businessIdentity: { type: 'string' },
+          websocketEntryId: { type: 'string' },
+          clientSession: requestStartFrameProperties.clientSession,
+          deadline: requestStartFrameProperties.deadline,
+          trace: requestStartFrameProperties.trace,
+          testEffectsEnabled: { type: 'boolean' },
+          testEffectDoubles: {
+            type: 'object',
+            additionalProperties: true
           },
-          headers: {
-            type: 'array',
-            items: {
-              type: 'object',
-              required: ['name', 'value'],
-              properties: {
-                name: { type: 'string' },
-                value: { type: 'string' }
-              },
-              additionalProperties: false
-            }
-          }
-        },
-        additionalProperties: false
-      },
-      httpAdapter: {
-        type: 'object',
-        required: ['kind', 'handler'],
-        properties: {
-          kind: { type: 'string', enum: ['typedJson', 'rawHttp'] },
-          handler: { type: 'object', additionalProperties: true },
-          guard: { type: 'object', additionalProperties: true },
-          pre: { type: 'object', additionalProperties: true },
-          adapterArgs: {
-            type: 'array',
-            items: {
-              type: 'object',
-              required: ['param', 'source'],
-              properties: {
-                param: { type: 'string' },
-                source: {
+          httpRequest: {
+            type: 'object',
+            required: ['method', 'url', 'path', 'query', 'headers'],
+            properties: {
+              method: { type: 'string' },
+              url: { type: 'string' },
+              path: { type: 'string' },
+              query: {
+                type: 'array',
+                items: {
                   type: 'object',
-                  required: ['kind'],
+                  required: ['name', 'value'],
                   properties: {
-                    kind: { type: 'string', enum: ['http.request', 'http.body', 'http.context'] }
+                    name: { type: 'string' },
+                    value: { type: 'string' }
                   },
                   additionalProperties: false
                 }
               },
-              additionalProperties: false
-            }
-          }
+              headers: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['name', 'value'],
+                  properties: {
+                    name: { type: 'string' },
+                    value: { type: 'string' }
+                  },
+                  additionalProperties: false
+                }
+              }
+            },
+            additionalProperties: false
+          },
+          httpAdapter: {
+            type: 'object',
+            required: ['kind', 'handler'],
+            properties: {
+              kind: { type: 'string', enum: ['typedJson', 'rawHttp'] },
+              handler: { type: 'object', additionalProperties: true },
+              guard: { type: 'object', additionalProperties: true },
+              pre: { type: 'object', additionalProperties: true },
+              adapterArgs: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['param', 'source'],
+                  properties: {
+                    param: { type: 'string' },
+                    source: {
+                      type: 'object',
+                      required: ['kind'],
+                      properties: {
+                        kind: { type: 'string', enum: ['http.request', 'http.body', 'http.context'] }
+                      },
+                      additionalProperties: false
+                    }
+                  },
+                  additionalProperties: false
+                }
+              }
+            },
+            additionalProperties: false
+          },
+          websocketAdapter: requestStartFrameProperties.websocketAdapter
         },
         additionalProperties: false
       },
-      websocketAdapter: requestStartFrameProperties.websocketAdapter
-    },
-    additionalProperties: false
+      {
+        type: 'object',
+        required: [
+          'schemaVersion',
+          'type',
+          'requestId',
+          'mode',
+          'caller',
+          'routing',
+          'trace',
+          'httpRequest'
+        ],
+        properties: {
+          schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+          type: { type: 'string', enum: ['request.start'] },
+          requestId: { type: 'string' },
+          mode: { type: 'string', enum: ['unary', 'serverStream'] },
+          caller: {
+            type: 'object',
+            required: ['kind'],
+            properties: {
+              kind: { type: 'string', enum: ['gateway'] }
+            },
+            additionalProperties: false
+          },
+          routing: requestStartFrameProperties.routing,
+          clientSession: requestStartFrameProperties.clientSession,
+          deadline: requestStartFrameProperties.deadline,
+          trace: requestStartFrameProperties.trace,
+          httpRequest: {
+            type: 'object',
+            required: ['method', 'url', 'path', 'query', 'headers'],
+            properties: {
+              method: { type: 'string' },
+              url: { type: 'string' },
+              path: { type: 'string' },
+              query: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['name', 'value'],
+                  properties: {
+                    name: { type: 'string' },
+                    value: { type: 'string' }
+                  },
+                  additionalProperties: false
+                }
+              },
+              headers: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['name', 'value'],
+                  properties: {
+                    name: { type: 'string' },
+                    value: { type: 'string' }
+                  },
+                  additionalProperties: false
+                }
+              }
+            },
+            additionalProperties: false
+          },
+          testEffectsEnabled: { type: 'boolean' }
+        },
+        additionalProperties: false
+      }
+    ]
   },
   'package-test.start': {
     type: 'object',
@@ -1772,7 +1840,7 @@ const actorRefFixture = {
 
 const actorControlActivationIdentityFixture = {
   assemblyIdentity:
-    'skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   generation: 7,
   runtimeReplicaId: 'runtime-replica-7',
   deploymentRevision: 'deployment-revision-7'
@@ -2462,7 +2530,7 @@ export function validateRuntimeAssemblyRequestStartFrameHeader(
   return error === null
     ? {
         ok: true,
-        envelope: normalizeRuntimeAssemblyRequestMetadata(envelope)
+        envelope: normalizeRuntimeAssemblyRequestStartHeader(envelope)
       }
     : { ok: false, error };
 }
@@ -3320,19 +3388,18 @@ function validateRequestStartFrameHeader(
   envelope: Record<string, unknown>,
   allowRuntimeAssemblyRouting: boolean
 ): string | null {
+  if (hasRuntimeAssemblyRouting(envelope)) {
+    return (
+      rejectHeaderPayloadFields(envelope, 'request.start') ??
+      validateRequestRoutingVariant(envelope, allowRuntimeAssemblyRouting)
+    );
+  }
   const baseError =
     rejectHeaderPayloadFields(envelope, 'request.start') ??
     requireString(envelope, 'request.start', 'requestId') ??
     requireEnum(envelope, 'request.start', 'mode', ['unary', 'serverStream']) ??
     validateCaller(envelope);
   if (baseError !== null) return baseError;
-
-  if (hasRuntimeAssemblyRouting(envelope)) {
-    return (
-      validateRuntimeAssemblyRequestMetadata(envelope) ??
-      validateRequestRoutingVariant(envelope, allowRuntimeAssemblyRouting)
-    );
-  }
 
   return (
     optionalStringPattern(
@@ -3373,10 +3440,7 @@ function validateRequestRoutingVariant(
     if (!allowRuntimeAssemblyRouting) {
       return 'invalid runtime-to-router request.start envelope: runtimeAssembly routing is not supported';
     }
-    if (!isRecord(envelope.caller) || envelope.caller.kind !== 'gateway') {
-      return 'invalid request.start runtimeAssembly envelope: caller.kind must be gateway';
-    }
-    return validateRuntimeAssemblyRequestRouting(envelope);
+    return validateRuntimeAssemblyRequestStartHeader(envelope);
   }
   return validateLegacyRequestRouting(envelope);
 }

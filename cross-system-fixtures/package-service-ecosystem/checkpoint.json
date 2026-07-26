@@ -57,9 +57,19 @@
   },
   "runtimeAssemblyRequestRouting": {
     "kind": "runtimeAssembly",
-    "fields": ["kind", "assemblyIdentity", "assemblyGeneration", "contractOperationId", "ingress"],
+    "fields": ["kind", "assemblyIdentity", "assemblyGeneration", "gatewayEntryIdentity", "ingress"],
     "ingressFields": ["protocol", "host", "method", "path"],
-    "forbiddenLegacyFields": ["target", "operationAbiId", "buildId", "serviceProtocolIdentity", "serviceId", "version", "selector"]
+    "ingressProtocol": "http",
+    "forbiddenFields": ["contractOperationId", "gatewayEntryKey", "deployment", "activationIdentity"]
+  },
+  "runtimeAssemblyRequestHeader": {
+    "requiredFields": ["schemaVersion", "type", "requestId", "mode", "caller", "routing", "trace", "httpRequest"],
+    "optionalFields": ["clientSession", "deadline", "testEffectsEnabled"],
+    "callerFields": ["kind"],
+    "callerKind": "gateway",
+    "defaultFalseFields": ["testEffectsEnabled"],
+    "payload": "opaque HTTP request body bytes",
+    "forbiddenFields": ["target", "operationAbiId", "selector", "serviceId", "version", "buildId", "serviceProtocolIdentity", "activationIdentity", "gatewayEntryIdentity", "businessIdentity", "websocketEntryId", "httpAdapter", "websocketAdapter", "testEffectDoubles"]
   },
   "ecosystemStoreAdapter": {
     "argv": ["__ecosystem-store", "--artifact-root", "<artifact-root>"],

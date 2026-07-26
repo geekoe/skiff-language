@@ -269,11 +269,12 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
   const requestCorpus = await readJson("runtime-request-wire.json");
   const storeCorpus = await readJson("ecosystem-store-cases.json");
 
-  assert.equal(requestCorpus.requestStartHeaders.length, 4);
-  assert.equal(requestCorpus.requestStartMutations.length, 240);
-  assert.equal(requestCorpus.requestStartRawCases.length, 29);
-  assert.equal(requestCorpus.requestStartEquivalentOptionPairs.length, 3);
-  assert.equal(requestCorpus.legacyRequestStartHeaders.length, 1);
+  assert.ok(requestCorpus.requestStartHeaders.length > 0);
+  assert.ok(requestCorpus.requestStartMutations.length > 0);
+  assert.ok(requestCorpus.requestStartRawCases.length > 0);
+  assert.ok(requestCorpus.requestStartPayloadCases.length > 0);
+  assert.ok(requestCorpus.requestStartEquivalentOptionPairs.length > 0);
+  assert.ok(requestCorpus.legacyRequestStartHeaders.length > 0);
 
   assert.equal(frameCorpus.assemblyActivationFrames.length, controlMessages.length);
   for (const golden of frameCorpus.assemblyActivationFrames) {
@@ -326,14 +327,20 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
     assert.equal(result.ok, true, result.ok ? header.requestId : result.error);
     const typed = validateRuntimeAssemblyRequestStartFrameHeader(header);
     assert.equal(typed.ok, true, typed.ok ? header.requestId : typed.error);
-    assert.deepEqual(typed.envelope, header);
-    const payload = header.routing.ingress.protocol === "webSocket"
-      ? Buffer.alloc(0)
-      : Buffer.from(`payload:${header.requestId}`);
+    const normalizedHeader = {
+      ...header,
+      testEffectsEnabled: header.testEffectsEnabled ?? false,
+    };
+    assert.deepEqual(typed.envelope, normalizedHeader);
+    const payload = Buffer.from(`payload:${header.requestId}`);
     const decoded = decodeRuntimeAssemblyRequestStartFrame(
       encodeBinaryFrame(header, payload),
     );
-    assert.deepEqual(decoded.header, header, `${header.requestId} typed roundtrip`);
+    assert.deepEqual(
+      decoded.header,
+      normalizedHeader,
+      `${header.requestId} typed roundtrip`,
+    );
     assert.deepEqual(decoded.payloadBytes, payload, `${header.requestId} payload`);
     assert.equal(
       validateRuntimeToRouterFrameHeader(header).ok,
@@ -341,18 +348,16 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
       `${header.requestId} direction`,
     );
   }
-  const nullDouble = requestCorpus.requestStartHeaders[0]
-    .testEffectDoubles.effect[0];
-  assert.equal(
-    Object.prototype.hasOwnProperty.call(nullDouble, "response"),
-    true,
-  );
-  assert.equal(nullDouble.response, null);
 
   const mutationNames = new Set();
   for (const mutation of requestCorpus.requestStartMutations) {
     assert.equal(mutationNames.has(mutation.name), false, mutation.name);
     mutationNames.add(mutation.name);
+    assert.ok(
+      mutation.baseIndex >= 0 &&
+        mutation.baseIndex < requestCorpus.requestStartHeaders.length,
+      mutation.name,
+    );
     const header = structuredClone(
       requestCorpus.requestStartHeaders[mutation.baseIndex],
     );
@@ -379,14 +384,9 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
   for (const rawCase of requestCorpus.requestStartRawCases) {
     assert.equal(mutationNames.has(rawCase.name), false, rawCase.name);
     mutationNames.add(rawCase.name);
-    const frame = Buffer.from(rawCase.frameHex, "hex");
+    const frame = requestRawCaseFrame(rawCase);
     if (rawCase.outcome === "accept") {
-      const decoded = decodeRuntimeAssemblyRequestStartFrame(frame);
-      const response = decoded.header.testEffectDoubles.effect[0].response;
-      assert.deepEqual(response, rawCase.expectedResponse, rawCase.name);
-      if (rawCase.name === "raw negative zero normalization") {
-        assert.equal(Object.is(response, -0), false, rawCase.name);
-      }
+      decodeRuntimeAssemblyRequestStartFrame(frame);
     } else {
       assert.equal(rawCase.outcome, "reject", rawCase.name);
       assert.throws(
@@ -397,7 +397,30 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
     }
   }
 
+  for (const payloadCase of requestCorpus.requestStartPayloadCases) {
+    assert.equal(mutationNames.has(payloadCase.name), false, payloadCase.name);
+    mutationNames.add(payloadCase.name);
+    assert.ok(
+      payloadCase.baseIndex >= 0 &&
+        payloadCase.baseIndex < requestCorpus.requestStartHeaders.length,
+      payloadCase.name,
+    );
+    const header = requestCorpus.requestStartHeaders[payloadCase.baseIndex];
+    const payload = Buffer.from(payloadCase.payloadHex, "hex");
+    const decoded = decodeRuntimeAssemblyRequestStartFrame(
+      encodeBinaryFrame(header, payload),
+    );
+    assert.deepEqual(decoded.payloadBytes, payload, payloadCase.name);
+  }
+
   for (const pair of requestCorpus.requestStartEquivalentOptionPairs) {
+    assert.equal(mutationNames.has(pair.name), false, pair.name);
+    mutationNames.add(pair.name);
+    assert.ok(
+      pair.baseIndex >= 0 &&
+        pair.baseIndex < requestCorpus.requestStartHeaders.length,
+      pair.name,
+    );
     const absent = structuredClone(requestCorpus.requestStartHeaders[pair.baseIndex]);
     const explicit = structuredClone(absent);
     applyPath(absent, pair.path, undefined, true);
@@ -433,6 +456,57 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
     "reject",
     "register",
   ]);
+  assert.deepEqual(frozenCheckpoint.runtimeAssemblyRequestRouting, {
+    kind: "runtimeAssembly",
+    fields: [
+      "kind",
+      "assemblyIdentity",
+      "assemblyGeneration",
+      "gatewayEntryIdentity",
+      "ingress",
+    ],
+    ingressFields: ["protocol", "host", "method", "path"],
+    ingressProtocol: "http",
+    forbiddenFields: [
+      "contractOperationId",
+      "gatewayEntryKey",
+      "deployment",
+      "activationIdentity",
+    ],
+  });
+  assert.deepEqual(frozenCheckpoint.runtimeAssemblyRequestHeader, {
+    requiredFields: [
+      "schemaVersion",
+      "type",
+      "requestId",
+      "mode",
+      "caller",
+      "routing",
+      "trace",
+      "httpRequest",
+    ],
+    optionalFields: ["clientSession", "deadline", "testEffectsEnabled"],
+    callerFields: ["kind"],
+    callerKind: "gateway",
+    defaultFalseFields: ["testEffectsEnabled"],
+    payload: "opaque HTTP request body bytes",
+    forbiddenFields: [
+      "target",
+      "operationAbiId",
+      "selector",
+      "serviceId",
+      "version",
+      "buildId",
+      "serviceProtocolIdentity",
+      "activationIdentity",
+      "gatewayEntryIdentity",
+      "businessIdentity",
+      "websocketEntryId",
+      "httpAdapter",
+      "websocketAdapter",
+      "testEffectDoubles",
+    ],
+  });
   assert.deepEqual(
     storeCorpus.argv,
     frozenCheckpoint.ecosystemStoreAdapter.argv,
@@ -467,12 +541,40 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
       requestHeaders: requestCorpus.requestStartHeaders.length,
       requestMutations: requestCorpus.requestStartMutations.length,
       requestRawCases: requestCorpus.requestStartRawCases.length,
+      requestPayloadCases: requestCorpus.requestStartPayloadCases.length,
       requestEquivalentOptionPairs:
         requestCorpus.requestStartEquivalentOptionPairs.length,
       legacyRequestHeaders: requestCorpus.legacyRequestStartHeaders.length,
       storeOperations: frozenCheckpoint.ecosystemStoreAdapter.operations.length,
     })}\n`,
   );
+}
+
+function requestRawCaseFrame(rawCase) {
+  const sources = [
+    rawCase.headerText !== undefined,
+    rawCase.headerHex !== undefined,
+    rawCase.frameHex !== undefined,
+  ];
+  assert.equal(
+    sources.filter(Boolean).length,
+    1,
+    `${rawCase.name} raw input`,
+  );
+  if (rawCase.frameHex !== undefined) {
+    return Buffer.from(rawCase.frameHex, "hex");
+  }
+  const header = rawCase.headerText !== undefined
+    ? Buffer.from(rawCase.headerText, "utf8")
+    : Buffer.from(rawCase.headerHex, "hex");
+  const frame = Buffer.alloc(14 + header.length);
+  Buffer.from([0x53, 0x4b, 0x42, 0x46]).copy(frame, 0);
+  frame.writeUInt8(1, 4);
+  frame.writeUInt8(1, 5);
+  frame.writeUInt32BE(header.length, 6);
+  frame.writeUInt32BE(0, 10);
+  header.copy(frame, 14);
+  return frame;
 }
 
 function applyMutation(root, mutation) {

@@ -290,6 +290,19 @@ const serviceErrorResponseV2Corpus = JSON.parse(
   }>;
 };
 
+const runtimeAssemblyRequestCorpus = JSON.parse(
+  readFileSync(
+    new URL(
+      '../../cross-system-fixtures/package-service-ecosystem/runtime-request-wire.json',
+      import.meta.url
+    ),
+    'utf8'
+  )
+) as {
+  requestStartHeaders: Array<Record<string, unknown>>;
+  legacyRequestStartHeaders: Array<Record<string, unknown>>;
+};
+
 const serviceErrorResponseV2HeaderInvalidCaseNames = new Set([
   'legacy-v1-generic-response-error',
   'missing-error-kind',
@@ -346,6 +359,35 @@ const observabilityFixture = JSON.parse(
 };
 
 describe('runtime protocol fixtures and schemas', () => {
+  it('registers disjoint legacy and canonical HTTP request.start schema branches', () => {
+    const schema = runtimeFrameHeaderSchemas['request.start'];
+    expect('oneOf' in schema).toBe(true);
+    if (!('oneOf' in schema)) throw new Error('request.start schema must be oneOf');
+    expect(schema.oneOf).toHaveLength(2);
+    expect(runtimeAssemblyRequestCorpus.requestStartHeaders.length).toBeGreaterThan(0);
+    expect(runtimeAssemblyRequestCorpus.legacyRequestStartHeaders.length).toBeGreaterThan(0);
+
+    for (const header of runtimeAssemblyRequestCorpus.requestStartHeaders) {
+      expect(matchesProtocolEnvelopeSchema(schema, header), String(header.requestId)).toBe(
+        true
+      );
+    }
+    for (const header of runtimeAssemblyRequestCorpus.legacyRequestStartHeaders) {
+      expect(matchesProtocolEnvelopeSchema(schema, header), String(header.requestId)).toBe(
+        true
+      );
+    }
+
+    const forgedCaller = structuredClone(runtimeAssemblyRequestCorpus.requestStartHeaders[0]!);
+    (forgedCaller.caller as Record<string, unknown>).target = 'forged-handler';
+    expect(matchesProtocolEnvelopeSchema(schema, forgedCaller)).toBe(false);
+
+    const websocket = structuredClone(runtimeAssemblyRequestCorpus.requestStartHeaders[0]!);
+    const routing = websocket.routing as Record<string, unknown>;
+    (routing.ingress as Record<string, unknown>).protocol = 'webSocket';
+    expect(matchesProtocolEnvelopeSchema(schema, websocket)).toBe(false);
+  });
+
   it('evaluates the response.error declarative oneOf against the shared header corpus', () => {
     const schema = runtimeFrameHeaderSchemas['response.error'];
     expect(schema.oneOf).toHaveLength(2);
@@ -750,7 +792,10 @@ describe('runtime protocol fixtures and schemas', () => {
       serviceId: 'example.com/hello'
     };
 
-    expect(runtimeFrameHeaderSchemas['request.start'].properties.serviceId).toEqual({
+    const requestStartSchema = runtimeFrameHeaderSchemas['request.start'];
+    expect('oneOf' in requestStartSchema).toBe(true);
+    if (!('oneOf' in requestStartSchema)) throw new Error('request.start schema must be oneOf');
+    expect(requestStartSchema.oneOf[0].properties.serviceId).toEqual({
       type: 'string'
     });
     expect(validateRouterToRuntimeFrameHeader(requestEnvelope)).toEqual({

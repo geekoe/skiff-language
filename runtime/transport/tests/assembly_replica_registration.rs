@@ -11,7 +11,7 @@ use skiff_runtime_transport::{
 fn assembly_ref(byte: char) -> RuntimeAssemblyRef {
     RuntimeAssemblyRef {
         assembly_identity: AssemblyIdentity::new(format!(
-            "skiff-runtime-assembly-v1:sha256:{}",
+            "skiff-runtime-assembly-v2:sha256:{}",
             byte.to_string().repeat(64)
         )),
     }
@@ -86,7 +86,7 @@ fn activation_control_rejects_payload_and_legacy_service_fields() {
         "candidateGeneration": 42,
         "assembly": {
             "assemblyIdentity": format!(
-                "skiff-runtime-assembly-v1:sha256:{}",
+                "skiff-runtime-assembly-v2:sha256:{}",
                 "b".repeat(64)
             )
         },

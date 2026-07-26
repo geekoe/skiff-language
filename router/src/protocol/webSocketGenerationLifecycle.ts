@@ -9,6 +9,10 @@ import {
   parseStrictActivationJson,
 } from "./strictActivationJson.js";
 import { isPublicationId } from "../publicationId.js";
+import {
+  activationGeneration,
+  runtimeAssemblyIdentity,
+} from "./assemblyActivationLexical.js";
 
 export const WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE =
   "websocket.generation.lifecycle" as const;
@@ -252,15 +256,10 @@ function decodeTuple(value: unknown): WebSocketGenerationLifecycleTuple {
     "websocketEntryId",
     "connectionId",
   ]);
-  const assemblyGeneration = value.assemblyGeneration;
-  if (
-    !Number.isSafeInteger(assemblyGeneration) ||
-    (assemblyGeneration as number) < 0
-  ) {
-    throw new Error(
-      "websocket generation lifecycle tuple assemblyGeneration must be a non-negative safe integer",
-    );
-  }
+  const assemblyGeneration = activationGeneration(
+    value.assemblyGeneration,
+    "websocket generation lifecycle tuple assemblyGeneration",
+  );
   return {
     routerSessionId: requirePattern(
       value,
@@ -268,12 +267,8 @@ function decodeTuple(value: unknown): WebSocketGenerationLifecycleTuple {
       /^skiff-router-session-v1:opaque:[A-Za-z0-9._:-]+$/,
     ),
     serviceId: requirePublicationId(value, "serviceId"),
-    assemblyIdentity: requirePattern(
-      value,
-      "assemblyIdentity",
-      /^skiff-runtime-assembly-v1:sha256:[0-9a-f]{64}$/,
-    ),
-    assemblyGeneration: assemblyGeneration as number,
+    assemblyIdentity: runtimeAssemblyIdentity(value.assemblyIdentity),
+    assemblyGeneration,
     websocketEntryId: requirePattern(
       value,
       "websocketEntryId",

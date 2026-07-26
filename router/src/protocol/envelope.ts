@@ -1,5 +1,6 @@
 import type { ConfigShape } from '../config/index.js';
 import type { RequestCancelReason } from './cancelReason.js';
+import type { RuntimeAssemblyRequestStartFrameHeader } from './runtimeAssemblyRequest.js';
 
 export type { RequestCancelReason } from './cancelReason.js';
 
@@ -480,15 +481,6 @@ export interface RequestStartFrameHeader extends RuntimeFrameHeaderBase<'request
   version?: string;
   buildId: string;
   serviceProtocolIdentity: string;
-  assemblyIdentity?: string;
-  assemblyGeneration?: number;
-  contractOperationId?: string;
-  ingress?: {
-    protocol: 'http' | 'webSocket';
-    host: string;
-    method: string | null;
-    path: string;
-  };
   activationIdentity?: string;
   gatewayEntryIdentity?: string;
   businessIdentity?: string;
@@ -830,6 +822,7 @@ export type RouterToRuntimeFrameHeader =
   | ActorSpawnRuntimeResponseFrameHeader
   | ActorSpawnRuntimeErrorFrameHeader
   | RequestStartFrameHeader
+  | RuntimeAssemblyRequestStartFrameHeader
   | PackageTestStartFrameHeader
   | RequestCancelFrameHeader
   | ResponseStartFrameHeader

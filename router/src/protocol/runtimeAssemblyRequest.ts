@@ -1,73 +1,59 @@
 import {
-  type HttpAdapterFrameMetadata,
+  type DispatchMode,
+  type HttpRequestFrameMetadata,
   isRecord,
-  type RequestStartFrameHeader,
-  type WebSocketAdapterFrameMetadata,
+  RUNTIME_FRAME_SCHEMA_VERSION,
+  type RuntimeClientSessionFrameMetadata,
+  type TraceContext,
 } from "./envelope.js";
 import {
   activationGeneration,
   runtimeAssemblyIdentity,
 } from "./assemblyActivationLexical.js";
 import {
+  normalizeRuntimeAssemblyRequestMetadata,
+  validateRuntimeAssemblyRequestMetadata,
+} from "./runtimeAssemblyRequestMetadata.js";
+import {
   firstMissingField,
   firstUnsupportedField,
   rejectUnknownObjectFields,
 } from "./runtimeAssemblyRequestStrict.js";
 
-type CanonicalReplacedField =
-  | "target"
-  | "operationAbiId"
-  | "selector"
-  | "serviceId"
-  | "version"
-  | "buildId"
-  | "serviceProtocolIdentity"
-  | "assemblyIdentity"
-  | "assemblyGeneration"
-  | "contractOperationId"
-  | "ingress"
-  | "httpAdapter"
-  | "websocketAdapter"
-  | "testEffectsEnabled"
-  | "testEffectDoubles";
-
 export interface RuntimeAssemblyRequestRoutingFrameHeader {
   kind: "runtimeAssembly";
   assemblyIdentity: string;
   assemblyGeneration: number;
-  contractOperationId: string;
+  gatewayEntryIdentity: string;
   ingress: {
-    protocol: "http" | "webSocket";
+    protocol: "http";
     host: string;
-    method: string | null;
+    method: string;
     path: string;
   };
 }
 
-export type RuntimeAssemblyRequestStartFrameHeader = Omit<
-  RequestStartFrameHeader,
-  CanonicalReplacedField
-> & {
+export interface RuntimeAssemblyRequestStartFrameHeader {
+  schemaVersion: typeof RUNTIME_FRAME_SCHEMA_VERSION;
+  type: "request.start";
+  requestId: string;
+  mode: DispatchMode;
   caller: {
     kind: "gateway";
-    target: string;
   };
   routing: RuntimeAssemblyRequestRoutingFrameHeader;
-  httpAdapter?: Omit<HttpAdapterFrameMetadata, "adapterArgs"> & {
-    adapterArgs: NonNullable<HttpAdapterFrameMetadata["adapterArgs"]>;
+  clientSession?: RuntimeClientSessionFrameMetadata;
+  deadline?: {
+    timeoutMs: number;
+    expiresAt: string;
   };
-  websocketAdapter?: Omit<WebSocketAdapterFrameMetadata, "adapterArgs"> & {
-    adapterArgs: WebSocketAdapterFrameMetadata["adapterArgs"];
-  };
+  trace: TraceContext;
+  httpRequest: HttpRequestFrameMetadata;
   testEffectsEnabled: boolean;
-  testEffectDoubles: Record<
-    string,
-    Array<{ expectRequest?: unknown; response: unknown }>
-  >;
-};
+}
 
-const CONTRACT_OPERATION_IDENTITY_PATTERN =
-  /^skiff-contract-operation-v1:sha256:[0-9a-f]{64}$/;
+const GATEWAY_ENTRY_IDENTITY_PATTERN =
+  /^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$/;
 
 const canonicalHeaderFields = new Set([
   "schemaVersion",
@@ -76,30 +62,31 @@ const canonicalHeaderFields = new Set([
   "mode",
   "caller",
   "routing",
-  "activationIdentity",
-  "gatewayEntryIdentity",
-  "businessIdentity",
-  "websocketEntryId",
   "clientSession",
   "deadline",
   "trace",
   "httpRequest",
-  "httpAdapter",
-  "websocketAdapter",
   "testEffectsEnabled",
-  "testEffectDoubles",
 ]);
-
+const requiredHeaderFields = new Set([
+  "schemaVersion",
+  "type",
+  "requestId",
+  "mode",
+  "caller",
+  "routing",
+  "trace",
+  "httpRequest",
+]);
 const routingFields = new Set([
   "kind",
   "assemblyIdentity",
   "assemblyGeneration",
-  "contractOperationId",
+  "gatewayEntryIdentity",
   "ingress",
 ]);
 const ingressFields = new Set(["protocol", "host", "method", "path"]);
-const callerFields = new Set(["kind", "target"]);
-const traceFields = new Set(["traceId", "spanId", "parentSpanId", "sampled"]);
+const callerFields = new Set(["kind"]);
 
 export function hasRuntimeAssemblyRouting(
   envelope: Record<string, unknown>,
@@ -107,25 +94,46 @@ export function hasRuntimeAssemblyRouting(
   return Object.prototype.hasOwnProperty.call(envelope, "routing");
 }
 
-export function validateRuntimeAssemblyRequestRouting(
+export function validateRuntimeAssemblyRequestStartHeader(
   envelope: Record<string, unknown>,
 ): string | null {
   const unsupportedHeader = firstUnsupportedField(envelope, canonicalHeaderFields);
   if (unsupportedHeader !== undefined) {
     return `invalid request.start runtimeAssembly envelope: ${unsupportedHeader} is not supported`;
   }
-  const callerError = rejectUnknownObjectFields(
-    envelope.caller,
-    callerFields,
-    "caller",
-  );
+  const missingHeader = firstMissingField(envelope, requiredHeaderFields);
+  if (missingHeader !== undefined) {
+    return `invalid request.start runtimeAssembly envelope: ${missingHeader} is required`;
+  }
+  if (envelope.schemaVersion !== RUNTIME_FRAME_SCHEMA_VERSION) {
+    return `invalid request.start runtimeAssembly envelope: schemaVersion must be ${RUNTIME_FRAME_SCHEMA_VERSION}`;
+  }
+  if (envelope.type !== "request.start") {
+    return "invalid request.start runtimeAssembly envelope: type must be request.start";
+  }
+  if (typeof envelope.requestId !== "string") {
+    return "invalid request.start runtimeAssembly envelope: requestId must be a string";
+  }
+  if (envelope.mode !== "unary" && envelope.mode !== "serverStream") {
+    return "invalid request.start runtimeAssembly envelope: mode must be unary or serverStream";
+  }
+  const callerError = validateCaller(envelope.caller);
   if (callerError !== null) return callerError;
-  const traceError = rejectUnknownObjectFields(
-    envelope.trace,
-    traceFields,
-    "trace",
+  return (
+    validateRuntimeAssemblyRequestRouting(envelope) ??
+    validateRuntimeAssemblyRequestMetadata(envelope)
   );
-  if (traceError !== null) return traceError;
+}
+
+export function normalizeRuntimeAssemblyRequestStartHeader(
+  envelope: Record<string, unknown>,
+): RuntimeAssemblyRequestStartFrameHeader {
+  return normalizeRuntimeAssemblyRequestMetadata(envelope);
+}
+
+export function validateRuntimeAssemblyRequestRouting(
+  envelope: Record<string, unknown>,
+): string | null {
   if (!isRecord(envelope.routing)) {
     return "invalid request.start envelope: routing must be an object";
   }
@@ -144,7 +152,7 @@ export function validateRuntimeAssemblyRequestRouting(
   try {
     runtimeAssemblyIdentity(routing.assemblyIdentity);
   } catch {
-    return "invalid request.start envelope: routing.assemblyIdentity must be skiff-runtime-assembly-v1:sha256:<64 lowercase hex>";
+    return "invalid request.start envelope: routing.assemblyIdentity must be skiff-runtime-assembly-v2:sha256:<64 lowercase hex>";
   }
   try {
     activationGeneration(
@@ -155,12 +163,23 @@ export function validateRuntimeAssemblyRequestRouting(
     return "invalid request.start envelope: routing.assemblyGeneration must be a non-negative safe integer";
   }
   if (
-    typeof routing.contractOperationId !== "string" ||
-    !CONTRACT_OPERATION_IDENTITY_PATTERN.test(routing.contractOperationId)
+    typeof routing.gatewayEntryIdentity !== "string" ||
+    !GATEWAY_ENTRY_IDENTITY_PATTERN.test(routing.gatewayEntryIdentity)
   ) {
-    return "invalid request.start envelope: routing.contractOperationId must be skiff-contract-operation-v1:sha256:<64 lowercase hex>";
+    return "invalid request.start envelope: routing.gatewayEntryIdentity must be skiff-gateway-entry-v1:sha256:<64 lowercase hex>";
   }
   return validateIngress(routing.ingress);
+}
+
+function validateCaller(input: unknown): string | null {
+  if (!isRecord(input)) {
+    return "invalid request.start runtimeAssembly envelope: caller must be an object";
+  }
+  const unsupported = rejectUnknownObjectFields(input, callerFields, "caller");
+  if (unsupported !== null) return unsupported;
+  return input.kind === "gateway"
+    ? null
+    : "invalid request.start runtimeAssembly envelope: caller.kind must be gateway";
 }
 
 function validateIngress(input: unknown): string | null {
@@ -175,23 +194,17 @@ function validateIngress(input: unknown): string | null {
   if (missing !== undefined) {
     return `invalid request.start envelope: routing.ingress.${missing} is required`;
   }
-  const { protocol, host, method, path } = input;
-  if (protocol !== "http" && protocol !== "webSocket") {
-    return "invalid request.start envelope: routing.ingress.protocol must be http or webSocket";
+  if (input.protocol !== "http") {
+    return "invalid request.start envelope: routing.ingress.protocol must be http";
   }
-  if (
-    typeof host !== "string" ||
-    host.length === 0 ||
-    typeof path !== "string" ||
-    !path.startsWith("/")
-  ) {
-    return "invalid request.start envelope: routing.ingress must carry a non-empty host and absolute path";
+  if (typeof input.host !== "string" || input.host.length === 0) {
+    return "invalid request.start envelope: routing.ingress.host must be a non-empty string";
   }
-  if (
-    (protocol === "http" && (typeof method !== "string" || method.length === 0)) ||
-    (protocol === "webSocket" && method !== null)
-  ) {
-    return "invalid request.start envelope: routing.ingress.method does not match protocol";
+  if (typeof input.method !== "string" || input.method.length === 0) {
+    return "invalid request.start envelope: routing.ingress.method must be a non-empty string";
+  }
+  if (typeof input.path !== "string" || !input.path.startsWith("/")) {
+    return "invalid request.start envelope: routing.ingress.path must be an absolute path";
   }
   return null;
 }

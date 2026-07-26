@@ -6,14 +6,13 @@
       "requestId": "request-http-full",
       "mode": "unary",
       "caller": {
-        "kind": "gateway",
-        "target": "gateway-http"
+        "kind": "gateway"
       },
       "routing": {
         "kind": "runtimeAssembly",
-        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f",
         "assemblyGeneration": 7,
-        "contractOperationId": "skiff-contract-operation-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "gatewayEntryIdentity": "skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "ingress": {
           "protocol": "http",
           "host": "example.com",
@@ -21,22 +20,18 @@
           "path": "/items"
         }
       },
-      "activationIdentity": "skiff-runtime-activation-v1:opaque:http.full-1",
-      "gatewayEntryIdentity": "skiff-gateway-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-      "businessIdentity": "business-http",
-      "websocketEntryId": "unused-but-valid",
       "clientSession": {
         "id": "client-http"
       },
       "deadline": {
-        "timeoutMs": 0,
+        "timeoutMs": 25,
         "expiresAt": "2030-01-01T00:00:00Z"
       },
       "trace": {
         "traceId": "trace-http",
         "spanId": "span-http",
-        "parentSpanId": "",
-        "sampled": false
+        "parentSpanId": "parent-http",
+        "sampled": true
       },
       "httpRequest": {
         "method": "POST",
@@ -63,1899 +58,325 @@
           }
         ]
       },
-      "httpAdapter": {
-        "kind": "typedJson",
-        "handler": {
-          "kind": "serviceFunction",
-          "modulePath": "handlers/items",
-          "symbol": "create"
-        },
-        "guard": {
-          "kind": "packageFunction",
-          "packageId": "example.com/auth",
-          "symbolPath": "guards/allow"
-        },
-        "pre": {
-          "kind": "serviceFunction",
-          "modulePath": "",
-          "symbol": ""
-        },
-        "adapterArgs": [
-          {
-            "param": "request",
-            "source": {
-              "kind": "http.request"
-            }
-          },
-          {
-            "param": "body",
-            "source": {
-              "kind": "http.body"
-            }
-          },
-          {
-            "param": "context",
-            "source": {
-              "kind": "http.context"
-            }
-          }
-        ]
-      },
-      "testEffectsEnabled": true,
-      "testEffectDoubles": {
-        "effect": [
-          {
-            "expectRequest": {
-              "nested": [
-                1,
-                true,
-                null
-              ]
-            },
-            "response": null
-          },
-          {
-            "response": {
-              "ok": true,
-              "value": -1.5
-            }
-          }
-        ]
-      }
+      "testEffectsEnabled": true
     },
     {
       "schemaVersion": "skiff-runtime-frame-v1",
       "type": "request.start",
-      "requestId": "request-ws-connect-full",
+      "requestId": "request-http-minimal-defaults",
       "mode": "unary",
       "caller": {
-        "kind": "gateway",
-        "target": "gateway-webSocket"
+        "kind": "gateway"
       },
       "routing": {
         "kind": "runtimeAssembly",
-        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "assemblyGeneration": 7,
-        "contractOperationId": "skiff-contract-operation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "assemblyGeneration": 0,
+        "gatewayEntryIdentity": "skiff-gateway-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "ingress": {
-          "protocol": "webSocket",
-          "host": "socket.example.com",
-          "method": null,
-          "path": "/chat"
+          "protocol": "http",
+          "host": "example.com",
+          "method": "GET",
+          "path": "/"
         }
-      },
-      "activationIdentity": "skiff-runtime-activation-v1:opaque:ws.connect",
-      "gatewayEntryIdentity": "skiff-gateway-v1:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-      "websocketEntryId": "chat-connect",
-      "clientSession": {
-        "id": "client-connect"
-      },
-      "deadline": {
-        "timeoutMs": 25,
-        "expiresAt": "2030-01-01T00:00:01Z"
       },
       "trace": {
-        "traceId": "trace-connect",
-        "spanId": "span-connect",
-        "parentSpanId": "parent",
-        "sampled": true
+        "traceId": "trace-minimal",
+        "spanId": "span-minimal"
       },
-      "websocketAdapter": {
-        "kind": "connect",
-        "adapterArgs": [
-          {
-            "param": "event",
-            "source": {
-              "kind": "websocket.ingressEvent"
-            }
-          }
-        ],
-        "connectRequest": {
-          "connectionId": "connection-connect",
-          "url": "wss://socket.example.com/chat",
-          "query": [
-            {
-              "name": "room",
-              "value": "one"
-            },
-            {
-              "name": "room",
-              "value": "two"
-            }
-          ],
-          "headers": [
-            {
-              "name": "x-repeat",
-              "value": "a"
-            },
-            {
-              "name": "x-repeat",
-              "value": "b"
-            }
-          ],
-          "cookies": [
-            {
-              "name": "session",
-              "value": "a"
-            },
-            {
-              "name": "session",
-              "value": "b"
-            }
-          ],
-          "version": "13"
-        }
-      },
-      "testEffectsEnabled": false,
-      "testEffectDoubles": {}
-    },
-    {
-      "schemaVersion": "skiff-runtime-frame-v1",
-      "type": "request.start",
-      "requestId": "request-ws-receive-text-full",
-      "mode": "unary",
-      "caller": {
-        "kind": "gateway",
-        "target": "gateway-webSocket"
-      },
-      "routing": {
-        "kind": "runtimeAssembly",
-        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-        "assemblyGeneration": 7,
-        "contractOperationId": "skiff-contract-operation-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-        "ingress": {
-          "protocol": "webSocket",
-          "host": "socket.example.com",
-          "method": null,
-          "path": "/chat"
-        }
-      },
-      "gatewayEntryIdentity": "skiff-gateway-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111",
-      "websocketEntryId": "chat-receive-text",
-      "businessIdentity": "top-business",
-      "trace": {
-        "traceId": "trace-receive-text",
-        "spanId": "span-receive-text"
-      },
-      "websocketAdapter": {
-        "kind": "receive",
-        "adapterArgs": [
-          {
-            "param": "event",
-            "source": {
-              "kind": "websocket.ingressEvent"
-            }
-          }
-        ],
-        "receiveEvent": {
-          "connectionId": "connection-text",
-          "businessIdentity": "event-business",
-          "message": {
-            "tag": "text",
-            "encoding": "utf8"
-          },
-          "payloadSegments": [
-            {
-              "kind": "websocket.context",
-              "offset": 0,
-              "length": 0
-            },
-            {
-              "kind": "websocket.message",
-              "offset": 0,
-              "length": 0
-            }
-          ],
-          "contextCodec": {
-            "operationAbiId": "context-abi",
-            "contextTypeIdentity": "context-type"
-          }
-        }
-      },
-      "testEffectsEnabled": false,
-      "testEffectDoubles": {}
-    },
-    {
-      "schemaVersion": "skiff-runtime-frame-v1",
-      "type": "request.start",
-      "requestId": "request-ws-receive-binary-boundary",
-      "mode": "unary",
-      "caller": {
-        "kind": "gateway",
-        "target": "gateway-webSocket"
-      },
-      "routing": {
-        "kind": "runtimeAssembly",
-        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-        "assemblyGeneration": 9007199254740991,
-        "contractOperationId": "skiff-contract-operation-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-        "ingress": {
-          "protocol": "webSocket",
-          "host": "socket.example.com",
-          "method": null,
-          "path": "/chat"
-        }
-      },
-      "gatewayEntryIdentity": "skiff-gateway-v1:sha256:2222222222222222222222222222222222222222222222222222222222222222",
-      "websocketEntryId": "chat-receive-binary",
-      "deadline": {
-        "timeoutMs": 9007199254740991,
-        "expiresAt": ""
-      },
-      "trace": {
-        "traceId": "trace-receive-binary",
-        "spanId": "span-receive-binary"
-      },
-      "websocketAdapter": {
-        "kind": "receive",
-        "adapterArgs": [
-          {
-            "param": "event",
-            "source": {
-              "kind": "websocket.ingressEvent"
-            }
-          }
-        ],
-        "receiveEvent": {
-          "connectionId": "connection-binary",
-          "message": {
-            "tag": "binary",
-            "encoding": "binary"
-          },
-          "payloadSegments": [
-            {
-              "kind": "websocket.message",
-              "offset": 0,
-              "length": 0
-            }
-          ]
-        }
-      },
-      "testEffectDoubles": {},
-      "testEffectsEnabled": false
-    }
-  ],
-  "requestStartMutations": [
-    {
-      "name": "target collision",
-      "baseIndex": 0,
-      "setPath": "target",
-      "value": "legacy-target"
-    },
-    {
-      "name": "buildId collision",
-      "baseIndex": 0,
-      "setPath": "buildId",
-      "value": "legacy-build"
-    },
-    {
-      "name": "serviceProtocolIdentity collision",
-      "baseIndex": 0,
-      "setPath": "serviceProtocolIdentity",
-      "value": "legacy-protocol"
-    },
-    {
-      "name": "serviceId collision",
-      "baseIndex": 0,
-      "setPath": "serviceId",
-      "value": "example.com/legacy"
-    },
-    {
-      "name": "version collision",
-      "baseIndex": 0,
-      "setPath": "version",
-      "value": "1.0.0"
-    },
-    {
-      "name": "selector collision",
-      "baseIndex": 0,
-      "setPath": "selector",
-      "value": "legacy-selector"
-    },
-    {
-      "name": "operationAbiId collision",
-      "baseIndex": 0,
-      "setPath": "operationAbiId",
-      "value": "legacy-operation"
-    },
-    {
-      "name": "old top-level assembly collision",
-      "baseIndex": 0,
-      "setPath": "assemblyIdentity",
-      "value": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    },
-    {
-      "name": "unknown routing field",
-      "baseIndex": 0,
-      "setPath": "routing.unknown",
-      "value": true
-    },
-    {
-      "name": "missing explicit method",
-      "baseIndex": 0,
-      "removePath": "routing.ingress.method"
-    },
-    {
-      "name": "http null method",
-      "baseIndex": 0,
-      "setPath": "routing.ingress.method",
-      "value": null
-    },
-    {
-      "name": "websocket string method",
-      "baseIndex": 1,
-      "setPath": "routing.ingress.method",
-      "value": "GET"
-    },
-    {
-      "name": "generation above safe integer",
-      "baseIndex": 0,
-      "setPath": "routing.assemblyGeneration",
-      "value": 9007199254740992
-    },
-    {
-      "name": "generation fraction",
-      "baseIndex": 0,
-      "setPath": "routing.assemblyGeneration",
-      "value": 1.5
-    },
-    {
-      "name": "generation negative",
-      "baseIndex": 0,
-      "setPath": "routing.assemblyGeneration",
-      "value": -1
-    },
-    {
-      "name": "generation negative zero",
-      "baseIndex": 0,
-      "setPath": "routing.assemblyGeneration",
-      "value": -0
-    },
-    {
-      "name": "invalid assembly identity",
-      "baseIndex": 0,
-      "setPath": "routing.assemblyIdentity",
-      "value": "skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    },
-    {
-      "name": "invalid contract operation identity",
-      "baseIndex": 0,
-      "setPath": "routing.contractOperationId",
-      "value": "skiff-protocol-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    },
-    {
-      "name": "numeric method",
-      "baseIndex": 0,
-      "setPath": "routing.ingress.method",
-      "value": 1
-    },
-    {
-      "name": "boolean method",
-      "baseIndex": 0,
-      "setPath": "routing.ingress.method",
-      "value": true
-    },
-    {
-      "name": "missing routing kind",
-      "baseIndex": 0,
-      "removePath": "routing.kind"
-    },
-    {
-      "name": "missing assembly identity",
-      "baseIndex": 0,
-      "removePath": "routing.assemblyIdentity"
-    },
-    {
-      "name": "missing assembly generation",
-      "baseIndex": 0,
-      "removePath": "routing.assemblyGeneration"
-    },
-    {
-      "name": "missing contract operation identity",
-      "baseIndex": 0,
-      "removePath": "routing.contractOperationId"
-    },
-    {
-      "name": "missing ingress",
-      "baseIndex": 0,
-      "removePath": "routing.ingress"
-    },
-    {
-      "name": "unknown ingress field",
-      "baseIndex": 0,
-      "setPath": "routing.ingress.buildId",
-      "value": "legacy-build"
-    },
-    {
-      "name": "wrong routing kind",
-      "baseIndex": 0,
-      "setPath": "routing.kind",
-      "value": "legacy"
-    },
-    {
-      "name": "non-gateway caller",
-      "baseIndex": 0,
-      "setPath": "caller.kind",
-      "value": "service"
-    },
-    {
-      "name": "unknown top-level field",
-      "baseIndex": 0,
-      "setPath": "artifactKind",
-      "value": "RuntimeAssembly"
-    },
-    {
-      "name": "unknown caller field",
-      "baseIndex": 0,
-      "setPath": "caller.serviceId",
-      "value": "example.com/legacy"
-    },
-    {
-      "name": "unknown trace field",
-      "baseIndex": 0,
-      "setPath": "trace.buildId",
-      "value": "legacy-build"
-    },
-    {
-      "name": "activation identity null",
-      "baseIndex": 0,
-      "setPath": "activationIdentity",
-      "value": null
-    },
-    {
-      "name": "gateway entry identity null",
-      "baseIndex": 0,
-      "setPath": "gatewayEntryIdentity",
-      "value": null
-    },
-    {
-      "name": "business identity null",
-      "baseIndex": 0,
-      "setPath": "businessIdentity",
-      "value": null
-    },
-    {
-      "name": "websocket entry id null",
-      "baseIndex": 1,
-      "setPath": "websocketEntryId",
-      "value": null
-    },
-    {
-      "name": "client session null",
-      "baseIndex": 0,
-      "setPath": "clientSession",
-      "value": null
-    },
-    {
-      "name": "deadline null",
-      "baseIndex": 0,
-      "setPath": "deadline",
-      "value": null
-    },
-    {
-      "name": "trace parent span null",
-      "baseIndex": 0,
-      "setPath": "trace.parentSpanId",
-      "value": null
-    },
-    {
-      "name": "trace sampled null",
-      "baseIndex": 0,
-      "setPath": "trace.sampled",
-      "value": null
-    },
-    {
-      "name": "http request null",
-      "baseIndex": 0,
-      "setPath": "httpRequest",
-      "value": null
-    },
-    {
-      "name": "http adapter null",
-      "baseIndex": 0,
-      "setPath": "httpAdapter",
-      "value": null
-    },
-    {
-      "name": "http guard null",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.guard",
-      "value": null
-    },
-    {
-      "name": "http pre null",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.pre",
-      "value": null
-    },
-    {
-      "name": "http adapter args null",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.adapterArgs",
-      "value": null
-    },
-    {
-      "name": "websocket adapter null",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter",
-      "value": null
-    },
-    {
-      "name": "websocket adapter args null",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs",
-      "value": null
-    },
-    {
-      "name": "websocket connect version null",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.connectRequest.version",
-      "value": null
-    },
-    {
-      "name": "receive business identity null",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.businessIdentity",
-      "value": null
-    },
-    {
-      "name": "receive context codec null",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.contextCodec",
-      "value": null
-    },
-    {
-      "name": "test effects enabled null",
-      "baseIndex": 0,
-      "setPath": "testEffectsEnabled",
-      "value": null
-    },
-    {
-      "name": "test effect doubles null",
-      "baseIndex": 0,
-      "setPath": "testEffectDoubles",
-      "value": null
-    },
-    {
-      "name": "invalid activation identity",
-      "baseIndex": 0,
-      "setPath": "activationIdentity",
-      "value": "skiff-runtime-activation-v1:opaque:"
-    },
-    {
-      "name": "invalid gateway identity",
-      "baseIndex": 0,
-      "setPath": "gatewayEntryIdentity",
-      "value": "skiff-gateway-v1:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    },
-    {
-      "name": "client session unknown field",
-      "baseIndex": 0,
-      "setPath": "clientSession.unknown",
-      "value": true
-    },
-    {
-      "name": "client session missing id",
-      "baseIndex": 0,
-      "removePath": "clientSession.id"
-    },
-    {
-      "name": "client session id wrong type",
-      "baseIndex": 0,
-      "setPath": "clientSession.id",
-      "value": 1
-    },
-    {
-      "name": "deadline unknown field",
-      "baseIndex": 0,
-      "setPath": "deadline.unknown",
-      "value": true
-    },
-    {
-      "name": "deadline missing timeout",
-      "baseIndex": 0,
-      "removePath": "deadline.timeoutMs"
-    },
-    {
-      "name": "deadline missing expires",
-      "baseIndex": 0,
-      "removePath": "deadline.expiresAt"
-    },
-    {
-      "name": "deadline expires wrong type",
-      "baseIndex": 0,
-      "setPath": "deadline.expiresAt",
-      "value": 1
-    },
-    {
-      "name": "deadline above safe integer",
-      "baseIndex": 0,
-      "setPath": "deadline.timeoutMs",
-      "value": 9007199254740992
-    },
-    {
-      "name": "deadline negative",
-      "baseIndex": 0,
-      "setPath": "deadline.timeoutMs",
-      "value": -1
-    },
-    {
-      "name": "deadline negative zero",
-      "baseIndex": 0,
-      "setPath": "deadline.timeoutMs",
-      "value": -0
-    },
-    {
-      "name": "deadline fraction",
-      "baseIndex": 0,
-      "setPath": "deadline.timeoutMs",
-      "value": 1.5
-    },
-    {
-      "name": "deadline integer wrong type",
-      "baseIndex": 0,
-      "setPath": "deadline.timeoutMs",
-      "value": "1"
-    },
-    {
-      "name": "trace missing trace id",
-      "baseIndex": 0,
-      "removePath": "trace.traceId"
-    },
-    {
-      "name": "trace missing span id",
-      "baseIndex": 0,
-      "removePath": "trace.spanId"
-    },
-    {
-      "name": "trace id wrong type",
-      "baseIndex": 0,
-      "setPath": "trace.traceId",
-      "value": 1
-    },
-    {
-      "name": "trace span id wrong type",
-      "baseIndex": 0,
-      "setPath": "trace.spanId",
-      "value": 1
-    },
-    {
-      "name": "trace parent span wrong type",
-      "baseIndex": 0,
-      "setPath": "trace.parentSpanId",
-      "value": 1
-    },
-    {
-      "name": "trace sampled wrong type",
-      "baseIndex": 0,
-      "setPath": "trace.sampled",
-      "value": 1
-    },
-    {
-      "name": "http request unknown field",
-      "baseIndex": 0,
-      "setPath": "httpRequest.unknown",
-      "value": true
-    },
-    {
-      "name": "http request body forbidden",
-      "baseIndex": 0,
-      "setPath": "httpRequest.body",
-      "value": "inline"
-    },
-    {
-      "name": "http request missing method",
-      "baseIndex": 0,
-      "removePath": "httpRequest.method"
-    },
-    {
-      "name": "http request missing url",
-      "baseIndex": 0,
-      "removePath": "httpRequest.url"
-    },
-    {
-      "name": "http request missing path",
-      "baseIndex": 0,
-      "removePath": "httpRequest.path"
-    },
-    {
-      "name": "http request missing query",
-      "baseIndex": 0,
-      "removePath": "httpRequest.query"
-    },
-    {
-      "name": "http request missing headers",
-      "baseIndex": 0,
-      "removePath": "httpRequest.headers"
-    },
-    {
-      "name": "http request method wrong type",
-      "baseIndex": 0,
-      "setPath": "httpRequest.method",
-      "value": 1
-    },
-    {
-      "name": "http request url wrong type",
-      "baseIndex": 0,
-      "setPath": "httpRequest.url",
-      "value": 1
-    },
-    {
-      "name": "http request path wrong type",
-      "baseIndex": 0,
-      "setPath": "httpRequest.path",
-      "value": 1
-    },
-    {
-      "name": "http query wrong type",
-      "baseIndex": 0,
-      "setPath": "httpRequest.query",
-      "value": {}
-    },
-    {
-      "name": "http headers wrong type",
-      "baseIndex": 0,
-      "setPath": "httpRequest.headers",
-      "value": {}
-    },
-    {
-      "name": "http query item wrong type",
-      "baseIndex": 0,
-      "setPath": "httpRequest.query.0",
-      "value": null
-    },
-    {
-      "name": "http query item unknown",
-      "baseIndex": 0,
-      "setPath": "httpRequest.query.0.unknown",
-      "value": true
-    },
-    {
-      "name": "http query item missing name",
-      "baseIndex": 0,
-      "removePath": "httpRequest.query.0.name"
-    },
-    {
-      "name": "http query item missing value",
-      "baseIndex": 0,
-      "removePath": "httpRequest.query.0.value"
-    },
-    {
-      "name": "http query name wrong type",
-      "baseIndex": 0,
-      "setPath": "httpRequest.query.0.name",
-      "value": 1
-    },
-    {
-      "name": "http query value wrong type",
-      "baseIndex": 0,
-      "setPath": "httpRequest.query.0.value",
-      "value": 1
-    },
-    {
-      "name": "http adapter unknown field",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.unknown",
-      "value": true
-    },
-    {
-      "name": "http handlerArgs forbidden",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.handlerArgs",
-      "value": []
-    },
-    {
-      "name": "http adapter missing kind",
-      "baseIndex": 0,
-      "removePath": "httpAdapter.kind"
-    },
-    {
-      "name": "http adapter missing handler",
-      "baseIndex": 0,
-      "removePath": "httpAdapter.handler"
-    },
-    {
-      "name": "http adapter kind invalid",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.kind",
-      "value": "json"
-    },
-    {
-      "name": "http handler wrong type",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.handler",
-      "value": null
-    },
-    {
-      "name": "http handler unknown field",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.handler.unknown",
-      "value": true
-    },
-    {
-      "name": "http handler missing kind",
-      "baseIndex": 0,
-      "removePath": "httpAdapter.handler.kind"
-    },
-    {
-      "name": "http handler kind invalid",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.handler.kind",
-      "value": "function"
-    },
-    {
-      "name": "service callable missing modulePath",
-      "baseIndex": 0,
-      "removePath": "httpAdapter.handler.modulePath"
-    },
-    {
-      "name": "service callable missing symbol",
-      "baseIndex": 0,
-      "removePath": "httpAdapter.handler.symbol"
-    },
-    {
-      "name": "service callable modulePath wrong type",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.handler.modulePath",
-      "value": 1
-    },
-    {
-      "name": "service callable symbol wrong type",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.handler.symbol",
-      "value": 1
-    },
-    {
-      "name": "package callable unknown field",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.guard.unknown",
-      "value": true
-    },
-    {
-      "name": "package callable missing packageId",
-      "baseIndex": 0,
-      "removePath": "httpAdapter.guard.packageId"
-    },
-    {
-      "name": "package callable missing symbolPath",
-      "baseIndex": 0,
-      "removePath": "httpAdapter.guard.symbolPath"
-    },
-    {
-      "name": "package callable packageId wrong type",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.guard.packageId",
-      "value": 1
-    },
-    {
-      "name": "package callable symbolPath wrong type",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.guard.symbolPath",
-      "value": 1
-    },
-    {
-      "name": "http adapter args wrong type",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.adapterArgs",
-      "value": {}
-    },
-    {
-      "name": "http adapter arg wrong type",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.adapterArgs.0",
-      "value": null
-    },
-    {
-      "name": "http adapter arg unknown",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.adapterArgs.0.unknown",
-      "value": true
-    },
-    {
-      "name": "http adapter arg missing param",
-      "baseIndex": 0,
-      "removePath": "httpAdapter.adapterArgs.0.param"
-    },
-    {
-      "name": "http adapter arg missing source",
-      "baseIndex": 0,
-      "removePath": "httpAdapter.adapterArgs.0.source"
-    },
-    {
-      "name": "http adapter param wrong type",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.adapterArgs.0.param",
-      "value": 1
-    },
-    {
-      "name": "http adapter param blank",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.adapterArgs.0.param",
-      "value": "  \t"
-    },
-    {
-      "name": "http adapter duplicate param",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.adapterArgs.1.param",
-      "value": "request"
-    },
-    {
-      "name": "http adapter source wrong type",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.adapterArgs.0.source",
-      "value": null
-    },
-    {
-      "name": "http adapter source unknown",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.adapterArgs.0.source.unknown",
-      "value": true
-    },
-    {
-      "name": "http adapter source missing kind",
-      "baseIndex": 0,
-      "removePath": "httpAdapter.adapterArgs.0.source.kind"
-    },
-    {
-      "name": "http adapter source websocket domain",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.adapterArgs.0.source.kind",
-      "value": "websocket.message"
-    },
-    {
-      "name": "http adapter source invalid",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.adapterArgs.0.source.kind",
-      "value": "http.unknown"
-    },
-    {
-      "name": "websocket adapter unknown field",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.unknown",
-      "value": true
-    },
-    {
-      "name": "websocket adapter missing kind",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.kind"
-    },
-    {
-      "name": "websocket adapter kind invalid",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.kind",
-      "value": "upgrade"
-    },
-    {
-      "name": "websocket adapter missing websocket entry identity",
-      "baseIndex": 1,
-      "removePath": "websocketEntryId"
-    },
-    {
-      "name": "websocket adapter missing gateway identity",
-      "baseIndex": 1,
-      "removePath": "gatewayEntryIdentity"
-    },
-    {
-      "name": "websocket adapter args wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs",
-      "value": {}
-    },
-    {
-      "name": "websocket adapter arg wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs.0",
-      "value": null
-    },
-    {
-      "name": "websocket adapter arg unknown",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs.0.unknown",
-      "value": true
-    },
-    {
-      "name": "websocket adapter arg missing param",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.adapterArgs.0.param"
-    },
-    {
-      "name": "websocket adapter arg missing source",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.adapterArgs.0.source"
-    },
-    {
-      "name": "websocket adapter param wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs.0.param",
-      "value": 1
-    },
-    {
-      "name": "websocket adapter param blank",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs.0.param",
-      "value": " "
-    },
-    {
-      "name": "websocket adapter duplicate param",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs",
-      "value": [
-        {
-          "param": "event",
-          "source": {
-            "kind": "websocket.ingressEvent"
-          }
-        },
-        {
-          "param": "event",
-          "source": {
-            "kind": "websocket.ingressEvent"
-          }
-        }
-      ]
-    },
-    {
-      "name": "websocket adapter source wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs.0.source",
-      "value": null
-    },
-    {
-      "name": "websocket adapter source unknown",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs.0.source.unknown",
-      "value": true
-    },
-    {
-      "name": "websocket adapter source missing kind",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.adapterArgs.0.source.kind"
-    },
-    {
-      "name": "websocket adapter source http domain",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs.0.source.kind",
-      "value": "http.request"
-    },
-    {
-      "name": "websocket adapter source invalid",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs.0.source.kind",
-      "value": "websocket.unknown"
-    },
-    {
-      "name": "connect missing connect request",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.connectRequest"
-    },
-    {
-      "name": "connect request explicit null",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.connectRequest",
-      "value": null
-    },
-    {
-      "name": "connect carries receive event",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.receiveEvent",
-      "value": {
-        "connectionId": "connection-text",
-        "businessIdentity": "event-business",
-        "message": {
-          "tag": "text",
-          "encoding": "utf8"
-        },
-        "payloadSegments": [],
-        "contextCodec": {
-          "operationAbiId": "context-abi",
-          "contextTypeIdentity": "context-type"
-        }
-      }
-    },
-    {
-      "name": "connect request unknown field",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.connectRequest.unknown",
-      "value": true
-    },
-    {
-      "name": "connect request missing connectionId",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.connectRequest.connectionId"
-    },
-    {
-      "name": "connect request missing url",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.connectRequest.url"
-    },
-    {
-      "name": "connect request missing query",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.connectRequest.query"
-    },
-    {
-      "name": "connect request missing headers",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.connectRequest.headers"
-    },
-    {
-      "name": "connect request missing cookies",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.connectRequest.cookies"
-    },
-    {
-      "name": "connect connection id wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.connectRequest.connectionId",
-      "value": 1
-    },
-    {
-      "name": "connect url wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.connectRequest.url",
-      "value": 1
-    },
-    {
-      "name": "connect query wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.connectRequest.query",
-      "value": {}
-    },
-    {
-      "name": "connect headers wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.connectRequest.headers",
-      "value": {}
-    },
-    {
-      "name": "connect cookies wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.connectRequest.cookies",
-      "value": {}
-    },
-    {
-      "name": "connect name value item unknown",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.connectRequest.cookies.0.unknown",
-      "value": true
-    },
-    {
-      "name": "connect version wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.connectRequest.version",
-      "value": 1
-    },
-    {
-      "name": "receive missing receive event",
-      "baseIndex": 2,
-      "removePath": "websocketAdapter.receiveEvent"
-    },
-    {
-      "name": "receive event explicit null",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent",
-      "value": null
-    },
-    {
-      "name": "receive carries connect request",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.connectRequest",
-      "value": {
-        "connectionId": "connection-connect",
-        "url": "wss://socket.example.com/chat",
-        "query": [
-          {
-            "name": "room",
-            "value": "one"
-          },
-          {
-            "name": "room",
-            "value": "two"
-          }
-        ],
-        "headers": [
-          {
-            "name": "x-repeat",
-            "value": "a"
-          },
-          {
-            "name": "x-repeat",
-            "value": "b"
-          }
-        ],
-        "cookies": [
-          {
-            "name": "session",
-            "value": "a"
-          },
-          {
-            "name": "session",
-            "value": "b"
-          }
-        ],
-        "version": "13"
-      }
-    },
-    {
-      "name": "receive event unknown field",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.unknown",
-      "value": true
-    },
-    {
-      "name": "receive missing connection id",
-      "baseIndex": 2,
-      "removePath": "websocketAdapter.receiveEvent.connectionId"
-    },
-    {
-      "name": "receive missing message",
-      "baseIndex": 2,
-      "removePath": "websocketAdapter.receiveEvent.message"
-    },
-    {
-      "name": "receive missing payload segments",
-      "baseIndex": 2,
-      "removePath": "websocketAdapter.receiveEvent.payloadSegments"
-    },
-    {
-      "name": "receive connection id wrong type",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.connectionId",
-      "value": 1
-    },
-    {
-      "name": "receive message wrong type",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.message",
-      "value": null
-    },
-    {
-      "name": "receive message unknown field",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.message.unknown",
-      "value": true
-    },
-    {
-      "name": "receive message missing tag",
-      "baseIndex": 2,
-      "removePath": "websocketAdapter.receiveEvent.message.tag"
-    },
-    {
-      "name": "receive message missing encoding",
-      "baseIndex": 2,
-      "removePath": "websocketAdapter.receiveEvent.message.encoding"
-    },
-    {
-      "name": "receive message tag invalid",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.message.tag",
-      "value": "json"
-    },
-    {
-      "name": "receive message encoding invalid",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.message.encoding",
-      "value": "base64"
-    },
-    {
-      "name": "payload segments null",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments",
-      "value": null
-    },
-    {
-      "name": "payload segment wrong type",
-      "baseIndex": 3,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0",
-      "value": null
-    },
-    {
-      "name": "payload segment unknown field",
-      "baseIndex": 3,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.unknown",
-      "value": true
-    },
-    {
-      "name": "payload segment missing kind",
-      "baseIndex": 3,
-      "removePath": "websocketAdapter.receiveEvent.payloadSegments.0.kind"
-    },
-    {
-      "name": "payload segment missing offset",
-      "baseIndex": 3,
-      "removePath": "websocketAdapter.receiveEvent.payloadSegments.0.offset"
-    },
-    {
-      "name": "payload segment missing length",
-      "baseIndex": 3,
-      "removePath": "websocketAdapter.receiveEvent.payloadSegments.0.length"
-    },
-    {
-      "name": "payload segment kind invalid",
-      "baseIndex": 3,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.kind",
-      "value": "websocket.payload"
-    },
-    {
-      "name": "payload segment offset above safe",
-      "baseIndex": 3,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.offset",
-      "value": 9007199254740992
-    },
-    {
-      "name": "payload segment length above safe",
-      "baseIndex": 3,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.length",
-      "value": 9007199254740992
-    },
-    {
-      "name": "payload segment offset negative",
-      "baseIndex": 3,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.offset",
-      "value": -1
-    },
-    {
-      "name": "payload segment length negative",
-      "baseIndex": 3,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.length",
-      "value": -1
-    },
-    {
-      "name": "payload segment offset negative zero",
-      "baseIndex": 3,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.offset",
-      "value": -0
-    },
-    {
-      "name": "payload segment length negative zero",
-      "baseIndex": 3,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.length",
-      "value": -0
-    },
-    {
-      "name": "payload segment offset fraction",
-      "baseIndex": 3,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.offset",
-      "value": 1.5
-    },
-    {
-      "name": "payload segment length fraction",
-      "baseIndex": 3,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.length",
-      "value": 1.5
-    },
-    {
-      "name": "payload segment offset wrong type",
-      "baseIndex": 3,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.offset",
-      "value": "1"
-    },
-    {
-      "name": "payload segment length wrong type",
-      "baseIndex": 3,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.length",
-      "value": "1"
-    },
-    {
-      "name": "context codec wrong type",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.contextCodec",
-      "value": []
-    },
-    {
-      "name": "context codec unknown field",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.contextCodec.unknown",
-      "value": true
-    },
-    {
-      "name": "context codec missing operation abi",
-      "baseIndex": 2,
-      "removePath": "websocketAdapter.receiveEvent.contextCodec.operationAbiId"
-    },
-    {
-      "name": "context codec missing type identity",
-      "baseIndex": 2,
-      "removePath": "websocketAdapter.receiveEvent.contextCodec.contextTypeIdentity"
-    },
-    {
-      "name": "context codec operation abi wrong type",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.contextCodec.operationAbiId",
-      "value": 1
-    },
-    {
-      "name": "context codec type identity wrong type",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.contextCodec.contextTypeIdentity",
-      "value": 1
-    },
-    {
-      "name": "test effect target empty sequence",
-      "baseIndex": 0,
-      "setPath": "testEffectDoubles.effect",
-      "value": []
-    },
-    {
-      "name": "test effect target wrong type",
-      "baseIndex": 0,
-      "setPath": "testEffectDoubles.effect",
-      "value": {}
-    },
-    {
-      "name": "test effect step null",
-      "baseIndex": 0,
-      "setPath": "testEffectDoubles.effect.0",
-      "value": null
-    },
-    {
-      "name": "test effect step missing response",
-      "baseIndex": 0,
-      "removePath": "testEffectDoubles.effect.0.response"
-    },
-    {
-      "name": "test effect step unknown field",
-      "baseIndex": 0,
-      "setPath": "testEffectDoubles.effect.0.unknown",
-      "value": true
-    },
-    {
-      "name": "missing schema version",
-      "baseIndex": 0,
-      "removePath": "schemaVersion"
-    },
-    {
-      "name": "wrong schema version",
-      "baseIndex": 0,
-      "setPath": "schemaVersion",
-      "value": "skiff-runtime-frame-v2"
-    },
-    {
-      "name": "missing frame type",
-      "baseIndex": 0,
-      "removePath": "type"
-    },
-    {
-      "name": "wrong frame type",
-      "baseIndex": 0,
-      "setPath": "type",
-      "value": "response.start"
-    },
-    {
-      "name": "missing request id",
-      "baseIndex": 0,
-      "removePath": "requestId"
-    },
-    {
-      "name": "request id wrong type",
-      "baseIndex": 0,
-      "setPath": "requestId",
-      "value": 1
-    },
-    {
-      "name": "missing mode",
-      "baseIndex": 0,
-      "removePath": "mode"
-    },
-    {
-      "name": "invalid mode",
-      "baseIndex": 0,
-      "setPath": "mode",
-      "value": "stream"
-    },
-    {
-      "name": "missing caller",
-      "baseIndex": 0,
-      "removePath": "caller"
-    },
-    {
-      "name": "caller wrong type",
-      "baseIndex": 0,
-      "setPath": "caller",
-      "value": []
-    },
-    {
-      "name": "caller missing kind",
-      "baseIndex": 0,
-      "removePath": "caller.kind"
-    },
-    {
-      "name": "caller missing target",
-      "baseIndex": 0,
-      "removePath": "caller.target"
-    },
-    {
-      "name": "caller target wrong type",
-      "baseIndex": 0,
-      "setPath": "caller.target",
-      "value": 1
-    },
-    {
-      "name": "trace wrong type",
-      "baseIndex": 0,
-      "setPath": "trace",
-      "value": []
-    },
-    {
-      "name": "activation identity wrong type",
-      "baseIndex": 0,
-      "setPath": "activationIdentity",
-      "value": 1
-    },
-    {
-      "name": "gateway entry identity wrong type",
-      "baseIndex": 0,
-      "setPath": "gatewayEntryIdentity",
-      "value": 1
-    },
-    {
-      "name": "business identity wrong type",
-      "baseIndex": 0,
-      "setPath": "businessIdentity",
-      "value": 1
-    },
-    {
-      "name": "websocket entry id wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketEntryId",
-      "value": 1
-    },
-    {
-      "name": "client session wrong type",
-      "baseIndex": 0,
-      "setPath": "clientSession",
-      "value": []
-    },
-    {
-      "name": "deadline wrong type",
-      "baseIndex": 0,
-      "setPath": "deadline",
-      "value": []
-    },
-    {
-      "name": "http request wrong type",
-      "baseIndex": 0,
-      "setPath": "httpRequest",
-      "value": []
-    },
-    {
-      "name": "http adapter wrong type",
-      "baseIndex": 0,
-      "setPath": "httpAdapter",
-      "value": []
-    },
-    {
-      "name": "websocket adapter wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter",
-      "value": []
-    },
-    {
-      "name": "test effects enabled wrong type",
-      "baseIndex": 0,
-      "setPath": "testEffectsEnabled",
-      "value": "true"
-    },
-    {
-      "name": "test effect doubles wrong type",
-      "baseIndex": 0,
-      "setPath": "testEffectDoubles",
-      "value": []
-    },
-    {
-      "name": "http header item unknown",
-      "baseIndex": 0,
-      "setPath": "httpRequest.headers.0.unknown",
-      "value": true
-    },
-    {
-      "name": "connect query item missing name",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.connectRequest.query.0.name"
-    },
-    {
-      "name": "connect header item missing value",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.connectRequest.headers.0.value"
-    },
-    {
-      "name": "connect cookie name wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.connectRequest.cookies.0.name",
-      "value": 1
-    },
-    {
-      "name": "http callable kind wrong type",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.handler.kind",
-      "value": 1
-    },
-    {
-      "name": "http source kind wrong type",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.adapterArgs.0.source.kind",
-      "value": 1
-    },
-    {
-      "name": "websocket source kind wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs.0.source.kind",
-      "value": 1
-    },
-    {
-      "name": "receive message tag wrong type",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.message.tag",
-      "value": 1
-    },
-    {
-      "name": "receive message encoding wrong type",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.receiveEvent.message.encoding",
-      "value": 1
-    },
-    {
-      "name": "payload segment kind wrong type",
-      "baseIndex": 3,
-      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.kind",
-      "value": 1
-    },
-    {
-      "name": "http adapter param unicode blank",
-      "baseIndex": 0,
-      "setPath": "httpAdapter.adapterArgs.0.param",
-      "value": "﻿"
-    },
-    {
-      "name": "websocket adapter param unicode blank",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs.0.param",
-      "value": "﻿"
-    },
-    {
-      "name": "canonical websocket missing adapter args",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.adapterArgs"
-    },
-    {
-      "name": "canonical websocket event param mismatch",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs.0.param",
-      "value": "request"
-    },
-    {
-      "name": "canonical websocket legacy source",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs.0.source.kind",
-      "value": "websocket.connectRequest"
-    },
-    {
-      "name": "canonical websocket context expectation forbidden",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.contextExpectation",
-      "value": {
-        "kind": "null"
-      }
-    },
-    {
-      "name": "canonical websocket server stream forbidden",
-      "baseIndex": 1,
-      "setPath": "mode",
-      "value": "serverStream"
-    },
-    {
-      "name": "canonical websocket HTTP metadata forbidden",
-      "baseIndex": 1,
-      "setPath": "httpRequest",
-      "value": {
+      "httpRequest": {
         "method": "GET",
-        "url": "https://socket.example.com/chat",
-        "path": "/chat",
+        "url": "https://example.com/",
+        "path": "/",
         "query": [],
         "headers": []
       }
     },
     {
-      "name": "canonical websocket test effects forbidden",
-      "baseIndex": 1,
-      "setPath": "testEffectsEnabled",
-      "value": true
+      "schemaVersion": "skiff-runtime-frame-v1",
+      "type": "request.start",
+      "requestId": "request-http-server-stream",
+      "mode": "serverStream",
+      "caller": {
+        "kind": "gateway"
+      },
+      "routing": {
+        "kind": "runtimeAssembly",
+        "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "assemblyGeneration": 9007199254740991,
+        "gatewayEntryIdentity": "skiff-gateway-entry-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "ingress": {
+          "protocol": "http",
+          "host": "stream.example.com",
+          "method": "GET",
+          "path": "/events"
+        }
+      },
+      "deadline": {
+        "timeoutMs": 9007199254740991,
+        "expiresAt": "2030-01-01T00:00:01Z"
+      },
+      "trace": {
+        "traceId": "trace-stream",
+        "spanId": "span-stream",
+        "sampled": false
+      },
+      "httpRequest": {
+        "method": "GET",
+        "url": "https://stream.example.com/events",
+        "path": "/events",
+        "query": [],
+        "headers": [
+          {
+            "name": "accept",
+            "value": "text/event-stream"
+          }
+        ]
+      },
+      "testEffectsEnabled": false
     }
+  ],
+  "requestStartMutations": [
+    { "name": "missing schemaVersion", "baseIndex": 0, "removePath": "schemaVersion" },
+    { "name": "missing type", "baseIndex": 0, "removePath": "type" },
+    { "name": "missing requestId", "baseIndex": 0, "removePath": "requestId" },
+    { "name": "missing mode", "baseIndex": 0, "removePath": "mode" },
+    { "name": "missing caller", "baseIndex": 0, "removePath": "caller" },
+    { "name": "missing routing", "baseIndex": 0, "removePath": "routing" },
+    { "name": "missing trace", "baseIndex": 0, "removePath": "trace" },
+    { "name": "missing httpRequest", "baseIndex": 0, "removePath": "httpRequest" },
+    { "name": "wrong schemaVersion", "baseIndex": 0, "setPath": "schemaVersion", "value": "skiff-runtime-frame-v2" },
+    { "name": "wrong type", "baseIndex": 0, "setPath": "type", "value": "response.start" },
+    { "name": "requestId null", "baseIndex": 0, "setPath": "requestId", "value": null },
+    { "name": "mode null", "baseIndex": 0, "setPath": "mode", "value": null },
+    { "name": "mode unsupported", "baseIndex": 0, "setPath": "mode", "value": "duplex" },
+    { "name": "unknown header field", "baseIndex": 0, "setPath": "unknown", "value": true },
+    { "name": "legacy target field", "baseIndex": 0, "setPath": "target", "value": "legacy-target" },
+    { "name": "legacy activation identity", "baseIndex": 0, "setPath": "activationIdentity", "value": "skiff-runtime-activation-v1:opaque:legacy" },
+    { "name": "legacy top gateway entry identity", "baseIndex": 0, "setPath": "gatewayEntryIdentity", "value": "skiff-gateway-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    { "name": "legacy business identity", "baseIndex": 0, "setPath": "businessIdentity", "value": "legacy" },
+    { "name": "legacy websocket entry id", "baseIndex": 0, "setPath": "websocketEntryId", "value": "legacy" },
+    { "name": "legacy http adapter", "baseIndex": 0, "setPath": "httpAdapter", "value": {} },
+    { "name": "legacy websocket adapter", "baseIndex": 0, "setPath": "websocketAdapter", "value": {} },
+    { "name": "legacy test effect doubles", "baseIndex": 0, "setPath": "testEffectDoubles", "value": {} },
+    { "name": "caller null", "baseIndex": 0, "setPath": "caller", "value": null },
+    { "name": "caller missing kind", "baseIndex": 0, "removePath": "caller.kind" },
+    { "name": "caller wrong kind", "baseIndex": 0, "setPath": "caller.kind", "value": "service" },
+    { "name": "caller kind null", "baseIndex": 0, "setPath": "caller.kind", "value": null },
+    { "name": "caller target is forbidden", "baseIndex": 0, "setPath": "caller.target", "value": "forged-handler" },
+    { "name": "routing null", "baseIndex": 0, "setPath": "routing", "value": null },
+    { "name": "routing unknown field", "baseIndex": 0, "setPath": "routing.unknown", "value": true },
+    { "name": "routing missing kind", "baseIndex": 0, "removePath": "routing.kind" },
+    { "name": "routing missing assembly identity", "baseIndex": 0, "removePath": "routing.assemblyIdentity" },
+    { "name": "routing missing assembly generation", "baseIndex": 0, "removePath": "routing.assemblyGeneration" },
+    { "name": "routing missing gateway identity", "baseIndex": 0, "removePath": "routing.gatewayEntryIdentity" },
+    { "name": "routing missing ingress", "baseIndex": 0, "removePath": "routing.ingress" },
+    { "name": "routing wrong kind", "baseIndex": 0, "setPath": "routing.kind", "value": "legacy" },
+    { "name": "assembly identity v1 rejected", "baseIndex": 0, "setPath": "routing.assemblyIdentity", "value": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    { "name": "assembly identity uppercase", "baseIndex": 0, "setPath": "routing.assemblyIdentity", "value": "skiff-runtime-assembly-v2:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+    { "name": "assembly identity short", "baseIndex": 0, "setPath": "routing.assemblyIdentity", "value": "skiff-runtime-assembly-v2:sha256:aaaa" },
+    { "name": "assembly identity null", "baseIndex": 0, "setPath": "routing.assemblyIdentity", "value": null },
+    { "name": "assembly generation negative", "baseIndex": 0, "setPath": "routing.assemblyGeneration", "value": -1 },
+    { "name": "assembly generation negative zero", "baseIndex": 0, "setPath": "routing.assemblyGeneration", "value": -0 },
+    { "name": "assembly generation unsafe", "baseIndex": 0, "setPath": "routing.assemblyGeneration", "value": 9007199254740992 },
+    { "name": "assembly generation string", "baseIndex": 0, "setPath": "routing.assemblyGeneration", "value": "7" },
+    { "name": "assembly generation null", "baseIndex": 0, "setPath": "routing.assemblyGeneration", "value": null },
+    { "name": "gateway identity legacy prefix", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-gateway-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    { "name": "gateway identity operation prefix", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-contract-operation-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    { "name": "gateway identity uppercase", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-gateway-entry-v1:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+    { "name": "gateway identity short", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-gateway-entry-v1:sha256:aaaa" },
+    { "name": "gateway identity null", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": null },
+    { "name": "legacy contract operation routing", "baseIndex": 0, "setPath": "routing.contractOperationId", "value": "skiff-contract-operation-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    { "name": "gateway entry key routing", "baseIndex": 0, "setPath": "routing.gatewayEntryKey", "value": "items" },
+    { "name": "deployment routing", "baseIndex": 0, "setPath": "routing.deployment", "value": "deployment" },
+    { "name": "service contract routing", "baseIndex": 0, "setPath": "routing.serviceProtocolIdentity", "value": "service-contract" },
+    { "name": "ingress null", "baseIndex": 0, "setPath": "routing.ingress", "value": null },
+    { "name": "ingress unknown field", "baseIndex": 0, "setPath": "routing.ingress.unknown", "value": true },
+    { "name": "ingress missing protocol", "baseIndex": 0, "removePath": "routing.ingress.protocol" },
+    { "name": "ingress missing host", "baseIndex": 0, "removePath": "routing.ingress.host" },
+    { "name": "ingress missing method", "baseIndex": 0, "removePath": "routing.ingress.method" },
+    { "name": "ingress missing path", "baseIndex": 0, "removePath": "routing.ingress.path" },
+    { "name": "ingress websocket rejected", "baseIndex": 0, "setPath": "routing.ingress.protocol", "value": "webSocket" },
+    { "name": "ingress protocol null", "baseIndex": 0, "setPath": "routing.ingress.protocol", "value": null },
+    { "name": "ingress empty host", "baseIndex": 0, "setPath": "routing.ingress.host", "value": "" },
+    { "name": "ingress host null", "baseIndex": 0, "setPath": "routing.ingress.host", "value": null },
+    { "name": "ingress empty method", "baseIndex": 0, "setPath": "routing.ingress.method", "value": "" },
+    { "name": "ingress method null", "baseIndex": 0, "setPath": "routing.ingress.method", "value": null },
+    { "name": "ingress relative path", "baseIndex": 0, "setPath": "routing.ingress.path", "value": "items" },
+    { "name": "ingress path null", "baseIndex": 0, "setPath": "routing.ingress.path", "value": null },
+    { "name": "client session null", "baseIndex": 0, "setPath": "clientSession", "value": null },
+    { "name": "client session wrong type", "baseIndex": 0, "setPath": "clientSession", "value": "client" },
+    { "name": "client session unknown field", "baseIndex": 0, "setPath": "clientSession.unknown", "value": true },
+    { "name": "client session missing id", "baseIndex": 0, "removePath": "clientSession.id" },
+    { "name": "client session id null", "baseIndex": 0, "setPath": "clientSession.id", "value": null },
+    { "name": "deadline null", "baseIndex": 0, "setPath": "deadline", "value": null },
+    { "name": "deadline unknown field", "baseIndex": 0, "setPath": "deadline.unknown", "value": true },
+    { "name": "deadline missing timeout", "baseIndex": 0, "removePath": "deadline.timeoutMs" },
+    { "name": "deadline missing expires", "baseIndex": 0, "removePath": "deadline.expiresAt" },
+    { "name": "deadline timeout negative", "baseIndex": 0, "setPath": "deadline.timeoutMs", "value": -1 },
+    { "name": "deadline timeout negative zero", "baseIndex": 0, "setPath": "deadline.timeoutMs", "value": -0 },
+    { "name": "deadline timeout unsafe", "baseIndex": 0, "setPath": "deadline.timeoutMs", "value": 9007199254740992 },
+    { "name": "deadline timeout string", "baseIndex": 0, "setPath": "deadline.timeoutMs", "value": "25" },
+    { "name": "deadline expires null", "baseIndex": 0, "setPath": "deadline.expiresAt", "value": null },
+    { "name": "trace null", "baseIndex": 0, "setPath": "trace", "value": null },
+    { "name": "trace unknown field", "baseIndex": 0, "setPath": "trace.unknown", "value": true },
+    { "name": "trace missing trace id", "baseIndex": 0, "removePath": "trace.traceId" },
+    { "name": "trace missing span id", "baseIndex": 0, "removePath": "trace.spanId" },
+    { "name": "trace id null", "baseIndex": 0, "setPath": "trace.traceId", "value": null },
+    { "name": "trace span null", "baseIndex": 0, "setPath": "trace.spanId", "value": null },
+    { "name": "trace parent null", "baseIndex": 0, "setPath": "trace.parentSpanId", "value": null },
+    { "name": "trace sampled null", "baseIndex": 0, "setPath": "trace.sampled", "value": null },
+    { "name": "trace sampled string", "baseIndex": 0, "setPath": "trace.sampled", "value": "true" },
+    { "name": "http request null", "baseIndex": 0, "setPath": "httpRequest", "value": null },
+    { "name": "http request unknown field", "baseIndex": 0, "setPath": "httpRequest.unknown", "value": true },
+    { "name": "http request missing method", "baseIndex": 0, "removePath": "httpRequest.method" },
+    { "name": "http request missing url", "baseIndex": 0, "removePath": "httpRequest.url" },
+    { "name": "http request missing path", "baseIndex": 0, "removePath": "httpRequest.path" },
+    { "name": "http request missing query", "baseIndex": 0, "removePath": "httpRequest.query" },
+    { "name": "http request missing headers", "baseIndex": 0, "removePath": "httpRequest.headers" },
+    { "name": "http request method null", "baseIndex": 0, "setPath": "httpRequest.method", "value": null },
+    { "name": "http request url null", "baseIndex": 0, "setPath": "httpRequest.url", "value": null },
+    { "name": "http request path null", "baseIndex": 0, "setPath": "httpRequest.path", "value": null },
+    { "name": "http request query null", "baseIndex": 0, "setPath": "httpRequest.query", "value": null },
+    { "name": "http request headers null", "baseIndex": 0, "setPath": "httpRequest.headers", "value": null },
+    { "name": "query entry unknown field", "baseIndex": 0, "setPath": "httpRequest.query.0.unknown", "value": true },
+    { "name": "query entry missing name", "baseIndex": 0, "removePath": "httpRequest.query.0.name" },
+    { "name": "query entry missing value", "baseIndex": 0, "removePath": "httpRequest.query.0.value" },
+    { "name": "query entry name null", "baseIndex": 0, "setPath": "httpRequest.query.0.name", "value": null },
+    { "name": "query entry value null", "baseIndex": 0, "setPath": "httpRequest.query.0.value", "value": null },
+    { "name": "header entry unknown field", "baseIndex": 0, "setPath": "httpRequest.headers.0.unknown", "value": true },
+    { "name": "header entry missing name", "baseIndex": 0, "removePath": "httpRequest.headers.0.name" },
+    { "name": "header entry missing value", "baseIndex": 0, "removePath": "httpRequest.headers.0.value" },
+    { "name": "header entry name null", "baseIndex": 0, "setPath": "httpRequest.headers.0.name", "value": null },
+    { "name": "header entry value null", "baseIndex": 0, "setPath": "httpRequest.headers.0.value", "value": null },
+    { "name": "test effects null", "baseIndex": 0, "setPath": "testEffectsEnabled", "value": null },
+    { "name": "test effects string", "baseIndex": 0, "setPath": "testEffectsEnabled", "value": "false" }
   ],
   "requestStartRawCases": [
     {
-      "name": "raw duplicate top-level requestId",
+      "name": "raw duplicate top-level key",
       "outcome": "reject",
-      "frameHex": "534b424601010000073c000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a22726571756573742d687474702d66756c6c222c22726571756573744964223a22726571756573742d687474702d66756c6c222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a22676174657761792d68747470227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a372c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a226578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f6974656d73227d7d2c2261637469766174696f6e4964656e74697479223a22736b6966662d72756e74696d652d61637469766174696f6e2d76313a6f70617175653a687474702e66756c6c2d31222c2267617465776179456e7472794964656e74697479223a22736b6966662d676174657761792d76313a7368613235363a65656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565222c22627573696e6573734964656e74697479223a22627573696e6573732d68747470222c22776562736f636b6574456e7472794964223a22756e757365642d6275742d76616c6964222c22636c69656e7453657373696f6e223a7b226964223a22636c69656e742d68747470227d2c22646561646c696e65223a7b2274696d656f75744d73223a302c22657870697265734174223a22323033302d30312d30315430303a30303a30305a227d2c227472616365223a7b2274726163654964223a2274726163652d68747470222c227370616e4964223a227370616e2d68747470222c22706172656e745370616e4964223a22222c2273616d706c6564223a66616c73657d2c226874747052657175657374223a7b226d6574686f64223a22504f5354222c2275726c223a2268747470733a2f2f6578616d706c652e636f6d2f6974656d733f713d3126713d32222c2270617468223a222f6974656d73222c227175657279223a5b7b226e616d65223a2271222c2276616c7565223a2231227d2c7b226e616d65223a2271222c2276616c7565223a2232227d5d2c2268656164657273223a5b7b226e616d65223a22782d726570656174222c2276616c7565223a2261227d2c7b226e616d65223a22782d726570656174222c2276616c7565223a2262227d5d7d2c226874747041646170746572223a7b226b696e64223a2274797065644a736f6e222c2268616e646c6572223a7b226b696e64223a227365727669636546756e6374696f6e222c226d6f64756c6550617468223a2268616e646c6572732f6974656d73222c2273796d626f6c223a22637265617465227d2c226775617264223a7b226b696e64223a227061636b61676546756e6374696f6e222c227061636b6167654964223a226578616d706c652e636f6d2f61757468222c2273796d626f6c50617468223a226775617264732f616c6c6f77227d2c22707265223a7b226b696e64223a227365727669636546756e6374696f6e222c226d6f64756c6550617468223a22222c2273796d626f6c223a22227d2c226164617074657241726773223a5b7b22706172616d223a2272657175657374222c22736f75726365223a7b226b696e64223a22687474702e72657175657374227d7d2c7b22706172616d223a22626f6479222c22736f75726365223a7b226b696e64223a22687474702e626f6479227d7d2c7b22706172616d223a22636f6e74657874222c22736f75726365223a7b226b696e64223a22687474702e636f6e74657874227d7d5d7d2c227465737445666665637473456e61626c6564223a747275652c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b2265787065637452657175657374223a7b226e6573746564223a5b312c747275652c6e756c6c5d7d2c22726573706f6e7365223a6e756c6c7d2c7b22726573706f6e7365223a7b226f6b223a747275652c2276616c7565223a2d312e357d7d5d7d7d"
+      "headerText": "{\"requestId\":\"one\",\"requestId\":\"two\"}"
     },
     {
-      "name": "raw duplicate deadline timeoutMs",
+      "name": "raw escaped duplicate top-level key",
       "outcome": "reject",
-      "frameHex": "534b424601010000072a000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a22726571756573742d687474702d66756c6c222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a22676174657761792d68747470227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a372c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a226578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f6974656d73227d7d2c2261637469766174696f6e4964656e74697479223a22736b6966662d72756e74696d652d61637469766174696f6e2d76313a6f70617175653a687474702e66756c6c2d31222c2267617465776179456e7472794964656e74697479223a22736b6966662d676174657761792d76313a7368613235363a65656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565222c22627573696e6573734964656e74697479223a22627573696e6573732d68747470222c22776562736f636b6574456e7472794964223a22756e757365642d6275742d76616c6964222c22636c69656e7453657373696f6e223a7b226964223a22636c69656e742d68747470227d2c22646561646c696e65223a7b2274696d656f75744d73223a302c2274696d656f75744d73223a302c22657870697265734174223a22323033302d30312d30315430303a30303a30305a227d2c227472616365223a7b2274726163654964223a2274726163652d68747470222c227370616e4964223a227370616e2d68747470222c22706172656e745370616e4964223a22222c2273616d706c6564223a66616c73657d2c226874747052657175657374223a7b226d6574686f64223a22504f5354222c2275726c223a2268747470733a2f2f6578616d706c652e636f6d2f6974656d733f713d3126713d32222c2270617468223a222f6974656d73222c227175657279223a5b7b226e616d65223a2271222c2276616c7565223a2231227d2c7b226e616d65223a2271222c2276616c7565223a2232227d5d2c2268656164657273223a5b7b226e616d65223a22782d726570656174222c2276616c7565223a2261227d2c7b226e616d65223a22782d726570656174222c2276616c7565223a2262227d5d7d2c226874747041646170746572223a7b226b696e64223a2274797065644a736f6e222c2268616e646c6572223a7b226b696e64223a227365727669636546756e6374696f6e222c226d6f64756c6550617468223a2268616e646c6572732f6974656d73222c2273796d626f6c223a22637265617465227d2c226775617264223a7b226b696e64223a227061636b61676546756e6374696f6e222c227061636b6167654964223a226578616d706c652e636f6d2f61757468222c2273796d626f6c50617468223a226775617264732f616c6c6f77227d2c22707265223a7b226b696e64223a227365727669636546756e6374696f6e222c226d6f64756c6550617468223a22222c2273796d626f6c223a22227d2c226164617074657241726773223a5b7b22706172616d223a2272657175657374222c22736f75726365223a7b226b696e64223a22687474702e72657175657374227d7d2c7b22706172616d223a22626f6479222c22736f75726365223a7b226b696e64223a22687474702e626f6479227d7d2c7b22706172616d223a22636f6e74657874222c22736f75726365223a7b226b696e64223a22687474702e636f6e74657874227d7d5d7d2c227465737445666665637473456e61626c6564223a747275652c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b2265787065637452657175657374223a7b226e6573746564223a5b312c747275652c6e756c6c5d7d2c22726573706f6e7365223a6e756c6c7d2c7b22726573706f6e7365223a7b226f6b223a747275652c2276616c7565223a2d312e357d7d5d7d7d"
+      "headerText": "{\"requestId\":\"one\",\"request\\u0049d\":\"two\"}"
     },
     {
-      "name": "raw duplicate http handler kind",
+      "name": "raw duplicate nested routing key",
       "outcome": "reject",
-      "frameHex": "534b4246010100000735000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a22726571756573742d687474702d66756c6c222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a22676174657761792d68747470227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a372c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a226578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f6974656d73227d7d2c2261637469766174696f6e4964656e74697479223a22736b6966662d72756e74696d652d61637469766174696f6e2d76313a6f70617175653a687474702e66756c6c2d31222c2267617465776179456e7472794964656e74697479223a22736b6966662d676174657761792d76313a7368613235363a65656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565222c22627573696e6573734964656e74697479223a22627573696e6573732d68747470222c22776562736f636b6574456e7472794964223a22756e757365642d6275742d76616c6964222c22636c69656e7453657373696f6e223a7b226964223a22636c69656e742d68747470227d2c22646561646c696e65223a7b2274696d656f75744d73223a302c22657870697265734174223a22323033302d30312d30315430303a30303a30305a227d2c227472616365223a7b2274726163654964223a2274726163652d68747470222c227370616e4964223a227370616e2d68747470222c22706172656e745370616e4964223a22222c2273616d706c6564223a66616c73657d2c226874747052657175657374223a7b226d6574686f64223a22504f5354222c2275726c223a2268747470733a2f2f6578616d706c652e636f6d2f6974656d733f713d3126713d32222c2270617468223a222f6974656d73222c227175657279223a5b7b226e616d65223a2271222c2276616c7565223a2231227d2c7b226e616d65223a2271222c2276616c7565223a2232227d5d2c2268656164657273223a5b7b226e616d65223a22782d726570656174222c2276616c7565223a2261227d2c7b226e616d65223a22782d726570656174222c2276616c7565223a2262227d5d7d2c226874747041646170746572223a7b226b696e64223a2274797065644a736f6e222c2268616e646c6572223a7b226b696e64223a227365727669636546756e6374696f6e222c226b696e64223a227365727669636546756e6374696f6e222c226d6f64756c6550617468223a2268616e646c6572732f6974656d73222c2273796d626f6c223a22637265617465227d2c226775617264223a7b226b696e64223a227061636b61676546756e6374696f6e222c227061636b6167654964223a226578616d706c652e636f6d2f61757468222c2273796d626f6c50617468223a226775617264732f616c6c6f77227d2c22707265223a7b226b696e64223a227365727669636546756e6374696f6e222c226d6f64756c6550617468223a22222c2273796d626f6c223a22227d2c226164617074657241726773223a5b7b22706172616d223a2272657175657374222c22736f75726365223a7b226b696e64223a22687474702e72657175657374227d7d2c7b22706172616d223a22626f6479222c22736f75726365223a7b226b696e64223a22687474702e626f6479227d7d2c7b22706172616d223a22636f6e74657874222c22736f75726365223a7b226b696e64223a22687474702e636f6e74657874227d7d5d7d2c227465737445666665637473456e61626c6564223a747275652c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b2265787065637452657175657374223a7b226e6573746564223a5b312c747275652c6e756c6c5d7d2c22726573706f6e7365223a6e756c6c7d2c7b22726573706f6e7365223a7b226f6b223a747275652c2276616c7565223a2d312e357d7d5d7d7d"
+      "headerText": "{\"routing\":{\"kind\":\"runtimeAssembly\",\"kind\":\"runtimeAssembly\"}}"
     },
     {
-      "name": "raw duplicate doubles target",
+      "name": "raw escaped duplicate nested ingress key",
       "outcome": "reject",
-      "frameHex": "534b4246010100000788000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a22726571756573742d687474702d66756c6c222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a22676174657761792d68747470227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a372c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a226578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f6974656d73227d7d2c2261637469766174696f6e4964656e74697479223a22736b6966662d72756e74696d652d61637469766174696f6e2d76313a6f70617175653a687474702e66756c6c2d31222c2267617465776179456e7472794964656e74697479223a22736b6966662d676174657761792d76313a7368613235363a65656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565222c22627573696e6573734964656e74697479223a22627573696e6573732d68747470222c22776562736f636b6574456e7472794964223a22756e757365642d6275742d76616c6964222c22636c69656e7453657373696f6e223a7b226964223a22636c69656e742d68747470227d2c22646561646c696e65223a7b2274696d656f75744d73223a302c22657870697265734174223a22323033302d30312d30315430303a30303a30305a227d2c227472616365223a7b2274726163654964223a2274726163652d68747470222c227370616e4964223a227370616e2d68747470222c22706172656e745370616e4964223a22222c2273616d706c6564223a66616c73657d2c226874747052657175657374223a7b226d6574686f64223a22504f5354222c2275726c223a2268747470733a2f2f6578616d706c652e636f6d2f6974656d733f713d3126713d32222c2270617468223a222f6974656d73222c227175657279223a5b7b226e616d65223a2271222c2276616c7565223a2231227d2c7b226e616d65223a2271222c2276616c7565223a2232227d5d2c2268656164657273223a5b7b226e616d65223a22782d726570656174222c2276616c7565223a2261227d2c7b226e616d65223a22782d726570656174222c2276616c7565223a2262227d5d7d2c226874747041646170746572223a7b226b696e64223a2274797065644a736f6e222c2268616e646c6572223a7b226b696e64223a227365727669636546756e6374696f6e222c226d6f64756c6550617468223a2268616e646c6572732f6974656d73222c2273796d626f6c223a22637265617465227d2c226775617264223a7b226b696e64223a227061636b61676546756e6374696f6e222c227061636b6167654964223a226578616d706c652e636f6d2f61757468222c2273796d626f6c50617468223a226775617264732f616c6c6f77227d2c22707265223a7b226b696e64223a227365727669636546756e6374696f6e222c226d6f64756c6550617468223a22222c2273796d626f6c223a22227d2c226164617074657241726773223a5b7b22706172616d223a2272657175657374222c22736f75726365223a7b226b696e64223a22687474702e72657175657374227d7d2c7b22706172616d223a22626f6479222c22736f75726365223a7b226b696e64223a22687474702e626f6479227d7d2c7b22706172616d223a22636f6e74657874222c22736f75726365223a7b226b696e64223a22687474702e636f6e74657874227d7d5d7d2c227465737445666665637473456e61626c6564223a747275652c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b2265787065637452657175657374223a7b226e6573746564223a5b312c747275652c6e756c6c5d7d2c22726573706f6e7365223a6e756c6c7d2c7b22726573706f6e7365223a7b226f6b223a747275652c2276616c7565223a2d312e357d7d5d2c22656666656374223a5b7b2265787065637452657175657374223a7b226e6573746564223a5b312c747275652c6e756c6c5d7d2c22726573706f6e7365223a6e756c6c7d2c7b22726573706f6e7365223a7b226f6b223a747275652c2276616c7565223a2d312e357d7d5d7d7d"
+      "headerText": "{\"routing\":{\"ingress\":{\"protocol\":\"http\",\"proto\\u0063ol\":\"http\"}}}"
     },
     {
-      "name": "raw duplicate opaque response",
+      "name": "raw assembly generation negative zero",
       "outcome": "reject",
-      "frameHex": "534b424601010000072c000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a22726571756573742d687474702d66756c6c222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a22676174657761792d68747470227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a372c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a226578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f6974656d73227d7d2c2261637469766174696f6e4964656e74697479223a22736b6966662d72756e74696d652d61637469766174696f6e2d76313a6f70617175653a687474702e66756c6c2d31222c2267617465776179456e7472794964656e74697479223a22736b6966662d676174657761792d76313a7368613235363a65656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565222c22627573696e6573734964656e74697479223a22627573696e6573732d68747470222c22776562736f636b6574456e7472794964223a22756e757365642d6275742d76616c6964222c22636c69656e7453657373696f6e223a7b226964223a22636c69656e742d68747470227d2c22646561646c696e65223a7b2274696d656f75744d73223a302c22657870697265734174223a22323033302d30312d30315430303a30303a30305a227d2c227472616365223a7b2274726163654964223a2274726163652d68747470222c227370616e4964223a227370616e2d68747470222c22706172656e745370616e4964223a22222c2273616d706c6564223a66616c73657d2c226874747052657175657374223a7b226d6574686f64223a22504f5354222c2275726c223a2268747470733a2f2f6578616d706c652e636f6d2f6974656d733f713d3126713d32222c2270617468223a222f6974656d73222c227175657279223a5b7b226e616d65223a2271222c2276616c7565223a2231227d2c7b226e616d65223a2271222c2276616c7565223a2232227d5d2c2268656164657273223a5b7b226e616d65223a22782d726570656174222c2276616c7565223a2261227d2c7b226e616d65223a22782d726570656174222c2276616c7565223a2262227d5d7d2c226874747041646170746572223a7b226b696e64223a2274797065644a736f6e222c2268616e646c6572223a7b226b696e64223a227365727669636546756e6374696f6e222c226d6f64756c6550617468223a2268616e646c6572732f6974656d73222c2273796d626f6c223a22637265617465227d2c226775617264223a7b226b696e64223a227061636b61676546756e6374696f6e222c227061636b6167654964223a226578616d706c652e636f6d2f61757468222c2273796d626f6c50617468223a226775617264732f616c6c6f77227d2c22707265223a7b226b696e64223a227365727669636546756e6374696f6e222c226d6f64756c6550617468223a22222c2273796d626f6c223a22227d2c226164617074657241726773223a5b7b22706172616d223a2272657175657374222c22736f75726365223a7b226b696e64223a22687474702e72657175657374227d7d2c7b22706172616d223a22626f6479222c22736f75726365223a7b226b696e64223a22687474702e626f6479227d7d2c7b22706172616d223a22636f6e74657874222c22736f75726365223a7b226b696e64223a22687474702e636f6e74657874227d7d5d7d2c227465737445666665637473456e61626c6564223a747275652c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b2265787065637452657175657374223a7b226e6573746564223a5b312c747275652c6e756c6c5d7d2c22726573706f6e7365223a6e756c6c2c22726573706f6e7365223a6e756c6c7d2c7b22726573706f6e7365223a7b226f6b223a747275652c2276616c7565223a2d312e357d7d5d7d7d"
+      "headerText": "{\"schemaVersion\":\"skiff-runtime-frame-v1\",\"type\":\"request.start\",\"requestId\":\"raw-negative-zero\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyGeneration\":-0,\"gatewayEntryIdentity\":\"skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ingress\":{\"protocol\":\"http\",\"host\":\"example.com\",\"method\":\"GET\",\"path\":\"/\"}},\"trace\":{\"traceId\":\"trace\",\"spanId\":\"span\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]}}"
     },
     {
-      "name": "raw valid escaped surrogate pair",
-      "outcome": "accept",
-      "frameHex": "534b4246010100000297000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a225c75643833645c7564653030227d5d7d7d",
-      "expectedResponse": "😀"
-    },
-    {
-      "name": "raw valid unescaped scalar",
-      "outcome": "accept",
-      "frameHex": "534b424601010000028f000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a22f09f9880227d5d7d7d",
-      "expectedResponse": "😀"
-    },
-    {
-      "name": "raw lone high surrogate",
+      "name": "raw deadline negative zero",
       "outcome": "reject",
-      "frameHex": "534b4246010100000291000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a225c7564383364227d5d7d7d"
+      "headerText": "{\"schemaVersion\":\"skiff-runtime-frame-v1\",\"type\":\"request.start\",\"requestId\":\"raw-deadline-negative-zero\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyGeneration\":0,\"gatewayEntryIdentity\":\"skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ingress\":{\"protocol\":\"http\",\"host\":\"example.com\",\"method\":\"GET\",\"path\":\"/\"}},\"deadline\":{\"timeoutMs\":-0,\"expiresAt\":\"2030-01-01T00:00:00Z\"},\"trace\":{\"traceId\":\"trace\",\"spanId\":\"span\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]}}"
     },
     {
-      "name": "raw lone low surrogate",
+      "name": "raw unsafe integer",
       "outcome": "reject",
-      "frameHex": "534b4246010100000291000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a225c7564653030227d5d7d7d"
+      "headerText": "{\"schemaVersion\":\"skiff-runtime-frame-v1\",\"type\":\"request.start\",\"requestId\":\"raw-unsafe\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyGeneration\":9007199254740992,\"gatewayEntryIdentity\":\"skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ingress\":{\"protocol\":\"http\",\"host\":\"example.com\",\"method\":\"GET\",\"path\":\"/\"}},\"trace\":{\"traceId\":\"trace\",\"spanId\":\"span\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]}}"
     },
     {
-      "name": "raw invalid surrogate pair",
+      "name": "raw assembly v1 identity",
       "outcome": "reject",
-      "frameHex": "534b4246010100000297000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a225c75643833645c7530303431227d5d7d7d"
+      "headerText": "{\"schemaVersion\":\"skiff-runtime-frame-v1\",\"type\":\"request.start\",\"requestId\":\"raw-v1\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyGeneration\":0,\"gatewayEntryIdentity\":\"skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ingress\":{\"protocol\":\"http\",\"host\":\"example.com\",\"method\":\"GET\",\"path\":\"/\"}},\"trace\":{\"traceId\":\"trace\",\"spanId\":\"span\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]}}"
     },
     {
-      "name": "raw reversed surrogate pair",
+      "name": "raw invalid UTF-8",
       "outcome": "reject",
-      "frameHex": "534b4246010100000297000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a225c75646530305c7564383364227d5d7d7d"
+      "headerHex": "ff"
     },
     {
-      "name": "raw escape-equivalent duplicate key",
+      "name": "raw invalid JSON",
       "outcome": "reject",
-      "frameHex": "534b424601010000029b000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a7b2261223a312c225c7530303631223a327d7d5d7d7d"
+      "headerText": "{"
     },
     {
-      "name": "raw invalid utf8",
+      "name": "raw non-object JSON",
       "outcome": "reject",
-      "frameHex": "534b424601010000028c000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a22ff227d5d7d7d"
+      "headerText": "[]"
     },
     {
-      "name": "raw unescaped control",
+      "name": "raw trailing JSON",
       "outcome": "reject",
-      "frameHex": "534b424601010000028c000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a2201227d5d7d7d"
+      "headerText": "{}{}"
     },
     {
-      "name": "raw positive non-finite overflow",
+      "name": "frame too short",
       "outcome": "reject",
-      "frameHex": "534b424601010000028e000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a31653430307d5d7d7d"
+      "frameHex": "534b"
     },
     {
-      "name": "raw negative non-finite overflow",
+      "name": "frame wrong magic",
       "outcome": "reject",
-      "frameHex": "534b424601010000028f000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a2d31653430307d5d7d7d"
+      "frameHex": "0000000001010000000000000000"
     },
     {
-      "name": "raw max safe integer",
-      "outcome": "accept",
-      "frameHex": "534b4246010100000299000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a393030373139393235343734303939317d5d7d7d",
-      "expectedResponse": 9007199254740991
-    },
-    {
-      "name": "raw negative max safe integer",
-      "outcome": "accept",
-      "frameHex": "534b424601010000029a000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a2d393030373139393235343734303939317d5d7d7d",
-      "expectedResponse": -9007199254740991
-    },
-    {
-      "name": "raw integer above safe",
+      "name": "frame wrong version",
       "outcome": "reject",
-      "frameHex": "534b4246010100000299000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a393030373139393235343734303939327d5d7d7d"
+      "frameHex": "534b424602010000000000000000"
     },
     {
-      "name": "raw negative integer below safe",
+      "name": "frame wrong encoding",
       "outcome": "reject",
-      "frameHex": "534b424601010000029a000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a2d393030373139393235343734303939327d5d7d7d"
+      "frameHex": "534b424601020000000000000000"
     },
     {
-      "name": "raw unsafe integer rounding",
+      "name": "frame empty header",
       "outcome": "reject",
-      "frameHex": "534b4246010100000299000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a393030373139393235343734303939337d5d7d7d"
+      "frameHex": "534b424601010000000000000000"
     },
     {
-      "name": "raw negative zero normalization",
-      "outcome": "accept",
-      "frameHex": "534b424601010000028b000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a2d307d5d7d7d",
-      "expectedResponse": 0
-    },
-    {
-      "name": "raw integral exponent normalization",
-      "outcome": "accept",
-      "frameHex": "534b424601010000028c000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a3165337d5d7d7d",
-      "expectedResponse": 1000
-    },
-    {
-      "name": "raw fractional exponent preservation",
-      "outcome": "accept",
-      "frameHex": "534b424601010000028f000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a312e323565317d5d7d7d",
-      "expectedResponse": 12.5
-    },
-    {
-      "name": "raw underflow normalization",
-      "outcome": "accept",
-      "frameHex": "534b424601010000028f000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a31652d3430307d5d7d7d",
-      "expectedResponse": 0
-    },
-    {
-      "name": "raw finite fraction preservation",
-      "outcome": "accept",
-      "frameHex": "534b424601010000028e000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227261772d6e6f726d616c697a6174696f6e222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a227261772d636f72707573227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a227261772e6578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f726177227d7d2c227472616365223a7b2274726163654964223a227261772d7472616365222c227370616e4964223a227261772d7370616e227d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b22726573706f6e7365223a302e3132357d5d7d7d",
-      "expectedResponse": 0.125
-    },
-    {
-      "name": "raw routing assembly generation negative zero",
+      "name": "frame header length mismatch",
       "outcome": "reject",
-      "frameHex": "534b424601010000071d000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a22726571756573742d687474702d66756c6c222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a22676174657761792d68747470227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a2d302c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a226578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f6974656d73227d7d2c2261637469766174696f6e4964656e74697479223a22736b6966662d72756e74696d652d61637469766174696f6e2d76313a6f70617175653a687474702e66756c6c2d31222c2267617465776179456e7472794964656e74697479223a22736b6966662d676174657761792d76313a7368613235363a65656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565222c22627573696e6573734964656e74697479223a22627573696e6573732d68747470222c22776562736f636b6574456e7472794964223a22756e757365642d6275742d76616c6964222c22636c69656e7453657373696f6e223a7b226964223a22636c69656e742d68747470227d2c22646561646c696e65223a7b2274696d656f75744d73223a302c22657870697265734174223a22323033302d30312d30315430303a30303a30305a227d2c227472616365223a7b2274726163654964223a2274726163652d68747470222c227370616e4964223a227370616e2d68747470222c22706172656e745370616e4964223a22222c2273616d706c6564223a66616c73657d2c226874747052657175657374223a7b226d6574686f64223a22504f5354222c2275726c223a2268747470733a2f2f6578616d706c652e636f6d2f6974656d733f713d3126713d32222c2270617468223a222f6974656d73222c227175657279223a5b7b226e616d65223a2271222c2276616c7565223a2231227d2c7b226e616d65223a2271222c2276616c7565223a2232227d5d2c2268656164657273223a5b7b226e616d65223a22782d726570656174222c2276616c7565223a2261227d2c7b226e616d65223a22782d726570656174222c2276616c7565223a2262227d5d7d2c226874747041646170746572223a7b226b696e64223a2274797065644a736f6e222c2268616e646c6572223a7b226b696e64223a227365727669636546756e6374696f6e222c226d6f64756c6550617468223a2268616e646c6572732f6974656d73222c2273796d626f6c223a22637265617465227d2c226775617264223a7b226b696e64223a227061636b61676546756e6374696f6e222c227061636b6167654964223a226578616d706c652e636f6d2f61757468222c2273796d626f6c50617468223a226775617264732f616c6c6f77227d2c22707265223a7b226b696e64223a227365727669636546756e6374696f6e222c226d6f64756c6550617468223a22222c2273796d626f6c223a22227d2c226164617074657241726773223a5b7b22706172616d223a2272657175657374222c22736f75726365223a7b226b696e64223a22687474702e72657175657374227d7d2c7b22706172616d223a22626f6479222c22736f75726365223a7b226b696e64223a22687474702e626f6479227d7d2c7b22706172616d223a22636f6e74657874222c22736f75726365223a7b226b696e64223a22687474702e636f6e74657874227d7d5d7d2c227465737445666665637473456e61626c6564223a747275652c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b2265787065637452657175657374223a7b226e6573746564223a5b312c747275652c6e756c6c5d7d2c22726573706f6e7365223a6e756c6c7d2c7b22726573706f6e7365223a7b226f6b223a747275652c2276616c7565223a2d312e357d7d5d7d7d"
+      "frameHex": "534b4246010100000002000000007b"
     },
     {
-      "name": "raw deadline timeout negative zero",
+      "name": "frame payload length mismatch",
       "outcome": "reject",
-      "frameHex": "534b424601010000071d000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a22726571756573742d687474702d66756c6c222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a22676174657761792d68747470227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a372c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22696e6772657373223a7b2270726f746f636f6c223a2268747470222c22686f7374223a226578616d706c652e636f6d222c226d6574686f64223a22504f5354222c2270617468223a222f6974656d73227d7d2c2261637469766174696f6e4964656e74697479223a22736b6966662d72756e74696d652d61637469766174696f6e2d76313a6f70617175653a687474702e66756c6c2d31222c2267617465776179456e7472794964656e74697479223a22736b6966662d676174657761792d76313a7368613235363a65656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565222c22627573696e6573734964656e74697479223a22627573696e6573732d68747470222c22776562736f636b6574456e7472794964223a22756e757365642d6275742d76616c6964222c22636c69656e7453657373696f6e223a7b226964223a22636c69656e742d68747470227d2c22646561646c696e65223a7b2274696d656f75744d73223a2d302c22657870697265734174223a22323033302d30312d30315430303a30303a30305a227d2c227472616365223a7b2274726163654964223a2274726163652d68747470222c227370616e4964223a227370616e2d68747470222c22706172656e745370616e4964223a22222c2273616d706c6564223a66616c73657d2c226874747052657175657374223a7b226d6574686f64223a22504f5354222c2275726c223a2268747470733a2f2f6578616d706c652e636f6d2f6974656d733f713d3126713d32222c2270617468223a222f6974656d73222c227175657279223a5b7b226e616d65223a2271222c2276616c7565223a2231227d2c7b226e616d65223a2271222c2276616c7565223a2232227d5d2c2268656164657273223a5b7b226e616d65223a22782d726570656174222c2276616c7565223a2261227d2c7b226e616d65223a22782d726570656174222c2276616c7565223a2262227d5d7d2c226874747041646170746572223a7b226b696e64223a2274797065644a736f6e222c2268616e646c6572223a7b226b696e64223a227365727669636546756e6374696f6e222c226d6f64756c6550617468223a2268616e646c6572732f6974656d73222c2273796d626f6c223a22637265617465227d2c226775617264223a7b226b696e64223a227061636b61676546756e6374696f6e222c227061636b6167654964223a226578616d706c652e636f6d2f61757468222c2273796d626f6c50617468223a226775617264732f616c6c6f77227d2c22707265223a7b226b696e64223a227365727669636546756e6374696f6e222c226d6f64756c6550617468223a22222c2273796d626f6c223a22227d2c226164617074657241726773223a5b7b22706172616d223a2272657175657374222c22736f75726365223a7b226b696e64223a22687474702e72657175657374227d7d2c7b22706172616d223a22626f6479222c22736f75726365223a7b226b696e64223a22687474702e626f6479227d7d2c7b22706172616d223a22636f6e74657874222c22736f75726365223a7b226b696e64223a22687474702e636f6e74657874227d7d5d7d2c227465737445666665637473456e61626c6564223a747275652c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b2265787065637452657175657374223a7b226e6573746564223a5b312c747275652c6e756c6c5d7d2c22726573706f6e7365223a6e756c6c7d2c7b22726573706f6e7365223a7b226f6b223a747275652c2276616c7565223a2d312e357d7d5d7d7d"
+      "frameHex": "534b4246010100000002000000017b7d"
+    }
+  ],
+  "requestStartPayloadCases": [
+    {
+      "name": "empty HTTP body",
+      "baseIndex": 1,
+      "payloadHex": ""
     },
     {
-      "name": "raw websocket segment offset negative zero",
-      "outcome": "reject",
-      "frameHex": "534b4246010100000548000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7631222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a22726571756573742d77732d726563656976652d62696e6172792d626f756e64617279222c226d6f6465223a2273657276657253747265616d222c2263616c6c6572223a7b226b696e64223a2267617465776179222c22746172676574223a22676174657761792d776562536f636b6574227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76313a7368613235363a64646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22617373656d626c7947656e65726174696f6e223a393030373139393235343734303939312c22636f6e74726163744f7065726174696f6e4964223a22736b6966662d636f6e74726163742d6f7065726174696f6e2d76313a7368613235363a64646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22696e6772657373223a7b2270726f746f636f6c223a22776562536f636b6574222c22686f7374223a22736f636b65742e6578616d706c652e636f6d222c226d6574686f64223a6e756c6c2c2270617468223a222f63686174227d7d2c2267617465776179456e7472794964656e74697479223a22736b6966662d676174657761792d76313a7368613235363a32323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232222c22776562736f636b6574456e7472794964223a22636861742d726563656976652d62696e617279222c22646561646c696e65223a7b2274696d656f75744d73223a393030373139393235343734303939312c22657870697265734174223a22227d2c227472616365223a7b2274726163654964223a2274726163652d726563656976652d62696e617279222c227370616e4964223a227370616e2d726563656976652d62696e617279227d2c22776562736f636b657441646170746572223a7b226b696e64223a2272656365697665222c226164617074657241726773223a5b7b22706172616d223a226d657373616765222c22736f75726365223a7b226b696e64223a22776562736f636b65742e6d657373616765227d7d5d2c22726563656976654576656e74223a7b22636f6e6e656374696f6e4964223a22636f6e6e656374696f6e2d62696e617279222c226d657373616765223a7b22746167223a2262696e617279222c22656e636f64696e67223a2262696e617279227d2c227061796c6f61645365676d656e7473223a5b7b226b696e64223a22776562736f636b65742e636f6e74657874222c226f6666736574223a2d302c226c656e677468223a393030373139393235343734303939317d2c7b226b696e64223a22776562736f636b65742e6d657373616765222c226f6666736574223a393030373139393235343734303939312c226c656e677468223a307d5d7d7d2c2274657374456666656374446f75626c6573223a7b22656666656374223a5b7b2265787065637452657175657374223a6e756c6c2c22726573706f6e7365223a6e756c6c7d5d7d2c227465737445666665637473456e61626c6564223a66616c73657d"
+      "name": "nonempty HTTP body",
+      "baseIndex": 0,
+      "payloadHex": "6f7061717565206874747020626f6479"
+    },
+    {
+      "name": "opaque non-UTF8 HTTP body",
+      "baseIndex": 0,
+      "payloadHex": "ff00fe"
+    },
+    {
+      "name": "server stream request body remains opaque",
+      "baseIndex": 2,
+      "payloadHex": "01020304"
     }
   ],
   "requestStartEquivalentOptionPairs": [
     {
-      "name": "http adapter args absent equals empty",
-      "baseIndex": 0,
-      "path": "httpAdapter.adapterArgs",
-      "value": []
-    },
-    {
       "name": "test effects enabled absent equals false",
-      "baseIndex": 0,
+      "baseIndex": 2,
       "path": "testEffectsEnabled",
       "value": false
-    },
-    {
-      "name": "test effect doubles absent equals empty",
-      "baseIndex": 0,
-      "path": "testEffectDoubles",
-      "value": {}
     }
   ],
   "legacyRequestStartHeaders": [
@@ -1973,7 +394,7 @@
       "serviceId": "example.com/legacy",
       "version": "1.0.0",
       "buildId": "skiff-service-build-v1:sha256:9999999999999999999999999999999999999999999999999999999999999999",
-      "serviceProtocolIdentity": "skiff-protocol-v1:sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "serviceProtocolIdentity": "skiff-service-protocol-v3:sha256:8888888888888888888888888888888888888888888888888888888888888888",
       "trace": {
         "traceId": "legacy-trace",
         "spanId": "legacy-span"
