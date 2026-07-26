@@ -29,15 +29,14 @@ import {
   MemoryRuntimeAssemblySnapshotLoader,
   RouterActiveAssemblySnapshotStore,
   RuntimeAssemblyIngressIndex,
-  type LoadedRuntimeAssembly,
-  type RuntimeAssemblyIngressBinding
+  type LoadedRuntimeAssembly
 } from '../src/router/runtimeAssemblySnapshot.js';
 
 const ASSEMBLY_A = identity('a');
 const ASSEMBLY_B = identity('b');
 const ASSEMBLY_C = identity('c');
 const EMPTY_ASSEMBLY =
-  'skiff-runtime-assembly-v1:sha256:4176e39122928fcf47db987c34884f2f7ab4a1833c502a33bb6fd0c861a5acf6';
+  'skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f';
 const RUNTIME_ID = 'runtime-assembly-a';
 const SERVICE_ID = 'example.com/actors';
 const SERVICE_VERSION = '1.0.0';
@@ -338,7 +337,7 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
       environment: 'test',
       generation: 2,
       assembly: { assemblyIdentity: ASSEMBLY_B },
-      ingress: new RuntimeAssemblyIngressIndex(assembly(ASSEMBLY_B).globalIngress)
+      ingress: new RuntimeAssemblyIngressIndex(assembly(ASSEMBLY_B).gatewayIngress)
     });
     fixture.assemblyRegistry.activate(fixture.snapshots.get());
     fixture.assemblyRegistry.setConnectionPinCounter({
@@ -772,46 +771,31 @@ function transition(
 function assembly(assemblyIdentity: string): LoadedRuntimeAssembly {
   const revision = deploymentRevision(assemblyIdentity);
   return {
-    schemaVersion: 'skiff-runtime-assembly-v1',
+    schemaVersion: 'skiff-runtime-assembly-v2',
     assemblyIdentity,
     resolvedDeployments:
       assemblyIdentity === EMPTY_ASSEMBLY
         ? []
-        : [ingressBinding(revision).deployment],
+        : [deploymentRef(revision)],
     resolvedContracts:
       assemblyIdentity === EMPTY_ASSEMBLY
         ? []
-        : [ingressBinding(revision).contract],
-    globalIngress:
-      assemblyIdentity === EMPTY_ASSEMBLY
-        ? []
-        : [ingressBinding(revision)]
+        : [{
+          serviceId: SERVICE_ID,
+          contractVersion: SERVICE_VERSION,
+          serviceProtocolIdentity: SERVICE_PROTOCOL
+        }],
+    gatewayIngress: []
   };
 }
 
-function ingressBinding(deploymentRevision: string): RuntimeAssemblyIngressBinding {
+function deploymentRef(deploymentRevision: string) {
   return {
-    selector: {
-      protocol: 'http',
-      host: 'actors.localhost',
-      method: 'POST',
-      path: '/actors'
-    },
-    deployment: {
-      serviceId: SERVICE_ID,
-      contractVersion: SERVICE_VERSION,
-      deploymentRevision,
-      deploymentArtifactIdentity:
-        `skiff-deployment-artifact-v2:sha256:${'e'.repeat(64)}`
-    },
-    contract: {
-      serviceId: SERVICE_ID,
-      contractVersion: SERVICE_VERSION,
-      serviceProtocolIdentity: SERVICE_PROTOCOL
-    },
-    operationMode: 'unary',
-    contractOperationId:
-      `skiff-contract-operation-v1:sha256:${'f'.repeat(64)}`
+    serviceId: SERVICE_ID,
+    contractVersion: SERVICE_VERSION,
+    deploymentRevision,
+    deploymentArtifactIdentity:
+      `skiff-deployment-artifact-v2:sha256:${'e'.repeat(64)}`
   };
 }
 
@@ -843,7 +827,7 @@ function actorKey() {
 }
 
 function identity(character: string): string {
-  return `skiff-runtime-assembly-v1:sha256:${character.repeat(64)}`;
+  return `skiff-runtime-assembly-v2:sha256:${character.repeat(64)}`;
 }
 
 async function openSocket(url: string): Promise<WebSocket> {

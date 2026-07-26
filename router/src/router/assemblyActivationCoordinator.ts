@@ -481,7 +481,7 @@ async function snapshotFromRequestActivation(
     ...(assembly.resolvedContracts === undefined
       ? {}
       : { resolvedContracts: assembly.resolvedContracts }),
-    ingress: new RuntimeAssemblyIngressIndex(assembly.globalIngress),
+    ingress: new RuntimeAssemblyIngressIndex(assembly.gatewayIngress),
     ...(assembly.actorMethods === undefined
       ? {}
       : { actorMethods: assembly.actorMethods })

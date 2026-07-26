@@ -3,19 +3,21 @@ import type {
   RuntimeAssemblyRef
 } from '../protocol/assemblyActivationProtocol.js';
 
-const CONTRACT_OPERATION_IDENTITY_PATTERN =
-  /^skiff-contract-operation-v1:sha256:[0-9a-f]{64}$/;
 const DEPLOYMENT_ARTIFACT_IDENTITY_PATTERN =
   /^skiff-deployment-artifact-v2:sha256:[0-9a-f]{64}$/;
+const GATEWAY_ENTRY_IDENTITY_PATTERN =
+  /^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$/;
+const RUNTIME_ASSEMBLY_IDENTITY_PATTERN =
+  /^skiff-runtime-assembly-v2:sha256:[0-9a-f]{64}$/;
 const SERVICE_PROTOCOL_IDENTITY_PATTERN =
   /^skiff-service-protocol-v3:sha256:[0-9a-f]{64}$/;
 
-export type RuntimeAssemblyIngressProtocol = 'http' | 'webSocket';
+export type RuntimeAssemblyIngressProtocol = 'http';
 
 export interface RuntimeAssemblyIngressSelector {
   protocol: RuntimeAssemblyIngressProtocol;
   host: string;
-  method: string | null;
+  method: string;
   path: string;
 }
 
@@ -35,18 +37,35 @@ export interface RuntimeAssemblyContractRef {
 export interface RuntimeAssemblyIngressBinding {
   selector: RuntimeAssemblyIngressSelector;
   deployment: RuntimeAssemblyDeploymentRef;
-  contract: RuntimeAssemblyContractRef;
-  contractOperationId: string;
+  gatewayEntryKey: string;
+  gatewayEntryIdentity: string;
+  adapterKind: 'rawHttp' | 'typedJson';
   operationMode: 'unary' | 'serverStream';
+  timeoutMs?: number;
 }
 
 export interface LoadedRuntimeAssembly {
-  schemaVersion: string;
+  schemaVersion: 'skiff-runtime-assembly-v2';
   assemblyIdentity: string;
   resolvedDeployments?: readonly RuntimeAssemblyDeploymentRef[];
   resolvedContracts?: readonly RuntimeAssemblyContractRef[];
-  globalIngress: readonly RuntimeAssemblyIngressBinding[];
+  gatewayIngress: readonly RuntimeAssemblyIngressBinding[];
   actorMethods?: readonly RuntimeAssemblyActorMethod[];
+}
+
+export interface DecodedRuntimeAssemblyRecord {
+  schemaVersion: 'skiff-runtime-assembly-v2';
+  assemblyIdentity: string;
+  resolvedDeployments: readonly RuntimeAssemblyDeploymentRef[];
+  resolvedContracts: readonly RuntimeAssemblyContractRef[];
+  gatewayIngress: readonly RuntimeAssemblyGatewayIngressDeclaration[];
+}
+
+export interface RuntimeAssemblyGatewayIngressDeclaration {
+  selector: RuntimeAssemblyIngressSelector;
+  deployment: RuntimeAssemblyDeploymentRef;
+  gatewayEntryKey: string;
+  gatewayEntryIdentity: string;
 }
 
 export interface RuntimeAssemblyActorMethod {
@@ -71,6 +90,12 @@ export class MemoryRuntimeAssemblySnapshotLoader implements RuntimeAssemblySnaps
 
   constructor(assemblies: readonly LoadedRuntimeAssembly[]) {
     for (const assembly of assemblies) {
+      if (
+        assembly.schemaVersion !== 'skiff-runtime-assembly-v2' ||
+        !RUNTIME_ASSEMBLY_IDENTITY_PATTERN.test(assembly.assemblyIdentity)
+      ) {
+        throw new Error('memory RuntimeAssembly loader accepts only canonical v2 records');
+      }
       if (this.byIdentity.has(assembly.assemblyIdentity)) {
         throw new Error(`duplicate RuntimeAssembly ${assembly.assemblyIdentity}`);
       }
@@ -129,7 +154,7 @@ export class RuntimeAssemblyIngressIndex {
     for (const binding of bindings) {
       const key = runtimeAssemblyIngressKey(binding.selector);
       if (this.bindings.has(key)) {
-        throw new Error(`RuntimeAssembly contains duplicate global ingress ${key}`);
+        throw new Error(`RuntimeAssembly contains duplicate gateway ingress ${key}`);
       }
       this.bindings.set(key, binding);
     }
@@ -162,7 +187,7 @@ export async function snapshotFromCommittedActivation(
     ...(assembly.resolvedContracts === undefined
       ? {}
       : { resolvedContracts: assembly.resolvedContracts }),
-    ingress: new RuntimeAssemblyIngressIndex(assembly.globalIngress),
+    ingress: new RuntimeAssemblyIngressIndex(assembly.gatewayIngress),
     ...(assembly.actorMethods === undefined
       ? {}
       : { actorMethods: assembly.actorMethods })
@@ -172,19 +197,26 @@ export async function snapshotFromCommittedActivation(
 export function runtimeAssemblyIngressKey(
   selector: RuntimeAssemblyIngressSelector
 ): string {
-  const protocol = selector.protocol;
+  if (selector.protocol !== 'http') {
+    throw new Error('RuntimeAssembly ingress currently accepts only HTTP');
+  }
   const host = canonicalIngressHost(selector.host);
-  const method = selector.method === null ? '' : selector.method.toUpperCase();
-  if (protocol === 'http' && method.length === 0) {
+  if (typeof selector.method !== 'string') {
     throw new Error('HTTP RuntimeAssembly ingress requires a method');
   }
-  if (protocol === 'webSocket' && method.length > 0) {
-    throw new Error('WebSocket RuntimeAssembly ingress must not declare a method');
+  const method = selector.method.toUpperCase();
+  if (method.length === 0) {
+    throw new Error('HTTP RuntimeAssembly ingress requires a method');
   }
-  if (!selector.path.startsWith('/') || selector.path.includes('?') || selector.path.includes('#')) {
+  if (
+    typeof selector.path !== 'string' ||
+    !selector.path.startsWith('/') ||
+    selector.path.includes('?') ||
+    selector.path.includes('#')
+  ) {
     throw new Error('RuntimeAssembly ingress path must be an absolute URL path');
   }
-  return `${protocol}\u0000${host}\u0000${method}\u0000${selector.path}`;
+  return `http\u0000${host}\u0000${method}\u0000${selector.path}`;
 }
 
 export function canonicalIngressHost(host: string): string {
@@ -209,27 +241,10 @@ export function canonicalIngressHost(host: string): string {
   }
 }
 
-export function decodeRouterSnapshot(
+export function decodeRuntimeAssemblyRecord(
   input: unknown,
   expectedAssembly: RuntimeAssemblyRef
-): { assembly: LoadedRuntimeAssembly } {
-  const value = exactObject(input, 'RouterSnapshot');
-  exactFields(value, ['assembly', 'serviceContracts'], 'RouterSnapshot');
-  if (!Array.isArray(value.serviceContracts)) {
-    throw new Error('RouterSnapshot.serviceContracts must be an array');
-  }
-  const operationModes = decodeContractOperationModes(value.serviceContracts);
-  const assembly = decodeRuntimeAssemblyIngressSurface(value.assembly, operationModes);
-  if (assembly.assemblyIdentity !== expectedAssembly.assemblyIdentity) {
-    throw new Error('RouterSnapshot assembly does not match the exact requested reference');
-  }
-  return { assembly };
-}
-
-function decodeRuntimeAssemblyIngressSurface(
-  input: unknown,
-  operationModes: ReadonlyMap<string, 'unary' | 'serverStream'>
-): LoadedRuntimeAssembly {
+): DecodedRuntimeAssemblyRecord {
   const value = exactObject(input, 'RuntimeAssembly');
   exactFields(value, [
     'schemaVersion',
@@ -241,176 +256,193 @@ function decodeRuntimeAssemblyIngressSurface(
     'packageLinkPlan',
     'serviceBindingTemplates',
     'activationTemplates',
-    'globalIngress'
+    'gatewayIngress'
   ], 'RuntimeAssembly');
-  if (value.schemaVersion !== 'skiff-runtime-assembly-v1') {
-    throw new Error('RuntimeAssembly schemaVersion must be skiff-runtime-assembly-v1');
+  if (value.schemaVersion !== 'skiff-runtime-assembly-v2') {
+    throw new Error('RuntimeAssembly schemaVersion must be skiff-runtime-assembly-v2');
   }
   const assemblyIdentity = requiredString(value, 'assemblyIdentity');
-  if (!/^skiff-runtime-assembly-v1:sha256:[0-9a-f]{64}$/.test(assemblyIdentity)) {
+  if (!RUNTIME_ASSEMBLY_IDENTITY_PATTERN.test(assemblyIdentity)) {
     throw new Error('RuntimeAssembly assemblyIdentity is invalid');
   }
+  if (assemblyIdentity !== expectedAssembly.assemblyIdentity) {
+    throw new Error('RouterSnapshot assembly does not match the exact requested reference');
+  }
   if (
+    !Array.isArray(value.roots) ||
     !Array.isArray(value.resolvedDeployments) ||
     !Array.isArray(value.resolvedContracts) ||
-    !Array.isArray(value.globalIngress)
+    !Array.isArray(value.resolvedPackages) ||
+    !Array.isArray(value.serviceBindingTemplates) ||
+    !Array.isArray(value.activationTemplates) ||
+    !Array.isArray(value.gatewayIngress)
   ) {
     throw new Error(
-      'RuntimeAssembly resolvedDeployments, resolvedContracts and globalIngress must be arrays'
+      'RuntimeAssembly closure and gatewayIngress fields must be arrays'
     );
   }
-  return {
-    schemaVersion: value.schemaVersion,
-    assemblyIdentity,
-    resolvedDeployments: value.resolvedDeployments.map((entry, index) =>
-      decodeDeploymentRef(
-        entry,
-        `RuntimeAssembly.resolvedDeployments[${index}]`
-      )
-    ),
-    resolvedContracts: value.resolvedContracts.map((entry, index) =>
-      decodeContractRef(entry, `RuntimeAssembly.resolvedContracts[${index}]`)
-    ),
-    globalIngress: value.globalIngress.map((entry, index) =>
-      decodeIngressBinding(
-        entry,
-        `RuntimeAssembly.globalIngress[${index}]`,
-        operationModes
-      )
+  exactObject(value.packageLinkPlan, 'RuntimeAssembly.packageLinkPlan');
+  const resolvedDeployments = value.resolvedDeployments.map((entry, index) =>
+    decodeDeploymentRef(
+      entry,
+      `RuntimeAssembly.resolvedDeployments[${index}]`
     )
+  );
+  assertUniqueDeploymentRefs(resolvedDeployments);
+  const resolvedContracts = value.resolvedContracts.map((entry, index) =>
+    decodeContractRef(entry, `RuntimeAssembly.resolvedContracts[${index}]`)
+  );
+  const deploymentKeys = new Set(resolvedDeployments.map(deploymentRefKey));
+  const gatewayIngress = value.gatewayIngress.map((entry, index) =>
+    decodeGatewayIngressDeclaration(
+      entry,
+      `RuntimeAssembly.gatewayIngress[${index}]`,
+      deploymentKeys
+    )
+  );
+  assertUniqueSelectors(gatewayIngress, 'RuntimeAssembly.gatewayIngress');
+  return {
+    schemaVersion: 'skiff-runtime-assembly-v2',
+    assemblyIdentity,
+    resolvedDeployments,
+    resolvedContracts,
+    gatewayIngress
   };
 }
 
-function decodeIngressBinding(
+function decodeGatewayIngressDeclaration(
   input: unknown,
   label: string,
-  operationModes: ReadonlyMap<string, 'unary' | 'serverStream'>
-): RuntimeAssemblyIngressBinding {
+  resolvedDeployments: ReadonlySet<string>
+): RuntimeAssemblyGatewayIngressDeclaration {
   const value = exactObject(input, label);
   exactFields(
     value,
-    ['selector', 'deployment', 'contract', 'contractOperationId'],
+    ['selector', 'deployment', 'gatewayEntryKey', 'gatewayEntryIdentity'],
     label
   );
-  const selectorValue = exactObject(value.selector, `${label}.selector`);
-  exactFields(selectorValue, ['protocol', 'host', 'method', 'path'], `${label}.selector`);
-  if (selectorValue.protocol !== 'http' && selectorValue.protocol !== 'webSocket') {
-    throw new Error(`${label}.selector.protocol is invalid`);
-  }
-  if (selectorValue.method !== null && typeof selectorValue.method !== 'string') {
-    throw new Error(`${label}.selector.method must be a string or null`);
-  }
-  const selector: RuntimeAssemblyIngressSelector = {
-    protocol: selectorValue.protocol,
-    host: requiredString(selectorValue, 'host'),
-    method: selectorValue.method,
-    path: requiredString(selectorValue, 'path')
-  };
-  runtimeAssemblyIngressKey(selector);
+  const selector = decodeRuntimeAssemblyIngressSelector(
+    value.selector,
+    `${label}.selector`
+  );
   const deployment = decodeDeploymentRef(value.deployment, `${label}.deployment`);
-  const contract = decodeContractRef(value.contract, `${label}.contract`);
-  if (
-    deployment.serviceId !== contract.serviceId ||
-    deployment.contractVersion !== contract.contractVersion
-  ) {
-    throw new Error(`${label} deployment and contract coordinates must match`);
+  if (!resolvedDeployments.has(deploymentRefKey(deployment))) {
+    throw new Error(`${label}.deployment is absent from resolvedDeployments`);
   }
-  const contractOperationId = requiredString(value, 'contractOperationId');
-  if (!CONTRACT_OPERATION_IDENTITY_PATTERN.test(contractOperationId)) {
-    throw new Error(`${label}.contractOperationId is invalid`);
-  }
-  const operationMode = operationModes.get(contractOperationKey(contract, contractOperationId));
-  if (operationMode === undefined) {
-    throw new Error(`${label}.contractOperationId is absent from the exact ServiceContract`);
+  const gatewayEntryKey = decodeRuntimeAssemblyGatewayEntryKey(
+    value.gatewayEntryKey,
+    label
+  );
+  const gatewayEntryIdentity = requiredString(value, 'gatewayEntryIdentity');
+  if (!GATEWAY_ENTRY_IDENTITY_PATTERN.test(gatewayEntryIdentity)) {
+    throw new Error(`${label}.gatewayEntryIdentity is invalid`);
   }
   return {
     selector,
     deployment,
-    contract,
-    contractOperationId,
-    operationMode
+    gatewayEntryKey,
+    gatewayEntryIdentity
   };
 }
 
-function decodeContractOperationModes(
-  contracts: readonly unknown[]
-): ReadonlyMap<string, 'unary' | 'serverStream'> {
-  const modes = new Map<string, 'unary' | 'serverStream'>();
-  const contractCoordinates = new Set<string>();
-  for (const [index, input] of contracts.entries()) {
-    const label = `RouterSnapshot.serviceContracts[${index}]`;
-    const contract = exactObject(input, label);
-    exactFields(contract, [
-      'schemaVersion',
-      'serviceId',
-      'contractVersion',
-      'serviceProtocolIdentity',
-      'operations',
-      'packageTypeRequirements',
-      'diagnosticText'
-    ], label);
-    if (contract.schemaVersion !== 'skiff-service-contract-v3') {
-      throw new Error(`${label}.schemaVersion must be skiff-service-contract-v3`);
-    }
-    const ref: RuntimeAssemblyContractRef = {
-      serviceId: requiredString(contract, 'serviceId'),
-      contractVersion: requiredString(contract, 'contractVersion'),
-      serviceProtocolIdentity: requiredString(contract, 'serviceProtocolIdentity')
-    };
-    if (!SERVICE_PROTOCOL_IDENTITY_PATTERN.test(ref.serviceProtocolIdentity)) {
-      throw new Error(`${label}.serviceProtocolIdentity is invalid`);
-    }
-    const coordinate = contractCoordinateKey(ref);
-    if (contractCoordinates.has(coordinate)) {
-      throw new Error(`${label} duplicates an exact ServiceContract coordinate`);
-    }
-    contractCoordinates.add(coordinate);
-    const operations = exactObject(contract.operations, `${label}.operations`);
-    for (const [operationId, descriptorInput] of Object.entries(operations)) {
-      if (!CONTRACT_OPERATION_IDENTITY_PATTERN.test(operationId)) {
-        throw new Error(`${label}.operations contains an invalid operation identity`);
-      }
-      const descriptor = exactObject(
-        descriptorInput,
-        `${label}.operations.${operationId}`
-      );
-      exactFields(descriptor, ['operationId', 'stableKey', 'contract'], `${label}.operations`);
-      if (descriptor.operationId !== operationId) {
-        throw new Error(`${label}.operations descriptor identity mismatch`);
-      }
-      const operationContract = exactObject(
-        descriptor.contract,
-        `${label}.operations.${operationId}.contract`
-      );
-      const stream = exactObject(
-        operationContract.stream,
-        `${label}.operations.${operationId}.contract.stream`
-      );
-      const kind = requiredString(stream, 'kind');
-      if (kind !== 'unary' && kind !== 'serverStream') {
-        throw new Error(
-          `${label}.operations.${operationId} is not available for Router ingress`
-        );
-      }
-      modes.set(contractOperationKey(ref, operationId), kind);
-    }
+export function decodeRuntimeAssemblyIngressSelector(
+  input: unknown,
+  label: string
+): RuntimeAssemblyIngressSelector {
+  const value = exactObject(input, label);
+  exactFields(value, ['protocol', 'host', 'method', 'path'], label);
+  if (value.protocol !== 'http') {
+    throw new Error(`${label}.protocol must be http`);
   }
-  return modes;
+  const host = requiredString(value, 'host');
+  if (canonicalIngressHost(host) !== host) {
+    throw new Error(`${label}.host must be canonical lowercase Host syntax`);
+  }
+  const method = requiredString(value, 'method');
+  if (
+    method !== method.toUpperCase() ||
+    !/^[A-Z0-9!#$%&'*+\-.^_`|~]+$/.test(method)
+  ) {
+    throw new Error(`${label}.method must be a canonical uppercase HTTP token`);
+  }
+  const path = requiredString(value, 'path');
+  if (/[\s\p{Cc}]/u.test(path)) {
+    throw new Error(`${label}.path must not contain whitespace or control characters`);
+  }
+  const selector: RuntimeAssemblyIngressSelector = {
+    protocol: 'http',
+    host,
+    method,
+    path
+  };
+  runtimeAssemblyIngressKey(selector);
+  return selector;
 }
 
-function contractOperationKey(
-  contract: RuntimeAssemblyContractRef,
-  operationId: string
-): string {
-  return `${contractCoordinateKey(contract)}\u0000${operationId}`;
+function assertUniqueDeploymentRefs(
+  references: readonly RuntimeAssemblyDeploymentRef[]
+): void {
+  const exact = new Set<string>();
+  const coordinates = new Map<string, string>();
+  for (const reference of references) {
+    const key = deploymentRefKey(reference);
+    if (exact.has(key)) {
+      throw new Error('RuntimeAssembly contains a duplicate resolved deployment');
+    }
+    exact.add(key);
+    const coordinate = [
+      reference.serviceId,
+      reference.contractVersion,
+      reference.deploymentRevision
+    ].join('\u0000');
+    const identity = coordinates.get(coordinate);
+    if (
+      identity !== undefined &&
+      identity !== reference.deploymentArtifactIdentity
+    ) {
+      throw new Error(
+        'RuntimeAssembly deployment coordinate resolves to multiple identities'
+      );
+    }
+    coordinates.set(coordinate, reference.deploymentArtifactIdentity);
+  }
 }
 
-function contractCoordinateKey(contract: RuntimeAssemblyContractRef): string {
+function assertUniqueSelectors(
+  bindings: readonly { selector: RuntimeAssemblyIngressSelector }[],
+  label: string
+): void {
+  const selectors = new Set<string>();
+  for (const binding of bindings) {
+    const key = runtimeAssemblyIngressKey(binding.selector);
+    if (selectors.has(key)) {
+      throw new Error(`${label} contains duplicate selector ${key}`);
+    }
+    selectors.add(key);
+  }
+}
+
+function deploymentRefKey(reference: RuntimeAssemblyDeploymentRef): string {
   return [
-    contract.serviceId,
-    contract.contractVersion,
-    contract.serviceProtocolIdentity
+    reference.serviceId,
+    reference.contractVersion,
+    reference.deploymentRevision,
+    reference.deploymentArtifactIdentity
   ].join('\u0000');
+}
+
+export function decodeRuntimeAssemblyGatewayEntryKey(
+  input: unknown,
+  label: string
+): string {
+  if (
+    typeof input !== 'string' ||
+    input.length === 0 ||
+    /[\s\p{Cc}]/u.test(input)
+  ) {
+    throw new Error(`${label}.gatewayEntryKey is invalid`);
+  }
+  return input;
 }
 
 function decodeDeploymentRef(

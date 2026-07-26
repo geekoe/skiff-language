@@ -3,19 +3,17 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import type { RuntimeAssemblyRef } from '../protocol/assemblyActivationProtocol.js';
 import { parseStrictJson } from '../protocol/strictJson.js';
-import { sha256Hex, stableStringify } from '../manifest/identity.js';
+import { joinRuntimeAssemblyDeployments } from './runtimeAssemblyDeploymentSnapshot.js';
 import {
-  decodeRouterSnapshot,
+  decodeRuntimeAssemblyRecord,
   type LoadedRuntimeAssembly,
   type RuntimeAssemblyActorMethod,
+  type RuntimeAssemblyDeploymentRef,
   type RuntimeAssemblySnapshotLoader
 } from './runtimeAssemblySnapshot.js';
 
 const MAX_RECORD_BYTES = 64 * 1024 * 1024;
-const ASSEMBLY_IDENTITY = /^skiff-runtime-assembly-v1:sha256:([0-9a-f]{64})$/;
-const SERVICE_PROTOCOL_IDENTITY = /^skiff-service-protocol-v3:sha256:([0-9a-f]{64})$/;
-const SERVICE_ID = /^[a-z0-9_.-]+(?:\/[a-z0-9_.-]+)*$/;
-const VERSION = /^[A-Za-z0-9_.-]{1,200}$/;
+const ASSEMBLY_IDENTITY = /^skiff-runtime-assembly-v2:sha256:([0-9a-f]{64})$/;
 
 export class FilesystemRuntimeAssemblySnapshotLoader
 implements RuntimeAssemblySnapshotLoader {
@@ -41,59 +39,39 @@ implements RuntimeAssemblySnapshotLoader {
     if (assemblyObject.assemblyIdentity !== ref.assemblyIdentity) {
       throw new Error('RuntimeAssembly record identity does not match its canonical path');
     }
-    const computedAssemblyIdentity = computeRuntimeAssemblyIdentity(assemblyObject);
-    if (computedAssemblyIdentity !== ref.assemblyIdentity) {
-      throw new Error('RuntimeAssembly record content does not match its declared identity');
-    }
-    if (!Array.isArray(assemblyObject.resolvedContracts)) {
-      throw new Error('RuntimeAssembly.resolvedContracts must be an array');
-    }
-    const serviceContracts = await Promise.all(
-      assemblyObject.resolvedContracts.map(async (input, index) => {
-        const contract = record(input, `RuntimeAssembly.resolvedContracts[${index}]`);
-        const serviceId = requiredString(contract, 'serviceId');
-        const contractVersion = requiredString(contract, 'contractVersion');
-        const protocol = requiredString(contract, 'serviceProtocolIdentity');
-        const protocolMatch = SERVICE_PROTOCOL_IDENTITY.exec(protocol);
-        if (
-          !SERVICE_ID.test(serviceId) ||
-          serviceId.includes('..') ||
-          !VERSION.test(contractVersion) ||
-          contractVersion === '.' ||
-          contractVersion === '..' ||
-          protocolMatch === null
-        ) {
-          throw new Error(
-            `RuntimeAssembly.resolvedContracts[${index}] is not a canonical contract reference`
-          );
-        }
-        const encodedService = serviceId.replaceAll('.', '~d').replaceAll('/', '~s');
-        const loaded = await this.readRecord(
-          `records/service-contracts/${encodedService}/${contractVersion}/${protocolMatch[1]}.json`,
-          `ServiceContract ${serviceId}@${contractVersion}`
-        );
-        const loadedObject = record(loaded, 'ServiceContract');
-        if (
-          loadedObject.serviceId !== serviceId ||
-          loadedObject.contractVersion !== contractVersion ||
-          loadedObject.serviceProtocolIdentity !== protocol
-        ) {
-          throw new Error(
-            `ServiceContract ${serviceId}@${contractVersion} identity does not match its canonical path`
-          );
-        }
-        const computedProtocolIdentity = computeServiceProtocolIdentity(loadedObject);
-        if (computedProtocolIdentity !== protocol) {
-          throw new Error(
-            `ServiceContract ${serviceId}@${contractVersion} content does not match its declared identity`
-          );
-        }
-        return loaded;
-      })
+    const recordSurface = decodeRuntimeAssemblyRecord(assembly, ref);
+    const serviceDeployments = await Promise.all(
+      recordSurface.resolvedDeployments.map((deployment, index) =>
+        this.loadServiceDeployment(deployment, index)
+      )
     );
-    const decoded = decodeRouterSnapshot({ assembly, serviceContracts }, ref).assembly;
+    const decoded = joinRuntimeAssemblyDeployments(recordSurface, serviceDeployments);
     const actorMethods = await this.loadActorMethods(assemblyObject);
     return actorMethods.length === 0 ? decoded : { ...decoded, actorMethods };
+  }
+
+  private async loadServiceDeployment(
+    reference: RuntimeAssemblyDeploymentRef,
+    index: number
+  ): Promise<unknown> {
+    const service = coordinate(reference.serviceId, 'serviceId');
+    const contractVersion = safeSegment(
+      reference.contractVersion,
+      'contractVersion'
+    );
+    const revision = safeSegment(
+      reference.deploymentRevision,
+      'deploymentRevision'
+    );
+    const identity = identityHash(
+      reference.deploymentArtifactIdentity,
+      'skiff-deployment-artifact-v2:sha256:',
+      'deploymentArtifactIdentity'
+    );
+    return await this.readRecord(
+      `records/service-deployments/${service}/${contractVersion}/${revision}/${identity}.json`,
+      `ServiceDeployment resolvedDeployments[${index}]`
+    );
   }
 
   private async loadActorMethods(
@@ -106,7 +84,10 @@ implements RuntimeAssemblySnapshotLoader {
       const slot = record(rawSlot, `RuntimeAssembly.packageLinkPlan.codeSlots[${codeSlot}]`);
       const implementation = record(slot.package, 'PackageCodeSlot.package');
       const packageId = requiredString(implementation, 'packageId');
-      const packageVersion = requiredString(implementation, 'packageVersion');
+      const packageVersion = safeSegment(
+        requiredString(implementation, 'packageVersion'),
+        'packageVersion'
+      );
       const packageBuildId = requiredString(implementation, 'packageBuildId');
       const buildHash = identityHash(
         packageBuildId,
@@ -115,7 +96,7 @@ implements RuntimeAssemblySnapshotLoader {
       );
       const packageRecord = record(
         await this.readRecord(
-          `records/package-artifacts/${coordinate(packageId)}/${packageVersion}/${buildHash}/package.json`,
+          `records/package-artifacts/${coordinate(packageId, 'packageId')}/${packageVersion}/${buildHash}/package.json`,
           `PackageArtifact ${packageId}@${packageVersion}`
         ),
         'PackageArtifact'
@@ -131,7 +112,7 @@ implements RuntimeAssemblySnapshotLoader {
         );
         const file = record(
           await this.readRecord(
-            `records/package-artifacts/${coordinate(packageId)}/${packageVersion}/${buildHash}/file-ir/${fileHash}.json`,
+            `records/package-artifacts/${coordinate(packageId, 'packageId')}/${packageVersion}/${buildHash}/file-ir/${fileHash}.json`,
             `FileIr ${fileIdentity}`
           ),
           'FileIr'
@@ -191,8 +172,34 @@ implements RuntimeAssemblySnapshotLoader {
   }
 }
 
-function coordinate(value: string): string {
+function coordinate(value: string, label: string): string {
+  if (
+    value.length === 0 ||
+    value.length > 200 ||
+    value !== value.trim() ||
+    value.includes('~') ||
+    value.includes('//') ||
+    value.startsWith('/') ||
+    value.endsWith('/') ||
+    !/^[a-z0-9_.\/-]+$/.test(value)
+  ) {
+    throw new Error(`${label} is not a canonical artifact coordinate`);
+  }
   return value.replaceAll('.', '~d').replaceAll('/', '~s');
+}
+
+function safeSegment(value: string, label: string): string {
+  if (
+    value.length === 0 ||
+    value.length > 200 ||
+    value !== value.trim() ||
+    value === '.' ||
+    value === '..' ||
+    !/^[A-Za-z0-9_.-]+$/.test(value)
+  ) {
+    throw new Error(`${label} is not a canonical artifact segment`);
+  }
+  return value;
 }
 
 function identityHash(value: string, prefix: string, label: string): string {
@@ -200,52 +207,6 @@ function identityHash(value: string, prefix: string, label: string): string {
     throw new Error(`${label} is invalid`);
   }
   return value.slice(prefix.length);
-}
-
-function computeRuntimeAssemblyIdentity(value: Record<string, unknown>): string {
-  const projection = canonicalRuntimeAssemblyIdentityValue({
-    schema: 'skiff-runtime-assembly-identity-v1',
-    roots: value.roots,
-    resolvedDeployments: value.resolvedDeployments,
-    resolvedContracts: value.resolvedContracts,
-    resolvedPackages: value.resolvedPackages,
-    packageLinkPlan: value.packageLinkPlan,
-    serviceBindingTemplates: value.serviceBindingTemplates,
-    activationTemplates: value.activationTemplates,
-    globalIngress: value.globalIngress
-  });
-  return `skiff-runtime-assembly-v1:sha256:${sha256Hex(stableStringify(projection))}`;
-}
-
-function canonicalRuntimeAssemblyIdentityValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value
-      .map(canonicalRuntimeAssemblyIdentityValue)
-      .sort((left, right) => {
-        const leftJson = stableStringify(left);
-        const rightJson = stableStringify(right);
-        return leftJson < rightJson ? -1 : leftJson > rightJson ? 1 : 0;
-      });
-  }
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value)
-        .filter(([key]) =>
-          !['packageVersion', 'contractVersion', 'exactVersion'].includes(key))
-        .map(([key, item]) => [key, canonicalRuntimeAssemblyIdentityValue(item)])
-    );
-  }
-  return value;
-}
-
-function computeServiceProtocolIdentity(value: Record<string, unknown>): string {
-  const projection = {
-    schema: 'skiff-service-protocol-identity-v3',
-    serviceId: value.serviceId,
-    operations: value.operations,
-    packageTypeRequirements: value.packageTypeRequirements
-  };
-  return `skiff-service-protocol-v3:sha256:${sha256Hex(stableStringify(projection))}`;
 }
 
 function assertContained(root: string, candidate: string, label: string): void {

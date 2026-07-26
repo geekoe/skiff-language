@@ -1,258 +1,137 @@
-import { request } from 'node:http';
-import { connect } from 'node:net';
-
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import {
-  canonicalWebSocketIngressIdentity
-} from '../src/gateway/assemblyWebSocketGateway.js';
-import type { RuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeAssemblyRequest.js';
-import { validateRuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeProtocol.js';
-import { AssemblyHttpGateway } from '../src/router/assemblyHttpGateway.js';
-import type { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
-import type { RuntimeUnaryDispatchFrameHeader } from '../src/router/runtimeRegistry.js';
-import {
-  RouterActiveAssemblySnapshotStore,
   RuntimeAssemblyIngressIndex,
+  runtimeAssemblyIngressKey,
   type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
 
-const ASSEMBLY = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
-const CODEX_MODELS_OPERATION = operationIdentity('b');
-const AIHUB_MODELS_OPERATION = operationIdentity('c');
-const AIHUB_SOCKET_OPERATION = operationIdentity('d');
-const AGINE_SOCKET_OPERATION = operationIdentity('e');
-const calls: RuntimeAssemblyRequestStartFrameHeader[] = [];
-const resources: Array<{ close(): Promise<void> }> = [];
+describe('RuntimeAssembly HTTP ingress index', () => {
+  it('disambiguates the same method/path by canonical Host', () => {
+    const codex = binding('codex-relay.localhost', 'models', '1');
+    const aihub = binding('aihub.localhost', 'models', '2');
+    const index = new RuntimeAssemblyIngressIndex([codex, aihub]);
 
-afterEach(async () => {
-  while (resources.length > 0) {
-    await resources.pop()!.close();
-  }
-  calls.length = 0;
-});
+    expect(index.get({
+      protocol: 'http',
+      host: 'CODEX-RELAY.LOCALHOST',
+      method: 'get',
+      path: '/v1/models'
+    })).toEqual(codex);
+    expect(index.get({
+      protocol: 'http',
+      host: 'aihub.localhost',
+      method: 'GET',
+      path: '/v1/models'
+    })).toEqual(aihub);
+    expect(index.get({
+      protocol: 'http',
+      host: 'unknown.localhost',
+      method: 'GET',
+      path: '/v1/models'
+    })).toBeUndefined();
+  });
 
-describe('RuntimeAssembly Host ingress', () => {
-  it('disambiguates the same HTTP path by Host and ignores legacy selectors', async () => {
-    const { gateway, url } = await listenHttp();
-    resources.push(gateway);
-    const codex = await httpGet(url, 'codex-relay.localhost', {
-      'x-skiff-service': 'wrong/service',
-      'x-skiff-version': 'wrong-version',
-      'x-skiff-release': 'wrong-release'
-    }, '?service=also-wrong&version=also-wrong');
-    expect(codex.status).toBe(200);
-    expect(calls.at(-1)).toMatchObject({
-      routing: { contractOperationId: CODEX_MODELS_OPERATION }
+  it('retains only exact deployment, gateway identity, adapter, mode and timeout facts', () => {
+    const value = binding('stream.localhost', 'stream', '3', {
+      adapterKind: 'rawHttp',
+      operationMode: 'serverStream',
+      timeoutMs: 4_000
     });
+    const loaded = new RuntimeAssemblyIngressIndex([value]).values()[0]!;
 
-    const aihub = await httpGet(url, 'aihub.localhost');
-    expect(aihub.status).toBe(200);
-    expect(calls.at(-1)).toMatchObject({
-      routing: { contractOperationId: AIHUB_MODELS_OPERATION }
-    });
+    expect(loaded).toEqual(value);
+    expect(Object.keys(loaded).sort()).toEqual([
+      'adapterKind',
+      'deployment',
+      'gatewayEntryIdentity',
+      'gatewayEntryKey',
+      'operationMode',
+      'selector',
+      'timeoutMs'
+    ]);
+  });
 
-    const unknown = await httpGet(url, 'unknown.localhost');
-    expect(unknown.status).toBe(404);
-    expect(await httpWithoutHost(url)).toBe(421);
-    expect(calls).toHaveLength(2);
+  it('fails closed for duplicate or non-HTTP selectors', () => {
+    const first = binding('echo.localhost', 'echo', '4');
+    const duplicate = structuredClone(first);
+    duplicate.selector.host = 'ECHO.LOCALHOST';
+    duplicate.selector.method = 'get';
+
+    expect(() => new RuntimeAssemblyIngressIndex([first, duplicate])).toThrow(
+      /duplicate gateway ingress/
+    );
+    expect(() => runtimeAssemblyIngressKey({
+      protocol: 'webSocket',
+      host: 'echo.localhost',
+      method: '',
+      path: '/echo'
+    } as never)).toThrow(/only HTTP/);
   });
 
   it.each([
-    'http://other.localhost/v1/models',
-    '//other.localhost/v1/models',
-    '/v1/models#fragment'
-  ])('rejects non-origin-form HTTP target %s before dispatch', async (target) => {
-    const { gateway, url } = await listenHttp();
-    resources.push(gateway);
-    expect(await rawHttpStatus(url, target, 'codex-relay.localhost')).toBe(400);
-    expect(calls).toEqual([]);
-  });
-
-  it('keeps canonical WebSocket entry identity stable across implementation generations and sensitive to ABI', () => {
-    const original = binding(
-      'webSocket',
-      'aihub.localhost',
-      null,
-      '/ws',
-      AIHUB_SOCKET_OPERATION
-    );
-    const samePublicIngress = structuredClone(original);
-    samePublicIngress.deployment.deploymentRevision = 'generation-B';
-    samePublicIngress.deployment.deploymentArtifactIdentity =
-      `skiff-deployment-artifact-v2:sha256:${'8'.repeat(64)}`;
-    const changedAbi = structuredClone(original);
-    changedAbi.contractOperationId = operationIdentity('9');
-
-    expect(canonicalWebSocketIngressIdentity(samePublicIngress)).toEqual(
-      canonicalWebSocketIngressIdentity(original)
-    );
-    expect(canonicalWebSocketIngressIdentity(changedAbi)).not.toEqual(
-      canonicalWebSocketIngressIdentity(original)
-    );
+    {
+      host: '',
+      method: 'POST',
+      path: '/echo'
+    },
+    {
+      host: 'user@echo.localhost',
+      method: 'POST',
+      path: '/echo'
+    },
+    {
+      host: 'echo.localhost',
+      method: '',
+      path: '/echo'
+    },
+    {
+      host: 'echo.localhost',
+      method: 'POST',
+      path: 'echo'
+    },
+    {
+      host: 'echo.localhost',
+      method: 'POST',
+      path: '/echo?query=true'
+    }
+  ])('rejects invalid canonical HTTP selector %#', (selector) => {
+    expect(() => runtimeAssemblyIngressKey({
+      protocol: 'http',
+      ...selector
+    })).toThrow();
   });
 });
 
-async function listenHttp() {
-  const gateway = new AssemblyHttpGateway({
-    snapshots: snapshotStore(),
-    dispatcher: fakeDispatcher(),
-    port: 0,
-    maxRequestBytes: 67108864,
-    maxResponseBytes: 67108864
-  });
-  const listen = await gateway.listen();
-  return { gateway, url: listen.url };
-}
-
-function snapshotStore(): RouterActiveAssemblySnapshotStore {
-  const snapshots = new RouterActiveAssemblySnapshotStore();
-  snapshots.replace(snapshot(7, 'a'));
-  return snapshots;
-}
-
-function snapshot(generation: number, assemblyCharacter: string) {
-  return {
-    environment: 'test',
-    generation,
-    assembly: {
-      assemblyIdentity: `skiff-runtime-assembly-v1:sha256:${assemblyCharacter.repeat(64)}`
-    },
-    ingress: new RuntimeAssemblyIngressIndex([
-      binding('http', 'codex-relay.localhost', 'GET', '/v1/models', CODEX_MODELS_OPERATION),
-      binding('http', 'aihub.localhost', 'GET', '/v1/models', AIHUB_MODELS_OPERATION),
-      binding('webSocket', 'aihub.localhost', null, '/ws', AIHUB_SOCKET_OPERATION),
-      binding('webSocket', 'agine.localhost', null, '/ws', AGINE_SOCKET_OPERATION)
-    ])
-  };
-}
-
 function binding(
-  protocol: 'http' | 'webSocket',
   host: string,
-  method: string | null,
-  path: string,
-  operation: string
+  gatewayEntryKey: string,
+  identityCharacter: string,
+  options: {
+    adapterKind?: 'rawHttp' | 'typedJson';
+    operationMode?: 'unary' | 'serverStream';
+    timeoutMs?: number;
+  } = {}
 ): RuntimeAssemblyIngressBinding {
   return {
-    selector: { protocol, host, method, path },
+    selector: {
+      protocol: 'http',
+      host,
+      method: host.includes('stream') ? 'POST' : 'GET',
+      path: host.includes('stream') ? '/stream' : '/v1/models'
+    },
     deployment: {
       serviceId: `service/${host}`,
       contractVersion: '1.0.0',
       deploymentRevision: 'revision',
-      deploymentArtifactIdentity: `skiff-deployment-artifact-v2:sha256:${'f'.repeat(64)}`
+      deploymentArtifactIdentity:
+        `skiff-deployment-artifact-v2:sha256:${identityCharacter.repeat(64)}`
     },
-    contract: {
-      serviceId: `service/${host}`,
-      contractVersion: '1.0.0',
-      serviceProtocolIdentity: `skiff-service-protocol-v3:sha256:${host.startsWith('codex') ? '1'.repeat(64) : host.startsWith('aihub') ? '2'.repeat(64) : '3'.repeat(64)}`
-    },
-    operationMode: 'unary',
-    contractOperationId: operation
+    gatewayEntryKey,
+    gatewayEntryIdentity:
+      `skiff-gateway-entry-v1:sha256:${identityCharacter.repeat(64)}`,
+    adapterKind: options.adapterKind ?? 'typedJson',
+    operationMode: options.operationMode ?? 'unary',
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs })
   };
-}
-
-function fakeDispatcher(): RuntimeDispatcher {
-  return {
-    dispatchBinary: async (
-      input: { header: RuntimeUnaryDispatchFrameHeader },
-      _timeoutMs: number
-    ) => {
-      const validation = validateRuntimeAssemblyRequestStartFrameHeader(input.header);
-      if (!validation.ok) {
-        throw new Error(validation.error);
-      }
-      calls.push(validation.envelope);
-      return {
-        header: {
-          schemaVersion: 'skiff-runtime-frame-v1',
-          type: 'response.end',
-          requestId: validation.envelope.requestId,
-          payloadPresent: false
-        },
-        payloadBytes: new Uint8Array()
-      };
-    }
-  } as unknown as RuntimeDispatcher;
-}
-
-function operationIdentity(character: string): string {
-  return `skiff-contract-operation-v1:sha256:${character.repeat(64)}`;
-}
-
-async function httpGet(
-  baseUrl: string,
-  host: string,
-  headers: Record<string, string> = {},
-  query = ''
-): Promise<{ status: number; body: string }> {
-  const base = new URL(baseUrl);
-  return await new Promise((resolve, reject) => {
-    const outgoing = request(
-      {
-        hostname: base.hostname,
-        port: base.port,
-        path: `/v1/models${query}`,
-        method: 'GET',
-        headers: { host, ...headers }
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
-        response.on('end', () => resolve({
-          status: response.statusCode ?? 0,
-          body: Buffer.concat(chunks).toString('utf8')
-        }));
-      }
-    );
-    outgoing.on('error', reject);
-    outgoing.end();
-  });
-}
-
-
-async function httpWithoutHost(baseUrl: string): Promise<number> {
-  const base = new URL(baseUrl);
-  return await new Promise<number>((resolve, reject) => {
-    const socket = connect(Number(base.port), base.hostname);
-    let response = '';
-    socket.setEncoding('utf8');
-    socket.once('connect', () => socket.write('GET /v1/models HTTP/1.0\r\n\r\n'));
-    socket.on('data', (chunk) => {
-      response += chunk;
-    });
-    socket.once('end', () => {
-      const match = /^HTTP\/1\.1 (\d{3})/.exec(response);
-      resolve(Number(match?.[1] ?? 0));
-    });
-    socket.once('error', reject);
-  });
-}
-
-async function rawHttpStatus(
-  baseUrl: string,
-  target: string,
-  host: string
-): Promise<number> {
-  const base = new URL(baseUrl);
-  return await new Promise<number>((resolve, reject) => {
-    const socket = connect(Number(base.port), base.hostname);
-    let response = '';
-    socket.setEncoding('utf8');
-    socket.once('connect', () => socket.write([
-      `GET ${target} HTTP/1.1`,
-      `Host: ${host}`,
-      'Connection: close',
-      '',
-      ''
-    ].join('\r\n')));
-    socket.on('data', (chunk) => {
-      response += chunk;
-    });
-    socket.once('end', () => {
-      const match = /^HTTP\/1\.1 (\d{3})/.exec(response);
-      resolve(Number(match?.[1] ?? 0));
-    });
-    socket.once('error', reject);
-  });
 }
