@@ -318,9 +318,11 @@ schema。
 
 ## 15. Static Stream Boundary
 
-`Stream<T>` 可以作为service operation或external gateway entry的返回类型。Service operation的chunk
-类型`T`必须通过Package schema closure；external ingress的chunk按该gateway entry的linked handler
-signature与external codec验证，不要求仅为ingress进入PackageSchema。
+`Stream<T>` 可以作为service operation，或adapter kind明确允许stream的external gateway entry返回类型。
+Service operation的chunk类型`T`必须通过Package schema closure。当前HTTP ingress中，`typedJson`
+handler必须是unary并拒绝任意`Stream<T>`返回；只有`rawHttp`允许精确返回
+`Stream<std.http.HttpResponseStreamEvent>`，其event按linked handler signature与raw HTTP adapter验证，
+不要求仅为ingress进入PackageSchema。
 
 显式 stream-producing native std / package API 也可返回 `Stream<T>`，作为 request-local external source handle。平台 std 也可以把 `Stream<T>` 放在 runtime-owned handle record 字段里，例如 `std.http.HttpClientStreamHandle.body`；这类 handle 仍是 request-local 值，不是可持久化 schema。除非调用方把 chunk `emit` 到服务边界，或写入其他边界 payload，否则该 `T` 不因 handle 本身进入 boundary closure。
 

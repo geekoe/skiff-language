@@ -173,6 +173,13 @@ type GatewayAdapterManifest = {
 
 `param` 是 runtime handler 参数名。`source` 是 gateway/platform 提供的标准值，不是字符串路径。
 
+HTTP response shape由`kind`与linked handler signature共同确定，不能只看返回类型是否写成
+`Stream<T>`：`typedJson`只允许unary return，由runtime wrapper编码一个JSON response；
+`rawHttp`允许单个`std.http.HttpResponse`，或精确的
+`Stream<std.http.HttpResponseStreamEvent>`。只有后一种产生external HTTP server-stream frames。
+其它`typedJson + Stream<T>`或`rawHttp + Stream<非HttpResponseStreamEvent>`组合必须在compiler projection
+阶段fail closed。
+
 HTTP source：
 
 ```ts

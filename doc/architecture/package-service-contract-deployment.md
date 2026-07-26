@@ -95,6 +95,13 @@ handler/adapter声明写在一起。Mapping key就是service-owner-local `Gatewa
 一个entry，不提供多个selector复用同一entry定义的别名/引用语法。`guard`/`pre`属于具体HTTP entry，
 不占用`http`下的保留key，也没有隐式全局继承。
 
+HTTP entry kind决定external response协议，不能只按handler的`Stream<T>`外形推断。`typedJson`只允许
+unary handler return；runtime wrapper把该单个值编码为一次JSON response，compiler必须拒绝
+`typedJson`与任意`Stream<T>`返回组合。`rawHttp`允许返回单个`std.http.HttpResponse`，也允许精确返回
+`Stream<std.http.HttpResponseStreamEvent>`；后一种是第一版唯一的external HTTP server-stream surface，
+由handler显式控制status、headers和后续body chunks。Compiler不得把raw HTTP stream改投影成typed JSON
+chunks，也不得要求external caller理解Skiff的`Stream<T>`类型。
+
 `websocket`仍由`service.yml`拥有，连接path和可选`connect`回调也属于这里；但业务消息入口的authoring与
 identity层级尚未冻结。Raw frame `receive`是平台transport阶段，不是与HTTP业务handler对等的service
 入口，目标设计不得把单一用户`receive`回调当成整个WebSocket业务API。后续必须先定义平台如何从frame
@@ -351,7 +358,9 @@ named route同时声明唯一selector与entry definition。该限制只简化aut
 两个transport回调做hash并把它误当成业务协议identity。Identity不包含source selector、
 handler/pre/guard `PackageCallableId`、内部名义类型identity、PackageArtifact/build或deployment policy。
 Compiler仍必须验证由linked handler signature导出的external schema和typed adapter plan与该surface逐项
-一致。
+一致。HTTP stream mode只能来自`rawHttp`的精确
+`Stream<std.http.HttpResponseStreamEvent>`返回；`typedJson` identity始终是unary，不能生成或接受
+server-stream shape。
 
 具体handler/pre/guard callable、完整typed adapter execution plan、implementation artifact、external
 selector和policy只由ServiceDeployment及其revision覆盖。只替换实现且external protocol不变时，

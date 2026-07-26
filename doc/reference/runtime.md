@@ -188,14 +188,18 @@ Host operation 必须通过 metadata 声明 commit point、cancel-safety、idemp
 
 Skiff 当前只支持 server / source stream。Stream 是一次性值，不是持久化数据结构。
 
-`Stream<T>` 可以出现在 service operation 或 ingress entry 绑定 operation 的最外层返回类型，表示 server stream；也可以作为显式 stream-producing native std / package API 的返回类型，表示 request-local external source handle。平台 std 可以返回包含 stream 字段的 runtime-owned handle record，例如 `std.http.HttpClientStreamHandle.body`；这个 record 只能在当前 request 中使用，不能持久化或作为业务协议 schema。
+`Stream<T>` 可以出现在 service operation，或adapter kind明确允许stream的external ingress entry最外层
+返回类型，表示server stream；当前HTTP ingress中只有`rawHttp`允许精确返回
+`Stream<std.http.HttpResponseStreamEvent>`，`typedJson`始终是unary。`Stream<T>`也可以作为显式
+stream-producing native std / package API 的返回类型，表示 request-local external source handle。平台 std 可以返回包含 stream 字段的 runtime-owned handle record，例如 `std.http.HttpClientStreamHandle.body`；这个 record 只能在当前 request 中使用，不能持久化或作为业务协议 schema。
 
 `Stream<T>` 当前不能作为用户 operation 参数、用户 record 字段、持久化字段、collection 元素或普通 public API type 字段。平台 std 的 runtime-owned handle 字段和 native host operation 参数是特权例外；例如 `std.file.createFromStream(source: Stream<bytes>, ...)` 在同一 request 内消费 source，不把 stream 传出为远程 API 或 durable value。普通 Skiff package / local function 不能通过源码 body 创建独立、可逃逸的 stream source。
 
-返回`Stream<T>`的service operation或external gateway entry是server-stream producer。Producer共享当前
-request frame、deadline、trace、call stack和request heap。函数体内`emit expr`要求`expr`可赋给`T`，并向
-当前stream sink写一个ordered chunk。函数体自然结束或裸`return`表示stream normal end；`return expr`在
-server-stream handler中是编译错误。当前不提供`Stream<T, R>`或stream完成后的独立response值。
+返回`Stream<T>`的service operation或允许stream的external gateway entry是server-stream producer。
+Producer共享当前request frame、deadline、trace、call stack和request heap。函数体内`emit expr`要求
+`expr`可赋给`T`，并向当前stream sink写一个ordered chunk。函数体自然结束或裸`return`表示stream
+normal end；`return expr`在server-stream handler中是编译错误。当前不提供`Stream<T, R>`或stream完成后的
+独立response值。
 
 `emit` 是 backpressure point。Consumer 不读取、gateway / client 断开或 buffer 达到平台上限时，当前 request 必须暂停、取消或按平台错误结束，不能无限积压。`emit` 不允许出现在 `concurrent` surface 内；`concurrent value` 的 tail lane 也属于该 surface。需要并发计算后输出时，先在 lane 中计算值，等 `concurrent` block 结束后，在后续顺序代码中按确定顺序 emit。
 
@@ -221,9 +225,14 @@ handler由`service.yml`选择，不要求进入`api.yml`或ServiceContract。Rou
 
 外部 HTTP request 在 dispatch 前打包为标准 HTTP request envelope；method、url、path、query、headers 和 body 保持为业务可检查的数据。Query 和 headers 使用数组保留重复项和顺序。
 
-Service 返回标准 HTTP response envelope；gateway 写回 status、headers 和 body。Raw streaming HTTP handler 返回 `Stream<std.http.HttpResponseStreamEvent>` 时，runtime 把 `start/chunk/end` event 转换成 `response.start/response.chunk/response.end` frame，gateway 按顺序写 socket。`start` 前的 runtime error 写 platform JSON error；`start` 后的 error 首轮按连接中断处理。Client disconnect 必须向 runtime 发送 cancel。
+Raw HTTP handler返回单个`std.http.HttpResponse`时，gateway写回status、headers和body；返回
+`Stream<std.http.HttpResponseStreamEvent>`时，runtime把`start/chunk/end` event转换成
+`response.start/response.chunk/response.end` frame，gateway按顺序写socket。后一种是external HTTP
+server stream，适合在不聚合完整body的情况下转发上游HTTP/SSE；external caller只观察普通HTTP协议，
+不需要理解Skiff的`Stream<T>`。`start`前的runtime error写platform JSON error；`start`后的error首轮按
+连接中断处理。Client disconnect必须向runtime发送cancel。
 
-Typed HTTP route 是 compiler-generated wrapper，不是 router framework。Router 仍只选择 service/version/route 并发起 HTTP dispatch；wrapper 在 service runtime 内执行 `http.pre`、JSON body decode、handler 调用和 HTTP 200 JSON encode。越过 wrapper 的 `std.http.HttpError`、decode error 或平台错误通过 runtime `response.error` 映射为非 2xx platform error response。该 HTTP response body 固定为 JSON `{ "message": string, "detail": Json? }`，不暴露 internal `code` 或业务指定 status；平台策略选择 status，例如 body/schema decode 为 400、handler / `http.pre` 未捕获异常为 500、timeout 为 504、runtime/dependency unavailable 为 503。
+Typed HTTP route 是 compiler-generated unary wrapper，不是 router framework。Router 仍只选择 service/version/route 并发起 HTTP dispatch；wrapper 在 service runtime 内执行 `http.pre`、JSON body decode、handler 调用和 HTTP 200 JSON encode。`typedJson` handler不能返回任意`Stream<T>`；需要保留上游status、headers或按到达顺序转发body chunk时必须声明`rawHttp`。越过 wrapper 的 `std.http.HttpError`、decode error 或平台错误通过 runtime `response.error` 映射为非 2xx platform error response。该 HTTP response body 固定为 JSON `{ "message": string, "detail": Json? }`，不暴露 internal `code` 或业务指定 status；平台策略选择 status，例如 body/schema decode 为 400、handler / `http.pre` 未捕获异常为 500、timeout 为 504、runtime/dependency unavailable 为 503。
 
 HTTP status code本身不是throw；业务代码必须检查status。HTTP entry的可观测target id是gateway entry
 target；实际执行deadline由deployment policy/request deadline决定。Host/path/handler mapping变化是
