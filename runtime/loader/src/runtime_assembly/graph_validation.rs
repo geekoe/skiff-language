@@ -25,7 +25,6 @@ pub(super) fn validate_hydrated_graph(
     validate_deployment_contents(assembly, deployments, contracts, &packages)?;
     validate_service_templates(assembly, deployments, contracts, &packages)?;
     validate_activation_templates(assembly, deployments)?;
-    validate_ingress(assembly, deployments)?;
     validate_reachable_closure(assembly, &packages)
 }
 
@@ -434,24 +433,6 @@ fn validate_activation_templates(
                 template.deployment
             );
         }
-    }
-    Ok(())
-}
-
-fn validate_ingress(
-    assembly: &RuntimeAssembly,
-    deployments: &BTreeMap<ServiceDeploymentRef, Arc<ServiceDeployment>>,
-) -> anyhow::Result<()> {
-    if !assembly.global_ingress.is_empty() {
-        anyhow::bail!(
-            "legacy RuntimeAssembly globalIngress is not accepted before deployment gateway entries are linked"
-        );
-    }
-    if deployments
-        .values()
-        .any(|deployment| !deployment.gateway_entries.is_empty() || !deployment.ingress.is_empty())
-    {
-        anyhow::bail!("deployment gateway ingress is not yet linked into RuntimeAssembly");
     }
     Ok(())
 }

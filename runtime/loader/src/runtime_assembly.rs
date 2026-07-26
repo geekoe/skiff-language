@@ -7,13 +7,15 @@ use anyhow::Context;
 use skiff_artifact_model::{
     package_schema_descriptor_refs, BoundaryCallbackContract, BoundaryOperationDescriptor,
     BoundaryStreamContract, ContractOperationId, ContractTypeDescriptor, ContractTypeRef,
-    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBuildId, PackageSchemaIndex,
-    PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssembly, RuntimeAssemblyRef,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    FileIrRef, FileIrUnit, GatewayEntryKey, IngressSelector, PackageArtifact, PackageArtifactRef,
+    PackageBuildId, PackageSchemaIndex, PackageSchemaIndexRef, PackageSchemaTypeId,
+    PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssembly,
+    RuntimeAssemblyRef, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef,
 };
 
 mod content_validation;
+mod gateway_ingress;
 mod graph_validation;
 
 use content_validation::{
@@ -21,6 +23,8 @@ use content_validation::{
     validate_package_file_targets, validate_package_ref, validate_resource_content,
     validate_resource_ref_path,
 };
+use gateway_ingress::hydrate_gateway_ingress;
+pub use gateway_ingress::{HydratedGatewayCallable, HydratedGatewayEntry};
 use graph_validation::validate_hydrated_graph;
 
 /// Trusted content-addressed storage boundary used by the typed assembly loader.
@@ -252,6 +256,8 @@ pub struct HydratedRuntimeAssembly {
     contracts: Arc<ServiceContractStore>,
     code_slots: Vec<HydratedPackageCodeSlot>,
     code_slots_by_build: BTreeMap<PackageBuildId, usize>,
+    gateway_entries: BTreeMap<(ServiceDeploymentRef, GatewayEntryKey), Arc<HydratedGatewayEntry>>,
+    gateway_ingress: BTreeMap<IngressSelector, Arc<HydratedGatewayEntry>>,
 }
 
 impl HydratedRuntimeAssembly {
@@ -290,6 +296,31 @@ impl HydratedRuntimeAssembly {
         self.code_slots_by_build
             .get(build_id)
             .and_then(|slot| self.code_slots.get(*slot))
+    }
+
+    pub fn gateway_entries(
+        &self,
+    ) -> impl ExactSizeIterator<
+        Item = (
+            &(ServiceDeploymentRef, GatewayEntryKey),
+            &Arc<HydratedGatewayEntry>,
+        ),
+    > {
+        self.gateway_entries.iter()
+    }
+
+    pub fn gateway_entry(
+        &self,
+        owner: &ServiceDeploymentRef,
+        key: &GatewayEntryKey,
+    ) -> Option<&Arc<HydratedGatewayEntry>> {
+        self.gateway_entries.get(&(owner.clone(), key.clone()))
+    }
+
+    pub fn gateway_ingress(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&IngressSelector, &Arc<HydratedGatewayEntry>)> {
+        self.gateway_ingress.iter()
     }
 }
 
@@ -339,6 +370,8 @@ where
         let deployments = self.load_deployments(&assembly)?;
 
         validate_hydrated_graph(&assembly, &deployments, &contracts, &code_slots)?;
+        let gateway =
+            hydrate_gateway_ingress(&assembly.gateway_ingress, &deployments, &code_slots)?;
         validate_assembly(&assembly, "after hydration")?;
 
         Ok(HydratedRuntimeAssembly {
@@ -347,6 +380,8 @@ where
             contracts: Arc::new(contracts),
             code_slots,
             code_slots_by_build,
+            gateway_entries: gateway.entries,
+            gateway_ingress: gateway.selectors,
         })
     }
 

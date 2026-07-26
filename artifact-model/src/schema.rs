@@ -18,7 +18,7 @@ pub const SERVICE_CONTRACT_SCHEMA_VERSION: &str = "skiff-service-contract-v4";
 pub const SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION: &str = "skiff-service-contract-definition-v3";
 pub const SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION: &str = "skiff-service-deployment-input-v2";
 pub const SERVICE_DEPLOYMENT_SCHEMA_VERSION: &str = "skiff-service-deployment-v2";
-pub const RUNTIME_ASSEMBLY_SCHEMA_VERSION: &str = "skiff-runtime-assembly-v1";
+pub const RUNTIME_ASSEMBLY_SCHEMA_VERSION: &str = "skiff-runtime-assembly-v2";
 pub const SERVICE_VERSION_POINTER_SCHEMA_VERSION: &str = "skiff-service-version-pointer-v1";
 pub const SERVICE_BUILD_SCHEMA_VERSION: &str = "skiff-service-build-v1";
 

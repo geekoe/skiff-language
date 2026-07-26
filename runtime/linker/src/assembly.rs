@@ -5,9 +5,9 @@ use std::{
 
 use anyhow::Context;
 use skiff_artifact_model::{
-    ActivationTemplate, ContractOperationId, GlobalIngressBinding, IngressSelector, PackageBuildId,
-    PackageRequirementKey, RuntimeAssembly, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, ServiceRequirementKey,
+    ActivationTemplate, ContractOperationId, PackageBuildId, PackageRequirementKey,
+    RuntimeAssembly, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceRequirementKey,
 };
 use skiff_runtime_linked_program::{
     HydratedPackageCode, LoadedPublicationResource, PublicationResourceTable,
@@ -16,11 +16,14 @@ use skiff_runtime_linked_program::{
 use skiff_runtime_loader::{HydratedRuntimeAssembly, ServiceContractStore};
 
 mod candidate;
+mod gateway;
 
 pub use candidate::{
     AssemblyLinkedCandidate, AssemblyServiceCallError, LinkedActivationTemplate,
     LinkedContractOperation, LinkedServiceBindingTemplate,
 };
+use gateway::link_gateway_ingress;
+pub use gateway::{LinkedGatewayCallable, LinkedGatewayEntry};
 
 /// Links the exact canonical package plan once and retains only typed immutable assembly facts.
 ///
@@ -50,7 +53,7 @@ pub fn link_runtime_assembly(
 
     validate_contract_store(&assembly, &contracts)?;
     let activations = link_activation_templates(&hydrated, &shared_image, &contracts)?;
-    let ingress = link_ingress(&hydrated, &activations, &contracts)?;
+    let (gateway_entries, ingress) = link_gateway_ingress(&hydrated, &activations, &shared_image)?;
 
     Ok(AssemblyLinkedCandidate {
         assembly,
@@ -58,6 +61,7 @@ pub fn link_runtime_assembly(
         execution_image,
         contracts,
         activations,
+        gateway_entries,
         ingress,
     })
 }
@@ -499,24 +503,6 @@ fn link_service_bindings(
         anyhow::bail!("activation is missing service binding {key:?}");
     }
     Ok(linked)
-}
-
-fn link_ingress(
-    hydrated: &HydratedRuntimeAssembly,
-    _activations: &BTreeMap<ServiceDeploymentRef, LinkedActivationTemplate>,
-    _contracts: &ServiceContractStore,
-) -> anyhow::Result<BTreeMap<IngressSelector, GlobalIngressBinding>> {
-    if !hydrated.assembly().global_ingress.is_empty() {
-        anyhow::bail!(
-            "legacy RuntimeAssembly globalIngress is not accepted before deployment gateway entries are linked"
-        );
-    }
-    if hydrated.deployments().any(|(_, deployment)| {
-        !deployment.gateway_entries.is_empty() || !deployment.ingress.is_empty()
-    }) {
-        anyhow::bail!("deployment gateway ingress is not yet linked by runtime linker");
-    }
-    Ok(BTreeMap::new())
 }
 
 #[cfg(test)]

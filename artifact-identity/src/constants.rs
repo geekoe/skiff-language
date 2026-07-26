@@ -34,7 +34,7 @@ pub const SERVICE_PROTOCOL_IDENTITY_PREFIX: &str = "skiff-service-protocol-v4:sh
 pub const DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER: &str =
     "skiff-deployment-artifact-identity-v2";
 pub const DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX: &str = "skiff-deployment-artifact-v2:sha256";
-pub const ASSEMBLY_IDENTITY_SCHEMA_MARKER: &str = "skiff-runtime-assembly-identity-v1";
+pub const ASSEMBLY_IDENTITY_SCHEMA_MARKER: &str = "skiff-runtime-assembly-identity-v2";
 pub const PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX: &str =
     "skiff-package-implementation-links-v1:sha256";
 pub const OPERATION_ABI_IDENTITY_PREFIX: &str = "skiff-operation-abi-v1:sha256";

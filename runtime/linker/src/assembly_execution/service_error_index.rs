@@ -948,6 +948,7 @@ mod tests {
             },
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections: BTreeMap::new(),
+            service_call_roots: Vec::new(),
             service_call_refs: Vec::new(),
         });
         let artifact_ref = PackageArtifactRef {
@@ -992,7 +993,7 @@ mod tests {
             },
             service_binding_templates: Vec::new(),
             activation_templates: Vec::new(),
-            global_ingress: Vec::new(),
+            gateway_ingress: Vec::new(),
         };
         let hydrated = fixtures
             .iter()

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use skiff_artifact_model::{
-    ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, GlobalIngressBinding,
+    ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, GatewayIngressBinding,
     IngressSelector, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
     PackageCodeSlot, PackageRequirement, PackageRequirementKey, ResolvedServiceBinding,
     RuntimeAssembly, ServiceBindingTemplate, ServiceContractRef, ServiceDeployment,
@@ -19,7 +19,7 @@ pub(super) struct Resolver<'a, 'c> {
     package_links: BTreeMap<PackageRequirementKey, PackageArtifactRef>,
     service_templates: BTreeMap<ServiceDeploymentRef, ServiceBindingTemplate>,
     activation_templates: BTreeMap<ServiceDeploymentRef, ActivationTemplate>,
-    global_ingress: BTreeMap<IngressSelector, GlobalIngressBinding>,
+    gateway_ingress: BTreeMap<IngressSelector, GatewayIngressBinding>,
 }
 
 impl<'a, 'c> Resolver<'a, 'c> {
@@ -36,7 +36,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
             package_links: BTreeMap::new(),
             service_templates: BTreeMap::new(),
             activation_templates: BTreeMap::new(),
-            global_ingress: BTreeMap::new(),
+            gateway_ingress: BTreeMap::new(),
         }
     }
 
@@ -116,8 +116,9 @@ impl<'a, 'c> Resolver<'a, 'c> {
             }
         }
         self.reject_unused_service_selectors(&reference, deployment, &used_selector_keys)?;
+        self.insert_gateway_ingress(&reference, deployment)?;
         self.insert_templates(&reference, deployment, bindings);
-        self.reject_unlinked_gateway_ingress(&reference, deployment)
+        Ok(())
     }
 
     fn reject_unused_service_selectors(
@@ -175,24 +176,37 @@ impl<'a, 'c> Resolver<'a, 'c> {
             .insert(reference.clone(), activation);
     }
 
-    fn reject_unlinked_gateway_ingress(
-        &self,
+    fn insert_gateway_ingress(
+        &mut self,
         reference: &ServiceDeploymentRef,
         deployment: &ServiceDeployment,
     ) -> AssemblyResult<()> {
-        if deployment.ingress.is_empty() {
-            return Ok(());
+        for source in &deployment.ingress {
+            let entry = deployment
+                .gateway_entries
+                .get(&source.gateway_entry_key)
+                .ok_or_else(|| AssemblyResolutionError::MissingGatewayEntry {
+                    activation: reference.clone(),
+                    gateway_entry_key: source.gateway_entry_key.clone(),
+                })?;
+            let binding = GatewayIngressBinding {
+                selector: source.selector.clone(),
+                deployment: reference.clone(),
+                gateway_entry_key: source.gateway_entry_key.clone(),
+                gateway_entry_identity: entry.gateway_entry_identity.clone(),
+            };
+            if let Some(first) = self
+                .gateway_ingress
+                .insert(source.selector.clone(), binding)
+            {
+                return Err(AssemblyResolutionError::GatewayIngressCollision {
+                    selector: source.selector.clone(),
+                    first: first.deployment,
+                    second: reference.clone(),
+                });
+            }
         }
-        Err(AssemblyResolutionError::GatewayIngressNotLinked {
-            activation: reference.clone(),
-            gateway_entry_keys: deployment
-                .ingress
-                .iter()
-                .map(|binding| binding.gateway_entry_key.clone())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect(),
-        })
+        Ok(())
     }
 
     fn resolve_activation_packages(
@@ -307,7 +321,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
             resolved_packages,
             service_binding_templates: self.service_templates.into_values().collect(),
             activation_templates: self.activation_templates.into_values().collect(),
-            global_ingress: self.global_ingress.into_values().collect(),
+            gateway_ingress: self.gateway_ingress.into_values().collect(),
         }
     }
 }

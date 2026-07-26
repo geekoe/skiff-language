@@ -188,7 +188,7 @@ pub use recoverable::{
 pub use refs::{FileIrRef, SourcePosition, SourceSpanRef};
 pub use resources::PublicationResourceRef;
 pub use runtime_assembly::{
-    ActivationTemplate, CanonicalPackageLinkPlan, GlobalIngressBinding, PackageCodeSlot,
+    ActivationTemplate, CanonicalPackageLinkPlan, GatewayIngressBinding, PackageCodeSlot,
     ResolvedServiceBinding, RuntimeAssembly, RuntimeAssemblyRef, ServiceBindingTemplate,
 };
 pub use schema::{
