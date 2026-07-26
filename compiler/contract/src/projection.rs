@@ -9,7 +9,7 @@ use skiff_artifact_model::{
 };
 
 use crate::{
-    compile_service_contract_definition, ContractDefinitionError, Result,
+    compile::compile_projected_service_contract_definition, ContractDefinitionError, Result,
     ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
 };
 
@@ -122,7 +122,7 @@ pub fn project_service_api(
             }
         })
         .collect();
-    let contract = compile_service_contract_definition(ServiceContractDefinition {
+    let contract = compile_projected_service_contract_definition(ServiceContractDefinition {
         service_id: service_id.clone(),
         contract_version: package.package_version.clone(),
         operations,
@@ -559,6 +559,7 @@ mod tests {
                     PackageLocalAbiSymbol::Callable {
                         callable_id: package_callable_id(path),
                         signature: PackageCallableSignature {
+                            type_params: Vec::new(),
                             parameters: Vec::new(),
                             return_type: PackageTypeRef::Local {
                                 local_type: TypeRefIr::builtin("void"),

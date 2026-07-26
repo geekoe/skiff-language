@@ -15,7 +15,8 @@ use skiff_compiler_input::{
         discover_package_manifests_with_dependency_dirs, read_user_package_manifest,
         PackageConfigError, PackageManifestKey, PackageResolutionDirs, PACKAGE_CONFIG_FILE,
     },
-    CompilerPlatformSources, CompilerPlatformSourcesError, InputAssemblyError,
+    read_service_package_root, CompilerPlatformSources, CompilerPlatformSourcesError,
+    InputAssemblyError, ServiceSourceConfigError,
 };
 use skiff_compiler_source::SourceCompileError;
 use thiserror::Error;
@@ -76,6 +77,8 @@ pub enum PackageProjectCompileError {
     ServiceCompile(#[from] ServicePackageCompileError),
     #[error(transparent)]
     ResolvedPackageSchema(#[from] ResolvedPackageSchemaError),
+    #[error(transparent)]
+    ServiceConfig(#[from] ServiceSourceConfigError),
     #[error("package dependency {package_id}@{package_version} has no discovered package.yml")]
     MissingDependencyManifest {
         package_id: String,
@@ -113,13 +116,13 @@ pub fn compile_package_project(
 /// Dependency packages still use the ordinary package entrypoint.
 pub fn compile_service_package_project(
     root: &Path,
-    service_id: &str,
 ) -> Result<(PublishedPackageProject, ServiceApiProjection), PackageProjectCompileError> {
     let store = root.join(LOCAL_PACKAGE_STORE);
     let package_dirs = PackageResolutionDirs {
         package_dirs: store.is_dir().then_some(store).into_iter().collect(),
     };
     let platform_sources = repository_platform_sources()?;
+    let service_root = read_service_package_root(root)?;
     let root_manifest = read_user_package_manifest(&root.join(PACKAGE_CONFIG_FILE))?;
     let root_key = (root_manifest.id.to_string(), root_manifest.version.clone());
     let manifests = discover_package_manifests_with_dependency_dirs(
@@ -138,7 +141,7 @@ pub fn compile_service_package_project(
     );
     // Match the authoring driver: compiler-owned std is admitted only when the
     // root's File IR actually closes over it, rather than being compiled eagerly.
-    let compiled = graph.compile_service(&root_key, service_id)?;
+    let compiled = graph.compile_service(&root_key, &service_root)?;
     let dependency_packages = graph.compiled_dependency_closure(&compiled.package)?;
     Ok((
         PublishedPackageProject {

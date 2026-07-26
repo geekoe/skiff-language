@@ -13,7 +13,7 @@ use skiff_artifact_identity::{
     PackageResourceRecordPath,
 };
 use skiff_artifact_model::{
-    ContractTypeDescriptor, ContractTypeNameability, PublicationResourceRef,
+    ContractTypeDescriptor, ContractTypeNameability, PackageLocalAbiSymbol, PublicationResourceRef,
 };
 use skiff_compiler_core::json_utils::sha256_hex;
 use skiff_compiler_emission::artifact::PublishedResourceArtifact;
@@ -25,7 +25,7 @@ use super::*;
 use crate::authoring::{build_authoring_object, AuthoringObject};
 
 const EXPECTED_STD_BUILD_ID: &str =
-    "skiff-package-build-v4:sha256:18adfaaf021770af47aafddff46e9e9876df0843700f260cea77651eefcb810d";
+    "skiff-package-build-v8:sha256:eb7a294930e76caabe86d73600f84da63cdb4e88ac8c763bbb64377ffe7ea69f";
 const EXPECTED_PRELUDE_ID: &str =
     "skiff-prelude-v1:sha256:2ebbd0569d4baf3d7dccf07c4326ec62deb5707c11a8d0eb0ac0722d1ee9d3bd";
 
@@ -49,6 +49,14 @@ fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
         .package_local_abi
         .public_symbols
         .contains_key("std.service.InternalError"));
+    let PackageLocalAbiSymbol::Callable {
+        signature: actor_find,
+        ..
+    } = &published.artifact.package_local_abi.public_symbols["std.actor.find"]
+    else {
+        panic!("std.actor.find must remain a callable");
+    };
+    assert_eq!(actor_find.type_params, ["T", "Id"]);
     let internal_error_entry =
         &published.package_schema_index.types["std.service.InternalError"];
     assert_eq!(

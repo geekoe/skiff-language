@@ -22,20 +22,20 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
     let artifact = project_fixture(SignatureSet::Complete, "async").unwrap();
     validate_package_artifact_identities(&artifact).unwrap();
     assert_eq!(artifact.schema_version, PACKAGE_ARTIFACT_SCHEMA_VERSION);
-    assert_eq!(artifact.schema_version, "skiff-package-artifact-v6");
+    assert_eq!(artifact.schema_version, "skiff-package-artifact-v7");
     assert!(artifact
         .package_build_id
         .as_str()
-        .starts_with("skiff-package-build-v7:sha256:"));
+        .starts_with("skiff-package-build-v8:sha256:"));
     assert_eq!(
         serde_json::to_value(package_artifact_build_identity_projection(&artifact).unwrap())
             .unwrap()["schema"],
-        "skiff-package-artifact-build-identity-v5"
+        "skiff-package-artifact-build-identity-v6"
     );
     assert_eq!(
         serde_json::to_value(package_artifact_local_abi_identity_projection(&artifact).unwrap())
             .unwrap()["schema"],
-        "skiff-package-artifact-local-abi-identity-v3"
+        "skiff-package-artifact-local-abi-identity-v4"
     );
 
     let callable_paths = artifact
@@ -118,7 +118,7 @@ fn exact_typed_signatures_reach_local_abi_and_public_instance_receiver_is_trimme
         .package_local_abi
         .local_abi_identity
         .as_str()
-        .starts_with("skiff-package-local-abi-v5:sha256:"));
+        .starts_with("skiff-package-local-abi-v6:sha256:"));
     let PackageLocalAbiSymbol::Callable {
         signature: run_signature,
         ..
@@ -144,7 +144,7 @@ fn stale_package_artifact_schema_and_identity_prefixes_fail_closed() {
     let base = project_fixture(SignatureSet::Complete, "async").unwrap();
 
     let mut stale_schema = base.clone();
-    stale_schema.schema_version = "skiff-package-artifact-v5".to_string();
+    stale_schema.schema_version = "skiff-package-artifact-v6".to_string();
     assert!(validate_package_artifact_identities(&stale_schema).is_err());
 
     let mut stale_local = base.clone();
@@ -155,8 +155,8 @@ fn stale_package_artifact_schema_and_identity_prefixes_fail_closed() {
                 .local_abi_identity
                 .as_str()
                 .replacen(
+                    "skiff-package-local-abi-v6:sha256",
                     "skiff-package-local-abi-v5:sha256",
-                    "skiff-package-local-abi-v4:sha256",
                     1,
                 ),
         );
@@ -165,8 +165,8 @@ fn stale_package_artifact_schema_and_identity_prefixes_fail_closed() {
     let mut stale_build = base;
     stale_build.package_build_id =
         skiff_artifact_model::PackageBuildId::new(stale_build.package_build_id.as_str().replacen(
+            "skiff-package-build-v8:sha256",
             "skiff-package-build-v7:sha256",
-            "skiff-package-build-v6:sha256",
             1,
         ));
     assert!(validate_package_artifact_identities(&stale_build).is_err());

@@ -1,6 +1,7 @@
 use crate::{
     compile_model::{ExportCallableBinding, ExportPublicInstanceBinding},
     parsed_sources::ParsedCompilerSource,
+    SourceInterfaceConformanceKey, SourceInterfaceSignatureFacts, SourceSymbolKey,
     TypeResolutionContext, TypeResolutionModel,
 };
 
@@ -8,6 +9,7 @@ pub(super) fn public_instance_operation_exports(
     parsed_sources: &[ParsedCompilerSource],
     instance: &ExportPublicInstanceBinding,
     type_resolution: &TypeResolutionModel,
+    interface_signatures: &SourceInterfaceSignatureFacts,
 ) -> Result<Vec<ExportCallableBinding>, String> {
     let instance_source = unique_source_module(
         parsed_sources,
@@ -73,17 +75,41 @@ pub(super) fn public_instance_operation_exports(
                 interface.source_symbol
             ));
         }
+        let conformance_key = SourceInterfaceConformanceKey {
+            receiver: receiver.clone(),
+            interface: SourceSymbolKey::new(&interface.source_module, &interface.source_symbol),
+        };
+        let conformance = interface_signatures
+            .conformance(&conformance_key)
+            .ok_or_else(|| {
+                format!(
+                    "public instance `{}` receiver `{}` has no exact conformance to `{}`",
+                    instance.public_path, conformance_key.receiver, conformance_key.interface
+                )
+            })?;
         exports.extend(
             declarations[0]
                 .operations
                 .iter()
-                .map(|operation| ExportCallableBinding {
+                .map(|operation| {
+                    let validated = conformance.methods.get(&operation.name).ok_or_else(|| {
+                        format!(
+                            "public instance `{}` interface `{}.{}` method `{}` has no exact validated implementation",
+                            instance.public_path,
+                            interface.source_module,
+                            interface.source_symbol,
+                            operation.name
+                        )
+                    })?;
+                    Ok(ExportCallableBinding {
                     public_path: format!("{}.{}", instance.public_path, operation.name),
-                    source_module: receiver.module_path().to_string(),
-                    source_symbol: format!("{}.{}", receiver.symbol(), operation.name),
+                    source_module: validated.executable.module_path().to_string(),
+                    source_symbol: validated.executable.symbol().to_string(),
                     kind: crate::api::PublicCallableKind::Method,
                     service_call: false,
-                }),
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?,
         );
     }
     Ok(exports)

@@ -626,6 +626,8 @@ fn generic_impl_receiver_call_lowers_to_static_executable() {
     .expect("generic impl receiver fixture should compile");
     let artifact_value = artifact.value();
     let method_index = executable_index(&artifact_value, "Box<T>.unwrap");
+    let method = executable_entry(&artifact_value, "Box<T>.unwrap");
+    assert_eq!(method["typeParams"], serde_json::json!(["T"]));
     let run = executable_entry(&artifact_value, "run");
 
     assert!(
@@ -1049,6 +1051,7 @@ version: 1.0.0
 "#,
     )
     .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         temp.path().join("internal").join("db_receiver.skiff"),
         r#"
@@ -1965,6 +1968,7 @@ fn compile_package_file_ir(
         "id: example.com/runtime-slots\nversion: 1.0.0\n",
     )
     .expect("package manifest should be written");
+    fs::write(temp.path().join("api.yml"), "{}\n").expect("api.yml should be written");
     let source_file = temp.path().join(source_path.as_ref());
     fs::create_dir_all(
         source_file
@@ -1987,6 +1991,7 @@ fn compile_root_alias_array_push(
         "id: example.com/union-array-push\nversion: 1.0.0\n",
     )
     .expect("package manifest should be written");
+    fs::write(temp.path().join("api.yml"), "{}\n").expect("api.yml should be written");
     fs::write(
         temp.path().join("types.skiff"),
         r#"alias Modality = "text" | "image" | "video" | "audio""#,

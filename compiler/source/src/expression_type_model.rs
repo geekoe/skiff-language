@@ -802,6 +802,7 @@ impl<'a> OwnerChecker<'a> {
                         };
                         (
                             skiff_artifact_model::PackageCallableSignature {
+                                type_params: Vec::new(),
                                 parameters: contract
                                     .parameters
                                     .iter()
@@ -5615,6 +5616,7 @@ mod tests {
             },
         )
         .with_signature(PackageCallableSignature {
+            type_params: Vec::new(),
             parameters: vec![PackageCallableParameter {
                 name: "input".to_string(),
                 ty: PackageTypeRef::Local {

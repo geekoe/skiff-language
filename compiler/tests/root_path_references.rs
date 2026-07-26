@@ -13,6 +13,7 @@ fn root_path_resolves_unexported_internal_type_over_local_same_name() {
         "id: example.com/root-type-reference\nversion: 1.0.0\n",
     )
     .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         temp.path().join("internal/helpers.skiff"),
         "type Helper { value: string }\n",
@@ -57,6 +58,7 @@ fn root_path_resolves_attached_db_object_type_in_file_ir() {
         "id: example.com/root-db-reference\nversion: 1.0.0\n",
     )
     .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         temp.path().join("internal/models.skiff"),
         r#"
@@ -117,6 +119,7 @@ fn unknown_root_module_and_symbol_fail_package_compilation() {
             format!("id: example.com/{name}\nversion: 1.0.0\n"),
         )
         .unwrap();
+        fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
         fs::write(
             temp.path().join("internal/helpers.skiff"),
             "type Helper { value: string }\n",
@@ -144,6 +147,7 @@ fn test_only_files_neither_enter_nor_satisfy_package_file_ir() {
         "id: example.com/ignored-test-root\nversion: 1.0.0\n",
     )
     .unwrap();
+    fs::write(ignored.path().join("api.yml"), "{}\n").unwrap();
     fs::write(ignored.path().join("main.skiff"), "type Main {}\n").unwrap();
     fs::write(
         ignored.path().join("broken.test.skiff"),
@@ -169,6 +173,7 @@ test "test-only root reference" {
         "id: example.com/test-only-symbol\nversion: 1.0.0\n",
     )
     .unwrap();
+    fs::write(unresolved.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         unresolved.path().join("main.skiff"),
         "type Holder { helper: root.test_only.Helper }\n",

@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    FileIrUnit, NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, ServiceSymbolRef,
-    TypeDescriptorIr, TypeRefIr,
+    FileIrUnit, NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, PackageTypeRef,
+    ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
 };
 
 use crate::package_artifact::{
@@ -18,6 +18,7 @@ pub(super) fn resolve_receiver(
     public_path: &str,
     const_module: &str,
     ty: &TypeRefIr,
+    visible_ty: &TypeRefIr,
     expected_module: &str,
     expected_symbol: &str,
 ) -> Result<PackagePublicInstanceReceiver, ProjectionError> {
@@ -51,7 +52,7 @@ pub(super) fn resolve_receiver(
                 ),
             )
         })?;
-    if matches!(decl.descriptor, TypeDescriptorIr::Alias { .. })
+    if !matches!(decl.descriptor, TypeDescriptorIr::Record { .. })
         || unit.declarations.interfaces.contains_key(&symbol.symbol)
     {
         return Err(public_instance_error(
@@ -63,7 +64,81 @@ pub(super) fn resolve_receiver(
             ),
         ));
     }
-    Ok(PackagePublicInstanceReceiver { symbol })
+    let Some(arguments) = visible_receiver_arguments(visible_ty, &symbol) else {
+        return Err(public_instance_error(
+            package,
+            public_path,
+            "const receiver type does not preserve its exact nominal instantiation",
+        ));
+    };
+    if arguments.len() != decl.type_params.len()
+        || arguments.iter().any(type_ref_contains_type_parameter)
+    {
+        return Err(public_instance_error(
+            package,
+            public_path,
+            format!(
+                "const receiver {}.{} has {} closed arguments, expected {}",
+                symbol.module_path,
+                symbol.symbol,
+                arguments.len(),
+                decl.type_params.len()
+            ),
+        ));
+    }
+    Ok(PackagePublicInstanceReceiver {
+        symbol,
+        type_params: decl.type_params.clone(),
+    })
+}
+
+fn visible_receiver_arguments<'a>(
+    ty: &'a TypeRefIr,
+    expected: &ServiceSymbolRef,
+) -> Option<&'a [TypeRefIr]> {
+    match ty {
+        TypeRefIr::ServiceSymbol { symbol } if symbol == expected => Some(&[]),
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            let NominalTypeRefBaseIr::ServiceSymbol { symbol } = base else {
+                return None;
+            };
+            (symbol == expected).then_some(arguments)
+        }
+        _ => None,
+    }
+}
+
+fn type_ref_contains_type_parameter(ty: &TypeRefIr) -> bool {
+    match ty {
+        TypeRefIr::TypeParam { .. } => true,
+        TypeRefIr::Builtin { args, .. } => args.iter().any(type_ref_contains_type_parameter),
+        TypeRefIr::AppliedNominal { arguments, .. } => {
+            arguments.iter().any(type_ref_contains_type_parameter)
+        }
+        TypeRefIr::Record { fields } => fields.values().any(type_ref_contains_type_parameter),
+        TypeRefIr::Union { items } => items.iter().any(type_ref_contains_type_parameter),
+        TypeRefIr::Nullable { inner } => type_ref_contains_type_parameter(inner),
+        TypeRefIr::AnyInterface { interface } => interface
+            .canonical_type_args
+            .iter()
+            .any(type_ref_contains_type_parameter),
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => {
+            params
+                .iter()
+                .any(|parameter| type_ref_contains_type_parameter(&parameter.ty))
+                || type_ref_contains_type_parameter(return_type)
+        }
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. } => false,
+    }
 }
 
 pub(super) fn resolve_interfaces(
@@ -121,6 +196,19 @@ pub(super) fn resolve_interfaces(
                 ),
             ));
         }
+        if interface_decl.type_params.len() != interface.arguments.len() {
+            return Err(public_instance_error(
+                package,
+                public_path,
+                format!(
+                    "interface selector {}.{} has {} type arguments, expected {}",
+                    interface.module,
+                    interface.symbol,
+                    interface.arguments.len(),
+                    interface_decl.type_params.len()
+                ),
+            ));
+        }
         let mut method_names = BTreeSet::new();
         for method in &interface.methods {
             if !method_names.insert(method.name.clone()) {
@@ -157,7 +245,12 @@ pub(super) fn resolve_interfaces(
                 ),
             ));
         }
-        let interface_ty = public_interface_type_ref(package, &interface.module, &interface.symbol);
+        let interface_ty = public_interface_type_ref(
+            package,
+            &interface.module,
+            &interface.symbol,
+            &interface.arguments,
+        );
         projected.push(PackagePublicInstanceInterface {
             ty: interface_ty,
             methods: interface.methods.clone(),
@@ -170,6 +263,7 @@ fn public_interface_type_ref(
     package: &PackageExportLinkProjectionInput<'_>,
     module: &str,
     symbol: &str,
+    arguments: &[PackageTypeRef],
 ) -> TypeRefIr {
     let symbol_path = package
         .exports
@@ -180,18 +274,55 @@ fn public_interface_type_ref(
                 .then(|| super::super::package_scoped_export_symbol(package, public_path))
         })
         .unwrap_or_else(|| format!("{module}.{symbol}"));
-    TypeRefIr::PackageSymbol {
-        symbol: PackageSymbolRef {
-            package: PackageRefIr::PackageId {
-                package_id: package.package_id.to_string(),
-            },
-            symbol_path,
-            abi_expectation: None,
+    let symbol = PackageSymbolRef {
+        package: PackageRefIr::PackageId {
+            package_id: package.package_id.to_string(),
+        },
+        symbol_path,
+        abi_expectation: None,
+    };
+    if arguments.is_empty() {
+        TypeRefIr::PackageSymbol { symbol }
+    } else {
+        TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::PackageSymbol { symbol },
+            arguments: arguments.iter().map(package_type_ref_to_ir).collect(),
+        }
+    }
+}
+
+fn package_type_ref_to_ir(ty: &PackageTypeRef) -> TypeRefIr {
+    match ty {
+        PackageTypeRef::Local { local_type } => local_type.clone(),
+        PackageTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => TypeRefIr::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
+        },
+        PackageTypeRef::Container { name, arguments } => TypeRefIr::Builtin {
+            name: name.clone(),
+            args: arguments.iter().map(package_type_ref_to_ir).collect(),
+        },
+        PackageTypeRef::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(package_type_ref_to_ir(inner)),
+        },
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => TypeRefIr::AnyInterface {
+            interface: skiff_artifact_identity::interface_instantiation_ref(
+                package_type_ref_to_ir(interface),
+                arguments.iter().map(package_type_ref_to_ir).collect(),
+            ),
         },
     }
 }
 
-fn nominal_service_symbol(
+pub(super) fn nominal_service_symbol(
     file_units_by_module: &BTreeMap<&str, &FileIrUnit>,
     module_path: &str,
     ty: &TypeRefIr,

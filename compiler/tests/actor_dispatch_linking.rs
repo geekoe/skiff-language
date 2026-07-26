@@ -19,6 +19,7 @@ fn real_actor_source_links_to_routed_actor_dispatch() {
         "package.yml",
         "id: example.com/actor-dispatch-linking\nversion: 1.0.0\n",
     );
+    project_dir.write("api.yml", "{}\n");
     project_dir.write(
         "main.skiff",
         r#"

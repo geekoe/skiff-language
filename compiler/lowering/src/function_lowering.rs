@@ -127,6 +127,7 @@ pub(super) type LocalTypeFieldIndex = BTreeMap<u32, BTreeMap<String, TypeRefIr>>
 
 #[derive(Clone, Debug)]
 pub(super) struct LoweredExecutableSignature {
+    pub(super) type_params: Vec<String>,
     pub(super) params: Vec<FunctionTypeParamIr>,
     pub(super) return_type: TypeRefIr,
     pub(super) self_type: Option<TypeRefIr>,

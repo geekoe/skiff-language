@@ -15,7 +15,7 @@ use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_input::{
     package_config::{package_alias_bindings, PackageManifest, PackageManifestKey},
     package_sources::{read_official_package_sources, read_package_sources},
-    read_publication_resources, CompilerPlatformSources, ManifestOwner,
+    read_publication_resources, CompilerPlatformSources, ManifestOwner, ServicePackageRoot,
 };
 use skiff_compiler_source::source_graph::PublicationSourceGraph;
 
@@ -108,7 +108,7 @@ impl<'a> PackageGraphCompiler<'a> {
     pub(super) fn compile_service(
         &mut self,
         key: &PackageManifestKey,
-        service_id: &str,
+        service_root: &ServicePackageRoot,
     ) -> Result<CompiledServicePackage, PackageProjectCompileError> {
         if self.published.contains_key(key) {
             return Err(PackageProjectCompileError::ServiceRootAlreadyCompiled {
@@ -139,7 +139,7 @@ impl<'a> PackageGraphCompiler<'a> {
 
         self.visiting.push(key.clone());
         self.visiting_set.insert(key.clone());
-        let result = self.compile_manifest(&manifest, Some(service_id));
+        let result = self.compile_manifest(&manifest, Some(service_root));
         self.visiting.pop();
         self.visiting_set.remove(key);
         let (package, service_api) = result?;
@@ -179,7 +179,7 @@ impl<'a> PackageGraphCompiler<'a> {
     fn compile_manifest(
         &mut self,
         manifest: &PackageManifest,
-        service_id: Option<&str>,
+        service_root: Option<&ServicePackageRoot>,
     ) -> Result<
         (
             PublishedPackageArtifact,
@@ -255,9 +255,9 @@ impl<'a> PackageGraphCompiler<'a> {
         }) {
             input = input.for_test_service();
         }
-        match service_id {
-            Some(service_id) => {
-                let compiled = compile_service_package(input, service_id)?;
+        match service_root {
+            Some(service_root) => {
+                let compiled = compile_service_package(input, service_root)?;
                 Ok((compiled.package, Some(compiled.service_api)))
             }
             None => Ok((compile_package(input)?, None)),

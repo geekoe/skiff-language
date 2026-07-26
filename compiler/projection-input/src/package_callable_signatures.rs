@@ -152,6 +152,7 @@ mod tests {
     fn duplicate_callable_signature_key_is_rejected() {
         let key = ProjectionPackageCallableKey::new("run", "api", 0);
         let signature = PackageCallableSignature {
+            type_params: Vec::new(),
             parameters: Vec::new(),
             return_type: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("string"),
@@ -169,6 +170,7 @@ mod tests {
     #[test]
     fn callable_signature_wire_contains_only_open_error_surface() {
         let signature = PackageCallableSignature {
+            type_params: Vec::new(),
             parameters: Vec::new(),
             return_type: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("void"),
@@ -183,7 +185,7 @@ mod tests {
                 .keys()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            vec!["parameters", "returnType", "maySuspend"]
+            vec!["typeParams", "parameters", "returnType", "maySuspend"]
         );
         assert!(wire.get("throwTypes").is_none());
 
@@ -201,6 +203,7 @@ mod tests {
             package_schema_type_id: PackageSchemaTypeId::new("package-type:models:User"),
         };
         let signature = PackageCallableSignature {
+            type_params: Vec::new(),
             parameters: vec![PackageCallableParameter {
                 name: "users".to_string(),
                 ty: PackageTypeRef::Nullable {

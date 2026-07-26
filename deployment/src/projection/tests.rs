@@ -118,6 +118,7 @@ impl ProjectionFixture {
                     PackageLocalAbiSymbol::Callable {
                         callable_id: callable_id.clone(),
                         signature: PackageCallableSignature {
+                            type_params: Vec::new(),
                             parameters: vec![PackageCallableParameter {
                                 name: "input".to_string(),
                                 ty: PackageTypeRef::PackageSchema {

@@ -12,6 +12,7 @@ use skiff_compiler_emission::{
     file_ir_artifacts::publish_file_ir_artifacts,
     package_artifact::{publish_projected_package_artifact, PublishedPackageArtifact},
 };
+use skiff_compiler_input::ServicePackageRoot;
 use skiff_compiler_projection::package_artifact::{
     project_compiled_package_artifact, PackageArtifactProjectionInput,
 };
@@ -45,17 +46,17 @@ pub fn compile_package(
 
 fn compile_package_with_service_call_roots(
     input: PackageCompileInput<'_>,
-    service_root: bool,
+    validated_service_root: bool,
 ) -> Result<PublishedPackageArtifact, PackageCompileError> {
     skiff_compiler_source::prelude_registry::initialize_prelude_registry(input.platform_sources())
         .map_err(|error| PackageCompileError::ContractValidation {
             message: error.to_string(),
         })?;
     let service_call_paths = service_call_paths(&input);
-    if !service_root && !input.is_test_service() && !service_call_paths.is_empty() {
+    if !validated_service_root && !service_call_paths.is_empty() {
         return Err(PackageCompileError::ContractValidation {
             message: format!(
-                "api.yml serviceCall markers at {} require a package root with service.yml",
+                "api.yml serviceCall markers at {} require a validated package root with service.yml",
                 service_call_paths.join(", ")
             ),
         });
@@ -434,11 +435,18 @@ pub enum ServicePackageCompileError {
 /// projects its service API from that canonical package result.
 pub fn compile_service_package(
     input: PackageCompileInput<'_>,
-    service_id: &str,
+    service_root: &ServicePackageRoot,
 ) -> Result<CompiledServicePackage, ServicePackageCompileError> {
+    if service_root.package.publication != input.package.manifest {
+        return Err(PackageCompileError::ContractValidation {
+            message: "validated service package root does not match the package compilation input"
+                .to_string(),
+        }
+        .into());
+    }
     let package = compile_package_with_service_call_roots(input, true)?;
     let service_api = project_service_api(
-        service_id,
+        &service_root.service.id,
         &package.artifact,
         &package.resolved_package_schema_type_records,
     )?;

@@ -353,6 +353,7 @@ fn compile_fixture(
         "package.yml",
         "id: example.com/registry-package\nversion: 7.4.0\n",
     );
+    root.write("service.yml", "id: example.com/registry\n");
     root.write(
         "api.yml",
         "read:\n  source: main.read\n  serviceCall: true\n",
@@ -363,7 +364,7 @@ fn compile_fixture(
             "function read() -> string {{ return {response} }}\nfunction configured() -> string {{ return config.require<string>(\"registry.token\") }}\n"
         ),
     );
-    compile_service_package_project(root.path(), "example.com/registry").unwrap()
+    compile_service_package_project(root.path()).unwrap()
 }
 
 fn manifest() -> ServiceManifestAuthoring {

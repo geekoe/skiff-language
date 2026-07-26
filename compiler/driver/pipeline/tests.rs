@@ -7,7 +7,7 @@ use skiff_artifact_model::{
     PackageSchemaIndexRef, PackageSymbolRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_core::{
-    api_spec::{PublicationApiEntry, PublicationApiSpec},
+    api_spec::{PublicationApiEntry, PublicationApiPublicInstanceEntry, PublicationApiSpec},
     id::PublicationId,
 };
 
@@ -29,10 +29,17 @@ fn service_call_marker_is_rejected_for_an_ordinary_package_root() {
         .unwrap();
     let platform_sources = CompilerPlatformSources::new(&platform_root).unwrap();
     let package_root = PathBuf::from("/tmp/skiff-service-call-admission");
-    let api = PublicationApiSpec::from_entries(vec![PublicationApiEntry::for_source(
-        "run", "main", "run",
-    )
-    .with_service_call()]);
+    let api = PublicationApiSpec::new(
+        vec![PublicationApiEntry::for_source("run", "main", "run").with_service_call()],
+        vec![PublicationApiPublicInstanceEntry::for_source(
+            "worker",
+            "root.main.worker",
+            ["root.main.WorkerApi"],
+        )
+        .unwrap()
+        .with_service_call()],
+        None,
+    );
     let package = PackageSourceInput::new(
         PublicationManifest::new(
             PublicationId::parse("example.com/service-call-admission").unwrap(),
@@ -62,8 +69,8 @@ fn service_call_marker_is_rejected_for_an_ordinary_package_root() {
     .unwrap_err()
     .to_string();
     assert!(
-        error.contains("api.yml serviceCall markers at run")
-            && error.contains("require a package root with service.yml"),
+        error.contains("api.yml serviceCall markers at run, worker")
+            && error.contains("require a validated package root with service.yml"),
         "{error}"
     );
 
@@ -79,7 +86,8 @@ fn service_call_marker_is_rejected_for_an_ordinary_package_root() {
     .unwrap_err()
     .to_string();
     assert!(
-        !test_service_error.contains("require a package root with service.yml"),
+        test_service_error.contains("api.yml serviceCall markers at run, worker")
+            && test_service_error.contains("require a validated package root with service.yml"),
         "{test_service_error}"
     );
 }

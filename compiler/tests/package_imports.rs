@@ -45,6 +45,7 @@ fn package_manifest_rejects_removed_fields_and_unsafe_ids() {
             format!("id: example.com/removed\nversion: 0.1.0\n{yaml}\n"),
         )
         .unwrap();
+        fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
         let error = read_user_package_manifest(&temp.path().join("package.yml"))
             .unwrap_err()
             .to_string();
@@ -60,6 +61,7 @@ fn package_manifest_rejects_removed_fields_and_unsafe_ids() {
         "id: app/escape/extra\nversion: 0.1.0\n",
     )
     .unwrap();
+    fs::write(unsafe_id.path().join("api.yml"), "{}\n").unwrap();
     let error = read_user_package_manifest(&unsafe_id.path().join("package.yml"))
         .unwrap_err()
         .to_string();
@@ -81,6 +83,7 @@ packages:
 "#,
     )
     .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         temp.path().join("main.skiff"),
         r#"
@@ -141,6 +144,7 @@ packages:
 "#,
     )
     .unwrap();
+    fs::write(nested.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         nested.path().join("main.skiff"),
         "import llm\nfunction run() -> string { return llm/llm.chat() }\n",
@@ -169,6 +173,7 @@ packages:
 "#,
     )
     .unwrap();
+    fs::write(folded.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         folded.path().join("main.skiff"),
         "import llm\nfunction run() -> string { return llm/chat() }\n",
@@ -195,6 +200,7 @@ packages:
 "#,
     )
     .unwrap();
+    fs::write(flat.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         flat.path().join("main.skiff"),
         "import llm\nfunction run() -> string { return llm/chat() }\n",
@@ -226,6 +232,7 @@ packages:
 "#,
     )
     .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         temp.path().join("main.skiff"),
         r#"
@@ -460,6 +467,7 @@ packages:
 "#,
     )
     .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         temp.path().join("main.skiff"),
         r#"
@@ -612,6 +620,7 @@ packages:
 "#,
     )
     .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
     let provider = temp
         .path()
         .join(".skiff-packages/example~com~~result-provider/1.0.0");
@@ -886,6 +895,7 @@ packages:
 "#,
     )
     .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         temp.path().join("main.skiff"),
         "import app\nfunction run() -> string { return app/facade() }\n",
@@ -958,6 +968,7 @@ packages:
 "#,
     )
     .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         temp.path().join("main.skiff"),
         r#"
@@ -1234,6 +1245,7 @@ fn dependency_alias_participates_in_package_build_identity() {
             ),
         )
         .unwrap();
+        fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
         fs::write(
             temp.path().join("main.skiff"),
             format!(
@@ -1269,6 +1281,7 @@ fn invalid_dependency_aliases_and_unknown_roots_fail_closed() {
     ] {
         let temp = TestDir::new("skiff-compiler", name);
         fs::write(temp.path().join("package.yml"), manifest).unwrap();
+        fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
         let error = read_user_package_manifest(&temp.path().join("package.yml"))
             .unwrap_err()
             .to_string();
@@ -1281,6 +1294,7 @@ fn invalid_dependency_aliases_and_unknown_roots_fail_closed() {
         "id: example.com/unknown-root-call\nversion: 1.0.0\n",
     )
     .unwrap();
+    fs::write(unknown.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         unknown.path().join("main.skiff"),
         "function run() -> string { return unknown.root.call() }\n",

@@ -1000,12 +1000,13 @@ fn compile_generated_stream_contract(
 }
 "#,
     );
+    provider.write("service.yml", format!("id: {service_id}\n"));
     provider.write(
         "model.skiff",
         "type Event { message: string }\ntype Request { topic: string }\n",
     );
     let (provider_project, projected_service_api) =
-        compile_service_package_project(provider.path(), service_id)
+        compile_service_package_project(provider.path())
             .expect("stream provider package should compile through the real service pipeline");
     assert!(
         matches!(

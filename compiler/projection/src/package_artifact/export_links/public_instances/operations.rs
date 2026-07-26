@@ -3,13 +3,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     ExecutableExport, ExecutableKind, FileIrRef, FileIrUnit, PackageExportIndex,
 };
-use skiff_compiler_core::naming::impl_method_declaration_name;
 
 use crate::{
     error::ProjectionError,
     package_artifact::{
         model::PackageExportLinkProjectionInput,
-        visible_types::{projection_visible_executable_signature, PackageVisibleTypeNames},
+        visible_types::{
+            projection_visible_executable_signature, projection_visible_type_ref,
+            PackageVisibleTypeNames,
+        },
     },
 };
 
@@ -43,23 +45,7 @@ pub(super) fn project_operations(
                     ),
                 ));
             }
-            let target_symbol = impl_method_declaration_name(&receiver.symbol.symbol, &method.name);
-            if method.executable_module != receiver.symbol.module_path
-                || method.executable_symbol != target_symbol
-            {
-                return Err(public_instance_error(
-                    package,
-                    public_path,
-                    format!(
-                        "source-validated method {} target {}.{} does not match receiver target {}.{}",
-                        method.name,
-                        method.executable_module,
-                        method.executable_symbol,
-                        receiver.symbol.module_path,
-                        target_symbol
-                    ),
-                ));
-            }
+            let target_symbol = method.executable_symbol.clone();
             let target_unit = file_units_by_module
                 .get(method.executable_module.as_str())
                 .copied()
@@ -118,6 +104,78 @@ pub(super) fn project_operations(
                         executable.kind,
                         executable.symbol,
                         target_symbol
+                    ),
+                ));
+            }
+            if executable.type_params != receiver.type_params {
+                return Err(public_instance_error(
+                    package,
+                    public_path,
+                    format!(
+                        "source-validated method {} target {}.{} has type parameters {:?}, expected {:?}",
+                        method.name,
+                        method.executable_module,
+                        method.executable_symbol,
+                        executable.type_params,
+                        receiver.type_params
+                    ),
+                ));
+            }
+            let explicit_self = executable
+                .params
+                .first()
+                .filter(|parameter| parameter.name == "self");
+            let implementation_receiver = match (executable.self_type.as_ref(), explicit_self) {
+                (Some(_), Some(_)) => {
+                    return Err(public_instance_error(
+                        package,
+                        public_path,
+                        format!(
+                            "source-validated method {} target {}.{} declares two receivers",
+                            method.name, method.executable_module, method.executable_symbol
+                        ),
+                    ));
+                }
+                (Some(self_type), None) => self_type,
+                (None, Some(self_parameter)) => &self_parameter.ty,
+                (None, None) => {
+                    return Err(public_instance_error(
+                        package,
+                        public_path,
+                        format!(
+                            "source-validated method {} target {}.{} has no receiver",
+                            method.name, method.executable_module, method.executable_symbol
+                        ),
+                    ));
+                }
+            };
+            if executable
+                .params
+                .iter()
+                .skip(usize::from(explicit_self.is_some()))
+                .any(|parameter| parameter.name == "self")
+            {
+                return Err(public_instance_error(
+                    package,
+                    public_path,
+                    format!(
+                        "source-validated method {} target {}.{} has a non-leading receiver",
+                        method.name, method.executable_module, method.executable_symbol
+                    ),
+                ));
+            }
+            let implementation_receiver = projection_visible_type_ref(
+                &method.executable_module,
+                implementation_receiver,
+                package_type_names,
+            );
+            if implementation_receiver != receiver.definition_type() {
+                return Err(public_instance_error(
+                    package,
+                    public_path,
+                    format!(
+                        "source-validated method {} target {}.{} has the wrong receiver",
+                        method.name, method.executable_module, method.executable_symbol
                     ),
                 ));
             }

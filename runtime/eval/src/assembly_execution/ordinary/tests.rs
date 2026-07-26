@@ -1463,6 +1463,7 @@ fn callable_package(
         PackageLocalAbiSymbol::Callable {
             callable_id: callable_id.clone(),
             signature: PackageCallableSignature {
+                type_params: Vec::new(),
                 parameters: vec![PackageCallableParameter {
                     name: "value".to_string(),
                     ty: PackageTypeRef::Local {
@@ -1571,6 +1572,7 @@ fn stream_callable_package(
         PackageLocalAbiSymbol::Callable {
             callable_id: callable_id.clone(),
             signature: PackageCallableSignature {
+                type_params: Vec::new(),
                 parameters: vec![PackageCallableParameter {
                     name: "value".to_string(),
                     ty: PackageTypeRef::Local {
