@@ -6466,7 +6466,7 @@ mod tests {
             interface_methods: Vec::new(),
         };
         PackageArtifact {
-            schema_version: "skiff-package-artifact-v7".to_string(),
+            schema_version: "skiff-package-artifact-v8".to_string(),
             package_id: "example.com/provider".to_string(),
             package_version: "1.0.0".to_string(),
             package_build_id: PackageBuildId::new("provider-build"),
@@ -6504,7 +6504,6 @@ mod tests {
             },
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections: BTreeMap::new(),
-            service_call_roots: Vec::new(),
             service_call_refs: Vec::new(),
         }
     }
@@ -7882,7 +7881,7 @@ mod tests {
             )]),
         };
         let artifact = PackageArtifact {
-            schema_version: "skiff-package-artifact-v7".to_string(),
+            schema_version: "skiff-package-artifact-v8".to_string(),
             package_id: "llm-api".to_string(),
             package_version: "1.0.0".to_string(),
             package_build_id: PackageBuildId::new("build"),
@@ -8008,7 +8007,6 @@ mod tests {
             },
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections: BTreeMap::new(),
-            service_call_roots: Vec::new(),
             service_call_refs: Vec::new(),
         };
         let mut package_types = BTreeMap::new();

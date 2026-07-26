@@ -102,11 +102,10 @@ pub(super) fn public_instance_operation_exports(
                         )
                     })?;
                     Ok(ExportCallableBinding {
-                    public_path: format!("{}.{}", instance.public_path, operation.name),
-                    source_module: validated.executable.module_path().to_string(),
-                    source_symbol: validated.executable.symbol().to_string(),
-                    kind: crate::api::PublicCallableKind::Method,
-                    service_call: false,
+                        public_path: format!("{}.{}", instance.public_path, operation.name),
+                        source_module: validated.executable.module_path().to_string(),
+                        source_symbol: validated.executable.symbol().to_string(),
+                        kind: crate::api::PublicCallableKind::Method,
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?,

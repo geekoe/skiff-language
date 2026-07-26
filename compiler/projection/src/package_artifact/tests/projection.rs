@@ -22,15 +22,15 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
     let artifact = project_fixture(SignatureSet::Complete, "async").unwrap();
     validate_package_artifact_identities(&artifact).unwrap();
     assert_eq!(artifact.schema_version, PACKAGE_ARTIFACT_SCHEMA_VERSION);
-    assert_eq!(artifact.schema_version, "skiff-package-artifact-v7");
+    assert_eq!(artifact.schema_version, "skiff-package-artifact-v8");
     assert!(artifact
         .package_build_id
         .as_str()
-        .starts_with("skiff-package-build-v8:sha256:"));
+        .starts_with("skiff-package-build-v9:sha256:"));
     assert_eq!(
         serde_json::to_value(package_artifact_build_identity_projection(&artifact).unwrap())
             .unwrap()["schema"],
-        "skiff-package-artifact-build-identity-v6"
+        "skiff-package-artifact-build-identity-v7"
     );
     assert_eq!(
         serde_json::to_value(package_artifact_local_abi_identity_projection(&artifact).unwrap())
@@ -47,12 +47,17 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
         })
         .collect::<Vec<_>>();
     assert_eq!(callable_paths, vec!["mutate", "run", "worker.handle"]);
+    assert!(matches!(
+        artifact.package_local_abi.public_symbols["Worker"],
+        PackageLocalAbiSymbol::Type { .. }
+    ));
+    assert!(matches!(
+        artifact.package_local_abi.public_symbols["VERSION"],
+        PackageLocalAbiSymbol::Constant { .. }
+    ));
     assert_eq!(artifact.callable_links.len(), 3);
     assert_eq!(artifact.callable_semantic_facts.len(), 3);
     assert_eq!(artifact.boundary_projections.len(), 3);
-    assert_eq!(artifact.service_call_roots.len(), 2);
-    assert_eq!(artifact.service_call_roots[0].public_path(), "run");
-    assert_eq!(artifact.service_call_roots[1].public_path(), "worker");
     assert_eq!(artifact.package_requirements.len(), 1);
     assert_eq!(artifact.contract_requirements.len(), 1);
     assert_eq!(artifact.service_requirements.len(), 1);
@@ -81,6 +86,11 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
         .implementation_links
         .functions
         .contains_key("mutate"));
+    assert!(artifact.implementation_links.types.contains_key("Worker"));
+    assert!(artifact
+        .implementation_links
+        .constants
+        .contains_key("VERSION"));
     assert_eq!(
         artifact.implementation_links.constants["worker"].const_index,
         0
@@ -106,9 +116,23 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
         "route",
         "operationAbiId",
         "methodAbiId",
+        "serviceCallRoots",
     ] {
         assert!(!wire.contains(forbidden), "forbidden field {forbidden}");
     }
+}
+
+#[test]
+fn ordinary_and_service_package_projection_share_artifact_and_local_abi() {
+    let ordinary_package = project_fixture(SignatureSet::Complete, "async").unwrap();
+    // A service root uses this exact same Package producer. There is no
+    // service-manifest or source-role input at this projection boundary.
+    let service_package = project_fixture(SignatureSet::Complete, "async").unwrap();
+    assert_eq!(service_package, ordinary_package);
+    assert_eq!(
+        service_package.package_local_abi.local_abi_identity,
+        ordinary_package.package_local_abi.local_abi_identity
+    );
 }
 
 #[test]
@@ -144,7 +168,7 @@ fn stale_package_artifact_schema_and_identity_prefixes_fail_closed() {
     let base = project_fixture(SignatureSet::Complete, "async").unwrap();
 
     let mut stale_schema = base.clone();
-    stale_schema.schema_version = "skiff-package-artifact-v6".to_string();
+    stale_schema.schema_version = "skiff-package-artifact-v7".to_string();
     assert!(validate_package_artifact_identities(&stale_schema).is_err());
 
     let mut stale_local = base.clone();
@@ -165,8 +189,8 @@ fn stale_package_artifact_schema_and_identity_prefixes_fail_closed() {
     let mut stale_build = base;
     stale_build.package_build_id =
         skiff_artifact_model::PackageBuildId::new(stale_build.package_build_id.as_str().replacen(
+            "skiff-package-build-v9:sha256",
             "skiff-package-build-v8:sha256",
-            "skiff-package-build-v7:sha256",
             1,
         ));
     assert!(validate_package_artifact_identities(&stale_build).is_err());
