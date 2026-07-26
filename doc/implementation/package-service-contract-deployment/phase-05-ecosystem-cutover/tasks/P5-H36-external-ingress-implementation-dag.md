@@ -1,7 +1,8 @@
 # P5-H36 External ingress implementation DAG
 
-状态：Implementation parent ready；C0 HTTP/shared model foundation leaf running。HTTP `service.yml`
-named-route authoring已由用户冻结；WebSocket业务消息路由于2026-07-26撤回原raw `receive`方案并暂缓。
+状态：Implementation in progress；C0–C2与C3 loader/linker已合流，C3 shared request wire正在执行。
+HTTP `service.yml` named-route authoring已由用户冻结；WebSocket业务消息路由于2026-07-26撤回原raw
+`receive`方案并暂缓。
 
 ## 直接父节点
 
@@ -37,10 +38,11 @@ named-route authoring已由用户冻结；WebSocket业务消息路由于2026-07-
    transport阶段，不是用户业务entry。所有external handler都不要求public，不生成
    `ContractOperationId`，不进入ServiceContract、`PackageSchemaRequirements`或service dependency
    module。
-4. External schema只为真实跨external boundary的source/sink形成entry-local结构。当前冻结typed HTTP
-   body/response及固定HTTP wire shape；未来typed WebSocket业务消息也遵守此规则，但须在消息路由模型
-   冻结后投影。`pre` context、guard值、WebSocket connection context和其它runtime内部值不进入external
-   schema。
+4. External schema只为真实跨external boundary的source/sink形成entry-local结构。`typedJson`只允许
+   unary handler return；`rawHttp`允许单个`std.http.HttpResponse`或精确
+   `Stream<std.http.HttpResponseStreamEvent>`。只有后者是external HTTP server stream，不能投影成typed
+   JSON chunks。未来typed WebSocket业务消息也遵守entry-local规则，但须在消息路由模型冻结后投影。
+   `pre` context、guard值、WebSocket connection context和其它runtime内部值不进入external schema。
 5. 私有named type可以贡献external structural shape，但它的source/public path、nominal identity、
    `PackageSchemaTypeId`或display name不得泄漏，也不得因ingress被补进`api.yml`、PackageLocalAbi、
    PackageSchema或ServiceContract。
@@ -132,6 +134,8 @@ surface/identity模型。WebSocket consumer不得把F351的HTTP surface强行复
 - generic function handler/pre/guard fail closed；
 - 从HTTP signature、adapter kind与source形成execution plan、entry-local external schema与
   `GatewayEntryIdentity`；
+- `typedJson`严格为unary；只有`rawHttp`精确
+  `Stream<std.http.HttpResponseStreamEvent>`可生成HTTP server-stream mode；
 - ServiceContract只读取`serviceCall` roots；
 - PackageArtifact不需要为private ingress type伪造public/schema record；
 - 更新compiler receipt、artifact generation与严格negative probes。
