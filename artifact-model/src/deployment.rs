@@ -70,12 +70,12 @@ pub struct ServiceSelectorBinding {
     pub contract: ServiceContractRef,
 }
 
-/// Human-authored operation target consumed only by deployment projection.
+/// Exact operation target consumed only by deployment projection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceDeploymentOperationInput {
     pub contract_operation_id: ContractOperationId,
-    pub package_public_path: String,
+    pub package_callable_id: PackageCallableId,
 }
 
 /// Canonical operation binding. Public/display paths never enter this artifact.
@@ -290,4 +290,50 @@ pub struct ServiceDeployment {
     pub runtime_capability_bindings: Vec<RuntimeCapabilityBinding>,
     pub policy: DeploymentPolicy,
     pub diagnostic_text: DeploymentDiagnosticText,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn service_deployment_operation_input_requires_exact_callable_id() {
+        let canonical = json!({
+            "contractOperationId": "operation",
+            "packageCallableId": "pkg-callable:example.provider:echo"
+        });
+        let decoded =
+            serde_json::from_value::<ServiceDeploymentOperationInput>(canonical.clone()).unwrap();
+        assert_eq!(decoded.contract_operation_id.as_str(), "operation");
+        assert_eq!(
+            decoded.package_callable_id.as_str(),
+            "pkg-callable:example.provider:echo"
+        );
+        assert_eq!(serde_json::to_value(decoded).unwrap(), canonical);
+
+        let legacy_path = json!({
+            "contractOperationId": "operation",
+            "packagePublicPath": "echo"
+        });
+        assert!(serde_json::from_value::<ServiceDeploymentOperationInput>(legacy_path).is_err());
+
+        let mut both = canonical.clone();
+        both["packagePublicPath"] = json!("echo");
+        assert!(serde_json::from_value::<ServiceDeploymentOperationInput>(both).is_err());
+
+        let mut missing_exact_id = canonical.clone();
+        missing_exact_id
+            .as_object_mut()
+            .unwrap()
+            .remove("packageCallableId");
+        assert!(
+            serde_json::from_value::<ServiceDeploymentOperationInput>(missing_exact_id).is_err()
+        );
+
+        let mut unknown = canonical;
+        unknown["sourcePath"] = json!("echo");
+        assert!(serde_json::from_value::<ServiceDeploymentOperationInput>(unknown).is_err());
+    }
 }

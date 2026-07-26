@@ -712,7 +712,7 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
     typeName: 'ServiceDeploymentOperationInput',
-    requiredFields: Object.freeze(['contract_operation_id', 'package_public_path']),
+    requiredFields: Object.freeze(['contract_operation_id', 'package_callable_id']),
   }),
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
@@ -1842,7 +1842,7 @@ pub struct PackageBinding { pub key: PackageRequirementKey, pub package: Package
 pub struct ServiceSelectorBinding { pub key: ServiceRequirementKey, pub contract: ServiceContractRef }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceDeploymentOperationInput {
-  pub contract_operation_id: OperationId, pub package_public_path: String,
+  pub contract_operation_id: OperationId, pub package_callable_id: CallableId,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentOperationBinding {
@@ -2043,6 +2043,30 @@ pub struct ActivationTemplate {
         }],
       }),
       expectedFailures: 4,
+    },
+    {
+      name: 'rejects legacy package public path deployment input',
+      files: canonicalDeploymentAssemblyFiles({
+        deployment: canonicalDeploymentText.replace(
+          'pub contract_operation_id: OperationId, pub package_callable_id: CallableId,',
+          'pub contract_operation_id: OperationId, pub package_public_path: String,',
+        ),
+      }),
+      expectedFailures: 2,
+    },
+    {
+      name: 'rejects second deployment operation input owner',
+      files: canonicalDeploymentAssemblyFiles({
+        extra: [{
+          relPath: 'deployment/model/src/operation_input.rs',
+          text: `#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceDeploymentOperationInput {
+  pub contract_operation_id: OperationId, pub package_callable_id: CallableId,
+}
+`,
+        }],
+      }),
+      expectedFailures: 1,
     },
     {
       name: 'rejects legacy aggregate embedded in deployment',

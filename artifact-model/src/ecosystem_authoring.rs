@@ -187,6 +187,8 @@ pub struct ServiceManifestAuthoring {
     pub id: String,
     #[serde(default)]
     pub kind: ServiceAuthoringKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_calls: Vec<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -451,6 +453,43 @@ mod tests {
     }
 
     #[test]
+    fn service_manifest_missing_and_empty_service_calls_are_equivalent() {
+        let missing =
+            serde_yaml::from_str::<ServiceManifestAuthoring>("id: example.com/users\n").unwrap();
+        let empty = serde_yaml::from_str::<ServiceManifestAuthoring>(
+            "id: example.com/users\nserviceCalls: []\n",
+        )
+        .unwrap();
+        assert_eq!(missing, empty);
+        assert!(missing.service_calls.is_empty());
+        assert_eq!(
+            serde_json::to_value(&missing).unwrap(),
+            serde_json::json!({
+                "id": "example.com/users",
+                "kind": "service"
+            })
+        );
+
+        let unvalidated = serde_yaml::from_str::<ServiceManifestAuthoring>(
+            "id: example.com/users\nserviceCalls:\n  - users.get\n  - not validated here\n",
+        )
+        .unwrap();
+        assert_eq!(
+            unvalidated.service_calls,
+            vec!["users.get".to_string(), "not validated here".to_string()]
+        );
+        assert_eq!(
+            serde_json::to_value(&unvalidated).unwrap()["serviceCalls"],
+            serde_json::json!(["users.get", "not validated here"])
+        );
+
+        assert!(serde_yaml::from_str::<ServiceManifestAuthoring>(
+            "id: example.com/users\nserviceCallRoots: []\n"
+        )
+        .is_err());
+    }
+
+    #[test]
     fn service_manifest_decodes_named_http_entries_in_canonical_key_order() {
         let manifest = serde_yaml::from_str::<ServiceManifestAuthoring>(
             r#"
@@ -627,6 +666,11 @@ http:
             parse_service_deployment_yml(&deployment_yml).unwrap(),
             deployment
         );
+        assert!(parse_service_deployment_yml(&deployment_yml.replace(
+            SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+            "skiff-service-deployment-input-v2"
+        ))
+        .is_err());
         assert!(
             parse_service_deployment_yml(&format!("{deployment_yml}sourceRoot: forbidden\n"))
                 .is_err()

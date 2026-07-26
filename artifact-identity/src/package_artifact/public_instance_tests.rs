@@ -1,10 +1,7 @@
 use skiff_artifact_model::{
-    FileIrRef, NominalTypeRefBaseIr, OperationCallableKind, PackageCallableId,
-    PackageLocalAbiSymbol, PackageRefIr, PackageServiceCallRoot, PackageSymbolRef, PackageTypeRef,
-    TypeRefIr,
+    FileIrRef, NominalTypeRefBaseIr, OperationCallableKind, PackageLocalAbiSymbol, PackageRefIr,
+    PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
-
-use crate::ArtifactIdentityError;
 
 use super::{
     package_artifact_build_identity,
@@ -16,36 +13,53 @@ mod fixtures;
 use fixtures::{public_instance_fixture, public_interface_alias_fixture};
 
 #[test]
-fn service_call_public_instance_root_requires_exact_methods_ids_and_link_kinds() {
+fn public_instance_complete_method_surface_remains_in_local_abi_links_and_boundary() {
+    let artifact = public_instance_fixture();
+    package_artifact_build_identity(&artifact).unwrap();
+
+    let PackageLocalAbiSymbol::PublicInstance { methods, .. } =
+        &artifact.package_local_abi.public_symbols["worker"]
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        methods.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["run", "stop"]
+    );
+    for (method, callable_id) in methods {
+        let method_path = format!("worker.{method}");
+        let PackageLocalAbiSymbol::Callable {
+            callable_id: public_callable_id,
+            ..
+        } = &artifact.package_local_abi.public_symbols[&method_path]
+        else {
+            unreachable!()
+        };
+        assert_eq!(public_callable_id, callable_id);
+        assert_eq!(
+            artifact.callable_links[callable_id].target.callable_kind,
+            OperationCallableKind::ImplMethod
+        );
+        assert!(artifact.boundary_projections.contains_key(callable_id));
+    }
+
+    let wire = serde_json::to_value(&artifact).unwrap();
+    assert_eq!(
+        wire["packageLocalAbi"]["publicSymbols"]["worker"]["methods"]
+            .as_object()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(wire["callableLinks"].as_object().unwrap().len(), 2);
+    assert_eq!(wire["boundaryProjections"].as_object().unwrap().len(), 2);
+    assert!(wire.get("serviceCallRoots").is_none());
+}
+
+#[test]
+fn public_instance_surface_requires_exact_method_link_kinds_and_interfaces() {
     let selected = public_instance_fixture();
     package_artifact_build_identity(&selected).unwrap();
-
-    let mut missing_method = selected.clone();
-    let PackageServiceCallRoot::PublicInstance { methods, .. } =
-        &mut missing_method.service_call_roots[0]
-    else {
-        unreachable!()
-    };
-    methods.remove("stop");
-    assert!(matches!(
-        package_artifact_build_identity(&missing_method),
-        Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
-    ));
-
-    let mut wrong_id = selected.clone();
-    let PackageServiceCallRoot::PublicInstance { methods, .. } =
-        &mut wrong_id.service_call_roots[0]
-    else {
-        unreachable!()
-    };
-    methods.insert(
-        "run".to_string(),
-        PackageCallableId::new("pkg-callable:example.identity:wrong"),
-    );
-    assert!(matches!(
-        package_artifact_build_identity(&wrong_id),
-        Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
-    ));
 
     let mut wrong_kind = selected.clone();
     let run_id = callable_id_for_path(&wrong_kind, "worker.run");
@@ -55,21 +69,7 @@ fn service_call_public_instance_root_requires_exact_methods_ids_and_link_kinds()
         .unwrap()
         .target
         .callable_kind = OperationCallableKind::PublicFunction;
-    assert!(matches!(
-        package_artifact_build_identity(&wrong_kind),
-        Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
-    ));
-
-    let mut forged_function = selected.clone();
-    let run_id = callable_id_for_path(&forged_function, "worker.run");
-    forged_function.service_call_roots = vec![PackageServiceCallRoot::Function {
-        public_path: "worker.run".to_string(),
-        callable_id: run_id.clone(),
-    }];
-    assert!(matches!(
-        package_artifact_build_identity(&forged_function),
-        Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
-    ));
+    assert_invalid_package_artifact(&wrong_kind);
 
     let mut no_interfaces = selected;
     let PackageLocalAbiSymbol::PublicInstance { interfaces, .. } = no_interfaces
@@ -81,10 +81,7 @@ fn service_call_public_instance_root_requires_exact_methods_ids_and_link_kinds()
         unreachable!()
     };
     interfaces.clear();
-    assert!(matches!(
-        package_artifact_build_identity(&no_interfaces),
-        Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
-    ));
+    assert_invalid_package_artifact(&no_interfaces);
 }
 
 #[test]
@@ -550,12 +547,6 @@ fn public_instance_surface_requires_exact_receiver_interface_and_method_provenan
         unreachable!()
     };
     methods.remove("stop");
-    let PackageServiceCallRoot::PublicInstance { methods, .. } =
-        &mut omitted_interface_method.service_call_roots[0]
-    else {
-        unreachable!()
-    };
-    methods.remove("stop");
     omitted_interface_method.callable_links.remove(&stop_id);
     omitted_interface_method
         .callable_semantic_facts
@@ -685,11 +676,6 @@ fn public_instance_allows_marker_interface_without_methods() {
         marker.callable_semantic_facts.remove(&callable_id);
         marker.boundary_projections.remove(&callable_id);
     }
-    let PackageServiceCallRoot::PublicInstance { methods, .. } = &mut marker.service_call_roots[0]
-    else {
-        unreachable!()
-    };
-    methods.clear();
 
     package_artifact_build_identity(&marker).unwrap();
 }

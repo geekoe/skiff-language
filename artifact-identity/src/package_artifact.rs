@@ -6,7 +6,7 @@ use skiff_artifact_model::{
     BoundaryCallableProjection, CallableSemanticFacts, PackageArtifact, PackageArtifactRef,
     PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
     PackageRuntimeRequirements, PackageSchemaIndexRef, PackageSchemaTypeId,
-    PackageSchemaTypeRecordRef, PackageServiceCallRoot, ServiceCallRef,
+    PackageSchemaTypeRecordRef, ServiceCallRef,
 };
 
 use crate::{
@@ -54,7 +54,6 @@ pub struct PackageArtifactBuildIdentityProjection {
     runtime_requirements: PackageRuntimeRequirements,
     callable_semantic_facts: BTreeMap<PackageCallableId, CallableSemanticFacts>,
     boundary_projections: BTreeMap<PackageCallableId, BoundaryCallableProjection>,
-    service_call_roots: Vec<PackageServiceCallRoot>,
     service_call_refs: Vec<ServiceCallRef>,
 }
 
@@ -160,11 +159,12 @@ fn invalid_artifact<T>(message: impl Into<String>) -> Result<T> {
 mod tests {
     use skiff_artifact_model::{
         BoundaryUnavailableReason, CallableEffectSummary, CallableMayEffects,
-        CallableProvenanceSummary, CallableSemanticFacts, ExecutableExport, ExecutableSignatureIr,
-        FileIrRef, NominalTypeRefBaseIr, OperationCallableKind, OperationTargetRef,
-        PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
-        PackageImplementationLinks, PackageRefIr, PackageSymbolRef, PackageTypeRef, ParamIr,
-        TypeRefIr, ValueProvenance, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        CallableProvenanceSummary, CallableSemanticFacts, ContractOperationId, ContractRequirement,
+        ExecutableExport, ExecutableSignatureIr, FileIrRef, NominalTypeRefBaseIr,
+        OperationCallableKind, OperationTargetRef, PackageCallableLinkFact,
+        PackageCallableParameter, PackageCallableSignature, PackageImplementationLinks,
+        PackageRefIr, PackageSymbolRef, PackageTypeRef, ParamIr, ServiceProtocolIdentity,
+        ServiceRequirement, TypeRefIr, ValueProvenance, PACKAGE_ARTIFACT_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -196,7 +196,7 @@ mod tests {
         validate_package_artifact_identities(&artifact).unwrap();
 
         let mut stale_schema = artifact.clone();
-        stale_schema.schema_version = "skiff-package-artifact-v6".to_string();
+        stale_schema.schema_version = "skiff-package-artifact-v7".to_string();
         assert!(matches!(
             validate_package_artifact_identities(&stale_schema),
             Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
@@ -223,7 +223,7 @@ mod tests {
         stale_build.package_build_id =
             PackageBuildId::new(stale_build.package_build_id.as_str().replacen(
                 crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-                "skiff-package-build-v7:sha256",
+                "skiff-package-build-v8:sha256",
                 1,
             ));
         assert!(matches!(
@@ -281,86 +281,79 @@ mod tests {
     }
 
     #[test]
-    fn service_call_roots_change_only_build_identity_and_are_order_stable() {
-        let base = two_callable_fixture();
-        let baseline_local = package_artifact_local_abi_identity(&base).unwrap();
-        let baseline_build = package_artifact_build_identity(&base).unwrap();
-        let run_id = callable_id_for_path(&base, "run");
-        let echo_id = callable_id_for_path(&base, "echo");
-
-        let mut selected = base.clone();
-        selected.service_call_roots = vec![
-            PackageServiceCallRoot::Function {
-                public_path: "run".to_string(),
-                callable_id: run_id.clone(),
-            },
-            PackageServiceCallRoot::Function {
-                public_path: "echo".to_string(),
-                callable_id: echo_id.clone(),
-            },
-        ];
-        let mut reordered = selected.clone();
-        reordered.service_call_roots.reverse();
-        let mut one_root = base.clone();
-        one_root.service_call_roots = vec![PackageServiceCallRoot::Function {
-            public_path: "run".to_string(),
-            callable_id: run_id,
-        }];
-
-        assert_eq!(
-            package_artifact_local_abi_identity(&selected).unwrap(),
-            baseline_local
-        );
-        assert_eq!(
-            package_artifact_local_abi_identity(&one_root).unwrap(),
-            baseline_local
-        );
-        assert_ne!(
-            package_artifact_build_identity(&selected).unwrap(),
-            baseline_build
-        );
-        assert_ne!(
-            package_artifact_build_identity(&selected).unwrap(),
-            package_artifact_build_identity(&one_root).unwrap()
-        );
-        assert_eq!(
-            package_artifact_build_identity(&selected).unwrap(),
-            package_artifact_build_identity(&reordered).unwrap()
-        );
-
+    fn package_artifact_build_v9_preimage_excludes_service_selection() {
+        let artifact = two_callable_fixture();
         let build =
-            serde_json::to_value(package_artifact_build_identity_projection(&selected).unwrap())
+            serde_json::to_value(package_artifact_build_identity_projection(&artifact).unwrap())
                 .unwrap();
         let local = serde_json::to_value(
-            package_artifact_local_abi_identity_projection(&selected).unwrap(),
+            package_artifact_local_abi_identity_projection(&artifact).unwrap(),
         )
         .unwrap();
-        assert!(build.get("serviceCallRoots").is_some());
+        let wire = serde_json::to_value(&artifact).unwrap();
+
+        assert_eq!(
+            build["schema"],
+            crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER
+        );
+        assert_eq!(build["schema"], "skiff-package-artifact-build-identity-v7");
+        assert!(build.get("serviceCallRoots").is_none());
+        assert!(wire.get("serviceCallRoots").is_none());
+        assert_eq!(build["serviceCallRefs"], serde_json::json!([]));
+        assert_eq!(wire["serviceCallRefs"], serde_json::json!([]));
+        assert!(artifact
+            .package_build_id
+            .as_str()
+            .starts_with("skiff-package-build-v9:sha256:"));
+
+        assert_eq!(
+            local["schema"],
+            "skiff-package-artifact-local-abi-identity-v4"
+        );
         assert!(local.get("serviceCallRoots").is_none());
+        assert!(artifact
+            .package_local_abi
+            .local_abi_identity
+            .as_str()
+            .starts_with("skiff-package-local-abi-v6:sha256:"));
+    }
 
-        let mut wrong_id = selected.clone();
-        let PackageServiceCallRoot::Function { callable_id, .. } =
-            &mut wrong_id.service_call_roots[0]
-        else {
-            unreachable!()
+    #[test]
+    fn package_artifact_service_call_refs_remain_identity_bearing_and_fail_closed() {
+        let mut artifact = fixture();
+        let protocol = ServiceProtocolIdentity::new("protocol");
+        let operation = ContractOperationId::new("operation");
+        let contract_requirement = ContractRequirement {
+            alias: "payments".to_string(),
+            service_id: "example.payments".to_string(),
+            contract_version: "1.0.0".to_string(),
+            expected_protocol_identity: protocol.clone(),
         };
-        *callable_id = PackageCallableId::new("pkg-callable:example.identity:wrong");
-        assert!(matches!(
-            package_artifact_build_identity(&wrong_id),
-            Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
-        ));
+        artifact.contract_requirements = vec![contract_requirement.clone()];
+        artifact.service_requirements = vec![ServiceRequirement {
+            contract_requirement,
+            service_binding_slot: 2,
+            used_operations: std::collections::BTreeSet::from([operation.clone()]),
+        }];
+        artifact.service_call_refs = vec![ServiceCallRef {
+            service_requirement_slot: 2,
+            contract_operation_id: operation,
+            expected_protocol_identity: protocol,
+        }];
+        assign_package_artifact_identities(&mut artifact).unwrap();
 
-        let mut duplicate_path = selected;
-        duplicate_path
-            .service_call_roots
-            .push(PackageServiceCallRoot::Function {
-                public_path: "echo".to_string(),
-                callable_id: echo_id,
-            });
-        assert!(matches!(
-            package_artifact_build_identity(&duplicate_path),
-            Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
-        ));
+        let projection =
+            serde_json::to_value(package_artifact_build_identity_projection(&artifact).unwrap())
+                .unwrap();
+        assert_eq!(projection["serviceCallRefs"].as_array().unwrap().len(), 1);
+
+        let mut missing_ref = artifact.clone();
+        missing_ref.service_call_refs.clear();
+        assert_invalid_package_artifact(&missing_ref);
+
+        let mut forged_slot = artifact;
+        forged_slot.service_call_refs[0].service_requirement_slot = 3;
+        assert_invalid_package_artifact(&forged_slot);
     }
 
     #[test]
@@ -758,7 +751,6 @@ mod tests {
             },
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections: BTreeMap::new(),
-            service_call_roots: Vec::new(),
             service_call_refs: Vec::new(),
         };
         assign_package_artifact_identities(&mut artifact).unwrap();

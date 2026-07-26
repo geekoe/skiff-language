@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     ConstExport, ExecutableExport, ExecutableSignatureIr, FunctionTypeParamIr,
     InterfaceMethodSignature, OperationCallableKind, PackageArtifact, PackageCallableId,
-    PackageLocalAbiSymbol, PackageRefIr, PackageServiceCallRoot, PackageSymbolRef, PackageTypeRef,
-    ParamIr, ServiceSymbolRef, TypeDescriptorIr, TypeExport, TypeRefIr,
+    PackageLocalAbiSymbol, PackageRefIr, PackageSymbolRef, PackageTypeRef, ParamIr,
+    ServiceSymbolRef, TypeDescriptorIr, TypeExport, TypeRefIr,
 };
 
 use super::super::{assign_package_artifact_identities, tests::two_callable_fixture};
@@ -165,10 +165,6 @@ pub(super) fn public_instance_fixture() -> PackageArtifact {
             },
         );
     }
-    artifact.service_call_roots = vec![PackageServiceCallRoot::PublicInstance {
-        public_path: "worker".to_string(),
-        methods: BTreeMap::from([("run".to_string(), run_id), ("stop".to_string(), stop_id)]),
-    }];
     assign_package_artifact_identities(&mut artifact).unwrap();
     artifact
 }
