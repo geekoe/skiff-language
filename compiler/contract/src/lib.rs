@@ -2,6 +2,7 @@ mod compile;
 mod definition;
 mod error;
 mod projection;
+mod selection;
 
 pub use compile::{compile_service_contract_definition, definition_contract_operation_id};
 pub use definition::{ServiceContractDefinition, ServiceContractDefinitionDiagnosticText};

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::collections::BTreeMap;
 
 use skiff_artifact_identity::{assign_package_artifact_identities, package_schema_index_identity};
 use skiff_artifact_model::{
@@ -6,91 +6,11 @@ use skiff_artifact_model::{
     PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex,
     PackageSchemaIndexRef, PackageSymbolRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
-use skiff_compiler_core::{
-    api_spec::{PublicationApiEntry, PublicationApiPublicInstanceEntry, PublicationApiSpec},
-    id::PublicationId,
-};
 
 use super::*;
-use crate::input::{
-    CompilerPlatformSources, ManifestOwner, ManifestProvenance, PackageSourceInput,
-    PublicationManifest, PublicationSourceGraph, SourceTree,
-};
 
 #[cfg(unix)]
 mod p5_f18a;
-
-#[test]
-fn service_call_marker_is_rejected_for_an_ordinary_package_root() {
-    let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .canonicalize()
-        .unwrap();
-    let platform_sources = CompilerPlatformSources::new(&platform_root).unwrap();
-    let package_root = PathBuf::from("/tmp/skiff-service-call-admission");
-    let api = PublicationApiSpec::new(
-        vec![PublicationApiEntry::for_source("run", "main", "run").with_service_call()],
-        vec![PublicationApiPublicInstanceEntry::for_source(
-            "worker",
-            "root.main.worker",
-            ["root.main.WorkerApi"],
-        )
-        .unwrap()
-        .with_service_call()],
-        None,
-    );
-    let package = PackageSourceInput::new(
-        PublicationManifest::new(
-            PublicationId::parse("example.com/service-call-admission").unwrap(),
-            "1.0.0".to_string(),
-            api,
-            Vec::new(),
-            ManifestProvenance::file(
-                package_root.join("package.yml"),
-                ManifestOwner::UserOrBuiltinPackage,
-            ),
-        ),
-        SourceTree {
-            root: package_root,
-            sources: Vec::new(),
-        },
-        PublicationSourceGraph::from_compiler_sources(Vec::new()),
-        Vec::new(),
-    );
-    let aliases = BTreeMap::new();
-
-    let error = compile_package(PackageCompileInput::new(
-        &platform_sources,
-        &package,
-        &aliases,
-        "example.com/service-call-admission",
-    ))
-    .unwrap_err()
-    .to_string();
-    assert!(
-        error.contains("api.yml serviceCall markers at run, worker")
-            && error.contains("require a validated package root with service.yml"),
-        "{error}"
-    );
-
-    let test_service_error = compile_package(
-        PackageCompileInput::new(
-            &platform_sources,
-            &package,
-            &aliases,
-            "example.com/service-call-admission",
-        )
-        .for_test_service(),
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(
-        test_service_error.contains("api.yml serviceCall markers at run, worker")
-            && test_service_error.contains("require a validated package root with service.yml"),
-        "{test_service_error}"
-    );
-}
 
 #[test]
 fn type_only_std_reference_adds_exact_requirement_from_validated_canonical_artifact() {
@@ -450,10 +370,10 @@ fn pre_source_schema_binding_is_exact_direct_or_compiler_owned_std_only() {
 fn pre_source_schema_binding_accepts_service_provider_package_owner() {
     let provider = canonical_artifact("example.service", "2.0.0");
     let contract: ServiceContract = serde_json::from_value(serde_json::json!({
-        "schemaVersion": "skiff-service-contract-v2",
+        "schemaVersion": "skiff-service-contract-v4",
         "serviceId": "example.service",
         "contractVersion": "2.0.0",
-        "serviceProtocolIdentity": "skiff-service-protocol-v3:sha256:test",
+        "serviceProtocolIdentity": "skiff-service-protocol-v4:sha256:test",
         "operations": {},
         "packageTypeRequirements": [],
         "diagnosticText": { "service": "", "operations": {}, "types": {} }
@@ -558,7 +478,6 @@ fn canonical_artifact(package_id: &str, version: &str) -> PackageArtifact {
         },
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
-        service_call_roots: Vec::new(),
         service_call_refs: Vec::new(),
     };
     assign_package_artifact_identities(&mut artifact).unwrap();

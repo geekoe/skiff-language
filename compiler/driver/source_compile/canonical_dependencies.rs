@@ -597,7 +597,7 @@ mod tests {
 
     fn package_artifact(package_id: &str, local_abi: &str) -> PackageArtifact {
         PackageArtifact {
-            schema_version: "test".to_string(),
+            schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
             package_id: package_id.to_string(),
             package_version: "1.0.0".to_string(),
             package_build_id: PackageBuildId::new("build"),
@@ -626,7 +626,6 @@ mod tests {
             },
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections: BTreeMap::new(),
-            service_call_roots: Vec::new(),
             service_call_refs: Vec::new(),
         }
     }

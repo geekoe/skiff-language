@@ -281,14 +281,17 @@ function unprojectable(body: Input) -> Stream<Map<string, string>> {
 }
 
 #[test]
-fn service_call_and_http_gateway_keep_distinct_identity_domains() {
+fn service_operation_and_http_gateway_keep_distinct_identity_domains() {
     let fixture = compile_fixture(
         "dual-surface",
-        "health: main.health\ndual:\n  source: main.dual\n  serviceCall: true\n",
+        "health: main.health\ndual: main.dual\n",
         r#"function health() -> string { return "ok" }
 function dual(body: string) -> string { return "ok" }
 "#,
-        typed_http("main.dual", "body"),
+        format!(
+            "serviceCalls:\n  - dual\n{}",
+            typed_http("main.dual", "body")
+        ),
     );
     let deployment = fixture.generate().expect("dual surface must project");
     assert_eq!(fixture.api.contract.operations.len(), 1);
@@ -297,17 +300,17 @@ function dual(body: string) -> string { return "ok" }
     let gateway = &deployment.gateway_entries[&gateway_key("typed")];
     let operation = fixture.api.contract.operations.keys().next().unwrap();
     assert_ne!(operation.as_str(), gateway.gateway_entry_identity.as_str());
-    let service_call_id = &deployment.operation_bindings[0].package_callable_id;
+    let service_operation_callable_id = &deployment.operation_bindings[0].package_callable_id;
     assert_ne!(
-        service_call_id, &gateway.handler,
+        service_operation_callable_id, &gateway.handler,
         "public service-call and private implementation callable IDs are distinct identity domains"
     );
-    let service_call_target =
-        &fixture.project.package.artifact.callable_links[service_call_id].target;
+    let service_operation_target =
+        &fixture.project.package.artifact.callable_links[service_operation_callable_id].target;
     let gateway_target = &fixture.project.package.artifact.callable_links[&gateway.handler].target;
-    assert_eq!(service_call_target.file_ref, gateway_target.file_ref);
+    assert_eq!(service_operation_target.file_ref, gateway_target.file_ref);
     assert_eq!(
-        service_call_target.executable_index, gateway_target.executable_index,
+        service_operation_target.executable_index, gateway_target.executable_index,
         "both protocol surfaces must still resolve to the same source executable"
     );
 }

@@ -187,6 +187,18 @@ fn generated_service_stream_contract_compiles_through_consumer_file_ir() {
 }
 "#,
     );
+    write_schema_package_dependency(
+        &consumer,
+        "example.com/generated-service-stream-consumer",
+        "example.com/generated-service-stream-provider",
+        "Event: model.Event\nRequest: model.Request\nevents: main.events\n",
+        r#"function events(input: root.model.Request) -> Stream<root.model.Event> {
+  emit(root.model.Event { message: "event" })
+  return
+}
+"#,
+        Some("type Event { message: string }\ntype Request { topic: string }\n"),
+    );
     let dependencies = BTreeMap::from([(
         (
             "example.com/generated-service-stream-consumer".to_string(),
@@ -414,6 +426,7 @@ fn provider_and_consumer_compile_against_the_same_contract_without_provider_bind
 }
 "#,
     );
+    write_echo_schema_dependency(&provider, "example.com/payments-provider");
     let provider_dependencies = BTreeMap::from([(
         (
             "example.com/payments-provider".to_string(),
@@ -432,11 +445,14 @@ fn provider_and_consumer_compile_against_the_same_contract_without_provider_bind
         provider_project.package.artifact.contract_requirements,
         vec![expected_requirement.clone()]
     );
-    assert!(provider_project
-        .package
-        .artifact
-        .package_requirements
-        .is_empty());
+    assert_eq!(
+        provider_project.package.artifact.package_requirements.len(),
+        1
+    );
+    assert_eq!(
+        provider_project.package.artifact.package_requirements[0].package_id,
+        SCHEMA_PACKAGE_ID
+    );
     assert!(provider_project
         .package
         .artifact
@@ -496,6 +512,7 @@ fn provider_and_consumer_compile_against_the_same_contract_without_provider_bind
 }
 "#,
     );
+    write_echo_schema_dependency(&consumer, "example.com/payments-consumer");
     let consumer_dependencies = BTreeMap::from([(
         (
             "example.com/payments-consumer".to_string(),
@@ -515,11 +532,14 @@ fn provider_and_consumer_compile_against_the_same_contract_without_provider_bind
         contract_operation_id: operation_id.clone(),
         expected_protocol_identity: contract.service_protocol_identity.clone(),
     };
-    assert!(consumer_project
-        .package
-        .artifact
-        .package_requirements
-        .is_empty());
+    assert_eq!(
+        consumer_project.package.artifact.package_requirements.len(),
+        1
+    );
+    assert_eq!(
+        consumer_project.package.artifact.package_requirements[0].package_id,
+        SCHEMA_PACKAGE_ID
+    );
     assert_eq!(
         consumer_project.package.artifact.contract_requirements,
         vec![expected_requirement.clone()]
@@ -623,10 +643,8 @@ packages:
         "main.skiff",
         r#"import helper
 
-type Box { value: string }
-
 function run() -> string {
-  const box = Box { value: "consumer" }
+  const box: helper.Box = { value: "consumer" }
   helper/tools.mutate(box)
   return payments/echo(box.value)
 }
@@ -707,7 +725,7 @@ function mutate(input: Box) -> void {
 }
 
 #[test]
-fn database_reads_and_detached_writes_project_available_but_owned_writes_do_not() {
+fn database_reads_and_detached_writes_preserve_source_escape_facts() {
     let package = TestDir::new("skiff-compiler", "database-boundary-provenance");
     write_package(
         &package,
@@ -737,6 +755,10 @@ function putOwned(id: string, tags: Array<string>) -> void {
 }
 "#,
     );
+    package.write(
+        "package.yml",
+        "id: example.com/database-boundary-provenance\nversion: 1.0.0\nstate:\n  database:\n    kind: database\n",
+    );
     let project =
         compile_package_project_with_contract_dependencies(package.path(), &BTreeMap::new())
             .expect("database provenance fixture should compile");
@@ -748,17 +770,24 @@ function putOwned(id: string, tags: Array<string>) -> void {
             "{callable} must remain boundary available: {projection:?}"
         );
     }
-    let BoundaryCallableProjection::Unavailable { reasons } =
-        public_callable_projection(&project.package.artifact, "putOwned")
+    let BoundaryCallableProjection::Available {
+        operation_contract,
+        implementation_requirements,
+    } = public_callable_projection(&project.package.artifact, "putOwned")
     else {
-        panic!("persisting a caller-owned payload must remain boundary unavailable");
+        panic!("detached boundary parameters must isolate the caller-owned payload");
     };
-    assert_eq!(
-        reasons,
-        &vec![BoundaryUnavailableReason::EscapesCallerValue {
-            lane: ValueEscapeLane::Database,
-        }]
+    assert!(operation_contract.effect_guarantee.no_caller_value_escape);
+    assert!(
+        implementation_requirements
+            .complete_may_effects
+            .escapes_caller_value
     );
+    assert!(matches!(
+        &implementation_requirements.provenance,
+        CallableProvenanceSummary::Analyzed { escape_lanes, .. }
+            if escape_lanes == &[ValueEscapeLane::Database]
+    ));
 }
 
 #[test]
@@ -925,7 +954,7 @@ fn echo_schema_seed() -> common::package_project::PublishedPackageProject {
 }
 
 fn echo_schema() -> skiff_compiler::ResolvedPackageSchema {
-    resolved_package_schema("contract-schema", &echo_schema_seed().package)
+    resolved_package_schema("contractSchema", &echo_schema_seed().package)
         .expect("echo schema seed should resolve")
 }
 
@@ -955,6 +984,44 @@ fn write_package(temp: &TestDir, package_id: &str, api: &str, source: &str) {
     );
     temp.write("api.yml", api);
     temp.write("main.skiff", source);
+}
+
+fn write_echo_schema_dependency(temp: &TestDir, root_package_id: &str) {
+    write_schema_package_dependency(
+        temp,
+        root_package_id,
+        SCHEMA_PACKAGE_ID,
+        "Request: main.Request\n",
+        "type Request { message: string }\n",
+        None,
+    );
+}
+
+fn write_schema_package_dependency(
+    temp: &TestDir,
+    root_package_id: &str,
+    schema_package_id: &str,
+    api: &str,
+    source: &str,
+    model_source: Option<&str>,
+) {
+    temp.write(
+        "package.yml",
+        format!(
+            "id: {root_package_id}\nversion: 1.0.0\npackages:\n  - id: {schema_package_id}\n    version: 1.0.0\n    alias: contractSchema\n"
+        ),
+    );
+    let encoded = schema_package_id.replace('.', "~").replace('/', "~~");
+    let root = format!(".skiff-packages/{encoded}/1.0.0");
+    temp.write(
+        &format!("{root}/package.yml"),
+        format!("id: {schema_package_id}\nversion: 1.0.0\n"),
+    );
+    temp.write(&format!("{root}/api.yml"), api);
+    temp.write(&format!("{root}/main.skiff"), source);
+    if let Some(model_source) = model_source {
+        temp.write(&format!("{root}/model.skiff"), model_source);
+    }
 }
 
 fn write_stream_dependency(consumer: &TestDir) {
@@ -993,14 +1060,17 @@ fn compile_generated_stream_contract(
     write_package(
         &provider,
         package_id,
-        "Event: model.Event\nRequest: model.Request\nevents:\n  source: main.events\n  serviceCall: true\n",
+        "Event: model.Event\nRequest: model.Request\nevents: main.events\n",
         r#"function events(input: root.model.Request) -> Stream<root.model.Event> {
   emit(root.model.Event { message: "event" })
   return
 }
 "#,
     );
-    provider.write("service.yml", format!("id: {service_id}\n"));
+    provider.write(
+        "service.yml",
+        format!("id: {service_id}\nserviceCalls:\n  - events\n"),
+    );
     provider.write(
         "model.skiff",
         "type Event { message: string }\ntype Request { topic: string }\n",
@@ -1018,7 +1088,7 @@ fn compile_generated_stream_contract(
     );
     assert_no_provider_binding_wire(&provider_project.package.artifact);
     let contract = projected_service_api.contract;
-    let schema = resolved_package_schema("contract-schema", &provider_project.package)
+    let schema = resolved_package_schema("contractSchema", &provider_project.package)
         .expect("stream provider schema should resolve");
     (contract, schema)
 }
