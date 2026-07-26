@@ -1,12 +1,10 @@
 use serde::{de, Deserialize, Deserializer};
 use skiff_artifact_model::{
     deserialize_activation_generation, validate_activation_generation,
-    validate_runtime_assembly_identity, AssemblyIdentity, ContractOperationId,
+    validate_runtime_assembly_identity, AssemblyIdentity, GatewayEntryIdentity,
 };
 
 use crate::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
-
-const CONTRACT_OPERATION_ID_PREFIX: &str = "skiff-contract-operation-v1:sha256:";
 
 pub(super) fn deserialize_runtime_frame_schema_version<'de, D>(
     deserializer: D,
@@ -84,36 +82,14 @@ where
     Ok(value)
 }
 
-pub(super) fn deserialize_contract_operation_id<'de, D>(
+pub(super) fn deserialize_gateway_entry_identity<'de, D>(
     deserializer: D,
-) -> Result<ContractOperationId, D::Error>
+) -> Result<GatewayEntryIdentity, D::Error>
 where
     D: Deserializer<'de>,
 {
     let value = String::deserialize(deserializer)?;
-    let valid = value
-        .strip_prefix(CONTRACT_OPERATION_ID_PREFIX)
-        .is_some_and(|hash| {
-            hash.len() == 64
-                && hash
-                    .bytes()
-                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-        });
-    if !valid {
-        return Err(de::Error::custom(
-            "routing.contractOperationId must be skiff-contract-operation-v1:sha256:<64 lowercase hex>",
-        ));
-    }
-    Ok(ContractOperationId::new(value))
-}
-
-pub(super) fn deserialize_required_nullable_string<'de, D>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Option::<String>::deserialize(deserializer)
+    GatewayEntryIdentity::parse(value).map_err(de::Error::custom)
 }
 
 fn deserialize_exact_string<'de, D>(

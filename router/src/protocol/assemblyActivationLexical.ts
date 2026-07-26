@@ -3,7 +3,7 @@ export const MAX_EXPECTED_ACTIVATION_GENERATION =
   MAX_SAFE_ACTIVATION_GENERATION - 1;
 
 const runtimeAssemblyIdentityPattern =
-  /^skiff-runtime-assembly-v1:sha256:[0-9a-f]{64}$/;
+  /^skiff-runtime-assembly-v2:sha256:[0-9a-f]{64}$/;
 const environmentPattern = /^[A-Za-z0-9._-]{1,200}$/;
 const visibleAsciiTokenPattern = /^[\x21-\x7e]{1,200}$/;
 
@@ -67,7 +67,7 @@ export function runtimeAssemblyIdentity(value: unknown): string {
     !runtimeAssemblyIdentityPattern.test(value)
   ) {
     throw new Error(
-      "assemblyIdentity must be skiff-runtime-assembly-v1:sha256:<64 lowercase hex>",
+      "assemblyIdentity must be skiff-runtime-assembly-v2:sha256:<64 lowercase hex>",
     );
   }
   return value;

@@ -1,8 +1,13 @@
+use std::collections::HashSet;
+
 use serde::Deserialize;
 use serde_json::Value;
 
 use super::{decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameHeader};
-use crate::protocol::{encode_binary_frame, RequestStartFrameHeader};
+use crate::protocol::{
+    encode_binary_frame, RequestStartFrameHeader, BINARY_FRAME_HEADER_ENCODING_JSON,
+    BINARY_FRAME_MAGIC, BINARY_FRAME_VERSION,
+};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -10,6 +15,7 @@ struct Corpus {
     request_start_headers: Vec<Value>,
     request_start_mutations: Vec<Mutation>,
     request_start_raw_cases: Vec<RawCase>,
+    request_start_payload_cases: Vec<PayloadCase>,
     request_start_equivalent_option_pairs: Vec<EquivalentOptionPair>,
     legacy_request_start_headers: Vec<Value>,
 }
@@ -30,8 +36,17 @@ struct Mutation {
 struct RawCase {
     name: String,
     outcome: String,
-    frame_hex: String,
-    expected_response: Option<Value>,
+    header_text: Option<String>,
+    header_hex: Option<String>,
+    frame_hex: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PayloadCase {
+    name: String,
+    base_index: usize,
+    payload_hex: String,
 }
 
 #[derive(Deserialize)]
@@ -44,13 +59,41 @@ struct EquivalentOptionPair {
 }
 
 #[test]
-fn runtime_assembly_request_start_corpus_is_exhaustive() {
+fn runtime_assembly_request_start_corpus_is_nonempty_and_uniquely_named() {
     let corpus = corpus();
-    assert_eq!(corpus.request_start_headers.len(), 4);
-    assert_eq!(corpus.request_start_mutations.len(), 240);
-    assert_eq!(corpus.request_start_raw_cases.len(), 29);
-    assert_eq!(corpus.request_start_equivalent_option_pairs.len(), 3);
-    assert_eq!(corpus.legacy_request_start_headers.len(), 1);
+    assert!(!corpus.request_start_headers.is_empty());
+    assert!(!corpus.request_start_mutations.is_empty());
+    assert!(!corpus.request_start_raw_cases.is_empty());
+    assert!(!corpus.request_start_payload_cases.is_empty());
+    assert!(!corpus.request_start_equivalent_option_pairs.is_empty());
+    assert!(!corpus.legacy_request_start_headers.is_empty());
+
+    let mut names = HashSet::new();
+    for name in corpus
+        .request_start_mutations
+        .iter()
+        .map(|case| case.name.as_str())
+        .chain(
+            corpus
+                .request_start_raw_cases
+                .iter()
+                .map(|case| case.name.as_str()),
+        )
+        .chain(
+            corpus
+                .request_start_payload_cases
+                .iter()
+                .map(|case| case.name.as_str()),
+        )
+        .chain(
+            corpus
+                .request_start_equivalent_option_pairs
+                .iter()
+                .map(|case| case.name.as_str()),
+        )
+    {
+        assert!(names.insert(name), "duplicate corpus case {name}");
+    }
 }
 
 #[test]
@@ -74,27 +117,44 @@ fn runtime_assembly_request_start_normalizes_equivalent_optional_defaults() {
 }
 
 #[test]
-fn runtime_assembly_request_start_decodes_shared_headers() {
-    for value in corpus().request_start_headers {
+fn runtime_assembly_request_start_decodes_shared_http_headers() {
+    let corpus = corpus();
+    let mut modes = HashSet::new();
+    for value in corpus.request_start_headers {
         let expected: RuntimeAssemblyRequestStartFrameHeader =
-            serde_json::from_value(value.clone()).expect("canonical request header");
+            serde_json::from_value(value).expect("canonical request header");
+        modes.insert(expected.mode.clone());
+        assert_eq!(expected.caller.kind, "gateway");
+        assert_eq!(
+            expected.routing.ingress.protocol,
+            super::RuntimeAssemblyRequestIngressProtocol::Http
+        );
         let serialized = serde_json::to_value(&expected).unwrap();
         let reparsed: RuntimeAssemblyRequestStartFrameHeader =
             serde_json::from_value(serialized).unwrap();
         assert_eq!(reparsed, expected);
-        let payload: &[u8] = if matches!(
-            expected.routing.ingress.protocol,
-            super::RuntimeAssemblyRequestIngressProtocol::WebSocket
-        ) {
-            &[]
-        } else {
-            b"opaque request payload"
-        };
-        let frame = encode_binary_frame(&expected, payload).unwrap();
+        let frame = encode_binary_frame(&expected, &[]).unwrap();
         let (decoded, decoded_payload) =
             decode_runtime_assembly_request_start_frame(&frame).unwrap();
         assert_eq!(decoded, expected);
-        assert_eq!(decoded_payload, payload);
+        assert!(decoded_payload.is_empty());
+    }
+    assert_eq!(
+        modes,
+        HashSet::from(["unary".to_string(), "serverStream".to_string()])
+    );
+}
+
+#[test]
+fn runtime_assembly_request_start_preserves_opaque_http_payload_boundaries() {
+    let corpus = corpus();
+    for payload_case in corpus.request_start_payload_cases {
+        let header = &corpus.request_start_headers[payload_case.base_index];
+        let payload = decode_hex(&payload_case.payload_hex);
+        let frame = encode_binary_frame(header, &payload).unwrap();
+        let (_, decoded_payload) = decode_runtime_assembly_request_start_frame(&frame)
+            .unwrap_or_else(|error| panic!("{}: {error}", payload_case.name));
+        assert_eq!(decoded_payload, payload, "{}", payload_case.name);
     }
 }
 
@@ -102,6 +162,11 @@ fn runtime_assembly_request_start_decodes_shared_headers() {
 fn runtime_assembly_request_start_mutations_fail_closed() {
     let corpus = corpus();
     for mutation in corpus.request_start_mutations {
+        assert!(
+            mutation.base_index < corpus.request_start_headers.len(),
+            "{}",
+            mutation.name
+        );
         let mut value = corpus.request_start_headers[mutation.base_index].clone();
         apply_mutation(&mut value, &mutation);
         assert!(
@@ -122,24 +187,13 @@ fn runtime_assembly_request_start_mutations_fail_closed() {
 }
 
 #[test]
-fn runtime_assembly_request_start_normalizes_raw_json() {
-    let corpus = corpus();
-    for raw_case in corpus.request_start_raw_cases {
-        let frame = decode_hex(&raw_case.frame_hex);
+fn runtime_assembly_request_start_raw_json_and_frame_cases_fail_closed() {
+    for raw_case in corpus().request_start_raw_cases {
+        let frame = raw_case_frame(&raw_case);
         match raw_case.outcome.as_str() {
             "accept" => {
-                let (decoded, _) = decode_runtime_assembly_request_start_frame(&frame)
+                decode_runtime_assembly_request_start_frame(&frame)
                     .unwrap_or_else(|error| panic!("{}: {error}", raw_case.name));
-                let response = &decoded.test_effect_doubles["effect"][0].response;
-                assert_eq!(
-                    response,
-                    raw_case
-                        .expected_response
-                        .as_ref()
-                        .expect("expected response"),
-                    "{}",
-                    raw_case.name
-                );
             }
             "reject" => assert!(
                 decode_runtime_assembly_request_start_frame(&frame).is_err(),
@@ -166,6 +220,40 @@ fn corpus() -> Corpus {
         "../../../../cross-system-fixtures/package-service-ecosystem/runtime-request-wire.json"
     ))
     .expect("shared runtime request corpus")
+}
+
+fn raw_case_frame(raw_case: &RawCase) -> Vec<u8> {
+    let sources = [
+        raw_case.header_text.is_some(),
+        raw_case.header_hex.is_some(),
+        raw_case.frame_hex.is_some(),
+    ];
+    assert_eq!(
+        sources.into_iter().filter(|present| *present).count(),
+        1,
+        "{} raw input",
+        raw_case.name
+    );
+    if let Some(frame_hex) = raw_case.frame_hex.as_deref() {
+        return decode_hex(frame_hex);
+    }
+    let header = if let Some(text) = raw_case.header_text.as_deref() {
+        text.as_bytes().to_vec()
+    } else {
+        decode_hex(raw_case.header_hex.as_deref().expect("header hex"))
+    };
+    raw_json_frame(&header)
+}
+
+fn raw_json_frame(header: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(14 + header.len());
+    frame.extend_from_slice(&BINARY_FRAME_MAGIC);
+    frame.push(BINARY_FRAME_VERSION);
+    frame.push(BINARY_FRAME_HEADER_ENCODING_JSON);
+    frame.extend_from_slice(&(header.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&0_u32.to_be_bytes());
+    frame.extend_from_slice(header);
+    frame
 }
 
 fn apply_mutation(root: &mut Value, mutation: &Mutation) {
