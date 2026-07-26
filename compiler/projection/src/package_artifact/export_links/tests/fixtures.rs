@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     ConstDeclarationIr, ConstIr, ConstLinkTargetIr, ExecutableBody, ExecutableDeclarationIr,
@@ -34,7 +34,6 @@ pub(super) fn projected_exports(
             export(const_public_path, "DEFAULT_ACTOR"),
             export(function_public_path, "run"),
         ]),
-        service_call_functions: BTreeSet::new(),
         public_instances: Vec::new(),
     };
     project_exports(package_id, &exports, file)
@@ -47,7 +46,6 @@ pub(super) fn projected_public_instance(
     let exports = PackageExports {
         entries: Vec::new(),
         symbols: BTreeMap::new(),
-        service_call_functions: BTreeSet::new(),
         public_instances: vec![PackageExportPublicInstance {
             public_path: "worker".to_string(),
             module: "api".to_string(),
@@ -60,7 +58,6 @@ pub(super) fn projected_public_instance(
                 arguments: Vec::new(),
                 methods,
             }],
-            service_call: false,
         }],
     };
     let files = vec![file];
@@ -97,7 +94,6 @@ pub(super) fn projected_exports_with_source_module(
                 symbol: symbol.to_string(),
             },
         )]),
-        service_call_functions: BTreeSet::new(),
         public_instances: Vec::new(),
     };
     project_exports(package_id, &exports, file)

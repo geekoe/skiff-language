@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_identity::{assign_file_ir_identity, assign_package_artifact_identities};
 use skiff_artifact_model::{
-    CallIr, CallTargetIr, ConstIr, ExecutableBody, ExprIr, PackageArtifact, PackageCallableId,
-    PackageCallableRef, PackageLocalAbiIdentity, PackageRefIr, PackageRequirement, TypeRefIr,
+    CallIr, CallTargetIr, ConstIr, ExecutableBody, ExprIr, InstructionSourceSite, PackageArtifact,
+    PackageCallableId, PackageCallableRef, PackageLocalAbiIdentity, PackageRefIr,
+    PackageRequirement, SyntheticInstructionSiteReason, TypeRefIr,
 };
 
 use crate::emission::{
@@ -177,6 +178,9 @@ fn push_package_call(file: &mut PublishedFileIrArtifact, package_ref: PackageRef
             target: CallTargetIr::PackageCallable {
                 package_ref,
                 package_callable_id: callable.package_callable_id,
+            },
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
             type_args: BTreeMap::new(),

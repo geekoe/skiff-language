@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -12,6 +12,7 @@ use skiff_artifact_model::{
 use thiserror::Error;
 
 use crate::{
+    api_spec::is_valid_identifier_segment,
     package_config::{read_user_package_manifest, PackageManifest},
     parse_publication_id_field, SourceSymbolSelector,
 };
@@ -114,9 +115,11 @@ fn read_service_manifest(
     path: &Path,
 ) -> Result<ServiceManifestAuthoring, ServiceSourceConfigError> {
     let text = read(path)?;
+    validate_service_calls_yaml_shape(path, &text)?;
     let mut manifest = serde_yaml::from_str::<ServiceManifestAuthoring>(&text)
         .map_err(|source| parse_error(path, source))?;
     validate_http_authoring(path, manifest.http.as_mut())?;
+    validate_service_calls(path, &mut manifest.service_calls)?;
     let mut violations = Vec::new();
     let id =
         parse_publication_id_field("service.yml id", Some(manifest.id.clone()), &mut violations);
@@ -127,6 +130,69 @@ fn read_service_manifest(
         id: id.expect("validated service id").into_string(),
         ..manifest
     })
+}
+
+fn validate_service_calls_yaml_shape(
+    path: &Path,
+    text: &str,
+) -> Result<(), ServiceSourceConfigError> {
+    let value =
+        serde_yaml::from_str::<YamlValue>(text).map_err(|source| parse_error(path, source))?;
+    let Some(mapping) = value.as_mapping() else {
+        return Ok(());
+    };
+    let Some(value) = mapping.get(YamlValue::String("serviceCalls".to_string())) else {
+        return Ok(());
+    };
+    let Some(items) = value.as_sequence() else {
+        return Err(validation_error(
+            path,
+            vec!["serviceCalls must be a list of string public paths".to_string()],
+        ));
+    };
+    let violations = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            (!matches!(item, YamlValue::String(_)))
+                .then(|| format!("serviceCalls[{index}] must be a string public path"))
+        })
+        .collect::<Vec<_>>();
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(validation_error(path, violations))
+    }
+}
+
+fn validate_service_calls(
+    path: &Path,
+    service_calls: &mut Vec<String>,
+) -> Result<(), ServiceSourceConfigError> {
+    let mut violations = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (index, public_path) in service_calls.iter().enumerate() {
+        if public_path.is_empty()
+            || public_path
+                .split('.')
+                .any(|segment| !is_valid_identifier_segment(segment))
+        {
+            violations.push(format!(
+                "serviceCalls[{index}] must be a non-empty canonical dotted public path"
+            ));
+            continue;
+        }
+        if !seen.insert(public_path.clone()) {
+            violations.push(format!(
+                "serviceCalls contains duplicate public path {public_path}"
+            ));
+        }
+    }
+    if !violations.is_empty() {
+        return Err(validation_error(path, violations));
+    }
+    service_calls.sort();
+    Ok(())
 }
 
 fn validate_http_authoring(
@@ -414,6 +480,96 @@ http:
             .to_string()
             .contains("allowed only when service.yml declares kind: test"));
         fs::remove_dir_all(production_root).unwrap();
+    }
+
+    #[test]
+    fn service_calls_accept_missing_empty_and_canonical_paths() {
+        let missing = read_service_yml("service-calls-missing", "id: example.com/users\n").unwrap();
+        let empty = read_service_yml(
+            "service-calls-empty",
+            "id: example.com/users\nserviceCalls: []\n",
+        )
+        .unwrap();
+        assert!(missing.service.service_calls.is_empty());
+        assert_eq!(missing.service.service_calls, empty.service.service_calls);
+
+        let selected = read_service_yml(
+            "service-calls-selected",
+            "id: example.com/users\nserviceCalls: [worker.run, send]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            selected.service.service_calls,
+            vec!["send".to_string(), "worker.run".to_string()]
+        );
+        assert_eq!(selected.package.id, missing.package.id);
+        assert_eq!(selected.package.version, missing.package.version);
+        assert_eq!(selected.package.api, missing.package.api);
+        assert_eq!(selected.package.dependencies, missing.package.dependencies);
+        assert_eq!(selected.package.resources, missing.package.resources);
+        assert_eq!(selected.package.state, missing.package.state);
+        assert_eq!(selected.package.services, missing.package.services);
+    }
+
+    #[test]
+    fn service_calls_reject_duplicates_before_canonical_sorting() {
+        let error = read_service_yml(
+            "service-calls-duplicate",
+            "id: example.com/users\nserviceCalls: [worker.run, send, worker.run]\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("duplicate public path worker.run"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn service_calls_reject_wrong_container_item_and_path_shapes() {
+        for (name, source, expected) in [
+            (
+                "scalar",
+                "id: example.com/users\nserviceCalls: worker.run\n",
+                "must be a list of string public paths",
+            ),
+            (
+                "non-string-item",
+                "id: example.com/users\nserviceCalls: [worker.run, 7]\n",
+                "serviceCalls[1] must be a string public path",
+            ),
+            (
+                "boolean-item",
+                "id: example.com/users\nserviceCalls: [true]\n",
+                "serviceCalls[0] must be a string public path",
+            ),
+            (
+                "empty-path",
+                "id: example.com/users\nserviceCalls: [\"\"]\n",
+                "canonical dotted public path",
+            ),
+            (
+                "whitespace",
+                "id: example.com/users\nserviceCalls: [\" worker.run\"]\n",
+                "canonical dotted public path",
+            ),
+            (
+                "empty-segment",
+                "id: example.com/users\nserviceCalls: [worker..run]\n",
+                "canonical dotted public path",
+            ),
+            (
+                "non-identifier-segment",
+                "id: example.com/users\nserviceCalls: [worker-run]\n",
+                "canonical dotted public path",
+            ),
+        ] {
+            let error = read_service_yml(name, source).unwrap_err().to_string();
+            assert!(
+                error.contains(expected),
+                "unexpected error for {name}: {error}"
+            );
+        }
     }
 
     #[test]

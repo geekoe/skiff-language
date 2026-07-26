@@ -82,7 +82,6 @@ pub struct ExportCallableBinding {
     pub source_module: String,
     pub source_symbol: String,
     pub kind: PublicCallableKind,
-    pub service_call: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,7 +98,6 @@ pub struct ExportPublicInstanceBinding {
     pub source_module: String,
     pub source_symbol: String,
     pub interfaces: Vec<ExportPublicInstanceInterfaceBinding>,
-    pub service_call: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -860,7 +858,6 @@ impl ExportBindingModel {
                             source_module: callable.source_module.clone(),
                             source_symbol: callable.source_symbol.clone(),
                             kind: callable.kind,
-                            service_call: callable.service_call,
                         },
                     )
                 })
@@ -898,7 +895,6 @@ impl ExportBindingModel {
                                     source_symbol: interface.source_symbol.clone(),
                                 })
                                 .collect(),
-                            service_call: instance.service_call,
                         },
                     )
                 })

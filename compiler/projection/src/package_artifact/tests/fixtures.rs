@@ -9,7 +9,7 @@ use skiff_artifact_model::{
     PackageRequirement, PackageResourceRequirement, PackageRuntimeCapabilityRequirement,
     PackageRuntimeRequirements, PackageSymbolRef, PackageTypeRef, ServiceCallRef,
     ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef, TypeDeclIr, TypeDeclarationIr,
-    TypeDescriptorIr, TypeRefIr, ValueProvenance,
+    TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
@@ -49,6 +49,29 @@ pub(super) fn project_fixture_with_runtime_requirements(
 ) -> Result<skiff_artifact_model::PackageArtifact, crate::error::ProjectionError> {
     let file_ref = file_ref();
     let export_index = PackageExportIndex {
+        types: BTreeMap::from([(
+            "Worker".to_string(),
+            TypeExport {
+                file: file_ref.clone(),
+                type_index: 0,
+                symbol: "Worker".to_string(),
+                is_interface: false,
+                descriptor: Some(TypeDescriptorIr::Record {
+                    fields: BTreeMap::new(),
+                }),
+                type_params: Vec::new(),
+                interface_methods: Vec::new(),
+            },
+        )]),
+        constants: BTreeMap::from([(
+            "VERSION".to_string(),
+            ConstExport {
+                file: file_ref.clone(),
+                const_index: 1,
+                symbol: "VERSION".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            },
+        )]),
         functions: BTreeMap::from([
             (
                 "mutate".to_string(),
@@ -62,6 +85,20 @@ pub(super) fn project_fixture_with_runtime_requirements(
     let api_exports = PackageExports {
         entries: Vec::new(),
         symbols: BTreeMap::from([
+            (
+                "Worker".to_string(),
+                PackageExportSymbol {
+                    module: "api".to_string(),
+                    symbol: "Worker".to_string(),
+                },
+            ),
+            (
+                "VERSION".to_string(),
+                PackageExportSymbol {
+                    module: "api".to_string(),
+                    symbol: "VERSION".to_string(),
+                },
+            ),
             (
                 "mutate".to_string(),
                 PackageExportSymbol {
@@ -77,7 +114,6 @@ pub(super) fn project_fixture_with_runtime_requirements(
                 },
             ),
         ]),
-        service_call_functions: BTreeSet::from(["run".to_string()]),
         public_instances: vec![PackageExportPublicInstance {
             public_path: "worker".to_string(),
             module: "api".to_string(),
@@ -85,7 +121,6 @@ pub(super) fn project_fixture_with_runtime_requirements(
             receiver_module: "api".to_string(),
             receiver_symbol: "Worker".to_string(),
             interfaces: Vec::new(),
-            service_call: true,
         }],
     };
     let mut signature_entries = vec![
@@ -201,6 +236,21 @@ pub(super) fn project_fixture_with_runtime_requirements(
             const_index: 0,
             symbol: "api.worker".to_string(),
             ty: TypeRefIr::LocalType { type_index: 0 },
+            source_span: None,
+        },
+    );
+    file.constants.push(ConstIr {
+        name: "VERSION".to_string(),
+        ty: TypeRefIr::builtin("string"),
+        body: ExecutableBody::default(),
+        source_span: None,
+    });
+    file.declarations.constants.insert(
+        "VERSION".to_string(),
+        ConstDeclarationIr {
+            const_index: 1,
+            symbol: "api.VERSION".to_string(),
+            ty: TypeRefIr::builtin("string"),
             source_span: None,
         },
     );
