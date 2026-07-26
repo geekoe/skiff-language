@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryImplementationRequirements, CallableEffectSummary,
-    DeploymentOperationBinding, PackageArtifact, PackageCallableId, PackageLocalAbiSymbol,
-    ServiceContract, ServiceDeploymentInput,
+    DeploymentOperationBinding, OperationCallableKind, PackageArtifact, PackageCallableId,
+    PackageLocalAbiSymbol, ServiceContract, ServiceDeploymentInput,
 };
 
 use super::eligibility;
@@ -51,18 +51,8 @@ pub(super) fn project_operation_bindings<'a>(
     let mut projected = Vec::with_capacity(input.operation_bindings.len());
     let mut selected = Vec::with_capacity(input.operation_bindings.len());
     for binding in &input.operation_bindings {
-        let symbol = implementation
-            .package_local_abi
-            .public_symbols
-            .get(&binding.package_public_path)
-            .ok_or_else(|| ProjectionError::UnknownPublicPath {
-                public_path: binding.package_public_path.clone(),
-            })?;
-        let PackageLocalAbiSymbol::Callable { callable_id, .. } = symbol else {
-            return Err(ProjectionError::PublicPathNotCallable {
-                public_path: binding.package_public_path.clone(),
-            });
-        };
+        let callable_id = &binding.package_callable_id;
+        validate_public_callable(implementation, callable_id)?;
         let boundary = implementation
             .boundary_projections
             .get(callable_id)
@@ -107,7 +97,7 @@ pub(super) fn project_operation_bindings<'a>(
 
         projected.push(DeploymentOperationBinding {
             contract_operation_id: binding.contract_operation_id.clone(),
-            package_callable_id: callable_id.clone(),
+            package_callable_id: binding.package_callable_id.clone(),
         });
         selected.push(SelectedCallable {
             callable_id: callable_id.clone(),
@@ -119,6 +109,93 @@ pub(super) fn project_operation_bindings<'a>(
         bindings: projected,
         selected,
     })
+}
+
+fn validate_public_callable(
+    implementation: &PackageArtifact,
+    callable_id: &PackageCallableId,
+) -> ProjectionResult<()> {
+    let public_callable_exists = implementation
+        .package_local_abi
+        .public_symbols
+        .values()
+        .any(|symbol| {
+            matches!(
+                symbol,
+                PackageLocalAbiSymbol::Callable {
+                    callable_id: public_callable_id,
+                    ..
+                } if public_callable_id == callable_id
+            )
+        });
+    if !public_callable_exists {
+        let exists_outside_public_surface = implementation
+            .package_local_abi
+            .implementation_symbols
+            .values()
+            .any(|symbol| {
+                matches!(
+                    symbol,
+                    PackageLocalAbiSymbol::Callable {
+                        callable_id: implementation_callable_id,
+                        ..
+                    } if implementation_callable_id == callable_id
+                )
+            })
+            || implementation.callable_links.contains_key(callable_id);
+        return Err(if exists_outside_public_surface {
+            ProjectionError::NonPublicPackageCallable {
+                callable_id: callable_id.clone(),
+            }
+        } else {
+            ProjectionError::UnknownPackageCallable {
+                callable_id: callable_id.clone(),
+            }
+        });
+    }
+
+    let link = implementation
+        .callable_links
+        .get(callable_id)
+        .ok_or_else(|| ProjectionError::CallableLinkMismatch {
+            callable_id: callable_id.clone(),
+            message: "callable link is absent".to_string(),
+        })?;
+    if link.callable_id != *callable_id {
+        return Err(ProjectionError::CallableLinkMismatch {
+            callable_id: callable_id.clone(),
+            message: format!("nested callable id is {}", link.callable_id),
+        });
+    }
+    if link.target.callable_abi_id != callable_id.as_str() {
+        return Err(ProjectionError::CallableLinkMismatch {
+            callable_id: callable_id.clone(),
+            message: format!("target callable ABI id is {}", link.target.callable_abi_id),
+        });
+    }
+
+    let is_public_instance_method = implementation
+        .package_local_abi
+        .public_symbols
+        .values()
+        .any(|symbol| {
+            matches!(
+                symbol,
+                PackageLocalAbiSymbol::PublicInstance { methods, .. }
+                    if methods.values().any(|method_id| method_id == callable_id)
+            )
+        });
+    match (link.target.callable_kind, is_public_instance_method) {
+        (OperationCallableKind::PublicFunction, false)
+        | (OperationCallableKind::ImplMethod, true) => Ok(()),
+        _ => Err(ProjectionError::CallableLinkMismatch {
+            callable_id: callable_id.clone(),
+            message: format!(
+                "target kind {:?} disagrees with public-instance membership {is_public_instance_method}",
+                link.target.callable_kind
+            ),
+        }),
+    }
 }
 
 fn validate_callable_facts(

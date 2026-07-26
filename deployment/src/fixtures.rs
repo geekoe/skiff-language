@@ -90,7 +90,7 @@ pub fn service_deployment_input_fixture() -> skiff_artifact_model::ServiceDeploy
         implementation: package_artifact_ref_fixture(),
         operation_bindings: vec![ServiceDeploymentOperationInput {
             contract_operation_id: ContractOperationId::new("operation.echo"),
-            package_public_path: "echo".to_string(),
+            package_callable_id: PackageCallableId::new("callable.echo"),
         }],
         package_bindings: Vec::new(),
         service_selectors: Vec::new(),
