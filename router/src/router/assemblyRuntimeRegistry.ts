@@ -9,6 +9,7 @@ import type {
 } from '../protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
 import { validateRuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeProtocol.js';
+import { sha256Hex, stableStringify } from '../manifest/identity.js';
 import { ProviderUnavailableError, ServiceProtocolBoundaryError } from './errors.js';
 import { isRuntimeAssemblyRequestDispatchHeader } from './runtimeRegistry.js';
 import type {
@@ -23,7 +24,8 @@ import {
   canonicalIngressHost,
   RouterActiveAssemblySnapshotStore,
   runtimeAssemblyIngressKey,
-  type RouterActiveAssemblySnapshot
+  type RouterActiveAssemblySnapshot,
+  type RuntimeAssemblyIngressBinding
 } from './runtimeAssemblySnapshot.js';
 
 type AssemblyRegisterControl = Extract<AssemblyActivationControl, { type: 'register' }>;
@@ -61,6 +63,15 @@ export interface AssemblyReplicaSnapshot {
   lastHealthAt?: string;
   healthCounters?: RuntimeHealthCounters;
 }
+
+export interface CanonicalAssemblyWebSocketIngressIdentity {
+  websocketEntryId: string;
+  gatewayEntryIdentity: string;
+}
+
+const CANONICAL_ASSEMBLY_WEBSOCKET_INGRESS_ARGS = [
+  { param: 'event', source: { kind: 'websocket.ingressEvent' } }
+] as const;
 
 export class AssemblyRuntimeRegistry {
   private readonly replicas = new Map<string, AssemblyReplica>();
@@ -593,4 +604,30 @@ function validateAssemblyHttpRequest(
     );
   }
   return undefined;
+}
+
+export function canonicalAssemblyWebSocketIngressIdentity(
+  binding: RuntimeAssemblyIngressBinding
+): CanonicalAssemblyWebSocketIngressIdentity {
+  const selector = binding.selector;
+  if (selector.protocol !== 'webSocket' || selector.method !== null) {
+    throw new Error('canonical WebSocket identity requires a WebSocket ingress binding');
+  }
+  const body = {
+    adapterArgs: CANONICAL_ASSEMBLY_WEBSOCKET_INGRESS_ARGS,
+    contractOperationId: binding.contractOperationId,
+    selector: {
+      protocol: 'webSocket',
+      host: canonicalIngressHost(selector.host),
+      method: null,
+      path: selector.path
+    },
+    serviceId: binding.contract.serviceId,
+    serviceProtocolIdentity: binding.contract.serviceProtocolIdentity
+  };
+  const digest = sha256Hex(stableStringify(body));
+  return {
+    websocketEntryId: `skiff-websocket-entry-v1:sha256:${digest}`,
+    gatewayEntryIdentity: `skiff-gateway-v1:sha256:${digest}`
+  };
 }
