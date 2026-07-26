@@ -3,16 +3,25 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { ASSEMBLY_ACTIVATION_CONTROL_ENDPOINT } from '../protocol/assemblyActivationProtocol.js';
 import { decodeRawAssemblyActivationRequest } from '../protocol/assemblyActivationRawCodec.js';
+import {
+  RUNTIME_FRAME_SCHEMA_VERSION,
+  type HttpRequestFrameMetadata
+} from '../protocol/envelope.js';
+import type {
+  RuntimeAssemblyRequestRoutingFrameHeader,
+  RuntimeAssemblyRequestStartFrameHeader
+} from '../protocol/runtimeAssemblyRequest.js';
+import { validateRuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeProtocol.js';
 import type { AssemblyActivationCoordinator } from './assemblyActivationCoordinator.js';
 import type { AssemblyRuntimeRegistry } from './assemblyRuntimeRegistry.js';
-import { assemblyHttpRequestHeader } from './assemblyHttpGateway.js';
+import { assemblyTestHttpRequestHeader } from './assemblyHttpGateway.js';
 import { toGatewayError } from './errors.js';
 import type { RuntimeDispatcher } from './runtimeDispatcher.js';
 import type { RuntimeRegistry } from './runtimeRegistry.js';
 import {
-  canonicalIngressHost,
+  type RouterActiveAssemblySnapshot,
   type RouterActiveAssemblySnapshotStore,
-  type RuntimeAssemblyIngressSelector
+  type RuntimeAssemblyIngressBinding
 } from './runtimeAssemblySnapshot.js';
 
 const ACTIVATION_PATH = ASSEMBLY_ACTIVATION_CONTROL_ENDPOINT.slice('POST '.length);
@@ -100,38 +109,22 @@ export class AssemblyControlPlane {
     }
     const body = decodeRuntimeAssemblyTestDispatch(await readBody(request));
     const snapshot = this.options.snapshots.get();
-    const binding = snapshot.ingress.get(body.ingress);
-    if (
-      binding === undefined ||
-      binding.contractOperationId !== body.contractOperationId
-    ) {
-      throw new Error(
-        'runtime assembly test dispatch does not match an exact active ingress operation'
-      );
-    }
-    const timeoutMs = body.timeoutMs ?? 30_000;
-    const header = assemblyHttpRequestHeader({
+    const binding = exactTestDispatchBinding(body, snapshot);
+    const header = assemblyTestHttpRequestHeader({
       snapshot,
       binding,
       requestId: randomUUID(),
-      timeoutMs,
-      httpRequest: {
-        method: body.ingress.method!,
-        url: `http://${body.ingress.host}${body.ingress.path}`,
-        path: body.ingress.path,
-        query: [],
-        headers: []
-      },
-      testEffectsEnabled: body.testEffectsEnabled,
-      testEffectDoubles: body.testEffectDoubles,
-      callerTarget: '__skiff.runtime-assembly-test-dispatch'
+      timeoutMs: body.timeoutMs,
+      routing: body.routing,
+      mode: body.mode,
+      httpRequest: body.httpRequest
     });
-    const runtimeResponse = await this.options.dispatcher.dispatchBinary(
+    const runtimeResponse = await this.options.dispatcher.dispatchAssemblyTestBinary(
       {
         header,
-        payloadBytes: Buffer.from(body.payloadBase64 ?? '', 'base64')
+        payloadBytes: body.payloadBytes
       },
-      timeoutMs
+      body.timeoutMs
     );
     this.writeJson(response, 200, {
       ok: true,
@@ -171,86 +164,129 @@ export class AssemblyControlPlane {
 }
 
 interface RuntimeAssemblyTestDispatch {
-  contractOperationId: string;
-  ingress: RuntimeAssemblyIngressSelector & {
-    protocol: 'http';
-    method: string;
-  };
-  payloadBase64?: string;
-  testEffectsEnabled: boolean;
-  testEffectDoubles: Record<
-    string,
-    Array<{ expectRequest?: unknown; response: unknown }>
-  >;
-  timeoutMs?: number;
+  kind: 'test';
+  routing: RuntimeAssemblyRequestRoutingFrameHeader;
+  mode: RuntimeAssemblyRequestStartFrameHeader['mode'];
+  httpRequest: HttpRequestFrameMetadata;
+  payloadBytes: Buffer;
+  timeoutMs: number;
 }
 
 function decodeRuntimeAssemblyTestDispatch(
   bytes: Buffer
 ): RuntimeAssemblyTestDispatch {
   const value: unknown = JSON.parse(bytes.toString('utf8'));
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('runtime assembly test dispatch body must be an object');
-  }
-  const body = value as Record<string, unknown>;
-  const supported = new Set([
+  const body = exactObject(value, 'runtime assembly test dispatch');
+  exactFields(body, [
     'kind',
-    'contractOperationId',
-    'ingress',
+    'routing',
+    'mode',
+    'httpRequest',
     'payloadBase64',
-    'testEffectsEnabled',
-    'testEffectDoubles',
     'timeoutMs'
-  ]);
-  const unknown = Object.keys(body).find((field) => !supported.has(field));
-  if (unknown !== undefined || body.kind !== 'runtimeAssembly') {
+  ], 'runtime assembly test dispatch');
+  if (body.kind !== 'test') {
+    throw new Error('runtime assembly test dispatch kind must be test');
+  }
+  const headerValidation = validateRuntimeAssemblyRequestStartFrameHeader({
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    type: 'request.start',
+    requestId: '__skiff.test-control-decode',
+    mode: body.mode,
+    caller: { kind: 'gateway' },
+    routing: body.routing,
+    trace: {
+      traceId: '__skiff.test-control-decode',
+      spanId: '__skiff.test-control-decode'
+    },
+    httpRequest: body.httpRequest,
+    testEffectsEnabled: true
+  });
+  if (!headerValidation.ok) {
     throw new Error(
-      unknown === undefined
-        ? 'runtime assembly test dispatch kind must be runtimeAssembly'
-        : `runtime assembly test dispatch does not support ${unknown}`
+      `runtime assembly test dispatch has invalid canonical fields: ${headerValidation.error}`
+    );
+  }
+  if (typeof body.payloadBase64 !== 'string') {
+    throw new Error('runtime assembly test dispatch payloadBase64 must be a string');
+  }
+  const payloadBytes = Buffer.from(body.payloadBase64, 'base64');
+  if (payloadBytes.toString('base64') !== body.payloadBase64) {
+    throw new Error(
+      'runtime assembly test dispatch payloadBase64 must be canonical standard Base64'
     );
   }
   if (
-    typeof body.contractOperationId !== 'string' ||
-    body.ingress === null ||
-    typeof body.ingress !== 'object' ||
-    Array.isArray(body.ingress) ||
-    typeof body.testEffectsEnabled !== 'boolean' ||
-    body.testEffectDoubles === null ||
-    typeof body.testEffectDoubles !== 'object' ||
-    Array.isArray(body.testEffectDoubles)
+    typeof body.timeoutMs !== 'number' ||
+    !Number.isSafeInteger(body.timeoutMs) ||
+    body.timeoutMs <= 0
   ) {
-    throw new Error('runtime assembly test dispatch has invalid canonical fields');
+    throw new Error(
+      'runtime assembly test dispatch timeoutMs must be a positive safe integer'
+    );
   }
-  const ingress = body.ingress as Record<string, unknown>;
-  if (
-    ingress.protocol !== 'http' ||
-    typeof ingress.host !== 'string' ||
-    typeof ingress.method !== 'string' ||
-    typeof ingress.path !== 'string'
-  ) {
-    throw new Error('runtime assembly test dispatch requires an HTTP ingress selector');
-  }
-  const selector = {
-    protocol: 'http' as const,
-    host: canonicalIngressHost(ingress.host),
-    method: ingress.method.toUpperCase(),
-    path: ingress.path
-  };
   return {
-    contractOperationId: body.contractOperationId,
-    ingress: selector,
-    ...(typeof body.payloadBase64 === 'string'
-      ? { payloadBase64: body.payloadBase64 }
-      : {}),
-    testEffectsEnabled: body.testEffectsEnabled,
-    testEffectDoubles: body.testEffectDoubles as RuntimeAssemblyTestDispatch['testEffectDoubles'],
-    ...(typeof body.timeoutMs === 'number' &&
-    Number.isSafeInteger(body.timeoutMs) &&
-    body.timeoutMs > 0
-      ? { timeoutMs: body.timeoutMs }
-      : {})
+    kind: 'test',
+    routing: headerValidation.envelope.routing,
+    mode: headerValidation.envelope.mode,
+    httpRequest: headerValidation.envelope.httpRequest,
+    payloadBytes,
+    timeoutMs: body.timeoutMs
   };
+}
+
+function exactObject(value: unknown, label: string): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function exactFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+  label: string
+): void {
+  const supported = new Set(fields);
+  const unknown = Object.keys(value).find((field) => !supported.has(field));
+  if (unknown !== undefined) {
+    throw new Error(`${label} does not support ${unknown}`);
+  }
+  const missing = fields.find(
+    (field) => !Object.prototype.hasOwnProperty.call(value, field)
+  );
+  if (missing !== undefined) {
+    throw new Error(`${label} requires ${missing}`);
+  }
+}
+
+function exactTestDispatchBinding(
+  body: RuntimeAssemblyTestDispatch,
+  snapshot: RouterActiveAssemblySnapshot
+): RuntimeAssemblyIngressBinding {
+  if (
+    body.routing.assemblyIdentity !== snapshot.assembly.assemblyIdentity ||
+    body.routing.assemblyGeneration !== snapshot.generation
+  ) {
+    throw new Error(
+      'runtime assembly test dispatch does not match the exact active assembly generation'
+    );
+  }
+  const binding = snapshot.ingress.get(body.routing.ingress);
+  if (
+    binding === undefined ||
+    binding.selector.protocol !== body.routing.ingress.protocol ||
+    binding.selector.host !== body.routing.ingress.host ||
+    binding.selector.method !== body.routing.ingress.method ||
+    binding.selector.path !== body.routing.ingress.path ||
+    binding.gatewayEntryIdentity !== body.routing.gatewayEntryIdentity ||
+    binding.operationMode !== body.mode
+  ) {
+    throw new Error(
+      'runtime assembly test dispatch does not match the exact active gateway binding'
+    );
+  }
+  return binding;
 }
 
 async function readBody(request: IncomingMessage): Promise<Buffer> {

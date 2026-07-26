@@ -9,7 +9,8 @@ import {
   decodeRuntimeFrame,
   encodeRuntimeFrame,
   RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
-  RUNTIME_FRAME_SCHEMA_VERSION
+  RUNTIME_FRAME_SCHEMA_VERSION,
+  type ResponseEndFrameHeader
 } from '../src/protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeAssemblyRequest.js';
 import {
@@ -18,6 +19,7 @@ import {
 } from '../src/protocol/runtimeProtocol.js';
 import {
   assemblyHttpRequestHeader,
+  assemblyTestHttpRequestHeader,
   AssemblyHttpGateway,
   effectiveHttpRequestTimeoutMs
 } from '../src/router/assemblyHttpGateway.js';
@@ -144,6 +146,111 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     expect(completedOpaque.status).toBe(201);
     expect(completedOpaque.headers['x-runtime-result']).toBe('opaque');
     expect(completedOpaque.body).toEqual(Buffer.from([9, 8, 7]));
+  });
+
+  it('isolates canonical test headers and dispatch from the ordinary production seam', async () => {
+    const fixture = await createFixture();
+    const productionHeader = canonicalHeader(
+      fixture.snapshot,
+      'ordinary-production'
+    );
+    expect(productionHeader.testEffectsEnabled).toBe(false);
+
+    const testHeader = assemblyTestHttpRequestHeader({
+      snapshot: fixture.snapshot,
+      binding: fixture.binding,
+      requestId: 'isolated-test-dispatch',
+      timeoutMs: 1_000,
+      routing: productionHeader.routing,
+      mode: productionHeader.mode,
+      httpRequest: productionHeader.httpRequest
+    });
+    expect(testHeader).toMatchObject({
+      routing: productionHeader.routing,
+      mode: productionHeader.mode,
+      httpRequest: productionHeader.httpRequest,
+      testEffectsEnabled: true
+    });
+
+    await expect(
+      fixture.dispatcher.dispatchBinary(
+        {
+          header: testHeader,
+          payloadBytes: Buffer.from('null', 'utf8')
+        },
+        100
+      )
+    ).rejects.toThrow(
+      'active RuntimeAssembly dispatch rejects test effect controls'
+    );
+    await expect(
+      fixture.dispatcher.dispatchAssemblyTestBinary(
+        {
+          header: productionHeader,
+          payloadBytes: Buffer.from('null', 'utf8')
+        },
+        100
+      )
+    ).rejects.toThrow(
+      'test RuntimeAssembly dispatch requires test effects enabled'
+    );
+    const legacyTestHeader = mutate(testHeader, (header) => {
+      header.contractOperationId =
+        `skiff-contract-operation-v1:sha256:${'f'.repeat(64)}`;
+    });
+    await expect(
+      fixture.dispatcher.dispatchAssemblyTestBinary(
+        {
+          header: legacyTestHeader,
+          payloadBytes: Buffer.from('null', 'utf8')
+        },
+        100
+      )
+    ).rejects.toThrow(/contractOperationId is not supported/);
+
+    const dispatch = fixture.dispatcher.dispatchAssemblyTestBinary(
+      {
+        header: testHeader,
+        payloadBytes: Buffer.from('null', 'utf8')
+      },
+      1_000
+    );
+    const frame = decodeBinaryFrame(await nextBinaryMessage(fixture.runtime));
+    const validation = validateRuntimeAssemblyRequestStartFrameHeader(
+      frame.header
+    );
+    expect(validation).toMatchObject({ ok: true });
+    if (!validation.ok) throw new Error(validation.error);
+    expect(validation.envelope.testEffectsEnabled).toBe(true);
+    expect(validation.envelope.routing).toEqual(testHeader.routing);
+    expect(validation.envelope.httpRequest).toEqual(testHeader.httpRequest);
+    expect(Buffer.from(frame.payloadBytes)).toEqual(
+      Buffer.from('null', 'utf8')
+    );
+
+    const responseHeader: ResponseEndFrameHeader = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.end',
+      requestId: testHeader.requestId,
+      payloadPresent: true,
+      httpResponse: {
+        status: 200,
+        headers: [
+          {
+            name: 'content-type',
+            value: 'application/json; charset=utf-8'
+          }
+        ]
+      }
+    };
+    fixture.runtime.send(
+      encodeRuntimeFrame(responseHeader, Buffer.from('null', 'utf8'))
+    );
+    const result = await dispatch;
+    expect(result.header).toEqual(responseHeader);
+    expect(Buffer.from(result.payloadBytes)).toEqual(
+      Buffer.from('null', 'utf8')
+    );
   });
 
   it('forwards typedJson request and response bytes without decoding or re-encoding', async () => {

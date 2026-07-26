@@ -12,9 +12,13 @@ import {
   encodeRuntimeFrame,
   RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
   RUNTIME_FRAME_SCHEMA_VERSION,
+  type ResponseEndFrameHeader,
   type RuntimeBinaryFrame
 } from '../src/protocol/envelope.js';
-import { runtimeFrameHeaderFixtures } from '../src/protocol/runtimeProtocol.js';
+import {
+  runtimeFrameHeaderFixtures,
+  validateRuntimeAssemblyRequestStartFrameHeader
+} from '../src/protocol/runtimeProtocol.js';
 import { AssemblyActivationCoordinator } from '../src/router/assemblyActivationCoordinator.js';
 import {
   initialActivationState,
@@ -45,6 +49,10 @@ const SERVICE_PROTOCOL =
 const BUILD_ID = `skiff-service-build-v1:sha256:${'d'.repeat(64)}`;
 const TARGET = 'function:service.example~actors.ActorApi.spawn';
 const SPAWN_COMPATIBILITY = `${SERVICE_VERSION}:${SERVICE_PROTOCOL}:${TARGET}`;
+const TEST_GATEWAY_ENTRY_IDENTITY =
+  `skiff-gateway-entry-v1:sha256:${'9'.repeat(64)}`;
+const TEST_HOST = 'case-0.package-test.skiff.localhost';
+const TEST_PATH = '/__skiff/package-test/0';
 const fixtures: CompositeEndpointFixture[] = [];
 
 describe('unified RuntimeEndpoint assembly bootstrap', () => {
@@ -131,6 +139,177 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
         connectionReleaseAckCount: 1
       })
     ]);
+  });
+
+  it('dispatches exact kind:test control through the isolated test-effects seam', async () => {
+    const fixture = await createFixture({
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A,
+      testGateway: true
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+
+    const body = testDispatchBody();
+    const responsePromise = postControlJson(
+      `${fixture.controlUrl}/__skiff/test-dispatch`,
+      body
+    );
+    const requestFrame = await nextRuntimeFrame(ws, 'request.start');
+    const validation = validateRuntimeAssemblyRequestStartFrameHeader(
+      requestFrame.header
+    );
+    expect(validation).toMatchObject({ ok: true });
+    if (!validation.ok) throw new Error(validation.error);
+    expect(validation.envelope).toMatchObject({
+      mode: body.mode,
+      routing: body.routing,
+      httpRequest: body.httpRequest,
+      testEffectsEnabled: true
+    });
+    expect(Buffer.from(requestFrame.payloadBytes)).toEqual(
+      Buffer.from('null', 'utf8')
+    );
+
+    const responseHeader: ResponseEndFrameHeader = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.end',
+      requestId: validation.envelope.requestId,
+      payloadPresent: true,
+      httpResponse: {
+        status: 200,
+        headers: [
+          {
+            name: 'content-type',
+            value: 'application/json; charset=utf-8'
+          }
+        ]
+      }
+    };
+    ws.send(
+      encodeRuntimeFrame(responseHeader, Buffer.from('null', 'utf8'))
+    );
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      ok: true,
+      header: responseHeader,
+      payloadBase64: Buffer.from('null', 'utf8').toString('base64')
+    });
+  });
+
+  it('rejects non-exact test control fields and facts before runtime dispatch', async () => {
+    const fixture = await createFixture({
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A,
+      testGateway: true
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+    let runtimeRequests = 0;
+    const countRuntimeRequests = (data: WebSocket.RawData, isBinary: boolean) => {
+      if (
+        isBinary &&
+        decodeRuntimeFrame(rawDataBuffer(data)).header.type === 'request.start'
+      ) {
+        runtimeRequests += 1;
+      }
+    };
+    ws.on('message', countRuntimeRequests);
+
+    const invalidBodies = [
+      mutateTestDispatchBody((body) => {
+        body.contractOperationId =
+          `skiff-contract-operation-v1:sha256:${'f'.repeat(64)}`;
+      }),
+      mutateTestDispatchBody((body) => {
+        body.deployment = { serviceId: SERVICE_ID };
+      }),
+      mutateTestDispatchBody((body) => {
+        body.gatewayEntryKey = 'run';
+      }),
+      mutateTestDispatchBody((body) => {
+        body.testEffectDoubles = {};
+      }),
+      mutateTestDispatchBody((body) => {
+        body.testEffectsEnabled = true;
+      }),
+      mutateTestDispatchBody((body) => {
+        body.unknown = true;
+      }),
+      mutateTestDispatchBody((body) => {
+        body.routing.unknown = true;
+      }),
+      mutateTestDispatchBody((body) => {
+        body.routing.ingress.unknown = true;
+      }),
+      mutateTestDispatchBody((body) => {
+        body.httpRequest.unknown = true;
+      }),
+      mutateTestDispatchBody((body) => {
+        body.httpRequest.headers[0].unknown = true;
+      }),
+      mutateTestDispatchBody((body) => {
+        body.kind = 'runtimeAssembly';
+      }),
+      mutateTestDispatchBody((body) => {
+        delete body.kind;
+      }),
+      mutateTestDispatchBody((body) => {
+        body.routing.assemblyIdentity =
+          `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
+      }),
+      mutateTestDispatchBody((body) => {
+        body.routing.assemblyGeneration += 1;
+      }),
+      mutateTestDispatchBody((body) => {
+        body.routing.gatewayEntryIdentity =
+          `skiff-gateway-entry-v1:sha256:${'f'.repeat(64)}`;
+      }),
+      mutateTestDispatchBody((body) => {
+        body.mode = 'serverStream';
+      }),
+      mutateTestDispatchBody((body) => {
+        body.routing.ingress.path = '/wrong';
+      }),
+      mutateTestDispatchBody((body) => {
+        body.routing.ingress.host = TEST_HOST.toUpperCase();
+      }),
+      mutateTestDispatchBody((body) => {
+        body.routing.ingress.method = 'post';
+      }),
+      mutateTestDispatchBody((body) => {
+        body.httpRequest.url = `http://${TEST_HOST}/wrong`;
+      }),
+      mutateTestDispatchBody((body) => {
+        body.httpRequest.path = '/wrong';
+      }),
+      mutateTestDispatchBody((body) => {
+        body.payloadBase64 = 'bnVsbA';
+      }),
+      mutateTestDispatchBody((body) => {
+        body.timeoutMs = 0;
+      }),
+      mutateTestDispatchBody((body) => {
+        body.timeoutMs = Number.MAX_SAFE_INTEGER + 1;
+      })
+    ];
+
+    for (const body of invalidBodies) {
+      const response = await postControlJson(
+        `${fixture.controlUrl}/__skiff/test-dispatch`,
+        body
+      );
+      expect(response.status).toBeGreaterThanOrEqual(400);
+    }
+    await nextTurn();
+    ws.off('message', countRuntimeRequests);
+    expect(runtimeRequests).toBe(0);
   });
 
   it('authorizes active actor/spawn control and round-trips structured activation identity', async () => {
@@ -659,8 +838,13 @@ interface CompositeEndpointFixture {
 }
 
 async function createFixture(
-  initial = { generation: 1, assemblyIdentity: ASSEMBLY_A }
+  initial: {
+    generation: number;
+    assemblyIdentity: string;
+    testGateway?: boolean;
+  } = { generation: 1, assemblyIdentity: ASSEMBLY_A }
 ): Promise<CompositeEndpointFixture> {
+  const testGateway = initial.testGateway ?? false;
   const snapshots = new RouterActiveAssemblySnapshotStore();
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
   const runtimeRegistry = new RuntimeRegistry();
@@ -682,9 +866,9 @@ async function createFixture(
     })),
     assemblyLoader: new MemoryRuntimeAssemblySnapshotLoader([
       assembly(EMPTY_ASSEMBLY),
-      assembly(ASSEMBLY_A),
-      assembly(ASSEMBLY_B),
-      assembly(ASSEMBLY_C)
+      assembly(ASSEMBLY_A, testGateway),
+      assembly(ASSEMBLY_B, testGateway),
+      assembly(ASSEMBLY_C, testGateway)
     ]),
     snapshots,
     registry: assemblyRegistry,
@@ -768,15 +952,19 @@ function transition(
     : { ...base, type };
 }
 
-function assembly(assemblyIdentity: string): LoadedRuntimeAssembly {
+function assembly(
+  assemblyIdentity: string,
+  includeTestGateway = false
+): LoadedRuntimeAssembly {
   const revision = deploymentRevision(assemblyIdentity);
+  const deployment = deploymentRef(revision);
   return {
     schemaVersion: 'skiff-runtime-assembly-v2',
     assemblyIdentity,
     resolvedDeployments:
       assemblyIdentity === EMPTY_ASSEMBLY
         ? []
-        : [deploymentRef(revision)],
+        : [deployment],
     resolvedContracts:
       assemblyIdentity === EMPTY_ASSEMBLY
         ? []
@@ -785,7 +973,22 @@ function assembly(assemblyIdentity: string): LoadedRuntimeAssembly {
           contractVersion: SERVICE_VERSION,
           serviceProtocolIdentity: SERVICE_PROTOCOL
         }],
-    gatewayIngress: []
+    gatewayIngress:
+      assemblyIdentity === EMPTY_ASSEMBLY || !includeTestGateway
+        ? []
+        : [{
+            selector: {
+              protocol: 'http',
+              host: TEST_HOST,
+              method: 'POST',
+              path: TEST_PATH
+            },
+            deployment,
+            gatewayEntryKey: 'run',
+            gatewayEntryIdentity: TEST_GATEWAY_ENTRY_IDENTITY,
+            adapterKind: 'typedJson',
+            operationMode: 'unary'
+          }]
   };
 }
 
@@ -828,6 +1031,72 @@ function actorKey() {
 
 function identity(character: string): string {
   return `skiff-runtime-assembly-v2:sha256:${character.repeat(64)}`;
+}
+
+function testDispatchBody() {
+  return {
+    kind: 'test',
+    routing: {
+      kind: 'runtimeAssembly',
+      assemblyIdentity: ASSEMBLY_A,
+      assemblyGeneration: 1,
+      gatewayEntryIdentity: TEST_GATEWAY_ENTRY_IDENTITY,
+      ingress: {
+        protocol: 'http',
+        host: TEST_HOST,
+        method: 'POST',
+        path: TEST_PATH
+      }
+    },
+    mode: 'unary',
+    httpRequest: {
+      method: 'POST',
+      url: `http://${TEST_HOST}${TEST_PATH}`,
+      path: TEST_PATH,
+      query: [],
+      headers: [
+        {
+          name: 'content-type',
+          value: 'application/json'
+        }
+      ]
+    },
+    payloadBase64: Buffer.from('null', 'utf8').toString('base64'),
+    timeoutMs: 1_000
+  };
+}
+
+function mutateTestDispatchBody(
+  change: (body: Record<string, any>) => void
+): Record<string, unknown> {
+  const body = structuredClone(testDispatchBody()) as unknown as Record<
+    string,
+    any
+  >;
+  change(body);
+  if (
+    typeof body.timeoutMs === 'number' &&
+    Number.isSafeInteger(body.timeoutMs) &&
+    body.timeoutMs > 0
+  ) {
+    body.timeoutMs = Math.min(body.timeoutMs, 25);
+  }
+  return body;
+}
+
+async function postControlJson(
+  url: string,
+  body: unknown
+): Promise<{ status: number; body: any }> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  return {
+    status: response.status,
+    body: await response.json()
+  };
 }
 
 async function openSocket(url: string): Promise<WebSocket> {
