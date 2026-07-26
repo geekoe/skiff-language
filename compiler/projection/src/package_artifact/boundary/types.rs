@@ -56,21 +56,11 @@ pub(super) fn project_operation_contract(
     }
 
     let (return_value, stream) = return_projection.expect("checked complete return projection");
-    let websocket_ingress = matches!(
-        parameters.as_slice(),
-        [BoundaryParameter {
-            name,
-            ty: ContractTypeRef::Builtin { name: builtin, arguments },
-            ..
-        }] if name == "event"
-            && builtin == "std.websocket.WebSocketIngressEvent"
-            && arguments.len() == 1
-    );
     Some(BoundaryOperationContract {
         parameters,
         return_value,
         stream,
-        cancellation: if signature.may_suspend && !websocket_ingress {
+        cancellation: if signature.may_suspend {
             BoundaryCancellationContract::Cooperative
         } else {
             BoundaryCancellationContract::NotCancellable
@@ -284,6 +274,11 @@ impl TypeClosurePolicy for BoundaryProjectionTypePolicy<'_> {
                 project_literal(value)?;
                 Ok(TypeClosureControl::Continue)
             }
+            TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. }
+                if contains_generic_boundary_shape(visit.ty) =>
+            {
+                Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+            }
             TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. } => {
                 Err(BoundaryUnavailableReason::CallbackAdapterUnavailable)
             }
@@ -386,6 +381,11 @@ fn project_local_type(
         }),
         TypeRefIr::Literal { value } => project_literal(value),
         TypeRefIr::AppliedNominal { .. } => Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
+        TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. }
+            if contains_generic_boundary_shape(ty) =>
+        {
+            Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+        }
         TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. } => {
             Err(BoundaryUnavailableReason::CallbackAdapterUnavailable)
         }
@@ -510,10 +510,7 @@ fn classify_native(name: &str, argument_count: usize) -> Result<(), BoundaryUnav
             0,
         )
         | ("Array", 1)
-        | ("Map", 2)
-        | ("std.websocket.WebSocketIngressEvent" | "std.websocket.WebSocketConnectResult", 1) => {
-            Ok(())
-        }
+        | ("Map", 2) => Ok(()),
         ("Stream", _) => Err(BoundaryUnavailableReason::UnsupportedStream),
         (
             "Array"
@@ -523,6 +520,36 @@ fn classify_native(name: &str, argument_count: usize) -> Result<(), BoundaryUnav
             _,
         ) => Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
         _ => Err(BoundaryUnavailableReason::NativeAdapterUnavailable),
+    }
+}
+
+fn contains_generic_boundary_shape(ty: &TypeRefIr) -> bool {
+    match ty {
+        TypeRefIr::AppliedNominal { .. } | TypeRefIr::TypeParam { .. } => true,
+        TypeRefIr::Builtin { args, .. } => args.iter().any(contains_generic_boundary_shape),
+        TypeRefIr::Record { fields } => fields.values().any(contains_generic_boundary_shape),
+        TypeRefIr::Union { items } => items.iter().any(contains_generic_boundary_shape),
+        TypeRefIr::Nullable { inner } => contains_generic_boundary_shape(inner),
+        TypeRefIr::AnyInterface { interface } => interface
+            .canonical_type_args
+            .iter()
+            .any(contains_generic_boundary_shape),
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => {
+            params
+                .iter()
+                .any(|param| contains_generic_boundary_shape(&param.ty))
+                || contains_generic_boundary_shape(return_type)
+        }
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. } => false,
     }
 }
 
@@ -734,6 +761,129 @@ mod tests {
                 arguments: vec![TypeRefIr::builtin("string")],
             }
         );
+    }
+
+    #[test]
+    fn package_schema_applied_nominal_callable_is_structured_unavailable() {
+        let applied = TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+            arguments: vec![TypeRefIr::builtin("string")],
+        };
+        let signature = PackageCallableSignature {
+            parameters: vec![skiff_artifact_model::PackageCallableParameter {
+                name: "value".to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: applied.clone(),
+                },
+            }],
+            return_type: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("string"),
+            },
+            may_suspend: true,
+        };
+        let mut reasons = Vec::new();
+
+        assert_eq!(
+            project_operation_contract("api", &signature, &[], &BTreeMap::new(), &[], &mut reasons,),
+            None
+        );
+        assert_eq!(
+            reasons,
+            vec![BoundaryUnavailableReason::UnsupportedBoundaryType]
+        );
+        assert_eq!(
+            signature.parameters[0].ty,
+            PackageTypeRef::Local {
+                local_type: applied
+            }
+        );
+    }
+
+    #[test]
+    fn package_schema_generic_return_stream_and_callback_are_unsupported() {
+        let applied = || TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+            arguments: vec![TypeRefIr::builtin("string")],
+        };
+        let cases = [
+            PackageCallableSignature {
+                parameters: Vec::new(),
+                return_type: PackageTypeRef::Local {
+                    local_type: applied(),
+                },
+                may_suspend: false,
+            },
+            PackageCallableSignature {
+                parameters: Vec::new(),
+                return_type: PackageTypeRef::Local {
+                    local_type: TypeRefIr::Builtin {
+                        name: "Stream".to_string(),
+                        args: vec![applied()],
+                    },
+                },
+                may_suspend: true,
+            },
+            PackageCallableSignature {
+                parameters: vec![skiff_artifact_model::PackageCallableParameter {
+                    name: "callback".to_string(),
+                    ty: PackageTypeRef::Local {
+                        local_type: TypeRefIr::Function {
+                            params: vec![skiff_artifact_model::FunctionTypeParamIr {
+                                name: "value".to_string(),
+                                ty: applied(),
+                            }],
+                            return_type: Box::new(TypeRefIr::builtin("void")),
+                        },
+                    },
+                }],
+                return_type: PackageTypeRef::Local {
+                    local_type: TypeRefIr::builtin("void"),
+                },
+                may_suspend: false,
+            },
+        ];
+
+        for signature in cases {
+            let mut reasons = Vec::new();
+            assert_eq!(
+                project_operation_contract(
+                    "api",
+                    &signature,
+                    &[],
+                    &BTreeMap::new(),
+                    &[],
+                    &mut reasons,
+                ),
+                None
+            );
+            assert_eq!(
+                reasons,
+                vec![BoundaryUnavailableReason::UnsupportedBoundaryType]
+            );
+        }
+    }
+
+    #[test]
+    fn package_schema_websocket_generic_builtins_are_not_service_boundary_types() {
+        for name in [
+            "std.websocket.WebSocketIngressEvent",
+            "std.websocket.WebSocketConnectResult",
+        ] {
+            assert_eq!(
+                project_local_type(
+                    "api",
+                    &TypeRefIr::Builtin {
+                        name: name.to_string(),
+                        args: vec![TypeRefIr::builtin("string")],
+                    },
+                    &[],
+                    &BTreeMap::new(),
+                    &[],
+                ),
+                Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
+                "{name}"
+            );
+        }
     }
 
     #[test]

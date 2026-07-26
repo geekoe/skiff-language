@@ -181,7 +181,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn package_local_type_handoff_keeps_generic_declaration_kinds_and_named_branches() {
+    fn package_schema_public_generic_local_abi_keeps_declaration_kinds_and_named_branches() {
         let record = TypeDescriptorIr::Record {
             fields: BTreeMap::from([(
                 "value".to_string(),
@@ -228,6 +228,32 @@ mod tests {
             type_params,
             interface_methods: Vec::new(),
         };
+        let interface_methods = vec![skiff_artifact_model::InterfaceMethodSignature {
+            name: "read".to_string(),
+            type_params: Vec::new(),
+            params: vec![skiff_artifact_model::FunctionTypeParamIr {
+                name: "fallback".to_string(),
+                ty: TypeRefIr::TypeParam {
+                    name: "T".to_string(),
+                },
+            }],
+            return_type: TypeRefIr::TypeParam {
+                name: "T".to_string(),
+            },
+            may_suspend: false,
+            is_native: false,
+            is_provider: false,
+            is_static: false,
+            implicit_self: None,
+        }];
+        let mut interface = export(
+            3,
+            "Reader",
+            TypeDescriptorIr::Interface,
+            vec!["T".to_string()],
+        );
+        interface.is_interface = true;
+        interface.interface_methods = interface_methods.clone();
         let projected = ProjectedPackageExportLinks {
             exports: PackageExportIndex {
                 types: BTreeMap::from([
@@ -258,6 +284,7 @@ mod tests {
                             vec!["Left".to_string(), "Right".to_string()],
                         ),
                     ),
+                    ("example.pkg/Reader".to_string(), interface),
                 ]),
                 ..PackageExportIndex::default()
             },
@@ -282,6 +309,11 @@ mod tests {
                 named_union,
                 vec!["Left".to_string(), "Right".to_string()],
             ),
+            (
+                "example.pkg/Reader",
+                TypeDescriptorIr::Interface,
+                vec!["T".to_string()],
+            ),
         ] {
             let PackageLocalAbiSymbol::Type {
                 descriptor,
@@ -294,5 +326,15 @@ mod tests {
             assert_eq!(descriptor, &expected_descriptor);
             assert_eq!(type_params, &expected_type_params);
         }
+        let PackageLocalAbiSymbol::Type {
+            is_interface,
+            interface_methods: actual_methods,
+            ..
+        } = &symbols["example.pkg/Reader"]
+        else {
+            unreachable!("Reader type checked above");
+        };
+        assert!(*is_interface);
+        assert_eq!(actual_methods, &interface_methods);
     }
 }

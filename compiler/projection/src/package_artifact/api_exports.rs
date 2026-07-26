@@ -73,19 +73,17 @@ struct PackageArtifactProjectionContext<'a> {
 #[derive(Clone, Copy, Debug)]
 enum PackageBoundaryKind {
     PackageLinkEntry,
-    PackageSchema,
     PersistentSchema,
 }
 
 impl PackageBoundaryKind {
     fn allows_any_interface(self) -> bool {
-        matches!(self, Self::PackageLinkEntry | Self::PackageSchema)
+        matches!(self, Self::PackageLinkEntry)
     }
 
     fn description(self) -> &'static str {
         match self {
             Self::PackageLinkEntry => "package link entry boundary",
-            Self::PackageSchema => "package public schema boundary",
             Self::PersistentSchema => "persistent payload schema",
         }
     }
@@ -126,7 +124,7 @@ pub(super) fn project_package_exports(
                 unit,
                 &symbol.source_symbol,
                 &symbol.public_path,
-                PackageBoundaryKind::PackageSchema,
+                PackageBoundaryKind::PackageLinkEntry,
                 &mut abi_violations,
             );
         }
@@ -1374,17 +1372,6 @@ mod tests {
     }
 
     #[test]
-    fn package_schema_boundary_allows_any_interface_values() {
-        let violations =
-            collect_any_interface_errors(PackageBoundaryKind::PackageSchema, &any_interface_type());
-
-        assert!(
-            violations.is_empty(),
-            "unexpected violations: {violations:?}"
-        );
-    }
-
-    #[test]
     fn persistent_schema_boundary_rejects_any_interface_values() {
         let violations = collect_any_interface_errors(
             PackageBoundaryKind::PersistentSchema,
@@ -1420,7 +1407,7 @@ mod tests {
     }
 
     #[test]
-    fn applied_nominal_fails_closed_for_public_and_persistent_schema() {
+    fn applied_nominal_fails_closed_for_persistent_schema() {
         let applied = TypeRefIr::AppliedNominal {
             base: NominalTypeRefBaseIr::PackageSymbol {
                 symbol: PackageSymbolRef {
@@ -1434,14 +1421,10 @@ mod tests {
             arguments: vec![TypeRefIr::builtin("string")],
         };
 
-        for boundary_kind in [
-            PackageBoundaryKind::PackageSchema,
-            PackageBoundaryKind::PersistentSchema,
-        ] {
-            let violations = collect_any_interface_errors(boundary_kind, &applied);
-            assert_eq!(violations.len(), 1);
-            assert!(violations[0].contains("generic nominal"));
-            assert!(violations[0].contains(boundary_kind.description()));
-        }
+        let boundary_kind = PackageBoundaryKind::PersistentSchema;
+        let violations = collect_any_interface_errors(boundary_kind, &applied);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("generic nominal"));
+        assert!(violations[0].contains(boundary_kind.description()));
     }
 }
