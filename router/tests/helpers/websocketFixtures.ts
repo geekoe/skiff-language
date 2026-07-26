@@ -71,7 +71,7 @@ export function baseWebSocketManifest(): any {
     serviceId: 'skiff.run/hello',
     revisionId: '1111111111111111111111111111111111111111111111111111111111111111',
     protocolIdentity:
-      'skiff-service-protocol-v3:sha256:0000000000000000000000000000000000000000000000000000000000000002',
+      'skiff-service-protocol-v5:sha256:0000000000000000000000000000000000000000000000000000000000000002',
     connectOperation: 'HelloSocket.connect',
     connectTarget: 'service.skiff~run~~hello.HelloSocket.connect',
     connectParameters: [
@@ -113,7 +113,7 @@ export function webSocketManifestValue(): any {
     serviceId: 'example.com/websocket_fixture',
     revisionId: '2222222222222222222222222222222222222222222222222222222222222222',
     protocolIdentity:
-      'skiff-service-protocol-v3:sha256:0000000000000000000000000000000000000000000000000000000000000003',
+      'skiff-service-protocol-v5:sha256:0000000000000000000000000000000000000000000000000000000000000003',
     connectOperation: 'WebSocketFixtureConnection.connect',
     connectTarget: 'service.example~com~~websocket_fixture.WebSocketFixtureConnection.connect',
     connectParameters: [

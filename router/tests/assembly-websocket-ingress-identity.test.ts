@@ -28,7 +28,7 @@ const binding = {
     serviceId: 'example/chat',
     contractVersion: '1.0.0',
     serviceProtocolIdentity:
-      `skiff-service-protocol-v3:sha256:${'d'.repeat(64)}`
+      `skiff-service-protocol-v5:sha256:${'d'.repeat(64)}`
   },
   operationMode: 'unary',
   contractOperationId:
@@ -42,9 +42,9 @@ describe('canonical assembly WebSocket ingress identity export', () => {
     );
     expect(canonicalAssemblyWebSocketIngressIdentity(binding)).toEqual({
       websocketEntryId:
-        'skiff-websocket-entry-v1:sha256:c85b1bb033336e0eba3654f911c88bff23839ebb7d15598cd6c380b732380414',
+        'skiff-websocket-entry-v1:sha256:c22ef23a292517ae07ac5f42bbb721e83545f153c22e70f4d50c03494012e4b8',
       gatewayEntryIdentity:
-        'skiff-gateway-v1:sha256:c85b1bb033336e0eba3654f911c88bff23839ebb7d15598cd6c380b732380414'
+        'skiff-gateway-v1:sha256:c22ef23a292517ae07ac5f42bbb721e83545f153c22e70f4d50c03494012e4b8'
     });
   });
 });

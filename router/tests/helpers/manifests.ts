@@ -36,7 +36,7 @@ export function loadRawHttpManifest(
   const serviceTargetComponent = publicationStorageSegment(serviceId);
   const protocolIdentity =
     input.protocolIdentity ??
-    'skiff-service-protocol-v3:sha256:5555555555555555555555555555555555555555555555555555555555555555';
+    'skiff-service-protocol-v5:sha256:5555555555555555555555555555555555555555555555555555555555555555';
   const stream = input.stream ?? false;
   const handleTarget = `service.${serviceTargetComponent}.SampleHttpApi.handle`;
   return withBuildId(loadManifest({
@@ -95,7 +95,7 @@ export function loadHttpRouteManifest(
   const serviceTargetComponent = publicationStorageSegment(serviceId);
   const protocolIdentity =
     input.protocolIdentity ??
-    'skiff-service-protocol-v3:sha256:5555555555555555555555555555555555555555555555555555555555555555';
+    'skiff-service-protocol-v5:sha256:5555555555555555555555555555555555555555555555555555555555555555';
   const sessionTarget = `service.${serviceTargetComponent}.SessionApi.handle`;
   const trackTarget = `service.${serviceTargetComponent}.TrackApi.handle`;
   const rawTarget = `service.${serviceTargetComponent}.SampleHttpApi.handle`;

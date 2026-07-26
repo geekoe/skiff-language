@@ -143,7 +143,7 @@ describe('router version routing', () => {
         id: 'skiff.run/sample',
         revisionId: '6666666666666666666666666666666666666666666666666666666666666666',
         protocolIdentity:
-          'skiff-service-protocol-v3:sha256:5555555555555555555555555555555555555555555555555555555555555555'
+          'skiff-service-protocol-v5:sha256:5555555555555555555555555555555555555555555555555555555555555555'
       },
       operations: [
         {

@@ -331,10 +331,22 @@ async function requestTypedUnary({
   unary,
   signal,
 }) {
+  const selector = unary?.selector;
+  assert.equal(
+    selector?.protocol,
+    'http',
+    'I02 typed unary requires a current HTTP selector',
+  );
+  assert.equal(typeof selector.host, 'string', 'I02 HTTP selector host must be a string');
+  assert.ok(selector.host.length > 0, 'I02 HTTP selector host must not be empty');
+  assert.equal(typeof selector.method, 'string', 'I02 HTTP selector method must be a string');
+  assert.ok(selector.method.length > 0, 'I02 HTTP selector method must not be empty');
+  assert.equal(typeof selector.path, 'string', 'I02 HTTP selector path must be a string');
+  assert.match(selector.path, /^\//, 'I02 HTTP selector path must be absolute');
   const response = await requestUnary({
-    method: unary.method,
-    url: `${stack.routerHttpUrl}${unary.path}`,
-    host: unary.host,
+    method: selector.method,
+    url: `${stack.routerHttpUrl}${selector.path}`,
+    host: selector.host,
     signal,
   });
   return validateUnary(response, packageServiceI02SpawnSubmitBusinessResult);

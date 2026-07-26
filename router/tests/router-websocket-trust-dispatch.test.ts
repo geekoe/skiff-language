@@ -25,7 +25,7 @@ import {
 const ASSEMBLY_A = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 const ASSEMBLY_B = `skiff-runtime-assembly-v2:sha256:${'b'.repeat(64)}`;
 const OPERATION = `skiff-contract-operation-v1:sha256:${'c'.repeat(64)}`;
-const PROTOCOL = `skiff-service-protocol-v3:sha256:${'d'.repeat(64)}`;
+const PROTOCOL = `skiff-service-protocol-v5:sha256:${'d'.repeat(64)}`;
 const HOST = 'chat.localhost';
 const PATH = '/v1/chat';
 const RUNTIME_ID = 'runtime-websocket-a';

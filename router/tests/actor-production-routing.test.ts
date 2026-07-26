@@ -231,7 +231,7 @@ async function runtime(url: string, runtimeId: string): Promise<WebSocket> {
     revisionId: 'a'.repeat(64),
     buildId: identity('skiff-service-build-v1:sha256', 'c'),
     serviceProtocolIdentity: identity(
-      'skiff-service-protocol-v3:sha256',
+      'skiff-service-protocol-v5:sha256',
       'd'
     ),
     targets: ['actor.example.Counter.increment'],
