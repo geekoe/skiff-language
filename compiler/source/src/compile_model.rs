@@ -186,12 +186,13 @@ impl PackageSourceModel {
             &input.parsed_sources,
             &name_resolution,
         )?;
-        let mut type_resolution = TypeResolutionModel::build(
+        let mut type_resolution = TypeResolutionModel::build_with_compiler_owned_packages(
             &input.parsed_sources,
             input.package_aliases,
             input.package_dependencies,
             input.type_resolution_package_facts,
             input.type_resolution_package_artifacts,
+            input.dependency_analysis,
             indexes.publication_type_symbols(),
         )
         .map_err(|message| PublicationError::ContractValidation {

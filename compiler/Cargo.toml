@@ -43,6 +43,10 @@ name = "public_generic_schema_availability"
 path = "tests/public_generic_schema_availability.rs"
 
 [[test]]
+name = "compiler_owned_std_type_resolution"
+path = "tests/compiler_owned_std_type_resolution.rs"
+
+[[test]]
 name = "package_unit_single_path"
 path = "tests/package_unit_single_path.rs"
 

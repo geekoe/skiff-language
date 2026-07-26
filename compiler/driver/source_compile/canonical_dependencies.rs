@@ -18,15 +18,60 @@ use crate::{
     shared::package_compile_error::PackageCompileError,
 };
 
-pub(super) fn source_dependency_analysis(
+pub(super) struct CanonicalSourceDependencies {
+    pub(super) analysis: SourceDependencyAnalysisInput,
+    /// Declared artifacts plus the one exact compiler-owned std selected below.
+    /// No other available package crosses the source type-resolution boundary.
+    pub(super) type_resolution_artifacts: Vec<PackageArtifact>,
+}
+
+pub(super) fn source_dependencies(
     input: &PackageCompileInput<'_>,
     resolved_package_schemas: &[ResolvedPackageSchema],
-) -> Result<SourceDependencyAnalysisInput, PackageCompileError> {
-    SourceDependencyAnalysisInput::new(
-        package_analysis(input, resolved_package_schemas)?,
+) -> Result<CanonicalSourceDependencies, PackageCompileError> {
+    let compiler_owned_std =
+        compiler_owned_std_artifact(input.package_id, input.available_packages)?;
+    let analysis = SourceDependencyAnalysisInput::new(
+        package_analysis(input, resolved_package_schemas, compiler_owned_std)?,
         validated_contract_dependencies(input, resolved_package_schemas)?,
     )
-    .map_err(dependency_analysis_error)
+    .map_err(dependency_analysis_error)?;
+    let mut type_resolution_artifacts = input.dependency_packages.to_vec();
+    if let Some(artifact) = compiler_owned_std {
+        type_resolution_artifacts.push(artifact.clone());
+    }
+    Ok(CanonicalSourceDependencies {
+        analysis,
+        type_resolution_artifacts,
+    })
+}
+
+fn compiler_owned_std_artifact<'a>(
+    package_id: &str,
+    available_packages: &'a [PackageArtifact],
+) -> Result<Option<&'a PackageArtifact>, PackageCompileError> {
+    if package_id == SKIFF_STD_PUBLICATION_ID {
+        return Ok(None);
+    }
+    let std_artifacts = available_packages
+        .iter()
+        .filter(|artifact| artifact.package_id == SKIFF_STD_PUBLICATION_ID)
+        .collect::<Vec<_>>();
+    if std_artifacts.len() > 1 {
+        return Err(validation_error(format!(
+            "compiler-owned package {SKIFF_STD_PUBLICATION_ID} has duplicate exact canonical artifacts"
+        )));
+    }
+    let Some(artifact) = std_artifacts.first().copied() else {
+        return Ok(None);
+    };
+    validate_package_artifact_identities(artifact).map_err(|error| {
+        validation_error(format!(
+            "compiler-owned package {}@{} identity validation failed: {error}",
+            artifact.package_id, artifact.package_version
+        ))
+    })?;
+    Ok(Some(artifact))
 }
 
 fn validated_contract_dependencies(
@@ -50,6 +95,7 @@ fn validated_contract_dependencies(
 fn package_analysis(
     input: &PackageCompileInput<'_>,
     resolved_package_schemas: &[ResolvedPackageSchema],
+    compiler_owned_std: Option<&PackageArtifact>,
 ) -> Result<Vec<(String, PackageDependencyAnalysisFacts)>, PackageCompileError> {
     if !input.is_test_service() {
         if let Some(dependency) = input
@@ -77,56 +123,38 @@ fn package_analysis(
         })
         .collect::<BTreeMap<_, _>>();
     let mut facts = Vec::new();
-    if input.package_id != SKIFF_STD_PUBLICATION_ID {
-        let std_artifacts = input
-            .available_packages
-            .iter()
-            .filter(|artifact| artifact.package_id == SKIFF_STD_PUBLICATION_ID)
-            .collect::<Vec<_>>();
-        if std_artifacts.len() > 1 {
-            return Err(validation_error(format!(
-                "compiler-owned package {SKIFF_STD_PUBLICATION_ID} has duplicate exact canonical artifacts"
-            )));
+    if let Some(artifact) = compiler_owned_std {
+        let callables = package_callable_analysis_from_symbols(
+            "compiler-owned std",
+            &artifact.package_local_abi.public_symbols,
+            artifact,
+            std_dependency_member_path,
+        )?;
+        let mut analysis = PackageDependencyAnalysisFacts::new(
+            artifact.package_build_id.clone(),
+            artifact.package_local_abi.local_abi_identity.clone(),
+            callables,
+        )
+        .compiler_owned();
+        if let Some(schema) = resolved_package_schemas.iter().find(|schema| {
+            schema.alias() == "std"
+                && schema.package_id() == artifact.package_id
+                && schema.exact_version() == artifact.package_version
+        }) {
+            analysis = analysis.with_schema_bindings(schema.index().types.iter().filter_map(
+                |(stable_key, entry)| {
+                    let record = schema.records().get(&entry.package_schema_type_id)?;
+                    Some((
+                        entry
+                            .public_path
+                            .clone()
+                            .unwrap_or_else(|| stable_key.clone()),
+                        record.clone(),
+                    ))
+                },
+            ));
         }
-        if let Some(artifact) = std_artifacts.first() {
-            validate_package_artifact_identities(artifact).map_err(|error| {
-                validation_error(format!(
-                    "compiler-owned package {}@{} identity validation failed: {error}",
-                    artifact.package_id, artifact.package_version
-                ))
-            })?;
-            let callables = package_callable_analysis_from_symbols(
-                "compiler-owned std",
-                &artifact.package_local_abi.public_symbols,
-                artifact,
-                std_dependency_member_path,
-            )?;
-            let mut analysis = PackageDependencyAnalysisFacts::new(
-                artifact.package_build_id.clone(),
-                artifact.package_local_abi.local_abi_identity.clone(),
-                callables,
-            )
-            .compiler_owned();
-            if let Some(schema) = resolved_package_schemas.iter().find(|schema| {
-                schema.alias() == "std"
-                    && schema.package_id() == artifact.package_id
-                    && schema.exact_version() == artifact.package_version
-            }) {
-                analysis = analysis.with_schema_bindings(schema.index().types.iter().filter_map(
-                    |(stable_key, entry)| {
-                        let record = schema.records().get(&entry.package_schema_type_id)?;
-                        Some((
-                            entry
-                                .public_path
-                                .clone()
-                                .unwrap_or_else(|| stable_key.clone()),
-                            record.clone(),
-                        ))
-                    },
-                ));
-            }
-            facts.push(("std".to_string(), analysis));
-        }
+        facts.push(("std".to_string(), analysis));
     }
     for dependency in input.package_dependencies {
         let Some(artifact) = artifacts.get(&(dependency.id.as_str(), dependency.version.as_str()))
@@ -423,13 +451,55 @@ fn validation_error(message: String) -> PackageCompileError {
 
 #[cfg(test)]
 mod tests {
+    use skiff_artifact_identity::{
+        assign_package_artifact_identities, package_schema_index_identity,
+    };
     use skiff_artifact_model::{
         PackageBuildId, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
         PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
-        PackageSymbolRef,
+        PackageSymbolRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
     };
 
     use super::*;
+
+    #[test]
+    fn compiler_owned_std_selection_is_exact_and_fail_closed() {
+        let std = canonical_artifact(SKIFF_STD_PUBLICATION_ID);
+        let other = canonical_artifact("example.other");
+        let available = [other.clone(), std.clone()];
+        let selected = compiler_owned_std_artifact("example.consumer", &available)
+            .unwrap()
+            .expect("one exact std artifact should be selected");
+        assert_eq!(selected.package_build_id, std.package_build_id);
+        assert!(
+            compiler_owned_std_artifact("example.consumer", std::slice::from_ref(&other))
+                .unwrap()
+                .is_none(),
+            "an undeclared non-std available artifact must not become source-visible"
+        );
+        assert!(
+            compiler_owned_std_artifact("example.consumer", &[])
+                .unwrap()
+                .is_none(),
+            "absence must not fabricate a std owner"
+        );
+
+        let error = compiler_owned_std_artifact("example.consumer", &[std.clone(), std.clone()])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("duplicate exact canonical artifacts"),
+            "{error}"
+        );
+
+        let mut wrong_identity = std;
+        wrong_identity.package_build_id = PackageBuildId::new("forged");
+        let error =
+            compiler_owned_std_artifact("example.consumer", std::slice::from_ref(&wrong_identity))
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("identity validation failed"), "{error}");
+    }
 
     #[test]
     fn applied_base_and_nested_arguments_bind_only_the_exact_package_abi() {
@@ -559,5 +629,16 @@ mod tests {
             service_call_roots: Vec::new(),
             service_call_refs: Vec::new(),
         }
+    }
+
+    fn canonical_artifact(package_id: &str) -> PackageArtifact {
+        let mut artifact = package_artifact(package_id, "unassigned");
+        artifact.schema_version = PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string();
+        artifact.package_build_id = PackageBuildId::new("unassigned");
+        artifact.package_local_abi.local_abi_identity = PackageLocalAbiIdentity::new("unassigned");
+        artifact.package_schema_index.package_schema_index_identity =
+            package_schema_index_identity(package_id, &BTreeMap::new()).unwrap();
+        assign_package_artifact_identities(&mut artifact).unwrap();
+        artifact
     }
 }

@@ -20,8 +20,8 @@ pub(crate) fn compile(
 ) -> Result<skiff_compiler_compiled::CompiledPackage, PackageCompileError> {
     #[cfg(test)]
     TEST_COMPILE_COUNT.with(|count| count.set(count.get() + 1));
-    let dependency_analysis =
-        canonical_dependencies::source_dependency_analysis(input, resolved_package_schemas)?;
+    let canonical_dependencies =
+        canonical_dependencies::source_dependencies(input, resolved_package_schemas)?;
     if let Some(overlay) = &input.package.test_overlay {
         let manifest = &input.package.manifest;
         if overlay.production.package_id != manifest.id.as_str()
@@ -38,7 +38,11 @@ pub(crate) fn compile(
             });
         }
     }
-    let model = build(input, &dependency_analysis)?;
+    let model = build(
+        input,
+        &canonical_dependencies.analysis,
+        &canonical_dependencies.type_resolution_artifacts,
+    )?;
     let lowered = skiff_compiler_lowering::lower(&model)?;
     Ok(skiff_compiler_compiled::CompiledPackage::new(
         model, lowered,
@@ -58,6 +62,7 @@ pub(crate) fn test_compile_count() -> usize {
 fn build<'a>(
     input: &PackageCompileInput<'a>,
     dependency_analysis: &SourceDependencyAnalysisInput,
+    type_resolution_artifacts: &[skiff_artifact_model::PackageArtifact],
 ) -> Result<PackageSourceModel, PackageCompileError> {
     let production_sources = input.package.compile_sources();
     let parsed_sources = skiff_compiler_source::parsed_sources::parse_publication_sources(
@@ -74,7 +79,7 @@ fn build<'a>(
                 package_aliases: input.package_aliases,
                 package_dependencies: input.package_dependencies,
                 package_facts: None,
-                package_artifacts: Some(input.dependency_packages),
+                package_artifacts: Some(type_resolution_artifacts),
                 policy: PackageCompilePolicy::new(input.package_id),
             },
             dependency_analysis,
