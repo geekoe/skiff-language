@@ -86,11 +86,13 @@ adapter参数来源及外部协议metadata。handler selector指向当前service
 来源确定性生成。`config.*.yml`只绑定已经声明的
 config/secret/state/resource requirement，不改变package/service dependency graph。
 
-Authoring层不要求开发者分别维护entry表与route表。`http.routes`和`websocket.routes`都是以稳定名字为key的
-mapping；每个value把external selector与该entry的handler/adapter声明写在一起。Mapping key就是
-service-owner-local `GatewayEntryKey`。Compiler必须把这一个authoring record确定性拆成
+Authoring层不要求开发者分别维护entry表与route表，也没有只起分类作用的`routes`中间层。`http`和
+`websocket`本身就是以稳定名字为key的entry mapping；每个value把external selector与该entry的
+handler/adapter声明写在一起。Mapping key就是service-owner-local `GatewayEntryKey`，且两个protocol
+mapping中的key在同一个service内必须全局唯一。Compiler必须把这一个authoring record确定性拆成
 `IngressSelector -> GatewayEntryKey`和`GatewayEntryKey -> resolved gateway entry`两个artifact事实。
 第一版一个authoring route只定义一个entry，不提供多个selector复用同一entry定义的别名/引用语法。
+`guard`/`pre`属于具体entry，不占用`http`或`websocket`下的保留key，也没有隐式全局继承。
 
 PackageArtifact至少包含：
 

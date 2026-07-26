@@ -103,8 +103,10 @@ surface/identity模型。
    - marked unavailable聚合结构化错误，unmarked unavailable不阻断Package。
 2. `strict service.yml authoring`
    - 冻结用户YAML shape；
-   - `http.routes`/`websocket.routes`是named mapping；mapping key就是`GatewayEntryKey`；
+   - `http`/`websocket`本身是named mapping，没有`routes`或`entries`中间层；
+   - 两个mapping的key在service内全局唯一，并直接成为`GatewayEntryKey`；
    - 每个named route把唯一selector与entry definition写在一起，compiler内部再拆成两个artifact事实；
+   - `guard`/`pre`只属于具体entry，无reserved key或隐式global inheritance；
    - 直接引用当前Package source callable；
    - 旧`operation`、旧`handlerArgs`、旧WebSocket `bind`和unknown fields全部fail closed。
 3. `deployment gateway model`
@@ -174,35 +176,34 @@ production surface，最终验收必须按影响范围重跑。
 
 ```yaml
 http:
-  routes:
-    createUser:
-      method: POST
-      path: /users
-      kind: typedJson
-      handler: users.create
-      adapterArgs:
-        - param: body
-          source: { kind: http.body }
+  createUser:
+    method: POST
+    path: /users
+    kind: typedJson
+    handler: users.create
+    adapterArgs:
+      - param: body
+        source: { kind: http.body }
 
 websocket:
-  routes:
-    chat:
-      path: /ws
-      connect:
-        handler: chat.connect
-        adapterArgs:
-          - param: request
-            source: { kind: websocket.connectRequest }
-      receive:
-        handler: chat.receive
-        adapterArgs:
-          - param: event
-            source: { kind: websocket.receiveEvent }
+  chat:
+    path: /ws
+    connect:
+      handler: chat.connect
+      adapterArgs:
+        - param: request
+          source: { kind: websocket.connectRequest }
+    receive:
+      handler: chat.receive
+      adapterArgs:
+        - param: event
+          source: { kind: websocket.receiveEvent }
 ```
 
 `createUser`和`chat`就是owner-local稳定key，不再重复写`id`。Compiler从每个value同时投影一个selector
-binding和一个resolved entry。第一版每个named route只有一个selector；多个route即使指向同一个handler也
-仍是独立entry。Artifact层仍保持selector/key/entry分离，且identity preimage绝不能读取selector。
+binding和一个resolved entry。`http`与`websocket`的key在service内不得重名。第一版每个named entry只有
+一个selector；多个entry即使指向同一个handler也仍是独立entry。`guard`/`pre`写在具体entry中，没有
+global default或继承。Artifact层仍保持selector/key/entry分离，且identity preimage绝不能读取selector。
 
 ## 验证与运行边界
 

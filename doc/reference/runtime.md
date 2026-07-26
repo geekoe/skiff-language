@@ -67,9 +67,12 @@ Runtime 依赖稳定 identity 做路由、drain、观测和测试替身匹配。
 
 Service protocol identity 描述 service-to-service API 的公开协议。API 参数 / 返回类型、operation 集合和 public schema closure 的规范化 schema 变化会改变它。跨 service call 的寻址坐标是 service id + version：caller 在依赖约束里声明被调 service 的 id 和 version，router 在请求时把 (service id, version) 解析为该 version 当前的 build 并路由到对应实例。发布时冻结的 build id 与 protocol identity 不是 release selector，而是边界兼容性 witness——dispatch 时 router 校验所解析当前 build 的 protocol identity 是否满足 caller 冻结的期望，不满足则以明确错误失败，绝不静默路由到不兼容的 build。
 
-Ingress entry identity描述external ingress。Handler/pre/guard callable identity、adapterArgs、
-WebSocket connect request schema、message event schema、Connection context schema和系统接口绑定变化会
-改变它。更改ingress不改变service protocol identity。
+Gateway entry identity只描述external ingress的公开协议面。Entry/protocol kind、unary/stream mode、
+external request/response/message shape、影响wire的标准source选择、WebSocket是否需要typed connection
+context以及公开external error projection变化会改变它。Selector、handler/pre/guard callable、
+目标参数名、Package build、deployment policy、内部connection-context nominal identity/codec及完整
+adapter execution plan不进入该identity；只替换实现而外部协议不变时只改变deployment revision。
+任何gateway entry变化都不改变service protocol identity。
 
 Stable target id描述执行类别，而不是资源实例。Service operation、HTTP entry、WebSocket
 connect/receive/close entry、std host operation和Package wrapper都必须能映射到stable target。Target用于
