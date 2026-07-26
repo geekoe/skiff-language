@@ -6222,6 +6222,7 @@ mod tests {
             },
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections: BTreeMap::new(),
+            service_call_roots: Vec::new(),
             service_call_refs: Vec::new(),
         }
     }
@@ -7624,6 +7625,7 @@ mod tests {
             },
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections: BTreeMap::new(),
+            service_call_roots: Vec::new(),
             service_call_refs: Vec::new(),
         };
         let mut package_types = BTreeMap::new();

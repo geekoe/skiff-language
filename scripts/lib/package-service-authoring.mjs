@@ -71,20 +71,29 @@ export function renderAuthoringResult(result) {
   if (!Array.isArray(functions)) {
     return JSON.stringify(result);
   }
-  const available = functions.filter((entry) => entry?.status === 'available');
+  const available = functions.filter(
+    (entry) => entry?.status === 'available' && typeof entry.serviceOperationId === 'string',
+  );
+  const packageAvailable = functions.filter(
+    (entry) => entry?.status === 'available' && entry.serviceOperationId === undefined,
+  );
   const unavailable = functions.filter((entry) => entry?.status === 'unavailable');
-  if (available.length + unavailable.length !== functions.length) {
+  if (available.length + packageAvailable.length + unavailable.length !== functions.length) {
     throw new Error('compiler returned an invalid service API projection status');
   }
   const owner = receipt.serviceId ?? '<package only>';
   const lines = [
     `Service API for ${owner}`,
     `Available: ${available.length}`,
-    `Package-only: ${unavailable.length}`,
+    `Package-only: ${packageAvailable.length + unavailable.length}`,
   ];
   for (const entry of functions) {
-    if (entry.status === 'available') {
+    if (entry.status === 'available' && typeof entry.serviceOperationId === 'string') {
       lines.push(`  available ${entry.publicPath}`);
+      continue;
+    }
+    if (entry.status === 'available') {
+      lines.push(`  package-only ${entry.publicPath}`);
       continue;
     }
     lines.push(`  package-only ${entry.publicPath}`);

@@ -260,9 +260,6 @@ fn validate_service_contract_surface(contract: &ServiceContract) -> Result<()> {
     }
     validate_non_empty("serviceId", &contract.service_id)?;
     validate_non_empty("contractVersion", &contract.contract_version)?;
-    if contract.operations.is_empty() {
-        return invalid_contract("operations must contain at least one operation");
-    }
     for (operation_id, descriptor) in &contract.operations {
         if operation_id != &descriptor.operation_id {
             return invalid_contract("operation map key does not match nested operationId");
@@ -700,6 +697,28 @@ mod tests {
             .and_then(|operation| operation.get_mut("contract"))
             .expect("operation contract wire")["errors"] = serde_json::json!({"kind": "none"});
         assert!(serde_json::from_value::<ServiceContract>(legacy).is_err());
+    }
+
+    #[test]
+    fn zero_operation_service_contract_has_stable_identity() {
+        let mut contract = ServiceContract {
+            schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
+            service_id: "example.empty".to_string(),
+            contract_version: "1.0.0".to_string(),
+            service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
+            operations: BTreeMap::new(),
+            package_type_requirements: Vec::new(),
+            diagnostic_text: ContractDiagnosticText {
+                service: "example.empty".to_string(),
+                operations: BTreeMap::new(),
+                types: BTreeMap::new(),
+            },
+        };
+        let first = assign_service_contract_identities(&mut contract).unwrap();
+        let second = service_protocol_identity(&contract).unwrap();
+
+        assert_eq!(first, second);
+        validate_service_contract_identities(&contract).unwrap();
     }
 
     #[test]

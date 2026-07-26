@@ -6,13 +6,14 @@ use std::{
 
 use serde_yaml::Value as YamlValue;
 use skiff_artifact_model::{
+    validate_gateway_adapter_args, GatewayEntryKey, HttpGatewayEntryAuthoring,
     ServiceAuthoringKind, ServiceConfigProfileAuthoring, ServiceManifestAuthoring,
 };
 use thiserror::Error;
 
 use crate::{
     package_config::{read_user_package_manifest, PackageManifest},
-    parse_publication_id_field,
+    parse_publication_id_field, SourceSymbolSelector,
 };
 
 pub const SERVICE_CONFIG_FILE: &str = "service.yml";
@@ -51,10 +52,8 @@ pub fn read_service_package_root(
     root: &Path,
 ) -> Result<ServicePackageRoot, ServiceSourceConfigError> {
     let package_path = root.join("package.yml");
-    let api_path = root.join("api.yml");
     let service_path = root.join(SERVICE_CONFIG_FILE);
     require_control_file(&package_path)?;
-    require_control_file(&api_path)?;
     require_control_file(&service_path)?;
     let package = read_user_package_manifest(&package_path)?;
     let service = read_service_manifest(&service_path)?;
@@ -110,9 +109,9 @@ fn read_service_manifest(
     path: &Path,
 ) -> Result<ServiceManifestAuthoring, ServiceSourceConfigError> {
     let text = read(path)?;
-    let manifest = serde_yaml::from_str::<ServiceManifestAuthoring>(&text)
+    let mut manifest = serde_yaml::from_str::<ServiceManifestAuthoring>(&text)
         .map_err(|source| parse_error(path, source))?;
-    reject_legacy_http_policy(path, manifest.http.as_ref())?;
+    validate_http_authoring(path, manifest.http.as_mut())?;
     let mut violations = Vec::new();
     let id =
         parse_publication_id_field("service.yml id", Some(manifest.id.clone()), &mut violations);
@@ -125,25 +124,100 @@ fn read_service_manifest(
     })
 }
 
-fn reject_legacy_http_policy(
+fn validate_http_authoring(
     path: &Path,
-    http: Option<&serde_json::Value>,
+    http: Option<&mut BTreeMap<GatewayEntryKey, HttpGatewayEntryAuthoring>>,
 ) -> Result<(), ServiceSourceConfigError> {
-    let Some(http) = http else {
+    let Some(entries) = http else {
         return Ok(());
     };
-    let Some(http) = http.as_object() else {
-        return Ok(());
-    };
-    if http.contains_key("response") {
-        return Err(ServiceSourceConfigError::Validation {
-            message: format!(
-                "- {}: service.yml http.response is not supported; HTTP byte ceilings belong to Router instance config",
-                path.display()
-            ),
-        });
+    let mut violations = Vec::new();
+    let mut selectors = BTreeMap::new();
+    for (key, entry) in entries {
+        validate_http_selector_field(key, "handler", &entry.handler, &mut violations);
+        if let Some(guard) = &entry.guard {
+            validate_http_selector_field(key, "guard", guard, &mut violations);
+        }
+        if let Some(pre) = &entry.pre {
+            validate_http_selector_field(key, "pre", pre, &mut violations);
+        }
+        validate_http_host(key, &mut entry.host, &mut violations);
+        validate_http_path(key, &entry.path, &mut violations);
+        validate_http_method(key, &mut entry.method, &mut violations);
+        if let Err(error) =
+            validate_gateway_adapter_args(entry.kind, entry.pre.is_some(), &entry.adapter_args)
+        {
+            violations.push(format!("http.{key}.adapterArgs is invalid: {error}"));
+        }
+
+        let selector = (entry.host.clone(), entry.method.clone(), entry.path.clone());
+        if let Some(existing) = selectors.insert(selector, key.clone()) {
+            violations.push(format!(
+                "http.{key} duplicates the selector owned by http.{existing}"
+            ));
+        }
+    }
+    if !violations.is_empty() {
+        return Err(validation_error(path, violations));
     }
     Ok(())
+}
+
+fn validate_http_selector_field(
+    key: &GatewayEntryKey,
+    field: &str,
+    value: &str,
+    violations: &mut Vec<String>,
+) {
+    if let Err(message) = SourceSymbolSelector::parse(value) {
+        violations.push(format!(
+            "http.{key}.{field} must be a current-package source selector: {message}"
+        ));
+    }
+}
+
+fn validate_http_host(key: &GatewayEntryKey, host: &mut String, violations: &mut Vec<String>) {
+    if host.is_empty()
+        || host.trim() != host
+        || host
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+        || host
+            .chars()
+            .any(|character| matches!(character, '/' | '@' | '?' | '#'))
+    {
+        violations.push(format!(
+            "http.{key}.host must be a non-empty ingress host without whitespace, user info, path, query, or fragment"
+        ));
+        return;
+    }
+    host.make_ascii_lowercase();
+}
+
+fn validate_http_path(key: &GatewayEntryKey, path: &str, violations: &mut Vec<String>) {
+    if !path.starts_with('/')
+        || path.chars().any(|character| matches!(character, '?' | '#'))
+        || path
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+    {
+        violations.push(format!(
+            "http.{key}.path must be an absolute URL path without query, fragment, whitespace, or control characters"
+        ));
+    }
+}
+
+fn validate_http_method(key: &GatewayEntryKey, method: &mut String, violations: &mut Vec<String>) {
+    let canonical = method.trim().to_ascii_uppercase();
+    if canonical.is_empty()
+        || !canonical
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+    {
+        violations.push(format!("http.{key}.method must be a valid HTTP token"));
+        return;
+    }
+    *method = canonical;
 }
 
 fn read_config_profiles(
@@ -248,11 +322,34 @@ mod tests {
     fn reads_service_as_package_root_and_profiles() {
         let root = fixture_root("positive");
         write(&root, "package.yml", "id: example.com/account-package\nversion: 2.1.0\nservices:\n  - id: example.com/payment\n    version: 3.0.0\n    alias: payment\n");
-        write(&root, "api.yml", "functions: {}\n");
+        write(&root, "api.yml", "{}\n");
         write(
             &root,
             "service.yml",
-            "id: example.com/account\nhttp: { routes: [] }\n",
+            r#"id: example.com/account
+http:
+  typed:
+    method: post
+    path: /users
+    kind: typedJson
+    handler: users.create
+    adapterArgs:
+      - param: body
+        source: { kind: http.body }
+  raw:
+    host: API.Example.COM
+    method: GET
+    path: /raw
+    kind: rawHttp
+    handler: handlers.raw
+    guard: handlers.guard
+    pre: handlers.prepare
+    adapterArgs:
+      - param: request
+        source: { kind: http.request }
+      - param: context
+        source: { kind: http.context }
+"#,
         );
         write(
             &root,
@@ -265,6 +362,17 @@ mod tests {
         assert_eq!(source.package.services[0].effective_alias(), "payment");
         assert_eq!(source.service.id, "example.com/account");
         assert_eq!(source.service.kind, ServiceAuthoringKind::Service);
+        let http = source.service.http.as_ref().unwrap();
+        let typed = &http[&GatewayEntryKey::parse("typed").unwrap()];
+        assert_eq!(typed.host, "*");
+        assert_eq!(typed.method, "POST");
+        assert_eq!(
+            typed.kind,
+            skiff_artifact_model::GatewayAdapterKind::TypedJson
+        );
+        let raw = &http[&GatewayEntryKey::parse("raw").unwrap()];
+        assert_eq!(raw.host, "api.example.com");
+        assert_eq!(raw.pre.as_deref(), Some("handlers.prepare"));
         assert!(source.config_profiles.contains_key("dev"));
         fs::remove_dir_all(root).unwrap();
     }
@@ -274,7 +382,7 @@ mod tests {
         let package = "id: example.com/widget-tests\nversion: 1.0.0\npackages:\n  - id: example.com/widget\n    version: 1.0.0\n    alias: widget\n    access: topLevel\n";
         let test_root = fixture_root("test-top-level");
         write(&test_root, "package.yml", package);
-        write(&test_root, "api.yml", "functions: {}\n");
+        write(&test_root, "api.yml", "{}\n");
         write(
             &test_root,
             "service.yml",
@@ -290,7 +398,7 @@ mod tests {
 
         let production_root = fixture_root("production-top-level");
         write(&production_root, "package.yml", package);
-        write(&production_root, "api.yml", "functions: {}\n");
+        write(&production_root, "api.yml", "{}\n");
         write(
             &production_root,
             "service.yml",
@@ -311,12 +419,8 @@ mod tests {
             "package.yml",
             "id: skiff.run/account\nversion: 0.1.0\n",
         );
-        write(&root, "api.yml", "functions: {}\n");
-        write(
-            &root,
-            "service.yml",
-            "id: skiff.run/account\nhttp: { routes: [] }\n",
-        );
+        write(&root, "api.yml", "{}\n");
+        write(&root, "service.yml", "id: skiff.run/account\nhttp: {}\n");
         write(
             &root,
             "config.dev.yml",
@@ -336,7 +440,7 @@ mod tests {
             "package.yml",
             "id: example.com/account\nversion: 0.1.0\n",
         );
-        write(&root, "api.yml", "functions: {}\n");
+        write(&root, "api.yml", "{}\n");
         write(&root, "service.yml", "id: example.com/account\n");
         write(
             &root,
@@ -354,10 +458,7 @@ mod tests {
         for (name, files) in [
             (
                 "missing-package",
-                vec![
-                    ("api.yml", "functions: {}\n"),
-                    ("service.yml", "id: example.com/a\n"),
-                ],
+                vec![("api.yml", "{}\n"), ("service.yml", "id: example.com/a\n")],
             ),
             (
                 "missing-api",
@@ -370,7 +471,7 @@ mod tests {
                 "missing-service",
                 vec![
                     ("package.yml", "id: example.com/a\nversion: 1.0.0\n"),
-                    ("api.yml", "functions: {}\n"),
+                    ("api.yml", "{}\n"),
                 ],
             ),
         ] {
@@ -394,7 +495,7 @@ mod tests {
         ] {
             let root = fixture_root("service-owned-fields");
             write(&root, "package.yml", "id: example.com/a\nversion: 1.0.0\n");
-            write(&root, "api.yml", "functions: {}\n");
+            write(&root, "api.yml", "{}\n");
             write(
                 &root,
                 "service.yml",
@@ -415,7 +516,7 @@ mod tests {
         ] {
             let root = fixture_root("removed-service-metadata");
             write(&root, "package.yml", "id: example.com/a\nversion: 1.0.0\n");
-            write(&root, "api.yml", "functions: {}\n");
+            write(&root, "api.yml", "{}\n");
             write(
                 &root,
                 "service.yml",
@@ -427,14 +528,179 @@ mod tests {
     }
 
     #[test]
+    fn service_manifest_rejects_legacy_http_shapes_and_unknown_fields() {
+        for (name, http) in [
+            ("routes", "{ routes: [] }"),
+            ("entries", "{ entries: {} }"),
+            ("global-guard", "{ guard: users.guard }"),
+            ("global-pre", "{ pre: users.prepare }"),
+            (
+                "operation",
+                "{ create: { method: POST, path: /users, kind: typedJson, handler: users.create, operation: create } }",
+            ),
+            (
+                "handler-args",
+                "{ create: { method: POST, path: /users, kind: typedJson, handler: users.create, handlerArgs: [] } }",
+            ),
+            (
+                "unknown-entry-field",
+                "{ create: { method: POST, path: /users, kind: typedJson, handler: users.create, fallback: true } }",
+            ),
+            (
+                "unknown-adapter-arg-field",
+                "{ create: { method: POST, path: /users, kind: typedJson, handler: users.create, adapterArgs: [{ param: body, source: { kind: http.body }, field: value }] } }",
+            ),
+            (
+                "missing-method",
+                "{ create: { path: /users, kind: typedJson, handler: users.create } }",
+            ),
+            (
+                "missing-path",
+                "{ create: { method: POST, kind: typedJson, handler: users.create } }",
+            ),
+            (
+                "missing-kind",
+                "{ create: { method: POST, path: /users, handler: users.create } }",
+            ),
+            (
+                "missing-handler",
+                "{ create: { method: POST, path: /users, kind: typedJson } }",
+            ),
+        ] {
+            let source = format!("id: example.com/users\nhttp: {http}\n");
+            assert!(
+                read_service_yml(name, &source).is_err(),
+                "{name} must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn service_manifest_validates_http_selectors_and_adapter_args() {
+        for (name, entry) in [
+            (
+                "invalid-key",
+                "\"bad key\": { method: GET, path: /users, kind: typedJson, handler: users.read }",
+            ),
+            (
+                "invalid-handler-selector",
+                "entry: { method: GET, path: /users, kind: typedJson, handler: read }",
+            ),
+            (
+                "public-root-handler-fallback",
+                "entry: { method: GET, path: /users, kind: typedJson, handler: root.users.read }",
+            ),
+            (
+                "invalid-guard-selector",
+                "entry: { method: GET, path: /users, kind: typedJson, handler: users.read, guard: guard }",
+            ),
+            (
+                "invalid-pre-selector",
+                "entry: { method: GET, path: /users, kind: typedJson, handler: users.read, pre: prepare }",
+            ),
+            (
+                "invalid-host",
+                "entry: { host: \"bad host\", method: GET, path: /users, kind: typedJson, handler: users.read }",
+            ),
+            (
+                "invalid-path",
+                "entry: { method: GET, path: users, kind: typedJson, handler: users.read }",
+            ),
+            (
+                "path-with-query",
+                "entry: { method: GET, path: \"/users?admin=true\", kind: typedJson, handler: users.read }",
+            ),
+            (
+                "invalid-method",
+                "entry: { method: \"G ET\", path: /users, kind: typedJson, handler: users.read }",
+            ),
+            (
+                "raw-body-source",
+                "entry: { method: POST, path: /users, kind: rawHttp, handler: users.raw, adapterArgs: [{ param: body, source: { kind: http.body } }] }",
+            ),
+            (
+                "typed-non-http-source",
+                "entry: { method: POST, path: /users, kind: typedJson, handler: users.create, adapterArgs: [{ param: body, source: { kind: websocket.connectRequest } }] }",
+            ),
+            (
+                "context-without-pre",
+                "entry: { method: GET, path: /users, kind: typedJson, handler: users.read, adapterArgs: [{ param: context, source: { kind: http.context } }] }",
+            ),
+            (
+                "duplicate-param",
+                "entry: { method: POST, path: /users, kind: typedJson, handler: users.create, adapterArgs: [{ param: value, source: { kind: http.request } }, { param: value, source: { kind: http.body } }] }",
+            ),
+        ] {
+            let source = format!("id: example.com/users\nhttp:\n  {entry}\n");
+            assert!(
+                read_service_yml(name, &source).is_err(),
+                "{name} must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn service_manifest_rejects_duplicate_http_keys_and_selectors() {
+        let duplicate_key = r#"
+id: example.com/users
+http:
+  entry:
+    method: GET
+    path: /users
+    kind: typedJson
+    handler: users.read
+  entry:
+    method: POST
+    path: /users
+    kind: typedJson
+    handler: users.create
+"#;
+        assert!(read_service_yml("duplicate-key", duplicate_key).is_err());
+
+        let duplicate_selector = r#"
+id: example.com/users
+http:
+  first:
+    method: GET
+    path: /users
+    kind: typedJson
+    handler: users.first
+  second:
+    method: get
+    path: /users
+    kind: rawHttp
+    handler: users.second
+"#;
+        let error = read_service_yml("duplicate-selector", duplicate_selector).unwrap_err();
+        assert!(error.to_string().contains("duplicates the selector"));
+    }
+
+    #[test]
     fn config_profile_rejects_dependencies() {
         let root = fixture_root("profile-dependencies");
         write(&root, "package.yml", "id: example.com/a\nversion: 1.0.0\n");
-        write(&root, "api.yml", "functions: {}\n");
+        write(&root, "api.yml", "{}\n");
         write(&root, "service.yml", "id: example.com/a\n");
         write(&root, "config.dev.yml", "services: []\n");
         assert!(read_service_package_root(&root).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn read_service_yml(
+        name: &str,
+        service_yml: &str,
+    ) -> Result<ServicePackageRoot, ServiceSourceConfigError> {
+        let root = fixture_root(name);
+        write(
+            &root,
+            "package.yml",
+            "id: example.com/users\nversion: 1.0.0\n",
+        );
+        write(&root, "api.yml", "{}\n");
+        write(&root, "service.yml", service_yml);
+        let result = read_service_package_root(&root);
+        fs::remove_dir_all(root).unwrap();
+        result
     }
 
     fn fixture_root(name: &str) -> PathBuf {

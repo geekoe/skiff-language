@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use skiff_compiler_core::prelude_registry::validate_package_api_public_path;
 use skiff_compiler_input::{
-    platform_sources::CompilerPlatformSourceSnapshot, CompilerPlatformSources,
+    platform_sources::CompilerPlatformSourceSnapshot, read_publication_api_yml,
+    CompilerPlatformSources,
 };
 
 use crate::{
-    api_yml::read_publication_api_yml,
     package_export_resolver::package_public_path,
     shared::id::{SKIFF_STD_PUBLICATION_ID, STD_SOURCE_ALIAS},
     shared::parser::parse_source,

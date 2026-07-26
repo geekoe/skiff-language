@@ -74,6 +74,7 @@ pub(super) fn project_fixture_with_runtime_requirements(
                 },
             ),
         ]),
+        service_call_functions: BTreeSet::from(["run".to_string()]),
         public_instances: vec![PackageExportPublicInstance {
             public_path: "worker".to_string(),
             module: "api".to_string(),
@@ -81,6 +82,7 @@ pub(super) fn project_fixture_with_runtime_requirements(
             receiver_module: "api".to_string(),
             receiver_symbol: "Worker".to_string(),
             interfaces: Vec::new(),
+            service_call: true,
         }],
     };
     let mut signature_entries = vec![

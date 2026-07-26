@@ -40,6 +40,7 @@ fn compiler_output_deserializes_as_the_canonical_package_artifact() {
             "runtimeRequirements",
             "schemaVersion",
             "serviceCallRefs",
+            "serviceCallRoots",
             "serviceRequirements",
             "staticResources",
         ])

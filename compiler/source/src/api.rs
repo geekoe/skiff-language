@@ -82,6 +82,7 @@ pub struct PublicCallable {
     pub source_module: String,
     pub source_symbol: String,
     pub kind: PublicCallableKind,
+    pub service_call: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +105,7 @@ pub struct PublicInstance {
     pub source_module: String,
     pub source_symbol: String,
     pub interfaces: Vec<PublicInstanceInterface>,
+    pub service_call: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,11 +224,19 @@ impl PublicationApi {
             };
 
             let public_path = entry.public_path_string();
+            if entry.service_call && kind != PublicSymbolKind::Function {
+                return Err(PublicationError::ContractValidation {
+                    message: format!(
+                        "api.yml serviceCall marker at {public_path} must resolve to a function or public instance"
+                    ),
+                });
+            }
             api.insert_resolved_export(
                 public_path.clone(),
                 &resolved_module,
                 &source_symbol,
                 kind,
+                entry.service_call,
                 &mut duplicates,
             );
         }
@@ -273,6 +283,7 @@ impl PublicationApi {
                 &const_module,
                 &const_symbol,
                 interfaces,
+                entry.service_call,
                 &mut duplicates,
             );
         }
@@ -324,6 +335,7 @@ impl PublicationApi {
         source_module: &str,
         source_symbol: &str,
         kind: PublicSymbolKind,
+        service_call: bool,
         duplicates: &mut BTreeSet<String>,
     ) {
         self.insert_public_symbol(
@@ -360,6 +372,7 @@ impl PublicationApi {
                 source_module,
                 source_symbol,
                 PublicCallableKind::Function,
+                service_call,
                 duplicates,
             ),
             PublicSymbolKind::Const => {}
@@ -456,6 +469,7 @@ impl PublicationApi {
         source_module: &str,
         source_symbol: &str,
         kind: PublicCallableKind,
+        service_call: bool,
         duplicates: &mut BTreeSet<String>,
     ) {
         if self
@@ -467,6 +481,7 @@ impl PublicationApi {
                     source_module: source_module.to_string(),
                     source_symbol: source_symbol.to_string(),
                     kind,
+                    service_call,
                 },
             )
             .is_some()
@@ -506,6 +521,7 @@ impl PublicationApi {
         source_module: &str,
         source_symbol: &str,
         interfaces: Vec<PublicInstanceInterface>,
+        service_call: bool,
         duplicates: &mut BTreeSet<String>,
     ) {
         if self.public_symbols.contains_key(&public_path)
@@ -524,6 +540,7 @@ impl PublicationApi {
                     source_module: source_module.to_string(),
                     source_symbol: source_symbol.to_string(),
                     interfaces,
+                    service_call,
                 },
             )
             .is_some()
@@ -807,6 +824,32 @@ mod tests {
         assert!(api.schema_types.contains_key("chat.Events"));
         assert!(api.callables.contains_key("chat.start"));
         assert!(api.public_symbols.contains_key("chat.VERSION"));
+    }
+
+    #[test]
+    fn service_call_marker_rejects_non_function_public_symbols() {
+        for (name, declaration) in [
+            ("Record", "type Record {}"),
+            (
+                "Handler",
+                "interface Handler { function run(self: Self) -> string }",
+            ),
+            ("VALUE", "const VALUE: string = \"value\""),
+        ] {
+            let spec = PublicationApiSpec::from_entries(vec![PublicationApiEntry::for_source(
+                name, "api", name,
+            )
+            .with_service_call()]);
+            let sources = [source("api.skiff", "api", declaration)];
+            let error = PublicationApi::build_from_publication_sources(&spec, sources.iter())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("serviceCall marker")
+                    && error.contains("must resolve to a function or public instance"),
+                "{name}: {error}"
+            );
+        }
     }
 
     #[test]

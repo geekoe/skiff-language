@@ -178,6 +178,7 @@ fn package(
         },
         "callableSemanticFacts": {},
         "boundaryProjections": {},
+        "serviceCallRoots": [],
         "serviceCallRefs": []
     }))
     .unwrap()

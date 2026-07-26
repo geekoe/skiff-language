@@ -1,7 +1,6 @@
 pub mod alias_resolution;
 pub mod api;
 pub(crate) mod api_seed;
-mod api_yml;
 pub mod callable_effects;
 mod compile_model;
 mod config_metadata;

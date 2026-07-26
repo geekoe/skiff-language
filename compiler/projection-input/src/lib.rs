@@ -788,6 +788,7 @@ pub struct ExportCallableProjection {
     pub source_module: String,
     pub source_symbol: String,
     pub kind: PublicCallableKindProjection,
+    pub service_call: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -805,6 +806,7 @@ pub struct ExportPublicInstanceProjection {
     pub source_symbol: String,
     pub receiver: ProjectionSourceSymbolKey,
     pub interfaces: Vec<ExportPublicInstanceInterfaceProjection>,
+    pub service_call: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -848,6 +850,7 @@ pub struct PublicCallableProjection {
     pub source_module: String,
     pub source_symbol: String,
     pub kind: PublicCallableKindProjection,
+    pub service_call: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -877,6 +880,7 @@ pub struct PublicInstanceProjection {
     pub source_module: String,
     pub source_symbol: String,
     pub interfaces: Vec<PublicInstanceInterfaceProjection>,
+    pub service_call: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1296,6 +1300,7 @@ mod resolved_package_schema_tests {
             },
             "callableSemanticFacts": {},
             "boundaryProjections": {},
+            "serviceCallRoots": [],
             "serviceCallRefs": []
         }))
         .unwrap();

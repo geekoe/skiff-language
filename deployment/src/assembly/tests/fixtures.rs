@@ -160,6 +160,7 @@ pub fn package(
         },
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
+        service_call_roots: Vec::new(),
         service_call_refs,
     };
     assign_package_artifact_identities(&mut package).unwrap();

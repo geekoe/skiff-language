@@ -5,7 +5,7 @@ use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryCallbackContract, BoundaryStreamContract,
     BoundaryUnavailableReason, ContractTypeDescriptor, ContractTypeRef, PackageArtifact,
     PackageCallableId, PackageLocalAbiSymbol, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    PackageTypeRequirement, ServiceContract,
+    PackageServiceCallRoot, PackageTypeRequirement, ServiceContract,
 };
 
 use crate::{
@@ -70,12 +70,13 @@ pub fn project_service_api(
     let mut operations = BTreeMap::new();
     let mut operation_text = BTreeMap::new();
     let mut roots = Vec::new();
-    for (callable_id, projection) in &package.boundary_projections {
-        let public_path = public_callables.get(callable_id).ok_or_else(|| {
-            ContractDefinitionError::MissingPublicCallable {
+    for (callable_id, public_path) in selected_service_callables(package)? {
+        let projection = package
+            .boundary_projections
+            .get(&callable_id)
+            .ok_or_else(|| ContractDefinitionError::MissingBoundaryProjection {
                 callable_id: callable_id.to_string(),
-            }
-        })?;
+            })?;
         match projection {
             BoundaryCallableProjection::Available {
                 operation_contract, ..
@@ -83,12 +84,15 @@ pub fn project_service_api(
                 collect_operation_refs(operation_contract, &mut roots);
                 operations.insert(public_path.clone(), operation_contract.clone());
                 operation_text.insert(public_path.clone(), public_path.clone());
-                available.insert(public_path.clone(), callable_id.clone());
+                available.insert(public_path.clone(), callable_id);
             }
             BoundaryCallableProjection::Unavailable { reasons } => {
                 unavailable.insert(public_path.clone(), reasons.clone());
             }
         }
+    }
+    if !unavailable.is_empty() {
+        return Err(ContractDefinitionError::UnavailableServiceCallRoots { unavailable });
     }
     for callable_id in public_callables.keys() {
         if !package.boundary_projections.contains_key(callable_id) {
@@ -136,6 +140,44 @@ pub fn project_service_api(
         available,
         unavailable,
     })
+}
+
+fn selected_service_callables(
+    package: &PackageArtifact,
+) -> Result<BTreeMap<PackageCallableId, String>> {
+    let mut selected = BTreeMap::new();
+    for root in &package.service_call_roots {
+        match root {
+            PackageServiceCallRoot::Function {
+                public_path,
+                callable_id,
+            } => {
+                if let Some(first) = selected.insert(callable_id.clone(), public_path.clone()) {
+                    return Err(ContractDefinitionError::DuplicatePublicCallable {
+                        callable_id: callable_id.to_string(),
+                        first,
+                        second: public_path.clone(),
+                    });
+                }
+            }
+            PackageServiceCallRoot::PublicInstance {
+                public_path,
+                methods,
+            } => {
+                for (method, callable_id) in methods {
+                    let method_path = format!("{public_path}.{method}");
+                    if let Some(first) = selected.insert(callable_id.clone(), method_path.clone()) {
+                        return Err(ContractDefinitionError::DuplicatePublicCallable {
+                            callable_id: callable_id.to_string(),
+                            first,
+                            second: method_path,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(selected)
 }
 
 fn transitive_closure(
@@ -313,7 +355,10 @@ mod tests {
         BoundaryCallbackExpirationError, BoundaryCallbackLifetime, BoundaryCancellationContract,
         BoundaryEffectGuarantee, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
         BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-        BoundaryValuePlan, PackageSchemaTypeRef,
+        BoundaryValuePlan, PackageBuildId, PackageCallableSignature, PackageImplementationLinks,
+        PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements,
+        PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageSchemaTypeRef,
+        PackageServiceCallRoot, PackageTypeRef, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -370,6 +415,326 @@ mod tests {
                 .map(|(key, id)| ("example.types".to_string(), key.to_string(), id))
                 .collect()
         );
+    }
+
+    #[test]
+    fn service_call_projection_selects_only_marked_function_and_instance_methods() {
+        let package = service_call_package();
+        let projected = project_service_api("example.service", &package, &BTreeMap::new()).unwrap();
+
+        assert_eq!(
+            projected
+                .available
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["selected", "worker.run", "worker.stop"]
+        );
+        assert!(projected.unavailable.is_empty());
+        assert_eq!(projected.contract.operations.len(), 3);
+        assert!(projected.contract.package_type_requirements.is_empty());
+        let operation_paths = projected
+            .contract
+            .diagnostic_text
+            .operations
+            .values()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            operation_paths,
+            BTreeSet::from(["selected", "worker.run", "worker.stop"])
+        );
+
+        let status = |path: &str| {
+            &projected
+                .visibility
+                .functions
+                .iter()
+                .find(|function| function.public_path == path)
+                .unwrap()
+                .status
+        };
+        assert!(matches!(
+            status("selected"),
+            ServiceApiFunctionStatus::Available {
+                service_operation_id: Some(_)
+            }
+        ));
+        assert!(matches!(
+            status("packageOnly"),
+            ServiceApiFunctionStatus::Available {
+                service_operation_id: None
+            }
+        ));
+        assert!(matches!(
+            status("worker.helper"),
+            ServiceApiFunctionStatus::Available {
+                service_operation_id: None
+            }
+        ));
+        assert!(matches!(
+            status("blocked"),
+            ServiceApiFunctionStatus::Unavailable { reasons }
+                if reasons == &vec![
+                    BoundaryUnavailableReason::AnalysisPending,
+                    BoundaryUnavailableReason::WritesCallerReachable,
+                ]
+        ));
+    }
+
+    #[test]
+    fn service_call_projection_reports_all_marked_unavailable_roots_and_reasons() {
+        let mut package = service_call_package();
+        for path in ["blocked", "blockedTwo"] {
+            package
+                .service_call_roots
+                .push(PackageServiceCallRoot::Function {
+                    public_path: path.to_string(),
+                    callable_id: package_callable_id(path),
+                });
+        }
+
+        let ContractDefinitionError::UnavailableServiceCallRoots { unavailable } =
+            project_service_api("example.service", &package, &BTreeMap::new()).unwrap_err()
+        else {
+            panic!("marked unavailable roots must fail as one structured error")
+        };
+        assert_eq!(
+            unavailable.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["blocked", "blockedTwo"]
+        );
+        assert_eq!(
+            unavailable["blocked"],
+            vec![
+                BoundaryUnavailableReason::AnalysisPending,
+                BoundaryUnavailableReason::WritesCallerReachable,
+            ]
+        );
+        assert_eq!(
+            unavailable["blockedTwo"],
+            vec![BoundaryUnavailableReason::UnsupportedBoundaryType]
+        );
+    }
+
+    #[test]
+    fn service_call_projection_allows_stable_zero_operation_contract() {
+        let mut package = service_call_package();
+        package.service_call_roots.clear();
+
+        let first = project_service_api("example.empty", &package, &BTreeMap::new()).unwrap();
+        let second = project_service_api("example.empty", &package, &BTreeMap::new()).unwrap();
+        assert!(first.contract.operations.is_empty());
+        assert!(first.contract.package_type_requirements.is_empty());
+        assert!(first.available.is_empty());
+        assert!(first.unavailable.is_empty());
+        assert_eq!(
+            first.contract.service_protocol_identity,
+            second.contract.service_protocol_identity
+        );
+        assert!(first.visibility.functions.iter().all(|function| {
+            !matches!(
+                &function.status,
+                ServiceApiFunctionStatus::Available {
+                    service_operation_id: Some(_)
+                }
+            )
+        }));
+    }
+
+    fn service_call_package() -> PackageArtifact {
+        let paths = [
+            "selected",
+            "packageOnly",
+            "blocked",
+            "blockedTwo",
+            "worker.run",
+            "worker.stop",
+            "worker.helper",
+        ];
+        let mut public_symbols = paths
+            .into_iter()
+            .map(|path| {
+                (
+                    path.to_string(),
+                    PackageLocalAbiSymbol::Callable {
+                        callable_id: package_callable_id(path),
+                        signature: PackageCallableSignature {
+                            parameters: Vec::new(),
+                            return_type: PackageTypeRef::Local {
+                                local_type: TypeRefIr::builtin("void"),
+                            },
+                            may_suspend: false,
+                        },
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        public_symbols.insert(
+            "worker".to_string(),
+            PackageLocalAbiSymbol::PublicInstance {
+                instance_id: "worker".to_string(),
+                declared_receiver_type: TypeRefIr::builtin("Worker"),
+                interfaces: vec![TypeRefIr::builtin("WorkerApi")],
+                methods: BTreeMap::from([
+                    ("run".to_string(), package_callable_id("worker.run")),
+                    ("stop".to_string(), package_callable_id("worker.stop")),
+                ]),
+            },
+        );
+
+        let mut boundary_projections = paths
+            .into_iter()
+            .map(|path| {
+                (
+                    package_callable_id(path),
+                    BoundaryCallableProjection::Available {
+                        operation_contract: operation(ContractTypeRef::builtin("void")),
+                        implementation_requirements:
+                            skiff_artifact_model::BoundaryImplementationRequirements {
+                                config: Vec::new(),
+                                state: Vec::new(),
+                                native_capabilities: Vec::new(),
+                                runtime_capabilities: Vec::new(),
+                                complete_may_effects: skiff_artifact_model::CallableMayEffects {
+                                    writes_caller_reachable: false,
+                                    returns_caller_alias: false,
+                                    throws_caller_alias: false,
+                                    escapes_caller_value: false,
+                                    requires_same_heap_identity: false,
+                                    invokes_unknown_target: false,
+                                    may_suspend: false,
+                                },
+                                provenance:
+                                    skiff_artifact_model::CallableProvenanceSummary::Analyzed {
+                                        return_origins: Vec::new(),
+                                        direct_return_origins: Vec::new(),
+                                        throw_origins: Vec::new(),
+                                        escape_lanes: Vec::new(),
+                                    },
+                            },
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        boundary_projections.insert(
+            package_callable_id("packageOnly"),
+            BoundaryCallableProjection::Available {
+                operation_contract: operation(ContractTypeRef::package_schema(
+                    "example.types",
+                    "Unused",
+                    PackageSchemaTypeId::new("type:unused"),
+                )),
+                implementation_requirements:
+                    skiff_artifact_model::BoundaryImplementationRequirements {
+                        config: Vec::new(),
+                        state: Vec::new(),
+                        native_capabilities: Vec::new(),
+                        runtime_capabilities: Vec::new(),
+                        complete_may_effects: skiff_artifact_model::CallableMayEffects {
+                            writes_caller_reachable: false,
+                            returns_caller_alias: false,
+                            throws_caller_alias: false,
+                            escapes_caller_value: false,
+                            requires_same_heap_identity: false,
+                            invokes_unknown_target: false,
+                            may_suspend: false,
+                        },
+                        provenance: skiff_artifact_model::CallableProvenanceSummary::Analyzed {
+                            return_origins: Vec::new(),
+                            direct_return_origins: Vec::new(),
+                            throw_origins: Vec::new(),
+                            escape_lanes: Vec::new(),
+                        },
+                    },
+            },
+        );
+        boundary_projections.insert(
+            package_callable_id("blocked"),
+            BoundaryCallableProjection::Unavailable {
+                reasons: vec![
+                    BoundaryUnavailableReason::AnalysisPending,
+                    BoundaryUnavailableReason::WritesCallerReachable,
+                ],
+            },
+        );
+        boundary_projections.insert(
+            package_callable_id("blockedTwo"),
+            BoundaryCallableProjection::Unavailable {
+                reasons: vec![BoundaryUnavailableReason::UnsupportedBoundaryType],
+            },
+        );
+
+        PackageArtifact {
+            schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
+            package_id: "example.package".to_string(),
+            package_version: "1.0.0".to_string(),
+            package_build_id: PackageBuildId::new("build"),
+            files: Vec::new(),
+            static_resources: Vec::new(),
+            package_local_abi: PackageLocalAbi {
+                local_abi_identity: PackageLocalAbiIdentity::new("abi"),
+                public_symbols,
+                implementation_symbols: BTreeMap::new(),
+            },
+            package_schema_index: PackageSchemaIndexRef {
+                package_id: "example.package".to_string(),
+                package_schema_index_identity: PackageSchemaIndexIdentity::new("index"),
+            },
+            package_schema_type_records: BTreeMap::new(),
+            implementation_links: PackageImplementationLinks::default(),
+            callable_links: BTreeMap::new(),
+            package_requirements: Vec::new(),
+            contract_requirements: Vec::new(),
+            service_requirements: Vec::new(),
+            runtime_requirements: PackageRuntimeRequirements {
+                config: Vec::new(),
+                state: Vec::new(),
+                resources: Vec::new(),
+                runtime_capabilities: Vec::new(),
+            },
+            callable_semantic_facts: BTreeMap::new(),
+            boundary_projections,
+            service_call_roots: vec![
+                PackageServiceCallRoot::Function {
+                    public_path: "selected".to_string(),
+                    callable_id: package_callable_id("selected"),
+                },
+                PackageServiceCallRoot::PublicInstance {
+                    public_path: "worker".to_string(),
+                    methods: BTreeMap::from([
+                        ("run".to_string(), package_callable_id("worker.run")),
+                        ("stop".to_string(), package_callable_id("worker.stop")),
+                    ]),
+                },
+            ],
+            service_call_refs: Vec::new(),
+        }
+    }
+
+    fn package_callable_id(path: &str) -> PackageCallableId {
+        PackageCallableId::new(format!("pkg-callable:example.package:{path}"))
+    }
+
+    fn operation(return_type: ContractTypeRef) -> BoundaryOperationContract {
+        BoundaryOperationContract {
+            parameters: Vec::new(),
+            return_value: BoundaryReturn {
+                ty: return_type,
+                value_plan: value_plan(BoundaryValueOwner::Provider),
+            },
+            stream: BoundaryStreamContract::Unary,
+            cancellation: BoundaryCancellationContract::NotCancellable,
+            callbacks: BoundaryCallbackContract::None,
+            may_suspend: false,
+            effect_guarantee: BoundaryEffectGuarantee {
+                detached_parameters: true,
+                detached_return: true,
+                detached_error: true,
+                no_caller_reachable_mutation: true,
+                no_caller_value_escape: true,
+                no_same_heap_identity: true,
+            },
+        }
     }
 
     fn value_plan(owner: BoundaryValueOwner) -> BoundaryValuePlan {

@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
+use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BoundaryOperationContract, PackageSchemaTypeId, PackageTypeRequirement, ServiceDeploymentInput,
-    ServiceDeploymentRef, SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    BoundaryOperationContract, GatewayAdapterArg, GatewayAdapterKind, GatewayEntryKey,
+    PackageSchemaTypeId, PackageTypeRequirement, ServiceDeploymentInput, ServiceDeploymentRef,
+    SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 
 /// Shared source-level dependency alias vectors.  Package and contract
@@ -82,14 +84,115 @@ pub enum ServiceAuthoringKind {
     Test,
 }
 
+fn default_http_host() -> String {
+    "*".to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HttpGatewayEntryAuthoring {
+    #[serde(default = "default_http_host")]
+    pub host: String,
+    pub method: String,
+    pub path: String,
+    pub kind: GatewayAdapterKind,
+    pub handler: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adapter_args: Vec<GatewayAdapterArg>,
+}
+
+struct HttpGatewayEntriesVisitor;
+
+impl<'de> Visitor<'de> for HttpGatewayEntriesVisitor {
+    type Value = BTreeMap<GatewayEntryKey, HttpGatewayEntryAuthoring>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a mapping of unique HTTP gateway entry keys")
+    }
+
+    fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut entries = BTreeMap::new();
+        while let Some((key, entry)) =
+            access.next_entry::<GatewayEntryKey, HttpGatewayEntryAuthoring>()?
+        {
+            if entries.insert(key.clone(), entry).is_some() {
+                return Err(serde::de::Error::custom(format!(
+                    "duplicate HTTP gateway entry key {key:?}"
+                )));
+            }
+        }
+        Ok(entries)
+    }
+}
+
+fn deserialize_http_gateway_entry_map<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<GatewayEntryKey, HttpGatewayEntryAuthoring>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_map(HttpGatewayEntriesVisitor)
+}
+
+fn deserialize_http_gateway_entries<'de, D>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<GatewayEntryKey, HttpGatewayEntryAuthoring>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct OptionalEntriesVisitor;
+
+    impl<'de> Visitor<'de> for OptionalEntriesVisitor {
+        type Value = Option<BTreeMap<GatewayEntryKey, HttpGatewayEntryAuthoring>>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("null or a mapping of unique HTTP gateway entry keys")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserialize_http_gateway_entry_map(deserializer).map(Some)
+        }
+    }
+
+    deserializer.deserialize_option(OptionalEntriesVisitor)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceManifestAuthoring {
     pub id: String,
     #[serde(default)]
     pub kind: ServiceAuthoringKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub http: Option<serde_json::Value>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_http_gateway_entries"
+    )]
+    pub http: Option<BTreeMap<GatewayEntryKey, HttpGatewayEntryAuthoring>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub websocket: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -345,6 +448,108 @@ mod tests {
             assert!(is_dependency_alias_reserved(alias), "{alias}");
             assert!(!is_dependency_alias_valid(alias), "{alias}");
         }
+    }
+
+    #[test]
+    fn service_manifest_decodes_named_http_entries_in_canonical_key_order() {
+        let manifest = serde_yaml::from_str::<ServiceManifestAuthoring>(
+            r#"
+id: example.com/users
+http:
+  zRaw:
+    host: api.example.com
+    method: GET
+    path: /raw
+    kind: rawHttp
+    handler: handlers.raw
+  createUser:
+    method: POST
+    path: /users
+    kind: typedJson
+    handler: users.create
+    guard: users.guard
+    pre: users.prepare
+    adapterArgs:
+      - param: body
+        source: { kind: http.body }
+      - param: context
+        source: { kind: http.context }
+"#,
+        )
+        .unwrap();
+        let http = manifest.http.as_ref().unwrap();
+        assert_eq!(
+            http.keys().map(GatewayEntryKey::as_str).collect::<Vec<_>>(),
+            vec!["createUser", "zRaw"]
+        );
+        assert_eq!(
+            http[&GatewayEntryKey::parse("createUser").unwrap()].host,
+            "*"
+        );
+
+        let encoded = serde_json::to_string(&manifest).unwrap();
+        assert!(encoded.find("createUser").unwrap() < encoded.find("zRaw").unwrap());
+        assert_eq!(
+            serde_json::from_str::<ServiceManifestAuthoring>(&encoded).unwrap(),
+            manifest
+        );
+        assert!(serde_yaml::from_str::<ServiceManifestAuthoring>(
+            "id: example.com/users\nhttp: null\n"
+        )
+        .unwrap()
+        .http
+        .is_none());
+    }
+
+    #[test]
+    fn service_manifest_http_mapping_rejects_duplicate_keys_and_recursive_unknown_fields() {
+        let duplicate = r#"
+id: example.com/users
+http:
+  createUser:
+    method: POST
+    path: /users
+    kind: typedJson
+    handler: users.create
+  createUser:
+    method: PUT
+    path: /users
+    kind: typedJson
+    handler: users.replace
+"#;
+        assert!(serde_yaml::from_str::<ServiceManifestAuthoring>(duplicate)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate HTTP gateway entry key"));
+
+        for invalid in [
+            "unknown: true",
+            "operation: createUser",
+            "handlerArgs: []",
+            "id: duplicate",
+        ] {
+            let source = format!(
+                "id: example.com/users\nhttp:\n  createUser:\n    method: POST\n    path: /users\n    kind: typedJson\n    handler: users.create\n    {invalid}\n"
+            );
+            assert!(
+                serde_yaml::from_str::<ServiceManifestAuthoring>(&source).is_err(),
+                "{invalid}"
+            );
+        }
+
+        let unknown_source_field = r#"
+id: example.com/users
+http:
+  createUser:
+    method: POST
+    path: /users
+    kind: typedJson
+    handler: users.create
+    adapterArgs:
+      - param: body
+        source: { kind: http.body, field: nested }
+"#;
+        assert!(serde_yaml::from_str::<ServiceManifestAuthoring>(unknown_source_field).is_err());
     }
 
     #[test]
