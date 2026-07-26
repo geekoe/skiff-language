@@ -61,11 +61,14 @@ test('isolated config is rooted in its temporary dev home and dynamic ports', ()
   assert.doesNotMatch(config, /__skiff\/reload-artifacts/);
 });
 
-test('Cargo owns one ungated canonical cutover target and no recursive wrapper', async () => {
+test('Cargo owns the current ungated integration targets and no recursive wrapper', async () => {
   const manifest = await readFile(join(root, 'test-runner', 'Cargo.toml'), 'utf8');
   const targets = manifest.split('[[test]]').slice(1).map(parseTestTarget);
 
-  assert.deepEqual(targets, [{ name: 'package_service_contract_deployment' }]);
+  assert.deepEqual(targets, [
+    { name: 'package_service_contract_deployment' },
+    { name: 'canonical_std_seed_bootstrap' },
+  ]);
   assert.doesNotMatch(manifest, /runtime-integration-worker/);
   assert.doesNotMatch(manifest, /test_runner_runtime_isolation/);
 });
