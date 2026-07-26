@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 
-const FIXTURE_SCHEMA_VERSION = 'skiff-package-service-smoke-fixture-v1';
+const FIXTURE_SCHEMA_VERSION = 'skiff-package-service-smoke-fixture-v2';
 const BOOTSTRAP_SCHEMA_VERSION = 'skiff-package-service-bootstrap-v1';
 const ENVIRONMENT_STATE_SCHEMA_VERSION = 'skiff-environment-activation-state-v1';
 const PACKAGE_POINTER_SCHEMA_VERSION = 'skiff-package-artifact-pointer-v1';
@@ -9,17 +9,19 @@ const ACTIVATION_REQUEST_SCHEMA_VERSION = 'skiff-assembly-activation-request-v1'
 
 const PRODUCTION_PACKAGE_ID = 'test.skiff/package-service-websocket-smoke';
 const PRODUCTION_PACKAGE_VERSION = '1.0.0';
-const SMOKE_SERVICE_ID = 'test.skiff/ecosystem-smoke';
 const STD_PACKAGE_ID = 'skiff.run/std';
 const STD_PACKAGE_VERSION = '1.0.0';
 
 const HASH = '[a-f0-9]{64}';
-const ASSEMBLY_IDENTITY = new RegExp(`^skiff-runtime-assembly-v1:sha256:${HASH}$`);
-const PACKAGE_BUILD_IDENTITY = new RegExp(`^skiff-package-build-v4:sha256:${HASH}$`);
-const PACKAGE_ABI_IDENTITY = new RegExp(`^skiff-package-local-abi-v3:sha256:${HASH}$`);
-const SERVICE_PROTOCOL_IDENTITY = new RegExp(`^skiff-service-protocol-v2:sha256:${HASH}$`);
+const ASSEMBLY_IDENTITY = new RegExp(`^skiff-runtime-assembly-v2:sha256:${HASH}$`);
+const PACKAGE_BUILD_IDENTITY = new RegExp(`^skiff-package-build-v9:sha256:${HASH}$`);
+const PACKAGE_ABI_IDENTITY = new RegExp(`^skiff-package-local-abi-v6:sha256:${HASH}$`);
 const DEPLOYMENT_IDENTITY = new RegExp(`^skiff-deployment-artifact-v2:sha256:${HASH}$`);
-const OPERATION_IDENTITY = new RegExp(`^skiff-contract-operation-v1:sha256:${HASH}$`);
+const GATEWAY_IDENTITY = new RegExp(`^skiff-gateway-entry-v1:sha256:${HASH}$`);
+const PACKAGE_TEST_GATEWAY_IDENTITY =
+  'skiff-gateway-entry-v1:sha256:cfcfced94f984612809ce837f81e975016b09f206925389d95e925e087fc32d4';
+const SMOKE_PROBE_GATEWAY_IDENTITY =
+  'skiff-gateway-entry-v1:sha256:adfaa17c077af0388f2b5751bbe4b9ba392ec647f5ce33022c8e8ec83eaf6653';
 
 const READINESS_TIMEOUT_MS = 30_000;
 const READINESS_INTERVAL_MS = 100;
@@ -30,7 +32,6 @@ export function readPackageServiceFixtureReceipt(
   {
     packageId = PRODUCTION_PACKAGE_ID,
     packageVersion = PRODUCTION_PACKAGE_VERSION,
-    packageTestName = 'normal source fixture compiles',
   } = {},
 ) {
   const receipt = parseJson(stdout, 'ecosystem smoke fixture');
@@ -63,53 +64,40 @@ export function readPackageServiceFixtureReceipt(
   );
 
   assert.ok(Array.isArray(candidate.entrypoints), 'fixture candidate entrypoints must be an array');
-  assert.equal(candidate.entrypoints.length, 3, 'fixture candidate must publish exactly 3 entrypoints');
-  const [packageTest, unary, websocket] = candidate.entrypoints;
-  entrypoint(packageTest, {
-    kind: 'packageTest',
-    name: packageTestName,
-    host: 'case-0.package-test.skiff.localhost',
-    method: 'POST',
-    path: '/__skiff/package-test/0',
+  assert.equal(candidate.entrypoints.length, 2, 'fixture candidate must publish exactly 2 HTTP entrypoints');
+  const [packageTest, unary] = candidate.entrypoints;
+  httpEntrypoint(packageTest, {
+    key: 'run',
+    identity: PACKAGE_TEST_GATEWAY_IDENTITY,
+    selector: {
+      protocol: 'http',
+      host: 'case-0.package-test.skiff.localhost',
+      method: 'POST',
+      path: '/__skiff/package-test/0',
+    },
     serviceId: `test.skiff/package/${packageId}`,
     contractVersion: packageVersion,
     deploymentRevision: `test-${identityHash(overlay.packageBuildId, PACKAGE_BUILD_IDENTITY)}`,
   });
-  entrypoint(unary, {
-    kind: 'unary',
-    name: 'marker',
-    host: 'ecosystem-smoke.skiff.localhost',
-    method: 'POST',
-    path: '/probe',
-    serviceId: SMOKE_SERVICE_ID,
+  httpEntrypoint(unary, {
+    key: 'probe',
+    identity: SMOKE_PROBE_GATEWAY_IDENTITY,
+    selector: {
+      protocol: 'http',
+      host: 'ecosystem-smoke.skiff.localhost',
+      method: 'POST',
+      path: '/probe',
+    },
+    serviceId: 'test.skiff/ecosystem-smoke',
     contractVersion: '1.0.0',
     deploymentRevision:
       `smoke-${identityHash(production.packageBuildId, PACKAGE_BUILD_IDENTITY)}`,
   });
-  entrypoint(websocket, {
-    kind: 'websocket',
-    name: 'websocket',
-    host: 'ecosystem-smoke.skiff.localhost',
-    method: null,
-    path: '/socket',
-    serviceId: SMOKE_SERVICE_ID,
-    contractVersion: '1.0.0',
-    deploymentRevision:
-      `smoke-${identityHash(production.packageBuildId, PACKAGE_BUILD_IDENTITY)}`,
-  });
-  assert.deepEqual(
-    unary.contract,
-    websocket.contract,
-    'unary and WebSocket entrypoints must bind the same exact contract',
+  assert.notEqual(
+    packageTest.gatewayEntryIdentity,
+    unary.gatewayEntryIdentity,
+    'Null -> Null and Null -> String gateway surfaces must not share an identity',
   );
-  assert.deepEqual(
-    unary.deployment,
-    websocket.deployment,
-    'unary and WebSocket entrypoints must bind the same exact deployment',
-  );
-  assert.notEqual(unary.operation, websocket.operation);
-  assert.notEqual(packageTest.operation, unary.operation);
-  assert.notEqual(packageTest.operation, websocket.operation);
 
   return receipt;
 }
@@ -315,24 +303,21 @@ export function packageServiceAssemblyReadiness(
   return { ready: true, replicaId: replica.replicaId };
 }
 
-function entrypoint(value, expected) {
+function httpEntrypoint(value, expected) {
   exactObject(
     value,
-    ['contract', 'deployment', 'host', 'kind', 'method', 'name', 'operation', 'path'],
-    `${expected.kind} entrypoint`,
+    ['deployment', 'gatewayEntryIdentity', 'gatewayEntryKey', 'mode', 'selector'],
+    `${expected.key} HTTP entrypoint`,
   );
-  assert.equal(value.kind, expected.kind);
-  assert.equal(value.name, expected.name);
-  assert.equal(value.host, expected.host);
-  assert.equal(value.method, expected.method);
-  assert.equal(value.path, expected.path);
-  assert.match(value.operation ?? '', OPERATION_IDENTITY);
-  const contract = serviceContractRef(value.contract, `${expected.kind} contract`);
-  assert.equal(contract.serviceId, expected.serviceId);
-  assert.equal(contract.contractVersion, expected.contractVersion);
-  const deployment = serviceDeploymentRef(value.deployment, `${expected.kind} deployment`);
-  assert.equal(deployment.serviceId, contract.serviceId);
-  assert.equal(deployment.contractVersion, contract.contractVersion);
+  assert.equal(value.gatewayEntryKey, expected.key);
+  assert.match(value.gatewayEntryIdentity ?? '', GATEWAY_IDENTITY);
+  assert.equal(value.gatewayEntryIdentity, expected.identity);
+  assert.equal(value.mode, 'unary');
+  exactObject(value.selector, ['host', 'method', 'path', 'protocol'], `${expected.key} selector`);
+  assert.deepEqual(value.selector, expected.selector);
+  const deployment = serviceDeploymentRef(value.deployment, `${expected.key} deployment`);
+  assert.equal(deployment.serviceId, expected.serviceId);
+  assert.equal(deployment.contractVersion, expected.contractVersion);
   assert.equal(deployment.deploymentRevision, expected.deploymentRevision);
   return value;
 }
@@ -347,18 +332,6 @@ function packageArtifactRef(value, label) {
   assert.equal(typeof value.packageVersion, 'string');
   assert.match(value.packageBuildId ?? '', PACKAGE_BUILD_IDENTITY);
   assert.match(value.packageLocalAbiIdentity ?? '', PACKAGE_ABI_IDENTITY);
-  return value;
-}
-
-function serviceContractRef(value, label) {
-  exactObject(
-    value,
-    ['contractVersion', 'serviceId', 'serviceProtocolIdentity'],
-    label,
-  );
-  assert.equal(typeof value.serviceId, 'string');
-  assert.equal(typeof value.contractVersion, 'string');
-  assert.match(value.serviceProtocolIdentity ?? '', SERVICE_PROTOCOL_IDENTITY);
   return value;
 }
 

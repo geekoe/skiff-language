@@ -11,6 +11,10 @@ function submitSpawnReceipt() -> string {
   return "P5-F45E-SPAWN-SUBMIT-TYPED-RESPONSE:submitted"
 }
 
+function __skiffHttpProbe(body: null) -> string {
+  return submitSpawnReceipt()
+}
+
 function acceptConnection() -> std.websocket.WebSocketConnectResult<null> {
   return {
     tag: "accept",

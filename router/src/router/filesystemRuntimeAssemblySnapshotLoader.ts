@@ -14,6 +14,8 @@ import {
 
 const MAX_RECORD_BYTES = 64 * 1024 * 1024;
 const ASSEMBLY_IDENTITY = /^skiff-runtime-assembly-v2:sha256:([0-9a-f]{64})$/;
+const PACKAGE_ARTIFACT_SCHEMA_VERSION = 'skiff-package-artifact-v8';
+const PACKAGE_BUILD_IDENTITY_PREFIX = 'skiff-package-build-v9:sha256:';
 
 export class FilesystemRuntimeAssemblySnapshotLoader
 implements RuntimeAssemblySnapshotLoader {
@@ -91,7 +93,7 @@ implements RuntimeAssemblySnapshotLoader {
       const packageBuildId = requiredString(implementation, 'packageBuildId');
       const buildHash = identityHash(
         packageBuildId,
-        'skiff-package-build-v8:sha256:',
+        PACKAGE_BUILD_IDENTITY_PREFIX,
         'packageBuildId'
       );
       const packageRecord = record(
@@ -101,6 +103,11 @@ implements RuntimeAssemblySnapshotLoader {
         ),
         'PackageArtifact'
       );
+      if (requiredString(packageRecord, 'schemaVersion') !== PACKAGE_ARTIFACT_SCHEMA_VERSION) {
+        throw new Error(
+          `PackageArtifact schemaVersion must be ${PACKAGE_ARTIFACT_SCHEMA_VERSION}`
+        );
+      }
       if (!Array.isArray(packageRecord.files)) continue;
       for (const [fileIndex, rawFile] of packageRecord.files.entries()) {
         const fileRef = record(rawFile, `PackageArtifact.files[${fileIndex}]`);

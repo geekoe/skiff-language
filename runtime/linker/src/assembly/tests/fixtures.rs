@@ -27,9 +27,9 @@ use skiff_artifact_model::{
     PackageCallableSignature, PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi,
     PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
     PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    PackageServiceCallRoot, PackageTypeRef, PublicationResourceRef, ResolvedServiceBinding,
-    ResourceBinding, ResourcePolicy, RuntimeAssembly, SecretRefBinding, ServiceBindingTemplate,
-    ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    PackageTypeRef, PublicationResourceRef, ResolvedServiceBinding, ResourceBinding,
+    ResourcePolicy, RuntimeAssembly, SecretRefBinding, ServiceBindingTemplate, ServiceCallRef,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
     ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
     SlotLayout, StateBinding, StateBindingKind, SyntheticInstructionSiteReason, TypeDeclIr,
     TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
@@ -901,10 +901,6 @@ fn package(
                 },
             },
         )]),
-        service_call_roots: vec![PackageServiceCallRoot::Function {
-            public_path: "entry".to_string(),
-            callable_id,
-        }],
         service_call_refs: Vec::new(),
     }
 }

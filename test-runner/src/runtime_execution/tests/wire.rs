@@ -2,6 +2,63 @@ use super::super::test_support::*;
 use super::*;
 
 #[test]
+fn package_test_dispatch_response_requires_canonical_response_end_and_null_payload() {
+    decode_package_test_dispatch_response(&valid_package_test_dispatch_response().to_string())
+        .unwrap();
+
+    let mut mutations = Vec::new();
+    let mut mutate = |name: &'static str, update: fn(&mut Value)| {
+        let mut response = valid_package_test_dispatch_response();
+        update(&mut response);
+        mutations.push((name, response));
+    };
+    mutate("outer unknown field", |value| {
+        value["legacy"] = Value::Bool(true);
+    });
+    mutate("outer ok false", |value| {
+        value["ok"] = Value::Bool(false);
+    });
+    mutate("wrong frame type", |value| {
+        value["header"]["type"] = Value::String("response.error".to_string());
+    });
+    mutate("empty request id", |value| {
+        value["header"]["requestId"] = Value::String(String::new());
+    });
+    mutate("noncanonical request id", |value| {
+        value["header"]["requestId"] = Value::String("request id".to_string());
+    });
+    mutate("payload flag false", |value| {
+        value["header"]["payloadPresent"] = Value::Bool(false);
+    });
+    mutate("inner status failure", |value| {
+        value["header"]["httpResponse"]["status"] = serde_json::json!(500);
+    });
+    mutate("wrong content type", |value| {
+        value["header"]["httpResponse"]["headers"][0]["value"] =
+            Value::String("application/json".to_string());
+    });
+    mutate("extra inner header", |value| {
+        value["header"]["httpResponse"]["headers"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"name": "x-extra", "value": "forbidden"}));
+    });
+    mutate("invalid base64", |value| {
+        value["payloadBase64"] = Value::String("***".to_string());
+    });
+    mutate("non-null payload", |value| {
+        value["payloadBase64"] = Value::String("e30=".to_string());
+    });
+
+    for (name, response) in mutations {
+        assert!(
+            decode_package_test_dispatch_response(&response.to_string()).is_err(),
+            "response mutation {name} was accepted"
+        );
+    }
+}
+
+#[test]
 fn activation_receipt_and_canonical_pending_decode_strictly() {
     let receipt = decode_activation_receipt(&activation_receipt_body()).unwrap();
     assert_eq!(receipt.environment, ENVIRONMENT);
@@ -317,4 +374,24 @@ fn replica_connection_lifecycle_count_mutations_fail_closed() {
         ));
         assert!(result.is_err(), "mutation {name} was accepted");
     }
+}
+
+fn valid_package_test_dispatch_response() -> Value {
+    serde_json::json!({
+        "ok": true,
+        "header": {
+            "schemaVersion": "skiff-runtime-frame-v1",
+            "type": "response.end",
+            "requestId": "package-test-request-1",
+            "payloadPresent": true,
+            "httpResponse": {
+                "status": 200,
+                "headers": [{
+                    "name": "content-type",
+                    "value": "application/json; charset=utf-8",
+                }],
+            },
+        },
+        "payloadBase64": "bnVsbA==",
+    })
 }

@@ -76,6 +76,51 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     ).resolves.toMatchObject({ assemblyIdentity: ASSEMBLY_IDENTITY });
   });
 
+  it('accepts only PackageArtifact v8 records addressed by package build v9', async () => {
+    const packageRef: PackageRefFixture = {
+      packageId: 'skiff.run/echo',
+      packageVersion: '1.0.0',
+      packageBuildId: `skiff-package-build-v9:sha256:${'d'.repeat(64)}`,
+      packageLocalAbiIdentity:
+        `skiff-package-local-abi-v6:sha256:${'e'.repeat(64)}`
+    };
+
+    const current = await fixtureRoot();
+    const currentFixture = canonicalFixture();
+    currentFixture.assembly.packageLinkPlan.codeSlots = [{ package: packageRef }];
+    await writeFixture(current, currentFixture);
+    await writeJson(current, packagePath(packageRef), {
+      schemaVersion: 'skiff-package-artifact-v8',
+      files: []
+    });
+    await expect(
+      loader(current).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).resolves.toMatchObject({ assemblyIdentity: ASSEMBLY_IDENTITY });
+
+    const legacySchema = await fixtureRoot();
+    await writeFixture(legacySchema, currentFixture);
+    await writeJson(legacySchema, packagePath(packageRef), {
+      schemaVersion: 'skiff-package-artifact-v7',
+      files: []
+    });
+    await expect(
+      loader(legacySchema).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow(/schemaVersion must be skiff-package-artifact-v8/);
+
+    const legacyBuild = await fixtureRoot();
+    const legacyBuildFixture = canonicalFixture();
+    legacyBuildFixture.assembly.packageLinkPlan.codeSlots = [{
+      package: {
+        ...packageRef,
+        packageBuildId: `skiff-package-build-v8:sha256:${'d'.repeat(64)}`
+      }
+    }];
+    await writeFixture(legacyBuild, legacyBuildFixture);
+    await expect(
+      loader(legacyBuild).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow(/packageBuildId is invalid/);
+  });
+
   it('rejects a v1 RuntimeAssembly identity prefix before artifact lookup', async () => {
     const root = await fixtureRoot();
     await expect(loader(root).load({
@@ -413,7 +458,7 @@ function deployment(
     implementation: {
       packageId: 'skiff.run/echo',
       packageVersion: '1.0.0',
-      packageBuildId: `skiff-package-build-v8:sha256:${'d'.repeat(64)}`,
+      packageBuildId: `skiff-package-build-v9:sha256:${'d'.repeat(64)}`,
       packageLocalAbiIdentity:
         `skiff-package-local-abi-v4:sha256:${'e'.repeat(64)}`
     },
@@ -543,6 +588,23 @@ interface DeploymentRefFixture {
   contractVersion: string;
   deploymentRevision: string;
   deploymentArtifactIdentity: string;
+}
+
+interface PackageRefFixture {
+  packageId: string;
+  packageVersion: string;
+  packageBuildId: string;
+  packageLocalAbiIdentity: string;
+}
+
+function packagePath(reference: PackageRefFixture): string {
+  return [
+    'records/package-artifacts',
+    reference.packageId.replaceAll('.', '~d').replaceAll('/', '~s'),
+    reference.packageVersion,
+    identityHash(reference.packageBuildId),
+    'package.json'
+  ].join('/');
 }
 
 async function writeJson(root: string, path: string, value: unknown): Promise<void> {

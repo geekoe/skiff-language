@@ -1,12 +1,15 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context;
-use skiff_artifact_model::{ContractLiteral, ContractTypeDescriptor, ContractTypeRef};
+use skiff_artifact_model::{
+    ContractLiteral, ContractTypeDescriptor, ContractTypeRef, FileIrRef, PackageRefIr,
+    TypeDescriptorIr,
+};
 use skiff_runtime_linked_program::{
-    LinkedNamedUnionBranch, LinkedNominalTypeRefBase, LinkedTypeDescriptor, LinkedTypeRef,
-    RuntimeTypeContext, ServiceErrorDeclarationKind, ServiceErrorExecutionContext,
-    ServiceErrorPublicIdentity, ServiceErrorTypeIndex, ServiceErrorTypeLink,
-    SharedPackageLinkedImage, TypeAddr,
+    type_descriptor_to_value, FileAddr, LinkedNamedUnionBranch, LinkedNominalTypeRefBase,
+    LinkedTypeDescriptor, LinkedTypeRef, RuntimeTypeContext, ServiceErrorDeclarationKind,
+    ServiceErrorExecutionContext, ServiceErrorPublicIdentity, ServiceErrorTypeIndex,
+    ServiceErrorTypeLink, ServiceSymbolRef, SharedPackageLinkedImage, TypeAddr, UnitAddr,
 };
 
 pub(super) fn build_service_error_type_index(
@@ -113,15 +116,37 @@ fn validate_root(
     links: &mut Vec<ServiceErrorTypeLink>,
 ) -> anyhow::Result<()> {
     let code = &shared.code_slots()[root.code_slot];
-    let source_file = code
-        .file(&root.export.file.file_ir_identity)
+    let coordinates = ExactTypeCoordinateResolver::new(shared, types);
+    let source_file_index = coordinates
+        .exact_file_index(root.code_slot, &root.export.file)
         .with_context(|| {
             format!(
-                "package {} public schema path {} targets an unloaded source file",
+                "package {} public schema path {} targets an unloaded or non-exact source file",
                 code.artifact().package_id,
                 root.public_path
             )
         })?;
+    let exact_root_addr = coordinates
+        .type_addr(
+            root.code_slot,
+            source_file_index,
+            root.export.type_index as usize,
+        )
+        .with_context(|| {
+            format!(
+                "package {} public schema path {} targets a missing source declaration",
+                code.artifact().package_id,
+                root.public_path
+            )
+        })?;
+    if exact_root_addr != root.addr {
+        anyhow::bail!(
+            "package {} public schema path {} linked execution coordinate disagrees with its exact export coordinate",
+            code.artifact().package_id,
+            root.public_path
+        );
+    }
+    let source_file = &code.files()[source_file_index];
     let source_declaration = source_file
         .type_table
         .get(root.export.type_index as usize)
@@ -139,15 +164,6 @@ fn validate_root(
             root.public_path
         )
     })?;
-    if export_descriptor != &source_declaration.descriptor
-        || root.export.type_params != source_declaration.type_params
-    {
-        anyhow::bail!(
-            "package {} public schema path {} export descriptor disagrees with its execution declaration",
-            code.artifact().package_id,
-            root.public_path
-        );
-    }
     let linked_declaration = types.declaration(&root.addr).with_context(|| {
         format!(
             "package {} public schema path {} has no linked declaration",
@@ -155,15 +171,50 @@ fn validate_root(
             root.public_path
         )
     })?;
-    if linked_declaration.name != source_declaration.name
-        || linked_declaration.type_params != source_declaration.type_params
+    if root.export.type_params != source_declaration.type_params
+        || source_declaration.type_params != linked_declaration.type_params
     {
+        anyhow::bail!(
+            "package {} public schema path {} export descriptor disagrees with its execution declaration",
+            code.artifact().package_id,
+            root.public_path
+        );
+    }
+    if linked_declaration.name != source_declaration.name {
         anyhow::bail!(
             "package {} public schema path {} linked declaration identity disagrees with File IR",
             code.artifact().package_id,
             root.public_path
         );
     }
+    validate_artifact_descriptor_matches_linked(
+        &coordinates,
+        root.code_slot,
+        source_file_index,
+        &source_declaration.descriptor,
+        &linked_declaration.descriptor,
+    )
+    .with_context(|| {
+        format!(
+            "package {} public schema path {} execution declaration disagrees with its canonical linked coordinate",
+            code.artifact().package_id,
+            root.public_path
+        )
+    })?;
+    validate_artifact_descriptor_matches_linked(
+        &coordinates,
+        root.code_slot,
+        source_file_index,
+        export_descriptor,
+        &linked_declaration.descriptor,
+    )
+    .with_context(|| {
+        format!(
+            "package {} public schema path {} export descriptor disagrees with its execution declaration",
+            code.artifact().package_id,
+            root.public_path
+        )
+    })?;
     if !linked_declaration.type_params.is_empty()
         || !root.record.canonical_descriptor.type_params.is_empty()
     {
@@ -232,6 +283,392 @@ fn validate_root(
         LinkedTypeDescriptor::Alias { .. } | LinkedTypeDescriptor::Interface => {}
     }
     Ok(())
+}
+
+struct ExactTypeCoordinateResolver<'a> {
+    shared: &'a SharedPackageLinkedImage,
+    types: &'a RuntimeTypeContext,
+}
+
+impl<'a> ExactTypeCoordinateResolver<'a> {
+    fn new(shared: &'a SharedPackageLinkedImage, types: &'a RuntimeTypeContext) -> Self {
+        Self { shared, types }
+    }
+
+    fn exact_file_index(&self, code_slot: usize, file_ref: &FileIrRef) -> anyhow::Result<usize> {
+        let code = self
+            .shared
+            .code_slots()
+            .get(code_slot)
+            .with_context(|| format!("package code slot {code_slot} is out of bounds"))?;
+        let mut matches = code
+            .files()
+            .iter()
+            .enumerate()
+            .filter(|(_, file)| file.file_ir_identity == file_ref.file_ir_identity);
+        let (file_index, file) = matches
+            .next()
+            .context("export File IR identity is not loaded")?;
+        if matches.next().is_some()
+            || file.module_path != file_ref.module_path
+            || file_ref
+                .source_ast_hash
+                .as_deref()
+                .is_some_and(|hash| hash != file.source_ast_hash)
+        {
+            anyhow::bail!("export File IR ref does not exactly match loaded code");
+        }
+        Ok(file_index)
+    }
+
+    fn type_addr(
+        &self,
+        code_slot: usize,
+        file_index: usize,
+        type_index: usize,
+    ) -> anyhow::Result<TypeAddr> {
+        let code = self
+            .shared
+            .code_slots()
+            .get(code_slot)
+            .with_context(|| format!("package code slot {code_slot} is out of bounds"))?;
+        let file = code
+            .files()
+            .get(file_index)
+            .with_context(|| format!("file index {file_index} is out of bounds"))?;
+        let source = file.type_table.get(type_index).with_context(|| {
+            format!(
+                "type index {type_index} is out of bounds for {}",
+                file.file_ir_identity
+            )
+        })?;
+        let addr = TypeAddr {
+            unit: UnitAddr::Package(code_slot),
+            file: FileAddr::LoadedFileIndex(file_index),
+            type_index,
+        };
+        let linked = self
+            .types
+            .declaration(&addr)
+            .context("exact type coordinate has no linked declaration")?;
+        if linked.name != source.name || linked.type_params != source.type_params {
+            anyhow::bail!("exact type coordinate declaration identity disagrees with File IR");
+        }
+        Ok(addr)
+    }
+
+    fn publication_type_addr(
+        &self,
+        code_slot: usize,
+        module_path: &str,
+        type_index: usize,
+    ) -> anyhow::Result<TypeAddr> {
+        let code = self
+            .shared
+            .code_slots()
+            .get(code_slot)
+            .with_context(|| format!("package code slot {code_slot} is out of bounds"))?;
+        let mut matches = code
+            .files()
+            .iter()
+            .enumerate()
+            .filter(|(_, file)| file.module_path == module_path);
+        let (file_index, _) = matches
+            .next()
+            .with_context(|| format!("module {module_path} is unresolved"))?;
+        if matches.next().is_some() {
+            anyhow::bail!("module {module_path} is ambiguous");
+        }
+        self.type_addr(code_slot, file_index, type_index)
+    }
+
+    fn local_symbol_type_addr(
+        &self,
+        code_slot: usize,
+        symbol: &ServiceSymbolRef,
+    ) -> anyhow::Result<TypeAddr> {
+        let code = self
+            .shared
+            .code_slots()
+            .get(code_slot)
+            .with_context(|| format!("package code slot {code_slot} is out of bounds"))?;
+        let mut resolved = None;
+        for (file_index, file) in code.files().iter().enumerate() {
+            if file.module_path != symbol.module_path {
+                continue;
+            }
+            let declared = file
+                .declarations
+                .types
+                .get(&symbol.symbol)
+                .map(|declaration| declaration.type_index as usize);
+            let linked = file
+                .link_targets
+                .types
+                .get(&symbol.symbol)
+                .map(|target| target.type_index as usize);
+            for type_index in declared.into_iter().chain(linked) {
+                let addr = self.type_addr(code_slot, file_index, type_index)?;
+                if resolved.as_ref().is_some_and(|first| first != &addr) {
+                    anyhow::bail!(
+                        "type symbol {}.{} is ambiguous",
+                        symbol.module_path,
+                        symbol.symbol
+                    );
+                }
+                resolved = Some(addr);
+            }
+        }
+        resolved.with_context(|| {
+            format!(
+                "type symbol {}.{} is unresolved",
+                symbol.module_path, symbol.symbol
+            )
+        })
+    }
+
+    fn service_symbol_coordinate(
+        &self,
+        code_slot: usize,
+        symbol: &ServiceSymbolRef,
+    ) -> anyhow::Result<ResolvedServiceSymbol> {
+        let code = self
+            .shared
+            .code_slots()
+            .get(code_slot)
+            .with_context(|| format!("package code slot {code_slot} is out of bounds"))?;
+        let mut actors = code
+            .files()
+            .iter()
+            .filter(|file| file.module_path == symbol.module_path)
+            .flat_map(|file| &file.actor_declarations)
+            .filter(|declaration| declaration.abi.actor_name == symbol.symbol);
+        if actors.next().is_some() {
+            if actors.next().is_some() {
+                anyhow::bail!(
+                    "Actor type symbol {}.{} is ambiguous",
+                    symbol.module_path,
+                    symbol.symbol
+                );
+            }
+            return Ok(ResolvedServiceSymbol::Actor);
+        }
+        self.local_symbol_type_addr(code_slot, symbol)
+            .map(ResolvedServiceSymbol::Address)
+    }
+
+    fn package_symbol_type_addr(
+        &self,
+        caller_slot: usize,
+        symbol: &skiff_artifact_model::PackageSymbolRef,
+    ) -> anyhow::Result<TypeAddr> {
+        let dependency_slot = self.resolve_package_ref(caller_slot, &symbol.package)?;
+        let code = &self.shared.code_slots()[dependency_slot];
+        if symbol
+            .abi_expectation
+            .as_deref()
+            .is_some_and(|expected| expected != code.local_abi_identity().as_str())
+        {
+            anyhow::bail!("package symbol local ABI expectation mismatches linked package");
+        }
+        let export = code
+            .artifact()
+            .implementation_links
+            .types
+            .get(&symbol.symbol_path)
+            .with_context(|| format!("package type {} is not exported", symbol.symbol_path))?;
+        let file_index = self.exact_file_index(dependency_slot, &export.file)?;
+        let addr = self.type_addr(dependency_slot, file_index, export.type_index as usize)?;
+        let indexed = self
+            .types
+            .exported_package_type(dependency_slot, &symbol.symbol_path)
+            .context("package type export has no canonical linked coordinate")?;
+        if indexed != &addr {
+            anyhow::bail!("package type export disagrees with its canonical linked coordinate");
+        }
+        Ok(addr)
+    }
+
+    fn resolve_package_ref(
+        &self,
+        caller_slot: usize,
+        package_ref: &PackageRefIr,
+    ) -> anyhow::Result<usize> {
+        match package_ref {
+            PackageRefIr::Dependency { dependency_ref } => {
+                let caller =
+                    self.shared.code_slots().get(caller_slot).with_context(|| {
+                        format!("package code slot {caller_slot} is out of bounds")
+                    })?;
+                let mut matches =
+                    self.shared
+                        .package_link_plan()
+                        .package_links
+                        .iter()
+                        .filter(|binding| {
+                            binding.key.caller_package_build_id == *caller.package_build_id()
+                                && binding.key.package_requirement_alias == *dependency_ref
+                        });
+                let binding = matches.next().with_context(|| {
+                    format!("package dependency {dependency_ref} is unresolved")
+                })?;
+                if matches.next().is_some() {
+                    anyhow::bail!("package dependency {dependency_ref} is ambiguous");
+                }
+                self.shared
+                    .code_slots()
+                    .iter()
+                    .position(|code| code.package_build_id() == &binding.package.package_build_id)
+                    .context("package dependency target is not loaded")
+            }
+            PackageRefIr::PackageId { package_id } => {
+                let mut matches = self
+                    .shared
+                    .code_slots()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, code)| code.artifact().package_id == *package_id);
+                let (slot, _) = matches
+                    .next()
+                    .with_context(|| format!("package id {package_id} is unresolved"))?;
+                if matches.next().is_some() {
+                    anyhow::bail!("package id {package_id} is ambiguous in the assembly");
+                }
+                Ok(slot)
+            }
+        }
+    }
+}
+
+enum ResolvedServiceSymbol {
+    Address(TypeAddr),
+    Actor,
+}
+
+fn validate_artifact_descriptor_matches_linked(
+    coordinates: &ExactTypeCoordinateResolver<'_>,
+    code_slot: usize,
+    file_index: usize,
+    artifact: &TypeDescriptorIr,
+    linked: &LinkedTypeDescriptor,
+) -> anyhow::Result<()> {
+    // Rewrite only exact nominal locators. The remaining descriptor value is
+    // compared in full, so equal shape or display text cannot substitute for
+    // an equal linked coordinate.
+    let mut resolved =
+        serde_json::to_value(artifact).context("failed to encode exported type descriptor")?;
+    resolve_artifact_type_coordinates(coordinates, code_slot, file_index, &mut resolved)?;
+    if resolved != type_descriptor_to_value(linked) {
+        anyhow::bail!("descriptor kinds or exact type coordinates differ");
+    }
+    Ok(())
+}
+
+fn resolve_artifact_type_coordinates(
+    coordinates: &ExactTypeCoordinateResolver<'_>,
+    code_slot: usize,
+    file_index: usize,
+    value: &mut serde_json::Value,
+) -> anyhow::Result<()> {
+    let kind = value
+        .as_object()
+        .and_then(|object| object.get("kind"))
+        .and_then(serde_json::Value::as_str);
+    let resolved_addr = match kind {
+        Some("localType") => {
+            Some(coordinates.type_addr(code_slot, file_index, exact_type_index(value)?)?)
+        }
+        Some("publicationType") => Some(coordinates.publication_type_addr(
+            code_slot,
+            exact_string(value, "modulePath")?,
+            exact_type_index(value)?,
+        )?),
+        Some("serviceSymbol") => {
+            let symbol = exact_symbol(value)?;
+            match coordinates.service_symbol_coordinate(code_slot, &symbol)? {
+                ResolvedServiceSymbol::Address(addr) => Some(addr),
+                ResolvedServiceSymbol::Actor => None,
+            }
+        }
+        Some("packageSymbol") => {
+            let symbol = serde_json::from_value(
+                value
+                    .get("symbol")
+                    .cloned()
+                    .context("package symbol coordinate has no exact symbol")?,
+            )
+            .context("package symbol coordinate is malformed")?;
+            Some(coordinates.package_symbol_type_addr(code_slot, &symbol)?)
+        }
+        Some("dbObjectSymbol") => {
+            Some(coordinates.local_symbol_type_addr(code_slot, &exact_symbol(value)?)?)
+        }
+        Some("builtin") => {
+            value
+                .as_object_mut()
+                .expect("builtin type coordinate is an object")
+                .entry("args")
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            None
+        }
+        Some("anyInterface") => {
+            let interface = value
+                .get_mut("interface")
+                .and_then(serde_json::Value::as_object_mut)
+                .context("interface coordinate has no exact interface")?;
+            interface
+                .entry("canonicalTypeArgs")
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            None
+        }
+        _ => None,
+    };
+    if let Some(addr) = resolved_addr {
+        *value = serde_json::json!({
+            "kind": "address",
+            "addr": addr,
+        });
+        return Ok(());
+    }
+    match value {
+        serde_json::Value::Object(object) => {
+            for nested in object.values_mut() {
+                resolve_artifact_type_coordinates(coordinates, code_slot, file_index, nested)?;
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for nested in items {
+                resolve_artifact_type_coordinates(coordinates, code_slot, file_index, nested)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn exact_type_index(value: &serde_json::Value) -> anyhow::Result<usize> {
+    let index = value
+        .get("typeIndex")
+        .and_then(serde_json::Value::as_u64)
+        .context("type coordinate has no exact type index")?;
+    usize::try_from(index).context("type coordinate index does not fit the linked address space")
+}
+
+fn exact_string<'a>(value: &'a serde_json::Value, field: &str) -> anyhow::Result<&'a str> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .with_context(|| format!("type coordinate has no exact {field}"))
+}
+
+fn exact_symbol(value: &serde_json::Value) -> anyhow::Result<ServiceSymbolRef> {
+    serde_json::from_value(
+        value
+            .get("symbol")
+            .cloned()
+            .context("type coordinate has no exact symbol")?,
+    )
+    .context("type coordinate symbol is malformed")
 }
 
 fn representation_owner(
@@ -579,8 +1016,8 @@ mod tests {
         PackageRuntimeRequirements, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
         PackageSchemaIndexEntry, PackageSchemaIndexRef, PackageSchemaTypeId,
         PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, RuntimeAssembly,
-        TypeDeclIr as ArtifactTypeDecl, TypeDescriptorIr, TypeExport,
-        RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+        TypeDeclIr as ArtifactTypeDecl, TypeDeclarationIr, TypeDescriptorIr, TypeExport,
+        TypeLinkTargetIr, TypeRefIr, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     };
     use skiff_runtime_linked_program::{
         FileAddr, HydratedPackageCode, LinkedTypeDescriptor, PackageCodeSlotIndex,
@@ -639,6 +1076,160 @@ mod tests {
         )
         .expect_err("linker must reject an artificially noncanonical builtin pair");
         assert!(error.to_string().contains("differ"));
+
+        let (shared, types) = image([package(
+            "example/builtin",
+            "api.BoolFault",
+            TypeDescriptorIr::Representation {
+                representation: TypeRefIr::builtin("bool"),
+            },
+            LinkedTypeDescriptor::Representation {
+                representation: LinkedTypeRef::Native {
+                    name: "bool".to_string(),
+                    args: Vec::new(),
+                },
+            },
+            ContractTypeDescriptor::Representation {
+                target: ContractTypeRef::builtin("bool"),
+            },
+            Vec::new(),
+        )]);
+        let root_addr = TypeAddr {
+            unit: UnitAddr::Package(0),
+            file: FileAddr::LoadedFileIndex(0),
+            type_index: 0,
+        };
+        let error = validate_artifact_descriptor_matches_linked(
+            &ExactTypeCoordinateResolver::new(&shared, &types),
+            0,
+            0,
+            &TypeDescriptorIr::Representation {
+                representation: TypeRefIr::builtin("boolean"),
+            },
+            &types.declaration(&root_addr).unwrap().descriptor,
+        )
+        .expect_err("export/execution comparison must also retain exact builtin spelling");
+        assert!(error.to_string().contains("differ"));
+    }
+
+    #[test]
+    fn public_service_symbol_and_execution_local_type_share_exact_coordinate() {
+        let (shared, types) = image([http_client_request_package()]);
+
+        let index = build_service_error_type_index(&shared, &types)
+            .expect("public ServiceSymbol and execution LocalType target the same declaration");
+
+        assert_eq!(index.public_identity_len(), 2);
+        assert!(index
+            .public_identities()
+            .any(|identity| identity.stable_schema_key() == HTTP_REQUEST_KEY));
+        assert!(index
+            .public_identities()
+            .any(|identity| identity.stable_schema_key() == HTTP_HEADER_KEY));
+    }
+
+    #[test]
+    fn wrong_package_file_and_type_coordinates_fail_closed() {
+        let (shared, mut types) = image([
+            http_client_request_package(),
+            record_package("example/other", "api.Other"),
+        ]);
+        let root_key = PackageSymbolKey::new(0, HTTP_REQUEST_KEY);
+
+        for (wrong, expected) in [
+            (
+                TypeAddr {
+                    unit: UnitAddr::Package(1),
+                    file: FileAddr::LoadedFileIndex(0),
+                    type_index: 0,
+                },
+                "multiple public Package schema identities",
+            ),
+            (
+                TypeAddr {
+                    unit: UnitAddr::Package(0),
+                    file: FileAddr::LoadedFileIndex(1),
+                    type_index: 0,
+                },
+                "exact export coordinate",
+            ),
+            (
+                TypeAddr {
+                    unit: UnitAddr::Package(0),
+                    file: FileAddr::LoadedFileIndex(0),
+                    type_index: 1,
+                },
+                "multiple public Package schema identities",
+            ),
+        ] {
+            types.exported_types.insert_package(root_key.clone(), wrong);
+            let error = build_service_error_type_index(&shared, &types)
+                .expect_err("non-exact root coordinate must be rejected");
+            assert!(format!("{error:#}").contains(expected), "{error:#}");
+        }
+    }
+
+    #[test]
+    fn wrong_local_index_and_missing_coordinate_fail_closed() {
+        let (shared, types) = image([http_client_request_package()]);
+        let coordinates = ExactTypeCoordinateResolver::new(&shared, &types);
+        let root_addr = TypeAddr {
+            unit: UnitAddr::Package(0),
+            file: FileAddr::LoadedFileIndex(0),
+            type_index: 0,
+        };
+        let error = validate_artifact_descriptor_matches_linked(
+            &coordinates,
+            0,
+            0,
+            &TypeDescriptorIr::Record {
+                fields: BTreeMap::from([(
+                    "headers".to_string(),
+                    TypeRefIr::Builtin {
+                        name: "Array".to_string(),
+                        args: vec![TypeRefIr::LocalType { type_index: 9 }],
+                    },
+                )]),
+            },
+            &types.declaration(&root_addr).unwrap().descriptor,
+        )
+        .expect_err("wrong execution-local index must be rejected");
+        let evidence = format!("{error:#}");
+        assert!(evidence.contains("type index 9"));
+
+        let mut missing = http_client_request_package();
+        service_symbol_in_root_export(&mut missing).symbol = "MissingHeader".to_string();
+        let (shared, types) = image([missing]);
+        let error = build_service_error_type_index(&shared, &types)
+            .expect_err("missing public symbol coordinate must be rejected");
+        assert!(format!("{error:#}").contains("MissingHeader is unresolved"));
+    }
+
+    #[test]
+    fn ambiguous_and_resolved_wrong_target_descriptors_fail_closed() {
+        let mut ambiguous = http_client_request_package();
+        Arc::make_mut(&mut ambiguous.files[0])
+            .link_targets
+            .types
+            .insert("HttpHeader".to_string(), TypeLinkTargetIr { type_index: 0 });
+        refresh_fixture_file_identity(&mut ambiguous, 0);
+        let (shared, types) = image([ambiguous]);
+        let error = build_service_error_type_index(&shared, &types)
+            .expect_err("ambiguous symbol coordinate must be rejected");
+        assert!(format!("{error:#}").contains("HttpHeader is ambiguous"));
+
+        let mut wrong_target = http_client_request_package();
+        Arc::make_mut(&mut wrong_target.files[0])
+            .declarations
+            .types
+            .get_mut("HttpHeader")
+            .unwrap()
+            .type_index = 0;
+        refresh_fixture_file_identity(&mut wrong_target, 0);
+        let (shared, types) = image([wrong_target]);
+        let error = build_service_error_type_index(&shared, &types)
+            .expect_err("resolved but different target coordinate must be rejected");
+        assert!(format!("{error:#}").contains("exact type coordinates differ"));
     }
 
     #[test]
@@ -793,9 +1384,17 @@ mod tests {
             .contains("implementation type link"));
 
         let mut descriptor_mismatch = record_package("example/mismatch", "api.Mismatch");
-        Arc::make_mut(&mut descriptor_mismatch.record)
-            .canonical_descriptor
-            .descriptor = ContractTypeDescriptor::Enumeration {
+        let record_id = descriptor_mismatch.index.types["api.Mismatch"]
+            .package_schema_type_id
+            .clone();
+        Arc::make_mut(
+            descriptor_mismatch
+                .records
+                .get_mut(&record_id)
+                .expect("fixture root record"),
+        )
+        .canonical_descriptor
+        .descriptor = ContractTypeDescriptor::Enumeration {
             variants: vec!["wrong".to_string()],
         };
         let (shared, types) = image([descriptor_mismatch]);
@@ -844,11 +1443,207 @@ mod tests {
         artifact_ref: PackageArtifactRef,
         artifact: Arc<PackageArtifact>,
         index: Arc<PackageSchemaIndex>,
-        record: Arc<PackageSchemaTypeRecord>,
-        file: Arc<FileIrUnit>,
-        linked_descriptor: LinkedTypeDescriptor,
-        stable_key: String,
-        type_params: Vec<String>,
+        records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+        files: Vec<Arc<FileIrUnit>>,
+        linked_descriptors: Vec<Vec<LinkedTypeDescriptor>>,
+    }
+
+    const HTTP_PACKAGE_ID: &str = "skiff.run/std";
+    const HTTP_REQUEST_KEY: &str = "std.http.HttpClientRequest";
+    const HTTP_HEADER_KEY: &str = "std.http.HttpHeader";
+
+    fn http_client_request_package() -> PackageFixture {
+        let header_canonical = PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::Record {
+                fields: BTreeMap::new(),
+            },
+        };
+        let header_type_id = skiff_artifact_identity::package_schema_type_id(
+            HTTP_PACKAGE_ID,
+            HTTP_HEADER_KEY,
+            &header_canonical,
+        )
+        .unwrap();
+        let header_addr = TypeAddr {
+            unit: UnitAddr::Package(0),
+            file: FileAddr::LoadedFileIndex(0),
+            type_index: 1,
+        };
+        let source_descriptor = TypeDescriptorIr::Record {
+            fields: BTreeMap::from([(
+                "headers".to_string(),
+                TypeRefIr::Builtin {
+                    name: "Array".to_string(),
+                    args: vec![TypeRefIr::LocalType { type_index: 1 }],
+                },
+            )]),
+        };
+        let linked_headers = LinkedTypeRef::Native {
+            name: "Array".to_string(),
+            args: vec![LinkedTypeRef::Address { addr: header_addr }],
+        };
+        let schema_headers = ContractTypeRef::Builtin {
+            name: "Array".to_string(),
+            arguments: vec![ContractTypeRef::package_schema(
+                HTTP_PACKAGE_ID,
+                HTTP_HEADER_KEY,
+                header_type_id.clone(),
+            )],
+        };
+        let mut fixture = package(
+            HTTP_PACKAGE_ID,
+            HTTP_REQUEST_KEY,
+            TypeDescriptorIr::Record {
+                fields: BTreeMap::new(),
+            },
+            LinkedTypeDescriptor::Record {
+                fields: BTreeMap::from([("headers".to_string(), linked_headers)]),
+            },
+            ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([("headers".to_string(), schema_headers)]),
+            },
+            Vec::new(),
+        );
+
+        {
+            let file = Arc::make_mut(&mut fixture.files[0]);
+            file.module_path = "std.http".to_string();
+            file.type_table[0].descriptor = source_descriptor;
+            file.type_table.push(ArtifactTypeDecl {
+                name: "HttpHeader".to_string(),
+                descriptor: TypeDescriptorIr::Record {
+                    fields: BTreeMap::new(),
+                },
+                type_params: Vec::new(),
+                implements: Vec::new(),
+                source_span: None,
+            });
+            file.declarations.types.insert(
+                "HttpHeader".to_string(),
+                TypeDeclarationIr {
+                    type_index: 1,
+                    symbol: "HttpHeader".to_string(),
+                    source_span: None,
+                },
+            );
+        }
+        refresh_fixture_file_identity(&mut fixture, 0);
+        let file_ref = fixture.artifact.files[0].clone();
+        let public_headers = TypeRefIr::Builtin {
+            name: "Array".to_string(),
+            args: vec![TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: "std.http".to_string(),
+                    symbol: "HttpHeader".to_string(),
+                },
+            }],
+        };
+        let header_record = Arc::new(PackageSchemaTypeRecord {
+            package_id: HTTP_PACKAGE_ID.to_string(),
+            stable_schema_key: HTTP_HEADER_KEY.to_string(),
+            package_schema_type_id: header_type_id.clone(),
+            canonical_descriptor: header_canonical,
+        });
+
+        let index = Arc::make_mut(&mut fixture.index);
+        index.types.insert(
+            HTTP_HEADER_KEY.to_string(),
+            PackageSchemaIndexEntry {
+                package_schema_type_id: header_type_id.clone(),
+                public_path: Some(HTTP_HEADER_KEY.to_string()),
+                nameability: ContractTypeNameability::PublicNameable,
+            },
+        );
+        index.package_schema_index_identity =
+            skiff_artifact_identity::package_schema_index_identity(HTTP_PACKAGE_ID, &index.types)
+                .unwrap();
+        fixture
+            .records
+            .insert(header_type_id.clone(), Arc::clone(&header_record));
+        fixture.linked_descriptors[0].push(LinkedTypeDescriptor::Record {
+            fields: BTreeMap::new(),
+        });
+
+        let artifact = Arc::make_mut(&mut fixture.artifact);
+        artifact
+            .implementation_links
+            .types
+            .get_mut(HTTP_REQUEST_KEY)
+            .unwrap()
+            .descriptor = Some(TypeDescriptorIr::Record {
+            fields: BTreeMap::from([("headers".to_string(), public_headers)]),
+        });
+        artifact.implementation_links.types.insert(
+            HTTP_HEADER_KEY.to_string(),
+            TypeExport {
+                file: file_ref,
+                type_index: 1,
+                symbol: "HttpHeader".to_string(),
+                is_interface: false,
+                descriptor: Some(TypeDescriptorIr::Record {
+                    fields: BTreeMap::new(),
+                }),
+                type_params: Vec::new(),
+                interface_methods: Vec::new(),
+            },
+        );
+        artifact.package_schema_index.package_schema_index_identity =
+            fixture.index.package_schema_index_identity.clone();
+        artifact.package_schema_type_records.insert(
+            header_type_id.clone(),
+            PackageSchemaTypeRecordRef {
+                package_id: HTTP_PACKAGE_ID.to_string(),
+                package_schema_type_id: header_type_id,
+            },
+        );
+        fixture
+    }
+
+    fn refresh_fixture_file_identity(fixture: &mut PackageFixture, file_index: usize) {
+        let old_identity = fixture.files[file_index].file_ir_identity.clone();
+        skiff_artifact_identity::assign_file_ir_identity(Arc::make_mut(
+            &mut fixture.files[file_index],
+        ))
+        .unwrap();
+        let file = &fixture.files[file_index];
+        let file_ref = FileIrRef {
+            file_ir_identity: file.file_ir_identity.clone(),
+            module_path: file.module_path.clone(),
+            artifact_path: None,
+            source_ast_hash: Some(file.source_ast_hash.clone()),
+        };
+        let artifact = Arc::make_mut(&mut fixture.artifact);
+        let artifact_file = artifact
+            .files
+            .iter_mut()
+            .find(|candidate| candidate.file_ir_identity == old_identity)
+            .expect("fixture artifact must reference the refreshed file");
+        *artifact_file = file_ref.clone();
+        for export in artifact.implementation_links.types.values_mut() {
+            if export.file.file_ir_identity == old_identity {
+                export.file = file_ref.clone();
+            }
+        }
+    }
+
+    fn service_symbol_in_root_export(fixture: &mut PackageFixture) -> &mut ServiceSymbolRef {
+        let descriptor = Arc::make_mut(&mut fixture.artifact)
+            .implementation_links
+            .types
+            .get_mut(HTTP_REQUEST_KEY)
+            .and_then(|export| export.descriptor.as_mut())
+            .expect("fixture request export descriptor");
+        let TypeDescriptorIr::Record { fields } = descriptor else {
+            unreachable!()
+        };
+        let TypeRefIr::Builtin { args, .. } = fields.get_mut("headers").unwrap() else {
+            unreachable!()
+        };
+        let TypeRefIr::ServiceSymbol { symbol } = &mut args[0] else {
+            unreachable!()
+        };
+        symbol
     }
 
     fn record_package(package_id: &str, stable_key: &str) -> PackageFixture {
@@ -876,7 +1671,6 @@ mod tests {
         schema_descriptor: ContractTypeDescriptor,
         type_params: Vec<String>,
     ) -> PackageFixture {
-        let fixture_type_params = type_params.clone();
         let canonical_descriptor = PackageSchemaCanonicalDescriptor {
             type_params: type_params.clone(),
             descriptor: schema_descriptor,
@@ -974,7 +1768,6 @@ mod tests {
             },
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections: BTreeMap::new(),
-            service_call_roots: Vec::new(),
             service_call_refs: Vec::new(),
         });
         let artifact_ref = PackageArtifactRef {
@@ -987,11 +1780,9 @@ mod tests {
             artifact_ref,
             artifact,
             index,
-            record,
-            file: Arc::new(file),
-            linked_descriptor,
-            stable_key: stable_key.to_string(),
-            type_params: fixture_type_params,
+            records: BTreeMap::from([(record.package_schema_type_id.clone(), record)]),
+            files: vec![Arc::new(file)],
+            linked_descriptors: vec![vec![linked_descriptor]],
         }
     }
 
@@ -1026,37 +1817,58 @@ mod tests {
             .map(|fixture| {
                 HydratedPackageCode::new(
                     Arc::clone(&fixture.artifact),
-                    vec![Arc::clone(&fixture.file)],
+                    fixture.files.iter().map(Arc::clone).collect(),
                     PublicationResourceTable::default(),
                 )
                 .with_schema_index(Arc::clone(&fixture.index))
-                .with_schema_records(BTreeMap::from([(
-                    fixture.record.package_schema_type_id.clone(),
-                    Arc::clone(&fixture.record),
-                )]))
+                .with_schema_records(fixture.records.clone())
             })
             .collect::<Vec<_>>();
         let shared = SharedPackageLinkedImage::from_runtime_assembly(&assembly, hydrated).unwrap();
         let mut types = RuntimeTypeContext::default();
         for (code_slot, fixture) in fixtures.into_iter().enumerate() {
-            let addr = TypeAddr {
-                unit: UnitAddr::Package(code_slot),
-                file: FileAddr::LoadedFileIndex(0),
-                type_index: 0,
-            };
-            types.descriptors.insert(
-                addr.clone(),
-                TypeDeclIr {
-                    name: fixture.stable_key.clone(),
-                    descriptor: fixture.linked_descriptor,
-                    type_params: fixture.type_params,
-                    implements: Vec::new(),
-                    source_span: None,
-                },
-            );
-            types
-                .exported_types
-                .insert_package(PackageSymbolKey::new(code_slot, fixture.stable_key), addr);
+            assert_eq!(fixture.files.len(), fixture.linked_descriptors.len());
+            for (file_index, (file, linked_descriptors)) in fixture
+                .files
+                .iter()
+                .zip(fixture.linked_descriptors)
+                .enumerate()
+            {
+                assert_eq!(file.type_table.len(), linked_descriptors.len());
+                for (type_index, (source, descriptor)) in
+                    file.type_table.iter().zip(linked_descriptors).enumerate()
+                {
+                    types.descriptors.insert(
+                        TypeAddr {
+                            unit: UnitAddr::Package(code_slot),
+                            file: FileAddr::LoadedFileIndex(file_index),
+                            type_index,
+                        },
+                        TypeDeclIr {
+                            name: source.name.clone(),
+                            descriptor,
+                            type_params: source.type_params.clone(),
+                            implements: Vec::new(),
+                            source_span: None,
+                        },
+                    );
+                }
+            }
+            for (symbol, export) in &fixture.artifact.implementation_links.types {
+                let file_index = fixture
+                    .files
+                    .iter()
+                    .position(|file| file.file_ir_identity == export.file.file_ir_identity)
+                    .expect("fixture export file must be loaded");
+                types.exported_types.insert_package(
+                    PackageSymbolKey::new(code_slot, symbol.clone()),
+                    TypeAddr {
+                        unit: UnitAddr::Package(code_slot),
+                        file: FileAddr::LoadedFileIndex(file_index),
+                        type_index: export.type_index as usize,
+                    },
+                );
+            }
             assert_eq!(
                 shared
                     .code_by_slot(PackageCodeSlotIndex::new(code_slot))
