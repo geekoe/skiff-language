@@ -33,18 +33,24 @@
    - stable key使用现有函数leaf名：`ping`、`register`、`login`等21个唯一identifier，不引入第二张entry表。
 2. `api.yml`继续拥有既有Package API，但所有21个scalar function都不加`serviceCall`；`accountService`
    也不加marker。生成ServiceContract必须有零个operation，不能保留假operation维持旧identity。
-3. 更新Account receipt/manifest tests，使其验证：
+3. 修正既有package-only instance接口的object-safety漂移：
+   - `AccountService.ping`声明改为`ping(self: Self) -> bool`；
+   - 现有`AccountServiceImpl.ping(self: AccountServiceImpl) -> bool`实现、返回值和
+     `AccountService/accountService` public surface保持；
+   - 这是让原有实例方法符合当前语言规则的精确修复，不得删除该API、增加service-call marker或改其它业务
+     `.skiff`代码。
+4. 更新Account receipt/manifest tests，使其验证：
    - 21个selector唯一且method/path不变；
    - 21个entry均为raw unary、handler与adapter source精确；
    - 不存在`routes`、`operation`或service-call marker；
    - 生成receipt的service operation数为0，gateway entry与ingress各21，key/identity引用闭合。
-4. 使用fresh isolated artifact root和本task Skiff toolchain至少真实发布一次Account service package；
+5. 使用fresh isolated artifact root和本task Skiff toolchain至少真实发布一次Account service package；
    先bootstrap canonical std并发布
    `/Users/geek/workspace/skiff-packages-phase-05-integration/http-session`。该依赖必须来自
    skiff-packages integration checkpoint `609551f0a65bfcc814ed4c894e4c333b4ffb10f1`，其中
    `337e3fae`已经声明所需database state；不得改用尚未合流该前置的skiff-packages `main`，也不得读取
    stable artifact store。保存JSON receipt的operation/gateway/ingress数量和identity generation证据。
-5. 检查21个真实handler仍是
+6. 检查21个真实handler仍是
    `HttpRequest -> HttpResponse`，不改业务HTTP语义、客户端URL、cookie/session、DB或config。
 
 ## 写入范围与非目标
@@ -52,11 +58,12 @@
 允许：
 
 - `skiff-platform/account/{service.yml,api.yml,service-api-receipt.mjs,service-api-receipt.test.mjs}`；
+- `skiff-platform/account/account.skiff`只允许上述`AccountService.ping(self: Self)`单行签名修复；
 - 只有聚焦测试确实需要时才可新增同目录小型fixture/helper。
 
 禁止：
 
-- Account业务`.skiff`实现、client、package dependency、config/state语义；
+- Account其它业务`.skiff`实现、client、package dependency、config/state语义；
 - Relay、AIHub、Agine、共享`scripts/**`、F269 worktree；
 - Skiff、skiff-packages、stable/live、push。
 
