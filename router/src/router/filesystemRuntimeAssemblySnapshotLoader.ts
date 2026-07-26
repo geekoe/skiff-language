@@ -91,7 +91,7 @@ implements RuntimeAssemblySnapshotLoader {
       const packageBuildId = requiredString(implementation, 'packageBuildId');
       const buildHash = identityHash(
         packageBuildId,
-        'skiff-package-build-v4:sha256:',
+        'skiff-package-build-v8:sha256:',
         'packageBuildId'
       );
       const packageRecord = record(
@@ -107,7 +107,7 @@ implements RuntimeAssemblySnapshotLoader {
         const fileIdentity = requiredString(fileRef, 'fileIrIdentity');
         const fileHash = identityHash(
           fileIdentity,
-          'skiff-file-ir-v5:sha256:',
+          'skiff-file-ir-v8:sha256:',
           'fileIrIdentity'
         );
         const file = record(

@@ -11,7 +11,7 @@ import { writeCompilerGeneratedFixtureArtifactRoot } from './helpers/compilerArt
 
 describe('compiler generated HTTP gateway compatibility', () => {
   it(
-    'joins the typed-null gateway after isolating the known contract-identity skew',
+    'joins and loads the typed-null gateway from exact current records',
     async () => {
       const root = await mkdtemp(join(tmpdir(), 'skiff-router-authoring-'));
       try {
@@ -155,21 +155,9 @@ describe('compiler generated HTTP gateway compatibility', () => {
           },
         ]);
 
-        // Isolate the Router's known v3-only contract lexical gate so this
-        // assertion covers only the generated HTTP gateway/deployment join.
-        // The exact fresh artifact remains v4 and is rejected below.
-        const routerJoinDeployment = structuredClone(generated.deploymentValue);
-        recordField(
-          routerJoinDeployment,
-          'contract'
-        ).serviceProtocolIdentity =
-          generated.serviceContract.contract.serviceProtocolIdentity.replace(
-            'skiff-service-protocol-v4:',
-            'skiff-service-protocol-v3:'
-          );
         const loaded = joinRuntimeAssemblyDeployments(
           generated.assemblyValue as unknown as DecodedRuntimeAssemblyRecord,
-          [routerJoinDeployment]
+          [generated.deploymentValue]
         );
         expect(loaded.assemblyIdentity).toBe(
           generated.runtimeAssembly.assembly.assemblyIdentity
@@ -194,13 +182,10 @@ describe('compiler generated HTTP gateway compatibility', () => {
           },
         ]);
 
-        await expect(
-          new FilesystemRuntimeAssemblySnapshotLoader(root).load(
-            generated.runtimeAssembly.assembly
-          )
-        ).rejects.toThrow(
-          /RuntimeAssembly\.resolvedContracts\[0\]\.serviceProtocolIdentity is invalid/
-        );
+        const filesystemLoaded = await new FilesystemRuntimeAssemblySnapshotLoader(
+          root
+        ).load(generated.runtimeAssembly.assembly);
+        expect(filesystemLoaded).toEqual(loaded);
       } finally {
         await rm(root, { recursive: true, force: true });
       }

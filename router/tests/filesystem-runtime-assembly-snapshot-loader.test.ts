@@ -10,7 +10,7 @@ const roots: string[] = [];
 const ASSEMBLY_IDENTITY =
   `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 const SERVICE_PROTOCOL_IDENTITY =
-  `skiff-service-protocol-v3:sha256:${'b'.repeat(64)}`;
+  `skiff-service-protocol-v4:sha256:${'b'.repeat(64)}`;
 const GATEWAY_IDENTITIES = [
   `skiff-gateway-entry-v1:sha256:${'1'.repeat(64)}`,
   `skiff-gateway-entry-v1:sha256:${'2'.repeat(64)}`,
@@ -413,7 +413,7 @@ function deployment(
     implementation: {
       packageId: 'skiff.run/echo',
       packageVersion: '1.0.0',
-      packageBuildId: `skiff-package-build-v4:sha256:${'d'.repeat(64)}`,
+      packageBuildId: `skiff-package-build-v8:sha256:${'d'.repeat(64)}`,
       packageLocalAbiIdentity:
         `skiff-package-local-abi-v4:sha256:${'e'.repeat(64)}`
     },
