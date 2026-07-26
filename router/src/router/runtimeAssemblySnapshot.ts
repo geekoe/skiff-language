@@ -10,7 +10,7 @@ const GATEWAY_ENTRY_IDENTITY_PATTERN =
 const RUNTIME_ASSEMBLY_IDENTITY_PATTERN =
   /^skiff-runtime-assembly-v2:sha256:[0-9a-f]{64}$/;
 const SERVICE_PROTOCOL_IDENTITY_PATTERN =
-  /^skiff-service-protocol-v3:sha256:[0-9a-f]{64}$/;
+  /^skiff-service-protocol-v4:sha256:[0-9a-f]{64}$/;
 
 export type RuntimeAssemblyIngressProtocol = 'http';
 

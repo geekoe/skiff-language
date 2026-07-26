@@ -104,7 +104,7 @@ describe("artifact identity CLI transaction", () => {
     }
   });
 
-  it("uses canonical compiler-authored record paths and keeps the version-skewed loader fail closed", async () => {
+  it("loads exact current records from canonical compiler-authored paths", async () => {
     const temp = await mkdtemp(join(tmpdir(), "skiff-router-artifact-paths-"));
     try {
       const generated = await writeCompilerGeneratedFixtureArtifactRoot(temp);
@@ -118,9 +118,11 @@ describe("artifact identity CLI transaction", () => {
         new FilesystemRuntimeAssemblySnapshotLoader(temp).load(
           generated.runtimeAssembly.assembly,
         ),
-      ).rejects.toThrow(
-        /RuntimeAssembly\.resolvedContracts\[0\]\.serviceProtocolIdentity is invalid/,
-      );
+      ).resolves.toMatchObject({
+        assemblyIdentity: generated.runtimeAssembly.assembly.assemblyIdentity,
+        resolvedContracts: [generated.serviceContract.contract],
+        resolvedDeployments: [generated.serviceDeployment.deployment],
+      });
     } finally {
       await rm(temp, { recursive: true, force: true });
     }
