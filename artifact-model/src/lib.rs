@@ -27,6 +27,7 @@ pub mod effects;
 pub mod executable;
 pub mod executable_target;
 pub mod file_ir;
+pub mod gateway;
 pub mod http_boundary;
 pub mod metadata;
 pub mod native_signature;
@@ -83,8 +84,10 @@ pub use builtin_receiver_ops::{
 };
 pub use compile_identity::{
     AssemblyIdentity, ContractOperationId, DeploymentArtifactIdentity, DeploymentRevision,
-    PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageSchemaIndexIdentity,
-    PackageSchemaTypeId, ServiceProtocolIdentity,
+    GatewayEntryIdentity, GatewayEntryIdentityParseError, GatewayEntryKey,
+    GatewayEntryKeyParseError, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
+    PackageSchemaIndexIdentity, PackageSchemaTypeId, ServiceProtocolIdentity,
+    GATEWAY_ENTRY_IDENTITY_PREFIX,
 };
 pub use compile_requirements::{
     ContractRequirement, PackageConfigRequirement, PackageRequirement, PackageResourceRequirement,
@@ -130,6 +133,13 @@ pub use executable_target::{
     PublicInstanceOperation, ReceiverCallAbi,
 };
 pub use file_ir::*;
+pub use gateway::{
+    validate_gateway_adapter_args, GatewayAdapterArg, GatewayAdapterArgValidationError,
+    GatewayAdapterKind, GatewayAdapterSource, GatewayDispatchMode, GatewayEntryProtocolSurface,
+    GatewayExternalErrorProjection, GatewayExternalErrorProjectionKind,
+    GatewayExternalErrorProjectionVersion, GatewayExternalSchema, GatewayHttpProtocolSurface,
+    GatewayProtocolSurface,
+};
 pub use metadata::MetadataValue;
 pub use native_signature::{
     is_runtime_receiver_native_binding_key, native_callable_semantics,

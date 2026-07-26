@@ -25,6 +25,7 @@ use super::*;
 mod artifact_reference;
 mod file_ir;
 mod framing;
+mod gateway;
 mod golden;
 mod legacy_service;
 mod operation;
