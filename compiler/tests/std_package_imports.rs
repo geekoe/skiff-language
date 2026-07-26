@@ -630,14 +630,8 @@ fn descriptor_contains_type_ref(
             type_ref_contains(representation, predicate)
         }
         TypeDescriptorIr::Union { branches } => branches.iter().any(|branch| match branch {
-            skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal {
-                nominal_type,
-                type_arguments,
-            } => {
+            skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
                 type_ref_contains(nominal_type, predicate)
-                    || type_arguments
-                        .values()
-                        .any(|argument| type_ref_contains(argument, predicate))
             }
             skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
                 payload_type,
@@ -660,6 +654,9 @@ fn type_ref_contains(ty: &TypeRefIr, predicate: &impl Fn(&TypeRefIr) -> bool) ->
             .any(|field| type_ref_contains(field, predicate)),
         TypeRefIr::Union { items } => items.iter().any(|item| type_ref_contains(item, predicate)),
         TypeRefIr::Nullable { inner } => type_ref_contains(inner, predicate),
+        TypeRefIr::AppliedNominal { arguments, .. } => arguments
+            .iter()
+            .any(|argument| type_ref_contains(argument, predicate)),
         TypeRefIr::AnyInterface { interface } => interface
             .canonical_type_args
             .iter()

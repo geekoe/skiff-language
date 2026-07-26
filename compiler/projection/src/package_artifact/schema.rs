@@ -65,47 +65,17 @@ pub(super) fn project_package_schema(
             ))
         })
         .collect::<BTreeMap<_, _>>();
-    if let Some((path, (_, type_params, _))) = candidate_definitions
-        .iter()
-        .find(|(_, (_, type_params, _))| !type_params.is_empty())
-    {
-        return Err(message(format!(
-            "package public schema does not admit generic declaration {path}<{}>",
-            type_params.join(", ")
-        )));
-    }
-    if let Some((path, _)) =
-        candidate_definitions
-            .iter()
-            .find(|(_, (descriptor, _, interface_methods))| {
-                descriptor_contains_applied_nominal(descriptor)
-                    || interface_methods.iter().any(|method| {
-                        method
-                            .params
-                            .iter()
-                            .any(|param| type_ref_contains_applied_nominal(&param.ty))
-                            || type_ref_contains_applied_nominal(&method.return_type)
-                            || method
-                                .implicit_self
-                                .as_ref()
-                                .is_some_and(type_ref_contains_applied_nominal)
-                    })
-            })
-    {
-        return Err(message(format!(
-            "package public schema does not admit applied nominal reference in {path}"
-        )));
-    }
     let definitions = candidate_definitions
         .iter()
-        .filter(|(path, (descriptor, _, interface_methods))| {
-            is_package_schema_descriptor(
-                descriptor,
-                interface_methods,
-                &candidate_definitions,
-                &source_to_public,
-                &mut BTreeSet::from([(*path).clone()]),
-            )
+        .filter(|(path, (descriptor, type_params, interface_methods))| {
+            type_params.is_empty()
+                && is_package_schema_descriptor(
+                    descriptor,
+                    interface_methods,
+                    &candidate_definitions,
+                    &source_to_public,
+                    &mut BTreeSet::from([(*path).clone()]),
+                )
         })
         .map(|(path, definition)| (path.clone(), definition.clone()))
         .collect::<BTreeMap<_, _>>();
@@ -179,63 +149,6 @@ pub(super) fn project_package_schema(
     })
 }
 
-fn descriptor_contains_applied_nominal(descriptor: &TypeDescriptorIr) -> bool {
-    match descriptor {
-        TypeDescriptorIr::Record { fields } => {
-            fields.values().any(type_ref_contains_applied_nominal)
-        }
-        TypeDescriptorIr::Representation { representation } => {
-            type_ref_contains_applied_nominal(representation)
-        }
-        TypeDescriptorIr::Union { branches } => branches.iter().any(|branch| match branch {
-            NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
-                type_ref_contains_applied_nominal(nominal_type)
-            }
-            NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
-                type_ref_contains_applied_nominal(payload_type)
-            }
-            NamedUnionBranchIr::Literal { .. } => false,
-        }),
-        TypeDescriptorIr::Alias { target } => type_ref_contains_applied_nominal(target),
-        TypeDescriptorIr::Interface => false,
-    }
-}
-
-fn type_ref_contains_applied_nominal(ty: &TypeRefIr) -> bool {
-    match ty {
-        TypeRefIr::AppliedNominal { .. } => true,
-        TypeRefIr::Builtin { args, .. } => args.iter().any(type_ref_contains_applied_nominal),
-        TypeRefIr::Record { fields } => fields.values().any(type_ref_contains_applied_nominal),
-        TypeRefIr::Union { items } => items.iter().any(type_ref_contains_applied_nominal),
-        TypeRefIr::Nullable { inner } => type_ref_contains_applied_nominal(inner),
-        TypeRefIr::AnyInterface { interface } => {
-            serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
-                .is_ok_and(|identity| type_ref_contains_applied_nominal(&identity))
-                || interface
-                    .canonical_type_args
-                    .iter()
-                    .any(type_ref_contains_applied_nominal)
-        }
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            params
-                .iter()
-                .any(|param| type_ref_contains_applied_nominal(&param.ty))
-                || type_ref_contains_applied_nominal(return_type)
-        }
-        TypeRefIr::LocalType { .. }
-        | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::ServiceSymbol { .. }
-        | TypeRefIr::PackageSymbol { .. }
-        | TypeRefIr::PackageSchema { .. }
-        | TypeRefIr::DbObjectSymbol { .. }
-        | TypeRefIr::Literal { .. }
-        | TypeRefIr::TypeParam { .. } => false,
-    }
-}
-
 fn insert_exact_record(
     records: &mut BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     type_id: &PackageSchemaTypeId,
@@ -281,6 +194,12 @@ fn is_package_schema_descriptor(
         }),
         TypeDescriptorIr::Interface => interface_methods.iter().all(|method| {
             method.type_params.is_empty()
+                && method.implicit_self.as_ref().is_none_or(|receiver| {
+                    matches!(
+                        receiver,
+                        TypeRefIr::Builtin { name, args } if name == "Self" && args.is_empty()
+                    ) || is_package_schema_ref(receiver, definitions, source_to_public, visiting)
+                })
                 && method.params.iter().all(|param| {
                     is_package_schema_ref(&param.ty, definitions, source_to_public, visiting)
                 })
@@ -330,28 +249,28 @@ fn is_package_schema_ref(
             if !visiting.insert(path.clone()) {
                 return true;
             }
-            let eligible =
-                definitions
-                    .get(path)
-                    .is_some_and(|(descriptor, _, interface_methods)| {
-                        is_package_schema_descriptor(
+            let eligible = definitions.get(path).is_some_and(
+                |(descriptor, type_params, interface_methods)| {
+                    type_params.is_empty()
+                        && is_package_schema_descriptor(
                             descriptor,
                             interface_methods,
                             definitions,
                             source_to_public,
                             visiting,
                         )
-                    });
+                },
+            );
             visiting.remove(path);
             eligible
         }
         TypeRefIr::Literal {
             value: LiteralIr::String { .. } | LiteralIr::Null,
         }
-        | TypeRefIr::TypeParam { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::PackageSchema { .. } => true,
         TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. }
         | TypeRefIr::AnyInterface { .. }
         | TypeRefIr::Function { .. }
         | TypeRefIr::LocalType { .. }
@@ -380,10 +299,6 @@ fn is_boundary_builtin(name: &str, arity: usize) -> bool {
             0
         ) | ("Array", 1)
             | ("Map", 2)
-            | (
-                "std.websocket.WebSocketIngressEvent" | "std.websocket.WebSocketConnectResult",
-                1
-            )
     )
 }
 
@@ -762,7 +677,7 @@ mod tests {
             is_native: false,
             is_provider: false,
             is_static: false,
-            implicit_self: None,
+            implicit_self: Some(TypeRefIr::builtin("Self")),
         }];
 
         let projected = project_package_schema("example.pkg", &interface, &[]).unwrap();
@@ -784,7 +699,39 @@ mod tests {
     }
 
     #[test]
-    fn generic_public_declaration_fails_before_schema_records_are_built() {
+    fn package_schema_interface_with_applied_implicit_receiver_is_omitted() {
+        let mut interface = exports(TypeDescriptorIr::Interface);
+        let export = interface.exports.types.get_mut("example.pkg/User").unwrap();
+        export.is_interface = true;
+        export.interface_methods = vec![InterfaceMethodSignature {
+            name: "read".to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: TypeRefIr::builtin("string"),
+            may_suspend: false,
+            is_native: false,
+            is_provider: false,
+            is_static: false,
+            implicit_self: Some(TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::ServiceSymbol {
+                    symbol: ServiceSymbolRef {
+                        module_path: "models".to_string(),
+                        symbol: "Box".to_string(),
+                    },
+                },
+                arguments: vec![TypeRefIr::builtin("string")],
+            }),
+        }];
+
+        let projected = project_package_schema("example.pkg", &interface, &[]).unwrap();
+
+        assert!(projected.index.types.is_empty());
+        assert!(projected.records.is_empty());
+        assert!(projected.refs_by_source.is_empty());
+    }
+
+    #[test]
+    fn package_schema_public_generic_declaration_is_omitted_without_partial_records() {
         let mut generic = exports(TypeDescriptorIr::Record {
             fields: BTreeMap::from([(
                 "value".to_string(),
@@ -800,16 +747,139 @@ mod tests {
             .unwrap()
             .type_params = vec!["T".to_string()];
 
-        let error = project_package_schema("example.pkg", &generic, &[]).unwrap_err();
+        let projected = project_package_schema("example.pkg", &generic, &[]).unwrap();
 
-        assert!(error
-            .to_string()
-            .contains("does not admit generic declaration User<T>"));
+        assert!(projected.index.types.is_empty());
+        assert!(projected.records.is_empty());
+        assert!(projected.refs_by_source.is_empty());
     }
 
     #[test]
-    fn applied_nominal_in_public_schema_fails_instead_of_emitting_a_partial_index() {
-        let error = project_package_schema(
+    fn package_schema_public_generic_declaration_kinds_are_uniformly_omitted() {
+        let file = FileIrRef::new("file", "models");
+        let export = |type_index, symbol: &str, descriptor, type_params| TypeExport {
+            file: file.clone(),
+            type_index,
+            symbol: symbol.to_string(),
+            is_interface: false,
+            descriptor: Some(descriptor),
+            type_params,
+            interface_methods: Vec::new(),
+        };
+        let mut interface = export(
+            3,
+            "Reader",
+            TypeDescriptorIr::Interface,
+            vec!["Item".to_string()],
+        );
+        interface.is_interface = true;
+        interface.interface_methods = vec![InterfaceMethodSignature {
+            name: "read".to_string(),
+            type_params: Vec::new(),
+            params: vec![skiff_artifact_model::FunctionTypeParamIr {
+                name: "fallback".to_string(),
+                ty: TypeRefIr::TypeParam {
+                    name: "Item".to_string(),
+                },
+            }],
+            return_type: TypeRefIr::TypeParam {
+                name: "Item".to_string(),
+            },
+            may_suspend: false,
+            is_native: false,
+            is_provider: false,
+            is_static: false,
+            implicit_self: None,
+        }];
+        let exports = ProjectedPackageExportLinks {
+            exports: PackageExportIndex {
+                types: BTreeMap::from([
+                    (
+                        "example.pkg/Box".to_string(),
+                        export(
+                            0,
+                            "Box",
+                            TypeDescriptorIr::Record {
+                                fields: BTreeMap::from([(
+                                    "value".to_string(),
+                                    TypeRefIr::TypeParam {
+                                        name: "Item".to_string(),
+                                    },
+                                )]),
+                            },
+                            vec!["Item".to_string()],
+                        ),
+                    ),
+                    (
+                        "example.pkg/Token".to_string(),
+                        export(
+                            1,
+                            "Token",
+                            TypeDescriptorIr::Representation {
+                                representation: TypeRefIr::TypeParam {
+                                    name: "Item".to_string(),
+                                },
+                            },
+                            vec!["Item".to_string()],
+                        ),
+                    ),
+                    (
+                        "example.pkg/Choice".to_string(),
+                        export(
+                            2,
+                            "Choice",
+                            TypeDescriptorIr::Union {
+                                branches: vec![NamedUnionBranchIr::SyntheticDiscriminator {
+                                    payload_type: TypeRefIr::TypeParam {
+                                        name: "Item".to_string(),
+                                    },
+                                    discriminator_field: "tag".to_string(),
+                                    discriminator_value: "value".to_string(),
+                                }],
+                            },
+                            vec!["Item".to_string()],
+                        ),
+                    ),
+                    ("example.pkg/Reader".to_string(), interface),
+                    (
+                        "example.pkg/Closed".to_string(),
+                        export(
+                            4,
+                            "Closed",
+                            TypeDescriptorIr::Record {
+                                fields: BTreeMap::from([(
+                                    "value".to_string(),
+                                    TypeRefIr::builtin("string"),
+                                )]),
+                            },
+                            Vec::new(),
+                        ),
+                    ),
+                ]),
+                ..PackageExportIndex::default()
+            },
+            public_instances: Vec::new(),
+            alias_types: BTreeSet::new(),
+        };
+
+        let projected = project_package_schema("example.pkg", &exports, &[]).unwrap();
+
+        assert_eq!(
+            projected
+                .index
+                .types
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["Closed"]
+        );
+        assert_eq!(projected.records.len(), 1);
+        assert_eq!(projected.refs_by_source.len(), 1);
+    }
+
+    #[test]
+    fn package_schema_applied_nominal_owner_is_omitted_without_partial_index() {
+        let projected = project_package_schema(
             "example.pkg",
             &exports(TypeDescriptorIr::Record {
                 fields: BTreeMap::from([(
@@ -827,11 +897,173 @@ mod tests {
             }),
             &[],
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(error
-            .to_string()
-            .contains("does not admit applied nominal reference in User"));
+        assert!(projected.index.types.is_empty());
+        assert!(projected.records.is_empty());
+        assert!(projected.refs_by_source.is_empty());
+    }
+
+    #[test]
+    fn package_schema_transitive_generic_owners_are_omitted_as_a_whole() {
+        let file = FileIrRef::new("file", "models");
+        let generic_ref = TypeRefIr::ServiceSymbol {
+            symbol: ServiceSymbolRef {
+                module_path: "models".to_string(),
+                symbol: "Cell".to_string(),
+            },
+        };
+        let exports = ProjectedPackageExportLinks {
+            exports: PackageExportIndex {
+                types: BTreeMap::from([
+                    (
+                        "example.pkg/Cell".to_string(),
+                        TypeExport {
+                            file: file.clone(),
+                            type_index: 0,
+                            symbol: "Cell".to_string(),
+                            is_interface: false,
+                            descriptor: Some(TypeDescriptorIr::Record {
+                                fields: BTreeMap::from([(
+                                    "value".to_string(),
+                                    TypeRefIr::TypeParam {
+                                        name: "T".to_string(),
+                                    },
+                                )]),
+                            }),
+                            type_params: vec!["T".to_string()],
+                            interface_methods: Vec::new(),
+                        },
+                    ),
+                    (
+                        "example.pkg/DirectEnvelope".to_string(),
+                        TypeExport {
+                            file: file.clone(),
+                            type_index: 1,
+                            symbol: "DirectEnvelope".to_string(),
+                            is_interface: false,
+                            descriptor: Some(TypeDescriptorIr::Record {
+                                fields: BTreeMap::from([(
+                                    "value".to_string(),
+                                    generic_ref.clone(),
+                                )]),
+                            }),
+                            type_params: Vec::new(),
+                            interface_methods: Vec::new(),
+                        },
+                    ),
+                    (
+                        "example.pkg/AppliedEnvelope".to_string(),
+                        TypeExport {
+                            file: file.clone(),
+                            type_index: 2,
+                            symbol: "AppliedEnvelope".to_string(),
+                            is_interface: false,
+                            descriptor: Some(TypeDescriptorIr::Record {
+                                fields: BTreeMap::from([(
+                                    "value".to_string(),
+                                    TypeRefIr::AppliedNominal {
+                                        base: NominalTypeRefBaseIr::ServiceSymbol {
+                                            symbol: ServiceSymbolRef {
+                                                module_path: "models".to_string(),
+                                                symbol: "Cell".to_string(),
+                                            },
+                                        },
+                                        arguments: vec![TypeRefIr::builtin("string")],
+                                    },
+                                )]),
+                            }),
+                            type_params: Vec::new(),
+                            interface_methods: Vec::new(),
+                        },
+                    ),
+                    (
+                        "example.pkg/FreeParamEnvelope".to_string(),
+                        TypeExport {
+                            file: file.clone(),
+                            type_index: 3,
+                            symbol: "FreeParamEnvelope".to_string(),
+                            is_interface: false,
+                            descriptor: Some(TypeDescriptorIr::Representation {
+                                representation: TypeRefIr::TypeParam {
+                                    name: "Unbound".to_string(),
+                                },
+                            }),
+                            type_params: Vec::new(),
+                            interface_methods: Vec::new(),
+                        },
+                    ),
+                    (
+                        "example.pkg/Closed".to_string(),
+                        TypeExport {
+                            file,
+                            type_index: 4,
+                            symbol: "Closed".to_string(),
+                            is_interface: false,
+                            descriptor: Some(TypeDescriptorIr::Record {
+                                fields: BTreeMap::from([(
+                                    "value".to_string(),
+                                    TypeRefIr::builtin("string"),
+                                )]),
+                            }),
+                            type_params: Vec::new(),
+                            interface_methods: Vec::new(),
+                        },
+                    ),
+                ]),
+                ..PackageExportIndex::default()
+            },
+            public_instances: Vec::new(),
+            alias_types: BTreeSet::new(),
+        };
+
+        let projected = project_package_schema("example.pkg", &exports, &[]).unwrap();
+
+        assert_eq!(
+            projected
+                .index
+                .types
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["Closed"]
+        );
+        assert_eq!(projected.records.len(), 1);
+        assert_eq!(
+            projected
+                .refs_by_source
+                .keys()
+                .map(|(module, symbol)| (module.as_str(), symbol.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("models", "Closed")]
+        );
+    }
+
+    #[test]
+    fn package_schema_websocket_generic_builtins_have_no_name_based_admission() {
+        for name in [
+            "std.websocket.WebSocketIngressEvent",
+            "std.websocket.WebSocketConnectResult",
+        ] {
+            let projected = project_package_schema(
+                "example.pkg",
+                &exports(TypeDescriptorIr::Record {
+                    fields: BTreeMap::from([(
+                        "value".to_string(),
+                        TypeRefIr::Builtin {
+                            name: name.to_string(),
+                            args: vec![TypeRefIr::builtin("string")],
+                        },
+                    )]),
+                }),
+                &[],
+            )
+            .unwrap();
+
+            assert!(projected.index.types.is_empty(), "{name}");
+            assert!(projected.records.is_empty(), "{name}");
+            assert!(projected.refs_by_source.is_empty(), "{name}");
+        }
     }
 
     #[test]

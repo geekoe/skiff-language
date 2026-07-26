@@ -57,8 +57,7 @@ fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
         panic!("std.actor.find must remain a callable");
     };
     assert_eq!(actor_find.type_params, ["T", "Id"]);
-    let internal_error_entry =
-        &published.package_schema_index.types["std.service.InternalError"];
+    let internal_error_entry = &published.package_schema_index.types["std.service.InternalError"];
     assert_eq!(
         internal_error_entry.public_path.as_deref(),
         Some("std.service.InternalError")
