@@ -392,7 +392,7 @@ fn protocol_identity_tracks_semantics_but_not_diagnostic_text() {
     );
 
     let mut changed = contract_definition();
-    changed.operations.get_mut("echo").unwrap().may_suspend = true;
+    changed.operations.get_mut("echo").unwrap().return_value.ty = ContractTypeRef::builtin("bool");
     let changed = compile_service_contract(changed).unwrap();
     assert_ne!(
         baseline.service_protocol_identity,
