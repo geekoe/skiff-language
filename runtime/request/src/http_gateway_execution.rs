@@ -3,7 +3,10 @@ use std::sync::{
     Arc,
 };
 
-use skiff_artifact_model::{GatewayAdapterKind, GatewayDispatchMode, GatewayProtocolSurface};
+use skiff_artifact_model::{
+    AssemblyIdentity, GatewayAdapterKind, GatewayDispatchMode, GatewayEntryIdentity,
+    GatewayProtocolSurface,
+};
 use skiff_runtime_capability_context::{
     BinaryHttpRequestContext, CancellationToken, HttpNameValueContext, RequestPayloadContext,
 };
@@ -162,27 +165,60 @@ fn validate_request(
     target: &RuntimeAssemblyHttpGatewayTarget,
     header: &RuntimeAssemblyRequestStartFrameHeader,
 ) -> RequestResult<()> {
+    let GatewayProtocolSurface::Http(http) = &target.protocol_surface().protocol;
+    validate_request_facts(
+        HttpGatewayRequestValidationFacts {
+            gateway_entry_key: target.gateway_entry_key().as_str(),
+            assembly_identity: target.eval().execution_image().assembly_identity(),
+            assembly_generation: target
+                .eval()
+                .activation_context()
+                .identity()
+                .assembly_generation,
+            gateway_entry_identity: target.gateway_entry_identity(),
+            dispatch_mode: http.dispatch_mode,
+            surface_adapter_kind: http.adapter_kind,
+            plan_adapter_kind: target.adapter_plan().kind,
+        },
+        header,
+    )
+}
+
+struct HttpGatewayRequestValidationFacts<'a> {
+    gateway_entry_key: &'a str,
+    assembly_identity: &'a AssemblyIdentity,
+    assembly_generation: u64,
+    gateway_entry_identity: &'a GatewayEntryIdentity,
+    dispatch_mode: GatewayDispatchMode,
+    surface_adapter_kind: GatewayAdapterKind,
+    plan_adapter_kind: GatewayAdapterKind,
+}
+
+fn validate_request_facts(
+    target: HttpGatewayRequestValidationFacts<'_>,
+    header: &RuntimeAssemblyRequestStartFrameHeader,
+) -> RequestResult<()> {
     if header.schema_version != RUNTIME_FRAME_SCHEMA_VERSION
         || header.frame_type != "request.start"
         || header.caller.kind != "gateway"
         || header.routing.kind != "runtimeAssembly"
     {
         return Err(RequestError::protocol(
-            target.gateway_entry_key().as_str(),
+            target.gateway_entry_key,
             "HTTP gateway request is not the canonical runtimeAssembly request.start shape",
         ));
     }
-    if header.routing.assembly_identity != *target.eval().execution_image().assembly_identity()
-        || header.routing.assembly_generation != target.eval().request_activation().generation()
+    if header.routing.assembly_identity != *target.assembly_identity
+        || header.routing.assembly_generation != target.assembly_generation
     {
         return Err(RequestError::protocol(
-            target.gateway_entry_key().as_str(),
+            target.gateway_entry_key,
             "HTTP gateway request does not match the pinned assembly activation",
         ));
     }
-    if header.routing.gateway_entry_identity != *target.gateway_entry_identity() {
+    if header.routing.gateway_entry_identity != *target.gateway_entry_identity {
         return Err(RequestError::protocol(
-            target.gateway_entry_key().as_str(),
+            target.gateway_entry_key,
             "HTTP gateway request identity does not match the exact linked entry",
         ));
     }
@@ -190,22 +226,21 @@ fn validate_request(
         || header.routing.ingress.path != header.http_request.path
     {
         return Err(RequestError::protocol(
-            target.gateway_entry_key().as_str(),
+            target.gateway_entry_key,
             "HTTP gateway routing metadata and binary HTTP context disagree",
         ));
     }
-    let GatewayProtocolSurface::Http(http) = &target.protocol_surface().protocol;
-    let expected_mode = match http.dispatch_mode {
+    let expected_mode = match target.dispatch_mode {
         GatewayDispatchMode::Unary => "unary",
         GatewayDispatchMode::ServerStream => "serverStream",
     };
     if header.mode != expected_mode
-        || (http.adapter_kind == GatewayAdapterKind::TypedJson
-            && http.dispatch_mode != GatewayDispatchMode::Unary)
-        || target.adapter_plan().kind != http.adapter_kind
+        || (target.surface_adapter_kind == GatewayAdapterKind::TypedJson
+            && target.dispatch_mode != GatewayDispatchMode::Unary)
+        || target.plan_adapter_kind != target.surface_adapter_kind
     {
         return Err(RequestError::protocol(
-            target.gateway_entry_key().as_str(),
+            target.gateway_entry_key,
             "HTTP gateway request mode does not match the exact linked adapter plan",
         ));
     }
@@ -265,3 +300,7 @@ impl Drop for RuntimeHttpGatewayRequestLifecycle {
         request_activation.end_request();
     }
 }
+
+#[cfg(test)]
+#[path = "http_gateway_execution/tests.rs"]
+mod tests;
