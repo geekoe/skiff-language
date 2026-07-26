@@ -194,6 +194,12 @@ fn is_package_schema_descriptor(
         }),
         TypeDescriptorIr::Interface => interface_methods.iter().all(|method| {
             method.type_params.is_empty()
+                && method.implicit_self.as_ref().is_none_or(|receiver| {
+                    matches!(
+                        receiver,
+                        TypeRefIr::Builtin { name, args } if name == "Self" && args.is_empty()
+                    ) || is_package_schema_ref(receiver, definitions, source_to_public, visiting)
+                })
                 && method.params.iter().all(|param| {
                     is_package_schema_ref(&param.ty, definitions, source_to_public, visiting)
                 })
@@ -671,7 +677,7 @@ mod tests {
             is_native: false,
             is_provider: false,
             is_static: false,
-            implicit_self: None,
+            implicit_self: Some(TypeRefIr::builtin("Self")),
         }];
 
         let projected = project_package_schema("example.pkg", &interface, &[]).unwrap();
@@ -690,6 +696,38 @@ mod tests {
                 may_suspend: true,
             }
         );
+    }
+
+    #[test]
+    fn package_schema_interface_with_applied_implicit_receiver_is_omitted() {
+        let mut interface = exports(TypeDescriptorIr::Interface);
+        let export = interface.exports.types.get_mut("example.pkg/User").unwrap();
+        export.is_interface = true;
+        export.interface_methods = vec![InterfaceMethodSignature {
+            name: "read".to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: TypeRefIr::builtin("string"),
+            may_suspend: false,
+            is_native: false,
+            is_provider: false,
+            is_static: false,
+            implicit_self: Some(TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::ServiceSymbol {
+                    symbol: ServiceSymbolRef {
+                        module_path: "models".to_string(),
+                        symbol: "Box".to_string(),
+                    },
+                },
+                arguments: vec![TypeRefIr::builtin("string")],
+            }),
+        }];
+
+        let projected = project_package_schema("example.pkg", &interface, &[]).unwrap();
+
+        assert!(projected.index.types.is_empty());
+        assert!(projected.records.is_empty());
+        assert!(projected.refs_by_source.is_empty());
     }
 
     #[test]

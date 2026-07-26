@@ -101,6 +101,22 @@ function roundTrip(value: GenericRecord<string>) -> GenericRecord<string> {
             .contains_key("TransitiveEnvelope"),
         "a non-generic owner that transitively uses an applied nominal must be omitted"
     );
+    assert!(
+        package
+            .artifact
+            .package_local_abi
+            .public_symbols
+            .contains_key("TransitiveEnvelope"),
+        "schema ineligibility must not remove the transitive owner from PackageLocalAbi"
+    );
+    assert!(
+        package
+            .artifact
+            .implementation_links
+            .types
+            .contains_key("TransitiveEnvelope"),
+        "schema ineligibility must not remove the transitive owner implementation link"
+    );
     assert_eq!(
         package
             .package_schema_index
@@ -131,10 +147,10 @@ function roundTrip(value: GenericRecord<string>) -> GenericRecord<string> {
         .dependency("skiff.run/std", "1.0.0")
         .expect("canonical std artifact");
     for path in [
-        "websocket.WebSocketConnection",
-        "websocket.WebSocketReceiveEvent",
-        "websocket.WebSocketIngressEvent",
-        "websocket.WebSocketConnectResult",
+        "std.websocket.WebSocketConnection",
+        "std.websocket.WebSocketReceiveEvent",
+        "std.websocket.WebSocketIngressEvent",
+        "std.websocket.WebSocketConnectResult",
     ] {
         assert!(matches!(
             std.artifact.package_local_abi.public_symbols.get(path),
@@ -147,7 +163,7 @@ function roundTrip(value: GenericRecord<string>) -> GenericRecord<string> {
     assert!(
         std.package_schema_index
             .types
-            .contains_key("service.InternalError"),
+            .contains_key("std.service.InternalError"),
         "ordinary schema-closed std errors must retain their exact record"
     );
 }

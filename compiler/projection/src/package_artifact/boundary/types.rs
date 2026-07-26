@@ -240,16 +240,22 @@ fn validate_local_type_closure(
         file_ir_units,
         public_type_ids,
         resolved_package_schemas,
+        callback_adapter_required: false,
     };
     walker
         .walk(owner_module, ty, &mut policy)
-        .map_err(|failure| failure.error)
+        .map_err(|failure| failure.error)?;
+    if policy.callback_adapter_required {
+        return Err(BoundaryUnavailableReason::CallbackAdapterUnavailable);
+    }
+    Ok(())
 }
 
 struct BoundaryProjectionTypePolicy<'a> {
     file_ir_units: &'a [skiff_artifact_model::FileIrUnit],
     public_type_ids: &'a BTreeMap<(String, String), ContractTypeRef>,
     resolved_package_schemas: &'a [ResolvedPackageSchema],
+    callback_adapter_required: bool,
 }
 
 impl TypeClosurePolicy for BoundaryProjectionTypePolicy<'_> {
@@ -274,13 +280,9 @@ impl TypeClosurePolicy for BoundaryProjectionTypePolicy<'_> {
                 project_literal(value)?;
                 Ok(TypeClosureControl::Continue)
             }
-            TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. }
-                if contains_generic_boundary_shape(visit.ty) =>
-            {
-                Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
-            }
             TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. } => {
-                Err(BoundaryUnavailableReason::CallbackAdapterUnavailable)
+                self.callback_adapter_required = true;
+                Ok(TypeClosureControl::Continue)
             }
             TypeRefIr::ServiceSymbol { symbol }
                 if self
@@ -381,12 +383,14 @@ fn project_local_type(
         }),
         TypeRefIr::Literal { value } => project_literal(value),
         TypeRefIr::AppliedNominal { .. } => Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
-        TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. }
-            if contains_generic_boundary_shape(ty) =>
-        {
-            Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
-        }
         TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. } => {
+            validate_local_type_closure(
+                owner_module,
+                ty,
+                file_ir_units,
+                public_type_ids,
+                resolved_package_schemas,
+            )?;
             Err(BoundaryUnavailableReason::CallbackAdapterUnavailable)
         }
         TypeRefIr::ServiceSymbol { symbol } => public_type_ids
@@ -520,36 +524,6 @@ fn classify_native(name: &str, argument_count: usize) -> Result<(), BoundaryUnav
             _,
         ) => Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
         _ => Err(BoundaryUnavailableReason::NativeAdapterUnavailable),
-    }
-}
-
-fn contains_generic_boundary_shape(ty: &TypeRefIr) -> bool {
-    match ty {
-        TypeRefIr::AppliedNominal { .. } | TypeRefIr::TypeParam { .. } => true,
-        TypeRefIr::Builtin { args, .. } => args.iter().any(contains_generic_boundary_shape),
-        TypeRefIr::Record { fields } => fields.values().any(contains_generic_boundary_shape),
-        TypeRefIr::Union { items } => items.iter().any(contains_generic_boundary_shape),
-        TypeRefIr::Nullable { inner } => contains_generic_boundary_shape(inner),
-        TypeRefIr::AnyInterface { interface } => interface
-            .canonical_type_args
-            .iter()
-            .any(contains_generic_boundary_shape),
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            params
-                .iter()
-                .any(|param| contains_generic_boundary_shape(&param.ty))
-                || contains_generic_boundary_shape(return_type)
-        }
-        TypeRefIr::LocalType { .. }
-        | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::ServiceSymbol { .. }
-        | TypeRefIr::PackageSymbol { .. }
-        | TypeRefIr::PackageSchema { .. }
-        | TypeRefIr::DbObjectSymbol { .. }
-        | TypeRefIr::Literal { .. } => false,
     }
 }
 
@@ -861,6 +835,91 @@ mod tests {
                 vec![BoundaryUnavailableReason::UnsupportedBoundaryType]
             );
         }
+    }
+
+    #[test]
+    fn package_schema_callback_transitively_referencing_generic_owner_is_unsupported() {
+        let mut unit = skiff_artifact_model::FileIrUnit::empty("api", "source-hash");
+        unit.declarations.types.insert(
+            "Cell".to_string(),
+            TypeDeclarationIr {
+                type_index: 0,
+                symbol: "Cell".to_string(),
+                source_span: None,
+            },
+        );
+        unit.declarations.types.insert(
+            "Envelope".to_string(),
+            TypeDeclarationIr {
+                type_index: 1,
+                symbol: "Envelope".to_string(),
+                source_span: None,
+            },
+        );
+        unit.type_table.push(TypeDeclIr {
+            name: "Cell".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::from([(
+                    "value".to_string(),
+                    TypeRefIr::TypeParam {
+                        name: "T".to_string(),
+                    },
+                )]),
+            },
+            type_params: vec!["T".to_string()],
+            implements: Vec::new(),
+            source_span: None,
+        });
+        unit.type_table.push(TypeDeclIr {
+            name: "Envelope".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::from([(
+                    "value".to_string(),
+                    TypeRefIr::AppliedNominal {
+                        base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                        arguments: vec![TypeRefIr::builtin("string")],
+                    },
+                )]),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
+        let signature = PackageCallableSignature {
+            parameters: vec![skiff_artifact_model::PackageCallableParameter {
+                name: "callback".to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: TypeRefIr::Function {
+                        params: vec![skiff_artifact_model::FunctionTypeParamIr {
+                            name: "value".to_string(),
+                            ty: TypeRefIr::LocalType { type_index: 1 },
+                        }],
+                        return_type: Box::new(TypeRefIr::builtin("void")),
+                    },
+                },
+            }],
+            return_type: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("void"),
+            },
+            may_suspend: false,
+        };
+        let mut reasons = Vec::new();
+
+        assert_eq!(
+            project_operation_contract(
+                "api",
+                &signature,
+                &[unit],
+                &BTreeMap::new(),
+                &[],
+                &mut reasons,
+            ),
+            None
+        );
+        assert_eq!(
+            reasons,
+            vec![BoundaryUnavailableReason::UnsupportedBoundaryType]
+        );
     }
 
     #[test]
