@@ -52,6 +52,7 @@ pub enum GeneratedServiceDeploymentError {
 pub fn generate_service_deployment(
     input: GeneratedServiceDeploymentInput<'_>,
 ) -> Result<ServiceDeployment, GeneratedServiceDeploymentError> {
+    reject_unwired_http_authoring(input.service)?;
     validate_exact_api(&input)?;
     let typed = ServiceDeploymentInput {
         schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
@@ -98,6 +99,18 @@ pub fn generate_service_deployment(
         &artifacts,
         input.package_schema_records,
     )?)
+}
+
+fn reject_unwired_http_authoring(
+    service: &ServiceManifestAuthoring,
+) -> Result<(), GeneratedServiceDeploymentError> {
+    if service.http.is_none() {
+        return Ok(());
+    }
+    Err(GeneratedServiceDeploymentError::InvalidManifest {
+        field: "http",
+        message: "named HTTP gateway entries are not yet supported by generated deployment; refusing to reinterpret them as service operations".to_string(),
+    })
 }
 
 fn validate_exact_api(
@@ -186,7 +199,7 @@ fn operation_bindings(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RouteAuthoring {
+struct WebSocketRouteAuthoring {
     #[serde(default = "default_host")]
     host: String,
     #[serde(default)]
@@ -197,8 +210,8 @@ struct RouteAuthoring {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RoutesAuthoring {
-    routes: Vec<RouteAuthoring>,
+struct WebSocketRoutesAuthoring {
+    routes: Vec<WebSocketRouteAuthoring>,
 }
 
 fn default_host() -> String {
@@ -209,32 +222,24 @@ fn ingress_bindings(
     input: &GeneratedServiceDeploymentInput<'_>,
 ) -> Result<Vec<DeploymentIngressBinding>, GeneratedServiceDeploymentError> {
     let mut result = Vec::new();
-    for (field, protocol, value) in [
-        ("http", IngressProtocol::Http, input.service.http.as_ref()),
-        (
-            "websocket",
-            IngressProtocol::WebSocket,
-            input.service.websocket.as_ref(),
-        ),
-    ] {
-        let Some(value) = value else { continue };
-        let routes: RoutesAuthoring = serde_json::from_value(value.clone()).map_err(|error| {
-            GeneratedServiceDeploymentError::InvalidManifest {
-                field,
-                message: error.to_string(),
-            }
-        })?;
+    if let Some(value) = input.service.websocket.as_ref() {
+        let routes: WebSocketRoutesAuthoring =
+            serde_json::from_value(value.clone()).map_err(|error| {
+                GeneratedServiceDeploymentError::InvalidManifest {
+                    field: "websocket",
+                    message: error.to_string(),
+                }
+            })?;
         for route in routes.routes {
-            result.push(resolve_route(input, protocol, route)?);
+            result.push(resolve_websocket_route(input, route)?);
         }
     }
     Ok(result)
 }
 
-fn resolve_route(
+fn resolve_websocket_route(
     input: &GeneratedServiceDeploymentInput<'_>,
-    protocol: IngressProtocol,
-    route: RouteAuthoring,
+    route: WebSocketRouteAuthoring,
 ) -> Result<DeploymentIngressBinding, GeneratedServiceDeploymentError> {
     if input.service_api.unavailable.contains_key(&route.operation) {
         return Err(invalid(format!(
@@ -256,7 +261,7 @@ fn resolve_route(
         })?;
     Ok(DeploymentIngressBinding {
         selector: IngressSelector {
-            protocol,
+            protocol: IngressProtocol::WebSocket,
             host: route.host,
             method: route.method,
             path: route.path,
@@ -509,4 +514,29 @@ fn generated_revision(
 
 fn invalid(message: impl Into<String>) -> GeneratedServiceDeploymentError {
     GeneratedServiceDeploymentError::InvalidInput(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_service_deployment_rejects_named_http_entries_before_legacy_resolution() {
+        let service = serde_yaml::from_str::<ServiceManifestAuthoring>(
+            r#"
+id: example.com/users
+http:
+  createUser:
+    method: POST
+    path: /users
+    kind: typedJson
+    handler: users.create
+"#,
+        )
+        .unwrap();
+        let error = reject_unwired_http_authoring(&service).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("named HTTP gateway entries"));
+        assert!(message.contains("refusing to reinterpret them as service operations"));
+    }
 }

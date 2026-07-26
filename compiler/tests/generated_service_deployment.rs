@@ -2,18 +2,16 @@ mod common;
 
 use common::{package_project::compile_package_project, TestDir};
 use serde_json::json;
-use skiff_artifact_model::{
-    BoundaryUnavailableReason, ServiceConfigProfileAuthoring, ServiceManifestAuthoring,
-};
+use skiff_artifact_model::{ServiceConfigProfileAuthoring, ServiceManifestAuthoring};
 use skiff_compiler::{
     generate_service_deployment, GeneratedServiceDeploymentInput, ServiceApiProjection,
 };
 use skiff_compiler_contract::project_service_api;
 
 #[test]
-fn generates_exact_operations_ingress_and_profile_bindings() {
+fn generates_exact_operations_and_profile_bindings() {
     let (project, service_api) = compile_fixture("generated-positive", "\"ok\"");
-    let service = manifest("read");
+    let service = manifest();
     let profile = profile();
     let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &service,
@@ -33,11 +31,7 @@ fn generates_exact_operations_ingress_and_profile_bindings() {
         skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap()
     );
     assert_eq!(deployment.operation_bindings.len(), 1);
-    assert_eq!(deployment.ingress.len(), 1);
-    assert_eq!(
-        deployment.ingress[0].contract_operation_id,
-        deployment.operation_bindings[0].contract_operation_id
-    );
+    assert!(deployment.ingress.is_empty());
     assert_eq!(deployment.config_literals[0].path, "registry.token");
     assert_eq!(deployment.policy.principal, "service:registry");
 }
@@ -49,7 +43,7 @@ fn omitted_or_null_timeout_does_not_generate_a_policy_override() {
     profile.timeout = serde_json::Value::Null;
 
     let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
-        service: &manifest("read"),
+        service: &manifest(),
         profile_name: "prod",
         profile: &profile,
         service_api: &service_api,
@@ -80,7 +74,7 @@ fn explicit_timeout_is_the_only_generated_timeout_override() {
     let mut profile = profile();
     profile.timeout = json!(1250);
     let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
-        service: &manifest("read"),
+        service: &manifest(),
         profile_name: "prod",
         profile: &profile,
         service_api: &service_api,
@@ -110,7 +104,7 @@ fn invalid_timeout_values_fail_closed() {
         let mut profile = profile();
         profile.timeout = timeout;
         let error = generate_service_deployment(GeneratedServiceDeploymentInput {
-            service: &manifest("read"),
+            service: &manifest(),
             profile_name: "prod",
             profile: &profile,
             service_api: &service_api,
@@ -128,29 +122,13 @@ fn invalid_timeout_values_fail_closed() {
 }
 
 #[test]
-fn ingress_and_mapping_fail_closed() {
+fn automatic_service_api_mapping_fails_closed() {
     let (project, mut service_api) = compile_fixture("generated-negative", "\"ok\"");
     let profile = profile();
-    service_api.unavailable.insert(
-        "notPublic".to_string(),
-        vec![BoundaryUnavailableReason::UnknownEffect],
-    );
-
-    let error = generate_service_deployment(GeneratedServiceDeploymentInput {
-        service: &manifest("notPublic"),
-        profile_name: "prod",
-        profile: &profile,
-        service_api: &service_api,
-        implementation: &project.package.artifact,
-        package_closure: &[],
-        package_schema_records: &project.package.resolved_package_schema_type_records,
-    })
-    .unwrap_err();
-    assert!(error.to_string().contains("boundary unavailable"));
 
     service_api.available.clear();
     let error = generate_service_deployment(GeneratedServiceDeploymentInput {
-        service: &manifest("read"),
+        service: &manifest(),
         profile_name: "prod",
         profile: &profile,
         service_api: &service_api,
@@ -189,7 +167,7 @@ fn ingress_and_mapping_fail_closed() {
         .insert("readAlias".to_string(), callable);
     skiff_artifact_identity::assign_service_contract_identities(&mut duplicate.contract).unwrap();
     let error = generate_service_deployment(GeneratedServiceDeploymentInput {
-        service: &manifest("read"),
+        service: &manifest(),
         profile_name: "prod",
         profile: &profile,
         service_api: &duplicate,
@@ -204,12 +182,42 @@ fn ingress_and_mapping_fail_closed() {
 }
 
 #[test]
+fn generated_service_deployment_refuses_named_http_entries_instead_of_reinterpreting_operations() {
+    let (project, service_api) = compile_fixture("generated-http-fail-closed", "\"ok\"");
+    let service = serde_yaml::from_str::<ServiceManifestAuthoring>(
+        r#"
+id: example.com/registry
+http:
+  read:
+    method: GET
+    path: /artifacts
+    kind: typedJson
+    handler: main.read
+"#,
+    )
+    .unwrap();
+    let error = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &service,
+        profile_name: "prod",
+        profile: &profile(),
+        service_api: &service_api,
+        implementation: &project.package.artifact,
+        package_closure: &[],
+        package_schema_records: &project.package.resolved_package_schema_type_records,
+    })
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("named HTTP gateway entries"));
+    assert!(message.contains("refusing to reinterpret them as service operations"));
+}
+
+#[test]
 fn unbound_requirement_and_identity_mismatch_fail_closed() {
     let (project, service_api) = compile_fixture("generated-unbound", "\"ok\"");
     let mut missing = profile();
     missing.config = json!({});
     let error = generate_service_deployment(GeneratedServiceDeploymentInput {
-        service: &manifest("read"),
+        service: &manifest(),
         profile_name: "prod",
         profile: &missing,
         service_api: &service_api,
@@ -222,7 +230,7 @@ fn unbound_requirement_and_identity_mismatch_fail_closed() {
         .to_string()
         .contains("missing config binding registry.token"));
 
-    let mut wrong_service = manifest("read");
+    let mut wrong_service = manifest();
     wrong_service.id = "example.com/other".to_string();
     let error = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &wrong_service,
@@ -323,7 +331,7 @@ fn generate(
     >,
 ) -> skiff_artifact_model::ServiceDeployment {
     generate_service_deployment(GeneratedServiceDeploymentInput {
-        service: &manifest("read"),
+        service: &manifest(),
         profile_name: "prod",
         profile: &profile(),
         service_api: api,
@@ -363,17 +371,11 @@ fn compile_fixture(
     (project, api)
 }
 
-fn manifest(operation: &str) -> ServiceManifestAuthoring {
+fn manifest() -> ServiceManifestAuthoring {
     ServiceManifestAuthoring {
         id: "example.com/registry".to_string(),
         kind: skiff_artifact_model::ServiceAuthoringKind::Service,
-        http: Some(json!({
-            "routes": [{
-                "method": "GET",
-                "path": "/artifacts",
-                "operation": operation
-            }]
-        })),
+        http: None,
         websocket: None,
         timeout: None,
     }

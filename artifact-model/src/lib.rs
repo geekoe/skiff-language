@@ -117,11 +117,11 @@ pub use deployment::{
 pub use ecosystem_authoring::{
     is_dependency_alias_lexically_valid, is_dependency_alias_reserved, is_dependency_alias_valid,
     parse_runtime_assembly_yml, parse_service_contract_definition_yml,
-    parse_service_deployment_yml, EcosystemAuthoringError, RuntimeAssemblyAuthoring,
-    ServiceAuthoringKind, ServiceConfigProfileAuthoring, ServiceContractDefinition,
-    ServiceContractDefinitionDiagnosticText, ServiceDeploymentAuthoring, ServiceManifestAuthoring,
-    DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS, DEPENDENCY_ALIAS_POSITIVE_VECTORS,
-    DEPENDENCY_ALIAS_RESERVED_VECTORS,
+    parse_service_deployment_yml, EcosystemAuthoringError, HttpGatewayEntryAuthoring,
+    RuntimeAssemblyAuthoring, ServiceAuthoringKind, ServiceConfigProfileAuthoring,
+    ServiceContractDefinition, ServiceContractDefinitionDiagnosticText, ServiceDeploymentAuthoring,
+    ServiceManifestAuthoring, DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS,
+    DEPENDENCY_ALIAS_POSITIVE_VECTORS, DEPENDENCY_ALIAS_RESERVED_VECTORS,
 };
 pub use effects::{
     CallableEffectFacts, CallableEffectSummary, CallableEffectUnknownReason, CallableMayEffects,
