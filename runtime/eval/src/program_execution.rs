@@ -724,6 +724,30 @@ impl Interpreter {
         .await
     }
 
+    /// Executes an exact assembly callable while retaining the existing deferred stream-producer
+    /// scheduler used by local calls. HTTP gateway server streams consume the returned handle
+    /// through the shared stream cleanup path.
+    pub async fn execute_runtime_assembly_addr_with_stream_defer(
+        &self,
+        context: ProgramExecutionContext<'_>,
+        heap: &mut RequestHeap,
+        addr: &ExecutableAddr,
+        args: Vec<RuntimeValue>,
+    ) -> Result<RuntimeValue> {
+        context.runtime_assembly_target()?;
+        self.call_program_executable_with_self(
+            context,
+            heap,
+            &Env::new(),
+            addr,
+            addr,
+            &BTreeMap::new(),
+            RuntimeValue::Null,
+            args,
+        )
+        .await
+    }
+
     pub fn program_projection(&self) -> Result<EvalProgramProjection<'_>> {
         let program = self.program.as_ref().ok_or_else(|| {
             RuntimeError::InvalidArtifact(

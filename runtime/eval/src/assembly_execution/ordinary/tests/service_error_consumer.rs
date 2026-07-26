@@ -1229,6 +1229,7 @@ fn provider_package(
         runtime_requirements: empty_runtime_requirements(),
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
+        service_call_roots: Vec::new(),
         service_call_refs: vec![service_call.clone()],
     });
     PackageFixture {
@@ -1342,6 +1343,7 @@ fn caller_package(
         runtime_requirements: empty_runtime_requirements(),
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
+        service_call_roots: Vec::new(),
         service_call_refs: vec![service_call.clone()],
     });
     PackageFixture {
@@ -1485,6 +1487,7 @@ fn std_package() -> PackageFixture {
         runtime_requirements: empty_runtime_requirements(),
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
+        service_call_roots: Vec::new(),
         service_call_refs: Vec::new(),
     });
     PackageFixture {
@@ -1620,7 +1623,7 @@ fn runtime_assembly(
         },
         service_binding_templates: Vec::new(),
         activation_templates: Vec::new(),
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     }
 }
 

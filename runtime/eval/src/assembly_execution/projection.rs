@@ -781,6 +781,7 @@ mod tests {
             },
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections: BTreeMap::new(),
+            service_call_roots: Vec::new(),
             service_call_refs: Vec::new(),
         };
         let package_ref = PackageArtifactRef {
@@ -804,7 +805,7 @@ mod tests {
             },
             service_binding_templates: Vec::new(),
             activation_templates: Vec::new(),
-            global_ingress: Vec::new(),
+            gateway_ingress: Vec::new(),
         };
         (
             crate::test_support::link_package_fixture(assembly, vec![(package, files)]),
@@ -885,6 +886,7 @@ mod tests {
             },
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections: BTreeMap::new(),
+            service_call_roots: Vec::new(),
             service_call_refs: Vec::new(),
         };
         let package_ref = PackageArtifactRef {
@@ -908,7 +910,7 @@ mod tests {
             },
             service_binding_templates: Vec::new(),
             activation_templates: Vec::new(),
-            global_ingress: Vec::new(),
+            gateway_ingress: Vec::new(),
         };
         let image = crate::test_support::link_package_fixture(
             assembly,

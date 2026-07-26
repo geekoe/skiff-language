@@ -41,6 +41,7 @@ pub mod recoverable_behavior;
 pub mod recoverable_spawn_payload;
 pub mod request_boundary;
 pub mod request_diagnostic;
+mod runtime_http_gateway;
 pub mod runtime_ops;
 pub mod runtime_value_view;
 pub mod service_dispatch;
@@ -92,6 +93,7 @@ pub use request_boundary::{
     EvalRequestWebSocketConnectAccept, EvalRequestWebSocketConnectContext,
     EvalRequestWebSocketConnectReject, EvalRequestWebSocketContextCodec,
 };
+pub use runtime_http_gateway::{RuntimeHttpGatewayCallable, RuntimeHttpGatewayExecutionTarget};
 
 use skiff_runtime_linked_program::{
     ExecutableAddr, LinkOverlay, LinkedFileUnit, PackageUnit, RuntimeTypeContext,

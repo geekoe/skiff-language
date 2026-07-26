@@ -114,7 +114,7 @@ fn compiler_wrap_continues_through_file_ir_linking_and_eval() {
         },
         service_binding_templates: Vec::new(),
         activation_templates: Vec::new(),
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     };
     let schema_records = published
         .resolved_package_schema_type_records

@@ -84,49 +84,10 @@ impl Interpreter {
                     )?)
                 }
             };
-            let item_value = match item {
-                StreamPoll::InternalItem(item) => {
-                    let (value, source_heap) = item.into_parts();
-                    let local_carrier = match &value {
-                        RuntimeValue::Heap(handle) => source_heap.local_carrier_cell(*handle)?,
-                        _ => None,
-                    };
-                    if let Some(carrier) = local_carrier {
-                        let carrier = deep_clone_runtime_value_carrier_between_heaps(
-                            &source_heap,
-                            heap,
-                            &carrier,
-                        )?;
-                        match item_type.as_ref() {
-                            Some(item_type) => {
-                                runtime_carrier_for_plan(carrier, item_type, "stream item", heap)?
-                            }
-                            None => carrier,
-                        }
-                    } else {
-                        let value =
-                            deep_clone_runtime_value_between_heaps(&source_heap, heap, &value)?;
-                        match item_type.as_ref() {
-                            Some(item_type) => {
-                                runtime_carrier_for_plan(value, item_type, "stream item", heap)?
-                            }
-                            None => value.into(),
-                        }
-                    }
-                }
-                StreamPoll::Item(item) => {
-                    if let Some(item_type) = item_type.as_ref() {
-                        runtime_carrier_from_wire_required_plan(
-                            &item,
-                            Some(item_type),
-                            "stream item",
-                            heap,
-                        )?
-                    } else {
-                        runtime_from_wire(&item, heap)?.into()
-                    }
-                }
-                StreamPoll::End => {
+            let item_value = match materialize_runtime_stream_item(item, item_type.as_ref(), heap)?
+            {
+                Some(item) => item,
+                None => {
                     cleanup.reached_end();
                     return Ok(Flow::Continue);
                 }
@@ -701,6 +662,49 @@ impl Interpreter {
             call,
             item_type,
         }))
+    }
+}
+
+/// Moves either an in-process producer item or an external wire item into the consumer heap
+/// under one exact item plan. Boundary consumers use this same transfer before applying their
+/// protocol codec.
+pub(crate) fn materialize_runtime_stream_item(
+    item: StreamPoll,
+    item_type: Option<&RuntimeTypePlan>,
+    heap: &mut RequestHeap,
+) -> Result<Option<RuntimeValueCarrier>> {
+    match item {
+        StreamPoll::InternalItem(item) => {
+            let (value, source_heap) = item.into_parts();
+            let local_carrier = match &value {
+                RuntimeValue::Heap(handle) => source_heap.local_carrier_cell(*handle)?,
+                _ => None,
+            };
+            let carrier = if let Some(carrier) = local_carrier {
+                deep_clone_runtime_value_carrier_between_heaps(&source_heap, heap, &carrier)?
+            } else {
+                deep_clone_runtime_value_between_heaps(&source_heap, heap, &value)?.into()
+            };
+            match item_type {
+                Some(plan) => {
+                    runtime_carrier_for_plan(carrier, plan, "stream item", heap).map(Some)
+                }
+                None => Ok(Some(carrier)),
+            }
+        }
+        StreamPoll::Item(item) => {
+            let carrier = match item_type {
+                Some(item_type) => runtime_carrier_from_wire_required_plan(
+                    &item,
+                    Some(item_type),
+                    "stream item",
+                    heap,
+                )?,
+                None => runtime_from_wire(&item, heap)?.into(),
+            };
+            Ok(Some(carrier))
+        }
+        StreamPoll::End => Ok(None),
     }
 }
 
