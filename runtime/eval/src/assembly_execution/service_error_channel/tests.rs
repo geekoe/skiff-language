@@ -1331,7 +1331,7 @@ impl CoreFixture {
             },
             service_binding_templates: Vec::new(),
             activation_templates: Vec::new(),
-            global_ingress: Vec::new(),
+            gateway_ingress: Vec::new(),
         };
         let hydrated = packages
             .iter()
@@ -1603,6 +1603,7 @@ fn package(package_id: &str, types: Vec<PublicType>) -> PackageFixture {
         },
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
+        service_call_roots: Vec::new(),
         service_call_refs: Vec::new(),
     });
     PackageFixture {

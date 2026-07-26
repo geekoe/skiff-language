@@ -454,7 +454,7 @@ fn materialization_fixture(expression: ExprIr) -> PackageDirectFixture {
         },
         service_binding_templates: Vec::new(),
         activation_templates: Vec::new(),
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     };
     let image =
         crate::test_support::link_package_fixture(assembly.clone(), vec![(package, vec![file])]);
@@ -625,7 +625,7 @@ fn package_constant_fixture() -> PackageDirectFixture {
         },
         service_binding_templates: Vec::new(),
         activation_templates: Vec::new(),
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     };
     let image = crate::test_support::link_package_fixture(
         assembly.clone(),
@@ -801,7 +801,7 @@ fn package_direct_fixture_with_caller(caller_kind: CallerFixtureKind) -> Package
         },
         service_binding_templates: Vec::new(),
         activation_templates: Vec::new(),
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     };
     let image = crate::test_support::link_package_fixture(
         assembly.clone(),
@@ -1660,6 +1660,7 @@ fn private_package(package_id: &str, file: &FileIrUnit) -> PackageArtifact {
         },
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
+        service_call_roots: Vec::new(),
         service_call_refs: Vec::new(),
     }
 }

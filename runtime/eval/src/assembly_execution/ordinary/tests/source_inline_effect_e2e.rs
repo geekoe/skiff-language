@@ -635,7 +635,7 @@ fn linked_service_effect_fixture(
         },
         service_binding_templates: Vec::new(),
         activation_templates: Vec::new(),
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     };
     let records = BTreeMap::from([(internal_type_id, internal_record)]);
     let hydrated = HydratedPackageCode::new(
@@ -1333,7 +1333,7 @@ fn package_link_fixture(packages: &[PackageArtifact]) -> RuntimeAssembly {
         },
         service_binding_templates: Vec::new(),
         activation_templates: Vec::new(),
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     }
 }
 

@@ -1065,6 +1065,51 @@ impl Interpreter {
     where
         F: FnMut(HttpBoundaryResponseStreamEvent) -> std::result::Result<(), E>,
     {
+        self.consume_binary_http_response_stream_with_context(
+            &context.execution_context,
+            stream_value,
+            item_type,
+            cancel_signals,
+            false,
+            on_event,
+        )
+        .await
+    }
+
+    pub(crate) async fn consume_in_process_binary_http_response_stream<F, E>(
+        &self,
+        context: &ProgramExecutionContext<'_>,
+        stream_value: &Value,
+        item_type: &RuntimeTypePlan,
+        cancel_signals: &[StreamCancelSignal],
+        on_event: &mut F,
+    ) -> EvalStreamResult<(), E>
+    where
+        F: FnMut(HttpBoundaryResponseStreamEvent) -> std::result::Result<(), E>,
+    {
+        self.consume_binary_http_response_stream_with_context(
+            context,
+            stream_value,
+            item_type,
+            cancel_signals,
+            true,
+            on_event,
+        )
+        .await
+    }
+
+    async fn consume_binary_http_response_stream_with_context<F, E>(
+        &self,
+        context: &ProgramExecutionContext<'_>,
+        stream_value: &Value,
+        item_type: &RuntimeTypePlan,
+        cancel_signals: &[StreamCancelSignal],
+        allow_internal_items: bool,
+        on_event: &mut F,
+    ) -> EvalStreamResult<(), E>
+    where
+        F: FnMut(HttpBoundaryResponseStreamEvent) -> std::result::Result<(), E>,
+    {
         let execution = context.execution();
         let stream_runtime = context.stream_runtime();
         let mut cleanup = StreamConsumerCleanup::new(stream_runtime.clone(), stream_value);
@@ -1079,23 +1124,36 @@ impl Interpreter {
                     )
                     .await,
             )?;
-            let item = match map_eval_error(Self::external_wire_stream_item(item, "HTTP response"))?
-            {
-                Some(item) => item,
-                None => {
-                    cleanup.reached_end();
-                    return Ok(());
-                }
-            };
             let mut heap = context.request_heap();
-            let coerced = map_eval_error(runtime_from_wire_required_plan(
-                &item,
-                Some(item_type),
-                "HTTP response stream item",
-                &mut heap,
-            ))?;
+            let item = if allow_internal_items {
+                match map_eval_error(crate::program_stream::materialize_runtime_stream_item(
+                    item, None, &mut heap,
+                ))? {
+                    Some(item) => item,
+                    None => {
+                        cleanup.reached_end();
+                        return Ok(());
+                    }
+                }
+            } else {
+                let item =
+                    match map_eval_error(Self::external_wire_stream_item(item, "HTTP response"))? {
+                        Some(item) => item,
+                        None => {
+                            cleanup.reached_end();
+                            return Ok(());
+                        }
+                    };
+                map_eval_error(runtime_from_wire_required_plan(
+                    &item,
+                    Some(item_type),
+                    "HTTP response stream item",
+                    &mut heap,
+                ))?
+                .into()
+            };
             let wire = map_eval_error(runtime_to_wire_required_plan(
-                &coerced,
+                item.value(),
                 Some(item_type),
                 "HTTP response stream item",
                 &mut heap,
