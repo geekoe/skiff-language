@@ -83,10 +83,27 @@ impl NotificationSink {
 }
 ```
 
-匹配必须基于 canonical method identity 和完整签名。参数数量、参数类型、返回类型、stream / callback /
-effect contract 和后续 ABI 相关 metadata 不匹配时，conformance 失败。具体可抛错误类型不属于签名。
-compiler 不允许靠同名但不同签名
-的方法“差不多匹配”。
+匹配必须基于 canonical method identity 和 interface requirement 的完整调用形状。参数数量、参数类型、
+返回类型、stream / callback contract 和其它由 requirement 明确拥有的 ABI metadata 不匹配时，
+conformance 失败。具体可抛错误类型和 concrete executable 的推断 suspension summary 都不属于
+interface requirement。compiler 不允许靠同名但不同调用形状的方法“差不多匹配”。
+
+interface 与 concrete method 都不新增 `async`、`suspending` 或 effect 关键字。带函数体的 concrete
+method 是否可能挂起由 compiler 从函数体、调用图和内建等待点推断；conformance 不比较这个推断结果。
+因此同一个 interface method requirement 可以同时由推断为 suspending 和 non-suspending 的 concrete
+method 实现。
+
+调用方的 suspension 分析按实际可见 target 分类：
+
+- 静态解析到 concrete method、package public callable 或 public-instance concrete binding 时，使用该
+  concrete callable 的推断 summary。
+- 通过 `any I` 或其它无法静态确定 concrete target 的 interface dispatch 调用时，保守视为可能挂起；
+  这个保守事实属于 call site 分析，不写回 interface requirement。
+- 远程 public instance / `any I` remote carrier 的调用是 service call；service call 本身就是调用方的
+  潜在挂起点，不读取 callee implementation 的内部 summary。
+
+`maySuspend=true` 只是静态 may-analysis 结果，不会插入调度点。runtime 仍只在执行到真实等待且等待尚未
+完成时释放 actor 执行权；语言没有显式 `yield`。
 
 第一版不支持同一 interface 内的 method overload。源码 method token 必须在该 interface 内唯一映射到
 一个 canonical `method_abi_id`；重名 method 即使签名不同也必须报错。
@@ -112,6 +129,9 @@ type ManagedLlmServiceImpl implements llm.ManagedLlmService {
 - conformance 是 Package API / Local ABI fact。删除 conformance 或改变 type arguments 必须改变相关
   Package Local ABI；若被ServiceContract operation引用，也必须改变对应service protocol identity并让依赖方
   fail closed。
+- concrete public callable 的推断 suspension summary 仍是该 callable 的 Package Local ABI fact；
+  summary 改变会重建其 Package build 并让 package 依赖方重编译，但不会改变 interface requirement 或
+  conformance 本身。callee 内部 summary 也不进入 ServiceContract identity。
 
 ## 5. Generic Interface Identity
 
@@ -245,12 +265,16 @@ compiler / artifact 必须保存足够的 interface metadata：
 
 - interface symbol identity。
 - interface type parameters。
-- method requirement signatures。
+- method requirement signatures；其中不包含 concrete executable 的 suspension summary。
 - nominal type 的 explicit conformance list，包括完整 type arguments。
 - public instance 使用到的 implemented interface identities。
 - `any I` 装箱点的 interface identity；远程 `as I` 装箱还需保存 callee `(public_instance_key,
   ContractOperationId)` 寻址与锁定的protocol identity（见
   `any-interface-value.md §Remote Fail-Closed`）。
+
+concrete executable / public callable 的推断 suspension summary 由 executable 与 Package callable
+metadata 另行保存。public instance 的具体 method binding引用该 concrete callable；interface method
+table和interface conformance metadata不得复制、默认或比较一个 requirement-level `maySuspend` 位。
 
 runtime 执行 concrete method 时不需要给 ordinary object 附加 interface identity。interface metadata
 只用于compile/link与artifact projection阶段的静态解析、ABI identity和compatibility check。runtime不依据

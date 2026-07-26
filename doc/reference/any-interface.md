@@ -64,7 +64,8 @@ const llm: any LlmClient = remoteLlm/managedLlm as LlmClient           // 远程
 ```
 
 - 本地装箱源：`expr` 的静态类型必须是 concrete nominal record instantiation，且 `implements I`（显式
-  conformance，遵循 `interface.md §4`）。
+  conformance，遵循 `interface.md §4`）。conformance只检查interface requirement的调用形状，不比较
+  concrete executable的推断suspension summary。
 - 远程装箱源：见 §2.5。
 - **`as I` 不能省略**，即使装箱源只 expose 一个 interface，也即使赋值/参数已有 `any I` 目标类型。理由是
   **装箱可见性**，不是消歧：`as I` 是类型擦除发生点（产生 fat 值 / 对远程还含寻址填入与 protocol identity
@@ -95,6 +96,11 @@ const out = p.execute(ctx, call)
 ```
 
 只能调用 `I` 声明的 method requirement；`any I` 不暴露具体类型的其它成员。
+
+`any I` method call无法从interface requirement确定唯一concrete summary，因此静态suspension分析必须
+保守视为可能挂起；它不能把某个当前装箱值的实现summary复制成interface承诺。remote carrier调用同时是
+service call，因service call本身而是潜在挂起点，不读取callee内部summary。保守`maySuspend`不会在调用
+入口插入`yield`；runtime仍只在执行遇到真实且尚未完成的等待时释放actor执行权。
 
 ### 2.5 远程装箱源（`/` 寻址）
 
@@ -233,8 +239,9 @@ agent/run(input, localLlm as LlmClient)           // 本地实现
   在调用点选 `remoteLlm/...`（远程装箱）还是 `local...`（本地装箱）决定。
 - `any I` 参数可以传任意多个、混入 `Array<any I>`——不像 binding 那样每个 requirement 只能绑一个实现、
   装不下运行期变长的异构集合。
-- 远程能力一旦改了签名 / 撤了 conformance，consumer 的装箱点编译失败（fail-closed 锁在产生远程引用的
-  装箱点，package 不碰）。
+- 远程能力一旦改了interface调用形状 / 撤了 conformance，consumer 的装箱点编译失败（fail-closed锁在
+  产生远程引用的装箱点，package不碰）。只改变callee implementation的内部suspension summary不改变
+  interface conformance或ServiceProtocol identity，因此不使该装箱点失效。
 
 `requires.bindings` manifest 机制本版退役，不再支持旧的 binding 写法。（是否在后续版本以更轻的"能力
 requirement"声明形态回归——让 consumer 用 `as I` 满足——是一个开放设计项，见
@@ -247,8 +254,9 @@ requirement"声明形态回归——让 consumer 用 `as I` 满足——是一�
 远程寻址值）、在 `any I` 方法调用处 emit 间接调用（本地 method table / 远程 operation dispatch）；
 runtime 执行间接调用。**本地** `any I` 不影响 ABI/identity；**远程**装箱在装箱点把 callee protocol
 identity 锁进 dependency lock（fail-closed）。远程性由值布局 `carrier` 是 `Remote` 分支表达，不引入
-独立 effect。DB/spawn/queue/persistent 等跨 request 边界是否接受该值由 recoverable boundary plan 与 runtime
-carrier check 决定，本文不展开。
+用户声明的独立 effect；但remote method call仍因其调用种类是service call而被推断为
+`maySuspend=true`。DB/spawn/queue/persistent 等跨 request 边界是否接受该值由 recoverable boundary plan
+与 runtime carrier check 决定，本文不展开。
 
 内部架构契约见 `../architecture/any-interface-value.md`；可恢复边界契约见
 `../architecture/recoverable-value.md`；落地阶段计划见

@@ -81,6 +81,12 @@ registry entry保存bootstrap值，只用于实例激活。registry不是持久�
 
 没有 suspension point 的同步片段天然不会与同实例的其他方法交替执行，因此适合短同步裁决。runtime 不提供同实例字段的多线程共享内存语义，也不要求业务使用 mutex 或 atomic。没有 suspension point 的长同步方法会阻塞该实例的所有其他方法，直到返回、失败或被连续执行预算/watchdog终止；runtime 不在任意指令之间自动抢占，也不提供显式 `yield`。
 
+compiler 的 `maySuspend` 是保守静态 summary，不是 runtime 调度指令。通过 `any I` / 未知 interface
+dispatch 的调用即使被保守标记为可能挂起，也不会因此在调用前后自动释放 executor；若最终 concrete
+执行没有遇到真实等待，该同步片段仍连续执行。service call本身是调用方的潜在挂起点，但也只有在
+response尚未就绪、调用实际等待时才释放executor。callee实现内部的推断summary只可供其owner
+runtime选择执行机制，不改变caller侧这一规则，也不属于ServiceContract。
+
 长生命周期成员方法是合法的，只要它通过异步 IO、stream next 等真实等待周期性释放执行权。例如正在消费 LLM stream 的方法可以与 `stop` 并发：
 
 ```skiff
