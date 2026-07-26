@@ -40,8 +40,10 @@
    - 生成receipt的service operation数为0，gateway entry与ingress各21，key/identity引用闭合。
 4. 使用fresh isolated artifact root和本task Skiff toolchain至少真实发布一次Account service package；
    先bootstrap canonical std并发布
-   `/Users/geek/workspace/skiff-packages/http-session`，不得读取stable artifact store。保存JSON receipt的
-   operation/gateway/ingress数量和identity generation证据。
+   `/Users/geek/workspace/skiff-packages-phase-05-integration/http-session`。该依赖必须来自
+   skiff-packages integration checkpoint `609551f0a65bfcc814ed4c894e4c333b4ffb10f1`，其中
+   `337e3fae`已经声明所需database state；不得改用尚未合流该前置的skiff-packages `main`，也不得读取
+   stable artifact store。保存JSON receipt的operation/gateway/ingress数量和identity generation证据。
 5. 检查21个真实handler仍是
    `HttpRequest -> HttpResponse`，不改业务HTTP语义、客户端URL、cookie/session、DB或config。
 
