@@ -343,6 +343,46 @@ impl TypeResolutionModel {
         package_artifacts: Option<&[PackageArtifact]>,
         external_type_symbols: &PublicationTypeSymbolIndex,
     ) -> Result<Self, String> {
+        Self::build_inner(
+            parsed_sources,
+            package_aliases,
+            package_dependencies,
+            package_facts,
+            package_artifacts,
+            None,
+            external_type_symbols,
+        )
+    }
+
+    pub(crate) fn build_with_compiler_owned_packages(
+        parsed_sources: &[ParsedCompilerSource],
+        package_aliases: &BTreeMap<String, Vec<String>>,
+        package_dependencies: &[PackageDependency],
+        package_facts: Option<&[TypeResolutionPackageFacts<'_>]>,
+        package_artifacts: Option<&[PackageArtifact]>,
+        dependency_analysis: &SourceDependencyAnalysisInput,
+        external_type_symbols: &PublicationTypeSymbolIndex,
+    ) -> Result<Self, String> {
+        Self::build_inner(
+            parsed_sources,
+            package_aliases,
+            package_dependencies,
+            package_facts,
+            package_artifacts,
+            Some(dependency_analysis),
+            external_type_symbols,
+        )
+    }
+
+    fn build_inner(
+        parsed_sources: &[ParsedCompilerSource],
+        package_aliases: &BTreeMap<String, Vec<String>>,
+        package_dependencies: &[PackageDependency],
+        package_facts: Option<&[TypeResolutionPackageFacts<'_>]>,
+        package_artifacts: Option<&[PackageArtifact]>,
+        compiler_owned_dependencies: Option<&SourceDependencyAnalysisInput>,
+        external_type_symbols: &PublicationTypeSymbolIndex,
+    ) -> Result<Self, String> {
         let mut modules = BTreeMap::new();
         let mut source_types = BTreeMap::new();
         let mut source_interfaces = BTreeSet::new();
@@ -367,12 +407,12 @@ impl TypeResolutionModel {
             index_source_interfaces(&module_path, ast, &mut source_interfaces);
         }
 
-        let package_dependency_access = package_dependencies
+        let mut package_dependency_access = package_dependencies
             .iter()
             .map(|dependency| (dependency.effective_alias().to_string(), dependency.access))
             .collect::<BTreeMap<_, _>>();
         let package_dependency_declarations = package_dependencies;
-        let package_dependencies = package_dependency_declarations
+        let mut package_dependencies = package_dependency_declarations
             .iter()
             .map(|dependency| {
                 (
@@ -411,6 +451,7 @@ impl TypeResolutionModel {
                     artifact,
                     dependency_ref,
                     dependency.access,
+                    ArtifactPackageTypePathMode::DeclaredPublic,
                     &mut package_types,
                     &mut package_interfaces,
                     &mut package_type_slots,
@@ -435,6 +476,20 @@ impl TypeResolutionModel {
                     ),
                 );
             }
+        }
+        if let Some(dependencies) = compiler_owned_dependencies {
+            index_compiler_owned_package_artifacts(
+                package_artifacts,
+                dependencies,
+                &mut package_types,
+                &mut package_interfaces,
+                &mut package_type_slots,
+                &mut package_type_source_paths,
+                &mut package_constants,
+                &mut package_dependencies,
+                &mut package_dependency_access,
+                &mut package_artifact_identities,
+            )?;
         }
         let semantic_publication = type_resolution_semantic_publication(parsed_sources);
         let interface_semantics = InterfaceSemantics::build(&semantic_publication)
@@ -466,9 +521,9 @@ impl TypeResolutionModel {
         Ok(model)
     }
 
-    /// Returns the artifact ABI identity selected for each declared package
-    /// dependency. Lowering uses this to keep type annotations aligned with the
-    /// exact dependency artifact that source resolution inspected.
+    /// Returns the artifact ABI identity selected for each declared or
+    /// compiler-owned package dependency. Lowering uses this to keep type
+    /// annotations aligned with the exact artifact source resolution inspected.
     pub fn package_dependency_abi_expectations(&self) -> BTreeMap<String, String> {
         self.package_artifact_identities
             .iter()
@@ -3381,10 +3436,80 @@ impl TypeResolutionModel {
     }
 }
 
+fn index_compiler_owned_package_artifacts(
+    package_artifacts: Option<&[PackageArtifact]>,
+    dependencies: &SourceDependencyAnalysisInput,
+    package_types: &mut BTreeMap<PackageSymbolKey, SourceTypeResolution>,
+    package_interfaces: &mut BTreeMap<PackageSymbolKey, PackageInterfaceFact>,
+    package_type_slots: &mut BTreeMap<(String, String, u32), String>,
+    package_type_source_paths: &mut BTreeMap<(String, String, String), String>,
+    package_constants: &mut BTreeMap<PackageSymbolKey, PackageConstantResolution>,
+    package_dependencies: &mut BTreeMap<String, String>,
+    package_dependency_access: &mut BTreeMap<String, PackageDependencyAccess>,
+    package_artifact_identities: &mut BTreeMap<String, (PackageLocalAbiIdentity, PackageBuildId)>,
+) -> Result<(), String> {
+    for (alias, expected_build_id, expected_local_abi) in
+        dependencies.compiler_owned_package_owners()
+    {
+        let matches = package_artifacts
+            .unwrap_or_default()
+            .iter()
+            .filter(|artifact| {
+                &artifact.package_build_id == expected_build_id
+                    && &artifact.package_local_abi.local_abi_identity == expected_local_abi
+            })
+            .collect::<Vec<_>>();
+        let [artifact] = matches.as_slice() else {
+            return Err(format!(
+                "compiler-owned dependency alias `{alias}` requires exactly one verified package artifact owner, found {}",
+                matches.len()
+            ));
+        };
+        if package_dependencies.contains_key(alias)
+            || package_artifact_identities.contains_key(alias)
+        {
+            return Err(format!(
+                "compiler-owned dependency alias `{alias}` conflicts with a declared package owner"
+            ));
+        }
+        let access = PackageDependencyAccess::Public;
+        index_artifact_package_types(
+            artifact,
+            alias,
+            access,
+            ArtifactPackageTypePathMode::CompilerOwnedExact,
+            package_types,
+            package_interfaces,
+            package_type_slots,
+        )?;
+        index_artifact_package_type_source_paths(
+            artifact,
+            alias,
+            access,
+            package_type_source_paths,
+        )?;
+        index_artifact_package_constants(artifact, alias, access, package_constants)?;
+        package_dependencies.insert(alias.to_string(), artifact.package_id.clone());
+        package_dependency_access.insert(alias.to_string(), access);
+        package_artifact_identities.insert(
+            alias.to_string(),
+            (expected_local_abi.clone(), expected_build_id.clone()),
+        );
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ArtifactPackageTypePathMode {
+    DeclaredPublic,
+    CompilerOwnedExact,
+}
+
 fn index_artifact_package_types(
     artifact: &PackageArtifact,
     dependency_ref: &str,
     access: PackageDependencyAccess,
+    path_mode: ArtifactPackageTypePathMode,
     package_types: &mut BTreeMap<PackageSymbolKey, SourceTypeResolution>,
     package_interfaces: &mut BTreeMap<PackageSymbolKey, PackageInterfaceFact>,
     package_type_slots: &mut BTreeMap<(String, String, u32), String>,
@@ -3483,9 +3608,12 @@ fn index_artifact_package_types(
             module_path: module_path.to_string(),
             public_path: Some(selected_path.clone()),
         };
-        let indexed_paths = match access {
-            PackageDependencyAccess::Public => vec![selected_path.as_str(), name],
-            PackageDependencyAccess::TopLevel => vec![selected_path.as_str()],
+        let indexed_paths = match (access, path_mode) {
+            (PackageDependencyAccess::Public, ArtifactPackageTypePathMode::DeclaredPublic) => {
+                vec![selected_path.as_str(), name]
+            }
+            (PackageDependencyAccess::Public, ArtifactPackageTypePathMode::CompilerOwnedExact)
+            | (PackageDependencyAccess::TopLevel, _) => vec![selected_path.as_str()],
         };
         for path in indexed_paths.into_iter().collect::<BTreeSet<_>>() {
             let key = PackageSymbolKey {
@@ -6478,6 +6606,112 @@ mod tests {
         assert!(error.contains("no unique public Local ABI type"), "{error}");
     }
 
+    #[test]
+    fn compiler_owned_package_owner_rehydrates_exact_local_abi_slots() {
+        let parsed_sources = parsed_sources("function noop() -> void {}");
+        let artifact = signature_rehydration_artifact();
+        let dependencies = compiler_owned_dependencies(&artifact);
+        let model = TypeResolutionModel::build_with_compiler_owned_packages(
+            &parsed_sources,
+            &BTreeMap::new(),
+            &[],
+            None,
+            Some(std::slice::from_ref(&artifact)),
+            &dependencies,
+            &PublicationTypeSymbolIndex::default(),
+        )
+        .expect("compiler-owned artifact owner should build");
+
+        assert_eq!(
+            model.package_dependencies.get("std").map(String::as_str),
+            Some("example.com/provider")
+        );
+        assert_eq!(
+            model
+                .rehydrate_package_signature_type_for_dependency(
+                    "std",
+                    &PackageTypeRef::Local {
+                        local_type: TypeRefIr::LocalType { type_index: 0 },
+                    },
+                )
+                .unwrap(),
+            PackageTypeRef::Local {
+                local_type: TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::Dependency {
+                            dependency_ref: "std".to_string(),
+                        },
+                        symbol_path: "Bindings".to_string(),
+                        abi_expectation: Some("provider-abi".to_string()),
+                    },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn compiler_owned_package_owner_requires_one_exact_artifact() {
+        let parsed_sources = parsed_sources("function noop() -> void {}");
+        let artifact = signature_rehydration_artifact();
+        let dependencies = compiler_owned_dependencies(&artifact);
+        for (artifacts, expected_count) in [
+            (Vec::new(), 0),
+            (vec![artifact.clone(), artifact.clone()], 2),
+        ] {
+            let error = TypeResolutionModel::build_with_compiler_owned_packages(
+                &parsed_sources,
+                &BTreeMap::new(),
+                &[],
+                None,
+                Some(&artifacts),
+                &dependencies,
+                &PublicationTypeSymbolIndex::default(),
+            )
+            .unwrap_err();
+            assert!(
+                error.contains(&format!(
+                    "requires exactly one verified package artifact owner, found {expected_count}"
+                )),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn compiler_owned_available_artifacts_require_explicit_owner_facts() {
+        let parsed_sources = parsed_sources("function noop() -> void {}");
+        let artifact = signature_rehydration_artifact();
+        let model = TypeResolutionModel::build_with_compiler_owned_packages(
+            &parsed_sources,
+            &BTreeMap::new(),
+            &[],
+            None,
+            Some(std::slice::from_ref(&artifact)),
+            &SourceDependencyAnalysisInput::default(),
+            &PublicationTypeSymbolIndex::default(),
+        )
+        .expect("unselected available artifacts must stay outside type resolution");
+        assert!(model.package_dependencies.is_empty());
+        assert!(model.package_artifact_identities.is_empty());
+        assert!(model.package_types.is_empty());
+    }
+
+    fn compiler_owned_dependencies(artifact: &PackageArtifact) -> SourceDependencyAnalysisInput {
+        SourceDependencyAnalysisInput::new(
+            [(
+                "std".to_string(),
+                crate::PackageDependencyAnalysisFacts::new(
+                    artifact.package_build_id.clone(),
+                    artifact.package_local_abi.local_abi_identity.clone(),
+                    BTreeMap::new(),
+                )
+                .compiler_owned(),
+            )],
+            [],
+        )
+        .unwrap()
+    }
+
     fn conformance_source() -> &'static str {
         r#"
           interface I<T> {}
@@ -7634,6 +7868,7 @@ mod tests {
             &artifact,
             "llm-api",
             PackageDependencyAccess::Public,
+            ArtifactPackageTypePathMode::DeclaredPublic,
             &mut package_types,
             &mut package_interfaces,
             &mut BTreeMap::new(),
@@ -7747,6 +7982,7 @@ mod tests {
             &tampered,
             "llm-api",
             PackageDependencyAccess::Public,
+            ArtifactPackageTypePathMode::DeclaredPublic,
             &mut BTreeMap::new(),
             &mut BTreeMap::new(),
             &mut BTreeMap::new(),

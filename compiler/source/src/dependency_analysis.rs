@@ -302,6 +302,18 @@ impl SourceDependencyAnalysisInput {
         self.packages.keys().map(String::as_str)
     }
 
+    pub(crate) fn compiler_owned_package_owners(
+        &self,
+    ) -> impl Iterator<Item = (&str, &PackageBuildId, &PackageLocalAbiIdentity)> {
+        self.packages.iter().filter_map(|(alias, facts)| {
+            facts.compiler_owned.then_some((
+                alias.as_str(),
+                &facts.package_build_id,
+                &facts.expected_local_abi,
+            ))
+        })
+    }
+
     pub(crate) fn contract_aliases(&self) -> impl Iterator<Item = &str> {
         self.contracts
             .dependencies()
