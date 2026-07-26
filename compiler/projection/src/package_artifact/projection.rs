@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     CallableSemanticFacts, ContractRequirement, FileIrUnit, PackageArtifact, PackageBuildId,
     PackageLocalAbi, PackageLocalAbiIdentity, PackageRequirement, PackageRuntimeRequirements,
-    PackageSchemaIndexRef, PackageSchemaTypeRecordRef, ServiceCallRef, ServiceRequirement,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageSchemaIndexRef, PackageSchemaTypeRecordRef, PackageServiceCallRoot, ServiceCallRef,
+    ServiceRequirement, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableSignatureFacts,
@@ -135,6 +135,11 @@ pub(super) fn project_package_artifact_facts(
         &input.runtime_requirements,
         &callables.boundary_projections,
     )?;
+    let service_call_roots = project_service_call_roots(
+        input.package_id,
+        input.api_exports,
+        &callables.public_symbols,
+    )?;
     let mut artifact = PackageArtifact {
         schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
         package_id: input.package_id.to_string(),
@@ -175,6 +180,7 @@ pub(super) fn project_package_artifact_facts(
         runtime_requirements: input.runtime_requirements,
         callable_semantic_facts: callables.semantic_facts,
         boundary_projections: callables.boundary_projections,
+        service_call_roots,
         service_call_refs: std::mem::take(&mut input.service_call_refs),
     };
     normalize_artifact_lists(&mut artifact);
@@ -194,6 +200,53 @@ pub(super) fn project_package_artifact_facts(
         file_ir_units: input.file_ir_units,
         resources: input.resources,
     })
+}
+
+fn project_service_call_roots(
+    package_id: &str,
+    api_exports: &super::api_exports::PackageExports,
+    public_symbols: &BTreeMap<String, skiff_artifact_model::PackageLocalAbiSymbol>,
+) -> Result<Vec<PackageServiceCallRoot>, ProjectionError> {
+    let mut roots = Vec::new();
+    for public_path in &api_exports.service_call_functions {
+        let Some(skiff_artifact_model::PackageLocalAbiSymbol::Callable { callable_id, .. }) =
+            public_symbols.get(public_path)
+        else {
+            return Err(ProjectionError::InvalidPackageArtifact {
+                message: format!(
+                    "package {package_id} serviceCall root {public_path} must resolve to a public function"
+                ),
+            });
+        };
+        let root = PackageServiceCallRoot::Function {
+            public_path: public_path.clone(),
+            callable_id: callable_id.clone(),
+        };
+        roots.push(root);
+    }
+    for instance in api_exports
+        .public_instances
+        .iter()
+        .filter(|instance| instance.service_call)
+    {
+        let public_path = &instance.public_path;
+        let Some(skiff_artifact_model::PackageLocalAbiSymbol::PublicInstance { methods, .. }) =
+            public_symbols.get(public_path)
+        else {
+            return Err(ProjectionError::InvalidPackageArtifact {
+                message: format!(
+                    "package {package_id} serviceCall root {public_path} must resolve to a public instance"
+                ),
+            });
+        };
+        let root = PackageServiceCallRoot::PublicInstance {
+            public_path: public_path.clone(),
+            methods: methods.clone(),
+        };
+        roots.push(root);
+    }
+    roots.sort_by(|left, right| left.public_path().cmp(right.public_path()));
+    Ok(roots)
 }
 
 fn normalize_artifact_lists(artifact: &mut PackageArtifact) {

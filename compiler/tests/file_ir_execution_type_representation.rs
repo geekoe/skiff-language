@@ -77,7 +77,7 @@ fn impl_receiver_and_contract_parameter_keep_distinct_execution_roles() {
         "package.yml",
         format!("id: {PACKAGE_ID}\nversion: {VERSION}\n"),
     );
-    temp.write("api.yml", "");
+    temp.write("api.yml", "{}\n");
     temp.write(
         "main.skiff",
         r#"

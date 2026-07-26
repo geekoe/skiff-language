@@ -101,6 +101,7 @@ version: 1.0.0
 "#,
     )
     .unwrap();
+    fs::write(temp.join("api.yml"), "{}\n").unwrap();
 
     let manifest = manifest_io::read_package_manifest(
         &manifest_path,
@@ -953,6 +954,7 @@ fn read_temp_manifest(name: &str, text: &str) -> Result<PackageManifest, Package
     let temp = temp_dir(name);
     let manifest_path = temp.join("package.yml");
     fs::write(&manifest_path, text).unwrap();
+    fs::write(temp.join("api.yml"), "{}\n").unwrap();
     let result = read_user_package_manifest(&manifest_path);
     let _ = fs::remove_dir_all(temp);
     result
@@ -979,6 +981,7 @@ fn write_package_manifest(dir: &Path, id: &str, version: &str) {
         format!("id: {id}\nversion: {version}\n"),
     )
     .unwrap();
+    fs::write(dir.join("api.yml"), "{}\n").unwrap();
 }
 
 fn write_package_store_manifest(store: &Path, id: &str, version: &str) {

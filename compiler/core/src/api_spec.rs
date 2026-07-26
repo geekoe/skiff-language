@@ -18,6 +18,7 @@ pub type PublicationApiSpecEntry = PublicationApiEntry;
 pub struct PublicationApiEntry {
     pub public_path: Vec<String>,
     pub source_selector: SourceSymbolSelector,
+    pub service_call: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,7 @@ pub struct PublicationApiPublicInstanceEntry {
     pub public_path: Vec<String>,
     pub const_selector: SourceSymbolSelector,
     pub interface_selectors: Vec<SourceSymbolSelector>,
+    pub service_call: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,7 +135,13 @@ impl PublicationApiEntry {
         Self {
             public_path,
             source_selector,
+            service_call: false,
         }
+    }
+
+    pub fn with_service_call(mut self) -> Self {
+        self.service_call = true;
+        self
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -145,6 +153,7 @@ impl PublicationApiEntry {
         Self {
             public_path: public_path_segments(public_path.as_ref()),
             source_selector: SourceSymbolSelector::new(module_path, symbol),
+            service_call: false,
         }
     }
 
@@ -182,7 +191,13 @@ impl PublicationApiPublicInstanceEntry {
             public_path,
             const_selector,
             interface_selectors,
+            service_call: false,
         }
+    }
+
+    pub fn with_service_call(mut self) -> Self {
+        self.service_call = true;
+        self
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -201,6 +216,7 @@ impl PublicationApiPublicInstanceEntry {
                 .into_iter()
                 .map(|selector| SourceSymbolSelector::parse_api_selector(selector.as_ref(), true))
                 .collect::<Result<Vec<_>, _>>()?,
+            service_call: false,
         })
     }
 

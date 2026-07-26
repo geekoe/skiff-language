@@ -297,6 +297,7 @@ fn export_bindings_projection(
                         source_module: value.source_module.clone(),
                         source_symbol: value.source_symbol.clone(),
                         kind: public_callable_kind_projection(value.kind),
+                        service_call: value.service_call,
                     },
                 )
             })
@@ -384,6 +385,7 @@ fn export_bindings_projection(
                             receiver.symbol,
                         ),
                         interfaces,
+                        service_call: value.service_call,
                     },
                 ))
             })
@@ -415,6 +417,7 @@ fn public_callable_projection(
         source_module: callable.source_module.clone(),
         source_symbol: callable.source_symbol.clone(),
         kind: public_callable_kind_projection(callable.kind),
+        service_call: callable.service_call,
     }
 }
 
@@ -442,6 +445,7 @@ fn public_instance_projection(
                 source_symbol: interface.source_symbol.clone(),
             })
             .collect(),
+        service_call: instance.service_call,
     }
 }
 

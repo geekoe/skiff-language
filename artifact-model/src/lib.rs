@@ -148,7 +148,7 @@ pub use native_signature::{
 };
 pub use package_artifact::{
     PackageArtifact, PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
-    PackageLocalAbi, PackageLocalAbiSymbol,
+    PackageLocalAbi, PackageLocalAbiSymbol, PackageServiceCallRoot,
 };
 pub use package_test::{
     PackageDependencyPublicLinkScope, PackageProductionLinkScope, PackageTestAssembly,

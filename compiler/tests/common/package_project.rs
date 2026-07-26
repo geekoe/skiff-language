@@ -7,7 +7,8 @@ use std::{
 
 use skiff_compiler::{
     PackageCompileError, PackageContractCompileDependency, PublishedPackageArtifact,
-    ResolvedPackageSchema, ResolvedPackageSchemaError,
+    ResolvedPackageSchema, ResolvedPackageSchemaError, ServiceApiProjection,
+    ServicePackageCompileError,
 };
 use skiff_compiler_input::{
     package_config::{
@@ -72,6 +73,8 @@ pub enum PackageProjectCompileError {
     #[error(transparent)]
     Compile(#[from] PackageCompileError),
     #[error(transparent)]
+    ServiceCompile(#[from] ServicePackageCompileError),
+    #[error(transparent)]
     ResolvedPackageSchema(#[from] ResolvedPackageSchemaError),
     #[error("package dependency {package_id}@{package_version} has no discovered package.yml")]
     MissingDependencyManifest {
@@ -87,6 +90,13 @@ pub enum PackageProjectCompileError {
     },
     #[error("package dependency graph contains a cycle: {coordinates}")]
     DependencyCycle { coordinates: String },
+    #[error(
+        "service root package {package_id}@{package_version} was already compiled as ordinary"
+    )]
+    ServiceRootAlreadyCompiled {
+        package_id: String,
+        package_version: String,
+    },
     #[error("package manifest path {path} has no package root")]
     MissingPackageRoot { path: String },
 }
@@ -97,6 +107,46 @@ pub fn compile_package_project(
     root: &Path,
 ) -> Result<PublishedPackageProject, PackageProjectCompileError> {
     compile_package_project_with_contract_dependencies(root, &BTreeMap::new())
+}
+
+/// Compiles a package graph while authorizing the root as a service package.
+/// Dependency packages still use the ordinary package entrypoint.
+pub fn compile_service_package_project(
+    root: &Path,
+    service_id: &str,
+) -> Result<(PublishedPackageProject, ServiceApiProjection), PackageProjectCompileError> {
+    let store = root.join(LOCAL_PACKAGE_STORE);
+    let package_dirs = PackageResolutionDirs {
+        package_dirs: store.is_dir().then_some(store).into_iter().collect(),
+    };
+    let platform_sources = repository_platform_sources()?;
+    let root_manifest = read_user_package_manifest(&root.join(PACKAGE_CONFIG_FILE))?;
+    let root_key = (root_manifest.id.to_string(), root_manifest.version.clone());
+    let manifests = discover_package_manifests_with_dependency_dirs(
+        &platform_sources,
+        root,
+        &package_dirs,
+        &root_manifest.dependencies,
+    )?;
+    let contract_dependencies = BTreeMap::new();
+    let resolved_package_schemas = BTreeMap::new();
+    let mut graph = PackageGraphCompiler::new(
+        &platform_sources,
+        manifests,
+        &contract_dependencies,
+        &resolved_package_schemas,
+    );
+    // Match the authoring driver: compiler-owned std is admitted only when the
+    // root's File IR actually closes over it, rather than being compiled eagerly.
+    let compiled = graph.compile_service(&root_key, service_id)?;
+    let dependency_packages = graph.compiled_dependency_closure(&compiled.package)?;
+    Ok((
+        PublishedPackageProject {
+            package: compiled.package,
+            dependency_packages,
+        },
+        compiled.service_api,
+    ))
 }
 
 /// Compiles a package graph with validated contract dependencies attached to

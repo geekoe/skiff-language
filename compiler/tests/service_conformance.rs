@@ -11,14 +11,13 @@ use skiff_artifact_model::{
     BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
     BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary, CallableMayEffects,
     CallableProvenanceSummary, ContractRequirement, ContractTypeRef, PackageLocalAbiSymbol,
-    PackageSchemaTypeId, PackageTypeRef, PackageTypeRequirement,
-    ServiceCallRef, ServiceRequirement, ValueEscapeLane,
+    PackageSchemaTypeId, PackageTypeRef, PackageTypeRequirement, ServiceCallRef,
+    ServiceRequirement, ValueEscapeLane,
 };
 use skiff_compiler::{
     definition_contract_operation_id, ContractDefinitionError, ServiceContractDefinition,
     ServiceContractDefinitionDiagnosticText,
 };
-use skiff_compiler_contract::project_service_api;
 
 use common::{
     artifacts::module_artifact,
@@ -26,6 +25,7 @@ use common::{
     package_project::{
         compile_package_project, compile_package_project_with_contract_dependencies,
         compile_package_project_with_contract_dependencies_and_schemas,
+        compile_service_package_project,
     },
     package_schemas::{public_contract_type, resolved_package_schema},
     TestDir,
@@ -993,7 +993,7 @@ fn compile_generated_stream_contract(
     write_package(
         &provider,
         package_id,
-        "Event: model.Event\nRequest: model.Request\nevents: main.events\n",
+        "Event: model.Event\nRequest: model.Request\nevents:\n  source: main.events\n  serviceCall: true\n",
         r#"function events(input: root.model.Request) -> Stream<root.model.Event> {
   emit(root.model.Event { message: "event" })
   return
@@ -1004,9 +1004,9 @@ fn compile_generated_stream_contract(
         "model.skiff",
         "type Event { message: string }\ntype Request { topic: string }\n",
     );
-    let provider_project =
-        compile_package_project_with_contract_dependencies(provider.path(), &BTreeMap::new())
-            .expect("stream provider package should compile through the real package pipeline");
+    let (provider_project, projected_service_api) =
+        compile_service_package_project(provider.path(), service_id)
+            .expect("stream provider package should compile through the real service pipeline");
     assert!(
         matches!(
             public_callable_projection(&provider_project.package.artifact, "events"),
@@ -1016,15 +1016,7 @@ fn compile_generated_stream_contract(
         public_callable_projection(&provider_project.package.artifact, "events")
     );
     assert_no_provider_binding_wire(&provider_project.package.artifact);
-    let contract = project_service_api(
-        service_id,
-        &provider_project.package.artifact,
-        &provider_project
-            .package
-            .resolved_package_schema_type_records,
-    )
-    .expect("public stream API should project through the real contract pipeline")
-    .contract;
+    let contract = projected_service_api.contract;
     let schema = resolved_package_schema("contract-schema", &provider_project.package)
         .expect("stream provider schema should resolve");
     (contract, schema)

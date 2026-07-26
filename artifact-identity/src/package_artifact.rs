@@ -6,7 +6,7 @@ use skiff_artifact_model::{
     BoundaryCallableProjection, CallableSemanticFacts, PackageArtifact, PackageArtifactRef,
     PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
     PackageRuntimeRequirements, PackageSchemaIndexRef, PackageSchemaTypeId,
-    PackageSchemaTypeRecordRef, ServiceCallRef,
+    PackageSchemaTypeRecordRef, PackageServiceCallRoot, ServiceCallRef,
 };
 
 use crate::{
@@ -51,6 +51,7 @@ pub struct PackageArtifactBuildIdentityProjection {
     runtime_requirements: PackageRuntimeRequirements,
     callable_semantic_facts: BTreeMap<PackageCallableId, CallableSemanticFacts>,
     boundary_projections: BTreeMap<PackageCallableId, BoundaryCallableProjection>,
+    service_call_roots: Vec<PackageServiceCallRoot>,
     service_call_refs: Vec<ServiceCallRef>,
 }
 
@@ -192,7 +193,7 @@ mod tests {
         validate_package_artifact_identities(&artifact).unwrap();
 
         let mut stale_schema = artifact.clone();
-        stale_schema.schema_version = "skiff-package-artifact-v4".to_string();
+        stale_schema.schema_version = "skiff-package-artifact-v5".to_string();
         assert!(matches!(
             validate_package_artifact_identities(&stale_schema),
             Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
@@ -219,7 +220,7 @@ mod tests {
         stale_build.package_build_id =
             PackageBuildId::new(stale_build.package_build_id.as_str().replacen(
                 crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-                "skiff-package-build-v5:sha256",
+                "skiff-package-build-v6:sha256",
                 1,
             ));
         assert!(matches!(
@@ -274,6 +275,150 @@ mod tests {
             package_artifact_build_identity(&changed).unwrap(),
             baseline_build
         );
+    }
+
+    #[test]
+    fn service_call_roots_change_only_build_identity_and_are_order_stable() {
+        let base = two_callable_fixture();
+        let baseline_local = package_artifact_local_abi_identity(&base).unwrap();
+        let baseline_build = package_artifact_build_identity(&base).unwrap();
+        let run_id = callable_id_for_path(&base, "run");
+        let echo_id = callable_id_for_path(&base, "echo");
+
+        let mut selected = base.clone();
+        selected.service_call_roots = vec![
+            PackageServiceCallRoot::Function {
+                public_path: "run".to_string(),
+                callable_id: run_id.clone(),
+            },
+            PackageServiceCallRoot::Function {
+                public_path: "echo".to_string(),
+                callable_id: echo_id.clone(),
+            },
+        ];
+        let mut reordered = selected.clone();
+        reordered.service_call_roots.reverse();
+        let mut one_root = base.clone();
+        one_root.service_call_roots = vec![PackageServiceCallRoot::Function {
+            public_path: "run".to_string(),
+            callable_id: run_id,
+        }];
+
+        assert_eq!(
+            package_artifact_local_abi_identity(&selected).unwrap(),
+            baseline_local
+        );
+        assert_eq!(
+            package_artifact_local_abi_identity(&one_root).unwrap(),
+            baseline_local
+        );
+        assert_ne!(
+            package_artifact_build_identity(&selected).unwrap(),
+            baseline_build
+        );
+        assert_ne!(
+            package_artifact_build_identity(&selected).unwrap(),
+            package_artifact_build_identity(&one_root).unwrap()
+        );
+        assert_eq!(
+            package_artifact_build_identity(&selected).unwrap(),
+            package_artifact_build_identity(&reordered).unwrap()
+        );
+
+        let build =
+            serde_json::to_value(package_artifact_build_identity_projection(&selected).unwrap())
+                .unwrap();
+        let local = serde_json::to_value(
+            package_artifact_local_abi_identity_projection(&selected).unwrap(),
+        )
+        .unwrap();
+        assert!(build.get("serviceCallRoots").is_some());
+        assert!(local.get("serviceCallRoots").is_none());
+
+        let mut wrong_id = selected.clone();
+        let PackageServiceCallRoot::Function { callable_id, .. } =
+            &mut wrong_id.service_call_roots[0]
+        else {
+            unreachable!()
+        };
+        *callable_id = PackageCallableId::new("pkg-callable:example.identity:wrong");
+        assert!(matches!(
+            package_artifact_build_identity(&wrong_id),
+            Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+        ));
+
+        let mut duplicate_path = selected;
+        duplicate_path
+            .service_call_roots
+            .push(PackageServiceCallRoot::Function {
+                public_path: "echo".to_string(),
+                callable_id: echo_id,
+            });
+        assert!(matches!(
+            package_artifact_build_identity(&duplicate_path),
+            Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+        ));
+    }
+
+    #[test]
+    fn service_call_public_instance_root_requires_exact_methods_ids_and_link_kinds() {
+        let selected = public_instance_fixture();
+        package_artifact_build_identity(&selected).unwrap();
+
+        let mut missing_method = selected.clone();
+        let PackageServiceCallRoot::PublicInstance { methods, .. } =
+            &mut missing_method.service_call_roots[0]
+        else {
+            unreachable!()
+        };
+        methods.remove("stop");
+        assert!(matches!(
+            package_artifact_build_identity(&missing_method),
+            Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+        ));
+
+        let mut wrong_id = selected.clone();
+        let PackageServiceCallRoot::PublicInstance { methods, .. } =
+            &mut wrong_id.service_call_roots[0]
+        else {
+            unreachable!()
+        };
+        methods.insert(
+            "run".to_string(),
+            PackageCallableId::new("pkg-callable:example.identity:wrong"),
+        );
+        assert!(matches!(
+            package_artifact_build_identity(&wrong_id),
+            Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+        ));
+
+        let mut wrong_kind = selected.clone();
+        let run_id = callable_id_for_path(&wrong_kind, "worker.run");
+        wrong_kind
+            .callable_links
+            .get_mut(&run_id)
+            .unwrap()
+            .target
+            .callable_kind = OperationCallableKind::PublicFunction;
+        assert!(matches!(
+            package_artifact_build_identity(&wrong_kind),
+            Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+        ));
+
+        let mut no_interfaces = selected;
+        let PackageLocalAbiSymbol::PublicInstance { interfaces, .. } = no_interfaces
+            .package_local_abi
+            .public_symbols
+            .get_mut("worker")
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        interfaces.clear();
+        assert!(matches!(
+            package_artifact_build_identity(&no_interfaces),
+            Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+        ));
     }
 
     #[test]
@@ -485,6 +630,7 @@ mod tests {
             },
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections: BTreeMap::new(),
+            service_call_roots: Vec::new(),
             service_call_refs: Vec::new(),
         };
         assign_package_artifact_identities(&mut artifact).unwrap();
@@ -560,6 +706,99 @@ mod tests {
         );
         assign_package_artifact_identities(&mut artifact).unwrap();
         artifact
+    }
+
+    fn two_callable_fixture() -> PackageArtifact {
+        let mut artifact = callable_fixture();
+        let run_id = callable_id_for_path(&artifact, "run");
+        let echo_id = PackageCallableId::new("pkg-callable:example.identity:echo");
+        let mut echo_symbol = artifact.package_local_abi.public_symbols["run"].clone();
+        let PackageLocalAbiSymbol::Callable { callable_id, .. } = &mut echo_symbol else {
+            unreachable!()
+        };
+        *callable_id = echo_id.clone();
+        artifact
+            .package_local_abi
+            .public_symbols
+            .insert("echo".to_string(), echo_symbol);
+
+        let mut echo_link = artifact.callable_links[&run_id].clone();
+        echo_link.callable_id = echo_id.clone();
+        echo_link.target.callable_abi_id = echo_id.to_string();
+        echo_link.target.executable_index = 1;
+        artifact.callable_links.insert(echo_id.clone(), echo_link);
+        artifact.callable_semantic_facts.insert(
+            echo_id.clone(),
+            artifact.callable_semantic_facts[&run_id].clone(),
+        );
+        artifact
+            .boundary_projections
+            .insert(echo_id, artifact.boundary_projections[&run_id].clone());
+        assign_package_artifact_identities(&mut artifact).unwrap();
+        artifact
+    }
+
+    fn public_instance_fixture() -> PackageArtifact {
+        let mut artifact = two_callable_fixture();
+        let run_id = callable_id_for_path(&artifact, "run");
+        let stop_id = callable_id_for_path(&artifact, "echo");
+        let run = artifact
+            .package_local_abi
+            .public_symbols
+            .remove("run")
+            .unwrap();
+        let stop = artifact
+            .package_local_abi
+            .public_symbols
+            .remove("echo")
+            .unwrap();
+        artifact
+            .package_local_abi
+            .public_symbols
+            .insert("worker.run".to_string(), run);
+        artifact
+            .package_local_abi
+            .public_symbols
+            .insert("worker.stop".to_string(), stop);
+        artifact.package_local_abi.public_symbols.insert(
+            "worker".to_string(),
+            PackageLocalAbiSymbol::PublicInstance {
+                instance_id: "worker".to_string(),
+                declared_receiver_type: TypeRefIr::builtin("Worker"),
+                interfaces: vec![TypeRefIr::builtin("WorkerApi")],
+                methods: BTreeMap::from([
+                    ("run".to_string(), run_id.clone()),
+                    ("stop".to_string(), stop_id.clone()),
+                ]),
+            },
+        );
+        artifact
+            .callable_links
+            .get_mut(&run_id)
+            .unwrap()
+            .target
+            .callable_kind = OperationCallableKind::ImplMethod;
+        artifact
+            .callable_links
+            .get_mut(&stop_id)
+            .unwrap()
+            .target
+            .callable_kind = OperationCallableKind::ImplMethod;
+        artifact.service_call_roots = vec![PackageServiceCallRoot::PublicInstance {
+            public_path: "worker".to_string(),
+            methods: BTreeMap::from([("run".to_string(), run_id), ("stop".to_string(), stop_id)]),
+        }];
+        assign_package_artifact_identities(&mut artifact).unwrap();
+        artifact
+    }
+
+    fn callable_id_for_path(artifact: &PackageArtifact, path: &str) -> PackageCallableId {
+        let PackageLocalAbiSymbol::Callable { callable_id, .. } =
+            &artifact.package_local_abi.public_symbols[path]
+        else {
+            panic!("{path} must be callable")
+        };
+        callable_id.clone()
     }
 
     fn callable_signature_mut(artifact: &mut PackageArtifact) -> &mut PackageCallableSignature {
