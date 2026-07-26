@@ -94,8 +94,9 @@ Service 是 Publication 的远程运行形态：
 - 在 Publication core 之外叠加 service runtime spec。
 - 发布与 package 相同的 `PublicationAbiUnit`。
 - 在 `ServiceUnit.operations` 中保存 `operation_abi_id` 到 service-local target 的 runtime table。
-- 在 `ServiceUnit.operationRouteBindings` 中保存 gateway / service ingress selector 到
-  `operation_abi_id` 的预编译映射。
+- 在service-call binding中保存dependency selector到`operation_abi_id`的预编译映射。
+- 在独立gateway entry table中保存external ingress selector、`gatewayEntryIdentity`、typed adapter
+  plan和精确handler target；gateway entry不进入`ServiceUnit.operations`。
 - `ServiceUnit.gateway.routes` 的 HTTP route collection 以 canonical `METHOD /literal/path`
   为 key；method 必须大写。同一 literal path 的不同 method 是不同 route identity，并各自投影为
   同名格式的 `HttpGateway` operation route selector，不能按 path 覆盖。
@@ -177,12 +178,17 @@ boundary schema closure 所需类型。
 Public root 引用到的 named types 会自动进入 ABI / schema closure，但不会自动成为外部源码可写的
 public name。外部源码可写名字只来自 public API graph 中显式声明的 public path。
 
-类型owner始终是Package。第一版只有在owner Package的`api.yml`中显式公开的named types才能进入boundary
-closure，并生成逐类型content-addressed record、`PackageSchemaTypeId`和当前artifact的schema index。
+类型owner始终是Package。第一版只有在owner Package的`api.yml`中显式公开且可投影的named types才能进入
+service-call boundary closure，并生成逐类型content-addressed record、`PackageSchemaTypeId`和当前artifact
+的schema index。Public generic declaration可以保留在package ABI中但标记service boundary unavailable；
+无关generic public symbol不能让整个Package失败。
 Service projection只选择
 remote operations并引用这些Package类型，不复制descriptor，也不把它们重写成service-owned类型。依赖
 service暴露的类型在源码中仍按其owner Package的API规则解析。schema index identity只用于枚举某个
 PackageArtifact，不进入service protocol；protocol只包含operations实际可达的type ids。
+
+External ingress handler的内部业务类型不需要为了HTTP/WebSocket暴露而进入`api.yml`或PackageSchema。
+Runtime adapter从linked handler signature取得codec事实；external JSON schema属于entry-local协议描述。
 
 Public instance 是 public API graph 中可作为 binding target 和 dependency receiver root 的 explicit
 instance export。instance 自身不等于 operation；它显式 exposed 的 interface methods 才 projection 成
@@ -232,9 +238,13 @@ Service public callable 使用 remote linkage：
 - call 遵守 protocol identity、timeout、cancel、trace、error envelope 和 revision routing。
 - runtime 即使优化为进程内执行，语义仍是 remote operation call。
 - service operation target 必须链接到 Service Unit / File IR Unit 中的 executable address。
-- gateway、HTTP、WebSocket 和 service-call ingress 必须先通过 `OperationRouteBinding` 映射成
-  `operation_abi_id`；provider 执行阶段只用校验后的 `operation_abi_id` 查 `ServiceUnit.operations`，
-  不按 public path、display name、source method name 或 interface id + method name 查找。
+- service-call selector必须通过operation binding映射成`operation_abi_id`；provider执行阶段只用校验后的
+  identity查`ServiceUnit.operations`，不按public path、display name、source method name或interface id +
+  method name查找。
+
+HTTP/WebSocket external ingress不走上述remote linkage。`service.yml`可以直接引用当前Package的非public
+handler；compiler生成`GatewayEntryIdentity`、adapter plan和精确callable target。Ingress不得借用
+`operation_abi_id`，也不得因handler target相同自动变成service call。
 
 因此 compiler 不应维护两套“package exports”和“service contract API”解析逻辑；分叉点应是
 linkage policy、`implementationLinks` 和 service runtime projection。public operation 的 canonical
@@ -330,10 +340,12 @@ protocol identity，也不能作为 service release selector。
 
 当前稳定边界：
 
-- raw HTTP dispatch 没有 per-route entry identity。
-- typed HTTP route 拥有 typed HTTP ingress identity，用于 client generation、drain 和发布验证；它不替代 service protocol identity。
-- WebSocket entry 可以有独立 entry identity。
-- entry identity 记录其 selector、绑定的 `operation_abi_id` 和 service protocol identity。
+- 每个需要runtime dispatch的HTTP/WebSocket entry都拥有canonical gateway entry identity；
+- entry identity用于route admission、client generation、drain和发布验证，不替代service protocol
+  identity；
+- entry identity记录selector、handler/pre/guard callable identity、adapterArgs和external protocol
+  metadata，不记录或借用`operation_abi_id`；
+- ingress变化可以改变entry identity与deployment revision，但不能改变service protocol identity。
 
 WebSocket entry identity 输入包括 connect request / result schema、Connection context schema、
 route key 列表、route event schema 和 receive event schema。
@@ -381,9 +393,9 @@ dependency lock 是发布产物和审计事实，不是源码 import 语法。
   `publicationAbi`；file/executable/const/type target 属于 `implementationLinks`。
 - Service Unit：service runtime production load 的主入口，保存 service metadata、service version、
   protocol identity、service-owned file refs、package/service dependencies、package ABI expectations、
-  `publicationAbi`、`ServiceUnit.operations`、`operationRouteBindings`、dependency lock / remote box provenance、gateway、config、
-  db 和 actor metadata。service operation table 以 `operation_abi_id` 为 key；gateway/service ingress 通过
-  `OperationRouteBinding` 预映射到该 key。
+  `publicationAbi`、`ServiceUnit.operations`、service-call bindings、dependency lock / remote box
+  provenance、gateway entries、config、db和actor metadata。service operation table以
+  `operation_abi_id`为key；external ingress由独立`gatewayEntryIdentity`映射到精确handler target。
 
 File IR Unit 不保存 service version、runtime build id、resolved package build 或 package public API
 surface。Package Unit 不内联 dependency package 的 File IR payload。Service Unit 不保存固定 package
@@ -409,7 +421,8 @@ Runtime activation link 成 `RuntimeProgram`。它是某个 service version 在�
 
 `RuntimeProgram` 包含 service metadata、service version、dynamic activation build identity、
 service File IR refs、resolved Package Units、package File IR refs、`operation_abi_id` dispatch table、
-selector-to-operation route mapping、link overlay、gateway config 和 runtime type context。
+service-call selector mapping、gateway-entry-to-handler mapping、link overlay、gateway config 和 runtime
+type context。
 
 `RuntimeProgram` 不复制或压平 executable bodies。多个 service version 或 activation 可以共享相同
 File IR Unit、Package Unit 和 package File IR Unit。
@@ -423,9 +436,10 @@ activation 的稳定语义：
 - 构建 service/package symbol 的 link overlay。
 - 校验 `publicationAbi.operationAbi`、operation exports 与 `implementationLinks` / `ServiceUnit.operations`
   一一对应。
-- 从 `OperationRouteBinding` 构建 selector 到 `operation_abi_id` 的 load-time route table。
+- 分别构建service-call selector到`operation_abi_id`、external selector到
+  `gatewayEntryIdentity`/handler target的load-time table。
 - 计算 dynamic activation build identity。
-- 注册可 dispatch 的 service operation 和 ingress target；执行阶段只按 `operation_abi_id` 查 target。
+- 分别注册可dispatch的service operation和ingress target；两种identity不可互换。
 
 缺少 package、ABI 不兼容、target 不存在、typed link 失败或 artifact schema 不匹配时，activation
 必须 fail closed。

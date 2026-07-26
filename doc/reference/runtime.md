@@ -4,7 +4,8 @@
 
 - 定义 Skiff runtime 的稳定执行边界：gateway / router / service runtime 各自承担什么。
 - 定义 request frame、heap value、mutable root、concurrent lane、join、timeout、cancel、stream 和错误选择的运行时语义。
-- 定义 HTTP / WebSocket entry 与 service-to-service call 如何进入同一类 typed dispatch。
+- 定义 HTTP / WebSocket entry 与 service-to-service call 如何共享request执行机制，同时保持不同的
+  identity与路由surface。
 - 说明 effect metadata 在 runtime 中如何参与并发、取消、timeout、观测和测试替身。
 - 列出当前明确不支持的 runtime 能力。
 
@@ -21,7 +22,7 @@ Skiff runtime 是一组边界职责，不是用户源码可访问的全局对象
 
 Gateway adapter 负责外部协议适配：接收 HTTP、HTTP stream / SSE、WebSocket 等入口，维护外部连接，执行协议层 decode / encode，把外部入口转换成 router 可路由的 typed dispatch，并把 unary response、stream chunk、stream end 或 error 编码回外部协议。Gateway 不执行用户 Skiff 代码，不拥有 Skiff call stack 或 request heap。
 
-Hub / router 是独立于用户 service runtime 的平台基础设施。它负责 service runtime 注册、service revision 注册、可用实例选择、service protocol identity / ingress entry identity 匹配、client session / actor binding / WebSocket Connection 索引、in-flight request / stream 配对、cancel / drain 路由、负载和流量切换。Router core 不解释业务 host、path、cookie、session、应用 WebSocket eventName 或业务 requestId。
+Hub / router 是独立于用户 service runtime 的平台基础设施。它负责 service runtime 注册、service revision 注册、可用实例选择、service protocol identity与gateway entry identity各自的匹配、client session / actor binding / WebSocket Connection 索引、in-flight request / stream 配对、cancel / drain 路由、负载和流量切换。Router core 不解释业务 host、path、cookie、session、应用 WebSocket eventName 或业务 requestId。
 
 Service runtime 是执行用户 Skiff 代码的边界。它加载已发布 artifact，构造 service revision singleton，为每次 dispatch 创建 request frame，解码 payload，调用 implementation method 或 entry handler，执行表达式、函数、collection mutation、`concurrent`、`timeout(...)`、`emit` 和 cleanup，并编码 response / chunk / error。
 
@@ -45,7 +46,9 @@ Request 结束后，request heap、call frames、slot values、lane state、exce
 
 ## 3. Runtime transport model
 
-Runtime 内部 transport 只表达 typed operation dispatch，不把 raw socket、raw WebSocket frame、raw SSE event 或宿主语言 HTTP object 暴露给 service runtime。
+Runtime 内部transport分别表达service operation dispatch与typed gateway entry dispatch，不把raw
+socket、raw WebSocket frame、raw SSE event或宿主语言HTTP object暴露给service runtime。External ingress
+使用`GatewayEntryIdentity`和精确handler target，不伪造`ContractOperationId`。
 
 Unary dispatch 最多产生一个 final response：成功时 response end 携带 payload，失败时 response error 携带 runtime error envelope；unary dispatch 不能产生 stream chunk。
 
@@ -63,11 +66,15 @@ Runtime 依赖稳定 identity 做路由、drain、观测和测试替身匹配。
 
 Service protocol identity 描述 service-to-service API 的公开协议。API 参数 / 返回类型、operation 集合和 public schema closure 的规范化 schema 变化会改变它。跨 service call 的寻址坐标是 service id + version：caller 在依赖约束里声明被调 service 的 id 和 version，router 在请求时把 (service id, version) 解析为该 version 当前的 build 并路由到对应实例。发布时冻结的 build id 与 protocol identity 不是 release selector，而是边界兼容性 witness——dispatch 时 router 校验所解析当前 build 的 protocol identity 是否满足 caller 冻结的期望，不满足则以明确错误失败，绝不静默路由到不兼容的 build。
 
-Ingress entry identity 描述 schemaful ingress entry。WebSocket connect request schema、message event schema、Connection context schema 和系统接口绑定变化会改变它。更改 ingress schema 不改变 service protocol identity。
+Ingress entry identity描述external ingress。Handler/pre/guard callable identity、adapterArgs、
+WebSocket connect request schema、message event schema、Connection context schema和系统接口绑定变化会
+改变它。更改ingress不改变service protocol identity。
 
 Stable target id 描述 operation 类别，而不是资源实例。Service operation、HTTP entry、WebSocket connect / receive / close、std host operation 和 package wrapper 都必须能映射到稳定 target。Target 用于 effect metadata、timeout source、trace、日志、指标、测试替身和错误聚合。
 
-HTTP raw dispatch 没有 per-route entry identity；它使用 HTTP entry target 进行观测。WebSocket Connection 绑定 entry identity 和 service protocol identity；schema-changing 发布后，旧 Connection 继续使用旧 entry identity，直到 drain 或断开。
+HTTP/WebSocket dispatch使用gateway entry identity做admission与观测。WebSocket Connection绑定entry
+identity与deployment/activation generation，不绑定或冒充service-call protocol operation；schema-changing
+发布后，旧Connection继续使用旧entry identity，直到drain或断开。
 
 ## 5. Request heap and values
 
@@ -147,7 +154,7 @@ Service-to-service 和 gateway-to-runtime 的 response error 在 caller 侧恢�
 只进入受限telemetry/log，并通过`traceId/errorId`关联，不能把私有源码路径或原始私有错误字段暴露给caller。
 InProcessBoundary与remote binding必须遵守同一规则。
 
-Ingress decode 在进入 service operation 前失败时，业务代码尚未运行，不能被业务 `catch` 捕获。
+Ingress decode在进入external handler前失败时，业务代码尚未运行，不能被业务`catch`捕获。
 
 ## 8. Timeout and cancel
 
@@ -193,7 +200,9 @@ External stream source error 映射为当前 lane 的 ordinary throw。若 serve
 
 HTTP entry 是 gateway-selected raw HTTP dispatch，不是 service-to-service API。
 
-Router 根据 trusted / selected service id、version / build 和 loaded entry metadata 调用该 service 的 HTTP entry operation。Router 不做业务 route bind，不按 path 改写 request，不根据 content-type 自动 decode body。
+Router根据trusted selector、deployment/activation和loaded gateway entry metadata调用HTTP handler。该
+handler由`service.yml`选择，不要求进入`api.yml`或ServiceContract。Router不按display/source path猜target，
+也不根据content-type自行解释业务类型。
 
 外部 HTTP request 在 dispatch 前打包为标准 HTTP request envelope；method、url、path、query、headers 和 body 保持为业务可检查的数据。Query 和 headers 使用数组保留重复项和顺序。
 
@@ -201,13 +210,17 @@ Service 返回标准 HTTP response envelope；gateway 写回 status、headers �
 
 Typed HTTP route 是 compiler-generated wrapper，不是 router framework。Router 仍只选择 service/version/route 并发起 HTTP dispatch；wrapper 在 service runtime 内执行 `http.pre`、JSON body decode、handler 调用和 HTTP 200 JSON encode。越过 wrapper 的 `std.http.HttpError`、decode error 或平台错误通过 runtime `response.error` 映射为非 2xx platform error response。该 HTTP response body 固定为 JSON `{ "message": string, "detail": Json? }`，不暴露 internal `code` 或业务指定 status；平台策略选择 status，例如 body/schema decode 为 400、handler / `http.pre` 未捕获异常为 500、timeout 为 504、runtime/dependency unavailable 为 503。
 
-HTTP status code 本身不是 throw；业务代码必须检查 status。HTTP entry 的可观测 target id 是 entry target；实际执行 deadline 由绑定 operation 的 service timeout / request deadline 决定。Host/path mapping 变化是 deploy / ingress 配置变化，不改变 service protocol identity。
+HTTP status code本身不是throw；业务代码必须检查status。HTTP entry的可观测target id是gateway entry
+target；实际执行deadline由deployment policy/request deadline决定。Host/path/handler mapping变化是
+deployment/ingress配置变化，不改变service protocol identity。
 
 ## 11. WebSocket entry
 
 WebSocket entry 只属于客户端直连的 API 层 service。下游业务 service 不拥有 Connection。
 
-WebSocket 物理连接由 gateway / hub 维护。Connection 拥有 connection id、service id、状态、client session、actor binding、typed connection context、entry identity、绑定的 service protocol identity 和物理 socket 集合。
+WebSocket物理连接由gateway/hub维护。Connection拥有connection id、service id、状态、client session、
+actor binding、typed connection context、entry identity、deployment/activation generation和物理socket
+集合；它不需要一个service-call protocol operation identity。
 
 Connect operation 是一次 request frame，用于连接验证、actor binding 和 typed connection context 初始化。Receive / route dispatch 每次都创建独立 request frame。
 
@@ -215,7 +228,9 @@ Router 只做 entry routing 和 event envelope，不解释应用 eventName、业
 
 Business handler 不接收 raw socket id；它接收当前 actor 和 typed connection context。
 
-WebSocket 连接按 entry identity 和绑定 operation 的 service protocol identity 路由。Schema-changing 发布产生新的 entry identity；既有 socket 继续绑定旧 entry identity，直到 drain 或断开。Runtime 不把旧应用消息投影到新 schema。
+WebSocket连接按entry identity和绑定的deployment/activation generation路由。Schema-changing发布产生新的
+entry identity；既有socket继续绑定旧entry identity，直到drain或断开。Runtime不把旧应用消息投影到新
+schema。
 
 ## 12. Effect metadata at runtime
 

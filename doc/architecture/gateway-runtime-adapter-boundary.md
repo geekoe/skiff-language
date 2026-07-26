@@ -88,6 +88,12 @@ Gateway adapter 是 runtime 侧的入口适配逻辑。它把 gateway 提供的�
 
 HTTP typed JSON route、raw HTTP route、WebSocket connect、WebSocket receive 都是 gateway adapter 场景。它们应共享同一类 manifest 概念：`adapterArgs`。
 
+这些external ingress entry由`service.yml`拥有，不是`api.yml`公开的service-call operation。Handler、
+pre和guard可以是当前Package中的非public callable；compiler直接解析其精确callable identity和linked
+signature。Gateway entry使用`gatewayEntryIdentity`寻址，不生成或借用`ContractOperationId`，也不进入
+`ServiceProtocolIdentity`。若同一source function同时公开为service call，两个surface仍各自拥有独立
+identity与校验。
+
 `gatewayEntryIdentity` 必须覆盖该 gateway entry 的 platform contract：entry id、handler/pre/guard callable identity、`adapterArgs`、WebSocket context expectation、HTTP typed body/response metadata，以及影响 gateway/runtime adapter frame shape 的字段。它不包含业务实现体。
 
 ### Business Identity

@@ -275,6 +275,11 @@ remote projection 从 public API graph 中选择 public callable 派生 operatio
 service operation；满足 public instance 规则的 public const 可以作为 receiver root，由其 interface
 methods 派生 operations。public interface 仍只是 conformance contract，不直接成为 service operation。
 
+HTTP、WebSocket等external ingress不属于remote projection。它们由`service.yml`选择当前Package中的
+handler/pre/guard；这些callable不要求public，也不生成service operation。Compiler按其linked signature与
+gateway adapter source检查参数/返回，生成独立gateway entry identity。Ingress不得使用或伪造
+`ContractOperationId`。
+
 source module path 是组织方式，不是协议身份。service protocol identity 由 public path、
 operation name、canonical signature、public instance / binding target receiver root metadata、schema
 closure 和 cross-service dependency identity 计算。
@@ -298,11 +303,18 @@ remote callable 必须按 source identity 解析，不能按短名或字符串�
 
 第一版不允许 generic remote method 或 static remote method。runtime-owned receiver / handler fields 是构造依赖，不是 request payload。
 
+`api.yml`中的public generic declaration可以供package linkage使用，但其声明本身没有第一版
+PackageSchema投影。只有引用闭包全部可投影的service-call operation才进入ServiceContract；无关generic
+public symbol不能让整个Package失败。External ingress的generic platform handler类型由linked signature和
+专用adapter处理，也不因此获得ordinary service-call schema。
+
 跨 service 调用必须静态解析到已声明 callee API，并绑定发布时记录的 exact protocol identity。业务代码不通过字符串 service id 或 service locator 发起远程调用。
 
 ## 15. Static Stream Boundary
 
-`Stream<T>` 可以作为 service operation 或 ingress entry operation 的返回类型；此时 chunk 类型 `T` 必须通过 schema closure。
+`Stream<T>` 可以作为 service operation 或 ingress entry operation 的返回类型。Service operation的chunk
+类型`T`必须通过Package schema closure；external ingress的chunk按该gateway entry的linked handler
+signature与external codec验证，不要求仅为ingress进入PackageSchema。
 
 显式 stream-producing native std / package API 也可返回 `Stream<T>`，作为 request-local external source handle。平台 std 也可以把 `Stream<T>` 放在 runtime-owned handle record 字段里，例如 `std.http.HttpClientStreamHandle.body`；这类 handle 仍是 request-local 值，不是可持久化 schema。除非调用方把 chunk `emit` 到服务边界，或写入其他边界 payload，否则该 `T` 不因 handle 本身进入 boundary closure。
 

@@ -257,6 +257,12 @@ effect metadata 是 telemetry write，target 对应具体 log level，cancel saf
 
 `std.websocket` 是 client-facing WebSocket ingress 的标准库 surface。新业务入口由 service config 顶层 websocket 声明；path、domain 和 service selection 属于 ingress / router 配置。
 
+`WebSocketConnection<Context>`、`WebSocketReceiveEvent<Context>`、
+`WebSocketIngressEvent<Context>`和`WebSocketConnectResult<Context>`是external gateway adapter使用的
+generic platform types。它们可以通过std Package API被源码引用，但声明本身不生成ordinary
+PackageSchema，也不能作为service-to-service payload。`service.yml`选择的ingress handler从linked
+signature取得完整实例化类型；handler不要求出现在`api.yml`。
+
 connection message 只表达 transport frame：UTF-8 text 或 binary bytes 的 base64 表示。应用 JSON tag 由 service 代码解释，router 不理解业务 tag。
 
 connect request 包含 connection id、url、query、headers、cookies 和可选 version。headers、query 和 cookies 保留重复值。
@@ -279,7 +285,9 @@ version 优先来自 `X-Skiff-Version`，WebSocket query 只作为兼容 fallbac
 
 `Stream<T>` 是 request-local 一次性顺序消费值，或服务 operation / ingress entry 的 server stream 返回类型。
 
-作为 service / ingress operation 返回类型时，`T` 是跨 runtime / gateway 边界的 chunk schema，必须 schema-closed。
+作为 service operation 返回类型时，`T`必须通过Package schema closure。作为external ingress返回类型时，
+`T`按该gateway entry的linked handler signature与external codec校验，不要求仅为ingress进入
+PackageSchema；两种边界不能互相推导。
 
 作为 std / package stream-producing API 返回值时，stream 是 external source handle；平台 std 也可以返回包含 stream 字段的 runtime-owned handle record，例如 `std.http.HttpClientStreamHandle.body`。这类 handle 只能在当前 request 内消费，不能持久化或作为业务协议 schema。
 

@@ -484,14 +484,25 @@ typed 事实流过 pipeline：
 ```text
 service.yml ingress spec
   -> SourceCompileModel.ingress
-  -> LoweredPublication.synthetic_operations
-  -> ProjectionBundle.runtime_manifest / service_unit
+  -> exact handler/pre/guard source resolution
+  -> LoweredPublication.gateway_entries
+  -> ProjectionBundle.runtime_manifest / service deployment
   -> PublishedArtifacts
 ```
 
 长期契约里没有 C 风格预处理器，也没有 generated Skiff source 阶段。历史上的
 generated source ingress adapter 已移除；临时实现也不应重新引入这条 pipeline
 阶段。
+
+External ingress不是service-call API projection：
+
+- handler/pre/guard不要求出现在`api.yml`；
+- pipeline从当前Package production source解析精确`PackageCallableId`，不得先制造public path；
+- gateway entry使用独立`GatewayEntryIdentity`和typed adapter plan，不产生或借用
+  `ContractOperationId`；
+- ingress变化不进入`ServiceProtocolIdentity`；
+- runtime payload codec从linked callable signature构造，manifest JSON schema不能成为binary codec
+  的事实源。
 
 ## Audit Targets
 

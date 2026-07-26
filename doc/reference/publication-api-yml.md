@@ -22,8 +22,9 @@ runtime 调度或完整 YAML parser 实现。
 
 没有 `api.yml`、`api.yml` 为空、或顶层 mapping 为空，都表示该 publication 没有 public API。
 
-`package.yml` 和 `service.yml` 不列 public symbol，也不声明 rename / namespace projection。
-public API 的唯一符号事实来源是 `api.yml`。
+`package.yml` 和 `service.yml` 不列 package/service-call public symbol，也不声明 rename / namespace
+projection；public API 的唯一符号事实来源是 `api.yml`。`service.yml`可以为HTTP/WebSocket等external
+ingress显式引用非public handler/pre/guard，这只创建gateway entry，不把这些source symbol加入public API。
 
 Skiff source declaration 不使用 `export` 关键字表达 public visibility。普通 source file 没有 public
 visibility marker；source file 不是包内 privacy 边界。
@@ -155,6 +156,11 @@ API graph 覆盖：
 - public instance roots。
 - ABI / schema closure 中需要的 closure-only types。
 
+Public binding与service-call boundary availability不是一回事。Generic declaration、actor或其它不能生成
+PackageSchema的public symbol仍可供package dependency链接；compiler必须为其记录结构化boundary-unavailable
+事实。只有被service-call operation实际引用且拥有合法PackageSchema投影的类型进入ServiceContract closure。
+某个无关public generic declaration不能让整个Package编译失败。
+
 Public instance 是 API graph 中可作为 binding target 的 receiver root。第一版中 public instance
 只能来自 `api.yml` 显式公开的 top-level `const`；该 const 必须有显式 nominal receiver type，且该
 receiver type 必须显式 implements 一个或多个 interface。public instance leaf 还必须显式列出 exposed
@@ -211,18 +217,27 @@ Service projection 使用同一份 Publication API graph：
   operations。
 - package/service 共享 `PublicationAbiUnit` contract：public operation 的 canonical signature、schema
   closure 和 stream/effect/config metadata 都写入 `operationAbi[operation_abi_id]`。
-- service runtime projection 额外生成 `ServiceUnit.operations` 和 `OperationRouteBinding`。HTTP/WebSocket
-  ingress、service-call selector 和 gateway route 必须先映射成 `operation_abi_id`；provider 执行阶段只按
-  `operation_abi_id` 查 target，不按 public path、method name 或 display name 查找。
+- service runtime projection为service-call API生成`ServiceUnit.operations`和对应operation binding。
+  Service dependency selector只映射到`operation_abi_id`；provider执行阶段只按该identity查target，不按
+  public path、method name或display name查找。
 - operation / protocol identity 使用 public path、`operation_abi_id`、canonical signature、
   `public_instance_key`、exposed `InterfaceInstantiationRef` 和 schema closure。
+
+HTTP/WebSocket等external ingress不属于本节的public service-call operation。它们由`service.yml`直接引用
+当前Package handler，并生成独立`GatewayEntryIdentity`与typed adapter plan：
+
+- handler不要求出现在`api.yml`；
+- gateway entry不写入`ServiceContract.operations`，也不进入`ServiceProtocolIdentity`；
+- runtime codec读取linked handler signature，外部JSON schema只用于协议文档/校验；
+- 同一函数同时出现在`api.yml`和`service.yml`时形成两个显式surface和两种identity，不自动合并。
 
 `api.yml`不声明每个operation的throw set，compiler也不把推导出的可能错误类型写入
 `PublicationAbiUnit`。任意希望跨service后仍保留原名义类型的错误，必须作为其owner Package的普通public
 type出现在该owner的`api.yml`并满足`SchemaClosed`；它不因此成为某个operation signature的一部分。
 
-source module path 不作为 service protocol identity。HTTP path、WebSocket route key、timeout、routing
-revision 和 runtime activation 属于 service projection 或部署 metadata，不属于 `api.yml`。
+source module path 不作为 service protocol identity。HTTP path、WebSocket route key、handler selector、
+adapterArgs、gateway entry identity、timeout、routing revision 和 runtime activation 属于external
+ingress projection或部署metadata，不属于`api.yml`或`ServiceProtocolIdentity`。
 
 ## 9. Validation Summary
 
