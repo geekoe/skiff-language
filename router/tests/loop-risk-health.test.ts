@@ -691,10 +691,14 @@ function collectRuntimeRequestFramesByTarget(
       } catch {
         return;
       }
-      if (frame.header.type !== 'request.start' || frame.header.target !== target) {
+      if (frame.header.type !== 'request.start' || 'routing' in frame.header) {
         return;
       }
-      requests.push({ header: frame.header });
+      const header = frame.header as RequestStartFrameHeader;
+      if (header.target !== target) {
+        return;
+      }
+      requests.push({ header });
       if (requests.length === count) {
         cleanup();
         resolve(requests);

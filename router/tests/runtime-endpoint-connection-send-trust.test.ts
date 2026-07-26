@@ -7,10 +7,7 @@ import {
   RUNTIME_FRAME_SCHEMA_VERSION
 } from '../src/protocol/envelope.js';
 import { runtimeFrameHeaderFixtures } from '../src/protocol/runtimeProtocol.js';
-import {
-  AssemblyRuntimeRegistry,
-  canonicalAssemblyWebSocketIngressIdentity
-} from '../src/router/assemblyRuntimeRegistry.js';
+import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
 import { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
 import {
   RuntimeEndpoint,
@@ -21,29 +18,14 @@ import {
 import { RuntimeRegistry } from '../src/router/runtimeRegistry.js';
 import {
   RouterActiveAssemblySnapshotStore,
-  RuntimeAssemblyIngressIndex,
-  type RuntimeAssemblyIngressBinding
+  RuntimeAssemblyIngressIndex
 } from '../src/router/runtimeAssemblySnapshot.js';
 
 const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
-const OPERATION = `skiff-contract-operation-v1:sha256:${'c'.repeat(64)}`;
 const RUNTIME_ID = 'runtime-connection-send-a';
-const binding: RuntimeAssemblyIngressBinding = {
-  selector: { protocol: 'webSocket', host: 'chat.localhost', method: null, path: '/v1/chat' },
-  deployment: {
-    serviceId: 'example/chat',
-    contractVersion: '1.0.0',
-    deploymentRevision: 'revision-a',
-    deploymentArtifactIdentity: `skiff-deployment-artifact-v2:sha256:${'d'.repeat(64)}`
-  },
-  contract: {
-    serviceId: 'example/chat',
-    contractVersion: '1.0.0',
-    serviceProtocolIdentity: `skiff-service-protocol-v5:sha256:${'e'.repeat(64)}`
-  },
-  operationMode: 'unary',
-  contractOperationId: OPERATION
-};
+const SERVICE_ID = 'example/chat';
+const WEBSOCKET_ENTRY_ID =
+  `skiff-websocket-entry-v1:sha256:${'e'.repeat(64)}`;
 
 const fixtures: EndpointFixture[] = [];
 
@@ -62,12 +44,12 @@ describe('runtime connection.send sender binding and observability', () => {
     },
     {
       reason: 'websocket-entry-mismatch',
-      serviceId: binding.contract.serviceId,
+      serviceId: SERVICE_ID,
       websocketEntryId: `skiff-websocket-entry-v1:sha256:${'f'.repeat(64)}`
     },
     {
       reason: 'runtime-sender-mismatch',
-      serviceId: binding.contract.serviceId
+      serviceId: SERVICE_ID
     }
   ] satisfies Array<{
     reason: ConnectionSendProtocolViolationReason;
@@ -129,7 +111,7 @@ describe('runtime connection.send sender binding and observability', () => {
       sourceMessages += 1;
     });
 
-    fixture.runtime.send(connectionSendFrame(binding.contract.serviceId, 'connection-closed'));
+    fixture.runtime.send(connectionSendFrame(SERVICE_ID, 'connection-closed'));
     await until(() => observations.length === 1);
     expect(observations).toEqual([
       expect.objectContaining({
@@ -156,7 +138,9 @@ describe('runtime connection.send sender binding and observability', () => {
 
     const [code, closeReason] = await waitForClose(fixture.runtime);
     expect(code).toBe(1008);
-    expect(closeReason).toBe('response.error binary frame payload must be empty');
+    expect(closeReason).toBe(
+      'invalid response.error control frame: payload must be empty'
+    );
   });
 });
 
@@ -174,7 +158,7 @@ async function createFixture(
     environment: 'test',
     generation: 7,
     assembly: { assemblyIdentity: ASSEMBLY },
-    ingress: new RuntimeAssemblyIngressIndex([binding])
+    ingress: new RuntimeAssemblyIngressIndex([])
   });
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
   const endpoint = new RuntimeEndpoint({
@@ -222,7 +206,7 @@ async function createFixture(
 function connectionSendFrame(
   serviceId: string,
   connectionId: string,
-  websocketEntryId = canonicalAssemblyWebSocketIngressIdentity(binding).websocketEntryId
+  websocketEntryId = WEBSOCKET_ENTRY_ID
 ): Buffer {
   return encodeRuntimeFrame(
     {

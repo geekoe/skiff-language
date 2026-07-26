@@ -271,7 +271,10 @@ function invocation(
     ),
     methodIdentity: identity('skiff-actor-method-v1:sha256', 'e'),
     argumentsEncodingVersion: ACTOR_ARGUMENTS_ENCODING_V1,
-    deadline: { timeoutMs: 5_000, expiresAt: '2026-07-25T01:00:00.000Z' },
+    deadline: {
+      timeoutMs: 60_000,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    },
     cancellationCorrelation: `cancel-${invocationId}`,
   };
 }

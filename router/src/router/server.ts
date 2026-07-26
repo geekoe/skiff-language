@@ -1,6 +1,5 @@
 import { parseArgs } from 'node:util';
 
-import { AssemblyWebSocketGateway } from '../gateway/assemblyWebSocketGateway.js';
 import { AssemblyActivationCoordinator } from './assemblyActivationCoordinator.js';
 import { AssemblyControlPlane } from './assemblyControlPlane.js';
 import { AssemblyHttpGateway } from './assemblyHttpGateway.js';
@@ -176,16 +175,6 @@ const httpGateway = new AssemblyHttpGateway({
   maxResponseBytes: config.httpMaxResponseBytes
 });
 const httpServer = await httpGateway.listen();
-const webSocketGateway = new AssemblyWebSocketGateway({
-  snapshots,
-  dispatcher,
-  runtimeConnectionSend: runtimeEndpoint,
-  generationLifecycle,
-  server: httpServer.server,
-  host: config.host,
-  requestTimeoutMs: config.requestTimeoutMs
-});
-const webSocketServer = await webSocketGateway.listen();
 const active = snapshots.get();
 
 console.log(
@@ -196,7 +185,6 @@ console.log(
       activeAssembly: active.assembly.assemblyIdentity,
       generation: active.generation,
       http: httpServer.url,
-      websocket: webSocketServer.url,
       runtime: runtimeServer.url,
       control: `http://${runtimeServer.host}:${runtimeServer.port}`
     },
@@ -209,7 +197,6 @@ async function shutdown(): Promise<void> {
   clearInterval(actorIdleSweep);
   const failures: unknown[] = [];
   for (const close of [
-    () => webSocketGateway.close(),
     () => httpGateway.close(),
     () => runtimeEndpoint.close(),
     () => activation.client.close()

@@ -1,11 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
-import { connect as connectTcp } from 'node:net';
 
 import WebSocket from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { AssemblyWebSocketGateway } from '../src/gateway/assemblyWebSocketGateway.js';
 import type { ResponseErrorFrameHeader } from '../src/protocol/envelope.js';
 import {
   runtimeFrameHeaderFixtures,
@@ -21,13 +19,7 @@ import {
   type RuntimeDispatchRegistry,
   type RuntimeFrameSender
 } from '../src/router/runtimeDispatcher.js';
-import type {
-  RuntimeConnectionSendSource
-} from '../src/router/runtimeEndpoint.js';
 import type { RuntimeUnaryDispatchFrameHeader } from '../src/router/runtimeRegistry.js';
-import type {
-  WebSocketGenerationLifecycleRouter
-} from '../src/router/webSocketGenerationLifecycleRouter.js';
 import {
   RouterActiveAssemblySnapshotStore,
   RuntimeAssemblyIngressIndex,
@@ -35,13 +27,9 @@ import {
 } from '../src/router/runtimeAssemblySnapshot.js';
 
 const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
-const OPERATION = `skiff-contract-operation-v1:sha256:${'b'.repeat(64)}`;
 const DEPLOYMENT = `skiff-deployment-artifact-v2:sha256:${'c'.repeat(64)}`;
-const PROTOCOL = `skiff-service-protocol-v5:sha256:${'d'.repeat(64)}`;
 const HTTP_HOST = 'p5-f345-http.example.test';
 const HTTP_PATH = '/convergence';
-const WEBSOCKET_HOST = 'p5-f345-websocket.example.test';
-const WEBSOCKET_PATH = '/convergence';
 const CONTROL_CASE = 'generic-control-same-safe-values-as-internal';
 
 interface ScenarioFixture {
@@ -156,7 +144,7 @@ describe('P5-F345 service error Router convergence', () => {
     expect(mappedControl).not.toBeInstanceOf(FixedServiceResponseError);
   });
 
-  it('projects the same strict fixed fact through actual HTTP and WebSocket gateways', async () => {
+  it('projects the same strict fixed fact through the actual HTTP gateway', async () => {
     const fixedCase = wireCase(scenario.corpusCase);
     const payloadBytes = Buffer.from(fixedCase.payloadUtf8, 'utf8');
     const fixed = validateResponseErrorFrame(fixedCase.header, payloadBytes);
@@ -194,32 +182,6 @@ describe('P5-F345 service error Router convergence', () => {
       }
     });
     assertExternalSafe(http.body);
-
-    const generationLifecycle = {
-      expectConnection: () => undefined,
-      releaseConnection: async () => undefined,
-      onConnectionLost: () => () => undefined,
-      flush: async () => undefined
-    } as unknown as WebSocketGenerationLifecycleRouter;
-    const runtimeConnectionSend: RuntimeConnectionSendSource = {
-      onConnectionSend: () => () => undefined
-    };
-    const websocketGateway = new AssemblyWebSocketGateway({
-      snapshots,
-      dispatcher: rejectingDispatcher,
-      runtimeConnectionSend,
-      generationLifecycle,
-      port: 0,
-      requestTimeoutMs: 1_000
-    });
-    const websocketListen = await websocketGateway.listen();
-    activeClosers.push(() => websocketGateway.close());
-    const websocket = await rawUpgradeResponse(websocketListen.port);
-    expect(websocket.status).toBe(500);
-    expect(websocket.body).toBe(
-      `${scenario.externalSafeMessage}; traceId=${scenario.traceId}; errorId=${scenario.errorId}`
-    );
-    assertExternalSafe(websocket.raw);
   });
 });
 
@@ -254,10 +216,7 @@ function requestHeader(requestId: string): RuntimeUnaryDispatchFrameHeader {
 
 function snapshotsForScenario(): RouterActiveAssemblySnapshotStore {
   const outer = scenario.hops[2]!;
-  const bindings: RuntimeAssemblyIngressBinding[] = [
-    binding('http', HTTP_HOST, 'POST', HTTP_PATH, outer),
-    binding('webSocket', WEBSOCKET_HOST, null, WEBSOCKET_PATH, outer)
-  ];
+  const bindings: RuntimeAssemblyIngressBinding[] = [binding(outer)];
   const snapshots = new RouterActiveAssemblySnapshotStore();
   snapshots.replace({
     environment: 'test',
@@ -269,26 +228,25 @@ function snapshotsForScenario(): RouterActiveAssemblySnapshotStore {
 }
 
 function binding(
-  protocol: 'http' | 'webSocket',
-  host: string,
-  method: string | null,
-  path: string,
   hop: HopExpectation
 ): RuntimeAssemblyIngressBinding {
   return {
-    selector: { protocol, host, method, path },
+    selector: {
+      protocol: 'http',
+      host: HTTP_HOST,
+      method: 'POST',
+      path: HTTP_PATH
+    },
     deployment: {
       serviceId: hop.serviceId,
       contractVersion: '1.0.0',
       deploymentRevision: hop.activationId,
       deploymentArtifactIdentity: DEPLOYMENT
     },
-    contract: {
-      serviceId: hop.serviceId,
-      contractVersion: '1.0.0',
-      serviceProtocolIdentity: PROTOCOL
-    },
-    contractOperationId: OPERATION,
+    gatewayEntryKey: 'convergence',
+    gatewayEntryIdentity:
+      `skiff-gateway-entry-v1:sha256:${'e'.repeat(64)}`,
+    adapterKind: 'typedJson',
     operationMode: 'unary'
   };
 }
@@ -320,42 +278,6 @@ async function sendHttp(baseUrl: string): Promise<{ status: number; body: string
     );
     request.once('error', reject);
     request.end();
-  });
-}
-
-async function rawUpgradeResponse(
-  port: number
-): Promise<{ status: number; raw: string; body: string }> {
-  return await new Promise((resolve, reject) => {
-    const socket = connectTcp(port, '127.0.0.1');
-    let response = '';
-    socket.setEncoding('utf8');
-    socket.once('connect', () => {
-      socket.write(
-        [
-          `GET ${WEBSOCKET_PATH} HTTP/1.1`,
-          `Host: ${WEBSOCKET_HOST}`,
-          'Connection: Upgrade',
-          'Upgrade: websocket',
-          'Sec-WebSocket-Version: 13',
-          'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
-          '',
-          ''
-        ].join('\r\n')
-      );
-    });
-    socket.on('data', (chunk) => {
-      response += chunk;
-    });
-    socket.once('end', () => {
-      const match = /^HTTP\/1\.1 (\d{3})/.exec(response);
-      resolve({
-        status: Number(match?.[1] ?? 0),
-        raw: response,
-        body: response.split('\r\n\r\n', 2)[1] ?? ''
-      });
-    });
-    socket.once('error', reject);
   });
 }
 

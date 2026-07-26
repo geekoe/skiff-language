@@ -26,5 +26,4 @@ export * from './router/assemblyRuntimeRegistry.js';
 export * from './router/assemblyControlPlane.js';
 export * from './router/assemblyHttpGateway.js';
 export * from './gateway/webSocketGateway.js';
-export * from './gateway/assemblyWebSocketGateway.js';
 export * from './config/index.js';
