@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use serde_json::{json, Value};
+use serde_json::json;
 use skiff_artifact_model::{
     AssemblyIdentity, GatewayDispatchMode, GatewayEntryIdentity, GatewayProtocolSurface,
     IngressProtocol,
@@ -39,8 +39,7 @@ async fn host_http_gateway_typed_raw_and_stream_execute_private_handlers() {
 
     let raw = canonical_header(&routes["/raw"], "host-http-raw");
     let raw_body = vec![0, 1, 2, 0xff, 0xfe];
-    let (raw_end, returned_raw_body) =
-        dispatch_unary(&host, raw, &raw_body, 1024).await;
+    let (raw_end, returned_raw_body) = dispatch_unary(&host, raw, &raw_body, 1024).await;
     assert_eq!(http_status(&raw_end), 201);
     assert_eq!(returned_raw_body, raw_body);
 
@@ -88,11 +87,9 @@ async fn host_http_gateway_exact_route_identity_generation_mode_and_http_metadat
     cases.push(("generation", wrong_generation));
 
     let mut wrong_gateway_identity = exact.clone();
-    wrong_gateway_identity.routing.gateway_entry_identity = GatewayEntryIdentity::parse(format!(
-        "skiff-gateway-entry-v1:sha256:{}",
-        "f".repeat(64)
-    ))
-    .unwrap();
+    wrong_gateway_identity.routing.gateway_entry_identity =
+        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v1:sha256:{}", "f".repeat(64)))
+            .unwrap();
     cases.push(("gateway-identity", wrong_gateway_identity));
 
     let mut wrong_mode = exact.clone();
@@ -103,9 +100,18 @@ async fn host_http_gateway_exact_route_identity_generation_mode_and_http_metadat
     wrong_method.http_request.method = "GET".to_string();
     cases.push(("method", wrong_method));
 
+    let mut wrong_path = exact.clone();
+    wrong_path.http_request.path = "/wrong".to_string();
+    cases.push(("path", wrong_path));
+
     let mut wrong_url = exact.clone();
     wrong_url.http_request.url = "http://other.test/typed".to_string();
     cases.push(("url", wrong_url));
+
+    let mut wrong_url_path = exact.clone();
+    wrong_url_path.http_request.url =
+        format!("http://{}/wrong", wrong_url_path.routing.ingress.host);
+    cases.push(("url-path", wrong_url_path));
 
     let mut wrong_selector = exact;
     wrong_selector.routing.ingress.host = "other.test".to_string();
@@ -198,7 +204,10 @@ async fn host_http_gateway_response_ceiling_cancel_and_stream_terminal_are_singl
     let Terminal::Error(response, payload) = recv_terminal(&mut receiver).await else {
         panic!("oversize unary response must fail")
     };
-    assert_eq!(control_error(&response, &payload).code, "ResourceLimitExceeded");
+    assert_eq!(
+        control_error(&response, &payload).code,
+        "ResourceLimitExceeded"
+    );
     assert_no_second_frame(&mut receiver).await;
 
     let slow = canonical_header(&routes["/slow"], "host-http-cancel");
@@ -241,7 +250,10 @@ async fn host_http_gateway_response_ceiling_cancel_and_stream_terminal_are_singl
     let Terminal::Error(response, payload) = recv_terminal(&mut receiver).await else {
         panic!("oversize stream must have one error terminal")
     };
-    assert_eq!(control_error(&response, &payload).code, "ResourceLimitExceeded");
+    assert_eq!(
+        control_error(&response, &payload).code,
+        "ResourceLimitExceeded"
+    );
     assert_no_second_frame(&mut receiver).await;
 }
 
@@ -346,10 +358,9 @@ fn canonical_header(
 fn deadline(timeout_ms: u64, expires_in_ms: i64) -> RuntimeAssemblyRequestDeadlineFrameHeader {
     RuntimeAssemblyRequestDeadlineFrameHeader {
         timeout_ms,
-        expires_at: (OffsetDateTime::now_utc()
-            + time::Duration::milliseconds(expires_in_ms))
-        .format(&Rfc3339)
-        .unwrap(),
+        expires_at: (OffsetDateTime::now_utc() + time::Duration::milliseconds(expires_in_ms))
+            .format(&Rfc3339)
+            .unwrap(),
     }
 }
 

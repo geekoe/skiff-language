@@ -409,7 +409,8 @@ impl ProjectedFixture {
         );
         let consumer_contract_ref = contract_ref(&consumer_contract);
 
-        let provider_callable = PackageCallableId::new("callable:phase-four-provider");
+        let provider_callable =
+            PackageCallableId::new("pkg-callable:example.phase-four-provider:provide");
         let provider_file = implementation_file(
             "phase_four.provider",
             "provide",
@@ -456,7 +457,7 @@ impl ProjectedFixture {
         let consumer_package = implementation_package(
             "example.phase-four-consumer",
             "consume",
-            PackageCallableId::new("callable:phase-four-consumer"),
+            PackageCallableId::new("pkg-callable:example.phase-four-consumer:consume"),
             &consumer_file,
             consumer_operation_contract,
             &consumer_schema_records,
@@ -1530,6 +1531,10 @@ fn implementation_package(
     package_dependency: Option<(String, PackageArtifactRef)>,
 ) -> PackageArtifact {
     let file_ref = file_ref(file);
+    let entry = file
+        .executables
+        .first()
+        .expect("fixture implementation must expose its entry executable");
     let may_suspend = operation_contract.may_suspend;
     let effects = no_effects(may_suspend);
     let provenance = CallableProvenanceSummary::Analyzed {
@@ -1630,7 +1635,7 @@ fn implementation_package(
                 PackageLocalAbiSymbol::Callable {
                     callable_id: callable_id.clone(),
                     signature: PackageCallableSignature {
-                        type_params: Vec::new(),
+                        type_params: entry.type_params.clone(),
                         parameters: Vec::new(),
                         return_type: PackageTypeRef::Local {
                             local_type: TypeRefIr::builtin("bool"),
@@ -1663,6 +1668,20 @@ fn implementation_package(
             .collect(),
         implementation_links: PackageImplementationLinks {
             types: schema_type_links,
+            functions: BTreeMap::from([(
+                public_path.to_string(),
+                ExecutableExport {
+                    file: file_ref.clone(),
+                    executable_index: 0,
+                    symbol: entry.symbol.clone(),
+                    signature: ExecutableSignatureIr {
+                        params: entry.params.clone(),
+                        return_type: entry.return_type.clone(),
+                        self_type: entry.self_type.clone(),
+                        may_suspend: entry.may_suspend,
+                    },
+                },
+            )]),
             ..PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::from([(

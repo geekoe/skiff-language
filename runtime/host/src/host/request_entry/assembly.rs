@@ -148,17 +148,11 @@ impl RuntimeHost {
                             CompletionTrace::RUNTIME,
                         )
                         .await;
-                    return response_sink.send_terminal_response(
-                        request_id,
-                        ResponseEvent::Error(response_error),
-                    );
+                    return response_sink
+                        .send_terminal_response(request_id, ResponseEvent::Error(response_error));
                 }
                 self.request_supervisor
-                    .complete_success(
-                        supervised_request,
-                        "request.end",
-                        CompletionTrace::RUNTIME,
-                    )
+                    .complete_success(supervised_request, "request.end", CompletionTrace::RUNTIME)
                     .await;
                 response_into_transport_message(request_id.to_string(), response)
             }
@@ -388,23 +382,32 @@ impl ResponseEventSink for HostHttpGatewayResponseSink {
                 "HTTP gateway response emitted after its terminal frame",
             ));
         }
-        state
-            .ceiling
-            .account_stream_event(&event)
-            .map_err(|error| {
-                RequestError::external_error_payload(
-                    error.code,
-                    error.message,
-                    error.status,
-                    error.details,
-                )
-            })?;
+        if let Err(error) = state.ceiling.account_stream_event(&event) {
+            let request_error = RequestError::external_error_payload(
+                error.code.clone(),
+                error.message.clone(),
+                error.status,
+                error.details.clone(),
+            );
+            state.terminal = true;
+            if let Ok(message) = response_event_into_transport_message(
+                request_id.to_string(),
+                ResponseEvent::Error(error),
+            ) {
+                let _ = self.sender.send(message);
+            }
+            return Err(request_error);
+        }
         let is_terminal = matches!(event, ResponseStreamEvent::End);
         let frame = skiff_runtime_transport::response_mapper::response_stream_event_into_frame(
             request_id, event,
         )
         .map_err(|error| RequestError::Decode(error.to_string()))?;
-        if self.sender.send(RouterWriterMessage::Binary(frame)).is_err() {
+        if self
+            .sender
+            .send(RouterWriterMessage::Binary(frame))
+            .is_err()
+        {
             state.terminal = true;
             return Err(RequestError::Cancelled);
         }

@@ -11,7 +11,7 @@ use skiff_runtime_transport::runtime_assembly_request::{
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::mpsc;
 use tracing::error;
-use url::Url;
+use url::{Position, Url};
 
 use super::{request_error_into_runtime_error, response_event_into_transport_message};
 use crate::{
@@ -92,20 +92,6 @@ impl RuntimeHost {
     }
 
     #[cfg(test)]
-    pub(crate) fn runtime_assembly_request_route_from_wire_for_test(
-        &self,
-        _router_session_id: &str,
-        header: &RuntimeAssemblyRequestStartFrameHeader,
-    ) -> Result<ActiveAssemblyRoute> {
-        validate_http_header(header)?;
-        let selector = ingress_selector(header);
-        let route = self.lookup_active_assembly_request_route(&selector)?;
-        validate_route(header, &selector, &route)?;
-        let _ = effective_deadline(header, &route)?;
-        Ok(route)
-    }
-
-    #[cfg(test)]
     pub(crate) fn runtime_assembly_request_deadline_from_wire_for_test(
         &self,
         header: &RuntimeAssemblyRequestStartFrameHeader,
@@ -150,16 +136,8 @@ fn validate_http_header(header: &RuntimeAssemblyRequestStartFrameHeader) -> Resu
         || url.password().is_some()
         || url.fragment().is_some()
         || url.host_str().is_none()
-        || url.host_str().is_some_and(str::is_empty)
         || url.path() != ingress.path
-        || url.host_str().is_none()
-        || url
-            .port()
-            .map_or_else(|| url.host_str().map(str::to_string), |port| {
-                url.host_str().map(|host| format!("{host}:{port}"))
-            })
-            .as_deref()
-            != Some(ingress.host.as_str())
+        || &url[Position::BeforeHost..Position::AfterPort] != ingress.host.as_str()
     {
         return Err(RuntimeError::Decode(
             "httpRequest URL host/path does not match canonical routing ingress".to_string(),

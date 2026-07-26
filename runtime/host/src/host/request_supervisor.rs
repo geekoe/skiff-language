@@ -140,10 +140,7 @@ impl RequestSupervisor {
             .await
             .insert(request_id.clone(), active.clone());
 
-        SupervisedRequest {
-            request_id,
-            active,
-        }
+        SupervisedRequest { request_id, active }
     }
 
     pub(crate) async fn complete_success(

@@ -159,7 +159,8 @@ impl FullChainFixture {
         );
         let consumer_contract_ref = contract_ref(&consumer_contract);
 
-        let provider_callable_id = PackageCallableId::new("callable:provider-health");
+        let provider_callable_id =
+            PackageCallableId::new("pkg-callable:example.phase-three-provider:health");
         let provider_file = implementation_file("provider.main", "health", None);
         let provider_file_ref = file_ref(&provider_file);
         let provider_package = implementation_package(
@@ -184,7 +185,8 @@ impl FullChainFixture {
             contract_version: provider_contract_ref.contract_version.clone(),
             expected_protocol_identity: provider_contract_ref.service_protocol_identity.clone(),
         };
-        let consumer_callable_id = PackageCallableId::new("callable:consumer-check");
+        let consumer_callable_id =
+            PackageCallableId::new("pkg-callable:example.phase-three-consumer:check");
         let consumer_file =
             implementation_file("consumer.main", "check", Some(provider_call.clone()));
         let consumer_file_ref = file_ref(&consumer_file);
@@ -571,6 +573,10 @@ fn implementation_package(
     service_dependency: Option<(ContractRequirement, ServiceCallRef)>,
 ) -> PackageArtifact {
     let file_ref = file_ref(file);
+    let entry = file
+        .executables
+        .first()
+        .expect("fixture implementation must expose its entry executable");
     let effects = no_effects();
     let provenance = CallableProvenanceSummary::Analyzed {
         return_origins: Vec::new(),
@@ -604,7 +610,7 @@ fn implementation_package(
                 PackageLocalAbiSymbol::Callable {
                     callable_id: callable_id.clone(),
                     signature: PackageCallableSignature {
-                        type_params: Vec::new(),
+                        type_params: entry.type_params.clone(),
                         parameters: Vec::new(),
                         return_type: PackageTypeRef::Local {
                             local_type: TypeRefIr::builtin("bool"),
@@ -624,7 +630,23 @@ fn implementation_package(
             .expect("empty Package schema index is canonical"),
         },
         package_schema_type_records: BTreeMap::new(),
-        implementation_links: PackageImplementationLinks::default(),
+        implementation_links: PackageImplementationLinks {
+            functions: BTreeMap::from([(
+                public_path.to_string(),
+                ExecutableExport {
+                    file: file_ref.clone(),
+                    executable_index: 0,
+                    symbol: entry.symbol.clone(),
+                    signature: ExecutableSignatureIr {
+                        params: entry.params.clone(),
+                        return_type: entry.return_type.clone(),
+                        self_type: entry.self_type.clone(),
+                        may_suspend: entry.may_suspend,
+                    },
+                },
+            )]),
+            ..PackageImplementationLinks::default()
+        },
         callable_links: BTreeMap::from([(
             callable_id.clone(),
             PackageCallableLinkFact {

@@ -34,8 +34,7 @@ const VERSION: &str = "1.0.0";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static FIXTURE: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 
-pub(super) async fn admitted_gateway_host(
-) -> (RuntimeHost, HashMap<String, ActiveAssemblyRoute>) {
+pub(super) async fn admitted_gateway_host() -> (RuntimeHost, HashMap<String, ActiveAssemblyRoute>) {
     let fixture = fixture();
     let resolver = fixture.resolver();
     let host = super::super::test_host();
@@ -155,8 +154,7 @@ impl RuntimeAssemblyContentResolver for CompiledGatewayResolver<'_> {
         &self,
         reference: &PackageArtifactRef,
     ) -> anyhow::Result<Arc<PackageArtifact>> {
-        if reference
-            == &skiff_artifact_identity::package_artifact_ref(&self.fixture.root_artifact)?
+        if reference == &skiff_artifact_identity::package_artifact_ref(&self.fixture.root_artifact)?
         {
             return Ok(Arc::clone(&self.fixture.root_artifact));
         }
@@ -368,21 +366,18 @@ fn localize_std_package_abi_schema_refs(
                 .as_deref()
                 .expect("canonical std schema public path");
             let source_path = public_path.strip_prefix("std.").unwrap_or(public_path);
-            let export = artifact
-                .implementation_links
-                .types
-                .get(source_path)
-                .or_else(|| artifact.implementation_links.types.get(public_path))
-                .or_else(|| {
-                    artifact
-                        .implementation_links
-                        .types
-                        .values()
-                        .find(|export| {
+            let export =
+                artifact
+                    .implementation_links
+                    .types
+                    .get(source_path)
+                    .or_else(|| artifact.implementation_links.types.get(public_path))
+                    .or_else(|| {
+                        artifact.implementation_links.types.values().find(|export| {
                             export.symbol == source_path || export.symbol == public_path
                         })
-                })
-                .unwrap_or_else(|| panic!("std schema path {public_path} implementation link"));
+                    })
+                    .unwrap_or_else(|| panic!("std schema path {public_path} implementation link"));
             (
                 entry.package_schema_type_id.clone(),
                 TypeRefIr::PublicationType {

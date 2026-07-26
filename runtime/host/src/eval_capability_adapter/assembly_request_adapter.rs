@@ -190,14 +190,7 @@ impl RuntimeHttpGatewayEvalAdapter for RuntimeHttpGatewayEvalAdapterImpl {
             self.http_options.clone(),
         ));
         let service_id = self.activation.identity().deployment.service_id.as_str();
-        let websocket = websocket_from_request(
-            service_id,
-            request
-                .extra
-                .get("websocketEntryId")
-                .and_then(Value::as_str),
-            self.router_sender.as_ref(),
-        );
+        let websocket = websocket_from_request(service_id, None, self.router_sender.as_ref());
         let actor = actor_from_request(
             self.runtime_id.as_str(),
             service_id,
