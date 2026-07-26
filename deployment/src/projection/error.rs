@@ -38,10 +38,15 @@ pub enum ProjectionError {
     MissingOperationBinding { operation_id: ContractOperationId },
     #[error("deployment maps unknown contract operation {operation_id}")]
     UnknownOperationBinding { operation_id: ContractOperationId },
-    #[error("package public path {public_path} does not exist")]
-    UnknownPublicPath { public_path: String },
-    #[error("package public path {public_path} is not a callable")]
-    PublicPathNotCallable { public_path: String },
+    #[error("package callable {callable_id} does not exist")]
+    UnknownPackageCallable { callable_id: PackageCallableId },
+    #[error("package callable {callable_id} is not a public function or public-instance method")]
+    NonPublicPackageCallable { callable_id: PackageCallableId },
+    #[error("package callable {callable_id} has an inconsistent callable link: {message}")]
+    CallableLinkMismatch {
+        callable_id: PackageCallableId,
+        message: String,
+    },
     #[error(
         "callable {callable_id} selected for operation {operation_id} is boundary unavailable: {reasons:?}"
     )]

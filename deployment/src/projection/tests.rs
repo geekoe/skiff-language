@@ -2,13 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::{
     assign_package_artifact_identities, assign_service_contract_identities, contract_operation_id,
-    package_schema_index_identity, package_schema_type_id,
+    package_schema_index_identity, package_schema_type_id, DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::*;
 
 use super::*;
 
 mod eligibility;
+mod operation_bindings;
 
 struct ProjectionFixture {
     input: ServiceDeploymentInput,
@@ -226,7 +227,6 @@ impl ProjectionFixture {
                     implementation_requirements: requirements,
                 },
             )]),
-            service_call_roots: Vec::new(),
             service_call_refs: Vec::new(),
         };
         assign_package_artifact_identities(&mut implementation).unwrap();
@@ -240,11 +240,11 @@ impl ProjectionFixture {
             operation_bindings: vec![
                 ServiceDeploymentOperationInput {
                     contract_operation_id: repeat_id,
-                    package_public_path: "handle".to_string(),
+                    package_callable_id: callable_id.clone(),
                 },
                 ServiceDeploymentOperationInput {
                     contract_operation_id: echo_id,
-                    package_public_path: "handle".to_string(),
+                    package_callable_id: callable_id.clone(),
                 },
             ],
             package_bindings: Vec::new(),
@@ -323,7 +323,16 @@ impl ProjectionFixture {
 #[test]
 fn projection_maps_every_operation_explicitly_and_emits_no_public_path() {
     let fixture = ProjectionFixture::new();
+    assert_eq!(
+        fixture.input.schema_version,
+        "skiff-service-deployment-input-v3"
+    );
     let deployment = fixture.project().unwrap();
+    assert_eq!(deployment.schema_version, "skiff-service-deployment-v2");
+    assert!(deployment
+        .deployment_artifact_identity
+        .as_str()
+        .starts_with(DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX));
     assert_eq!(deployment.operation_bindings.len(), 2);
     assert!(deployment
         .operation_bindings
@@ -334,6 +343,7 @@ fn projection_maps_every_operation_explicitly_and_emits_no_public_path() {
         .windows(2)
         .all(|pair| { pair[0].contract_operation_id < pair[1].contract_operation_id }));
     let wire = serde_json::to_string(&deployment).unwrap();
+    assert!(wire.contains("packageCallableId"));
     assert!(!wire.contains("packagePublicPath"));
     skiff_artifact_identity::validate_service_deployment_identity(&deployment).unwrap();
 }
@@ -424,13 +434,6 @@ fn operation_mapping_failures_are_structured_and_fail_closed() {
     assert!(matches!(
         fixture.project(),
         Err(ProjectionError::UnknownOperationBinding { .. })
-    ));
-
-    let mut fixture = ProjectionFixture::new();
-    fixture.input.operation_bindings[0].package_public_path = "missing".to_string();
-    assert!(matches!(
-        fixture.project(),
-        Err(ProjectionError::UnknownPublicPath { .. })
     ));
 }
 
@@ -876,7 +879,6 @@ fn dependency_artifact(resource_hash: &str) -> PackageArtifact {
         },
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
-        service_call_roots: Vec::new(),
         service_call_refs: Vec::new(),
     };
     assign_package_artifact_identities(&mut artifact).unwrap();

@@ -1,7 +1,7 @@
 //! Source-free service deployment projection.
 //!
-//! The trust boundary resolves human public paths once, then emits only typed,
-//! canonical artifact references and callable identities.
+//! The trust boundary consumes exact callable identities from typed input and
+//! emits only typed, canonical artifact references and callable identities.
 
 mod eligibility;
 mod error;
