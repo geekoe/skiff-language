@@ -1,12 +1,11 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn,
-    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractOperationId, ContractTypeDescriptor,
-    ContractTypeRef, PackageSchemaCanonicalDescriptor, PackageSchemaTypeId,
-    PackageSchemaTypeRecord,
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+    BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, ContractOperationId, ContractTypeDescriptor, ContractTypeRef,
+    PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord,
 };
 use skiff_runtime_boundary::service_linkable::FailClosedServiceLinkableCapabilityHooks;
 use skiff_runtime_model::{
@@ -212,9 +211,7 @@ fn operation(
                 value_plan: detached_plan(BoundaryValueOwner::Provider),
             },
             stream: BoundaryStreamContract::Unary,
-            cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,
-            may_suspend: false,
             effect_guarantee: BoundaryEffectGuarantee {
                 detached_parameters: true,
                 detached_return: true,

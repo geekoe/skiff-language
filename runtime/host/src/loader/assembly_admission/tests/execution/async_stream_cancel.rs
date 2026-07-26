@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryFeatureUnavailableReason, BoundaryOperationContract, BoundaryReturn,
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract, BoundaryReturn,
     BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
     BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
 };
@@ -16,8 +15,7 @@ use skiff_runtime_model::{
 };
 
 use super::{
-    artifacts::{ProjectedFixture, TypedExecutionContract},
-    runtime::TypedExecutionRuntime,
+    artifacts::TypedExecutionContract, runtime::TypedExecutionRuntime,
     scenario::TypedExecutionFixture,
 };
 
@@ -26,6 +24,7 @@ async fn typed_execution_async_stream_cancel_reaches_owned_provider_future_full_
     let fixture = TypedExecutionFixture::admit_contract(TypedExecutionContract::returning_null(
         async_unary_contract(),
         BTreeMap::new(),
+        true,
     ))
     .await;
     let provider = fixture.resolve_provider();
@@ -78,6 +77,18 @@ async fn typed_execution_async_stream_cancel_reaches_owned_provider_future_full_
         generation,
         "provider future must retain the explicit request generation"
     );
+}
+
+#[tokio::test]
+async fn typed_execution_provider_suspension_summary_does_not_select_boundary_lane() {
+    for may_suspend in [false, true] {
+        let fixture = TypedExecutionFixture::admit_contract(
+            TypedExecutionContract::unary().with_provider_may_suspend(may_suspend),
+        )
+        .await;
+
+        fixture.assert_dynamic_execution_results().await;
+    }
 }
 
 #[tokio::test]
@@ -154,7 +165,7 @@ async fn typed_execution_async_stream_cancel_restores_public_typed_error_from_fi
 async fn typed_execution_async_stream_cancel_spawns_server_stream_from_admitted_target() {
     {
         let fixture = TypedExecutionFixture::admit_contract(
-            TypedExecutionContract::returning_null(server_stream_contract(), BTreeMap::new()),
+            TypedExecutionContract::returning_null(server_stream_contract(), BTreeMap::new(), true),
         )
         .await;
         let runtime = TypedExecutionRuntime::new(
@@ -403,6 +414,52 @@ async fn typed_execution_service_stream_request_cancel_cleans_provider_and_isola
 }
 
 #[tokio::test]
+async fn typed_execution_service_stream_deadline_releases_provider_task_and_lease() {
+    let baseline = skiff_runtime_eval::provider_stream_tasks_active_for_test();
+    let fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::unconsumed_boolean_stream())
+            .await;
+    let provider = fixture.resolve_provider();
+    let runtime = TypedExecutionRuntime::new(
+        &fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    )
+    .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(250));
+    let interpreter = runtime.interpreter();
+    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let mut heap = context.request_heap();
+
+    let stream = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect("service call should return its stream before the request deadline");
+    assert!(matches!(stream, RuntimeValue::Heap(_)));
+
+    wait_for_stream_runtime_empty(&interpreter.stream_runtime).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while skiff_runtime_eval::provider_stream_tasks_active_for_test() != baseline {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("deadline must terminate the detached provider task");
+
+    assert!(
+        provider.provider_request().open_stream().is_none(),
+        "deadline must cancel the provider request and release its stream lease"
+    );
+}
+
+#[tokio::test]
 async fn typed_execution_async_stream_cancel_runtime_owner_drop_wakes_unconsumed_producer_clone() {
     let runtime = TypedExecutionRuntime::new("example.phase-four.consumer");
     let interpreter = runtime.interpreter();
@@ -627,24 +684,6 @@ async fn typed_execution_async_stream_cancel_rejects_callback_item_wrong_tuple_b
     );
 }
 
-#[test]
-fn typed_execution_async_stream_cancel_rejects_unsupported_descriptor_before_provider() {
-    let mut contract = async_unary_contract();
-    contract.cancellation = BoundaryCancellationContract::Unsupported {
-        reason: BoundaryFeatureUnavailableReason::UnknownSemantics,
-    };
-    let rejected = std::panic::catch_unwind(|| {
-        ProjectedFixture::new(TypedExecutionContract::returning_null(
-            contract,
-            BTreeMap::new(),
-        ))
-    });
-    assert!(
-        rejected.is_err(),
-        "unsupported cancellation descriptor must fail during typed projection"
-    );
-}
-
 fn async_unary_contract() -> BoundaryOperationContract {
     BoundaryOperationContract {
         parameters: Vec::new(),
@@ -653,9 +692,7 @@ fn async_unary_contract() -> BoundaryOperationContract {
             value_plan: detached_plan(BoundaryValueLifetime::Call),
         },
         stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::Cooperative,
         callbacks: BoundaryCallbackContract::None,
-        may_suspend: true,
         effect_guarantee: detached_effect_guarantee(),
     }
 }

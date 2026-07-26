@@ -1031,9 +1031,7 @@ fn service_contract(operation_id: ContractOperationId, flavor: ContractFlavor) -
                     parameters,
                     return_value,
                     stream: BoundaryStreamContract::Unary,
-                    cancellation: BoundaryCancellationContract::NotCancellable,
                     callbacks: BoundaryCallbackContract::None,
-                    may_suspend: false,
                     effect_guarantee: BoundaryEffectGuarantee {
                         detached_parameters: true,
                         detached_return: true,
@@ -1575,6 +1573,7 @@ fn runtime_assembly(
                 package_requirement_alias: STD_ALIAS.to_string(),
             },
             package: std.reference.clone(),
+            collection_name_mapping: BTreeMap::new(),
         },
         PackageBinding {
             key: PackageRequirementKey {
@@ -1582,6 +1581,7 @@ fn runtime_assembly(
                 package_requirement_alias: STD_ALIAS.to_string(),
             },
             package: std.reference.clone(),
+            collection_name_mapping: BTreeMap::new(),
         },
     ];
     if linked_provider {
@@ -1591,6 +1591,7 @@ fn runtime_assembly(
                 package_requirement_alias: PROVIDER_ALIAS.to_string(),
             },
             package: provider.reference.clone(),
+            collection_name_mapping: BTreeMap::new(),
         });
     }
     RuntimeAssembly {
@@ -1842,6 +1843,7 @@ fn package_requirement(alias: &str, package: &PackageArtifactRef) -> PackageRequ
         package_id: package.package_id.clone(),
         exact_version: package.package_version.clone(),
         expected_local_abi: package.package_local_abi_identity.clone(),
+        collection_name_mapping: BTreeMap::new(),
         expected_package_build: Some(package.package_build_id.clone()),
     }
 }

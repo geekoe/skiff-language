@@ -89,12 +89,16 @@ pub(super) struct TypedExecutionContract {
     provider_schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     consumer_behavior: ConsumerBehavior,
     provider_behavior: ProviderBehavior,
+    consumer_may_suspend: bool,
+    provider_may_suspend: bool,
+    callback_owner_may_suspend: bool,
 }
 
 impl TypedExecutionContract {
     fn with_provider_behavior(
         operation: BoundaryOperationContract,
         schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+        may_suspend: bool,
         provider_behavior: ProviderBehavior,
     ) -> Self {
         Self {
@@ -105,6 +109,9 @@ impl TypedExecutionContract {
             provider_schema_records: schema_records,
             consumer_behavior: ConsumerBehavior::ReturnCall,
             provider_behavior,
+            consumer_may_suspend: may_suspend,
+            provider_may_suspend: may_suspend,
+            callback_owner_may_suspend: false,
         }
     }
 
@@ -112,6 +119,7 @@ impl TypedExecutionContract {
         Self::with_provider_behavior(
             unary_contract(),
             BTreeMap::new(),
+            false,
             ProviderBehavior::ReturnTrue,
         )
     }
@@ -119,8 +127,14 @@ impl TypedExecutionContract {
     pub(super) fn returning_null(
         operation: BoundaryOperationContract,
         schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+        may_suspend: bool,
     ) -> Self {
-        Self::with_provider_behavior(operation, schema_records, ProviderBehavior::ReturnNull)
+        Self::with_provider_behavior(
+            operation,
+            schema_records,
+            may_suspend,
+            ProviderBehavior::ReturnNull,
+        )
     }
 
     pub(super) fn async_typed_error() -> Self {
@@ -138,9 +152,6 @@ impl TypedExecutionContract {
                 fields: payload_fields,
             },
         );
-        let mut operation = unary_contract();
-        operation.cancellation = BoundaryCancellationContract::Cooperative;
-        operation.may_suspend = true;
         let provider_schema_records = BTreeMap::from([(
             payload_record.package_schema_type_id.clone(),
             payload_record,
@@ -148,11 +159,14 @@ impl TypedExecutionContract {
         Self {
             consumer_operation: unary_contract(),
             consumer_schema_records: BTreeMap::new(),
-            provider_operation: operation,
+            provider_operation: unary_contract(),
             provider_contract_schema_records: BTreeMap::new(),
             provider_schema_records,
             consumer_behavior: ConsumerBehavior::ReturnCall,
             provider_behavior: ProviderBehavior::ThrowTypedError,
+            consumer_may_suspend: false,
+            provider_may_suspend: true,
+            callback_owner_may_suspend: false,
         }
     }
 
@@ -170,7 +184,6 @@ impl TypedExecutionContract {
                     BoundaryCallbackOperation {
                         parameters: Vec::new(),
                         return_type: ContractTypeRef::builtin("bool"),
-                        may_suspend: false,
                     },
                 )]),
             },
@@ -208,6 +221,9 @@ impl TypedExecutionContract {
             provider_schema_records,
             consumer_behavior: ConsumerBehavior::InvokeCallback,
             provider_behavior: ProviderBehavior::InvokeCallback,
+            consumer_may_suspend: false,
+            provider_may_suspend: false,
+            callback_owner_may_suspend: false,
         }
     }
 
@@ -227,6 +243,7 @@ impl TypedExecutionContract {
         let mut fixture = Self::with_provider_behavior(
             boolean_stream_contract(),
             BTreeMap::new(),
+            true,
             ProviderBehavior::EmitBooleanSequence,
         );
         fixture.consumer_behavior = ConsumerBehavior::ConsumeBooleanSequence;
@@ -237,6 +254,7 @@ impl TypedExecutionContract {
         let mut fixture = Self::with_provider_behavior(
             boolean_stream_contract(),
             BTreeMap::new(),
+            true,
             ProviderBehavior::EmitBooleanSequence,
         );
         fixture.consumer_behavior = ConsumerBehavior::ReturnGenericBooleanStream;
@@ -265,6 +283,9 @@ impl TypedExecutionContract {
             )]),
             consumer_behavior: ConsumerBehavior::ConsumeBooleanSequence,
             provider_behavior: ProviderBehavior::EmitBooleanThenError,
+            consumer_may_suspend: true,
+            provider_may_suspend: true,
+            callback_owner_may_suspend: false,
         }
     }
 
@@ -322,7 +343,6 @@ impl TypedExecutionContract {
                     BoundaryCallbackOperation {
                         parameters: Vec::new(),
                         return_type: ContractTypeRef::builtin("bool"),
-                        may_suspend: false,
                     },
                 )]),
             },
@@ -347,8 +367,6 @@ impl TypedExecutionContract {
             lifetime: BoundaryCallbackLifetime::Stream,
             expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
         };
-        provider_operation.cancellation = BoundaryCancellationContract::Cooperative;
-        provider_operation.may_suspend = true;
         let provider_schema_records = BTreeMap::from([(
             callback_record.package_schema_type_id.clone(),
             callback_record,
@@ -363,7 +381,20 @@ impl TypedExecutionContract {
                 break_after_item: false,
             },
             provider_behavior: ProviderBehavior::EmitCallbackStream,
+            consumer_may_suspend: false,
+            provider_may_suspend: true,
+            callback_owner_may_suspend: false,
         }
+    }
+
+    pub(super) fn with_provider_may_suspend(mut self, may_suspend: bool) -> Self {
+        self.provider_may_suspend = may_suspend;
+        self
+    }
+
+    pub(super) fn with_callback_owner_may_suspend(mut self, may_suspend: bool) -> Self {
+        self.callback_owner_may_suspend = may_suspend;
+        self
     }
 }
 
@@ -394,6 +425,9 @@ impl ProjectedFixture {
         let provider_schema_records = contract_fixture.provider_schema_records;
         let consumer_behavior = contract_fixture.consumer_behavior;
         let provider_behavior = contract_fixture.provider_behavior;
+        let consumer_may_suspend = contract_fixture.consumer_may_suspend;
+        let provider_may_suspend = contract_fixture.provider_may_suspend;
+        let callback_owner_may_suspend = contract_fixture.callback_owner_may_suspend;
         let (provider_contract, provider_operation) = service_contract(
             "example.phase-four.provider",
             "provide",
@@ -414,7 +448,8 @@ impl ProjectedFixture {
         let provider_file = implementation_file(
             "phase_four.provider",
             "provide",
-            provider_operation_contract.may_suspend,
+            provider_may_suspend,
+            callback_owner_may_suspend,
             ImplementationRole::Provider(provider_behavior),
         );
         let provider_file_ref = file_ref(&provider_file);
@@ -445,7 +480,8 @@ impl ProjectedFixture {
         let consumer_file = implementation_file(
             "phase_four.consumer",
             "consume",
-            consumer_operation_contract.may_suspend,
+            consumer_may_suspend,
+            callback_owner_may_suspend,
             ImplementationRole::Consumer {
                 service_call: service_call.clone(),
                 package_call: ("providerPackage".to_string(), provider_callable.clone()),
@@ -673,6 +709,7 @@ fn implementation_file(
     module_path: &str,
     symbol: &str,
     may_suspend: bool,
+    callback_owner_may_suspend: bool,
     role: ImplementationRole,
 ) -> FileIrUnit {
     let mut file = FileIrUnit::empty(module_path, format!("source:{module_path}"));
@@ -696,7 +733,13 @@ fn implementation_file(
         ImplementationRole::Provider(behavior) => {
             configure_provider_entry(&mut file, &mut entry, module_path, behavior);
             file.executables.push(entry);
-            install_provider_support(&mut file, module_path, symbol, behavior);
+            install_provider_support(
+                &mut file,
+                module_path,
+                symbol,
+                behavior,
+                callback_owner_may_suspend,
+            );
         }
         ImplementationRole::Consumer {
             service_call,
@@ -705,7 +748,14 @@ fn implementation_file(
         } => {
             configure_consumer_entry(&mut file, &mut entry, module_path, service_call, behavior);
             file.executables.push(entry);
-            install_consumer_support(&mut file, module_path, symbol, package_call, behavior);
+            install_consumer_support(
+                &mut file,
+                module_path,
+                symbol,
+                package_call,
+                behavior,
+                callback_owner_may_suspend,
+            );
         }
     }
     skiff_artifact_identity::assign_file_ir_identity(&mut file)
@@ -804,6 +854,7 @@ fn install_provider_support(
     module_path: &str,
     symbol: &str,
     behavior: ProviderBehavior,
+    callback_owner_may_suspend: bool,
 ) {
     match behavior {
         ProviderBehavior::InvokeCallback => {
@@ -813,6 +864,7 @@ fn install_provider_support(
                 symbol,
                 false,
                 CALLBACK_OWNER_EXECUTABLE_INDEX,
+                callback_owner_may_suspend,
             );
         }
         ProviderBehavior::EmitCallbackStream => {
@@ -822,6 +874,7 @@ fn install_provider_support(
                 symbol,
                 true,
                 CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX,
+                callback_owner_may_suspend,
             );
             configure_return_true_entry(
                 file.executables
@@ -839,6 +892,7 @@ fn install_consumer_support(
     symbol: &str,
     package_call: (String, PackageCallableId),
     behavior: ConsumerBehavior,
+    callback_owner_may_suspend: bool,
 ) {
     let (dependency_ref, package_callable_id) = package_call;
     let package_ref = PackageRefIr::Dependency { dependency_ref };
@@ -876,6 +930,7 @@ fn install_consumer_support(
         symbol,
         matches!(behavior, ConsumerBehavior::InvokeCallback),
         CALLBACK_OWNER_EXECUTABLE_INDEX,
+        callback_owner_may_suspend,
     );
 }
 
@@ -1320,6 +1375,7 @@ fn install_callback_interface_fixture(
     symbol: &str,
     include_owner_method: bool,
     owner_executable_index: u32,
+    owner_may_suspend: bool,
 ) {
     let callback_interface = callback_interface_ref(module_path);
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
@@ -1398,7 +1454,7 @@ fn install_callback_interface_fixture(
             return_type: TypeRefIr::builtin("bool"),
             self_type: Some(TypeRefIr::LocalType { type_index: 0 }),
             slots: SlotLayout::default(),
-            may_suspend: false,
+            may_suspend: owner_may_suspend,
             // Intentional callback-owner missing-entry probe; validation/execution must fail
             // closed instead of inventing an owner-method body.
             body: ExecutableBody::default(),
@@ -1538,7 +1594,7 @@ fn implementation_package(
         .executables
         .first()
         .expect("fixture implementation must expose its entry executable");
-    let may_suspend = operation_contract.may_suspend;
+    let may_suspend = entry.may_suspend;
     let effects = no_effects(may_suspend);
     let provenance = CallableProvenanceSummary::Analyzed {
         return_origins: Vec::new(),
@@ -1753,9 +1809,7 @@ fn unary_contract() -> BoundaryOperationContract {
             },
         },
         stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,
-        may_suspend: false,
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,
@@ -1785,8 +1839,6 @@ fn boolean_stream_contract() -> BoundaryOperationContract {
             lifetime: BoundaryValueLifetime::Stream,
         },
     };
-    contract.cancellation = BoundaryCancellationContract::Cooperative;
-    contract.may_suspend = true;
     contract
 }
 

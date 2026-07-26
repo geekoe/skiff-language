@@ -99,6 +99,10 @@ impl ExecutionBudget {
             || current / interval != previous / interval
     }
 
+    pub fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
     pub fn poll(&self, cancelled: bool, now: Instant) -> Result<(), ExecutionBudgetReason> {
         if cancelled {
             return self.fail(ExecutionBudgetReason::Cancelled);

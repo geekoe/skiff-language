@@ -3,12 +3,12 @@ use std::{cell::Cell, collections::BTreeMap, sync::Arc};
 use sha2::{Digest, Sha256};
 use skiff_artifact_model::{
     ActivationPolicy, ActivationTemplate, BoundaryCallableProjection, BoundaryCallbackContract,
-    BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryImplementationRequirements,
-    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract,
-    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
-    CallableSemanticFacts, ContractDiagnosticText, ContractOperationId, ContractTypeDescriptor,
-    ContractTypeNameability, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
+    BoundaryEffectGuarantee, BoundaryImplementationRequirements, BoundaryOperationContract,
+    BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
+    ContractDiagnosticText, ContractOperationId, ContractTypeDescriptor, ContractTypeNameability,
+    ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
     DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
     ExecutableBody, ExecutableExport, ExecutableIr, ExecutableKind, ExecutableSignatureIr,
     FileIrRef, FileIrUnit, GatewayEntryIdentity, GatewayEntryKey, GatewayIngressBinding,
@@ -1702,9 +1702,7 @@ fn operation_contract() -> BoundaryOperationContract {
             },
         },
         stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,
-        may_suspend: false,
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,

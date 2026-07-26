@@ -1286,9 +1286,7 @@ fn operation_contract() -> BoundaryOperationContract {
             },
         },
         stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,
-        may_suspend: false,
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,

@@ -2,6 +2,7 @@ use std::{
     fmt,
     marker::PhantomData,
     sync::{atomic::AtomicBool, Arc},
+    time::Instant,
 };
 
 use serde_json::json;
@@ -159,6 +160,7 @@ pub trait ExecutionControlApi: Send + Sync {
     fn owned(&self) -> OwnedExecutionControl;
     fn cancel_flag(&self) -> Arc<AtomicBool>;
     fn cancellation_token(&self) -> CancellationToken;
+    fn deadline(&self) -> Option<Instant>;
     fn check_cancelled(&self) -> ExecutionControlResult<()>;
     fn add_instruction_units(&self, units: u64) -> ExecutionControlResult<()>;
     fn poll_execution_budget(&self) -> ExecutionControlResult<()>;
@@ -197,6 +199,10 @@ impl<'a> ExecutionControl<'a> {
         self.inner.cancellation_token()
     }
 
+    pub fn deadline(&self) -> Option<Instant> {
+        self.inner.deadline()
+    }
+
     pub fn check_cancelled(&self) -> ExecutionControlResult<()> {
         self.inner.check_cancelled()
     }
@@ -221,6 +227,7 @@ pub trait OwnedExecutionControlApi: Send + Sync {
     fn borrow(&self) -> ExecutionControl<'_>;
     fn cancelled(&self) -> &AtomicBool;
     fn cancellation_token(&self) -> CancellationToken;
+    fn deadline(&self) -> Option<Instant>;
 }
 
 #[derive(Clone)]
@@ -248,5 +255,9 @@ impl OwnedExecutionControl {
 
     pub fn cancellation_token(&self) -> CancellationToken {
         self.inner.cancellation_token()
+    }
+
+    pub fn deadline(&self) -> Option<Instant> {
+        self.inner.deadline()
     }
 }

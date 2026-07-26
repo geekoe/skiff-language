@@ -17,6 +17,10 @@ impl capability_contract::ExecutionControlApi for RuntimeExecutionControl {
         self.0.borrow().cancellation_token()
     }
 
+    fn deadline(&self) -> Option<std::time::Instant> {
+        self.0.borrow().deadline()
+    }
+
     fn check_cancelled(&self) -> ExecutionControlResult<()> {
         self.0.borrow().check_cancelled()
     }
@@ -55,5 +59,9 @@ impl capability_contract::OwnedExecutionControlApi for RuntimeOwnedExecutionCont
 
     fn cancellation_token(&self) -> CancellationToken {
         self.0.cancellation_token()
+    }
+
+    fn deadline(&self) -> Option<std::time::Instant> {
+        self.0.deadline()
     }
 }

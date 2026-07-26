@@ -353,39 +353,6 @@ async fn object_materialization_interpreter_heap_shape_distinguishes_construct_a
     ));
 }
 
-#[test]
-fn ordinary_in_process_keeps_lane_specific_type_arguments_out_of_shared_planner() {
-    let descriptor = BoundaryOperationDescriptor {
-        operation_id: ContractOperationId::new("operation:ordinary-lane-validation"),
-        stable_key: "ordinaryLaneValidation".to_string(),
-        contract: ordinary_array_contract(),
-    };
-    let mut call = skiff_runtime_linked_program::CallIr {
-        target: LinkedCallTarget::Builtin {
-            op: "ordinary-lane-validation".to_string(),
-        },
-        site: test_instruction_site(),
-        args: Vec::new(),
-        type_args: BTreeMap::new(),
-        metadata: BTreeMap::new(),
-        actor_metadata: None,
-    };
-    call.type_args.insert(
-        "T".to_string(),
-        skiff_runtime_linked_program::LinkedTypeRef::Native {
-            name: "string".to_string(),
-            args: Vec::new(),
-        },
-    );
-
-    let error = super::validate_ordinary_operation(&descriptor, &call)
-        .expect_err("ordinary lane must reject package-local type arguments");
-    assert!(matches!(
-        error,
-        crate::error::RuntimeError::InvalidArtifact(_)
-    ));
-}
-
 struct PackageDirectFixture {
     eval_target: RuntimeAssemblyEvalTarget,
     caller_addr: skiff_runtime_linked_program::ExecutableAddr,
@@ -593,6 +560,7 @@ fn package_constant_fixture() -> PackageDirectFixture {
             package_id: dependency_ref.package_id.clone(),
             exact_version: dependency_ref.package_version.clone(),
             expected_local_abi: dependency_ref.package_local_abi_identity.clone(),
+            collection_name_mapping: BTreeMap::new(),
             expected_package_build: Some(dependency_ref.package_build_id.clone()),
         });
     skiff_artifact_identity::assign_package_artifact_identities(&mut caller_package)
@@ -621,6 +589,7 @@ fn package_constant_fixture() -> PackageDirectFixture {
                     package_requirement_alias: DEPENDENCY_ALIAS.to_string(),
                 },
                 package: dependency_ref,
+                collection_name_mapping: BTreeMap::new(),
             }],
         },
         service_binding_templates: Vec::new(),
@@ -769,6 +738,7 @@ fn package_direct_fixture_with_caller(caller_kind: CallerFixtureKind) -> Package
             package_id: callee_ref.package_id.clone(),
             exact_version: callee_ref.package_version.clone(),
             expected_local_abi: callee_ref.package_local_abi_identity.clone(),
+            collection_name_mapping: BTreeMap::new(),
             expected_package_build: None,
         });
     skiff_artifact_identity::assign_package_artifact_identities(&mut caller_package)
@@ -797,6 +767,7 @@ fn package_direct_fixture_with_caller(caller_kind: CallerFixtureKind) -> Package
                     package_requirement_alias: DEPENDENCY_ALIAS.to_string(),
                 },
                 package: callee_ref,
+                collection_name_mapping: BTreeMap::new(),
             }],
         },
         service_binding_templates: Vec::new(),
@@ -1554,9 +1525,7 @@ fn stream_callable_package(
             item_type: ContractTypeRef::builtin("string"),
             item_value_plan,
         },
-        cancellation: BoundaryCancellationContract::Cooperative,
         callbacks: BoundaryCallbackContract::None,
-        may_suspend: true,
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,
@@ -1680,9 +1649,7 @@ fn ordinary_array_contract() -> BoundaryOperationContract {
             value_plan: detached_plan(BoundaryValueOwner::Provider),
         },
         stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,
-        may_suspend: false,
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,

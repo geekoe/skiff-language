@@ -11,7 +11,9 @@ mod websocket_identity;
 mod websocket_ingress;
 mod websocket_response;
 
-use skiff_artifact_model::{BoundaryCancellationContract, BoundaryStreamContract};
+use skiff_artifact_model::{
+    BoundaryFeatureUnavailableReason, BoundaryStreamContract, ContractOperationId,
+};
 use skiff_runtime_linked_program::{
     ActivationRelativeServiceCall, CallIr, LinkedPackageDirectCall,
 };
@@ -81,51 +83,14 @@ async fn dispatch_in_process_boundary(
     record_in_process_boundary_dispatch(origin, &target);
     let remote_service_id = target.contract().service_id.clone();
     let remote_operation_id = target.descriptor().operation_id.clone();
-    let caller_package_build_id = match origin {
-        InProcessBoundaryDispatchOrigin::Ingress => None,
-        InProcessBoundaryDispatchOrigin::InternalServiceCall => Some(
-            context
-                .context
-                .runtime_assembly_target()?
-                .activation_context()
-                .implementation_package_build_id()
-                .clone(),
-        ),
-    };
     let result = match &target.descriptor().contract.stream {
-        BoundaryStreamContract::Unsupported { reason } => Err(RuntimeError::Unsupported(format!(
-            "canonical service operation {} has unsupported stream semantics: {reason:?}",
-            target.descriptor().operation_id
-        ))),
-        BoundaryStreamContract::ServerStream { .. } => {
+        BoundaryStreamContract::Unsupported { reason } => Err(unsupported_stream_error(
+            &target.descriptor().operation_id,
+            reason,
+        )),
+        BoundaryStreamContract::Unary | BoundaryStreamContract::ServerStream { .. } => {
             async_stream_cancel::execute_service_call(context, call, target, args).await
         }
-        BoundaryStreamContract::Unary => match target.descriptor().contract.cancellation {
-            BoundaryCancellationContract::Unsupported { reason } => {
-                Err(RuntimeError::Unsupported(format!(
-                    "canonical service operation {} has unsupported cancellation semantics: {reason:?}",
-                    target.descriptor().operation_id
-                )))
-            }
-            BoundaryCancellationContract::Cooperative => {
-                async_stream_cancel::execute_service_call(context, call, target, args).await
-            }
-            BoundaryCancellationContract::NotCancellable
-                if target.descriptor().contract.may_suspend =>
-            {
-                async_stream_cancel::execute_service_call(context, call, target, args).await
-            }
-            BoundaryCancellationContract::NotCancellable => {
-                ordinary::execute_service_call(
-                    context,
-                    call,
-                    target,
-                    args,
-                    caller_package_build_id.as_ref(),
-                )
-                .await
-            }
-        },
     };
 
     let Err(RuntimeError::FixedServiceFailure(error)) = result else {
@@ -160,6 +125,15 @@ async fn dispatch_in_process_boundary(
             Err(RuntimeError::UserException(exception))
         }
     }
+}
+
+fn unsupported_stream_error(
+    operation_id: &ContractOperationId,
+    reason: &BoundaryFeatureUnavailableReason,
+) -> RuntimeError {
+    RuntimeError::Unsupported(format!(
+        "canonical service operation {operation_id} has unsupported stream semantics: {reason:?}"
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -364,5 +338,14 @@ mod tests {
         let error = RuntimeError::from(RuntimeAssemblyEvalSeamError::MissingExecutionTarget);
         assert!(matches!(error, RuntimeError::InvalidArtifact(_)));
         assert!(error.to_string().contains("no runtime assembly target"));
+    }
+
+    #[test]
+    fn unsupported_stream_contract_remains_a_typed_runtime_error() {
+        let error = unsupported_stream_error(
+            &ContractOperationId::new("operation:unsupported-stream"),
+            &BoundaryFeatureUnavailableReason::UnknownSemantics,
+        );
+        assert!(matches!(error, RuntimeError::Unsupported(_)));
     }
 }

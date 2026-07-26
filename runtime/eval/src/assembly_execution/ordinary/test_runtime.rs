@@ -4,6 +4,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
+    time::Instant,
 };
 
 use bytes::Bytes;
@@ -49,6 +50,12 @@ pub(crate) fn runtime_factory() -> EvalRuntimeFactory {
 
 pub(crate) fn execution_control() -> ExecutionControl<'static> {
     ExecutionControl::new(TestExecutionControl::default())
+}
+
+pub(crate) fn execution_control_with_deadline(
+    deadline: Option<Instant>,
+) -> ExecutionControl<'static> {
+    ExecutionControl::new(TestExecutionControl::with_deadline(deadline))
 }
 
 pub(crate) fn config_context() -> ConfigCapabilityContext<'static> {
@@ -433,13 +440,22 @@ impl StreamRuntimeApi for TestStreamRuntime {
 struct TestExecutionControl {
     cancelled: Arc<AtomicBool>,
     cancellation: CancellationToken,
+    deadline: Option<Instant>,
 }
 
 impl Default for TestExecutionControl {
     fn default() -> Self {
+        Self::with_deadline(None)
+    }
+}
+
+impl TestExecutionControl {
+    fn with_deadline(deadline: Option<Instant>) -> Self {
+        let cancellation = CancellationToken::new();
         Self {
-            cancelled: Arc::new(AtomicBool::new(false)),
-            cancellation: CancellationToken::new(),
+            cancelled: cancellation.cancel_flag(),
+            cancellation,
+            deadline,
         }
     }
 }
@@ -457,8 +473,12 @@ impl ExecutionControlApi for TestExecutionControl {
         self.cancellation.clone()
     }
 
+    fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
     fn check_cancelled(&self) -> ExecutionControlResult<()> {
-        if self.cancelled.load(Ordering::Acquire) {
+        if self.cancellation.is_cancelled() {
             Err(skiff_runtime_capability_context::ExecutionControlError::Cancelled)
         } else {
             Ok(())
@@ -470,7 +490,25 @@ impl ExecutionControlApi for TestExecutionControl {
     }
 
     fn poll_execution_budget(&self) -> ExecutionControlResult<()> {
-        self.check_cancelled()
+        self.check_cancelled()?;
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            Err(
+                skiff_runtime_capability_context::ExecutionControlError::BudgetExceeded(
+                    skiff_runtime_capability_context::ExecutionBudgetFailure {
+                        reason:
+                            skiff_runtime_capability_context::ExecutionBudgetReason::DeadlineExceeded,
+                        instruction_count: 0,
+                        limit: None,
+                        elapsed_ms: 0.0,
+                    },
+                ),
+            )
+        } else {
+            Ok(())
+        }
     }
 
     fn file_source_stream_context(
@@ -492,6 +530,10 @@ impl OwnedExecutionControlApi for TestExecutionControl {
 
     fn cancellation_token(&self) -> CancellationToken {
         self.cancellation.clone()
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        self.deadline
     }
 }
 

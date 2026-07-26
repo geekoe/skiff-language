@@ -47,6 +47,10 @@ impl<'a> ExecutionControl<'a> {
         self.cancellation.clone()
     }
 
+    pub fn deadline(&self) -> Option<Instant> {
+        self.execution_budget.deadline()
+    }
+
     pub fn check_cancelled(&self) -> ExecutionControlResult<()> {
         if self.abort_signal().is_cancelled() {
             self.execution_budget.record_cancelled();
@@ -103,5 +107,9 @@ impl OwnedExecutionControl {
 
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancellation.clone()
+    }
+
+    pub fn deadline(&self) -> Option<Instant> {
+        self.execution_budget.deadline()
     }
 }

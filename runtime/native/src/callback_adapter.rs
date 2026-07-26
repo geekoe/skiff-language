@@ -529,7 +529,6 @@ mod tests {
             BoundaryCallbackOperation {
                 parameters: vec![ContractTypeRef::builtin("string")],
                 return_type: ContractTypeRef::builtin("bool"),
-                may_suspend: false,
             },
         )])
     }

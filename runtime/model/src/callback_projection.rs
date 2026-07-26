@@ -126,7 +126,6 @@ impl CallbackContractProjection {
                 receiver_call_abi: *receiver_call_abi,
                 parameters: contract_operation.parameters.clone(),
                 return_type: contract_operation.return_type.clone(),
-                may_suspend: contract_operation.may_suspend,
             });
         }
         operations.sort_by_key(CallbackContractOperationProjection::slot);
@@ -172,7 +171,6 @@ pub struct CallbackContractOperationProjection {
     receiver_call_abi: InterfaceReceiverCallAbi,
     parameters: Vec<ContractTypeRef>,
     return_type: ContractTypeRef,
-    may_suspend: bool,
 }
 
 impl CallbackContractOperationProjection {
@@ -206,10 +204,6 @@ impl CallbackContractOperationProjection {
 
     pub fn return_type(&self) -> &ContractTypeRef {
         &self.return_type
-    }
-
-    pub const fn may_suspend(&self) -> bool {
-        self.may_suspend
     }
 }
 
@@ -345,7 +339,6 @@ mod tests {
             BoundaryCallbackOperation {
                 parameters: Vec::new(),
                 return_type: ContractTypeRef::builtin("bool"),
-                may_suspend: false,
             },
         )])
     }
@@ -482,7 +475,6 @@ mod tests {
                 BoundaryCallbackOperation {
                     parameters: vec![payload_type.clone()],
                     return_type: payload_type,
-                    may_suspend: false,
                 },
             )]);
             assert!(matches!(

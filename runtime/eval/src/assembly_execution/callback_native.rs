@@ -382,7 +382,6 @@ fn validate_adapter_preimage(
         let explicit_self = usize::from(executable_has_explicit_self_binding(executable));
         if !executable.type_params.is_empty()
             || executable.params.len().saturating_sub(explicit_self) != operation.parameters().len()
-            || executable.may_suspend != operation.may_suspend()
         {
             return Err(ServiceLinkableMaterializationError::InvalidPlan {
                 message: "callback adapter executable does not match its contract operation",
@@ -446,7 +445,6 @@ mod tests {
             BoundaryCallbackOperation {
                 parameters: Vec::new(),
                 return_type: ContractTypeRef::builtin("bool"),
-                may_suspend: false,
             },
         )]);
         let callback_record = Arc::new(PackageSchemaTypeRecord {

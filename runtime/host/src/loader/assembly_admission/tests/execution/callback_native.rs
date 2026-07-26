@@ -10,7 +10,10 @@ use skiff_runtime_model::{
 
 #[tokio::test]
 async fn typed_execution_callback_native_uses_production_service_materialization() {
-    let fixture = TypedExecutionFixture::admit_contract(TypedExecutionContract::callback()).await;
+    let fixture = TypedExecutionFixture::admit_contract(
+        TypedExecutionContract::callback().with_callback_owner_may_suspend(true),
+    )
+    .await;
     let receiver_activation_id = fixture
         .eval_target
         .activation_context()

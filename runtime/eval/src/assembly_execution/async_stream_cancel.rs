@@ -7,13 +7,14 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
+    time::Instant,
 };
 
 use serde_json::Value;
 use skiff_artifact_model::{
-    BoundaryCancellationContract, BoundaryStreamContract, BoundaryValueCarrier,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
-    InstructionSourceSite, PackageBuildId, SyntheticInstructionSiteReason,
+    BoundaryCallbackContract, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef, InstructionSourceSite, PackageBuildId,
+    SyntheticInstructionSiteReason,
 };
 use skiff_runtime_activation::RequestStreamLease;
 use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
@@ -22,8 +23,9 @@ use skiff_runtime_boundary::service_linkable::{
     ServiceLinkableMaterializationScope,
 };
 use skiff_runtime_capability_context::{
-    CancellationToken, StreamCancelSignal, StreamInternalItem, StreamLifetimeGuard,
-    StreamLifetimeGuardApi, StreamRuntimeError, StreamRuntimeResult,
+    CancellationToken, ExecutionControl, OwnedExecutionControl, StreamCancelSignal,
+    StreamInternalItem, StreamLifetimeGuard, StreamLifetimeGuardApi, StreamRuntimeError,
+    StreamRuntimeResult,
 };
 use skiff_runtime_linked_program::CallIr;
 use skiff_runtime_model::{
@@ -67,7 +69,14 @@ pub(crate) async fn execute_service_call(
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,
 ) -> Result<RuntimeValue> {
-    context.execution.check_cancelled()?;
+    if let Err(error) = context.execution.poll_execution_budget() {
+        target.provider_request().cancel();
+        return Err(error.into());
+    }
+    validate_supported_callback_contract(
+        &target.descriptor().operation_id,
+        &target.descriptor().contract.callbacks,
+    )?;
     match AsyncStreamSpawn::for_target(&target) {
         AsyncStreamSpawn::ProviderUnary => {
             execute_provider_unary(context, call, target, args).await
@@ -117,14 +126,13 @@ async fn execute_provider_unary(
     let provider_args =
         boundary.materialize_parameters(&args, context.heap, &mut provider_heap, &caller_hooks)?;
     let provider_context = provider_execution_context(&context.context, &target)?;
-    // Capture on every async-lane call. `may_suspend` never controls whether the future owns its
-    // provider activation; it only describes the contract surface.
+    // Every service call owns its provider activation while the provider future is pending.
+    // A concrete executable suspension summary never selects a runtime boundary lane.
     let owned_provider = OwnedProgramExecutionContext::capture(&provider_context);
     let provider_addr = target.executable_addr().clone();
     let caller_addr = context.addr.clone();
     let caller_env = context.env.clone();
     let type_args = call.type_args.clone();
-    let cancellation = context.execution.cancellation_token();
     let provider_request = target.provider_request().clone();
     let provider_result = {
         let provider_context = owned_provider.borrow();
@@ -137,13 +145,7 @@ async fn execute_provider_unary(
             &type_args,
             provider_args,
         );
-        await_provider_unary(
-            target.descriptor().operation_id.as_str(),
-            &target.descriptor().contract.cancellation,
-            &cancellation,
-            provider_future,
-        )
-        .await
+        await_provider_unary(&context.execution, &provider_request, provider_future).await
     };
     let provider_result = match provider_result {
         Err(error) if error.is_cancelled() => {
@@ -178,29 +180,28 @@ async fn execute_provider_unary(
 }
 
 async fn await_provider_unary<F>(
-    operation_id: &str,
-    cancellation_contract: &BoundaryCancellationContract,
-    cancellation: &CancellationToken,
+    execution: &ExecutionControl<'_>,
+    provider_request: &skiff_runtime_activation::RequestActivationContext,
     provider_future: F,
 ) -> Result<RuntimeValue>
 where
     F: Future<Output = Result<RuntimeValue>>,
 {
+    let cancellation = execution.cancellation_token();
+    let deadline = wait_for_deadline(execution.deadline());
     tokio::pin!(provider_future);
-    match cancellation_contract {
-        BoundaryCancellationContract::Cooperative => {
-            tokio::select! {
-                biased;
-                _ = cancellation.wait_cancelled() => Err(RuntimeError::Cancelled),
-                result = &mut provider_future => result,
-            }
+    tokio::pin!(deadline);
+    tokio::select! {
+        biased;
+        _ = cancellation.wait_cancelled() => {
+            provider_request.cancel();
+            Err(RuntimeError::Cancelled)
         }
-        BoundaryCancellationContract::NotCancellable => provider_future.await,
-        BoundaryCancellationContract::Unsupported { reason } => {
-            Err(RuntimeError::Unsupported(format!(
-                "canonical service operation {operation_id} has unsupported cancellation semantics: {reason:?}"
-            )))
+        _ = &mut deadline => {
+            provider_request.cancel();
+            Err(deadline_error(execution))
         }
+        result = &mut provider_future => result,
     }
 }
 
@@ -249,23 +250,17 @@ fn start_provider_stream(
         BoundaryValueOwner::Provider,
         BoundaryValueLifetime::Stream,
     )?;
-    if let BoundaryCancellationContract::Unsupported { reason } =
-        &target.descriptor().contract.cancellation
-    {
-        return Err(RuntimeError::Unsupported(format!(
-            "canonical service operation {} has unsupported cancellation semantics: {reason:?}",
-            target.descriptor().operation_id
-        )));
-    }
+    let execution = context.execution.owned();
+    let request = target.provider_request().clone();
     // Open the request's stream lifetime before parameter materialization: T06 may register a
     // stream-scoped callback while projecting a parameter, and registration must observe the
     // already-live stream lease. Every preparation error below drops this lease immediately.
-    let lease = target.provider_request().open_stream().ok_or_else(|| {
-        RuntimeError::ProviderUnavailable {
+    let lease = request
+        .open_stream()
+        .ok_or_else(|| RuntimeError::ProviderUnavailable {
             target: target.descriptor().operation_id.to_string(),
             reason: "request stream lifetime is already terminal".to_string(),
-        }
-    })?;
+        })?;
 
     let mut provider_heap = boundary.fresh_provider_heap(context.context.request_heap_limits());
     let hooks = CallbackNativeCapabilityHooks::new(&context.context);
@@ -294,6 +289,8 @@ fn start_provider_stream(
         schema_records: Arc::clone(target.schema_records()),
         execution_item_type: provider_stream_item_type.clone(),
         provider_context: Arc::clone(&owned_provider),
+        execution: execution.clone(),
+        request: request.clone(),
     });
     let receiver_value = match runtime_from_wire(&stream_value, context.heap) {
         Ok(value) => value,
@@ -326,9 +323,8 @@ fn start_provider_stream(
         stream_value,
         sink,
         stream_cancel,
-        cancellation: context.execution.cancellation_token(),
-        cancellation_contract: target.descriptor().contract.cancellation.clone(),
-        request: target.provider_request().clone(),
+        execution,
+        request,
         _stream_runtime_owner: provider_stream_runtime_owner,
     };
     spawn_provider_stream(producer);
@@ -385,8 +381,7 @@ struct ProviderStreamTask {
     stream_value: Value,
     sink: StreamSink,
     stream_cancel: StreamCancelSignal,
-    cancellation: CancellationToken,
-    cancellation_contract: BoundaryCancellationContract,
+    execution: OwnedExecutionControl,
     request: skiff_runtime_activation::RequestActivationContext,
     _stream_runtime_owner: Option<StreamRuntimeOwner>,
 }
@@ -412,9 +407,8 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
             args,
         );
         await_provider_stream_terminal(
-            &producer.cancellation_contract,
+            &producer.execution,
             &producer.stream_cancel,
-            &producer.cancellation,
             provider_future,
         )
         .await
@@ -457,6 +451,7 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
             publish_provider_terminal(&producer, ProviderStreamPublication::Error(terminal)).await;
         }
         ProviderTerminal::ConsumerCancelled => {
+            producer.request.cancel();
             producer
                 .interpreter
                 .stream_runtime
@@ -468,6 +463,14 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
                 .interpreter
                 .stream_runtime
                 .cancel(&producer.stream_value);
+        }
+        ProviderTerminal::DeadlineExceeded(error) => {
+            producer.request.cancel();
+            producer
+                .interpreter
+                .stream_runtime
+                .cancel(&producer.stream_value);
+            let _ = error;
         }
     }
 }
@@ -482,21 +485,19 @@ async fn publish_provider_terminal(
             ProviderStreamPublication::Error(error) => producer.sink.fail(error).await,
         }
     };
-    tokio::pin!(publication);
-    match producer.cancellation_contract {
-        BoundaryCancellationContract::Cooperative => {
-            tokio::select! {
-                biased;
-                _ = producer.stream_cancel.wait_cancelled() => {},
-                _ = producer.cancellation.wait_cancelled() => {
-                    producer.request.cancel();
-                    producer.interpreter.stream_runtime.cancel(&producer.stream_value);
-                },
-                _ = &mut publication => {},
-            }
-        }
-        BoundaryCancellationContract::NotCancellable => publication.await,
-        BoundaryCancellationContract::Unsupported { .. } => {
+    match await_provider_publication(
+        &producer.execution,
+        &producer.stream_cancel,
+        &producer.request,
+        publication,
+    )
+    .await
+    {
+        ProviderPublication::Published => {}
+        ProviderPublication::ConsumerCancelled
+        | ProviderPublication::RequestCancelled
+        | ProviderPublication::DeadlineExceeded(_) => {
+            producer.request.cancel();
             producer
                 .interpreter
                 .stream_runtime
@@ -509,45 +510,141 @@ enum ProviderTerminal {
     Provider(Result<RuntimeValue>),
     ConsumerCancelled,
     RequestCancelled,
+    DeadlineExceeded(RuntimeError),
 }
 
 async fn await_provider_stream_terminal<F>(
-    cancellation_contract: &BoundaryCancellationContract,
+    execution: &OwnedExecutionControl,
     stream_cancel: &StreamCancelSignal,
-    request_cancellation: &CancellationToken,
     provider_future: F,
 ) -> ProviderTerminal
 where
     F: Future<Output = Result<RuntimeValue>>,
 {
+    let request_cancellation = execution.cancellation_token();
+    let deadline = wait_for_deadline(execution.deadline());
     tokio::pin!(provider_future);
-    match cancellation_contract {
-        BoundaryCancellationContract::Cooperative => {
-            tokio::select! {
-                biased;
-                _ = stream_cancel.wait_cancelled() => ProviderTerminal::ConsumerCancelled,
-                _ = request_cancellation.wait_cancelled() => ProviderTerminal::RequestCancelled,
-                result = &mut provider_future => ProviderTerminal::Provider(result),
-            }
+    tokio::pin!(deadline);
+    tokio::select! {
+        biased;
+        _ = stream_cancel.wait_cancelled() => ProviderTerminal::ConsumerCancelled,
+        _ = request_cancellation.wait_cancelled() => ProviderTerminal::RequestCancelled,
+        _ = &mut deadline => {
+            ProviderTerminal::DeadlineExceeded(deadline_error(&execution.borrow()))
         }
-        BoundaryCancellationContract::NotCancellable => {
-            tokio::select! {
-                biased;
-                _ = stream_cancel.wait_cancelled() => ProviderTerminal::ConsumerCancelled,
-                result = &mut provider_future => ProviderTerminal::Provider(result),
-            }
+        result = &mut provider_future => ProviderTerminal::Provider(result),
+    }
+}
+
+enum ProviderPublication {
+    Published,
+    ConsumerCancelled,
+    RequestCancelled,
+    DeadlineExceeded(RuntimeError),
+}
+
+async fn await_provider_publication<F>(
+    execution: &OwnedExecutionControl,
+    stream_cancel: &StreamCancelSignal,
+    provider_request: &skiff_runtime_activation::RequestActivationContext,
+    publication: F,
+) -> ProviderPublication
+where
+    F: Future<Output = ()>,
+{
+    let request_cancellation = execution.cancellation_token();
+    let deadline = wait_for_deadline(execution.deadline());
+    tokio::pin!(publication);
+    tokio::pin!(deadline);
+    tokio::select! {
+        biased;
+        _ = stream_cancel.wait_cancelled() => ProviderPublication::ConsumerCancelled,
+        _ = request_cancellation.wait_cancelled() => {
+            provider_request.cancel();
+            ProviderPublication::RequestCancelled
+        },
+        _ = &mut deadline => {
+            provider_request.cancel();
+            ProviderPublication::DeadlineExceeded(deadline_error(&execution.borrow()))
         }
-        BoundaryCancellationContract::Unsupported { reason } => {
-            ProviderTerminal::Provider(Err(RuntimeError::Unsupported(format!(
-                "unsupported stream cancellation semantics: {reason:?}"
-            ))))
-        }
+        _ = &mut publication => ProviderPublication::Published,
     }
 }
 
 enum ProviderStreamPublication {
     End,
     Error(StreamRuntimeError),
+}
+
+fn validate_supported_callback_contract(
+    operation_id: &skiff_artifact_model::ContractOperationId,
+    callbacks: &BoundaryCallbackContract,
+) -> Result<()> {
+    if let BoundaryCallbackContract::Unsupported { reason } = callbacks {
+        return Err(RuntimeError::Unsupported(format!(
+            "canonical service operation {} has unsupported callback semantics: {reason:?}",
+            operation_id
+        )));
+    }
+    Ok(())
+}
+
+async fn wait_for_deadline(deadline: Option<Instant>) {
+    if let Some(deadline) = deadline {
+        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+    } else {
+        std::future::pending::<()>().await;
+    }
+}
+
+fn deadline_error(execution: &ExecutionControl<'_>) -> RuntimeError {
+    match execution.poll_execution_budget() {
+        Err(
+            error @ skiff_runtime_capability_context::ExecutionControlError::BudgetExceeded(
+                skiff_runtime_capability_context::ExecutionBudgetFailure {
+                    reason:
+                        skiff_runtime_capability_context::ExecutionBudgetReason::DeadlineExceeded,
+                    ..
+                },
+            ),
+        ) => error.into(),
+        Ok(())
+        | Err(skiff_runtime_capability_context::ExecutionControlError::Cancelled)
+        | Err(skiff_runtime_capability_context::ExecutionControlError::BudgetExceeded(_)) => {
+            RuntimeError::ExecutionBudgetExceeded {
+                reason: crate::error::BudgetReason::DeadlineExceeded,
+                instruction_count: 0,
+                limit: None,
+                elapsed_ms: 0.0,
+            }
+        }
+    }
+}
+
+async fn await_stream_item_publication<T, F>(
+    execution: &OwnedExecutionControl,
+    provider_request: &skiff_runtime_activation::RequestActivationContext,
+    provider_future: F,
+) -> StreamRuntimeResult<T>
+where
+    F: Future<Output = StreamRuntimeResult<T>>,
+{
+    let request_cancellation = execution.cancellation_token();
+    let deadline = wait_for_deadline(execution.deadline());
+    tokio::pin!(provider_future);
+    tokio::pin!(deadline);
+    tokio::select! {
+        biased;
+        _ = request_cancellation.wait_cancelled() => {
+            provider_request.cancel();
+            Err(StreamRuntimeError::cancelled())
+        }
+        _ = &mut deadline => {
+            provider_request.cancel();
+            Err(StreamRuntimeError::producer(deadline_error(&execution.borrow())))
+        }
+        result = &mut provider_future => result,
+    }
 }
 
 fn provider_execution_context<'a>(
@@ -678,6 +775,8 @@ struct BoundaryStreamSink {
     schema_records: crate::AdmittedPackageSchemaRecords,
     execution_item_type: Option<RuntimeTypePlan>,
     provider_context: Arc<OwnedProgramExecutionContext>,
+    execution: OwnedExecutionControl,
+    request: skiff_runtime_activation::RequestActivationContext,
 }
 
 pub(crate) fn is_canonical_boundary_stream_sink(sink: &StreamSink) -> bool {
@@ -777,9 +876,13 @@ impl StreamSinkApi for BoundaryStreamSink {
         cancel_tokens: Vec<CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>> {
         Box::pin(async move {
-            self.inner
-                .send_internal_with_cancellation(item, signals, cancel_tokens)
-                .await
+            await_stream_item_publication(
+                &self.execution,
+                &self.request,
+                self.inner
+                    .send_internal_with_cancellation(item, signals, cancel_tokens),
+            )
+            .await
         })
     }
 
@@ -787,7 +890,11 @@ impl StreamSinkApi for BoundaryStreamSink {
         &'a self,
         item: Value,
     ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>> {
-        Box::pin(async move { self.inner.send(self.materialize_item(item)?).await })
+        Box::pin(async move {
+            let item = self.materialize_item(item)?;
+            await_stream_item_publication(&self.execution, &self.request, self.inner.send(item))
+                .await
+        })
     }
 
     fn send_with_cancel<'a>(
@@ -796,9 +903,13 @@ impl StreamSinkApi for BoundaryStreamSink {
         cancel_flags: &'a [Arc<std::sync::atomic::AtomicBool>],
     ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>> {
         Box::pin(async move {
-            self.inner
-                .send_with_cancel(self.materialize_item(item)?, cancel_flags)
-                .await
+            let item = self.materialize_item(item)?;
+            await_stream_item_publication(
+                &self.execution,
+                &self.request,
+                self.inner.send_with_cancel(item, cancel_flags),
+            )
+            .await
         })
     }
 
@@ -809,9 +920,14 @@ impl StreamSinkApi for BoundaryStreamSink {
         cancel_tokens: Vec<CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>> {
         Box::pin(async move {
-            self.inner
-                .send_with_cancellation(self.materialize_item(item)?, signals, cancel_tokens)
-                .await
+            let item = self.materialize_item(item)?;
+            await_stream_item_publication(
+                &self.execution,
+                &self.request,
+                self.inner
+                    .send_with_cancellation(item, signals, cancel_tokens),
+            )
+            .await
         })
     }
 
@@ -866,9 +982,10 @@ mod tests {
     use std::collections::BTreeSet;
 
     use skiff_artifact_model::{
-        ActivationPolicy, AssemblyIdentity, DeploymentArtifactIdentity, DeploymentPolicy,
-        DeploymentRevision, PackageBuildId, PackageSchemaCanonicalDescriptor, PackageSchemaTypeId,
-        PackageSchemaTypeRecord, ResourcePolicy, ServiceDeploymentRef,
+        ActivationPolicy, AssemblyIdentity, BoundaryFeatureUnavailableReason,
+        DeploymentArtifactIdentity, DeploymentPolicy, DeploymentRevision, PackageBuildId,
+        PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord,
+        ResourcePolicy, ServiceDeploymentRef,
     };
     use skiff_runtime_activation::{
         ActivationContext, ActivationIdentity, ActivationOwnedBindings, RequestActivationContext,
@@ -927,20 +1044,62 @@ mod tests {
         assert_eq!(variants.len(), 2);
     }
 
+    #[test]
+    fn unsupported_callback_contract_remains_a_typed_runtime_error() {
+        let error = validate_supported_callback_contract(
+            &skiff_artifact_model::ContractOperationId::new("operation:unsupported-callback"),
+            &BoundaryCallbackContract::Unsupported {
+                reason: BoundaryFeatureUnavailableReason::UnknownSemantics,
+            },
+        )
+        .expect_err("unsupported callback semantics must fail closed");
+        assert!(matches!(error, RuntimeError::Unsupported(_)));
+    }
+
     #[tokio::test]
-    async fn in_process_stream_cooperative_cancel_wakes_pending_provider_unary() {
-        let cancellation = CancellationToken::new();
+    async fn ready_provider_unary_returns_without_forced_yield() {
+        let execution = test_runtime::execution_control();
+        let request = RequestActivationContext::begin(activation("ready", "ready-build")).unwrap();
+        let value =
+            await_provider_unary(&execution, &request, async { Ok(RuntimeValue::Bool(true)) })
+                .await
+                .expect("ready provider should return during the initial poll");
+        assert_eq!(value, RuntimeValue::Bool(true));
+        assert!(request.open_stream().is_some());
+    }
+
+    #[tokio::test]
+    async fn pending_provider_unary_wakes_from_provider_completion() {
+        let execution = test_runtime::execution_control();
+        let request =
+            RequestActivationContext::begin(activation("provider", "provider-build")).unwrap();
+        let (complete, completed) = tokio::sync::oneshot::channel();
         let waiter = tokio::spawn({
-            let cancellation = cancellation.clone();
+            let execution = execution.clone();
+            let request = request.clone();
             async move {
-                await_provider_unary(
-                    "operation:pending",
-                    &BoundaryCancellationContract::Cooperative,
-                    &cancellation,
-                    std::future::pending(),
-                )
+                await_provider_unary(&execution, &request, async move {
+                    completed.await.expect("provider completion sender");
+                    Ok(RuntimeValue::Bool(true))
+                })
                 .await
             }
+        });
+        tokio::task::yield_now().await;
+        complete.send(()).unwrap();
+        assert_eq!(waiter.await.unwrap().unwrap(), RuntimeValue::Bool(true));
+    }
+
+    #[tokio::test]
+    async fn pending_provider_unary_wakes_from_request_cancellation() {
+        let execution = test_runtime::execution_control();
+        let cancellation = execution.cancellation_token();
+        let request =
+            RequestActivationContext::begin(activation("cancel", "cancel-build")).unwrap();
+        let waiter = tokio::spawn({
+            let execution = execution.clone();
+            let request = request.clone();
+            async move { await_provider_unary(&execution, &request, std::future::pending()).await }
         });
 
         cancellation.cancel();
@@ -951,58 +1110,67 @@ mod tests {
             .expect("provider waiter should not panic")
             .expect_err("pending provider should terminate as cancelled");
         assert!(error.is_cancelled());
+        assert!(
+            request.open_stream().is_none(),
+            "caller cancellation must cancel the provider request"
+        );
     }
 
     #[tokio::test]
-    async fn in_process_unary_caller_cancel_precedes_ready_provider_error() {
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        let error = await_provider_unary(
-            "operation:cancel-race",
-            &BoundaryCancellationContract::Cooperative,
-            &cancellation,
-            async {
-                Err(RuntimeError::FileError {
-                    message: "provider failure must not outrank caller cancellation".to_string(),
-                })
-            },
-        )
-        .await
-        .expect_err("pre-cancelled caller should win the biased select");
+    async fn pending_provider_unary_wakes_from_deadline_and_cancels_provider_request() {
+        let execution = test_runtime::execution_control_with_deadline(Some(
+            Instant::now() - std::time::Duration::from_millis(1),
+        ));
+        let request =
+            RequestActivationContext::begin(activation("deadline", "deadline-build")).unwrap();
+        let error = await_provider_unary(&execution, &request, std::future::pending())
+            .await
+            .expect_err("expired deadline should wake the pending provider");
+        assert!(matches!(
+            error,
+            RuntimeError::ExecutionBudgetExceeded {
+                reason: crate::error::BudgetReason::DeadlineExceeded,
+                ..
+            }
+        ));
+        assert!(
+            request.open_stream().is_none(),
+            "deadline must emit the provider request cancellation signal"
+        );
+    }
 
+    #[tokio::test]
+    async fn request_cancel_precedes_expired_deadline_and_ready_provider() {
+        let execution = test_runtime::execution_control_with_deadline(Some(
+            Instant::now() - std::time::Duration::from_millis(1),
+        ));
+        let cancellation = execution.cancellation_token();
+        cancellation.cancel();
+        let request = RequestActivationContext::begin(activation("race", "race-build")).unwrap();
+        let error = await_provider_unary(&execution, &request, async {
+            Err(RuntimeError::FileError {
+                message: "ready provider failure".to_string(),
+            })
+        })
+        .await
+        .expect_err("pre-cancelled request should win the biased select");
         assert!(matches!(error, RuntimeError::Cancelled));
     }
 
-    #[tokio::test]
-    async fn in_process_stream_not_cancellable_waits_for_provider_terminal() {
-        let cancellation = CancellationToken::new();
-        let (complete, completed) = tokio::sync::oneshot::channel();
-        let waiter = tokio::spawn({
-            let cancellation = cancellation.clone();
-            async move {
-                await_provider_unary(
-                    "operation:not-cancellable",
-                    &BoundaryCancellationContract::NotCancellable,
-                    &cancellation,
-                    async move {
-                        completed
-                            .await
-                            .expect("completion sender should remain alive");
-                        Ok(RuntimeValue::Bool(true))
-                    },
-                )
-                .await
-            }
-        });
+    #[test]
+    fn selected_deadline_does_not_downgrade_after_late_cancellation() {
+        let execution = test_runtime::execution_control_with_deadline(Some(
+            Instant::now() - std::time::Duration::from_millis(1),
+        ));
+        execution.cancellation_token().cancel();
 
-        cancellation.cancel();
-        tokio::task::yield_now().await;
-        assert!(
-            !waiter.is_finished(),
-            "NotCancellable must not install the cooperative cancellation select"
-        );
-        complete.send(()).unwrap();
-        assert_eq!(waiter.await.unwrap().unwrap(), RuntimeValue::Bool(true));
+        assert!(matches!(
+            deadline_error(&execution),
+            RuntimeError::ExecutionBudgetExceeded {
+                reason: crate::error::BudgetReason::DeadlineExceeded,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -1010,13 +1178,10 @@ mod tests {
         let diagnostic_generation = u64::MAX - 1;
         start_restricted_service_diagnostic_probe_for_test(diagnostic_generation);
         let (_consumer_cancel, stream_cancel) = test_stream_cancel();
-        let request_cancel = CancellationToken::new();
-        let terminal = await_provider_stream_terminal(
-            &BoundaryCancellationContract::Cooperative,
-            &stream_cancel,
-            &request_cancel,
-            async { Ok(RuntimeValue::Bool(true)) },
-        )
+        let execution = test_runtime::execution_control().owned();
+        let terminal = await_provider_stream_terminal(&execution, &stream_cancel, async {
+            Ok(RuntimeValue::Bool(true))
+        })
         .await;
 
         assert!(matches!(
@@ -1032,15 +1197,11 @@ mod tests {
     #[tokio::test]
     async fn provider_stream_consumer_cancel_is_control_terminal() {
         let (consumer_cancel, stream_cancel) = test_stream_cancel();
-        let request_cancel = CancellationToken::new();
+        let execution = test_runtime::execution_control().owned();
         consumer_cancel.cancel();
-        let terminal = await_provider_stream_terminal(
-            &BoundaryCancellationContract::Cooperative,
-            &stream_cancel,
-            &request_cancel,
-            std::future::pending(),
-        )
-        .await;
+        let terminal =
+            await_provider_stream_terminal(&execution, &stream_cancel, std::future::pending())
+                .await;
 
         assert!(matches!(terminal, ProviderTerminal::ConsumerCancelled));
     }
@@ -1048,15 +1209,11 @@ mod tests {
     #[tokio::test]
     async fn provider_stream_request_cancel_is_control_terminal() {
         let (_consumer_cancel, stream_cancel) = test_stream_cancel();
-        let request_cancel = CancellationToken::new();
-        request_cancel.cancel();
-        let terminal = await_provider_stream_terminal(
-            &BoundaryCancellationContract::Cooperative,
-            &stream_cancel,
-            &request_cancel,
-            std::future::pending(),
-        )
-        .await;
+        let execution = test_runtime::execution_control().owned();
+        execution.cancellation_token().cancel();
+        let terminal =
+            await_provider_stream_terminal(&execution, &stream_cancel, std::future::pending())
+                .await;
 
         assert!(matches!(terminal, ProviderTerminal::RequestCancelled));
     }
@@ -1064,43 +1221,146 @@ mod tests {
     #[tokio::test]
     async fn provider_stream_control_ordering_precedes_ready_provider_error() {
         let (consumer_cancel, stream_cancel) = test_stream_cancel();
-        let request_cancel = CancellationToken::new();
+        let execution = test_runtime::execution_control_with_deadline(Some(
+            Instant::now() - std::time::Duration::from_millis(1),
+        ))
+        .owned();
         consumer_cancel.cancel();
-        request_cancel.cancel();
-        let terminal = await_provider_stream_terminal(
-            &BoundaryCancellationContract::Cooperative,
-            &stream_cancel,
-            &request_cancel,
-            async {
-                Err(RuntimeError::FileError {
-                    message: "ready provider error".to_string(),
-                })
-            },
-        )
+        execution.cancellation_token().cancel();
+        let terminal = await_provider_stream_terminal(&execution, &stream_cancel, async {
+            Err(RuntimeError::FileError {
+                message: "ready provider error".to_string(),
+            })
+        })
         .await;
         assert!(matches!(terminal, ProviderTerminal::ConsumerCancelled));
 
         let (_consumer_cancel, stream_cancel) = test_stream_cancel();
-        let request_cancel = CancellationToken::new();
-        request_cancel.cancel();
-        let terminal = await_provider_stream_terminal(
-            &BoundaryCancellationContract::Cooperative,
-            &stream_cancel,
-            &request_cancel,
-            async {
-                Err(RuntimeError::FileError {
-                    message: "ready provider error".to_string(),
-                })
-            },
-        )
+        let execution = test_runtime::execution_control_with_deadline(Some(
+            Instant::now() - std::time::Duration::from_millis(1),
+        ))
+        .owned();
+        execution.cancellation_token().cancel();
+        let terminal = await_provider_stream_terminal(&execution, &stream_cancel, async {
+            Err(RuntimeError::FileError {
+                message: "ready provider error".to_string(),
+            })
+        })
         .await;
         assert!(matches!(terminal, ProviderTerminal::RequestCancelled));
     }
 
     #[tokio::test]
+    async fn stream_terminal_item_and_publication_deadlines_remain_typed() {
+        let execution = test_runtime::execution_control_with_deadline(Some(
+            Instant::now() - std::time::Duration::from_millis(1),
+        ))
+        .owned();
+        let item_request =
+            RequestActivationContext::begin(activation("stream-deadline", "stream-build")).unwrap();
+        let (_consumer_cancel, stream_cancel) = test_stream_cancel();
+
+        let terminal =
+            await_provider_stream_terminal(&execution, &stream_cancel, std::future::pending())
+                .await;
+        assert!(matches!(
+            terminal,
+            ProviderTerminal::DeadlineExceeded(RuntimeError::ExecutionBudgetExceeded {
+                reason: crate::error::BudgetReason::DeadlineExceeded,
+                ..
+            })
+        ));
+
+        let item_error = await_stream_item_publication(
+            &execution,
+            &item_request,
+            std::future::pending::<StreamRuntimeResult<()>>(),
+        )
+        .await
+        .expect_err("stream item publication must wake on deadline");
+        assert!(matches!(
+            RuntimeError::from(item_error),
+            RuntimeError::ExecutionBudgetExceeded {
+                reason: crate::error::BudgetReason::DeadlineExceeded,
+                ..
+            }
+        ));
+        assert!(
+            item_request.open_stream().is_none(),
+            "stream item deadline must cancel the provider request"
+        );
+
+        let publication_request =
+            RequestActivationContext::begin(activation("publication-deadline", "stream-build"))
+                .unwrap();
+        let publication = await_provider_publication(
+            &execution,
+            &stream_cancel,
+            &publication_request,
+            std::future::pending(),
+        )
+        .await;
+        assert!(matches!(
+            publication,
+            ProviderPublication::DeadlineExceeded(RuntimeError::ExecutionBudgetExceeded {
+                reason: crate::error::BudgetReason::DeadlineExceeded,
+                ..
+            })
+        ));
+        assert!(
+            publication_request.open_stream().is_none(),
+            "stream terminal publication deadline must cancel the provider request"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_item_and_publication_request_cancel_precede_expired_deadline() {
+        let execution = test_runtime::execution_control_with_deadline(Some(
+            Instant::now() - std::time::Duration::from_millis(1),
+        ))
+        .owned();
+        execution.cancellation_token().cancel();
+        let item_request =
+            RequestActivationContext::begin(activation("item-cancel-race", "stream-build"))
+                .unwrap();
+
+        let item_error = await_stream_item_publication(
+            &execution,
+            &item_request,
+            std::future::pending::<StreamRuntimeResult<()>>(),
+        )
+        .await
+        .expect_err("request cancellation must wake a pending item publication");
+        assert!(matches!(
+            RuntimeError::from(item_error),
+            RuntimeError::Cancelled
+        ));
+        assert!(
+            item_request.open_stream().is_none(),
+            "item cancellation must propagate to the provider request"
+        );
+
+        let publication_request =
+            RequestActivationContext::begin(activation("publication-cancel-race", "stream-build"))
+                .unwrap();
+        let (_consumer_cancel, stream_cancel) = test_stream_cancel();
+        let publication = await_provider_publication(
+            &execution,
+            &stream_cancel,
+            &publication_request,
+            std::future::pending(),
+        )
+        .await;
+        assert!(matches!(publication, ProviderPublication::RequestCancelled));
+        assert!(
+            publication_request.open_stream().is_none(),
+            "publication cancellation must propagate to the provider request"
+        );
+    }
+
+    #[tokio::test]
     async fn restricted_service_diagnostic_server_stream_failure_submits_once() {
-        let (task, generation, stream_runtime, stream_value, _) =
-            provider_stream_failure_task(BoundaryCancellationContract::NotCancellable);
+        let (task, generation, stream_runtime, stream_value, _) = provider_stream_failure_task();
 
         start_restricted_service_diagnostic_probe_for_test(generation);
         run_provider_stream(task).await;
@@ -1126,8 +1386,7 @@ mod tests {
 
     #[tokio::test]
     async fn restricted_service_diagnostic_server_stream_request_cancel_submits_zero() {
-        let (task, generation, _, _, cancellation) =
-            provider_stream_failure_task(BoundaryCancellationContract::Cooperative);
+        let (task, generation, _, _, cancellation) = provider_stream_failure_task();
         cancellation.cancel();
         start_restricted_service_diagnostic_probe_for_test(generation);
 
@@ -1139,9 +1398,7 @@ mod tests {
         );
     }
 
-    fn provider_stream_failure_task(
-        cancellation_contract: BoundaryCancellationContract,
-    ) -> (
+    fn provider_stream_failure_task() -> (
         ProviderStreamTask,
         u64,
         StreamRuntime,
@@ -1195,7 +1452,8 @@ mod tests {
         let (stream_value, sink) = stream_runtime.channel_stream();
         let stream_cancel = sink.cancel_signal();
         let caller_stack_at_site = receiver_context.exception_stack_for_site(call.site.clone());
-        let cancellation = receiver_context.execution().cancellation_token();
+        let execution = receiver_context.execution().owned();
+        let cancellation = execution.cancellation_token();
         let task = ProviderStreamTask {
             interpreter: interpreter.clone_for_stream_producer(),
             provider_context: Arc::new(OwnedProgramExecutionContext::capture(&provider_context)),
@@ -1222,8 +1480,7 @@ mod tests {
             stream_value: stream_value.clone(),
             sink,
             stream_cancel,
-            cancellation: cancellation.clone(),
-            cancellation_contract,
+            execution,
             request: target.provider_request().clone(),
             _stream_runtime_owner: provider_stream_owner,
         };

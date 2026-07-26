@@ -131,12 +131,6 @@ impl<'contract> PinnedWebSocketContractPlan<'contract> {
                 "return type does not match the contract execution projection",
             ));
         }
-        if executable.may_suspend != self.operation.may_suspend {
-            return Err(self.executable_mismatch(format!(
-                "maySuspend={} does not match contract maySuspend={}",
-                executable.may_suspend, self.operation.may_suspend
-            )));
-        }
         Ok(())
     }
 
@@ -305,10 +299,10 @@ pub(crate) mod test_support {
     use std::{collections::BTreeMap, sync::Arc};
 
     use skiff_artifact_model::{
-        BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-        BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
-        BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-        BoundaryValuePlan, ContractDiagnosticText, ContractTypeDescriptor, ContractTypeRef,
+        BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+        BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+        BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+        ContractDiagnosticText, ContractTypeDescriptor, ContractTypeRef,
         PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord, PackageSchemaTypeRef,
         PackageTypeRequirement, ServiceContract, ServiceProtocolIdentity,
         SERVICE_CONTRACT_SCHEMA_VERSION, WEBSOCKET_CONNECT_RESULT_TYPE,
@@ -437,9 +431,7 @@ pub(crate) mod test_support {
                 value_plan: linkable(BoundaryValueOwner::Provider),
             },
             stream: BoundaryStreamContract::Unary,
-            cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,
-            may_suspend: false,
             effect_guarantee: BoundaryEffectGuarantee {
                 detached_parameters: true,
                 detached_return: true,
@@ -504,6 +496,9 @@ mod tests {
         };
         plan.validate_executable(&executable)
             .expect("contract nominal leaves must admit only opaque unknown execution leaves");
+        executable.may_suspend = true;
+        plan.validate_executable(&executable)
+            .expect("concrete executable suspension summary is outside the code-free contract");
 
         let LinkedTypeRef::Native { args, .. } = &mut executable.params[0].ty else {
             panic!("WebSocket Event execution projection should stay builtin")

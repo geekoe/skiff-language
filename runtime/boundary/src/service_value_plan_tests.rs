@@ -1077,7 +1077,6 @@ fn service_value_plan_rejects_alias_callback_cycle_foreign_and_invalid_map_key()
                 BoundaryCallbackOperation {
                     parameters: Vec::new(),
                     return_type: ContractTypeRef::builtin("string"),
-                    may_suspend: false,
                 },
             )]),
         },
@@ -1219,7 +1218,6 @@ fn service_value_plan_preserves_exact_any_interface_identity_and_fails_wire_clos
                 BoundaryCallbackOperation {
                     parameters: Vec::new(),
                     return_type: ContractTypeRef::builtin("string"),
-                    may_suspend: false,
                 },
             )]),
         },

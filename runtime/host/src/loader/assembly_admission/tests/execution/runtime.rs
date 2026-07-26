@@ -10,8 +10,8 @@ use skiff_runtime_eval::{
 use skiff_runtime_linked_program::{GatewayConfig, ServiceMeta};
 use skiff_runtime_model::request_heap::RequestHeapLimits;
 use skiff_runtime_request::{
-    execution_budget::ExecutionBudget, ExecutionControl, OutboundRequestRegistry, RequestEnvelope,
-    RuntimeOperation,
+    execution_budget::{ExecutionBudget, ExecutionBudgetConfig},
+    ExecutionControl, OutboundRequestRegistry, RequestEnvelope, RuntimeOperation,
 };
 
 use crate::{
@@ -110,6 +110,14 @@ impl TypedExecutionRuntime {
 
     pub(super) fn interpreter(&self) -> Interpreter {
         Interpreter::for_runtime_assembly(eval_capability_adapter::runtime_factory())
+    }
+
+    pub(super) fn with_deadline(mut self, deadline: std::time::Instant) -> Self {
+        self.budget = Arc::new(ExecutionBudget::new(
+            ExecutionBudgetConfig::runtime_default(),
+            Some(deadline),
+        ));
+        self
     }
 
     pub(super) fn cancel_request(&self) {
