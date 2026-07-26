@@ -295,7 +295,7 @@ fn initialize_empty_environment(
         },
         service_binding_templates: Vec::new(),
         activation_templates: Vec::new(),
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     };
     skiff_artifact_identity::assign_runtime_assembly_identity(&mut empty)?;
     store.write_runtime_assembly(&empty)?;
