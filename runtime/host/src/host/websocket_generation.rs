@@ -83,7 +83,7 @@ impl WebSocketGenerationRegistry {
     ) -> Result<WebSocketGenerationLifecycleControl> {
         let tuple = WebSocketGenerationLifecycleTuple {
             router_session_id: router_session_id.to_string(),
-            service_id: route.binding().contract.service_id.clone(),
+            service_id: route.entry().owner().service_id.clone(),
             assembly_identity: route.assembly_identity().clone(),
             assembly_generation: route.generation(),
             websocket_entry_id,

@@ -128,6 +128,10 @@ impl ExecutionBudget {
         let _ = self.fail(ExecutionBudgetReason::Cancelled);
     }
 
+    pub fn record_deadline_exceeded(&self) {
+        let _ = self.fail(ExecutionBudgetReason::DeadlineExceeded);
+    }
+
     pub fn finish(&self, now: Instant) {
         if let Ok(mut finished_at) = self.finished_at.lock() {
             finished_at.get_or_insert(now);

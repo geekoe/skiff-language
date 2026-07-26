@@ -139,7 +139,6 @@ struct FullChainFixture {
     consumer_deployment_ref: ServiceDeploymentRef,
     consumer_package_ref: PackageArtifactRef,
     consumer_file_ir_identity: String,
-    ingress: IngressSelector,
 }
 
 impl FullChainFixture {
@@ -160,7 +159,8 @@ impl FullChainFixture {
         );
         let consumer_contract_ref = contract_ref(&consumer_contract);
 
-        let provider_callable_id = PackageCallableId::new("callable:provider-health");
+        let provider_callable_id =
+            PackageCallableId::new("pkg-callable:example.phase-three-provider:health");
         let provider_file = implementation_file("provider.main", "health", None);
         let provider_file_ref = file_ref(&provider_file);
         let provider_package = implementation_package(
@@ -185,7 +185,8 @@ impl FullChainFixture {
             contract_version: provider_contract_ref.contract_version.clone(),
             expected_protocol_identity: provider_contract_ref.service_protocol_identity.clone(),
         };
-        let consumer_callable_id = PackageCallableId::new("callable:consumer-check");
+        let consumer_callable_id =
+            PackageCallableId::new("pkg-callable:example.phase-three-consumer:check");
         let consumer_file =
             implementation_file("consumer.main", "check", Some(provider_call.clone()));
         let consumer_file_ref = file_ref(&consumer_file);
@@ -200,12 +201,6 @@ impl FullChainFixture {
         );
         let consumer_package_ref = package_ref(&consumer_package);
 
-        let ingress = IngressSelector {
-            protocol: IngressProtocol::Http,
-            host: "phase-three.test".to_string(),
-            method: Some("GET".to_string()),
-            path: "/check".to_string(),
-        };
         let provider_deployment = project_service_deployment(
             ServiceDeploymentInput {
                 schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
@@ -256,18 +251,8 @@ impl FullChainFixture {
                     },
                     contract: provider_contract_ref.clone(),
                 }],
-                gateway_entries: BTreeMap::from([(
-                    GatewayEntryKey::parse("phase-three-consumer-http")
-                        .expect("fixture gateway entry key"),
-                    skiff_deployment::fixtures::gateway_entry_fixture(PackageCallableId::new(
-                        "callable:consumer-check",
-                    )),
-                )]),
-                ingress: vec![DeploymentIngressBinding {
-                    selector: ingress.clone(),
-                    gateway_entry_key: GatewayEntryKey::parse("phase-three-consumer-http")
-                        .expect("fixture gateway entry key"),
-                }],
+                gateway_entries: BTreeMap::new(),
+                ingress: Vec::new(),
                 config_literals: Vec::new(),
                 secret_refs: Vec::new(),
                 state_bindings: Vec::new(),
@@ -342,7 +327,6 @@ impl FullChainFixture {
             consumer_deployment_ref,
             consumer_package_ref,
             consumer_file_ir_identity,
-            ingress,
         }
     }
 }
@@ -487,13 +471,6 @@ async fn projected_nonempty_assembly_admits_and_active_lookup_is_io_free() {
 
     let reads_after_admit = fixture.resolver.reads.load(Ordering::SeqCst);
     assert!(reads_after_admit > 0);
-    let route = controller.route(&fixture.ingress).unwrap().unwrap();
-    assert_eq!(route.assembly_identity(), active.identity());
-    assert_eq!(
-        &route.activation().identity().deployment,
-        &fixture.consumer_deployment_ref
-    );
-    assert_eq!(route.operation_descriptor().stable_key, "check");
     let binding_wire =
         serde_json::to_string(&active.candidate().assembly().service_binding_templates).unwrap();
     assert!(!binding_wire.contains("stableKey"));
@@ -596,6 +573,10 @@ fn implementation_package(
     service_dependency: Option<(ContractRequirement, ServiceCallRef)>,
 ) -> PackageArtifact {
     let file_ref = file_ref(file);
+    let entry = file
+        .executables
+        .first()
+        .expect("fixture implementation must expose its entry executable");
     let effects = no_effects();
     let provenance = CallableProvenanceSummary::Analyzed {
         return_origins: Vec::new(),
@@ -629,7 +610,7 @@ fn implementation_package(
                 PackageLocalAbiSymbol::Callable {
                     callable_id: callable_id.clone(),
                     signature: PackageCallableSignature {
-                        type_params: Vec::new(),
+                        type_params: entry.type_params.clone(),
                         parameters: Vec::new(),
                         return_type: PackageTypeRef::Local {
                             local_type: TypeRefIr::builtin("bool"),
@@ -649,7 +630,23 @@ fn implementation_package(
             .expect("empty Package schema index is canonical"),
         },
         package_schema_type_records: BTreeMap::new(),
-        implementation_links: PackageImplementationLinks::default(),
+        implementation_links: PackageImplementationLinks {
+            functions: BTreeMap::from([(
+                public_path.to_string(),
+                ExecutableExport {
+                    file: file_ref.clone(),
+                    executable_index: 0,
+                    symbol: entry.symbol.clone(),
+                    signature: ExecutableSignatureIr {
+                        params: entry.params.clone(),
+                        return_type: entry.return_type.clone(),
+                        self_type: entry.self_type.clone(),
+                        may_suspend: entry.may_suspend,
+                    },
+                },
+            )]),
+            ..PackageImplementationLinks::default()
+        },
         callable_links: BTreeMap::from([(
             callable_id.clone(),
             PackageCallableLinkFact {
@@ -695,6 +692,7 @@ fn implementation_package(
                 },
             },
         )]),
+        service_call_roots: Vec::new(),
         service_call_refs,
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();

@@ -1,14 +1,11 @@
 use skiff_artifact_model::IngressSelector;
 use skiff_runtime_request::{
-    BoundaryResponse, RequestCancel, RequestEnvelope, RequestError, ResponseEvent,
-    RouterWriterMessage,
+    BoundaryResponse, RequestCancel, RequestError, ResponseEvent, RouterWriterMessage,
 };
 use skiff_runtime_transport::{response_mapper, TransportError};
-use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::{
-    capability_context::response_error_from_runtime_error,
     error::{Result, RuntimeError},
     loader::assembly_admission::ActiveAssemblyRoute,
 };
@@ -17,32 +14,12 @@ use super::RuntimeHost;
 
 mod assembly;
 mod assembly_wire;
-mod websocket_generation;
 
 impl RuntimeHost {
-    pub(super) fn send_request_error_response(
-        &self,
-        request: &RequestEnvelope,
-        error: &RuntimeError,
-        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
-    ) {
-        match response_event_into_transport_message(
-            request.request_id.clone(),
-            ResponseEvent::Error(response_error_from_runtime_error(error)),
-        ) {
-            Ok(message) => {
-                let _ = sender.send(message);
-            }
-            Err(error) => {
-                error!(event = "runtime.response_encode_error", error = %error);
-            }
-        }
-    }
-
     /// Resolves a canonical ingress only from one immutable active assembly generation.
     ///
     /// The canonical wire bridge supplies the selector. This entry performs no artifact access or
-    /// candidate mutation and returns the activation template plus descriptor pinned by
+    /// candidate mutation and returns the activation plus exact linked gateway entry pinned by
     /// `ActiveAssemblyRoute`.
     pub(crate) fn lookup_active_assembly_request_route(
         &self,

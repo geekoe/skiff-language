@@ -409,7 +409,8 @@ impl ProjectedFixture {
         );
         let consumer_contract_ref = contract_ref(&consumer_contract);
 
-        let provider_callable = PackageCallableId::new("callable:phase-four-provider");
+        let provider_callable =
+            PackageCallableId::new("pkg-callable:example.phase-four-provider:provide");
         let provider_file = implementation_file(
             "phase_four.provider",
             "provide",
@@ -456,7 +457,7 @@ impl ProjectedFixture {
         let consumer_package = implementation_package(
             "example.phase-four-consumer",
             "consume",
-            PackageCallableId::new("callable:phase-four-consumer"),
+            PackageCallableId::new("pkg-callable:example.phase-four-consumer:consume"),
             &consumer_file,
             consumer_operation_contract,
             &consumer_schema_records,
@@ -484,17 +485,6 @@ impl ProjectedFixture {
         .expect("provider deployment should project from typed contract/package artifacts");
         let provider_deployment =
             skiff_artifact_identity::service_deployment_ref(&provider_deployment_artifact);
-        let gateway_entry_key =
-            GatewayEntryKey::parse("phase-four-consumer-http").expect("fixture gateway entry key");
-        let ingress = DeploymentIngressBinding {
-            selector: IngressSelector {
-                protocol: IngressProtocol::Http,
-                host: "phase-four.test".to_string(),
-                method: Some("POST".to_string()),
-                path: "/consume".to_string(),
-            },
-            gateway_entry_key: gateway_entry_key.clone(),
-        };
         let consumer_deployment_artifact = project_service_deployment(
             deployment_input(
                 consumer_contract_ref.clone(),
@@ -516,13 +506,8 @@ impl ProjectedFixture {
                     },
                     contract: provider_contract_ref.clone(),
                 }],
-                BTreeMap::from([(
-                    gateway_entry_key,
-                    skiff_deployment::fixtures::gateway_entry_fixture(PackageCallableId::new(
-                        "callable:phase-four-consumer",
-                    )),
-                )]),
-                vec![ingress],
+                BTreeMap::new(),
+                Vec::new(),
             ),
             &consumer_contract,
             &[consumer_package.clone(), provider_package.clone()],
@@ -1546,6 +1531,10 @@ fn implementation_package(
     package_dependency: Option<(String, PackageArtifactRef)>,
 ) -> PackageArtifact {
     let file_ref = file_ref(file);
+    let entry = file
+        .executables
+        .first()
+        .expect("fixture implementation must expose its entry executable");
     let may_suspend = operation_contract.may_suspend;
     let effects = no_effects(may_suspend);
     let provenance = CallableProvenanceSummary::Analyzed {
@@ -1646,7 +1635,7 @@ fn implementation_package(
                 PackageLocalAbiSymbol::Callable {
                     callable_id: callable_id.clone(),
                     signature: PackageCallableSignature {
-                        type_params: Vec::new(),
+                        type_params: entry.type_params.clone(),
                         parameters: Vec::new(),
                         return_type: PackageTypeRef::Local {
                             local_type: TypeRefIr::builtin("bool"),
@@ -1679,6 +1668,20 @@ fn implementation_package(
             .collect(),
         implementation_links: PackageImplementationLinks {
             types: schema_type_links,
+            functions: BTreeMap::from([(
+                public_path.to_string(),
+                ExecutableExport {
+                    file: file_ref.clone(),
+                    executable_index: 0,
+                    symbol: entry.symbol.clone(),
+                    signature: ExecutableSignatureIr {
+                        params: entry.params.clone(),
+                        return_type: entry.return_type.clone(),
+                        self_type: entry.self_type.clone(),
+                        may_suspend: entry.may_suspend,
+                    },
+                },
+            )]),
             ..PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::from([(
@@ -1726,6 +1729,7 @@ fn implementation_package(
                 },
             },
         )]),
+        service_call_roots: Vec::new(),
         service_call_refs,
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut package)

@@ -3,20 +3,21 @@ use std::sync::{Arc, RwLock};
 use anyhow::Context;
 use skiff_artifact_model::{
     AssemblyActivationControl, AssemblyActivationRejectReason, AssemblyActivationServiceDb,
-    AssemblyIdentity, BoundaryOperationDescriptor, ContractOperationId, GlobalIngressBinding,
-    IngressSelector, OperationTargetRef, RuntimeAssembly, RuntimeAssemblyRef, ServiceContract,
-    ServiceContractRef, ServiceDeploymentRef,
+    AssemblyIdentity, BoundaryOperationDescriptor, ContractOperationId, DeploymentPolicy,
+    GatewayAdapterKind, GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey,
+    GatewayEntryProtocolSurface, GatewayProtocolSurface, IngressProtocol, IngressSelector,
+    RuntimeAssembly, RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
 };
 use skiff_runtime_activation::{ActivationContext, RequestActivationContext};
 use skiff_runtime_eval::{RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget};
 use skiff_runtime_linker::{
-    link_runtime_assembly, AssemblyLinkedCandidate, LinkedActivationTemplate,
+    link_runtime_assembly, AssemblyLinkedCandidate, LinkedActivationTemplate, LinkedGatewayEntry,
 };
 use skiff_runtime_loader::{
     RuntimeAssemblyContentResolver, RuntimeAssemblyLoader, RuntimeAssemblyRecordResolver,
     ServiceContractStore,
 };
-use skiff_runtime_request::RuntimeAssemblyRequestTarget;
+use skiff_runtime_request::RuntimeAssemblyHttpGatewayTarget;
 use time::OffsetDateTime;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -71,11 +72,10 @@ struct CommittedAssembly {
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveAssemblyRoute {
     active: Arc<ActiveAssembly>,
-    binding: GlobalIngressBinding,
+    selector: IngressSelector,
+    entry: Arc<LinkedGatewayEntry>,
     activation: Arc<ActivationContext>,
-    descriptor: BoundaryOperationDescriptor,
-    contract: Arc<ServiceContract>,
-    provider_target: OperationTargetRef,
+    policy: DeploymentPolicy,
 }
 
 /// Immutable committed-assembly snapshot for one Actor owner execution.
@@ -123,15 +123,40 @@ impl ActiveAssemblyRoute {
         &self.activation
     }
 
-    pub(crate) fn operation_descriptor(&self) -> &BoundaryOperationDescriptor {
-        &self.descriptor
+    pub(crate) fn selector(&self) -> &IngressSelector {
+        &self.selector
     }
 
-    pub(crate) fn provider_target(&self) -> &OperationTargetRef {
-        &self.provider_target
+    pub(crate) fn gateway_entry_key(&self) -> &GatewayEntryKey {
+        self.entry.gateway_entry_key()
     }
 
-    pub(crate) fn request_target(&self) -> anyhow::Result<RuntimeAssemblyRequestTarget> {
+    pub(crate) fn gateway_entry_identity(&self) -> &GatewayEntryIdentity {
+        self.entry.gateway_entry_identity()
+    }
+
+    pub(crate) fn protocol_surface(&self) -> &GatewayEntryProtocolSurface {
+        self.entry.protocol_surface()
+    }
+
+    pub(crate) fn deployment_policy(&self) -> &DeploymentPolicy {
+        &self.policy
+    }
+
+    pub(crate) fn service_protocol_identity(
+        &self,
+    ) -> &skiff_artifact_model::ServiceProtocolIdentity {
+        &self
+            .active
+            .candidate
+            .activation(self.entry.owner())
+            .expect("admitted route owner activation remains pinned")
+            .deployment()
+            .contract
+            .service_protocol_identity
+    }
+
+    pub(crate) fn request_target(&self) -> anyhow::Result<RuntimeAssemblyHttpGatewayTarget> {
         let request_activation = RequestActivationContext::begin(Arc::clone(&self.activation))?;
         let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::clone(&self.active.contexts) as _;
         let eval = RuntimeAssemblyEvalTarget::new(
@@ -139,17 +164,22 @@ impl ActiveAssemblyRoute {
             request_activation,
             resolver,
         )?;
-        let boundary = eval.resolve_ingress_target(
-            &self.binding.contract,
-            &self.binding.contract_operation_id,
-            Arc::clone(&self.contract),
-            &self.provider_target,
-        )?;
-        Ok(RuntimeAssemblyRequestTarget::new(eval, boundary)?)
+        Ok(RuntimeAssemblyHttpGatewayTarget::new(
+            eval,
+            Arc::clone(&self.entry),
+        )?)
     }
 
-    pub(crate) fn binding(&self) -> &GlobalIngressBinding {
-        &self.binding
+    pub(crate) fn entry(&self) -> &Arc<LinkedGatewayEntry> {
+        &self.entry
+    }
+
+    #[cfg(test)]
+    pub(crate) fn selector_and_owner_key_share_entry(&self) -> bool {
+        self.active
+            .candidate
+            .gateway_entry(self.entry.owner(), self.entry.gateway_entry_key())
+            .is_some_and(|entry| Arc::ptr_eq(&self.entry, entry))
     }
 
     pub(crate) fn context_set(&self) -> &Arc<ActiveAssemblyContextSet> {
@@ -208,7 +238,7 @@ impl ActiveAssembly {
         self.candidate.activation(deployment)
     }
 
-    pub(crate) fn ingress(&self, selector: &IngressSelector) -> Option<&GlobalIngressBinding> {
+    pub(crate) fn ingress(&self, selector: &IngressSelector) -> Option<&Arc<LinkedGatewayEntry>> {
         self.candidate.ingress(selector)
     }
 
@@ -436,32 +466,30 @@ impl AssemblyAdmissionController {
         let Some(active) = self.active()? else {
             return Ok(None);
         };
-        let Some(binding) = active.ingress(selector).cloned() else {
+        let Some(entry) = active.ingress(selector).cloned() else {
             return Ok(None);
         };
+        let exact_entry = active
+            .candidate
+            .gateway_entry(entry.owner(), entry.gateway_entry_key())
+            .ok_or_else(|| anyhow::anyhow!("active assembly gateway entry lookup is missing"))?;
+        if !Arc::ptr_eq(&entry, exact_entry) {
+            anyhow::bail!("active assembly selector and owner/key lookup disagree");
+        }
         let activation = active
             .contexts
-            .activation_for_deployment(&binding.deployment)
-            .ok_or_else(|| anyhow::anyhow!("active assembly ingress has no activation context"))?;
-        let descriptor = active
-            .operation_descriptor(&binding.contract, &binding.contract_operation_id)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("active assembly ingress has no descriptor"))?;
-        let contract = active
-            .contexts
-            .contract(&binding.contract)
-            .ok_or_else(|| anyhow::anyhow!("active assembly ingress has no canonical contract"))?;
-        let provider_target = active
-            .contexts
-            .operation_target(activation.activation_id(), &binding.contract_operation_id)
-            .ok_or_else(|| anyhow::anyhow!("active assembly ingress has no provider target"))?;
+            .activation_for_deployment(entry.owner())
+            .ok_or_else(|| anyhow::anyhow!("active assembly gateway has no activation context"))?;
+        let linked_activation = active
+            .activation(entry.owner())
+            .ok_or_else(|| anyhow::anyhow!("active assembly gateway has no activation template"))?;
+        let policy = linked_activation.deployment().policy.clone();
         Ok(Some(ActiveAssemblyRoute {
             active,
-            binding,
+            selector: selector.clone(),
+            entry,
             activation,
-            descriptor,
-            contract,
-            provider_target,
+            policy,
         }))
     }
 
@@ -767,7 +795,7 @@ fn validate_candidate(candidate: &AssemblyLinkedCandidate) -> anyhow::Result<()>
     if candidate.activations().len() != assembly.activation_templates.len() {
         anyhow::bail!("linked activation set does not exactly match RuntimeAssembly");
     }
-    if candidate.ingress_bindings().len() != assembly.global_ingress.len() {
+    if candidate.ingress_bindings().len() != assembly.gateway_ingress.len() {
         anyhow::bail!("linked ingress set does not exactly match RuntimeAssembly");
     }
 
@@ -805,24 +833,89 @@ fn validate_candidate(candidate: &AssemblyLinkedCandidate) -> anyhow::Result<()>
         }
     }
 
-    for source in &assembly.global_ingress {
-        let binding = candidate
+    for source in &assembly.gateway_ingress {
+        let entry = candidate
             .ingress(&source.selector)
             .ok_or_else(|| anyhow::anyhow!("linked ingress {:?} is missing", source.selector))?;
-        if binding != source {
-            anyhow::bail!("linked ingress {:?} changed its binding", source.selector);
-        }
-        if candidate.activation(&binding.deployment).is_none() {
-            anyhow::bail!("linked ingress {:?} has no activation", source.selector);
-        }
-        if candidate
-            .operation_descriptor(&binding.contract, &binding.contract_operation_id)
-            .is_none()
-        {
+        let exact_entry = candidate
+            .gateway_entry(&source.deployment, &source.gateway_entry_key)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "linked ingress {:?} owner/key entry is missing",
+                    source.selector
+                )
+            })?;
+        if !Arc::ptr_eq(entry, exact_entry) {
             anyhow::bail!(
-                "linked ingress {:?} has no canonical operation descriptor",
+                "linked ingress {:?} selector and owner/key lookups disagree",
                 source.selector
             );
+        }
+        if entry.owner() != &source.deployment
+            || entry.gateway_entry_key() != &source.gateway_entry_key
+            || entry.gateway_entry_identity() != &source.gateway_entry_identity
+        {
+            anyhow::bail!("linked ingress {:?} changed its binding", source.selector);
+        }
+        let activation = candidate.activation(entry.owner()).ok_or_else(|| {
+            anyhow::anyhow!("linked ingress {:?} has no activation", source.selector)
+        })?;
+        let deployment_entry = activation
+            .deployment()
+            .gateway_entries
+            .get(entry.gateway_entry_key())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "linked ingress {:?} deployment entry is missing",
+                    source.selector
+                )
+            })?;
+        if deployment_entry.gateway_entry_identity != *entry.gateway_entry_identity()
+            || deployment_entry.protocol_surface != *entry.protocol_surface()
+        {
+            anyhow::bail!(
+                "linked ingress {:?} deployment entry facts changed",
+                source.selector
+            );
+        }
+        let Some(deployment_binding) = activation
+            .deployment()
+            .ingress
+            .iter()
+            .find(|binding| binding.selector == source.selector)
+        else {
+            anyhow::bail!(
+                "linked ingress {:?} deployment binding is missing",
+                source.selector
+            );
+        };
+        if deployment_binding.gateway_entry_key != *entry.gateway_entry_key() {
+            anyhow::bail!(
+                "linked ingress {:?} deployment binding key changed",
+                source.selector
+            );
+        }
+        if source.selector.protocol != IngressProtocol::Http {
+            anyhow::bail!("linked ingress {:?} is not HTTP", source.selector);
+        }
+        let GatewayProtocolSurface::Http(http) = &entry.protocol_surface().protocol;
+        let mode_is_valid = matches!(
+            (http.adapter_kind, http.dispatch_mode),
+            (GatewayAdapterKind::TypedJson, GatewayDispatchMode::Unary)
+                | (GatewayAdapterKind::RawHttp, GatewayDispatchMode::Unary)
+                | (
+                    GatewayAdapterKind::RawHttp,
+                    GatewayDispatchMode::ServerStream
+                )
+        );
+        if !mode_is_valid {
+            anyhow::bail!(
+                "linked ingress {:?} has an unsupported HTTP adapter/mode",
+                source.selector
+            );
+        }
+        if candidate.activation(entry.owner()).is_none() {
+            anyhow::bail!("linked ingress {:?} has no activation", source.selector);
         }
     }
 
@@ -834,7 +927,7 @@ fn validate_candidate(candidate: &AssemblyLinkedCandidate) -> anyhow::Result<()>
         && assembly.package_link_plan.package_links.is_empty()
         && assembly.service_binding_templates.is_empty()
         && assembly.activation_templates.is_empty()
-        && assembly.global_ingress.is_empty();
+        && assembly.gateway_ingress.is_empty();
     if candidate.is_empty() != canonical_empty {
         anyhow::bail!("linked candidate empty state does not match RuntimeAssembly");
     }

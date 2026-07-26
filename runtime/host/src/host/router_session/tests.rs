@@ -1,7 +1,6 @@
 use serde_json::json;
 
 use super::*;
-use skiff_runtime_loader::RuntimeAssemblyContentResolver;
 use skiff_runtime_transport::{
     assembly_activation::{
         decode_assembly_activation_frame, encode_assembly_activation_frame,

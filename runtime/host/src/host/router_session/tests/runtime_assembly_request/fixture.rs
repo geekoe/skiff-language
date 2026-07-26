@@ -1,517 +1,593 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, OnceLock,
+    },
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use skiff_artifact_model::*;
+use skiff_artifact_model::{
+    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageSchemaIndex,
+    PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    PackageSchemaTypeRecordRef, PackageTypeRef, PublicationResourceRef, RuntimeAssembly,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, TypeRefIr,
+};
+use skiff_compiler::{
+    authoring::{build_authoring_object, AuthoringObject},
+    CompilerPlatformSources,
+};
+use skiff_deployment::{assembly::resolve_runtime_assembly, storage::CanonicalArtifactStore};
+use skiff_runtime_loader::{
+    FilesystemRuntimeAssemblyContentResolver, RuntimeAssemblyContentResolver,
+};
+use skiff_test_runner::canonical_std_seed::seed_canonical_std;
 
 use crate::{host::RuntimeHost, loader::assembly_admission::ActiveAssemblyRoute};
 
-#[path = "../../../../loader/assembly_admission/tests/execution/resolver.rs"]
-mod resolver;
+const PACKAGE_ID: &str = "example.com/host-http-gateway";
+const SERVICE_ID: &str = "example.com/host-http-gateway-service";
+const VERSION: &str = "1.0.0";
 
-// Reuse the checked-in nested-provider builder without editing loader-owned fixtures.
-#[allow(dead_code)]
-#[path = "../../../../loader/assembly_admission/tests/execution/artifacts.rs"]
-mod nested_artifacts;
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static FIXTURE: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 
-use nested_artifacts::{ProjectedFixture, TypedExecutionContract};
-use resolver::TypedResolver;
-
-pub(super) async fn admitted_nested_host() -> (RuntimeHost, ActiveAssemblyRoute) {
-    let projected = ProjectedFixture::new(TypedExecutionContract::unary());
-    admit(projected.assembly, projected.resolver).await
-}
-
-pub(super) async fn admitted_void_host(may_suspend: bool) -> (RuntimeHost, ActiveAssemblyRoute) {
-    let fixture = void_fixture(may_suspend, false);
-    admit(fixture.assembly, fixture.resolver).await
-}
-
-pub(super) async fn admitted_spawn_host() -> (RuntimeHost, ActiveAssemblyRoute) {
-    let fixture = void_fixture(true, true);
-    admit(fixture.assembly, fixture.resolver).await
-}
-
-pub(super) async fn reloaded_nested_host() -> (RuntimeHost, ActiveAssemblyRoute, ActiveAssemblyRoute)
-{
-    let projected = ProjectedFixture::new(TypedExecutionContract::unary());
-    let selector = projected.assembly.global_ingress[0].selector.clone();
+pub(super) async fn admitted_gateway_host() -> (RuntimeHost, HashMap<String, ActiveAssemblyRoute>) {
+    let fixture = fixture();
+    let resolver = fixture.resolver();
     let host = super::super::test_host();
     host.assembly_admission
-        .admit(projected.assembly.clone(), &projected.resolver)
+        .admit(Arc::clone(&fixture.assembly), &resolver)
         .await
-        .expect("generation one should admit");
+        .expect("compiled HTTP gateway assembly should admit");
+    let routes = fixture
+        .assembly
+        .gateway_ingress
+        .iter()
+        .map(|binding| {
+            (
+                binding.selector.path.clone(),
+                host.lookup_active_assembly_request_route(&binding.selector)
+                    .expect("compiled HTTP gateway route"),
+            )
+        })
+        .collect();
+    (host, routes)
+}
+
+pub(crate) async fn reloaded_gateway_host(
+) -> (RuntimeHost, ActiveAssemblyRoute, ActiveAssemblyRoute) {
+    let fixture = fixture();
+    let resolver = fixture.resolver();
+    let selector = fixture
+        .assembly
+        .gateway_ingress
+        .iter()
+        .find(|binding| binding.selector.path == "/typed")
+        .expect("typed gateway selector")
+        .selector
+        .clone();
+    let host = super::super::test_host();
+    host.assembly_admission
+        .admit(Arc::clone(&fixture.assembly), &resolver)
+        .await
+        .expect("gateway generation one should admit");
     let pinned = host
         .lookup_active_assembly_request_route(&selector)
         .expect("generation one route");
     host.assembly_admission
-        .admit(projected.assembly, &projected.resolver)
+        .admit(Arc::clone(&fixture.assembly), &resolver)
         .await
-        .expect("generation two should admit");
+        .expect("gateway generation two should admit");
     let current = host
         .lookup_active_assembly_request_route(&selector)
         .expect("generation two route");
     (host, pinned, current)
 }
 
-pub(crate) async fn reloaded_websocket_host(
-) -> (RuntimeHost, ActiveAssemblyRoute, ActiveAssemblyRoute) {
-    let mut projected = ProjectedFixture::new_with_consumer_service_id(
-        TypedExecutionContract::unary(),
-        "example.com/consumer",
-    );
-    let consumer_index = projected
-        .resolver
-        .deployments
-        .iter()
-        .position(|(reference, _)| reference == &projected.consumer_deployment)
-        .expect("consumer deployment fixture");
-    let mut consumer = projected.resolver.deployments[consumer_index]
-        .1
-        .as_ref()
-        .clone();
-    consumer.ingress[0].selector.protocol = IngressProtocol::WebSocket;
-    consumer.ingress[0].selector.method = None;
-    skiff_artifact_identity::assign_service_deployment_identity(&mut consumer)
-        .expect("WebSocket deployment identity");
-    let consumer_ref = skiff_artifact_identity::service_deployment_ref(&consumer);
-    projected.resolver.deployments[consumer_index] = (consumer_ref.clone(), Arc::new(consumer));
-    let deployments = projected
-        .resolver
-        .deployments
-        .iter()
-        .map(|(_, deployment)| deployment.as_ref().clone())
-        .collect::<Vec<_>>();
-    let contracts = projected
-        .resolver
-        .contracts
-        .iter()
-        .map(|(_, contract)| contract.as_ref().clone())
-        .collect::<Vec<_>>();
-    let packages = projected
-        .resolver
-        .packages
-        .iter()
-        .map(|(_, package)| package.as_ref().clone())
-        .collect::<Vec<_>>();
-    projected.assembly = skiff_deployment::assembly::resolve_runtime_assembly(
-        std::slice::from_ref(&consumer_ref),
-        &deployments,
-        &contracts,
-        &packages,
-    )
-    .expect("WebSocket RuntimeAssembly should resolve");
-    let selector = projected.assembly.global_ingress[0].selector.clone();
-    let host = super::super::test_host();
-    host.assembly_admission
-        .admit(projected.assembly.clone(), &projected.resolver)
-        .await
-        .expect("WebSocket generation one should admit");
-    let pinned = host
-        .lookup_active_assembly_request_route(&selector)
-        .expect("WebSocket generation one route");
-    host.assembly_admission
-        .admit(projected.assembly, &projected.resolver)
-        .await
-        .expect("WebSocket generation two should admit");
-    let current = host
-        .lookup_active_assembly_request_route(&selector)
-        .expect("WebSocket generation two route");
-    (host, pinned, current)
+struct CompiledGatewayFixture {
+    assembly: Arc<RuntimeAssembly>,
+    artifact_root: PathBuf,
+    deployment_ref: ServiceDeploymentRef,
+    deployment: Arc<ServiceDeployment>,
+    original_root_ref: PackageArtifactRef,
+    root_artifact: Arc<PackageArtifact>,
+    original_std_ref: PackageArtifactRef,
+    std_artifact: Arc<PackageArtifact>,
+    std_schema_index: Arc<PackageSchemaIndex>,
+    _temp: TempFixture,
 }
 
-async fn admit(
-    assembly: RuntimeAssembly,
-    resolver: TypedResolver,
-) -> (RuntimeHost, ActiveAssemblyRoute) {
-    let selector = assembly.global_ingress[0].selector.clone();
-    let host = super::super::test_host();
-    host.assembly_admission
-        .admit(assembly, &resolver)
-        .await
-        .expect("canonical request assembly should admit");
-    let route = host
-        .lookup_active_assembly_request_route(&selector)
-        .expect("canonical ingress should have one active route");
-    (host, route)
-}
-
-struct VoidFixture {
-    assembly: RuntimeAssembly,
-    resolver: TypedResolver,
-}
-
-fn void_fixture(may_suspend: bool, submits_spawn: bool) -> VoidFixture {
-    let operation_contract = void_unary_contract(may_suspend);
-    let (contract, operation_id) = void_contract(operation_contract.clone());
-    let contract_ref = ServiceContractRef {
-        service_id: contract.service_id.clone(),
-        contract_version: contract.contract_version.clone(),
-        service_protocol_identity: contract.service_protocol_identity.clone(),
-    };
-    let file = void_file(may_suspend, submits_spawn);
-    let file_ref = FileIrRef {
-        file_ir_identity: file.file_ir_identity.clone(),
-        module_path: file.module_path.clone(),
-        artifact_path: None,
-        source_ast_hash: Some(file.source_ast_hash.clone()),
-    };
-    let package = void_package(&file_ref, operation_contract, may_suspend);
-    let package_ref = PackageArtifactRef {
-        package_id: package.package_id.clone(),
-        package_version: package.package_version.clone(),
-        package_build_id: package.package_build_id.clone(),
-        package_local_abi_identity: package.package_local_abi.local_abi_identity.clone(),
-    };
-    let deployment = void_deployment(
-        contract_ref.clone(),
-        package_ref.clone(),
-        operation_id,
-        &contract,
-        &package,
-    );
-    let deployment_ref = skiff_artifact_identity::service_deployment_ref(&deployment);
-    let assembly = skiff_deployment::assembly::resolve_runtime_assembly(
-        std::slice::from_ref(&deployment_ref),
-        std::slice::from_ref(&deployment),
-        std::slice::from_ref(&contract),
-        std::slice::from_ref(&package),
-    )
-    .expect("void assembly should resolve");
-    VoidFixture {
-        assembly,
-        resolver: TypedResolver {
-            deployments: vec![(deployment_ref, Arc::new(deployment))],
-            contracts: vec![(contract_ref, Arc::new(contract))],
-            packages: vec![(package_ref.clone(), Arc::new(package))],
-            files: vec![(package_ref, file_ref, Arc::new(file))],
-            package_schema_records: Vec::new(),
-        },
+impl CompiledGatewayFixture {
+    fn resolver(&self) -> CompiledGatewayResolver<'_> {
+        CompiledGatewayResolver {
+            inner: FilesystemRuntimeAssemblyContentResolver::open(&self.artifact_root)
+                .expect("gateway filesystem resolver"),
+            fixture: self,
+        }
     }
 }
 
-fn void_contract(
-    operation_contract: BoundaryOperationContract,
-) -> (ServiceContract, ContractOperationId) {
-    let service_id = "example.canonical-void";
-    let contract_version = "1.0.0";
-    let operation_id =
-        skiff_artifact_identity::contract_operation_id(service_id, contract_version, "invoke")
-            .expect("void operation identity");
-    let mut contract = ServiceContract {
-        schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
-        service_id: service_id.to_string(),
-        contract_version: contract_version.to_string(),
-        service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
-        operations: BTreeMap::from([(
-            operation_id.clone(),
-            BoundaryOperationDescriptor {
-                operation_id: operation_id.clone(),
-                stable_key: "invoke".to_string(),
-                contract: operation_contract.clone(),
-            },
-        )]),
-        package_type_requirements: Vec::new(),
-        diagnostic_text: ContractDiagnosticText {
-            service: "Canonical void fixture".to_string(),
-            operations: BTreeMap::new(),
-            types: BTreeMap::new(),
-        },
-    };
-    skiff_artifact_identity::assign_service_contract_identities(&mut contract)
-        .expect("void contract identities");
-    (contract, operation_id)
+struct CompiledGatewayResolver<'a> {
+    inner: FilesystemRuntimeAssemblyContentResolver,
+    fixture: &'a CompiledGatewayFixture,
 }
 
-fn void_file(may_suspend: bool, submits_spawn: bool) -> FileIrUnit {
-    let mut file = FileIrUnit::empty("canonical.void", "source:canonical.void".to_string());
-    let (statements, expressions) = if submits_spawn {
-        (
-            vec![
-                StmtIr::Spawn {
-                    call: ExprRefIr { expression: 0 },
-                },
-                StmtIr::Return { value: None },
-            ],
-            vec![ExprIr::Call {
-                call: CallIr {
-                    target: CallTargetIr::LocalExecutable {
-                        executable_index: 1,
-                    },
-                    site: InstructionSourceSite::Synthetic {
-                        reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
-                    },
-                    args: Vec::new(),
-                    type_args: BTreeMap::new(),
-                    metadata: BTreeMap::from([(
-                        "spawnSubmit".to_string(),
-                        MetadataValue::Object(BTreeMap::from([
-                            (
-                                "targetKind".to_string(),
-                                MetadataValue::String("function".to_string()),
-                            ),
-                            (
-                                "target".to_string(),
-                                MetadataValue::String(
-                                    "function:canonical.void.spawnTarget".to_string(),
-                                ),
-                            ),
-                        ])),
-                    )]),
-                },
-            }],
-        )
-    } else {
-        (vec![StmtIr::Return { value: None }], Vec::new())
-    };
-    file.executables.push(ExecutableIr {
-        kind: ExecutableKind::Function,
-        symbol: "invoke".to_string(),
-        type_params: Vec::new(),
-        params: Vec::new(),
-        return_type: TypeRefIr::builtin("void"),
-        self_type: None,
-        slots: SlotLayout::default(),
-        may_suspend,
-        body: ExecutableBody {
-            blocks: vec![BlockIr {
-                label: "entry".to_string(),
-                statements: (0..statements.len())
-                    .map(|statement| StmtRefIr {
-                        statement: statement as u32,
-                    })
-                    .collect(),
-            }],
-            statements,
-            expressions,
-        },
-        source_span: None,
-    });
-    if submits_spawn {
-        file.executables.push(ExecutableIr {
-            kind: ExecutableKind::Function,
-            symbol: "canonical.void.spawnTarget".to_string(),
-            type_params: Vec::new(),
-            params: Vec::new(),
-            return_type: TypeRefIr::builtin("void"),
-            self_type: None,
-            slots: SlotLayout::default(),
-            may_suspend: false,
-            body: ExecutableBody {
-                blocks: vec![BlockIr {
-                    label: "entry".to_string(),
-                    statements: vec![StmtRefIr { statement: 0 }],
-                }],
-                statements: vec![StmtIr::Return { value: None }],
-                expressions: Vec::new(),
-            },
-            source_span: None,
-        });
+impl RuntimeAssemblyContentResolver for CompiledGatewayResolver<'_> {
+    fn resolve_deployment(
+        &self,
+        reference: &ServiceDeploymentRef,
+    ) -> anyhow::Result<Arc<ServiceDeployment>> {
+        if reference == &self.fixture.deployment_ref {
+            return Ok(Arc::clone(&self.fixture.deployment));
+        }
+        self.inner.resolve_deployment(reference)
     }
-    skiff_artifact_identity::assign_file_ir_identity(&mut file).expect("void File IR identity");
-    file
-}
 
-fn void_package(
-    file_ref: &FileIrRef,
-    operation_contract: BoundaryOperationContract,
-    may_suspend: bool,
-) -> PackageArtifact {
-    let callable_id = PackageCallableId::new("callable:canonical-void");
-    let effects = CallableMayEffects {
-        writes_caller_reachable: false,
-        returns_caller_alias: false,
-        throws_caller_alias: false,
-        escapes_caller_value: false,
-        requires_same_heap_identity: false,
-        invokes_unknown_target: false,
-        may_suspend,
-    };
-    let provenance = CallableProvenanceSummary::Analyzed {
-        return_origins: Vec::new(),
-        direct_return_origins: Vec::new(),
-        throw_origins: Vec::new(),
-        escape_lanes: Vec::new(),
-    };
-    let mut package = PackageArtifact {
-        schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
-        package_id: "example.canonical-void-package".to_string(),
-        package_version: "1.0.0".to_string(),
-        package_build_id: PackageBuildId::new("unassigned"),
-        files: vec![file_ref.clone()],
-        static_resources: Vec::new(),
-        package_local_abi: PackageLocalAbi {
-            local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
-            public_symbols: BTreeMap::from([(
-                "invoke".to_string(),
-                PackageLocalAbiSymbol::Callable {
-                    callable_id: callable_id.clone(),
-                    signature: PackageCallableSignature {
-                        type_params: Vec::new(),
-                        parameters: Vec::new(),
-                        return_type: PackageTypeRef::Local {
-                            local_type: TypeRefIr::builtin("void"),
-                        },
-                        may_suspend,
-                    },
-                },
-            )]),
-            implementation_symbols: BTreeMap::new(),
-        },
-        package_schema_index: PackageSchemaIndexRef {
-            package_id: "example.canonical-void-package".to_string(),
-            package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
-                "example.canonical-void-package",
-                &BTreeMap::new(),
-            )
-            .expect("empty Package schema index is canonical"),
-        },
-        package_schema_type_records: BTreeMap::new(),
-        implementation_links: PackageImplementationLinks::default(),
-        callable_links: BTreeMap::from([(
-            callable_id.clone(),
-            PackageCallableLinkFact {
-                callable_id: callable_id.clone(),
-                target: OperationTargetRef {
-                    file_ref: file_ref.clone(),
-                    executable_index: 0,
-                    callable_abi_id: callable_id.to_string(),
-                    callable_kind: OperationCallableKind::PublicFunction,
-                },
-            },
-        )]),
-        package_requirements: Vec::new(),
-        contract_requirements: Vec::new(),
-        service_requirements: Vec::new(),
-        runtime_requirements: PackageRuntimeRequirements {
-            config: Vec::new(),
-            state: Vec::new(),
-            resources: Vec::new(),
-            runtime_capabilities: Vec::new(),
-        },
-        callable_semantic_facts: BTreeMap::from([(
-            callable_id.clone(),
-            CallableSemanticFacts {
-                effects: CallableEffectSummary::Analyzed {
-                    effects: effects.clone(),
-                },
-                provenance: provenance.clone(),
-                resolved_call_targets: BTreeMap::new(),
-            },
-        )]),
-        boundary_projections: BTreeMap::from([(
-            callable_id.clone(),
-            BoundaryCallableProjection::Available {
-                operation_contract: operation_contract.clone(),
-                implementation_requirements: BoundaryImplementationRequirements {
-                    config: Vec::new(),
-                    state: Vec::new(),
-                    native_capabilities: Vec::new(),
-                    runtime_capabilities: Vec::new(),
-                    complete_may_effects: effects,
-                    provenance,
-                },
-            },
-        )]),
-        service_call_refs: Vec::new(),
-    };
-    skiff_artifact_identity::assign_package_artifact_identities(&mut package)
-        .expect("void package identities");
-    package
-}
+    fn resolve_contract(
+        &self,
+        reference: &ServiceContractRef,
+    ) -> anyhow::Result<Arc<ServiceContract>> {
+        self.inner.resolve_contract(reference)
+    }
 
-fn void_deployment(
-    contract_ref: ServiceContractRef,
-    package_ref: PackageArtifactRef,
-    operation_id: ContractOperationId,
-    contract: &ServiceContract,
-    package: &PackageArtifact,
-) -> ServiceDeployment {
-    let gateway_entry_key =
-        GatewayEntryKey::parse("canonical-void-http").expect("fixture gateway entry key");
-    let deployment_input = ServiceDeploymentInput {
-        schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
-        contract: contract_ref,
-        deployment_revision: DeploymentRevision::new("canonical-void-r1"),
-        implementation: package_ref,
-        operation_bindings: vec![ServiceDeploymentOperationInput {
-            contract_operation_id: operation_id.clone(),
-            package_public_path: "invoke".to_string(),
-        }],
-        package_bindings: Vec::new(),
-        service_selectors: Vec::new(),
-        gateway_entries: BTreeMap::from([(
-            gateway_entry_key.clone(),
-            skiff_deployment::fixtures::gateway_entry_fixture(PackageCallableId::new(
-                "callable:canonical-void",
-            )),
-        )]),
-        ingress: vec![DeploymentIngressBinding {
-            selector: IngressSelector {
-                protocol: IngressProtocol::Http,
-                host: "canonical-void.test".to_string(),
-                method: Some("POST".to_string()),
-                path: "/invoke".to_string(),
-            },
-            gateway_entry_key,
-        }],
-        config_literals: Vec::new(),
-        secret_refs: Vec::new(),
-        state_bindings: Vec::new(),
-        resource_bindings: Vec::new(),
-        runtime_capability_bindings: Vec::new(),
-        policy: DeploymentPolicy {
-            timeout_ms: Some(1_000),
-            resources: ResourcePolicy {
-                cpu_millis: 100,
-                memory_bytes: 1_048_576,
-            },
-            activation: ActivationPolicy {
-                max_concurrency: 4,
-                idle_timeout_ms: None,
-            },
-            principal: "service:canonical-void".to_string(),
-        },
-        diagnostic_text: DeploymentDiagnosticText {
-            display_name: "Canonical void fixture".to_string(),
-            notes: BTreeMap::new(),
-        },
-    };
-    let deployment = skiff_deployment::projection::project_service_deployment(
-        deployment_input,
-        contract,
-        std::slice::from_ref(package),
-        &BTreeMap::new(),
-    )
-    .expect("void deployment should project");
-    deployment
-}
+    fn resolve_package_schema_index(
+        &self,
+        reference: &PackageSchemaIndexRef,
+    ) -> anyhow::Result<Arc<PackageSchemaIndex>> {
+        if reference == &self.fixture.std_artifact.package_schema_index {
+            return Ok(Arc::clone(&self.fixture.std_schema_index));
+        }
+        self.inner.resolve_package_schema_index(reference)
+    }
 
-fn void_unary_contract(may_suspend: bool) -> BoundaryOperationContract {
-    BoundaryOperationContract {
-        parameters: Vec::new(),
-        return_value: BoundaryReturn {
-            ty: ContractTypeRef::builtin("void"),
-            value_plan: BoundaryValuePlan::Linkable {
-                carrier: BoundaryValueCarrier::DetachedValueGraph,
-                encoding: BoundaryValueEncoding::CanonicalValue,
-                owner: BoundaryValueOwner::Provider,
-                lifetime: BoundaryValueLifetime::Call,
-            },
-        },
-        stream: BoundaryStreamContract::Unary,
-        cancellation: if may_suspend {
-            BoundaryCancellationContract::Cooperative
+    fn resolve_package_schema_type(
+        &self,
+        reference: &PackageSchemaTypeRecordRef,
+    ) -> anyhow::Result<Arc<PackageSchemaTypeRecord>> {
+        self.inner.resolve_package_schema_type(reference)
+    }
+
+    fn resolve_package(
+        &self,
+        reference: &PackageArtifactRef,
+    ) -> anyhow::Result<Arc<PackageArtifact>> {
+        if reference == &skiff_artifact_identity::package_artifact_ref(&self.fixture.root_artifact)?
+        {
+            return Ok(Arc::clone(&self.fixture.root_artifact));
+        }
+        if reference == &skiff_artifact_identity::package_artifact_ref(&self.fixture.std_artifact)?
+        {
+            return Ok(Arc::clone(&self.fixture.std_artifact));
+        }
+        self.inner.resolve_package(reference)
+    }
+
+    fn resolve_file_ir(
+        &self,
+        package: &PackageArtifactRef,
+        reference: &FileIrRef,
+    ) -> anyhow::Result<Arc<FileIrUnit>> {
+        let package = if package.package_id == self.fixture.root_artifact.package_id {
+            &self.fixture.original_root_ref
+        } else if package.package_id == self.fixture.std_artifact.package_id {
+            &self.fixture.original_std_ref
         } else {
-            BoundaryCancellationContract::NotCancellable
-        },
-        callbacks: BoundaryCallbackContract::None,
-        may_suspend,
-        effect_guarantee: BoundaryEffectGuarantee {
-            detached_parameters: true,
-            detached_return: true,
-            detached_error: true,
-            no_caller_reachable_mutation: true,
-            no_caller_value_escape: true,
-            no_same_heap_identity: true,
-        },
+            package
+        };
+        self.inner.resolve_file_ir(package, reference)
+    }
+
+    fn resolve_static_resource(
+        &self,
+        package: &PackageArtifactRef,
+        reference: &PublicationResourceRef,
+    ) -> anyhow::Result<Arc<[u8]>> {
+        let package = if package.package_id == self.fixture.root_artifact.package_id {
+            &self.fixture.original_root_ref
+        } else if package.package_id == self.fixture.std_artifact.package_id {
+            &self.fixture.original_std_ref
+        } else {
+            package
+        };
+        self.inner.resolve_static_resource(package, reference)
+    }
+}
+
+fn fixture() -> &'static CompiledGatewayFixture {
+    FIXTURE.get_or_init(compile_fixture)
+}
+
+fn compile_fixture() -> CompiledGatewayFixture {
+    let temp = TempFixture::new("host-http-gateway");
+    let service_root = temp.child("service");
+    let artifact_root = temp.child("artifacts");
+    write_service_fixture(&service_root);
+    let platform = repository_platform_sources();
+    seed_canonical_std(&platform, &artifact_root).expect("canonical std seed");
+    let output = build_authoring_object(
+        &platform,
+        AuthoringObject::Package,
+        &service_root,
+        &artifact_root,
+        "dev",
+        true,
+    )
+    .expect("Host gateway service authoring");
+    let root_package_ref: PackageArtifactRef =
+        serde_json::from_value(output["packageArtifactReceipt"]["artifact"].clone())
+            .expect("gateway package ref");
+    let deployment_ref: ServiceDeploymentRef =
+        serde_json::from_value(output["serviceDeploymentReceipt"]["deployment"].clone())
+            .expect("gateway deployment ref");
+    let contract_ref: ServiceContractRef =
+        serde_json::from_value(output["serviceContractReceipt"]["contract"].clone())
+            .expect("gateway contract ref");
+    let store = CanonicalArtifactStore::open(&artifact_root).expect("gateway artifact store");
+    let original_deployment = store
+        .read_service_deployment(&deployment_ref)
+        .expect("gateway deployment");
+    let contract = store
+        .read_service_contract(&contract_ref)
+        .expect("gateway contract");
+    let implementation = store
+        .read_package_artifact(&root_package_ref)
+        .expect("gateway implementation");
+    let mut package_refs =
+        BTreeMap::from([(implementation.package_build_id.clone(), root_package_ref)]);
+    for binding in &original_deployment.package_bindings {
+        package_refs.insert(
+            binding.package.package_build_id.clone(),
+            binding.package.clone(),
+        );
+    }
+    let packages = package_refs
+        .values()
+        .map(|reference| store.read_package_artifact(reference))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("gateway package closure");
+    let original_std = packages
+        .iter()
+        .find(|package| package.package_id == "skiff.run/std")
+        .expect("gateway fixture std package");
+    let original_std_ref = skiff_artifact_identity::package_artifact_ref(original_std)
+        .expect("canonical std package ref");
+    let mut std_artifact = original_std.as_ref().clone();
+    let original_std_schema = store
+        .read_package_schema_index(&std_artifact.package_schema_index)
+        .expect("canonical std schema index");
+    localize_std_package_abi_schema_refs(&mut std_artifact, &original_std_schema);
+    let std_schema_types = BTreeMap::new();
+    let std_schema_identity = skiff_artifact_identity::package_schema_index_identity(
+        &std_artifact.package_id,
+        &std_schema_types,
+    )
+    .expect("empty std schema identity");
+    std_artifact.package_schema_index = PackageSchemaIndexRef {
+        package_id: std_artifact.package_id.clone(),
+        package_schema_index_identity: std_schema_identity.clone(),
+    };
+    std_artifact.package_schema_type_records.clear();
+    skiff_artifact_identity::assign_package_artifact_identities(&mut std_artifact)
+        .expect("HTTP fixture std identity");
+    let std_artifact = Arc::new(std_artifact);
+    let std_ref = skiff_artifact_identity::package_artifact_ref(&std_artifact)
+        .expect("schema-neutral std fixture ref");
+    let std_schema_index = Arc::new(PackageSchemaIndex {
+        package_id: std_artifact.package_id.clone(),
+        package_schema_index_identity: std_schema_identity,
+        types: std_schema_types,
+    });
+
+    // The canonical std publication schema currently disagrees with several of its own File IR
+    // declarations. These HTTP probes need std execution code, not its independent service-error
+    // schema roots, so the test resolver retains exact File IR and rewrites only the Package-ABI
+    // nominal references to their equivalent local publication declarations.
+    let original_root_ref =
+        skiff_artifact_identity::package_artifact_ref(&implementation).expect("gateway root ref");
+    let mut root_artifact = implementation.as_ref().clone();
+    for requirement in &mut root_artifact.package_requirements {
+        if requirement.package_id == std_artifact.package_id {
+            requirement.expected_local_abi =
+                std_artifact.package_local_abi.local_abi_identity.clone();
+            if requirement.expected_package_build.is_some() {
+                requirement.expected_package_build = Some(std_artifact.package_build_id.clone());
+            }
+        }
+    }
+    skiff_artifact_identity::assign_package_artifact_identities(&mut root_artifact)
+        .expect("gateway root fixture identity");
+    let root_artifact = Arc::new(root_artifact);
+    let root_ref = skiff_artifact_identity::package_artifact_ref(&root_artifact)
+        .expect("gateway root fixture ref");
+
+    let mut deployment = original_deployment.as_ref().clone();
+    deployment.implementation = root_ref.clone();
+    for binding in &mut deployment.package_bindings {
+        if binding.key.caller_package_build_id == original_root_ref.package_build_id {
+            binding.key.caller_package_build_id = root_ref.package_build_id.clone();
+        }
+        if binding.package == original_std_ref {
+            binding.package = std_ref.clone();
+        }
+    }
+    skiff_artifact_identity::assign_service_deployment_identity(&mut deployment)
+        .expect("schema-neutral gateway deployment identity");
+    let deployment = Arc::new(deployment);
+    let deployment_ref = skiff_artifact_identity::service_deployment_ref(&deployment);
+    let package_values = packages
+        .iter()
+        .map(|package| {
+            if package.package_id == std_artifact.package_id {
+                std_artifact.as_ref().clone()
+            } else if package.package_id == root_artifact.package_id {
+                root_artifact.as_ref().clone()
+            } else {
+                package.as_ref().clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    let root = deployment_ref.clone();
+    let assembly = Arc::new(
+        resolve_runtime_assembly(
+            std::slice::from_ref(&root),
+            std::slice::from_ref(deployment.as_ref()),
+            std::slice::from_ref(contract.as_ref()),
+            &package_values,
+        )
+        .expect("gateway RuntimeAssembly"),
+    );
+    CompiledGatewayFixture {
+        assembly,
+        artifact_root,
+        deployment_ref,
+        deployment,
+        original_root_ref,
+        root_artifact,
+        original_std_ref,
+        std_artifact,
+        std_schema_index,
+        _temp: temp,
+    }
+}
+
+fn localize_std_package_abi_schema_refs(
+    artifact: &mut PackageArtifact,
+    schema: &PackageSchemaIndex,
+) {
+    let local_types = schema
+        .types
+        .values()
+        .map(|entry| {
+            let public_path = entry
+                .public_path
+                .as_deref()
+                .expect("canonical std schema public path");
+            let source_path = public_path.strip_prefix("std.").unwrap_or(public_path);
+            let export =
+                artifact
+                    .implementation_links
+                    .types
+                    .get(source_path)
+                    .or_else(|| artifact.implementation_links.types.get(public_path))
+                    .or_else(|| {
+                        artifact.implementation_links.types.values().find(|export| {
+                            export.symbol == source_path || export.symbol == public_path
+                        })
+                    })
+                    .unwrap_or_else(|| panic!("std schema path {public_path} implementation link"));
+            (
+                entry.package_schema_type_id.clone(),
+                TypeRefIr::PublicationType {
+                    module_path: export.file.module_path.clone(),
+                    type_index: export.type_index,
+                },
+            )
+        })
+        .collect::<BTreeMap<PackageSchemaTypeId, TypeRefIr>>();
+    for symbol in artifact
+        .package_local_abi
+        .public_symbols
+        .values_mut()
+        .chain(
+            artifact
+                .package_local_abi
+                .implementation_symbols
+                .values_mut(),
+        )
+    {
+        match symbol {
+            skiff_artifact_model::PackageLocalAbiSymbol::Callable { signature, .. } => {
+                for parameter in &mut signature.parameters {
+                    localize_package_type_ref(
+                        &mut parameter.ty,
+                        &artifact.package_id,
+                        &local_types,
+                    );
+                }
+                localize_package_type_ref(
+                    &mut signature.return_type,
+                    &artifact.package_id,
+                    &local_types,
+                );
+            }
+            skiff_artifact_model::PackageLocalAbiSymbol::Constant { ty, .. } => {
+                localize_package_type_ref(ty, &artifact.package_id, &local_types);
+            }
+            skiff_artifact_model::PackageLocalAbiSymbol::Type { .. }
+            | skiff_artifact_model::PackageLocalAbiSymbol::PublicInstance { .. } => {}
+        }
+    }
+}
+
+fn localize_package_type_ref(
+    ty: &mut PackageTypeRef,
+    package_id: &str,
+    local_types: &BTreeMap<PackageSchemaTypeId, TypeRefIr>,
+) {
+    match ty {
+        PackageTypeRef::PackageSchema {
+            package_id: owner,
+            package_schema_type_id,
+            ..
+        } if owner == package_id => {
+            *ty = PackageTypeRef::Local {
+                local_type: local_types
+                    .get(package_schema_type_id)
+                    .unwrap_or_else(|| {
+                        panic!("std Package ABI schema type {package_schema_type_id} local link")
+                    })
+                    .clone(),
+            };
+        }
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            localize_package_type_ref(interface, package_id, local_types);
+            for argument in arguments {
+                localize_package_type_ref(argument, package_id, local_types);
+            }
+        }
+        PackageTypeRef::Container { arguments, .. } => {
+            for argument in arguments {
+                localize_package_type_ref(argument, package_id, local_types);
+            }
+        }
+        PackageTypeRef::Nullable { inner } => {
+            localize_package_type_ref(inner, package_id, local_types);
+        }
+        PackageTypeRef::Local { .. } | PackageTypeRef::PackageSchema { .. } => {}
+    }
+}
+
+fn write_service_fixture(root: &Path) {
+    fs::create_dir_all(root).expect("gateway fixture directory");
+    fs::write(
+        root.join("package.yml"),
+        format!("id: {PACKAGE_ID}\nversion: {VERSION}\n"),
+    )
+    .expect("gateway package manifest");
+    fs::write(root.join("api.yml"), "health: main.health\n").expect("gateway API");
+    fs::write(
+        root.join("service.yml"),
+        format!(
+            r#"id: {SERVICE_ID}
+http:
+  typed:
+    method: POST
+    path: /typed
+    kind: typedJson
+    handler: main.typed
+    adapterArgs:
+      - param: body
+        source: {{ kind: http.body }}
+  raw:
+    method: POST
+    path: /raw
+    kind: rawHttp
+    handler: main.raw
+    adapterArgs:
+      - param: request
+        source: {{ kind: http.request }}
+  stream:
+    method: POST
+    path: /stream
+    kind: rawHttp
+    handler: main.stream
+    adapterArgs:
+      - param: request
+        source: {{ kind: http.request }}
+  slow:
+    method: POST
+    path: /slow
+    kind: typedJson
+    handler: main.slow
+    adapterArgs:
+      - param: body
+        source: {{ kind: http.body }}
+"#
+        ),
+    )
+    .expect("gateway service manifest");
+    fs::write(
+        root.join("config.dev.yml"),
+        "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\nlifecycle: { maxConcurrency: 1 }\n",
+    )
+    .expect("gateway config");
+    fs::write(
+        root.join("main.skiff"),
+        r#"import std
+
+function health() -> string {
+  return "healthy"
+}
+
+function typed(body: string) -> string {
+  return body
+}
+
+function raw(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return std.http.HttpResponse {
+    status: 201,
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: request.body,
+  }
+}
+
+function stream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit(std.http.streamStart(202, Array.empty<std.http.HttpHeader>()))
+  emit(std.http.streamChunk(request.body))
+  emit(std.http.streamEnd())
+  return null
+}
+
+function slow(body: string) -> string {
+  std.time.sleep(Duration.milliseconds(200))
+  return body
+}
+"#,
+    )
+    .expect("gateway source");
+}
+
+fn repository_platform_sources() -> CompilerPlatformSources {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("runtime/host must live below the Skiff root")
+        .to_path_buf();
+    CompilerPlatformSources::new(&root).expect("repository platform sources")
+}
+
+struct TempFixture {
+    root: PathBuf,
+}
+
+impl TempFixture {
+    fn new(name: &str) -> Self {
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock after Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "skiff-runtime-host-{name}-{}-{timestamp}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("gateway temp fixture root");
+        Self { root }
+    }
+
+    fn child(&self, name: &str) -> PathBuf {
+        self.root.join(name)
+    }
+}
+
+impl Drop for TempFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
     }
 }

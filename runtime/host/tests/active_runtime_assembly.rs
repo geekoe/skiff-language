@@ -82,7 +82,7 @@ fn empty_assembly() -> RuntimeAssembly {
         },
         service_binding_templates: Vec::new(),
         activation_templates: Vec::new(),
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     };
     skiff_artifact_identity::assign_runtime_assembly_identity(&mut assembly).unwrap();
     assembly

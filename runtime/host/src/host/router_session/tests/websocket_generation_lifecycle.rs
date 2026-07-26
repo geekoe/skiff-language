@@ -1,21 +1,6 @@
 use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::{
     protocol::RUNTIME_FRAME_SCHEMA_VERSION,
-    runtime_assembly_request::{
-        RuntimeAssemblyRequestCallerFrameHeader, RuntimeAssemblyRequestIngressFrameHeader,
-        RuntimeAssemblyRequestIngressProtocol, RuntimeAssemblyRequestRoutingFrameHeader,
-        RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
-        RuntimeAssemblyWebSocketAdapterArgFrameHeader, RuntimeAssemblyWebSocketAdapterFrameHeader,
-        RuntimeAssemblyWebSocketAdapterKindFrameHeader,
-        RuntimeAssemblyWebSocketAdapterSourceFrameHeader,
-        RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader,
-        RuntimeAssemblyWebSocketConnectRequestFrameHeader,
-        RuntimeAssemblyWebSocketMessageEncodingFrameHeader,
-        RuntimeAssemblyWebSocketMessageFrameHeader, RuntimeAssemblyWebSocketMessageTagFrameHeader,
-        RuntimeAssemblyWebSocketPayloadSegmentFrameHeader,
-        RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader,
-        RuntimeAssemblyWebSocketReceiveEventFrameHeader,
-    },
     websocket_generation_lifecycle::{
         decode_websocket_generation_lifecycle_frame, encode_websocket_generation_lifecycle_frame,
         WebSocketGenerationLifecycleControl, WebSocketGenerationLifecycleDirection,
@@ -29,19 +14,16 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use super::runtime_assembly_request::fixture;
-use crate::loader::assembly_admission::ActiveAssemblyRoute;
 
 const ROUTER_SESSION: &str = "skiff-router-session-v1:opaque:test-session";
 const OTHER_ROUTER_SESSION: &str = "skiff-router-session-v1:opaque:other-session";
 const CONNECTION_ID: &str = "connection-a";
 const WEBSOCKET_ENTRY_ID: &str =
     "skiff-websocket-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const GATEWAY_ENTRY_ID: &str =
-    "skiff-gateway-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 #[tokio::test]
 async fn websocket_generation_old_route_survives_reload_until_disconnect_without_artifact_io() {
-    let (host, generation_a, generation_b) = fixture::reloaded_websocket_host().await;
+    let (host, generation_a, generation_b) = fixture::reloaded_gateway_host().await;
     host.websocket_generations.connect(ROUTER_SESSION).unwrap();
     assert_eq!(generation_a.generation(), 1);
     assert_eq!(generation_b.generation(), 2);
@@ -91,27 +73,6 @@ async fn websocket_generation_old_route_survives_reload_until_disconnect_without
         .expect("duplicate exact acquire ack should correlate");
     assert_eq!(host.websocket_generations.pin_count().unwrap(), 1);
 
-    let receive_a = receive_header(&generation_a, WEBSOCKET_ENTRY_ID, CONNECTION_ID);
-    let pinned = host
-        .runtime_assembly_request_route_from_wire_for_test(ROUTER_SESSION, &receive_a)
-        .expect("generation A receive should resolve only from the in-memory pin");
-    assert_eq!(pinned.generation(), 1);
-
-    let connect_b = connect_header(&generation_b, "connection-b");
-    let current = host
-        .runtime_assembly_request_route_from_wire_for_test(ROUTER_SESSION, &connect_b)
-        .expect("new connect should resolve the current generation");
-    assert_eq!(current.generation(), 2);
-
-    let mut wrong_generation = receive_a.clone();
-    wrong_generation.routing.assembly_generation = generation_b.generation();
-    assert!(host
-        .runtime_assembly_request_route_from_wire_for_test(ROUTER_SESSION, &wrong_generation,)
-        .is_err());
-    assert!(host
-        .runtime_assembly_request_route_from_wire_for_test(OTHER_ROUTER_SESSION, &receive_a)
-        .is_err());
-
     host.websocket_generations
         .disconnect(ROUTER_SESSION)
         .expect("session disconnect should release all pins");
@@ -119,9 +80,6 @@ async fn websocket_generation_old_route_survives_reload_until_disconnect_without
         .disconnect(ROUTER_SESSION)
         .expect("duplicate session disconnect should be idempotent");
     assert_eq!(host.websocket_generations.pin_count().unwrap(), 0);
-    assert!(host
-        .runtime_assembly_request_route_from_wire_for_test(ROUTER_SESSION, &receive_a)
-        .is_err());
     assert!(host
         .websocket_generations
         .begin_acquire(
@@ -135,7 +93,7 @@ async fn websocket_generation_old_route_survives_reload_until_disconnect_without
 
 #[tokio::test]
 async fn websocket_generation_release_is_exact_idempotent_and_fail_closed() {
-    let (host, generation_a, _) = fixture::reloaded_websocket_host().await;
+    let (host, generation_a, _) = fixture::reloaded_gateway_host().await;
     host.websocket_generations.connect(ROUTER_SESSION).unwrap();
     let retired_context = Arc::downgrade(generation_a.context_set());
     let acquire = host
@@ -269,7 +227,7 @@ async fn websocket_generation_release_is_exact_idempotent_and_fail_closed() {
 
 #[tokio::test]
 async fn websocket_generation_acquire_rejection_rolls_back_the_route_pin() {
-    let (host, generation_a, _) = fixture::reloaded_websocket_host().await;
+    let (host, generation_a, _) = fixture::reloaded_gateway_host().await;
     host.websocket_generations.connect(ROUTER_SESSION).unwrap();
     let acquire = host
         .websocket_generations
@@ -285,115 +243,6 @@ async fn websocket_generation_acquire_rejection_rolls_back_the_route_pin() {
         .handle_acquire_response(&reject)
         .expect("typed acquire rejection should be isolated to the connection");
     assert_eq!(host.websocket_generations.pin_count().unwrap(), 0);
-}
-
-fn connect_header(
-    route: &ActiveAssemblyRoute,
-    connection_id: &str,
-) -> RuntimeAssemblyRequestStartFrameHeader {
-    websocket_header(
-        route,
-        RuntimeAssemblyWebSocketAdapterFrameHeader {
-            kind: RuntimeAssemblyWebSocketAdapterKindFrameHeader::Connect,
-            adapter_args: canonical_adapter_args(),
-            context_expectation: None,
-            connect_request: Some(RuntimeAssemblyWebSocketConnectRequestFrameHeader {
-                connection_id: connection_id.to_string(),
-                url: "ws://canonical.test/consume".to_string(),
-                query: Vec::new(),
-                headers: Vec::new(),
-                cookies: Vec::new(),
-                version: None,
-            }),
-            receive_event: None,
-        },
-    )
-}
-
-fn receive_header(
-    route: &ActiveAssemblyRoute,
-    websocket_entry_id: &str,
-    connection_id: &str,
-) -> RuntimeAssemblyRequestStartFrameHeader {
-    let mut header = websocket_header(
-        route,
-        RuntimeAssemblyWebSocketAdapterFrameHeader {
-            kind: RuntimeAssemblyWebSocketAdapterKindFrameHeader::Receive,
-            adapter_args: canonical_adapter_args(),
-            context_expectation: None,
-            connect_request: None,
-            receive_event: Some(RuntimeAssemblyWebSocketReceiveEventFrameHeader {
-                connection_id: connection_id.to_string(),
-                business_identity: None,
-                message: RuntimeAssemblyWebSocketMessageFrameHeader {
-                    tag: RuntimeAssemblyWebSocketMessageTagFrameHeader::Text,
-                    encoding: RuntimeAssemblyWebSocketMessageEncodingFrameHeader::Utf8,
-                },
-                payload_segments: vec![RuntimeAssemblyWebSocketPayloadSegmentFrameHeader {
-                    kind: RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Message,
-                    offset: 0,
-                    length: 1,
-                }],
-                context_codec: None,
-            }),
-        },
-    );
-    header.websocket_entry_id = Some(websocket_entry_id.to_string());
-    header
-}
-
-fn websocket_header(
-    route: &ActiveAssemblyRoute,
-    websocket_adapter: RuntimeAssemblyWebSocketAdapterFrameHeader,
-) -> RuntimeAssemblyRequestStartFrameHeader {
-    RuntimeAssemblyRequestStartFrameHeader {
-        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-        frame_type: "request.start".to_string(),
-        request_id: format!("request-{}", uuid::Uuid::new_v4()),
-        mode: "unary".to_string(),
-        caller: RuntimeAssemblyRequestCallerFrameHeader {
-            kind: "gateway".to_string(),
-            target: "__skiff.runtime-assembly-ingress".to_string(),
-        },
-        routing: RuntimeAssemblyRequestRoutingFrameHeader {
-            kind: "runtimeAssembly".to_string(),
-            assembly_identity: route.assembly_identity().clone(),
-            assembly_generation: route.generation(),
-            contract_operation_id: route.binding().contract_operation_id.clone(),
-            ingress: RuntimeAssemblyRequestIngressFrameHeader {
-                protocol: RuntimeAssemblyRequestIngressProtocol::WebSocket,
-                host: route.binding().selector.host.clone(),
-                method: None,
-                path: route.binding().selector.path.clone(),
-            },
-        },
-        activation_identity: None,
-        gateway_entry_identity: Some(GATEWAY_ENTRY_ID.to_string()),
-        business_identity: None,
-        websocket_entry_id: Some(WEBSOCKET_ENTRY_ID.to_string()),
-        client_session: None,
-        deadline: None,
-        trace: RuntimeAssemblyRequestTraceFrameHeader {
-            trace_id: "trace-websocket-generation".to_string(),
-            span_id: "span-websocket-generation".to_string(),
-            parent_span_id: None,
-            sampled: None,
-        },
-        http_request: None,
-        http_adapter: None,
-        websocket_adapter: Some(websocket_adapter),
-        test_effects_enabled: false,
-        test_effect_doubles: Default::default(),
-    }
-}
-
-fn canonical_adapter_args() -> Vec<RuntimeAssemblyWebSocketAdapterArgFrameHeader> {
-    vec![RuntimeAssemblyWebSocketAdapterArgFrameHeader {
-        param: "event".to_string(),
-        source: RuntimeAssemblyWebSocketAdapterSourceFrameHeader {
-            kind: RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader::IngressEvent,
-        },
-    }]
 }
 
 fn acquire_ack(

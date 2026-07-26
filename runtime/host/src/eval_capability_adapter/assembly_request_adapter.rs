@@ -2,15 +2,21 @@ use skiff_runtime_activation::{ActivationContext, RuntimeActivation};
 use skiff_runtime_eval::program_execution::{ProgramExecutionContext, ProgramExecutionInput};
 use skiff_runtime_linked_program::{GatewayConfig, ServiceMeta};
 use skiff_runtime_request::{
-    AssemblyRequestEvalAdapter, RequestEvalExecutionInputParts, RuntimeAssemblyRequestTarget,
+    RequestEnvelope, RuntimeHttpGatewayEvalAdapter, RuntimeHttpGatewayEvalExecutionInputParts,
+    RuntimeOperation,
 };
+use skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestStartFrameHeader;
 
 use super::*;
 
-pub(crate) struct RuntimeAssemblyRequestEvalAdapterInput {
+pub(crate) struct RuntimeHttpGatewayEvalAdapterInput {
     pub(crate) runtime_id: String,
     pub(crate) activation: Arc<ActivationContext>,
     pub(crate) execution_image: Arc<skiff_runtime_linked_program::AssemblyExecutionImage>,
+    pub(crate) header: RuntimeAssemblyRequestStartFrameHeader,
+    pub(crate) gateway_entry_key: String,
+    pub(crate) service_protocol_identity: String,
+    pub(crate) ingress_selector: skiff_artifact_model::IngressSelector,
     pub(crate) db_source: concrete::DbCapabilitySource,
     pub(crate) file_source: concrete::FileCapabilitySource,
     pub(crate) http_options: concrete::HttpRuntimeOptions,
@@ -22,9 +28,9 @@ pub(crate) struct RuntimeAssemblyRequestEvalAdapterInput {
     pub(crate) http_response_max_bytes: usize,
 }
 
-pub(crate) fn assembly_request_eval_adapter(
-    input: RuntimeAssemblyRequestEvalAdapterInput,
-) -> anyhow::Result<Arc<dyn AssemblyRequestEvalAdapter>> {
+pub(crate) fn http_gateway_eval_adapter(
+    input: RuntimeHttpGatewayEvalAdapterInput,
+) -> anyhow::Result<Arc<dyn RuntimeHttpGatewayEvalAdapter>> {
     let config = crate::config_view::RuntimeConfigView::from_activation_literals(
         &input.activation.owned_bindings().config_literals,
     )?;
@@ -52,7 +58,58 @@ pub(crate) fn assembly_request_eval_adapter(
         actors: Vec::new(),
         gateway: GatewayConfig::default(),
     });
-    Ok(Arc::new(RuntimeAssemblyRequestEvalAdapter {
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "caller".to_string(),
+        serde_json::to_value(&input.header.caller)?,
+    );
+    if let Some(client_session) = &input.header.client_session {
+        extra.insert(
+            "clientSession".to_string(),
+            serde_json::to_value(client_session)?,
+        );
+    }
+    if let Some(deadline) = &input.header.deadline {
+        extra.insert("deadline".to_string(), serde_json::to_value(deadline)?);
+    }
+    extra.insert(
+        "trace".to_string(),
+        serde_json::to_value(&input.header.trace)?,
+    );
+    let request = RequestEnvelope {
+        request_id: input.header.request_id.clone(),
+        mode: input.header.mode.clone(),
+        target: input.gateway_entry_key.clone(),
+        operation_abi_id: None,
+        selector: None,
+        service_id: Some(deployment.service_id.clone()),
+        build_id: input
+            .activation
+            .implementation_package_build_id()
+            .as_str()
+            .to_string(),
+        service_protocol_identity: input.service_protocol_identity.clone(),
+        contract_identity: None,
+        activation_identity: Some(input.activation.activation_id().as_str().to_string()),
+        ingress_selector: Some(input.ingress_selector),
+        binary_http: None,
+        http_adapter: None,
+        websocket_adapter: None,
+        test_effects_enabled: input.header.test_effects_enabled,
+        test_effect_doubles: Default::default(),
+        payload_bytes: Vec::new(),
+        extra,
+    };
+    let operation = RuntimeOperation {
+        operation_abi_id: None,
+        operation: input.gateway_entry_key.clone(),
+        target: input.gateway_entry_key,
+        mode: input.header.mode,
+        parameters: Vec::new(),
+        service_protocol_identity: Some(input.service_protocol_identity),
+        extra: Default::default(),
+    };
+    Ok(Arc::new(RuntimeHttpGatewayEvalAdapterImpl {
         runtime_id: input.runtime_id,
         activation: input.activation,
         activation_identity,
@@ -68,10 +125,12 @@ pub(crate) fn assembly_request_eval_adapter(
         telemetry_context: input.telemetry_context,
         router_sender: input.router_sender,
         http_response_max_bytes: input.http_response_max_bytes,
+        request,
+        operation,
     }))
 }
 
-struct RuntimeAssemblyRequestEvalAdapter {
+struct RuntimeHttpGatewayEvalAdapterImpl {
     runtime_id: String,
     activation: Arc<ActivationContext>,
     activation_identity: ActivationIdentityControl,
@@ -87,32 +146,35 @@ struct RuntimeAssemblyRequestEvalAdapter {
     telemetry_context: Option<RequestTelemetryContext>,
     router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     http_response_max_bytes: usize,
+    request: RequestEnvelope,
+    operation: RuntimeOperation,
 }
 
-impl AssemblyRequestEvalAdapter for RuntimeAssemblyRequestEvalAdapter {
+impl RuntimeHttpGatewayEvalAdapter for RuntimeHttpGatewayEvalAdapterImpl {
     fn runtime_factory(&self) -> eval_capabilities::EvalRuntimeFactory {
         runtime_factory()
     }
 
     fn execution_context<'a>(
         &'a self,
-        parts: RequestEvalExecutionInputParts<'a>,
+        parts: RuntimeHttpGatewayEvalExecutionInputParts<'a>,
         _request_context: skiff_runtime_request::RequestPayloadContext<'a>,
         interpreter: &skiff_runtime_eval::Interpreter,
-        target: &RuntimeAssemblyRequestTarget,
+        eval_target: &skiff_runtime_eval::RuntimeAssemblyEvalTarget,
     ) -> ProgramExecutionContext<'a> {
-        let RequestEvalExecutionInputParts {
-            operation,
-            request,
+        let RuntimeHttpGatewayEvalExecutionInputParts {
+            header: _,
             execution,
             cancellation,
             cancelled: _,
             execution_budget: _,
             request_heap_limits,
         } = parts;
+        let request = &self.request;
+        let operation = &self.operation;
         debug_assert!(Arc::ptr_eq(
             &self.activation,
-            target.eval().activation_context()
+            eval_target.activation_context()
         ));
         let execution = execution_control(execution);
         let db = self.db_source.context_for_request(
@@ -128,14 +190,7 @@ impl AssemblyRequestEvalAdapter for RuntimeAssemblyRequestEvalAdapter {
             self.http_options.clone(),
         ));
         let service_id = self.activation.identity().deployment.service_id.as_str();
-        let websocket = websocket_from_request(
-            service_id,
-            request
-                .extra
-                .get("websocketEntryId")
-                .and_then(Value::as_str),
-            self.router_sender.as_ref(),
-        );
+        let websocket = websocket_from_request(service_id, None, self.router_sender.as_ref());
         let actor = actor_from_request(
             self.runtime_id.as_str(),
             service_id,
@@ -182,7 +237,7 @@ impl AssemblyRequestEvalAdapter for RuntimeAssemblyRequestEvalAdapter {
             outbound: retired_assembly_outbound(cancellation, request_heap_limits.clone()),
             request_heap_limits,
         })
-        .with_runtime_assembly_target(target.eval().clone())
+        .with_runtime_assembly_target(eval_target.clone())
     }
 }
 
