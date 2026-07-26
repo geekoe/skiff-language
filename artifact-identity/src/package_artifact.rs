@@ -163,8 +163,9 @@ mod tests {
         ExecutableExport, ExecutableSignatureIr, FileIrRef, NominalTypeRefBaseIr,
         OperationCallableKind, OperationTargetRef, PackageCallableLinkFact,
         PackageCallableParameter, PackageCallableSignature, PackageImplementationLinks,
-        PackageRefIr, PackageSymbolRef, PackageTypeRef, ParamIr, ServiceProtocolIdentity,
-        ServiceRequirement, TypeRefIr, ValueProvenance, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        PackageRefIr, PackageRequirement, PackageSymbolRef, PackageTypeRef, ParamIr,
+        ServiceProtocolIdentity, ServiceRequirement, TypeRefIr, ValueProvenance,
+        PACKAGE_ARTIFACT_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -714,6 +715,70 @@ mod tests {
             package_artifact_local_abi_identity(&package_schema),
             Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
         ));
+    }
+
+    #[test]
+    fn dependency_collection_mapping_is_canonical_and_build_identifying() {
+        let mut empty = fixture();
+        empty.package_requirements.push(PackageRequirement {
+            alias: "store".to_string(),
+            package_id: "example.store".to_string(),
+            exact_version: "1.0.0".to_string(),
+            expected_local_abi: PackageLocalAbiIdentity::new("store-abi"),
+            collection_name_mapping: BTreeMap::new(),
+            expected_package_build: None,
+        });
+        let empty_identity = package_artifact_build_identity(&empty).unwrap();
+        let empty_local_abi = package_artifact_local_abi_identity(&empty).unwrap();
+
+        let mut explicit_empty_wire = serde_json::to_value(&empty).unwrap();
+        explicit_empty_wire["packageRequirements"][0]["collectionNameMapping"] =
+            serde_json::json!({});
+        let explicit_empty: PackageArtifact = serde_json::from_value(explicit_empty_wire).unwrap();
+        assert_eq!(
+            package_artifact_build_identity(&explicit_empty).unwrap(),
+            empty_identity
+        );
+
+        let mut single = empty.clone();
+        single.package_requirements[0].collection_name_mapping =
+            BTreeMap::from([("package_secret".to_string(), "mapped_secret".to_string())]);
+        assert_ne!(
+            package_artifact_build_identity(&single).unwrap(),
+            empty_identity
+        );
+        assert_eq!(
+            package_artifact_local_abi_identity(&single).unwrap(),
+            empty_local_abi
+        );
+
+        let mut changed_target = single.clone();
+        changed_target.package_requirements[0]
+            .collection_name_mapping
+            .insert("package_secret".to_string(), "other_secret".to_string());
+        assert_ne!(
+            package_artifact_build_identity(&changed_target).unwrap(),
+            package_artifact_build_identity(&single).unwrap()
+        );
+
+        let mut ordered = empty.clone();
+        ordered.package_requirements[0].collection_name_mapping = [
+            ("beta".to_string(), "mapped_beta".to_string()),
+            ("alpha".to_string(), "mapped_alpha".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let mut reversed = empty;
+        reversed.package_requirements[0].collection_name_mapping = [
+            ("alpha".to_string(), "mapped_alpha".to_string()),
+            ("beta".to_string(), "mapped_beta".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            package_artifact_build_identity(&ordered).unwrap(),
+            package_artifact_build_identity(&reversed).unwrap()
+        );
     }
 
     fn fixture() -> PackageArtifact {

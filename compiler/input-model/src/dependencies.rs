@@ -166,6 +166,14 @@ pub fn collect_package_dependency_violations(
             ));
         }
     }
+    if let Err(message) = skiff_artifact_model::validate_dependency_collection_name_mapping(
+        &dependency.collection_name_mapping,
+    ) {
+        violations.push(format!(
+            "{field_label} entry {} has invalid collection_name_mapping: {message}",
+            dependency.id
+        ));
+    }
     let effective_alias = dependency.effective_alias();
     if !aliases.insert(effective_alias.to_string()) {
         violations.push(format!(
@@ -222,5 +230,42 @@ mod tests {
             assert!(is_valid_source_import_alias(alias), "{alias}");
             assert!(is_reserved_source_import_alias(alias), "{alias}");
         }
+    }
+
+    #[test]
+    fn dependency_mapping_uses_the_frozen_authoring_spelling_and_rejects_collisions() {
+        let dependency: PackageDependency = serde_json::from_value(serde_json::json!({
+            "id": "example.store",
+            "version": "1.0.0",
+            "alias": "store",
+            "collection_name_mapping": {
+                "package_secret": "mapped_package_secret"
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            dependency.collection_name_mapping,
+            BTreeMap::from([(
+                "package_secret".to_string(),
+                "mapped_package_secret".to_string()
+            )])
+        );
+
+        let mut colliding = dependency;
+        colliding.collection_name_mapping = BTreeMap::from([
+            ("first".to_string(), "same_target".to_string()),
+            ("second".to_string(), "same_target".to_string()),
+        ]);
+        let mut aliases = BTreeSet::new();
+        let mut violations = Vec::new();
+        collect_package_dependency_violations(
+            &colliding,
+            "packages",
+            &mut aliases,
+            &mut violations,
+        );
+        assert!(violations
+            .iter()
+            .any(|message| message.contains("invalid collection_name_mapping")));
     }
 }

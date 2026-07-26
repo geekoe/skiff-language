@@ -304,6 +304,7 @@ pub(crate) fn canonical_package_bindings(
                 },
                 package: package_artifact_ref(dependency)
                     .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?,
+                collection_name_mapping: requirement.collection_name_mapping.clone(),
             })
         })
         .collect()

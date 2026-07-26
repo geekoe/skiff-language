@@ -16,6 +16,7 @@ mod activation_lexical;
 pub mod assembly_activation_control;
 pub mod boundary;
 pub mod builtin_receiver_ops;
+pub mod collection_mapping;
 pub mod compile_identity;
 pub mod compile_requirements;
 pub mod config;
@@ -81,6 +82,9 @@ pub use builtin_receiver_ops::{
     BuiltinReceiverSupportError, BuiltinReceiverSupportStatus, BuiltinReceiverThrowSemantics,
     BUILTIN_RECEIVER_CALLABLE_SEMANTICS, RECEIVER_BUILTIN_CAPABILITY_VERSION,
     SUPPORTED_RECEIVER_BUILTIN_OPS,
+};
+pub use collection_mapping::{
+    resolve_dependency_collection_names, validate_dependency_collection_name_mapping,
 };
 pub use compile_identity::{
     AssemblyIdentity, ContractOperationId, DeploymentArtifactIdentity, DeploymentRevision,

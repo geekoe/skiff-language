@@ -16,7 +16,7 @@ pub(super) struct Resolver<'a, 'c> {
     resolved_deployments: BTreeMap<ServiceDeploymentRef, &'a ServiceDeployment>,
     resolved_contracts: BTreeSet<ServiceContractRef>,
     resolved_packages: BTreeMap<PackageBuildId, PackageArtifactRef>,
-    package_links: BTreeMap<PackageRequirementKey, PackageArtifactRef>,
+    package_links: BTreeMap<PackageRequirementKey, PackageBinding>,
     service_templates: BTreeMap<ServiceDeploymentRef, ServiceBindingTemplate>,
     activation_templates: BTreeMap<ServiceDeploymentRef, ActivationTemplate>,
     gateway_ingress: BTreeMap<IngressSelector, GatewayIngressBinding>,
@@ -240,7 +240,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
                         activation: activation.clone(),
                         key: key.clone(),
                     })?;
-                if !package_requirement_matches(requirement, &binding.package) {
+                if !package_requirement_matches(requirement, binding) {
                     return Err(AssemblyResolutionError::PackageRequirementMismatch {
                         activation: activation.clone(),
                         key,
@@ -248,7 +248,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
                         selected: binding.package.clone(),
                     });
                 }
-                self.insert_package_link(&key, &binding.package)?;
+                self.insert_package_link(binding)?;
                 used_binding_keys.insert(key);
                 pending.push_back(binding.package.clone());
             }
@@ -280,17 +280,16 @@ impl<'a, 'c> Resolver<'a, 'c> {
         Ok(())
     }
 
-    fn insert_package_link(
-        &mut self,
-        key: &PackageRequirementKey,
-        package: &PackageArtifactRef,
-    ) -> AssemblyResult<()> {
-        if let Some(existing) = self.package_links.insert(key.clone(), package.clone()) {
-            if existing != *package {
+    fn insert_package_link(&mut self, binding: &PackageBinding) -> AssemblyResult<()> {
+        if let Some(existing) = self
+            .package_links
+            .insert(binding.key.clone(), binding.clone())
+        {
+            if existing != *binding {
                 return Err(AssemblyResolutionError::ConflictingPackageLink {
-                    key: key.clone(),
-                    first: existing,
-                    second: package.clone(),
+                    key: binding.key.clone(),
+                    first: existing.package,
+                    second: binding.package.clone(),
                 });
             }
         }
@@ -312,11 +311,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
                     .cloned()
                     .map(|package| PackageCodeSlot { package })
                     .collect(),
-                package_links: self
-                    .package_links
-                    .into_iter()
-                    .map(|(key, package)| PackageBinding { key, package })
-                    .collect(),
+                package_links: self.package_links.into_values().collect(),
             },
             resolved_packages,
             service_binding_templates: self.service_templates.into_values().collect(),
@@ -341,13 +336,14 @@ fn service_requirement_contract(
 
 fn package_requirement_matches(
     requirement: &PackageRequirement,
-    selected: &PackageArtifactRef,
+    selected: &PackageBinding,
 ) -> bool {
-    selected.package_id == requirement.package_id
-        && selected.package_version == requirement.exact_version
-        && selected.package_local_abi_identity == requirement.expected_local_abi
+    selected.collection_name_mapping == requirement.collection_name_mapping
+        && selected.package.package_id == requirement.package_id
+        && selected.package.package_version == requirement.exact_version
+        && selected.package.package_local_abi_identity == requirement.expected_local_abi
         && requirement
             .expected_package_build
             .as_ref()
-            .is_none_or(|expected| expected == &selected.package_build_id)
+            .is_none_or(|expected| expected == &selected.package.package_build_id)
 }

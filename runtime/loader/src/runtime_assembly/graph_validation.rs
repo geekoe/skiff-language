@@ -36,7 +36,7 @@ fn validate_package_links(
         .package_link_plan
         .package_links
         .iter()
-        .map(|binding| (binding.key.clone(), &binding.package))
+        .map(|binding| (binding.key.clone(), binding))
         .collect::<BTreeMap<_, _>>();
     let mut expected = BTreeSet::new();
     for (build_id, package) in packages {
@@ -53,16 +53,17 @@ fn validate_package_links(
                     requirement.alias
                 )
             })?;
-            if provider.package_id != requirement.package_id
-                || provider.package_version != requirement.exact_version
-                || provider.package_local_abi_identity != requirement.expected_local_abi
+            if provider.package.package_id != requirement.package_id
+                || provider.package.package_version != requirement.exact_version
+                || provider.package.package_local_abi_identity != requirement.expected_local_abi
+                || provider.collection_name_mapping != requirement.collection_name_mapping
                 || requirement
                     .expected_package_build
                     .as_ref()
-                    .is_some_and(|expected| expected != &provider.package_build_id)
+                    .is_some_and(|expected| expected != &provider.package.package_build_id)
             {
                 anyhow::bail!(
-                    "package {} requirement {} link-plan target mismatches coordinate/local ABI",
+                    "package {} requirement {} link-plan target mismatches coordinate/local ABI/collection mapping",
                     build_id,
                     requirement.alias
                 );
@@ -115,7 +116,7 @@ fn validate_deployment_contents(
         .package_link_plan
         .package_links
         .iter()
-        .map(|binding| (binding.key.clone(), &binding.package))
+        .map(|binding| (binding.key.clone(), binding))
         .collect::<BTreeMap<_, _>>();
     for (reference, deployment) in deployments {
         let contract = contracts.contract(&deployment.contract).ok_or_else(|| {
@@ -136,7 +137,7 @@ fn validate_deployment_contents(
             if package.reference != binding.package {
                 anyhow::bail!("deployment {reference:?} package binding ref is not exact");
             }
-            if global_package_links.get(&binding.key) != Some(&&binding.package) {
+            if global_package_links.get(&binding.key) != Some(&binding) {
                 anyhow::bail!(
                     "deployment {reference:?} package binding {:?} mismatches canonical link plan",
                     binding.key
@@ -329,7 +330,7 @@ fn activation_package_closure(
     let bindings = deployment
         .package_bindings
         .iter()
-        .map(|binding| (binding.key.clone(), &binding.package))
+        .map(|binding| (binding.key.clone(), binding))
         .collect::<BTreeMap<_, _>>();
     let mut used_bindings = BTreeSet::new();
     let mut closure = BTreeSet::new();
@@ -351,26 +352,126 @@ fn activation_package_closure(
                     "activation {activation:?} package requirement {key:?} has no binding"
                 )
             })?;
-            if provider.package_id != requirement.package_id
-                || provider.package_version != requirement.exact_version
-                || provider.package_local_abi_identity != requirement.expected_local_abi
+            if provider.package.package_id != requirement.package_id
+                || provider.package.package_version != requirement.exact_version
+                || provider.package.package_local_abi_identity != requirement.expected_local_abi
+                || provider.collection_name_mapping != requirement.collection_name_mapping
                 || requirement
                     .expected_package_build
                     .as_ref()
-                    .is_some_and(|expected| expected != &provider.package_build_id)
+                    .is_some_and(|expected| expected != &provider.package.package_build_id)
             {
                 anyhow::bail!(
-                    "activation {activation:?} package requirement {key:?} binding mismatches coordinate/local ABI"
+                    "activation {activation:?} package requirement {key:?} binding mismatches coordinate/local ABI/collection mapping"
                 );
             }
             used_bindings.insert(key);
-            pending.push(provider.package_build_id.clone());
+            pending.push(provider.package.package_build_id.clone());
         }
     }
     if used_bindings != bindings.keys().cloned().collect::<BTreeSet<_>>() {
         anyhow::bail!("activation {activation:?} contains an unused package binding");
     }
+    validate_activation_collection_names(activation, deployment, packages, &bindings)?;
     Ok(closure)
+}
+
+fn validate_activation_collection_names(
+    activation: &ServiceDeploymentRef,
+    deployment: &ServiceDeployment,
+    packages: &BTreeMap<PackageBuildId, &HydratedPackageCodeSlot>,
+    bindings: &BTreeMap<
+        skiff_artifact_model::PackageRequirementKey,
+        &skiff_artifact_model::PackageBinding,
+    >,
+) -> anyhow::Result<()> {
+    let root = packages
+        .get(&deployment.implementation.package_build_id)
+        .expect("activation closure validated the root package");
+    let mut active_targets = BTreeMap::new();
+    for collection in package_collection_names(root) {
+        active_targets.insert(
+            collection,
+            format!(
+                "service package {}",
+                deployment.implementation.package_build_id
+            ),
+        );
+    }
+
+    let mut visited = BTreeSet::new();
+    let mut projected_collection_builds = BTreeMap::from([(
+        deployment.implementation.package_build_id.clone(),
+        format!(
+            "service package {}",
+            deployment.implementation.package_build_id
+        ),
+    )]);
+    let mut pending = vec![deployment.implementation.package_build_id.clone()];
+    while let Some(caller_build) = pending.pop() {
+        if !visited.insert(caller_build.clone()) {
+            continue;
+        }
+        let caller = packages
+            .get(&caller_build)
+            .expect("activation closure contains only hydrated packages");
+        for requirement in &caller.artifact.package_requirements {
+            let key = skiff_artifact_model::PackageRequirementKey {
+                caller_package_build_id: caller_build.clone(),
+                package_requirement_alias: requirement.alias.clone(),
+            };
+            let binding = bindings
+                .get(&key)
+                .expect("activation closure validated every package binding");
+            let provider = packages
+                .get(&binding.package.package_build_id)
+                .expect("activation closure validated every package provider");
+            let sources = package_collection_names(provider);
+            let owner = format!(
+                "dependency {}:{} -> {}",
+                key.caller_package_build_id,
+                key.package_requirement_alias,
+                binding.package.package_build_id
+            );
+            if !sources.is_empty() {
+                if let Some(first_owner) = projected_collection_builds
+                    .insert(binding.package.package_build_id.clone(), owner.clone())
+                {
+                    anyhow::bail!(
+                        "activation {activation:?} package {} has multiple active collection projections from {first_owner} and {owner}",
+                        binding.package.package_build_id
+                    );
+                }
+            }
+            let projected = skiff_artifact_model::resolve_dependency_collection_names(
+                &sources,
+                &binding.collection_name_mapping,
+            )
+            .map_err(|message| {
+                anyhow::anyhow!(
+                    "activation {activation:?} package requirement {key:?} has invalid collection mapping: {message}"
+                )
+            })?;
+            for target in projected.into_values() {
+                if let Some(first_owner) = active_targets.insert(target.clone(), owner.clone()) {
+                    anyhow::bail!(
+                        "activation {activation:?} collection target {target:?} collides between {first_owner} and {owner}"
+                    );
+                }
+            }
+            pending.push(binding.package.package_build_id.clone());
+        }
+    }
+    Ok(())
+}
+
+fn package_collection_names(package: &HydratedPackageCodeSlot) -> BTreeSet<String> {
+    package
+        .files()
+        .iter()
+        .flat_map(|file| file.declarations.db.values())
+        .map(|declaration| declaration.collection_name.clone())
+        .collect()
 }
 
 fn validate_activation_templates(
@@ -471,7 +572,7 @@ fn validate_reachable_closure(
         .package_link_plan
         .package_links
         .iter()
-        .map(|binding| (binding.key.clone(), &binding.package))
+        .map(|binding| (binding.key.clone(), binding))
         .collect::<BTreeMap<_, _>>();
     let activation_packages = assembly
         .activation_templates
@@ -493,8 +594,8 @@ fn validate_reachable_closure(
             let provider = links
                 .get(&key)
                 .expect("package link validation checked requirement");
-            if reachable_packages.insert(provider.package_build_id.clone()) {
-                pending_packages.push(provider.package_build_id.clone());
+            if reachable_packages.insert(provider.package.package_build_id.clone()) {
+                pending_packages.push(provider.package.package_build_id.clone());
             }
         }
     }

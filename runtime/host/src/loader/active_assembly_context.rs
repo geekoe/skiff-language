@@ -217,16 +217,63 @@ fn activation_db_metadata(
     root: &PackageBuildId,
 ) -> anyhow::Result<Vec<DbMetadataIr>> {
     let image = candidate.execution_image().shared_packages();
-    let mut pending = vec![(root.clone(), true)];
+    let mut pending = vec![(root.clone(), true, None)];
     let mut visited = BTreeSet::new();
+    let mut active_collection_owners = BTreeMap::new();
+    let mut projected_collection_builds = BTreeMap::new();
     let mut metadata = Vec::new();
-    while let Some((build_id, is_root)) = pending.pop() {
-        if !visited.insert(build_id.clone()) {
-            continue;
-        }
+    while let Some((build_id, is_root, edge)) = pending.pop() {
         let code = image.code_by_build(&build_id).ok_or_else(|| {
             anyhow::anyhow!("activation DB metadata package {build_id} is not loaded")
         })?;
+        let source_collections = code
+            .files()
+            .iter()
+            .flat_map(|file| file.declarations.db.values())
+            .map(|declaration| declaration.collection_name.clone())
+            .collect::<BTreeSet<_>>();
+        let (owner, collection_names) = match edge {
+            None => (
+                format!("service package {build_id}"),
+                source_collections
+                    .iter()
+                    .map(|name| (name.clone(), name.clone()))
+                    .collect::<BTreeMap<_, _>>(),
+            ),
+            Some((owner, mapping)) => {
+                let names = skiff_artifact_model::resolve_dependency_collection_names(
+                    &source_collections,
+                    &mapping,
+                )
+                .map_err(|message| {
+                    anyhow::anyhow!(
+                        "activation DB metadata {owner} has invalid collection mapping: {message}"
+                    )
+                })?;
+                (owner, names)
+            }
+        };
+        if !source_collections.is_empty() {
+            if let Some(first_owner) =
+                projected_collection_builds.insert(build_id.clone(), owner.clone())
+            {
+                anyhow::bail!(
+                    "activation DB metadata package {build_id} has multiple active collection projections from {first_owner} and {owner}"
+                );
+            }
+        }
+        for target in collection_names.values() {
+            if let Some(first_owner) =
+                active_collection_owners.insert(target.clone(), owner.clone())
+            {
+                anyhow::bail!(
+                    "activation DB collection target {target:?} collides between {first_owner} and {owner}"
+                );
+            }
+        }
+        if !visited.insert(build_id.clone()) {
+            continue;
+        }
         for file in code.files() {
             for declaration in file.declarations.db.values() {
                 metadata.push(DbMetadataIr {
@@ -238,7 +285,10 @@ fn activation_db_metadata(
                     kind: declaration.kind,
                     ty: declaration.type_ref.clone(),
                     type_name: declaration.type_name.clone(),
-                    collection_name: declaration.collection_name.clone(),
+                    collection_name: collection_names
+                        .get(&declaration.collection_name)
+                        .expect("declared collection was projected")
+                        .clone(),
                     key: Some(declaration.key.clone()),
                     fields: declaration.fields.clone(),
                     retention: declaration.retention.clone(),
@@ -258,7 +308,19 @@ fn activation_db_metadata(
         }
         for link in &candidate.assembly().package_link_plan.package_links {
             if link.key.caller_package_build_id == build_id {
-                pending.push((link.package.package_build_id.clone(), false));
+                pending.push((
+                    link.package.package_build_id.clone(),
+                    false,
+                    Some((
+                        format!(
+                            "dependency {}:{} -> {}",
+                            link.key.caller_package_build_id,
+                            link.key.package_requirement_alias,
+                            link.package.package_build_id
+                        ),
+                        link.collection_name_mapping.clone(),
+                    )),
+                ));
             }
         }
     }

@@ -148,6 +148,7 @@ fn package_requirement(alias: &str, package_id: &str) -> PackageRequirement {
         package_id: package_id.to_string(),
         exact_version: "1.0.0".to_string(),
         expected_local_abi: PackageLocalAbiIdentity::new(format!("abi:{package_id}")),
+        collection_name_mapping: BTreeMap::new(),
         expected_package_build: None,
     }
 }

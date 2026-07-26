@@ -142,6 +142,10 @@ fn validate_link_plan(
         .collect::<BTreeSet<_>>();
     let mut link_keys = BTreeSet::new();
     for link in &assembly.package_link_plan.package_links {
+        skiff_artifact_model::validate_dependency_collection_name_mapping(
+            &link.collection_name_mapping,
+        )
+        .map_err(|message| crate::ArtifactIdentityError::InvalidRuntimeAssembly { message })?;
         if !known_builds.contains(&link.key.caller_package_build_id) {
             return invalid_assembly(format!(
                 "package link caller {} is dangling",

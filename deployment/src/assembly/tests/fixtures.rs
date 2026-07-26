@@ -97,6 +97,7 @@ pub fn package(
             package_id: dependency.package_id.clone(),
             exact_version: dependency.package_version.clone(),
             expected_local_abi: dependency.package_local_abi.local_abi_identity.clone(),
+            collection_name_mapping: BTreeMap::new(),
             expected_package_build: None,
         })
         .collect();
@@ -187,6 +188,7 @@ pub fn package_binding(
             package_requirement_alias: alias.to_string(),
         },
         package: package_ref(provider),
+        collection_name_mapping: BTreeMap::new(),
     }
 }
 

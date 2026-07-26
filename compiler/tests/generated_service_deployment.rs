@@ -6,6 +6,8 @@ use skiff_artifact_model::{ServiceConfigProfileAuthoring, ServiceManifestAuthori
 use skiff_compiler::{
     generate_service_deployment, GeneratedServiceDeploymentInput, ServiceApiProjection,
 };
+use skiff_compiler_core::id::PublicationId;
+use skiff_deployment::assembly::resolve_runtime_assembly;
 
 #[test]
 fn generates_exact_operations_and_profile_bindings() {
@@ -59,6 +61,126 @@ fn generates_exact_operations_and_profile_bindings() {
     .unwrap();
     assert!(explicit_empty.gateway_entries.is_empty());
     assert!(explicit_empty.ingress.is_empty());
+}
+
+#[test]
+fn real_package_fixture_transports_collection_mapping_to_runtime_assembly() {
+    let root = TestDir::new("skiff-compiler", "collection-mapping-transport");
+    root.write(
+        "package.yml",
+        r#"
+id: example.com/mapping-service-package
+version: 1.0.0
+packages:
+  - id: example.com/mapping-store
+    version: 1.0.0
+    alias: store
+    collection_name_mapping:
+      package_secret: mapped_package_secret
+"#,
+    );
+    root.write(
+        "service.yml",
+        "id: example.com/mapping-service\nserviceCalls:\n  - read\n",
+    );
+    root.write("api.yml", "read: main.read\n");
+    root.write(
+        "main.skiff",
+        "function read() -> string { return \"ok\" }\n",
+    );
+
+    let dependency_path = std::path::PathBuf::from(".skiff-packages")
+        .join(
+            PublicationId::parse("example.com/mapping-store")
+                .unwrap()
+                .artifact_path(),
+        )
+        .join("1.0.0");
+    root.write(
+        dependency_path.join("package.yml"),
+        "id: example.com/mapping-store\nversion: 1.0.0\nstate:\n  database:\n    kind: database\n",
+    );
+    root.write(dependency_path.join("api.yml"), "{}\n");
+    root.write(
+        dependency_path.join("store.skiff"),
+        r#"
+type PackageSecret { id: string, value: string }
+db object PackageSecret {
+  name "package_secret"
+  primary key(id)
+}
+"#,
+    );
+
+    let (project, service_api) = compile_service_package_project(root.path()).unwrap();
+    let expected_mapping = std::collections::BTreeMap::from([(
+        "package_secret".to_string(),
+        "mapped_package_secret".to_string(),
+    )]);
+    assert_eq!(
+        project.package.artifact.package_requirements[0].collection_name_mapping,
+        expected_mapping
+    );
+    let dependency = project
+        .dependency("example.com/mapping-store", "1.0.0")
+        .expect("fresh dependency artifact");
+    assert!(dependency
+        .file_ir_units
+        .iter()
+        .flat_map(|file| file.unit.declarations.db.values())
+        .any(|declaration| declaration.collection_name == "package_secret"));
+
+    let service = ServiceManifestAuthoring {
+        id: "example.com/mapping-service".to_string(),
+        kind: skiff_artifact_model::ServiceAuthoringKind::Service,
+        service_calls: vec!["read".to_string()],
+        http: None,
+        websocket: None,
+        timeout: None,
+    };
+    let mut mapping_profile = profile();
+    mapping_profile.config = json!({});
+    mapping_profile.state = json!({
+        "database": {
+            "kind": "database",
+            "namespace": "collection-mapping-fixture"
+        }
+    });
+    let closure = project
+        .dependency_packages
+        .iter()
+        .map(|package| package.artifact.clone())
+        .collect::<Vec<_>>();
+    let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &service,
+        profile_name: "fixture",
+        profile: &mapping_profile,
+        service_api: &service_api,
+        implementation: &project.package.artifact,
+        package_closure: &closure,
+        package_schema_records: &project.package.resolved_package_schema_type_records,
+    })
+    .unwrap();
+    assert_eq!(
+        deployment.package_bindings[0].collection_name_mapping,
+        expected_mapping
+    );
+
+    let deployment_ref = skiff_artifact_identity::service_deployment_ref(&deployment);
+    let mut packages = closure;
+    packages.push(project.package.artifact.clone());
+    let assembly = resolve_runtime_assembly(
+        std::slice::from_ref(&deployment_ref),
+        std::slice::from_ref(&deployment),
+        std::slice::from_ref(&service_api.contract),
+        &packages,
+    )
+    .unwrap();
+    assert_eq!(
+        assembly.package_link_plan.package_links[0].collection_name_mapping,
+        expected_mapping
+    );
+    skiff_artifact_identity::validate_runtime_assembly_identity(&assembly).unwrap();
 }
 
 #[test]

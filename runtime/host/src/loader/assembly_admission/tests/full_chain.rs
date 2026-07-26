@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
 };
 
@@ -331,6 +331,352 @@ impl FullChainFixture {
     }
 }
 
+struct CollectionMappingFixture {
+    assembly: RuntimeAssembly,
+    resolver: CountingResolver,
+}
+
+impl CollectionMappingFixture {
+    fn new(mapping: BTreeMap<String, String>, root_collection: Option<&str>) -> Self {
+        Self::build(mapping, root_collection, false)
+    }
+
+    fn with_dependency_target_collision() -> Self {
+        Self::build(
+            BTreeMap::from([(
+                "package_secret".to_string(),
+                "mapped_package_secret".to_string(),
+            )]),
+            None,
+            true,
+        )
+    }
+
+    fn build(
+        mapping: BTreeMap<String, String>,
+        root_collection: Option<&str>,
+        include_colliding_dependency: bool,
+    ) -> Self {
+        let base = FullChainFixture::new();
+        let consumer_deployment = base
+            .resolver
+            .deployments
+            .iter()
+            .find(|(reference, _)| reference == &base.consumer_deployment_ref)
+            .map(|(_, deployment)| deployment.as_ref().clone())
+            .expect("consumer deployment");
+        let consumer_contract_ref = consumer_deployment.contract.clone();
+        let consumer_contract = base
+            .resolver
+            .contracts
+            .iter()
+            .find(|(reference, _)| reference == &consumer_contract_ref)
+            .map(|(_, contract)| contract.as_ref().clone())
+            .expect("consumer contract");
+        let provider_deployment = base
+            .resolver
+            .deployments
+            .iter()
+            .find(|(reference, _)| reference == &base.provider_deployment_ref)
+            .map(|(_, deployment)| deployment.as_ref().clone())
+            .expect("provider deployment");
+        let provider_package = base
+            .resolver
+            .packages
+            .iter()
+            .find(|(reference, _)| reference.package_id == "example.phase-three-provider")
+            .map(|(_, package)| package.as_ref().clone())
+            .expect("provider package");
+        let provider_file = base
+            .resolver
+            .files
+            .iter()
+            .find(|(reference, _, _)| reference.package_id == "example.phase-three-provider")
+            .map(|(_, _, file)| file.as_ref().clone())
+            .expect("provider file");
+
+        let mut consumer_package = base
+            .resolver
+            .packages
+            .iter()
+            .find(|(reference, _)| reference == &base.consumer_package_ref)
+            .map(|(_, package)| package.as_ref().clone())
+            .expect("consumer package");
+        let mut consumer_file = base
+            .resolver
+            .files
+            .iter()
+            .find(|(reference, _, _)| reference == &base.consumer_package_ref)
+            .map(|(_, _, file)| file.as_ref().clone())
+            .expect("consumer file");
+        if let Some(collection_name) = root_collection {
+            insert_db_collection(&mut consumer_file, "ServiceSecret", collection_name);
+            replace_package_file(&mut consumer_package, &consumer_file);
+            consumer_package
+                .runtime_requirements
+                .state
+                .push(PackageStateRequirement {
+                    key: "database".to_string(),
+                    kind: StateBindingKind::Database,
+                });
+        }
+
+        let mut dependency_file = implementation_file("mapping.store", "noop", None);
+        insert_db_collection(&mut dependency_file, "PackageSecret", "package_secret");
+        insert_db_collection(&mut dependency_file, "PackageAudit", "package_audit");
+        let dependency_callable = PackageCallableId::new("pkg-callable:example.mapping-store:noop");
+        let mut dependency_package = implementation_package(
+            "example.mapping-store",
+            "noop",
+            dependency_callable,
+            &dependency_file,
+            operation_contract(),
+            None,
+        );
+        dependency_package
+            .runtime_requirements
+            .state
+            .push(PackageStateRequirement {
+                key: "database".to_string(),
+                kind: StateBindingKind::Database,
+            });
+        skiff_artifact_identity::assign_package_artifact_identities(&mut dependency_package)
+            .unwrap();
+        let dependency_ref = package_ref(&dependency_package);
+
+        let colliding_dependency = include_colliding_dependency.then(|| {
+            let mut file = implementation_file("mapping.cache", "noop", None);
+            insert_db_collection(&mut file, "CacheSecret", "cache_secret");
+            let callable = PackageCallableId::new("pkg-callable:example.mapping-cache:noop");
+            let mut package = implementation_package(
+                "example.mapping-cache",
+                "noop",
+                callable,
+                &file,
+                operation_contract(),
+                None,
+            );
+            package
+                .runtime_requirements
+                .state
+                .push(PackageStateRequirement {
+                    key: "database".to_string(),
+                    kind: StateBindingKind::Database,
+                });
+            skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
+            (file, package)
+        });
+
+        consumer_package
+            .package_requirements
+            .push(PackageRequirement {
+                alias: "store".to_string(),
+                package_id: dependency_package.package_id.clone(),
+                exact_version: dependency_package.package_version.clone(),
+                expected_local_abi: dependency_package
+                    .package_local_abi
+                    .local_abi_identity
+                    .clone(),
+                collection_name_mapping: mapping.clone(),
+                expected_package_build: None,
+            });
+        if let Some((_, package)) = &colliding_dependency {
+            consumer_package
+                .package_requirements
+                .push(PackageRequirement {
+                    alias: "cache".to_string(),
+                    package_id: package.package_id.clone(),
+                    exact_version: package.package_version.clone(),
+                    expected_local_abi: package.package_local_abi.local_abi_identity.clone(),
+                    collection_name_mapping: BTreeMap::from([(
+                        "cache_secret".to_string(),
+                        "mapped_package_secret".to_string(),
+                    )]),
+                    expected_package_build: None,
+                });
+        }
+        skiff_artifact_identity::assign_package_artifact_identities(&mut consumer_package).unwrap();
+        let consumer_package_ref = package_ref(&consumer_package);
+
+        let mut consumer_deployment = consumer_deployment;
+        consumer_deployment.implementation = consumer_package_ref.clone();
+        for selector in &mut consumer_deployment.service_selectors {
+            selector.key.caller_package_build_id = consumer_package_ref.package_build_id.clone();
+        }
+        let mut package_bindings = vec![PackageBinding {
+            key: PackageRequirementKey {
+                caller_package_build_id: consumer_package_ref.package_build_id.clone(),
+                package_requirement_alias: "store".to_string(),
+            },
+            package: dependency_ref.clone(),
+            collection_name_mapping: mapping,
+        }];
+        if let Some((_, package)) = &colliding_dependency {
+            package_bindings.push(PackageBinding {
+                key: PackageRequirementKey {
+                    caller_package_build_id: consumer_package_ref.package_build_id.clone(),
+                    package_requirement_alias: "cache".to_string(),
+                },
+                package: package_ref(package),
+                collection_name_mapping: BTreeMap::from([(
+                    "cache_secret".to_string(),
+                    "mapped_package_secret".to_string(),
+                )]),
+            });
+        }
+        consumer_deployment.package_bindings = package_bindings;
+        consumer_deployment.state_bindings = vec![StateBinding {
+            requirement_key: "database".to_string(),
+            kind: StateBindingKind::Database,
+            namespace: "collection-mapping-fixture".to_string(),
+        }];
+        skiff_artifact_identity::assign_service_deployment_identity(&mut consumer_deployment)
+            .unwrap();
+        let consumer_deployment_ref =
+            skiff_artifact_identity::service_deployment_ref(&consumer_deployment);
+        let provider_deployment_ref =
+            skiff_artifact_identity::service_deployment_ref(&provider_deployment);
+        let provider_contract = base.provider_contract.as_ref().clone();
+        let provider_contract_ref = contract_ref(&provider_contract);
+        let provider_package_ref = package_ref(&provider_package);
+        let consumer_file_ref = file_ref(&consumer_file);
+        let provider_file_ref = file_ref(&provider_file);
+        let dependency_file_ref = file_ref(&dependency_file);
+
+        let mut packages = vec![
+            consumer_package.clone(),
+            provider_package.clone(),
+            dependency_package.clone(),
+        ];
+        if let Some((_, package)) = &colliding_dependency {
+            packages.push(package.clone());
+        }
+        let assembly = resolve_runtime_assembly(
+            std::slice::from_ref(&consumer_deployment_ref),
+            &[consumer_deployment.clone(), provider_deployment.clone()],
+            &[consumer_contract.clone(), provider_contract.clone()],
+            &packages,
+        )
+        .unwrap();
+        let mut resolver_packages = vec![
+            (consumer_package_ref.clone(), Arc::new(consumer_package)),
+            (provider_package_ref.clone(), Arc::new(provider_package)),
+            (dependency_ref.clone(), Arc::new(dependency_package)),
+        ];
+        let mut resolver_files = vec![
+            (
+                consumer_package_ref,
+                consumer_file_ref,
+                Arc::new(consumer_file),
+            ),
+            (
+                provider_package_ref,
+                provider_file_ref,
+                Arc::new(provider_file),
+            ),
+            (
+                dependency_ref,
+                dependency_file_ref,
+                Arc::new(dependency_file),
+            ),
+        ];
+        if let Some((file, package)) = colliding_dependency {
+            let reference = package_ref(&package);
+            resolver_packages.push((reference.clone(), Arc::new(package)));
+            resolver_files.push((reference, file_ref(&file), Arc::new(file)));
+        }
+        let resolver = CountingResolver {
+            assembly: Arc::new(assembly.clone()),
+            deployments: vec![
+                (consumer_deployment_ref, Arc::new(consumer_deployment)),
+                (provider_deployment_ref, Arc::new(provider_deployment)),
+            ],
+            contracts: vec![
+                (consumer_contract_ref, Arc::new(consumer_contract)),
+                (provider_contract_ref, Arc::new(provider_contract)),
+            ],
+            packages: resolver_packages,
+            files: resolver_files,
+            reads: AtomicUsize::new(0),
+        };
+        Self { assembly, resolver }
+    }
+}
+
+fn insert_db_collection(file: &mut FileIrUnit, type_name: &str, collection_name: &str) {
+    let fields = BTreeMap::from([
+        ("id".to_string(), TypeRefIr::builtin("string")),
+        ("value".to_string(), TypeRefIr::builtin("string")),
+    ]);
+    file.declarations.db.insert(
+        type_name.to_string(),
+        DbDeclarationIr {
+            type_ref: TypeRefIr::Record {
+                fields: fields.clone(),
+            },
+            type_name: type_name.to_string(),
+            collection_name: collection_name.to_string(),
+            kind: DbObjectKindIr::Object,
+            key: DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            },
+            fields: fields
+                .into_iter()
+                .map(|(name, ty)| DbObjectFieldIr {
+                    name,
+                    ty,
+                    storage: DbFieldStorageIr::Identity,
+                })
+                .collect(),
+            retention: None,
+            leases: Vec::new(),
+            indexes: Vec::new(),
+            source_span: None,
+        },
+    );
+    skiff_artifact_identity::assign_file_ir_identity(file).unwrap();
+}
+
+fn replace_package_file(package: &mut PackageArtifact, file: &FileIrUnit) {
+    let old_ref = package.files[0].clone();
+    let new_ref = file_ref(file);
+    package.files[0] = new_ref.clone();
+    for export in package.implementation_links.functions.values_mut() {
+        if export.file == old_ref {
+            export.file = new_ref.clone();
+        }
+    }
+    for fact in package.callable_links.values_mut() {
+        if fact.target.file_ref == old_ref {
+            fact.target.file_ref = new_ref.clone();
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct CapturingDbProvider {
+    inputs: Arc<Mutex<Vec<skiff_runtime_capability_context::DbProviderBuildInput>>>,
+}
+
+impl skiff_runtime_capability_context::DbProviderFactory for CapturingDbProvider {
+    fn build(
+        &self,
+        input: skiff_runtime_capability_context::DbProviderBuildInput,
+    ) -> skiff_runtime_capability_context::DbCapabilityResult<
+        skiff_runtime_capability_context::DbCapabilitySource,
+    > {
+        self.inputs.lock().unwrap().push(input);
+        Ok(skiff_runtime_capability_context::DbCapabilitySource::unavailable())
+    }
+}
+
+fn mapping_service_db() -> AssemblyActivationServiceDb {
+    AssemblyActivationServiceDb {
+        mongo_url: "mongodb://fixture.invalid".to_string(),
+    }
+}
+
 #[tokio::test]
 async fn committed_recovery_nonempty_generation_survives_restart_with_exact_registration() {
     let fixture = FullChainFixture::new();
@@ -490,6 +836,209 @@ async fn projected_nonempty_assembly_admits_and_active_lookup_is_io_free() {
         reads_after_admit,
         "failed reload must fail before content I/O and preserve active"
     );
+}
+
+#[tokio::test]
+async fn collection_mapping_reaches_db_provider_exactly_and_survives_reload() {
+    let fixture = CollectionMappingFixture::new(
+        BTreeMap::from([(
+            "package_secret".to_string(),
+            "mapped_package_secret".to_string(),
+        )]),
+        None,
+    );
+    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let provider = CapturingDbProvider::default();
+    let controller = AssemblyAdmissionController::new(
+        "runtime-mapping",
+        skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
+    );
+    let service_db = mapping_service_db();
+
+    controller
+        .recover_committed(
+            "fixture",
+            7,
+            &reference,
+            &fixture.resolver,
+            Some(&service_db),
+        )
+        .await
+        .expect("mapped collection fixture must admit");
+    controller
+        .recover_committed(
+            "fixture",
+            7,
+            &reference,
+            &fixture.resolver,
+            Some(&service_db),
+        )
+        .await
+        .expect("reload must rebuild the exact mapped metadata");
+
+    let inputs = provider.inputs.lock().unwrap();
+    assert_eq!(inputs.len(), 2);
+    assert_eq!(inputs[0].runtime_program_db, inputs[1].runtime_program_db);
+    let mut collections = inputs[0]
+        .runtime_program_db
+        .iter()
+        .map(|metadata| {
+            assert_eq!(metadata.source_role, "package");
+            assert_eq!(
+                metadata.package_id.as_deref(),
+                Some("example.mapping-store")
+            );
+            metadata.collection_name.clone()
+        })
+        .collect::<Vec<_>>();
+    collections.sort();
+    assert_eq!(
+        collections,
+        vec![
+            "mapped_package_secret".to_string(),
+            "package_audit".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn collection_mapping_unknown_source_and_partial_collision_fail_closed() {
+    for (label, mapping, expected) in [
+        (
+            "unknown",
+            BTreeMap::from([(
+                "missing_collection".to_string(),
+                "mapped_collection".to_string(),
+            )]),
+            "is not declared",
+        ),
+        (
+            "partial collision",
+            BTreeMap::from([("package_secret".to_string(), "package_audit".to_string())]),
+            "both resolve",
+        ),
+    ] {
+        let fixture = CollectionMappingFixture::new(mapping, None);
+        let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+        let provider = CapturingDbProvider::default();
+        let controller = AssemblyAdmissionController::new(
+            format!("runtime-{label}"),
+            skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
+        );
+        let error = controller
+            .recover_committed(
+                "fixture",
+                1,
+                &reference,
+                &fixture.resolver,
+                Some(&mapping_service_db()),
+            )
+            .await
+            .expect_err("invalid collection mapping must fail closed");
+        let error = format!("{error:#}");
+        assert!(error.contains(expected), "{label}: {error}");
+        assert!(provider.inputs.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn mapped_dependency_collision_with_service_collection_fails_closed() {
+    let fixture = CollectionMappingFixture::new(
+        BTreeMap::from([(
+            "package_secret".to_string(),
+            "mapped_package_secret".to_string(),
+        )]),
+        Some("mapped_package_secret"),
+    );
+    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let controller = AssemblyAdmissionController::new(
+        "runtime-service-collision",
+        skiff_runtime_capability_context::DbProviderSource::new(CapturingDbProvider::default()),
+    );
+
+    let error = controller
+        .recover_committed(
+            "fixture",
+            1,
+            &reference,
+            &fixture.resolver,
+            Some(&mapping_service_db()),
+        )
+        .await
+        .expect_err("service/dependency collection collision must fail closed");
+    let error = format!("{error:#}");
+    assert!(error.contains("collides between"), "{error}");
+}
+
+#[tokio::test]
+async fn mapped_targets_from_distinct_dependencies_cannot_collide() {
+    let fixture = CollectionMappingFixture::with_dependency_target_collision();
+    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let provider = CapturingDbProvider::default();
+    let controller = AssemblyAdmissionController::new(
+        "runtime-dependency-collision",
+        skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
+    );
+
+    let error = controller
+        .recover_committed(
+            "fixture",
+            1,
+            &reference,
+            &fixture.resolver,
+            Some(&mapping_service_db()),
+        )
+        .await
+        .expect_err("two dependency collection targets must not collide");
+    let error = format!("{error:#}");
+    assert!(error.contains("collides between"), "{error}");
+    assert!(
+        error.contains("store") && error.contains("cache"),
+        "{error}"
+    );
+    assert!(provider.inputs.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn assembly_collection_mapping_drift_fails_before_host_activation() {
+    let mut fixture = CollectionMappingFixture::new(
+        BTreeMap::from([(
+            "package_secret".to_string(),
+            "mapped_package_secret".to_string(),
+        )]),
+        None,
+    );
+    fixture.assembly.package_link_plan.package_links[0]
+        .collection_name_mapping
+        .insert(
+            "package_secret".to_string(),
+            "drifted_package_secret".to_string(),
+        );
+    skiff_artifact_identity::assign_runtime_assembly_identity(&mut fixture.assembly).unwrap();
+    fixture.resolver.assembly = Arc::new(fixture.assembly.clone());
+    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let provider = CapturingDbProvider::default();
+    let controller = AssemblyAdmissionController::new(
+        "runtime-drift",
+        skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
+    );
+
+    let error = controller
+        .recover_committed(
+            "fixture",
+            1,
+            &reference,
+            &fixture.resolver,
+            Some(&mapping_service_db()),
+        )
+        .await
+        .expect_err("deployment/assembly mapping drift must fail closed");
+    let error = format!("{error:#}");
+    assert!(
+        error.contains("collection mapping") || error.contains("canonical link plan"),
+        "{error}"
+    );
+    assert!(provider.inputs.lock().unwrap().is_empty());
 }
 
 fn service_contract(

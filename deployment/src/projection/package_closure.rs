@@ -90,7 +90,7 @@ impl<'a> PackageClosure<'a> {
                         key: binding.package.package_build_id.to_string(),
                     })?;
                 validate_package_ref(&binding.package, target)?;
-                validate_requirement_target(requirement, &binding.package, &key)?;
+                validate_requirement_target(requirement, binding, &key)?;
                 pending.push_back(target.package_build_id.clone());
             }
 
@@ -168,9 +168,10 @@ fn validate_package_ref(
 
 fn validate_requirement_target(
     requirement: &skiff_artifact_model::PackageRequirement,
-    target: &PackageArtifactRef,
+    binding: &skiff_artifact_model::PackageBinding,
     key: &PackageRequirementKey,
 ) -> ProjectionResult<()> {
+    let target = &binding.package;
     let mismatch = if target.package_id != requirement.package_id {
         Some(format!(
             "packageId must be {}, got {}",
@@ -185,6 +186,11 @@ fn validate_requirement_target(
         Some(format!(
             "packageLocalAbiIdentity must be {}, got {}",
             requirement.expected_local_abi, target.package_local_abi_identity
+        ))
+    } else if binding.collection_name_mapping != requirement.collection_name_mapping {
+        Some(format!(
+            "collectionNameMapping must be {:?}, got {:?}",
+            requirement.collection_name_mapping, binding.collection_name_mapping
         ))
     } else if requirement
         .expected_package_build

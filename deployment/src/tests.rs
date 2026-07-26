@@ -66,6 +66,7 @@ fn rich_deployment() -> ServiceDeployment {
             package_requirement_alias: "dependency".to_string(),
         },
         package: dependency,
+        collection_name_mapping: BTreeMap::new(),
     });
     deployment.service_selectors.push(ServiceSelectorBinding {
         key: ServiceRequirementKey {
@@ -225,6 +226,56 @@ fn deployment_identity_is_order_independent_and_excludes_diagnostics() {
     assert_eq!(
         service_deployment_identity(&diagnostic_only).expect("diagnostic identity"),
         expected
+    );
+}
+
+#[test]
+fn collection_mapping_is_canonical_and_deployment_identifying() {
+    let empty = rich_deployment();
+    let empty_identity = service_deployment_identity(&empty).unwrap();
+
+    let mut explicit_empty_wire = serde_json::to_value(&empty).unwrap();
+    explicit_empty_wire["packageBindings"][0]["collectionNameMapping"] = serde_json::json!({});
+    let explicit_empty: ServiceDeployment = serde_json::from_value(explicit_empty_wire).unwrap();
+    assert_eq!(
+        service_deployment_identity(&explicit_empty).unwrap(),
+        empty_identity
+    );
+
+    let mut single = empty.clone();
+    single.package_bindings[0].collection_name_mapping =
+        BTreeMap::from([("package_secret".to_string(), "mapped_secret".to_string())]);
+    assert_ne!(
+        service_deployment_identity(&single).unwrap(),
+        empty_identity
+    );
+
+    let mut changed_target = single.clone();
+    changed_target.package_bindings[0]
+        .collection_name_mapping
+        .insert("package_secret".to_string(), "other_secret".to_string());
+    assert_ne!(
+        service_deployment_identity(&changed_target).unwrap(),
+        service_deployment_identity(&single).unwrap()
+    );
+
+    let mut ordered = empty.clone();
+    ordered.package_bindings[0].collection_name_mapping = [
+        ("beta".to_string(), "mapped_beta".to_string()),
+        ("alpha".to_string(), "mapped_alpha".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let mut reversed = empty;
+    reversed.package_bindings[0].collection_name_mapping = [
+        ("alpha".to_string(), "mapped_alpha".to_string()),
+        ("beta".to_string(), "mapped_beta".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        service_deployment_identity(&ordered).unwrap(),
+        service_deployment_identity(&reversed).unwrap()
     );
 }
 
@@ -530,6 +581,7 @@ fn deployment_validation_rejects_duplicates_dangling_refs_and_tamper() {
                 .clone(),
             ..coordinate_mismatch.package_bindings[0].package.clone()
         },
+        collection_name_mapping: BTreeMap::new(),
     });
     assert!(service_deployment_identity(&coordinate_mismatch).is_err());
 
@@ -585,6 +637,7 @@ fn assembly_identity_includes_graph_link_plan_and_templates() {
                 package_requirement_alias: "dependency".to_string(),
             },
             package: link_plan.resolved_packages[1].clone(),
+            collection_name_mapping: BTreeMap::new(),
         });
     assert_ne!(
         runtime_assembly_identity(&link_plan).unwrap(),
@@ -620,6 +673,77 @@ fn assembly_identity_includes_graph_link_plan_and_templates() {
         .gateway_ingress
         .push(runtime_assembly_ingress(&assembly));
     assert_ne!(runtime_assembly_identity(&ingress).unwrap(), expected);
+}
+
+#[test]
+fn collection_mapping_is_canonical_and_assembly_identifying() {
+    let mut empty = runtime_assembly_fixture().expect("assembly fixture");
+    let dependency = additional_package();
+    empty.resolved_packages.push(dependency.clone());
+    empty
+        .package_link_plan
+        .code_slots
+        .push(skiff_artifact_model::PackageCodeSlot {
+            package: dependency.clone(),
+        });
+    empty.package_link_plan.package_links.push(PackageBinding {
+        key: PackageRequirementKey {
+            caller_package_build_id: empty.resolved_packages[0].package_build_id.clone(),
+            package_requirement_alias: "dependency".to_string(),
+        },
+        package: dependency,
+        collection_name_mapping: BTreeMap::new(),
+    });
+    let empty_identity = runtime_assembly_identity(&empty).unwrap();
+
+    let mut explicit_empty_wire = serde_json::to_value(&empty).unwrap();
+    explicit_empty_wire["packageLinkPlan"]["packageLinks"][0]["collectionNameMapping"] =
+        serde_json::json!({});
+    let explicit_empty: RuntimeAssembly = serde_json::from_value(explicit_empty_wire).unwrap();
+    assert_eq!(
+        runtime_assembly_identity(&explicit_empty).unwrap(),
+        empty_identity
+    );
+
+    let mut mapped = empty.clone();
+    mapped.package_link_plan.package_links[0]
+        .collection_name_mapping
+        .insert(
+            "package_secret".to_string(),
+            "mapped_package_secret".to_string(),
+        );
+    assert_ne!(runtime_assembly_identity(&mapped).unwrap(), empty_identity);
+
+    let mut changed_target = mapped.clone();
+    changed_target.package_link_plan.package_links[0]
+        .collection_name_mapping
+        .insert(
+            "package_secret".to_string(),
+            "other_package_secret".to_string(),
+        );
+    assert_ne!(
+        runtime_assembly_identity(&changed_target).unwrap(),
+        runtime_assembly_identity(&mapped).unwrap()
+    );
+
+    let mut ordered = empty.clone();
+    ordered.package_link_plan.package_links[0].collection_name_mapping = [
+        ("beta".to_string(), "mapped_beta".to_string()),
+        ("alpha".to_string(), "mapped_alpha".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let mut reversed = empty;
+    reversed.package_link_plan.package_links[0].collection_name_mapping = [
+        ("alpha".to_string(), "mapped_alpha".to_string()),
+        ("beta".to_string(), "mapped_beta".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        runtime_assembly_identity(&ordered).unwrap(),
+        runtime_assembly_identity(&reversed).unwrap()
+    );
 }
 
 #[test]

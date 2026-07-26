@@ -257,6 +257,7 @@ impl CycleFixture {
             package_id: helper_ref.package_id.clone(),
             exact_version: helper_ref.package_version.clone(),
             expected_local_abi: helper_ref.package_local_abi_identity.clone(),
+            collection_name_mapping: BTreeMap::new(),
             expected_package_build: None,
         });
         shared
@@ -351,6 +352,7 @@ impl CycleFixture {
                         package_requirement_alias: "helper".to_string(),
                     },
                     package: helper_ref.clone(),
+                    collection_name_mapping: BTreeMap::new(),
                 }],
             },
             service_binding_templates: vec![
@@ -1009,6 +1011,7 @@ fn deployment(
         package_bindings: vec![PackageBinding {
             key: package_key,
             package: helper.clone(),
+            collection_name_mapping: BTreeMap::new(),
         }],
         service_selectors: vec![ServiceSelectorBinding {
             key: service_key,

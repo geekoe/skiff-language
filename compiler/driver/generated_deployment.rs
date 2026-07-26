@@ -276,6 +276,7 @@ fn package_bindings(
                     package_requirement_alias: requirement.alias.clone(),
                 },
                 package: package_artifact_ref(package)?,
+                collection_name_mapping: requirement.collection_name_mapping.clone(),
             })
         })
         .collect()

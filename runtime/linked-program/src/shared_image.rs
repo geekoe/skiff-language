@@ -13,10 +13,10 @@ use std::{
 use skiff_artifact_model::{
     file_ir_package_call_sites, validate_file_ir_package_calls, validate_file_ir_service_calls,
     AssemblyIdentity, CanonicalPackageLinkPlan, ContractOperationId, FileIrRef, FileIrUnit,
-    OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBuildId, PackageCallableId,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageRefIr, PackageRequirementKey,
-    PackageSchemaIndex, PackageSchemaTypeId, PackageSchemaTypeRecord, RuntimeAssembly,
-    ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity,
+    OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
+    PackageCallableId, PackageLocalAbi, PackageLocalAbiIdentity, PackageRefIr,
+    PackageRequirementKey, PackageSchemaIndex, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    RuntimeAssembly, ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity,
 };
 
 use crate::{ExecutableAddr, FileAddr, PublicationResourceTable, UnitAddr};
@@ -224,7 +224,7 @@ pub struct SharedPackageLinkedImage {
     package_link_plan: CanonicalPackageLinkPlan,
     code_slots: Vec<Arc<SharedPackageCode>>,
     code_slot_by_build: BTreeMap<PackageBuildId, PackageCodeSlotIndex>,
-    package_links: BTreeMap<PackageRequirementKey, PackageArtifactRef>,
+    package_links: BTreeMap<PackageRequirementKey, PackageBinding>,
 }
 
 impl SharedPackageLinkedImage {
@@ -276,7 +276,7 @@ impl SharedPackageLinkedImage {
         let mut package_links = BTreeMap::new();
         for binding in &assembly.package_link_plan.package_links {
             if package_links
-                .insert(binding.key.clone(), binding.package.clone())
+                .insert(binding.key.clone(), binding.clone())
                 .is_some()
             {
                 return Err(SharedPackageImageError::DuplicatePackageLink {
@@ -360,11 +360,12 @@ impl SharedPackageLinkedImage {
             caller_package_build_id: caller_package_build_id.clone(),
             package_requirement_alias: requirement_alias.to_string(),
         };
-        let dependency_ref = self
+        let binding = self
             .package_links
             .get(&key)
             .ok_or_else(|| SharedPackageImageError::MissingPackageLink { key: key.clone() })?;
-        validate_requirement_binding(caller, requirement, dependency_ref)?;
+        validate_requirement_binding(caller, requirement, binding)?;
+        let dependency_ref = &binding.package;
 
         let dependency = self.required_code_by_build(&dependency_ref.package_build_id)?;
         if dependency.artifact_ref() != dependency_ref {
@@ -446,15 +447,15 @@ impl SharedPackageLinkedImage {
     }
 
     fn validate_package_edges(&self) -> SharedPackageImageResult<()> {
-        for (key, package_ref) in &self.package_links {
+        for (key, binding) in &self.package_links {
             let caller = self.required_code_by_build(&key.caller_package_build_id)?;
             let requirement = unique_package_requirement(caller, &key.package_requirement_alias)?;
-            validate_requirement_binding(caller, requirement, package_ref)?;
-            let dependency = self.required_code_by_build(&package_ref.package_build_id)?;
-            if dependency.artifact_ref() != package_ref {
+            validate_requirement_binding(caller, requirement, binding)?;
+            let dependency = self.required_code_by_build(&binding.package.package_build_id)?;
+            if dependency.artifact_ref() != &binding.package {
                 return Err(SharedPackageImageError::PackageLinkTargetRefMismatch {
                     key: key.clone(),
-                    linked: package_ref.clone(),
+                    linked: binding.package.clone(),
                     loaded: dependency.artifact_ref().clone(),
                 });
             }
@@ -856,12 +857,22 @@ fn unique_package_requirement<'a>(
 fn validate_requirement_binding(
     caller: &SharedPackageCode,
     requirement: &skiff_artifact_model::PackageRequirement,
-    dependency: &PackageArtifactRef,
+    binding: &PackageBinding,
 ) -> SharedPackageImageResult<()> {
     let key = PackageRequirementKey {
         caller_package_build_id: caller.package_build_id().clone(),
         package_requirement_alias: requirement.alias.clone(),
     };
+    if requirement.collection_name_mapping != binding.collection_name_mapping {
+        return Err(
+            SharedPackageImageError::PackageRequirementCollectionMappingMismatch {
+                key,
+                expected: requirement.collection_name_mapping.clone(),
+                actual: binding.collection_name_mapping.clone(),
+            },
+        );
+    }
+    let dependency = &binding.package;
     if requirement.package_id != dependency.package_id
         || requirement.exact_version != dependency.package_version
     {
@@ -1044,6 +1055,11 @@ pub enum SharedPackageImageError {
         key: PackageRequirementKey,
         expected: PackageBuildId,
         actual: PackageBuildId,
+    },
+    PackageRequirementCollectionMappingMismatch {
+        key: PackageRequirementKey,
+        expected: BTreeMap<String, String>,
+        actual: BTreeMap<String, String>,
     },
     PackageLinkTargetRefMismatch {
         key: PackageRequirementKey,

@@ -113,6 +113,30 @@ fn package_edges_reject_version_abi_and_build_lookup_mismatches() {
         AssemblyResolutionError::MissingPackageArtifact(_)
     ));
 
+    let mut mapping_drift = package_binding(&root_package, "dependency", &dependency);
+    mapping_drift.collection_name_mapping.insert(
+        "package_secret".to_string(),
+        "mapped_package_secret".to_string(),
+    );
+    let drifted = deployment(
+        &root_contract,
+        &root_package,
+        "mapping-drift",
+        vec![mapping_drift],
+        Vec::new(),
+    );
+    let error = resolve_runtime_assembly(
+        &[deployment_ref(&drifted)],
+        &[drifted],
+        std::slice::from_ref(&root_contract),
+        &candidates,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AssemblyResolutionError::PackageRequirementMismatch { .. }
+    ));
+
     let mut wrong_version_binding = valid_binding.clone();
     wrong_version_binding.package.package_version = "9.0.0".to_string();
     let wrong_version = deployment(

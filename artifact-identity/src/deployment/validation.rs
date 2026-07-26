@@ -133,6 +133,10 @@ fn validate_package_bindings<'a>(
     insert_package_coordinate(&mut packages, implementation, "implementation")?;
     for binding in bindings {
         validate_package_ref(&binding.package, "package binding provider")?;
+        skiff_artifact_model::validate_dependency_collection_name_mapping(
+            &binding.collection_name_mapping,
+        )
+        .map_err(|message| crate::ArtifactIdentityError::InvalidServiceDeployment { message })?;
         insert_package_coordinate(&mut packages, &binding.package, "package binding provider")?;
     }
     let mut keys = BTreeSet::new();
