@@ -11,7 +11,7 @@ use skiff_artifact_model::{
 
 use crate::{gateway_entry_identity, ArtifactIdentityError, Result};
 
-/// Validate the path-free typed input before projection resolves public paths.
+/// Validate the path-free typed input before projection resolves exact callables.
 pub fn validate_service_deployment_input(input: &ServiceDeploymentInput) -> Result<()> {
     if input.schema_version != SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION {
         return invalid_deployment(format!(
@@ -28,7 +28,10 @@ pub fn validate_service_deployment_input(input: &ServiceDeploymentInput) -> Resu
             "operation contractOperationId",
             binding.contract_operation_id.as_str(),
         )?;
-        require_non_empty("operation packagePublicPath", &binding.package_public_path)?;
+        require_non_empty(
+            "operation packageCallableId",
+            binding.package_callable_id.as_str(),
+        )?;
         if !operations.insert(binding.contract_operation_id.clone()) {
             return invalid_deployment(format!(
                 "duplicate operation binding {}",

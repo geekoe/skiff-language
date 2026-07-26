@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     BoundaryCallableProjection, ExecutableSignatureIr, FileIrRef, InterfaceMethodSignature,
     NominalTypeRefBaseIr, OperationCallableKind, PackageArtifact, PackageCallableSignature,
-    PackageLocalAbiSymbol, PackageServiceCallRoot, PackageTypeRef, PublicationResourceRef,
-    StateBindingKind, TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageLocalAbiSymbol, PackageTypeRef, PublicationResourceRef, StateBindingKind,
+    TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use crate::Result;
@@ -50,7 +50,6 @@ pub(super) fn validate_package_artifact_surface(artifact: &PackageArtifact) -> R
     validate_unique_resources(&artifact.static_resources)?;
     validate_requirements(artifact)?;
     validate_callable_surfaces(artifact)?;
-    validate_service_call_roots(artifact)?;
     validate_service_calls(artifact)
 }
 
@@ -208,6 +207,8 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
             }
         }
     }
+    validate_public_instance_method_surface(artifact)?;
+
     let mut implementation_callables = BTreeSet::new();
     for (source_path, symbol) in &artifact.package_local_abi.implementation_symbols {
         if source_path.trim().is_empty() || !source_path.contains('.') {
@@ -364,6 +365,58 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
     Ok(())
 }
 
+fn validate_public_instance_method_surface(artifact: &PackageArtifact) -> Result<()> {
+    for (instance_path, symbol) in &artifact.package_local_abi.public_symbols {
+        let PackageLocalAbiSymbol::PublicInstance { methods, .. } = symbol else {
+            continue;
+        };
+        let method_prefix = format!("{instance_path}.");
+        for (public_path, public_symbol) in &artifact.package_local_abi.public_symbols {
+            let Some(method) = public_path.strip_prefix(&method_prefix) else {
+                continue;
+            };
+            let PackageLocalAbiSymbol::Callable { callable_id, .. } = public_symbol else {
+                return invalid_artifact(format!(
+                    "public instance namespace {instance_path} contains non-callable path {public_path}"
+                ));
+            };
+            if methods.get(method) != Some(callable_id) {
+                return invalid_artifact(format!(
+                    "public instance {instance_path} does not list exact public method {method}"
+                ));
+            }
+        }
+        for (method, callable_id) in methods {
+            let method_path = format!("{instance_path}.{method}");
+            let Some(PackageLocalAbiSymbol::Callable {
+                callable_id: public_callable_id,
+                ..
+            }) = artifact.package_local_abi.public_symbols.get(&method_path)
+            else {
+                return invalid_artifact(format!(
+                    "public instance {instance_path} method {method} has no public callable path {method_path}"
+                ));
+            };
+            if callable_id != public_callable_id {
+                return invalid_artifact(format!(
+                    "public instance {instance_path} method {method} binds {callable_id}, expected {public_callable_id}"
+                ));
+            }
+            let Some(link) = artifact.callable_links.get(callable_id) else {
+                return invalid_artifact(format!(
+                    "public instance {instance_path} method {method} has no exact callable link"
+                ));
+            };
+            if link.target.callable_kind != OperationCallableKind::ImplMethod {
+                return invalid_artifact(format!(
+                    "public instance {instance_path} method {method} must bind an impl method"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 type ExecutableCoordinate = (String, String, u32);
 
 fn executable_coordinate(file: &FileIrRef, executable_index: u32) -> ExecutableCoordinate {
@@ -515,172 +568,6 @@ fn implementation_link_callable_scope<'a>(
     scope.ok_or_else(|| crate::ArtifactIdentityError::InvalidPackageArtifact {
         message: format!("{location} has no matching public callable"),
     })
-}
-
-fn validate_service_call_roots(artifact: &PackageArtifact) -> Result<()> {
-    let mut instance_method_paths = BTreeSet::new();
-    let mut instance_method_callables = BTreeSet::new();
-    for (instance_path, symbol) in &artifact.package_local_abi.public_symbols {
-        let PackageLocalAbiSymbol::PublicInstance { methods, .. } = symbol else {
-            continue;
-        };
-        let method_prefix = format!("{instance_path}.");
-        for (public_path, public_symbol) in &artifact.package_local_abi.public_symbols {
-            let Some(method) = public_path.strip_prefix(&method_prefix) else {
-                continue;
-            };
-            let PackageLocalAbiSymbol::Callable { callable_id, .. } = public_symbol else {
-                return invalid_artifact(format!(
-                    "public instance namespace {instance_path} contains non-callable path {public_path}"
-                ));
-            };
-            if methods.get(method) != Some(callable_id) {
-                return invalid_artifact(format!(
-                    "public instance {instance_path} does not list exact public method {method}"
-                ));
-            }
-        }
-        for (method, callable_id) in methods {
-            if method.trim().is_empty() {
-                return invalid_artifact(format!(
-                    "public instance {instance_path} has an empty method name"
-                ));
-            }
-            let method_path = format!("{instance_path}.{method}");
-            let Some(PackageLocalAbiSymbol::Callable {
-                callable_id: public_callable_id,
-                ..
-            }) = artifact.package_local_abi.public_symbols.get(&method_path)
-            else {
-                return invalid_artifact(format!(
-                    "public instance {instance_path} method {method} has no public callable path {method_path}"
-                ));
-            };
-            if callable_id != public_callable_id {
-                return invalid_artifact(format!(
-                    "public instance {instance_path} method {method} binds {callable_id}, expected {public_callable_id}"
-                ));
-            }
-            let Some(link) = artifact.callable_links.get(callable_id) else {
-                return invalid_artifact(format!(
-                    "public instance {instance_path} method {method} has no exact callable link"
-                ));
-            };
-            if link.target.callable_kind != OperationCallableKind::ImplMethod {
-                return invalid_artifact(format!(
-                    "public instance {instance_path} method {method} must bind an impl method"
-                ));
-            }
-            instance_method_paths.insert(method_path);
-            instance_method_callables.insert(callable_id.clone());
-        }
-    }
-
-    let mut root_paths = BTreeSet::new();
-    let mut selected_callables = BTreeSet::new();
-    for root in &artifact.service_call_roots {
-        let public_path = root.public_path();
-        if public_path.trim().is_empty() || !root_paths.insert(public_path) {
-            return invalid_artifact(format!(
-                "serviceCall root path must be non-empty and unique, got {public_path:?}"
-            ));
-        }
-        match root {
-            PackageServiceCallRoot::Function {
-                callable_id,
-                public_path,
-            } => {
-                let Some(PackageLocalAbiSymbol::Callable {
-                    callable_id: public_callable_id,
-                    ..
-                }) = artifact.package_local_abi.public_symbols.get(public_path)
-                else {
-                    return invalid_artifact(format!(
-                        "serviceCall function root {public_path} is not a public callable"
-                    ));
-                };
-                if callable_id != public_callable_id {
-                    return invalid_artifact(format!(
-                        "serviceCall function root {public_path} binds {callable_id}, expected {public_callable_id}"
-                    ));
-                }
-                if instance_method_paths.contains(public_path)
-                    || instance_method_callables.contains(callable_id)
-                {
-                    return invalid_artifact(format!(
-                        "serviceCall function root {public_path} cannot select a public instance method"
-                    ));
-                }
-                let Some(link) = artifact.callable_links.get(callable_id) else {
-                    return invalid_artifact(format!(
-                        "serviceCall function root {public_path} has no exact callable link"
-                    ));
-                };
-                if link.target.callable_kind != OperationCallableKind::PublicFunction {
-                    return invalid_artifact(format!(
-                        "serviceCall function root {public_path} must bind a public function"
-                    ));
-                }
-                if !selected_callables.insert(callable_id) {
-                    return invalid_artifact(format!(
-                        "serviceCall callable {callable_id} is selected by more than one root"
-                    ));
-                }
-            }
-            PackageServiceCallRoot::PublicInstance {
-                public_path,
-                methods,
-            } => {
-                let Some(PackageLocalAbiSymbol::PublicInstance {
-                    methods: public_methods,
-                    ..
-                }) = artifact.package_local_abi.public_symbols.get(public_path)
-                else {
-                    return invalid_artifact(format!(
-                        "serviceCall public instance root {public_path} is not a public instance"
-                    ));
-                };
-                if methods != public_methods {
-                    return invalid_artifact(format!(
-                        "serviceCall public instance root {public_path} methods do not exactly match its listed interface methods"
-                    ));
-                }
-                for (method, callable_id) in methods {
-                    let method_path = format!("{public_path}.{method}");
-                    let Some(PackageLocalAbiSymbol::Callable {
-                        callable_id: public_callable_id,
-                        ..
-                    }) = artifact.package_local_abi.public_symbols.get(&method_path)
-                    else {
-                        return invalid_artifact(format!(
-                            "serviceCall public instance root {public_path} method {method} has no public callable path {method_path}"
-                        ));
-                    };
-                    if callable_id != public_callable_id {
-                        return invalid_artifact(format!(
-                            "serviceCall public instance root {public_path} method {method} binds {callable_id}, expected {public_callable_id}"
-                        ));
-                    }
-                    let Some(link) = artifact.callable_links.get(callable_id) else {
-                        return invalid_artifact(format!(
-                            "serviceCall public instance root {public_path} method {method} has no exact callable link"
-                        ));
-                    };
-                    if link.target.callable_kind != OperationCallableKind::ImplMethod {
-                        return invalid_artifact(format!(
-                            "serviceCall public instance root {public_path} method {method} must bind an impl method"
-                        ));
-                    }
-                    if !selected_callables.insert(callable_id) {
-                        return invalid_artifact(format!(
-                            "serviceCall callable {callable_id} is selected by more than one root"
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 fn validate_executable_signature(

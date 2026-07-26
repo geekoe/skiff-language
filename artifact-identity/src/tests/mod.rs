@@ -42,11 +42,11 @@ fn canonical_generation_markers_bump_without_changing_legacy_package_domains() {
     assert_eq!(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v8:sha256");
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
-        "skiff-package-artifact-build-identity-v6"
+        "skiff-package-artifact-build-identity-v7"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-        "skiff-package-build-v8:sha256"
+        "skiff-package-build-v9:sha256"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
