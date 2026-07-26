@@ -9,10 +9,9 @@ use std::collections::BTreeMap;
 use skiff_artifact_identity::{package_artifact_ref, service_contract_ref, service_deployment_ref};
 use skiff_artifact_model::{
     ActivationPolicy, BoundaryCallableProjection, ContractOperationId, DeploymentDiagnosticText,
-    DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision, IngressProtocol,
-    IngressSelector, PackageArtifactRef, PackageBinding, ResourcePolicy, ServiceContract,
-    ServiceContractRef, ServiceDeploymentInput, ServiceDeploymentOperationInput,
-    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    DeploymentPolicy, DeploymentRevision, IngressProtocol, IngressSelector, PackageArtifactRef,
+    PackageBinding, ResourcePolicy, ServiceContract, ServiceContractRef, ServiceDeploymentInput,
+    ServiceDeploymentOperationInput, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     compile_contract, ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
@@ -56,6 +55,16 @@ pub struct CanonicalEcosystemSmokeFixture {
 }
 
 pub fn assemble_ecosystem_smoke_fixture(
+    _project: &CanonicalPackageProject,
+    _overlay: PublishedPackageTestOverlay,
+) -> Result<CanonicalEcosystemSmokeFixture, CanonicalFixtureError> {
+    Err(CanonicalFixtureError::InvalidInput(
+        "ecosystem smoke ingress is not yet migrated to deployment gateway entries".to_string(),
+    ))
+}
+
+#[allow(dead_code)]
+fn assemble_ecosystem_smoke_fixture_unlinked(
     project: &CanonicalPackageProject,
     overlay: PublishedPackageTestOverlay,
 ) -> Result<CanonicalEcosystemSmokeFixture, CanonicalFixtureError> {
@@ -148,8 +157,8 @@ pub fn assemble_ecosystem_smoke_fixture(
 fn smoke_deployment_input(
     smoke: &SmokeContract,
     production: PackageArtifactRef,
-    selector: IngressSelector,
-    websocket_selector: IngressSelector,
+    _selector: IngressSelector,
+    _websocket_selector: IngressSelector,
     package_bindings: Vec<PackageBinding>,
 ) -> ServiceDeploymentInput {
     let revision = production
@@ -162,18 +171,11 @@ fn smoke_deployment_input(
         contract_operation_id: smoke.operation.clone(),
         package_public_path: "marker".to_string(),
     }];
-    let mut ingress = vec![DeploymentIngressBinding {
-        selector,
-        contract_operation_id: smoke.operation.clone(),
-    }];
+    let ingress = Vec::new();
     if let Some(operation) = smoke.websocket_operation.as_ref() {
         operation_bindings.push(ServiceDeploymentOperationInput {
             contract_operation_id: operation.clone(),
             package_public_path: "websocket".to_string(),
-        });
-        ingress.push(DeploymentIngressBinding {
-            selector: websocket_selector,
-            contract_operation_id: operation.clone(),
         });
     }
     ServiceDeploymentInput {
@@ -184,6 +186,7 @@ fn smoke_deployment_input(
         operation_bindings,
         package_bindings,
         service_selectors: Vec::new(),
+        gateway_entries: BTreeMap::new(),
         ingress,
         config_literals: Vec::new(),
         secret_refs: Vec::new(),

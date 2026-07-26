@@ -2,9 +2,9 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 
 use crate::{
     validate_runtime_assembly_identity, AssemblyIdentity, ConfigLiteralBinding,
-    ContractOperationId, DeploymentIngressBinding, DeploymentPolicy, IngressSelector,
-    PackageArtifactRef, PackageBinding, PackageBuildId, ResourceBinding, SecretRefBinding,
-    ServiceContractRef, ServiceDeploymentRef, ServiceRequirementKey, StateBinding,
+    ContractOperationId, DeploymentPolicy, IngressSelector, PackageArtifactRef, PackageBinding,
+    PackageBuildId, ResourceBinding, SecretRefBinding, ServiceContractRef, ServiceDeploymentRef,
+    ServiceRequirementKey, StateBinding,
 };
 
 /// Exact reference to one immutable RuntimeAssembly record.
@@ -84,29 +84,6 @@ pub struct GlobalIngressBinding {
     pub deployment: ServiceDeploymentRef,
     pub contract: ServiceContractRef,
     pub contract_operation_id: ContractOperationId,
-}
-
-impl
-    From<(
-        &ServiceDeploymentRef,
-        &ServiceContractRef,
-        &DeploymentIngressBinding,
-    )> for GlobalIngressBinding
-{
-    fn from(
-        (deployment, contract, ingress): (
-            &ServiceDeploymentRef,
-            &ServiceContractRef,
-            &DeploymentIngressBinding,
-        ),
-    ) -> Self {
-        Self {
-            selector: ingress.selector.clone(),
-            deployment: deployment.clone(),
-            contract: contract.clone(),
-            contract_operation_id: ingress.contract_operation_id.clone(),
-        }
-    }
 }
 
 /// Canonical resolved deployment/package graph loaded identically by every replica.

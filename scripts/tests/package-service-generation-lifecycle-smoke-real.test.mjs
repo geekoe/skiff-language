@@ -508,12 +508,12 @@ function generationReceipt(targetEnvironment, characters) {
   packageTestDeployment.deploymentRevision =
     `test-${characters.overlayBuild.repeat(64)}`;
   packageTestDeployment.deploymentArtifactIdentity =
-    identity('skiff-deployment-artifact-v1:sha256', characters.packageTestDeployment);
+    identity('skiff-deployment-artifact-v2:sha256', characters.packageTestDeployment);
   const smokeDeployment = {
     ...receipt.candidate.entrypoints[1].deployment,
     deploymentRevision: `smoke-${characters.productionBuild.repeat(64)}`,
     deploymentArtifactIdentity:
-      identity('skiff-deployment-artifact-v1:sha256', characters.smokeDeployment),
+      identity('skiff-deployment-artifact-v2:sha256', characters.smokeDeployment),
   };
   receipt.candidate.entrypoints[1].deployment = smokeDeployment;
   receipt.candidate.entrypoints[2].deployment = structuredClone(smokeDeployment);

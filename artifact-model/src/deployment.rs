@@ -1,10 +1,14 @@
 use std::collections::BTreeMap;
+use std::fmt;
 
+use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ContractOperationId, DeploymentArtifactIdentity, DeploymentRevision, MetadataValue,
-    PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, ServiceProtocolIdentity,
+    ContractOperationId, DeploymentArtifactIdentity, DeploymentRevision, GatewayAdapterArg,
+    GatewayAdapterKind, GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
+    MetadataValue, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
+    ServiceProtocolIdentity,
 };
 
 /// Exact, path-free reference to one immutable package artifact.
@@ -103,7 +107,64 @@ pub struct IngressSelector {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentIngressBinding {
     pub selector: IngressSelector,
-    pub contract_operation_id: ContractOperationId,
+    pub gateway_entry_key: GatewayEntryKey,
+}
+
+/// Complete, ordered mapping from a gateway callable's target parameters to
+/// the typed adapter sources that provide them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GatewayAdapterPlan {
+    pub kind: GatewayAdapterKind,
+    pub args: Vec<GatewayAdapterArg>,
+}
+
+/// Source-free deployment-owned gateway target and execution plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeploymentGatewayEntry {
+    pub gateway_entry_identity: GatewayEntryIdentity,
+    pub protocol_surface: GatewayEntryProtocolSurface,
+    pub handler: PackageCallableId,
+    pub pre: Option<PackageCallableId>,
+    pub guard: Option<PackageCallableId>,
+    pub adapter_plan: GatewayAdapterPlan,
+}
+
+struct GatewayEntriesVisitor;
+
+impl<'de> Visitor<'de> for GatewayEntriesVisitor {
+    type Value = BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a mapping of unique deployment gateway entry keys")
+    }
+
+    fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut entries = BTreeMap::new();
+        while let Some((key, entry)) =
+            access.next_entry::<GatewayEntryKey, DeploymentGatewayEntry>()?
+        {
+            if entries.insert(key.clone(), entry).is_some() {
+                return Err(serde::de::Error::custom(format!(
+                    "duplicate deployment gateway entry key {key:?}"
+                )));
+            }
+        }
+        Ok(entries)
+    }
+}
+
+fn deserialize_gateway_entries<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_map(GatewayEntriesVisitor)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -195,6 +256,8 @@ pub struct ServiceDeploymentInput {
     pub operation_bindings: Vec<ServiceDeploymentOperationInput>,
     pub package_bindings: Vec<PackageBinding>,
     pub service_selectors: Vec<ServiceSelectorBinding>,
+    #[serde(deserialize_with = "deserialize_gateway_entries")]
+    pub gateway_entries: BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     pub ingress: Vec<DeploymentIngressBinding>,
     pub config_literals: Vec<ConfigLiteralBinding>,
     pub secret_refs: Vec<SecretRefBinding>,
@@ -217,6 +280,8 @@ pub struct ServiceDeployment {
     pub operation_bindings: Vec<DeploymentOperationBinding>,
     pub package_bindings: Vec<PackageBinding>,
     pub service_selectors: Vec<ServiceSelectorBinding>,
+    #[serde(deserialize_with = "deserialize_gateway_entries")]
+    pub gateway_entries: BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     pub ingress: Vec<DeploymentIngressBinding>,
     pub config_literals: Vec<ConfigLiteralBinding>,
     pub secret_refs: Vec<SecretRefBinding>,

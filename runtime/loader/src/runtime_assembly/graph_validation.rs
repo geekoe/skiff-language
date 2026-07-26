@@ -442,31 +442,16 @@ fn validate_ingress(
     assembly: &RuntimeAssembly,
     deployments: &BTreeMap<ServiceDeploymentRef, Arc<ServiceDeployment>>,
 ) -> anyhow::Result<()> {
-    let mut expected = BTreeSet::new();
-    for (reference, deployment) in deployments {
-        for ingress in &deployment.ingress {
-            expected.insert((
-                ingress.selector.clone(),
-                reference.clone(),
-                deployment.contract.clone(),
-                ingress.contract_operation_id.clone(),
-            ));
-        }
+    if !assembly.global_ingress.is_empty() {
+        anyhow::bail!(
+            "legacy RuntimeAssembly globalIngress is not accepted before deployment gateway entries are linked"
+        );
     }
-    let actual = assembly
-        .global_ingress
-        .iter()
-        .map(|binding| {
-            (
-                binding.selector.clone(),
-                binding.deployment.clone(),
-                binding.contract.clone(),
-                binding.contract_operation_id.clone(),
-            )
-        })
-        .collect::<BTreeSet<_>>();
-    if actual != expected {
-        anyhow::bail!("globalIngress does not exactly match hydrated deployment ingress");
+    if deployments
+        .values()
+        .any(|deployment| !deployment.gateway_entries.is_empty() || !deployment.ingress.is_empty())
+    {
+        anyhow::bail!("deployment gateway ingress is not yet linked into RuntimeAssembly");
     }
     Ok(())
 }

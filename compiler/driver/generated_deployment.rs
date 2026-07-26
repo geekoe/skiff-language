@@ -4,14 +4,13 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{package_artifact_ref, service_contract_ref};
 use skiff_artifact_model::{
-    ActivationPolicy, ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentIngressBinding,
-    DeploymentPolicy, DeploymentRevision, IngressProtocol, IngressSelector, MetadataValue,
-    PackageArtifact, PackageBinding, PackageRequirementKey, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, ResourceBinding, ResourcePolicy, RuntimeCapabilityBinding,
-    SecretRefBinding, ServiceConfigProfileAuthoring, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentInput, ServiceDeploymentOperationInput, ServiceManifestAuthoring,
-    ServiceRequirementKey, ServiceSelectorBinding, StateBinding, StateBindingKind,
-    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    ActivationPolicy, ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentPolicy,
+    DeploymentRevision, MetadataValue, PackageArtifact, PackageBinding, PackageRequirementKey,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, ResourceBinding, ResourcePolicy,
+    RuntimeCapabilityBinding, SecretRefBinding, ServiceConfigProfileAuthoring, ServiceContractRef,
+    ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentOperationInput,
+    ServiceManifestAuthoring, ServiceRequirementKey, ServiceSelectorBinding, StateBinding,
+    StateBindingKind, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_compiler_contract::ServiceApiProjection;
 use skiff_deployment::projection::{project_service_deployment, ProjectionError};
@@ -52,7 +51,7 @@ pub enum GeneratedServiceDeploymentError {
 pub fn generate_service_deployment(
     input: GeneratedServiceDeploymentInput<'_>,
 ) -> Result<ServiceDeployment, GeneratedServiceDeploymentError> {
-    reject_unwired_http_authoring(input.service)?;
+    reject_unwired_gateway_authoring(input.service)?;
     validate_exact_api(&input)?;
     let typed = ServiceDeploymentInput {
         schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
@@ -62,7 +61,8 @@ pub fn generate_service_deployment(
         operation_bindings: operation_bindings(&input)?,
         package_bindings: package_bindings(&input)?,
         service_selectors: service_selectors(&input),
-        ingress: ingress_bindings(&input)?,
+        gateway_entries: BTreeMap::new(),
+        ingress: Vec::new(),
         config_literals: keyed_values("config", &input.profile.config)?
             .into_iter()
             .map(|(path, value)| ConfigLiteralBinding {
@@ -101,16 +101,22 @@ pub fn generate_service_deployment(
     )?)
 }
 
-fn reject_unwired_http_authoring(
+fn reject_unwired_gateway_authoring(
     service: &ServiceManifestAuthoring,
 ) -> Result<(), GeneratedServiceDeploymentError> {
-    if service.http.is_none() {
-        return Ok(());
+    if service.http.is_some() {
+        return Err(GeneratedServiceDeploymentError::InvalidManifest {
+            field: "http",
+            message: "named HTTP gateway entries are not yet supported by generated deployment; refusing to reinterpret them as service operations".to_string(),
+        });
     }
-    Err(GeneratedServiceDeploymentError::InvalidManifest {
-        field: "http",
-        message: "named HTTP gateway entries are not yet supported by generated deployment; refusing to reinterpret them as service operations".to_string(),
-    })
+    if service.websocket.is_some() {
+        return Err(GeneratedServiceDeploymentError::InvalidManifest {
+            field: "websocket",
+            message: "WebSocket business gateway entries are not defined for this deployment generation; refusing legacy operation ingress".to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn validate_exact_api(
@@ -195,79 +201,6 @@ fn operation_bindings(
             })
         })
         .collect()
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WebSocketRouteAuthoring {
-    #[serde(default = "default_host")]
-    host: String,
-    #[serde(default)]
-    method: Option<String>,
-    path: String,
-    operation: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WebSocketRoutesAuthoring {
-    routes: Vec<WebSocketRouteAuthoring>,
-}
-
-fn default_host() -> String {
-    "*".to_string()
-}
-
-fn ingress_bindings(
-    input: &GeneratedServiceDeploymentInput<'_>,
-) -> Result<Vec<DeploymentIngressBinding>, GeneratedServiceDeploymentError> {
-    let mut result = Vec::new();
-    if let Some(value) = input.service.websocket.as_ref() {
-        let routes: WebSocketRoutesAuthoring =
-            serde_json::from_value(value.clone()).map_err(|error| {
-                GeneratedServiceDeploymentError::InvalidManifest {
-                    field: "websocket",
-                    message: error.to_string(),
-                }
-            })?;
-        for route in routes.routes {
-            result.push(resolve_websocket_route(input, route)?);
-        }
-    }
-    Ok(result)
-}
-
-fn resolve_websocket_route(
-    input: &GeneratedServiceDeploymentInput<'_>,
-    route: WebSocketRouteAuthoring,
-) -> Result<DeploymentIngressBinding, GeneratedServiceDeploymentError> {
-    if input.service_api.unavailable.contains_key(&route.operation) {
-        return Err(invalid(format!(
-            "ingress operation {} is boundary unavailable",
-            route.operation
-        )));
-    }
-    let descriptor = input
-        .service_api
-        .contract
-        .operations
-        .values()
-        .find(|descriptor| descriptor.stable_key == route.operation)
-        .ok_or_else(|| {
-            invalid(format!(
-                "ingress operation {} is not an Available service API operation",
-                route.operation
-            ))
-        })?;
-    Ok(DeploymentIngressBinding {
-        selector: IngressSelector {
-            protocol: IngressProtocol::WebSocket,
-            host: route.host,
-            method: route.method,
-            path: route.path,
-        },
-        contract_operation_id: descriptor.operation_id.clone(),
-    })
 }
 
 fn package_bindings(
@@ -534,9 +467,27 @@ http:
 "#,
         )
         .unwrap();
-        let error = reject_unwired_http_authoring(&service).unwrap_err();
+        let error = reject_unwired_gateway_authoring(&service).unwrap_err();
         let message = error.to_string();
         assert!(message.contains("named HTTP gateway entries"));
         assert!(message.contains("refusing to reinterpret them as service operations"));
+    }
+
+    #[test]
+    fn generated_service_deployment_rejects_legacy_websocket_operation_ingress() {
+        let service = serde_yaml::from_str::<ServiceManifestAuthoring>(
+            r#"
+id: example.com/chat
+websocket:
+  routes:
+    - path: /chat
+      operation: receive
+"#,
+        )
+        .unwrap();
+        let error = reject_unwired_gateway_authoring(&service).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("WebSocket business gateway entries are not defined"));
+        assert!(message.contains("refusing legacy operation ingress"));
     }
 }

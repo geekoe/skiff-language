@@ -74,7 +74,7 @@ impl ProjectionFixture {
         };
         assign_service_contract_identities(&mut contract).unwrap();
 
-        let callable_id = PackageCallableId::new("callable:handle");
+        let callable_id = PackageCallableId::new("pkg-callable:example.provider:handle");
         let facts = safe_facts();
         let requirements = BoundaryImplementationRequirements {
             config: vec![BoundaryConfigRequirement {
@@ -109,7 +109,7 @@ impl ProjectionFixture {
             package_id: package_id.to_string(),
             package_version: "2.0.0".to_string(),
             package_build_id: PackageBuildId::new("unassigned"),
-            files: vec![file],
+            files: vec![file.clone()],
             static_resources: Vec::new(),
             package_local_abi: PackageLocalAbi {
                 local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
@@ -160,7 +160,35 @@ impl ProjectionFixture {
                     package_schema_type_id: payload_id.clone(),
                 },
             )]),
-            implementation_links: PackageImplementationLinks::default(),
+            implementation_links: PackageImplementationLinks {
+                functions: BTreeMap::from([(
+                    "handle".to_string(),
+                    ExecutableExport {
+                        file: file.clone(),
+                        executable_index: 0,
+                        symbol: "handle".to_string(),
+                        signature: ExecutableSignatureIr {
+                            params: vec![ParamIr {
+                                name: "input".to_string(),
+                                slot: 0,
+                                ty: TypeRefIr::PackageSchema {
+                                    package_id: package_id.to_string(),
+                                    stable_schema_key: "payload".to_string(),
+                                    package_schema_type_id: payload_id.clone(),
+                                },
+                            }],
+                            return_type: TypeRefIr::PackageSchema {
+                                package_id: package_id.to_string(),
+                                stable_schema_key: "payload".to_string(),
+                                package_schema_type_id: payload_id.clone(),
+                            },
+                            self_type: None,
+                            may_suspend: true,
+                        },
+                    },
+                )]),
+                ..PackageImplementationLinks::default()
+            },
             callable_links: BTreeMap::from([(
                 callable_id.clone(),
                 PackageCallableLinkFact {
@@ -221,6 +249,7 @@ impl ProjectionFixture {
             ],
             package_bindings: Vec::new(),
             service_selectors: Vec::new(),
+            gateway_entries: BTreeMap::new(),
             ingress: Vec::new(),
             config_literals: vec![ConfigLiteralBinding {
                 path: "echo.token".to_string(),
@@ -310,260 +339,65 @@ fn projection_maps_every_operation_explicitly_and_emits_no_public_path() {
 }
 
 #[test]
-fn websocket_ingress_contract_validation_accepts_only_the_unified_abi() {
+fn projection_preserves_validated_gateway_entries_and_selector_key_bindings() {
     let mut fixture = ProjectionFixture::new();
-    let operation_id = fixture
-        .contract
-        .operations
-        .keys()
-        .next()
-        .expect("fixture operation")
-        .clone();
-    fixture.input.ingress = vec![DeploymentIngressBinding {
-        selector: IngressSelector {
-            protocol: IngressProtocol::WebSocket,
-            host: "socket.example.test".to_string(),
-            method: None,
-            path: "/socket".to_string(),
+    let key = GatewayEntryKey::parse("echo-http").unwrap();
+    let entry = crate::fixtures::gateway_entry_fixture(fixture.callable_id.clone());
+    fixture
+        .input
+        .gateway_entries
+        .insert(key.clone(), entry.clone());
+    fixture.input.ingress = vec![
+        DeploymentIngressBinding {
+            selector: IngressSelector {
+                protocol: IngressProtocol::Http,
+                host: "api.example.test".to_string(),
+                method: Some("POST".to_string()),
+                path: "/echo".to_string(),
+            },
+            gateway_entry_key: key.clone(),
         },
-        contract_operation_id: operation_id.clone(),
-    }];
-    assert!(matches!(
-        validate_ingress_contracts(
-            &fixture.input,
-            &fixture.contract,
-            &fixture.package_schema_records
-        ),
-        Err(ProjectionError::InvalidWebSocketIngressContract { .. })
-    ));
+        DeploymentIngressBinding {
+            selector: IngressSelector {
+                protocol: IngressProtocol::Http,
+                host: "alias.example.test".to_string(),
+                method: Some("POST".to_string()),
+                path: "/echo".to_string(),
+            },
+            gateway_entry_key: key.clone(),
+        },
+    ];
 
-    let context = fixture
-        .package_schema_records
-        .keys()
-        .next()
-        .expect("fixture context type")
-        .clone();
-    let context_ref = package_context_ref(&fixture, &context);
-    let descriptor = fixture.contract.operations.get_mut(&operation_id).unwrap();
-    descriptor.stable_key = "websocket".to_string();
-    descriptor.contract = websocket_ingress_operation(context_ref);
-    validate_ingress_contracts(
-        &fixture.input,
-        &fixture.contract,
-        &fixture.package_schema_records,
-    )
-    .expect("exact unified WebSocket ABI should pass deployment projection validation");
-
-    let baseline = fixture.contract.operations[&operation_id].contract.clone();
-    let mut invalid = baseline.clone();
-    invalid.parameters[0].name = "request".to_string();
-    fixture
-        .contract
-        .operations
-        .get_mut(&operation_id)
-        .unwrap()
-        .contract = invalid;
-    assert!(validate_ingress_contracts(
-        &fixture.input,
-        &fixture.contract,
-        &fixture.package_schema_records
-    )
-    .is_err());
-
-    let mut suspending = baseline.clone();
-    suspending.may_suspend = true;
-    fixture
-        .contract
-        .operations
-        .get_mut(&operation_id)
-        .unwrap()
-        .contract = suspending;
-    validate_ingress_contracts(
-        &fixture.input,
-        &fixture.contract,
-        &fixture.package_schema_records,
-    )
-    .expect("maySuspend does not change the canonical WebSocket ingress ABI");
-
-    let mut invalid = baseline.clone();
-    invalid.parameters.push(invalid.parameters[0].clone());
-    fixture
-        .contract
-        .operations
-        .get_mut(&operation_id)
-        .unwrap()
-        .contract = invalid;
-    assert!(validate_ingress_contracts(
-        &fixture.input,
-        &fixture.contract,
-        &fixture.package_schema_records
-    )
-    .is_err());
-
-    let mut invalid = baseline.clone();
-    invalid.parameters[0].ty = ContractTypeRef::Builtin {
-        name: WEBSOCKET_INGRESS_EVENT_TYPE.to_string(),
-        arguments: vec![ContractTypeRef::builtin("string")],
-    };
-    fixture
-        .contract
-        .operations
-        .get_mut(&operation_id)
-        .unwrap()
-        .contract = invalid;
-    assert!(validate_ingress_contracts(
-        &fixture.input,
-        &fixture.contract,
-        &fixture.package_schema_records
-    )
-    .is_err());
-
-    let mut invalid = baseline.clone();
-    invalid.return_value.ty = ContractTypeRef::builtin("null");
-    fixture
-        .contract
-        .operations
-        .get_mut(&operation_id)
-        .unwrap()
-        .contract = invalid;
-    assert!(validate_ingress_contracts(
-        &fixture.input,
-        &fixture.contract,
-        &fixture.package_schema_records
-    )
-    .is_err());
-
-    let mut invalid = baseline;
-    invalid.stream = BoundaryStreamContract::ServerStream {
-        item_type: ContractTypeRef::builtin("string"),
-        item_value_plan: linkable_plan(BoundaryValueOwner::Provider),
-    };
-    fixture
-        .contract
-        .operations
-        .get_mut(&operation_id)
-        .unwrap()
-        .contract = invalid;
-    assert!(validate_ingress_contracts(
-        &fixture.input,
-        &fixture.contract,
-        &fixture.package_schema_records
-    )
-    .is_err());
+    let deployment = fixture.project().unwrap();
+    assert_eq!(
+        deployment.gateway_entries,
+        BTreeMap::from([(key.clone(), entry)])
+    );
+    assert_eq!(deployment.ingress.len(), 2);
+    assert!(deployment
+        .ingress
+        .iter()
+        .all(|binding| binding.gateway_entry_key == key));
 }
 
 #[test]
-fn websocket_ingress_admission_rejects_non_persistable_context_graphs() {
+fn projection_accepts_zero_operation_contract_and_empty_gateway_surface() {
     let mut fixture = ProjectionFixture::new();
-    let operation_id = fixture
-        .contract
-        .operations
-        .keys()
-        .next()
-        .expect("fixture operation")
-        .clone();
-    fixture.input.ingress = vec![DeploymentIngressBinding {
-        selector: IngressSelector {
-            protocol: IngressProtocol::WebSocket,
-            host: "socket.example.test".to_string(),
-            method: None,
-            path: "/socket".to_string(),
-        },
-        contract_operation_id: operation_id.clone(),
-    }];
-    let context_id = fixture
-        .package_schema_records
-        .keys()
-        .next()
-        .expect("fixture context type")
-        .clone();
-    let descriptor = fixture.contract.operations.get_mut(&operation_id).unwrap();
-    descriptor.stable_key = WEBSOCKET_INGRESS_OPERATION_NAME.to_string();
-    descriptor.contract = websocket_ingress_operation(ContractTypeRef::builtin("null"));
-    validate_ingress_contracts(
-        &fixture.input,
-        &fixture.contract,
-        &fixture.package_schema_records,
-    )
-    .expect("null Context must pass deployment admission");
+    fixture.contract.operations.clear();
+    fixture.contract.package_type_requirements.clear();
+    assign_service_contract_identities(&mut fixture.contract).unwrap();
+    fixture.input.contract = contract_ref(&fixture.contract);
+    fixture.input.operation_bindings.clear();
+    fixture.input.gateway_entries.clear();
+    fixture.input.ingress.clear();
+    fixture.package_schema_records.clear();
 
-    fixture
-        .contract
-        .operations
-        .get_mut(&operation_id)
-        .unwrap()
-        .contract = websocket_ingress_operation(package_context_ref(&fixture, &context_id));
-    validate_ingress_contracts(
-        &fixture.input,
-        &fixture.contract,
-        &fixture.package_schema_records,
-    )
-    .expect("persistable nominal Context must pass deployment admission");
-
-    fixture
-        .package_schema_records
-        .get_mut(&context_id)
-        .unwrap()
-        .canonical_descriptor
-        .descriptor = ContractTypeDescriptor::CallbackInterface {
-        operations: BTreeMap::new(),
-    };
-    assert_websocket_admission_error_contains(&fixture, "CallbackInterface");
-
-    fixture
-        .package_schema_records
-        .get_mut(&context_id)
-        .unwrap()
-        .canonical_descriptor
-        .descriptor = ContractTypeDescriptor::Record {
-        fields: BTreeMap::from([(
-            "self".to_string(),
-            package_context_ref(&fixture, &context_id),
-        )]),
-    };
-    assert_websocket_admission_error_contains(&fixture, "package schema cycle");
-
-    let missing_id = PackageSchemaTypeId::new("type:foreign-or-missing");
-    fixture
-        .package_schema_records
-        .get_mut(&context_id)
-        .unwrap()
-        .canonical_descriptor
-        .descriptor = ContractTypeDescriptor::Record {
-        fields: BTreeMap::from([(
-            "foreign".to_string(),
-            ContractTypeRef::package_schema("example.provider", "missing", missing_id),
-        )]),
-    };
-    assert_websocket_admission_error_contains(&fixture, "outside ServiceContract requirements");
-}
-
-fn assert_websocket_admission_error_contains(fixture: &ProjectionFixture, expected: &str) {
-    let error = validate_ingress_contracts(
-        &fixture.input,
-        &fixture.contract,
-        &fixture.package_schema_records,
-    )
-    .expect_err("invalid WebSocket Context must fail deployment admission");
-    let ProjectionError::InvalidWebSocketIngressContract { message, .. } = error else {
-        panic!("expected WebSocket ingress admission error, got {error:?}")
-    };
-    assert!(
-        message.contains(expected),
-        "expected `{expected}` in `{message}`"
-    );
-}
-
-fn package_context_ref(
-    fixture: &ProjectionFixture,
-    type_id: &PackageSchemaTypeId,
-) -> ContractTypeRef {
-    let record = &fixture.package_schema_records[type_id];
-    ContractTypeRef::package_schema(
-        record.package_id.clone(),
-        record.stable_schema_key.clone(),
-        type_id.clone(),
-    )
+    let deployment = fixture
+        .project()
+        .expect("a zero-operation contract must project with no gateway surface");
+    assert!(deployment.operation_bindings.is_empty());
+    assert!(deployment.gateway_entries.is_empty());
+    assert!(deployment.ingress.is_empty());
 }
 
 #[test]
@@ -1063,40 +897,6 @@ fn contract_ref(contract: &ServiceContract) -> ServiceContractRef {
         service_id: contract.service_id.clone(),
         contract_version: contract.contract_version.clone(),
         service_protocol_identity: contract.service_protocol_identity.clone(),
-    }
-}
-
-fn websocket_ingress_operation(context: ContractTypeRef) -> BoundaryOperationContract {
-    BoundaryOperationContract {
-        parameters: vec![BoundaryParameter {
-            name: "event".to_string(),
-            ty: ContractTypeRef::Builtin {
-                name: WEBSOCKET_INGRESS_EVENT_TYPE.to_string(),
-                arguments: vec![context.clone()],
-            },
-            value_plan: linkable_plan(BoundaryValueOwner::Caller),
-        }],
-        return_value: BoundaryReturn {
-            ty: ContractTypeRef::Nullable {
-                inner: Box::new(ContractTypeRef::Builtin {
-                    name: WEBSOCKET_CONNECT_RESULT_TYPE.to_string(),
-                    arguments: vec![context],
-                }),
-            },
-            value_plan: linkable_plan(BoundaryValueOwner::Provider),
-        },
-        stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::NotCancellable,
-        callbacks: BoundaryCallbackContract::None,
-        may_suspend: false,
-        effect_guarantee: BoundaryEffectGuarantee {
-            detached_parameters: true,
-            detached_return: true,
-            detached_error: true,
-            no_caller_reachable_mutation: true,
-            no_caller_value_escape: true,
-            no_same_heap_identity: true,
-        },
     }
 }
 

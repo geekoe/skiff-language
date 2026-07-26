@@ -178,7 +178,7 @@ function generationReceipt(environment, assembly, production, overlay, deploymen
     ...receipt.candidate.entrypoints[1].deployment,
     deploymentRevision: `smoke-${production.repeat(64)}`,
     deploymentArtifactIdentity:
-      identity('skiff-deployment-artifact-v1:sha256', deployment),
+      identity('skiff-deployment-artifact-v2:sha256', deployment),
   };
   receipt.candidate.entrypoints[1].deployment = smokeDeployment;
   receipt.candidate.entrypoints[2].deployment = structuredClone(smokeDeployment);

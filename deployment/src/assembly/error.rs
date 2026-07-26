@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use skiff_artifact_identity::ArtifactIdentityError;
 use skiff_artifact_model::{
-    ContractOperationId, IngressSelector, PackageArtifactRef, PackageBuildId, PackageRequirement,
+    ContractOperationId, GatewayEntryKey, PackageArtifactRef, PackageBuildId, PackageRequirement,
     PackageRequirementKey, ServiceContractRef, ServiceDeploymentRef, ServiceProtocolIdentity,
     ServiceRequirementKey,
 };
@@ -131,19 +131,11 @@ pub enum AssemblyResolutionError {
     },
 
     #[error(
-        "activation {activation:?} ingress uses operation {operation}, which is absent from {contract:?}"
+        "activation {activation:?} has deployment gateway ingress {gateway_entry_keys:?}, but RuntimeAssembly gateway entries are not yet linked"
     )]
-    MissingIngressOperation {
+    GatewayIngressNotLinked {
         activation: ServiceDeploymentRef,
-        contract: ServiceContractRef,
-        operation: ContractOperationId,
-    },
-
-    #[error("global ingress selector {selector:?} is owned by both {first:?} and {second:?}")]
-    IngressCollision {
-        selector: IngressSelector,
-        first: ServiceDeploymentRef,
-        second: ServiceDeploymentRef,
+        gateway_entry_keys: Vec<GatewayEntryKey>,
     },
 }
 

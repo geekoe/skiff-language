@@ -14,20 +14,24 @@ use skiff_artifact_model::{
     CallTargetIr, CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
     CallableSemanticFacts, CanonicalPackageLinkPlan, ConfigLiteralBinding, ContractDiagnosticText,
     ContractOperationId, ContractRequirement, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
-    ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, ExprRefIr, FileIrRef, FileIrUnit,
-    GlobalIngressBinding, IngressProtocol, IngressSelector, InstructionSourceSite, MetadataValue,
-    OperationCallableKind, OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBinding,
-    PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableRef,
-    PackageCallableSignature, PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
-    PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    PackageTypeRef, PublicationResourceRef, ResolvedServiceBinding, ResourceBinding,
-    ResourcePolicy, RuntimeAssembly, SecretRefBinding, ServiceBindingTemplate, ServiceCallRef,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
-    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
-    SlotLayout, StateBinding, StateBindingKind, SyntheticInstructionSiteReason, TypeDeclIr,
-    TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy,
+    DeploymentRevision, ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, ExprRefIr, FileIrRef,
+    FileIrUnit, GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource,
+    GatewayDispatchMode, GatewayEntryKey, GatewayEntryProtocolSurface,
+    GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
+    GatewayProtocolSurface, GlobalIngressBinding, IngressProtocol, IngressSelector,
+    InstructionSourceSite, MetadataValue, OperationCallableKind, OperationTargetRef,
+    PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId,
+    PackageCallableLinkFact, PackageCallableRef, PackageCallableSignature, PackageCodeSlot,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageRefIr, PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
+    PackageSchemaIndex, PackageSchemaIndexRef, PackageTypeRef, PublicationResourceRef,
+    ResolvedServiceBinding, ResourceBinding, ResourcePolicy, RuntimeAssembly, SecretRefBinding,
+    ServiceBindingTemplate, ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey,
+    ServiceSelectorBinding, SlotLayout, StateBinding, StateBindingKind,
+    SyntheticInstructionSiteReason, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::RuntimeAssemblyContentResolver;
@@ -343,11 +347,12 @@ impl CycleFixture {
                 activation_template(&activation_a, &deployment_a),
                 activation_template(&activation_b, &deployment_b),
             ],
-            global_ingress: vec![GlobalIngressBinding::from((
-                &activation_a,
-                &contract_ref,
-                &deployment_a.ingress[0],
-            ))],
+            global_ingress: vec![GlobalIngressBinding {
+                selector: ingress_selector.clone(),
+                deployment: activation_a.clone(),
+                contract: contract_ref.clone(),
+                contract_operation_id: operation_id.clone(),
+            }],
         };
         skiff_artifact_identity::assign_runtime_assembly_identity(&mut assembly).unwrap();
 
@@ -823,6 +828,20 @@ fn deployment(
         caller_package_build_id: implementation.package_build_id.clone(),
         service_requirement_slot: 0,
     };
+    let (gateway_entries, ingress) = match ingress {
+        Some(selector) => {
+            let gateway_entry_key =
+                GatewayEntryKey::parse("fixture-http").expect("fixture gateway entry key");
+            (
+                BTreeMap::from([(gateway_entry_key.clone(), gateway_entry(callable.clone()))]),
+                vec![DeploymentIngressBinding {
+                    selector,
+                    gateway_entry_key,
+                }],
+            )
+        }
+        None => (BTreeMap::new(), Vec::new()),
+    };
     ServiceDeployment {
         schema_version: SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
         contract: contract.clone(),
@@ -841,13 +860,8 @@ fn deployment(
             key: service_key,
             contract: contract.clone(),
         }],
-        ingress: ingress
-            .into_iter()
-            .map(|selector| DeploymentIngressBinding {
-                selector,
-                contract_operation_id: operation.clone(),
-            })
-            .collect(),
+        gateway_entries,
+        ingress,
         config_literals: vec![ConfigLiteralBinding {
             path: "activation.owner".to_string(),
             value: MetadataValue::String(owner.to_string()),
@@ -871,6 +885,35 @@ fn deployment(
         diagnostic_text: DeploymentDiagnosticText {
             display_name: format!("Cycle {owner}"),
             notes: BTreeMap::new(),
+        },
+    }
+}
+
+fn gateway_entry(handler: PackageCallableId) -> DeploymentGatewayEntry {
+    let protocol_surface = GatewayEntryProtocolSurface {
+        protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
+            adapter_kind: GatewayAdapterKind::TypedJson,
+            dispatch_mode: GatewayDispatchMode::Unary,
+            external_sources: vec![GatewayAdapterSource::HttpBody],
+            request_body_schema: Some(GatewayExternalSchema::String),
+            response_schema: Some(GatewayExternalSchema::String),
+            stream_item_schema: None,
+        }),
+        external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+    };
+    DeploymentGatewayEntry {
+        gateway_entry_identity: skiff_artifact_identity::gateway_entry_identity(&protocol_surface)
+            .expect("fixture gateway surface identity"),
+        protocol_surface,
+        handler,
+        pre: None,
+        guard: None,
+        adapter_plan: GatewayAdapterPlan {
+            kind: GatewayAdapterKind::TypedJson,
+            args: vec![GatewayAdapterArg {
+                param: "body".to_string(),
+                source: GatewayAdapterSource::HttpBody,
+            }],
         },
     }
 }

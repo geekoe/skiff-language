@@ -99,12 +99,12 @@ name = "streams_emit"
 path = "tests/streams_emit.rs"
 
 [[test]]
-name = "websocket_ingress"
-path = "tests/websocket_ingress.rs"
-
-[[test]]
 name = "test_artifact_identity"
 path = "tests/test_artifact_identity.rs"
+
+[[test]]
+name = "websocket_ingress"
+path = "tests/websocket_ingress.rs"
 
 [[test]]
 name = "generated_service_deployment"

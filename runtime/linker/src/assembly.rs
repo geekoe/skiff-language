@@ -503,60 +503,20 @@ fn link_service_bindings(
 
 fn link_ingress(
     hydrated: &HydratedRuntimeAssembly,
-    activations: &BTreeMap<ServiceDeploymentRef, LinkedActivationTemplate>,
-    contracts: &ServiceContractStore,
+    _activations: &BTreeMap<ServiceDeploymentRef, LinkedActivationTemplate>,
+    _contracts: &ServiceContractStore,
 ) -> anyhow::Result<BTreeMap<IngressSelector, GlobalIngressBinding>> {
-    let mut expected = BTreeSet::new();
-    for (deployment_ref, deployment) in hydrated.deployments() {
-        for binding in &deployment.ingress {
-            expected.insert((
-                binding.selector.clone(),
-                deployment_ref.clone(),
-                deployment.contract.clone(),
-                binding.contract_operation_id.clone(),
-            ));
-        }
+    if !hydrated.assembly().global_ingress.is_empty() {
+        anyhow::bail!(
+            "legacy RuntimeAssembly globalIngress is not accepted before deployment gateway entries are linked"
+        );
     }
-
-    let mut ingress = BTreeMap::new();
-    let mut actual = BTreeSet::new();
-    for binding in &hydrated.assembly().global_ingress {
-        let activation = activations.get(&binding.deployment).ok_or_else(|| {
-            anyhow::anyhow!(
-                "ingress {:?} targets a missing activation",
-                binding.selector
-            )
-        })?;
-        if activation.contract() != &binding.contract
-            || activation
-                .operation(&binding.contract_operation_id)
-                .is_none()
-            || contracts
-                .operation_descriptor(&binding.contract, &binding.contract_operation_id)
-                .is_none()
-        {
-            anyhow::bail!(
-                "ingress {:?} targets a dangling contract operation",
-                binding.selector
-            );
-        }
-        actual.insert((
-            binding.selector.clone(),
-            binding.deployment.clone(),
-            binding.contract.clone(),
-            binding.contract_operation_id.clone(),
-        ));
-        if ingress
-            .insert(binding.selector.clone(), binding.clone())
-            .is_some()
-        {
-            anyhow::bail!("global ingress collision for {:?}", binding.selector);
-        }
+    if hydrated.deployments().any(|(_, deployment)| {
+        !deployment.gateway_entries.is_empty() || !deployment.ingress.is_empty()
+    }) {
+        anyhow::bail!("deployment gateway ingress is not yet linked by runtime linker");
     }
-    if actual != expected {
-        anyhow::bail!("global ingress does not exactly match deployment ingress");
-    }
-    Ok(ingress)
+    Ok(BTreeMap::new())
 }
 
 #[cfg(test)]

@@ -425,6 +425,8 @@ fn void_deployment(
     contract: &ServiceContract,
     package: &PackageArtifact,
 ) -> ServiceDeployment {
+    let gateway_entry_key =
+        GatewayEntryKey::parse("canonical-void-http").expect("fixture gateway entry key");
     let deployment_input = ServiceDeploymentInput {
         schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
         contract: contract_ref,
@@ -436,6 +438,12 @@ fn void_deployment(
         }],
         package_bindings: Vec::new(),
         service_selectors: Vec::new(),
+        gateway_entries: BTreeMap::from([(
+            gateway_entry_key.clone(),
+            skiff_deployment::fixtures::gateway_entry_fixture(PackageCallableId::new(
+                "callable:canonical-void",
+            )),
+        )]),
         ingress: vec![DeploymentIngressBinding {
             selector: IngressSelector {
                 protocol: IngressProtocol::Http,
@@ -443,7 +451,7 @@ fn void_deployment(
                 method: Some("POST".to_string()),
                 path: "/invoke".to_string(),
             },
-            contract_operation_id: operation_id,
+            gateway_entry_key,
         }],
         config_literals: Vec::new(),
         secret_refs: Vec::new(),

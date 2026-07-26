@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
+
 use skiff_artifact_identity::{
-    assign_runtime_assembly_identity, assign_service_deployment_identity,
+    assign_runtime_assembly_identity, assign_service_deployment_identity, gateway_entry_identity,
     runtime_assembly_identity, runtime_assembly_identity_projection, service_deployment_identity,
     service_deployment_identity_projection, validate_runtime_assembly_identity,
     validate_runtime_assembly_surface, validate_service_deployment_identity,
@@ -7,15 +9,18 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     ConfigLiteralBinding, ContractOperationId, DeploymentIngressBinding,
-    DeploymentOperationBinding, IngressProtocol, IngressSelector, MetadataValue,
-    PackageArtifactRef, PackageBinding, PackageBuildId, PackageLocalAbiIdentity,
-    PackageRequirementKey, ResolvedServiceBinding, ResourceBinding, RuntimeAssembly,
-    RuntimeCapabilityBinding, SecretRefBinding, ServiceDeployment, ServiceRequirementKey,
-    ServiceSelectorBinding, StateBinding, StateBindingKind,
+    DeploymentOperationBinding, GatewayAdapterArg, GatewayAdapterSource, GatewayEntryKey,
+    GatewayExternalSchema, GatewayProtocolSurface, GlobalIngressBinding, IngressProtocol,
+    IngressSelector, MetadataValue, PackageArtifactRef, PackageBinding, PackageBuildId,
+    PackageCallableId, PackageLocalAbiIdentity, PackageRequirementKey, ResolvedServiceBinding,
+    ResourceBinding, RuntimeAssembly, RuntimeCapabilityBinding, SecretRefBinding,
+    ServiceDeployment, ServiceRequirementKey, ServiceSelectorBinding, StateBinding,
+    StateBindingKind,
 };
 
 use crate::fixtures::{
-    empty_runtime_assembly_fixture, runtime_assembly_fixture, service_deployment_fixture,
+    empty_runtime_assembly_fixture, gateway_entry_fixture, runtime_assembly_fixture,
+    service_deployment_fixture,
 };
 
 fn additional_package() -> PackageArtifactRef {
@@ -27,9 +32,24 @@ fn additional_package() -> PackageArtifactRef {
     }
 }
 
+fn runtime_assembly_ingress(assembly: &RuntimeAssembly) -> GlobalIngressBinding {
+    GlobalIngressBinding {
+        selector: IngressSelector {
+            protocol: IngressProtocol::Http,
+            host: "example.test".to_string(),
+            method: Some("POST".to_string()),
+            path: "/echo".to_string(),
+        },
+        deployment: assembly.resolved_deployments[0].clone(),
+        contract: assembly.resolved_contracts[0].clone(),
+        contract_operation_id: ContractOperationId::new("operation.echo"),
+    }
+}
+
 fn rich_deployment() -> ServiceDeployment {
     let mut deployment = service_deployment_fixture().expect("deployment fixture");
     let dependency = additional_package();
+    let health_key = GatewayEntryKey::parse("health").expect("gateway key");
     deployment
         .operation_bindings
         .push(DeploymentOperationBinding {
@@ -50,6 +70,10 @@ fn rich_deployment() -> ServiceDeployment {
         },
         contract: deployment.contract.clone(),
     });
+    deployment.gateway_entries.insert(
+        health_key.clone(),
+        gateway_entry_fixture(PackageCallableId::new("callable.health")),
+    );
     deployment.ingress.push(DeploymentIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::Http,
@@ -57,7 +81,7 @@ fn rich_deployment() -> ServiceDeployment {
             method: Some("GET".to_string()),
             path: "/health".to_string(),
         },
-        contract_operation_id: ContractOperationId::new("operation.health"),
+        gateway_entry_key: health_key,
     });
     deployment.config_literals.push(ConfigLiteralBinding {
         path: "message.suffix".to_string(),
@@ -100,6 +124,38 @@ fn strict_wire_rejects_unknown_and_missing_semantic_fields() {
     let mut missing = serde_json::to_value(&deployment).expect("serialize deployment");
     missing.as_object_mut().unwrap().remove("operationBindings");
     assert!(serde_json::from_value::<ServiceDeployment>(missing).is_err());
+
+    let mut missing_gateway_entries =
+        serde_json::to_value(&deployment).expect("serialize deployment");
+    missing_gateway_entries
+        .as_object_mut()
+        .unwrap()
+        .remove("gatewayEntries");
+    assert!(serde_json::from_value::<ServiceDeployment>(missing_gateway_entries).is_err());
+
+    let mut legacy_ingress = serde_json::to_value(&deployment).expect("serialize deployment");
+    let ingress = legacy_ingress["ingress"][0].as_object_mut().unwrap();
+    ingress.remove("gatewayEntryKey");
+    ingress.insert(
+        "contractOperationId".to_string(),
+        serde_json::json!("operation.echo"),
+    );
+    assert!(serde_json::from_value::<ServiceDeployment>(legacy_ingress).is_err());
+
+    let encoded = serde_json::to_string(&deployment).unwrap();
+    let entry = serde_json::to_string(
+        deployment
+            .gateway_entries
+            .get(&GatewayEntryKey::parse("echo").unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    let unique = format!(r#""gatewayEntries":{{"echo":{entry}}}"#);
+    let duplicate = format!(r#""gatewayEntries":{{"echo":{entry},"echo":{entry}}}"#);
+    assert!(encoded.contains(&unique));
+    assert!(
+        serde_json::from_str::<ServiceDeployment>(&encoded.replace(&unique, &duplicate)).is_err()
+    );
 
     let mut semantic_ref = serde_json::to_value(&deployment.implementation).unwrap();
     semantic_ref.as_object_mut().unwrap().insert(
@@ -146,6 +202,11 @@ fn deployment_identity_is_order_independent_and_excludes_diagnostics() {
     reordered.state_bindings.reverse();
     reordered.resource_bindings.reverse();
     reordered.runtime_capability_bindings.reverse();
+    let entries = reordered.gateway_entries.clone();
+    reordered.gateway_entries = BTreeMap::new();
+    for (key, entry) in entries.into_iter().rev() {
+        reordered.gateway_entries.insert(key, entry);
+    }
     assert_eq!(
         service_deployment_identity(&reordered).expect("reordered identity"),
         expected
@@ -238,6 +299,80 @@ fn deployment_identity_mutation_matrix_covers_every_semantic_category() {
         (
             "ingress",
             Box::new(|value| value.ingress[0].selector.path = "/echo-v2".into()),
+        ),
+        (
+            "gateway key",
+            Box::new(|value| {
+                let old = value.ingress[0].gateway_entry_key.clone();
+                let new = GatewayEntryKey::parse("echo-renamed").unwrap();
+                let entry = value.gateway_entries.remove(&old).unwrap();
+                value.gateway_entries.insert(new.clone(), entry);
+                value.ingress[0].gateway_entry_key = new;
+            }),
+        ),
+        (
+            "gateway protocol surface and identity",
+            Box::new(|value| {
+                let entry = value
+                    .gateway_entries
+                    .get_mut(&GatewayEntryKey::parse("echo").unwrap())
+                    .unwrap();
+                let GatewayProtocolSurface::Http(http) = &mut entry.protocol_surface.protocol;
+                http.response_schema = Some(GatewayExternalSchema::Integer);
+                entry.gateway_entry_identity =
+                    gateway_entry_identity(&entry.protocol_surface).unwrap();
+            }),
+        ),
+        (
+            "gateway handler",
+            Box::new(|value| {
+                value.gateway_entries.values_mut().next().unwrap().handler =
+                    PackageCallableId::new("callable.changed-handler");
+            }),
+        ),
+        (
+            "gateway pre",
+            Box::new(|value| {
+                value.gateway_entries.values_mut().next().unwrap().pre =
+                    Some(PackageCallableId::new("callable.pre"));
+            }),
+        ),
+        (
+            "gateway guard",
+            Box::new(|value| {
+                value.gateway_entries.values_mut().next().unwrap().guard =
+                    Some(PackageCallableId::new("callable.guard"));
+            }),
+        ),
+        (
+            "gateway adapter param",
+            Box::new(|value| {
+                value
+                    .gateway_entries
+                    .values_mut()
+                    .next()
+                    .unwrap()
+                    .adapter_plan
+                    .args[0]
+                    .param = "payload".to_string();
+            }),
+        ),
+        (
+            "gateway adapter source",
+            Box::new(|value| {
+                let entry = value.gateway_entries.values_mut().next().unwrap();
+                entry.adapter_plan.args.push(GatewayAdapterArg {
+                    param: "request".to_string(),
+                    source: GatewayAdapterSource::HttpRequest,
+                });
+                let GatewayProtocolSurface::Http(http) = &mut entry.protocol_surface.protocol;
+                http.external_sources = vec![
+                    GatewayAdapterSource::HttpBody,
+                    GatewayAdapterSource::HttpRequest,
+                ];
+                entry.gateway_entry_identity =
+                    gateway_entry_identity(&entry.protocol_surface).unwrap();
+            }),
         ),
         (
             "config literal",
@@ -374,7 +509,7 @@ fn deployment_validation_rejects_duplicates_dangling_refs_and_tamper() {
     assert!(service_deployment_identity(&duplicate).is_err());
 
     let mut dangling = deployment.clone();
-    dangling.ingress[0].contract_operation_id = "operation.missing".into();
+    dangling.ingress[0].gateway_entry_key = GatewayEntryKey::parse("missing").unwrap();
     assert!(service_deployment_identity(&dangling).is_err());
 
     let mut coordinate_mismatch = deployment.clone();
@@ -477,7 +612,9 @@ fn assembly_identity_includes_graph_link_plan_and_templates() {
     assert_ne!(runtime_assembly_identity(&activation).unwrap(), expected);
 
     let mut ingress = assembly.clone();
-    ingress.global_ingress[0].selector.path = "/echo-v2".to_string();
+    ingress
+        .global_ingress
+        .push(runtime_assembly_ingress(&assembly));
     assert_ne!(runtime_assembly_identity(&ingress).unwrap(), expected);
 }
 
@@ -508,9 +645,8 @@ fn assembly_validation_rejects_dangling_collision_and_tamper() {
     assert!(validate_runtime_assembly_surface(&dangling).is_err());
 
     let mut collision = assembly.clone();
-    collision
-        .global_ingress
-        .push(collision.global_ingress[0].clone());
+    let ingress = runtime_assembly_ingress(&assembly);
+    collision.global_ingress = vec![ingress.clone(), ingress];
     assert!(validate_runtime_assembly_surface(&collision).is_err());
 
     let mut duplicate_slot = assembly.clone();

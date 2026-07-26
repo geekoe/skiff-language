@@ -1,14 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    ConfigLiteralBinding, DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision,
-    PackageArtifactRef, PackageBinding, ResourceBinding, RuntimeCapabilityBinding,
-    SecretRefBinding, ServiceContractRef, ServiceDeployment, ServiceDeploymentInput,
-    ServiceDeploymentRef, ServiceSelectorBinding, StateBinding,
+    validate_gateway_adapter_args, ConfigLiteralBinding, DeploymentGatewayEntry,
+    DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision, GatewayAdapterSource,
+    GatewayEntryKey, GatewayProtocolSurface, PackageArtifactRef, PackageBinding, ResourceBinding,
+    RuntimeCapabilityBinding, SecretRefBinding, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentInput, ServiceDeploymentRef, ServiceSelectorBinding, StateBinding,
     SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
-use crate::{ArtifactIdentityError, Result};
+use crate::{gateway_entry_identity, ArtifactIdentityError, Result};
 
 /// Validate the path-free typed input before projection resolves public paths.
 pub fn validate_service_deployment_input(input: &ServiceDeploymentInput) -> Result<()> {
@@ -35,13 +36,11 @@ pub fn validate_service_deployment_input(input: &ServiceDeploymentInput) -> Resu
             ));
         }
     }
-    if operations.is_empty() {
-        return invalid_deployment("operationBindings must not be empty");
-    }
     validate_shared_bindings(
         &input.implementation,
         &input.package_bindings,
         &input.service_selectors,
+        &input.gateway_entries,
         &input.ingress,
         &input.config_literals,
         &input.secret_refs,
@@ -49,7 +48,6 @@ pub fn validate_service_deployment_input(input: &ServiceDeploymentInput) -> Resu
         &input.resource_bindings,
         &input.runtime_capability_bindings,
         &input.policy,
-        &operations,
     )
 }
 
@@ -81,13 +79,11 @@ pub fn validate_service_deployment_surface(deployment: &ServiceDeployment) -> Re
             ));
         }
     }
-    if operations.is_empty() {
-        return invalid_deployment("operationBindings must not be empty");
-    }
     validate_shared_bindings(
         &deployment.implementation,
         &deployment.package_bindings,
         &deployment.service_selectors,
+        &deployment.gateway_entries,
         &deployment.ingress,
         &deployment.config_literals,
         &deployment.secret_refs,
@@ -95,7 +91,6 @@ pub fn validate_service_deployment_surface(deployment: &ServiceDeployment) -> Re
         &deployment.resource_bindings,
         &deployment.runtime_capability_bindings,
         &deployment.policy,
-        &operations,
     )
 }
 
@@ -104,6 +99,7 @@ fn validate_shared_bindings(
     implementation: &PackageArtifactRef,
     package_bindings: &[PackageBinding],
     service_selectors: &[ServiceSelectorBinding],
+    gateway_entries: &BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     ingress: &[DeploymentIngressBinding],
     config_literals: &[ConfigLiteralBinding],
     secret_refs: &[SecretRefBinding],
@@ -111,11 +107,11 @@ fn validate_shared_bindings(
     resource_bindings: &[ResourceBinding],
     runtime_capability_bindings: &[RuntimeCapabilityBinding],
     policy: &DeploymentPolicy,
-    operation_ids: &BTreeSet<skiff_artifact_model::ContractOperationId>,
 ) -> Result<()> {
     let packages = validate_package_bindings(implementation, package_bindings)?;
     validate_service_selectors(service_selectors, &packages)?;
-    validate_ingress_bindings(ingress, operation_ids)?;
+    validate_gateway_entries(gateway_entries)?;
+    validate_ingress_bindings(ingress, gateway_entries)?;
     validate_activation_inputs(
         config_literals,
         secret_refs,
@@ -183,21 +179,86 @@ fn validate_service_selectors(
 
 fn validate_ingress_bindings(
     ingress: &[DeploymentIngressBinding],
-    operation_ids: &BTreeSet<skiff_artifact_model::ContractOperationId>,
+    gateway_entries: &BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
 ) -> Result<()> {
     let mut selectors = BTreeSet::new();
+    let mut referenced_entries = BTreeSet::new();
     for binding in ingress {
         validate_ingress(binding)?;
-        if !operation_ids.contains(&binding.contract_operation_id) {
+        if !gateway_entries.contains_key(&binding.gateway_entry_key) {
             return invalid_deployment(format!(
-                "ingress selector references unbound operation {}",
-                binding.contract_operation_id
+                "ingress selector references missing gateway entry {}",
+                binding.gateway_entry_key
             ));
         }
+        referenced_entries.insert(&binding.gateway_entry_key);
         if !selectors.insert(binding.selector.clone()) {
             return invalid_deployment(format!(
                 "duplicate ingress selector {:?}",
                 binding.selector
+            ));
+        }
+    }
+    if let Some(orphan) = gateway_entries
+        .keys()
+        .find(|key| !referenced_entries.contains(key))
+    {
+        return invalid_deployment(format!(
+            "gateway entry {orphan} is not referenced by any ingress selector"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_gateway_entries(
+    entries: &BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
+) -> Result<()> {
+    for (key, entry) in entries {
+        require_non_empty("gateway entry key", key.as_str())?;
+        require_non_empty("gateway handler callable id", entry.handler.as_str())?;
+        if let Some(pre) = &entry.pre {
+            require_non_empty("gateway pre callable id", pre.as_str())?;
+        }
+        if let Some(guard) = &entry.guard {
+            require_non_empty("gateway guard callable id", guard.as_str())?;
+        }
+
+        let computed = gateway_entry_identity(&entry.protocol_surface)?;
+        if entry.gateway_entry_identity != computed {
+            return invalid_deployment(format!(
+                "gateway entry {key} identity mismatch: declared {}, computed {computed}",
+                entry.gateway_entry_identity
+            ));
+        }
+
+        let GatewayProtocolSurface::Http(http) = &entry.protocol_surface.protocol;
+        if entry.adapter_plan.kind != http.adapter_kind {
+            return invalid_deployment(format!(
+                "gateway entry {key} adapter plan kind {:?} does not match HTTP protocol kind {:?}",
+                entry.adapter_plan.kind, http.adapter_kind
+            ));
+        }
+        validate_gateway_adapter_args(
+            entry.adapter_plan.kind,
+            entry.pre.is_some(),
+            &entry.adapter_plan.args,
+        )
+        .map_err(|error| ArtifactIdentityError::InvalidServiceDeployment {
+            message: format!("gateway entry {key} adapter plan is invalid: {error}"),
+        })?;
+
+        let mut external_sources = entry
+            .adapter_plan
+            .args
+            .iter()
+            .map(|arg| arg.source)
+            .filter(|source| source.is_external_protocol_source())
+            .collect::<Vec<GatewayAdapterSource>>();
+        external_sources.sort_by_key(|source| source.wire_name());
+        external_sources.dedup();
+        if external_sources != http.external_sources {
+            return invalid_deployment(format!(
+                "gateway entry {key} external protocol sources do not match adapter plan"
             ));
         }
     }
@@ -343,9 +404,9 @@ fn validate_ingress(binding: &DeploymentIngressBinding) -> Result<()> {
             require_non_empty("HTTP ingress method", method)?;
         }
         skiff_artifact_model::IngressProtocol::WebSocket => {
-            if binding.selector.method.is_some() {
-                return invalid_deployment("WebSocket ingress must not declare method");
-            }
+            return invalid_deployment(
+                "current deployment generation accepts only HTTP gateway ingress",
+            );
         }
     }
     Ok(())

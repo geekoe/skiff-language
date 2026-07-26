@@ -58,7 +58,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         self.resolved_deployments
             .insert(reference.clone(), deployment);
 
-        let contract = self.candidates.contract(&deployment.contract)?;
+        self.candidates.contract(&deployment.contract)?;
         self.resolved_contracts.insert(deployment.contract.clone());
 
         let packages = self.resolve_activation_packages(&reference, deployment)?;
@@ -117,7 +117,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         }
         self.reject_unused_service_selectors(&reference, deployment, &used_selector_keys)?;
         self.insert_templates(&reference, deployment, bindings);
-        self.insert_ingress(&reference, deployment, contract)
+        self.reject_unlinked_gateway_ingress(&reference, deployment)
     }
 
     fn reject_unused_service_selectors(
@@ -175,36 +175,24 @@ impl<'a, 'c> Resolver<'a, 'c> {
             .insert(reference.clone(), activation);
     }
 
-    fn insert_ingress(
-        &mut self,
+    fn reject_unlinked_gateway_ingress(
+        &self,
         reference: &ServiceDeploymentRef,
         deployment: &ServiceDeployment,
-        contract: &skiff_artifact_model::ServiceContract,
     ) -> AssemblyResult<()> {
-        for ingress in &deployment.ingress {
-            if !contract
-                .operations
-                .contains_key(&ingress.contract_operation_id)
-            {
-                return Err(AssemblyResolutionError::MissingIngressOperation {
-                    activation: reference.clone(),
-                    contract: deployment.contract.clone(),
-                    operation: ingress.contract_operation_id.clone(),
-                });
-            }
-            let binding = GlobalIngressBinding::from((reference, &deployment.contract, ingress));
-            if let Some(existing) = self
-                .global_ingress
-                .insert(ingress.selector.clone(), binding)
-            {
-                return Err(AssemblyResolutionError::IngressCollision {
-                    selector: ingress.selector.clone(),
-                    first: existing.deployment,
-                    second: reference.clone(),
-                });
-            }
+        if deployment.ingress.is_empty() {
+            return Ok(());
         }
-        Ok(())
+        Err(AssemblyResolutionError::GatewayIngressNotLinked {
+            activation: reference.clone(),
+            gateway_entry_keys: deployment
+                .ingress
+                .iter()
+                .map(|binding| binding.gateway_entry_key.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        })
     }
 
     fn resolve_activation_packages(

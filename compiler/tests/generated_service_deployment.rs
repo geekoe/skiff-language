@@ -30,6 +30,7 @@ fn generates_exact_operations_and_profile_bindings() {
         skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap()
     );
     assert_eq!(deployment.operation_bindings.len(), 1);
+    assert!(deployment.gateway_entries.is_empty());
     assert!(deployment.ingress.is_empty());
     assert_eq!(deployment.config_literals[0].path, "registry.token");
     assert_eq!(deployment.policy.principal, "service:registry");
@@ -208,6 +209,31 @@ http:
     let message = error.to_string();
     assert!(message.contains("named HTTP gateway entries"));
     assert!(message.contains("refusing to reinterpret them as service operations"));
+}
+
+#[test]
+fn generated_service_deployment_refuses_legacy_websocket_operation_ingress() {
+    let (project, service_api) = compile_fixture("generated-websocket-fail-closed", "\"ok\"");
+    let mut service = manifest();
+    service.websocket = Some(json!({
+        "routes": [{
+            "path": "/events",
+            "operation": "read"
+        }]
+    }));
+    let error = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &service,
+        profile_name: "prod",
+        profile: &profile(),
+        service_api: &service_api,
+        implementation: &project.package.artifact,
+        package_closure: &[],
+        package_schema_records: &project.package.resolved_package_schema_type_records,
+    })
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("WebSocket business gateway entries are not defined"));
+    assert!(message.contains("refusing legacy operation ingress"));
 }
 
 #[test]

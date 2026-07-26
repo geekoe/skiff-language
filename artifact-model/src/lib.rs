@@ -107,12 +107,13 @@ pub use contract_types::{
     PackageSchemaTypeRecordRef, PackageSchemaTypeRef, PackageTypeRef, PackageTypeRequirement,
 };
 pub use deployment::{
-    ActivationPolicy, ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentIngressBinding,
-    DeploymentOperationBinding, DeploymentPolicy, IngressProtocol, IngressSelector,
-    PackageArtifactRef, PackageBinding, PackageRequirementKey, ResourceBinding, ResourcePolicy,
-    RuntimeCapabilityBinding, SecretRefBinding, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentInput, ServiceDeploymentOperationInput, ServiceDeploymentRef,
-    ServiceRequirementKey, ServiceSelectorBinding, StateBinding, StateBindingKind,
+    ActivationPolicy, ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentGatewayEntry,
+    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, GatewayAdapterPlan,
+    IngressProtocol, IngressSelector, PackageArtifactRef, PackageBinding, PackageRequirementKey,
+    ResourceBinding, ResourcePolicy, RuntimeCapabilityBinding, SecretRefBinding,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentOperationInput,
+    ServiceDeploymentRef, ServiceRequirementKey, ServiceSelectorBinding, StateBinding,
+    StateBindingKind,
 };
 pub use ecosystem_authoring::{
     is_dependency_alias_lexically_valid, is_dependency_alias_reserved, is_dependency_alias_valid,

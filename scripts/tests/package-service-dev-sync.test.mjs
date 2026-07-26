@@ -176,5 +176,5 @@ const dummyDeploymentRef = {
   serviceId: 'example.com/health',
   contractVersion: '1.0.0',
   deploymentRevision: 'revision-1',
-  deploymentArtifactIdentity: `skiff-service-deployment-v1:sha256:${'2'.repeat(64)}`,
+  deploymentArtifactIdentity: `skiff-deployment-artifact-v2:sha256:${'2'.repeat(64)}`,
 };
