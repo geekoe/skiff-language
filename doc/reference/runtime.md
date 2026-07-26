@@ -217,7 +217,9 @@ External stream source error 映射为当前 lane 的 ordinary throw。若 serve
 
 ## 10. HTTP entry
 
-HTTP entry 是 gateway-selected raw HTTP dispatch，不是 service-to-service API。
+HTTP entry 是gateway-selected external HTTP dispatch，不是service-to-service API。External caller既可以是
+浏览器、移动端或CLI客户端，也可以是支付回调等第三方服务器；反向代理和上游HTTP/SSE转发同样属于该入口。
+Skiff service之间的调用始终使用ServiceContract，不通过HTTP entry伪装。
 
 Router根据trusted selector、deployment/activation和loaded gateway entry metadata调用HTTP handler。该
 handler由`service.yml`选择，不要求进入`api.yml`或ServiceContract。Router不按display/source path猜target，
@@ -232,15 +234,18 @@ server stream，适合在不聚合完整body的情况下转发上游HTTP/SSE；e
 不需要理解Skiff的`Stream<T>`。`start`前的runtime error写platform JSON error；`start`后的error首轮按
 连接中断处理。Client disconnect必须向runtime发送cancel。
 
-Typed HTTP route 是 compiler-generated unary wrapper，不是 router framework。Router 仍只选择 service/version/route 并发起 HTTP dispatch；wrapper 在 service runtime 内执行 `http.pre`、JSON body decode、handler 调用和 HTTP 200 JSON encode。`typedJson` handler不能返回任意`Stream<T>`；需要保留上游status、headers或按到达顺序转发body chunk时必须声明`rawHttp`。越过 wrapper 的 `std.http.HttpError`、decode error 或平台错误通过 runtime `response.error` 映射为非 2xx platform error response。该 HTTP response body 固定为 JSON `{ "message": string, "detail": Json? }`，不暴露 internal `code` 或业务指定 status；平台策略选择 status，例如 body/schema decode 为 400、handler / `http.pre` 未捕获异常为 500、timeout 为 504、runtime/dependency unavailable 为 503。
+Typed HTTP route 是 compiler-generated unary wrapper，不是 router framework。Router 仍只选择 service/version/route 并发起 HTTP dispatch；wrapper 在 service runtime 内执行 `http.pre`、JSON body decode、handler 调用和 HTTP 200 JSON encode。`typedJson` handler不能返回任意`Stream<T>`；需要保留原始request bytes/headers做签名校验、控制status/response headers、转发binary body或按到达顺序转发body chunk时必须声明`rawHttp`。越过 wrapper 的 `std.http.HttpError`、decode error 或平台错误通过 runtime `response.error` 映射为非 2xx platform error response。该 HTTP response body 固定为 JSON `{ "message": string, "detail": Json? }`，不暴露 internal `code` 或业务指定 status；平台策略选择 status，例如 body/schema decode 为 400、handler / `http.pre` 未捕获异常为 500、timeout 为 504、runtime/dependency unavailable 为 503。
 
 HTTP status code本身不是throw；业务代码必须检查status。HTTP entry的可观测target id是gateway entry
-target；实际执行deadline由deployment policy/request deadline决定。Host/path/handler mapping变化是
-deployment/ingress配置变化，不改变service protocol identity。
+target。Router作为external connection owner生成request deadline；其budget是平台HTTP request上限与
+deployment `policy.timeoutMs` override中更早者。Host按已admit activation的deployment policy再次收紧并
+执行deadline，wire缺失、放宽或伪造不能绕过该上限。Host/path/handler mapping变化是deployment/ingress
+配置变化，不改变service protocol identity。
 
 ## 11. WebSocket entry
 
-WebSocket entry 只属于客户端直连的 API 层 service。下游业务 service 不拥有 Connection。
+WebSocket entry主要属于客户端直连的API层service。下游业务service不拥有Connection，也不把WebSocket
+当作service-to-service transport。
 
 WebSocket物理连接由gateway/hub维护。Connection拥有connection id、service id、状态、client session、
 actor binding、typed connection context、entry identity、deployment/activation generation和物理socket

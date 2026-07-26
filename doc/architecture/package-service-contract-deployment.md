@@ -746,7 +746,9 @@ Service source的`config.*.yml`选择或提供：
 `timeout`是可选的deployment override。profile缺省或显式`null`都表示不覆盖平台/外层request
 deadline；生成的`DeploymentPolicy`不包含`timeoutMs`。只有显式的正整数毫秒值才生成
 `timeoutMs`，零、负数、小数、字符串或对象都必须fail closed。tooling不得为了通过artifact校验而
-填入虚假的默认timeout。
+填入虚假的默认timeout。External HTTP中，Router以平台HTTP request上限和该override的较小值生成
+request deadline；Host从已admit activation读取同一policy并再次收紧、执行。Deployment override只能
+缩短平台/外层deadline，不能放宽，也不能因wire遗漏或伪造而失效。
 
 tooling把所选profile与精确PackageArtifact、生成的ServiceContract及闭合dependency resolution投影为
 ServiceDeployment。profile不得增加/删除`package.yml`中的package或service dependency。
