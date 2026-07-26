@@ -435,7 +435,7 @@ async fn typed_execution_service_stream_deadline_releases_provider_task_and_leas
 
     let stream = interpreter
         .execute_runtime_assembly_addr(
-            context,
+            context.clone(),
             &mut heap,
             &fixture.consumer_executable_addr(0),
             Vec::new(),
@@ -444,7 +444,13 @@ async fn typed_execution_service_stream_deadline_releases_provider_task_and_leas
         .expect("service call should return its stream before the request deadline");
     assert!(matches!(stream, RuntimeValue::Heap(_)));
 
-    wait_for_stream_runtime_empty(&interpreter.stream_runtime).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while skiff_runtime_eval::provider_stream_tasks_active_for_test() == baseline {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("detached provider task must start before deadline cleanup is observed");
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while skiff_runtime_eval::provider_stream_tasks_active_for_test() != baseline {
             tokio::task::yield_now().await;
@@ -457,6 +463,14 @@ async fn typed_execution_service_stream_deadline_releases_provider_task_and_leas
         provider.provider_request().open_stream().is_none(),
         "deadline must cancel the provider request and release its stream lease"
     );
+    assert_eq!(
+        crate::eval_capability_adapter::concrete_stream_runtime(&interpreter.stream_runtime)
+            .active_stream_count(),
+        1,
+        "typed deadline terminal must remain registered until request-scope teardown"
+    );
+    drop(context);
+    wait_for_stream_runtime_empty(&interpreter.stream_runtime).await;
 }
 
 #[tokio::test]

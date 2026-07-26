@@ -164,28 +164,51 @@ impl TestStreamRuntime {
         let Some(channel) = channel else {
             return Ok(StreamPoll::End);
         };
-        let event = channel.receiver.lock().await.recv().await;
+        let cancel_notified = channel.cancel_notify.notified();
+        tokio::pin!(cancel_notified);
+        cancel_notified.as_mut().enable();
+        if channel.cancelled.load(Ordering::Acquire) {
+            self.finish_channel(id, &channel);
+            return Err(StreamRuntimeError::cancelled());
+        }
+        let event = {
+            let mut receiver = channel.receiver.lock().await;
+            tokio::select! {
+                biased;
+                _ = &mut cancel_notified => {
+                    self.finish_channel(id, &channel);
+                    return Err(StreamRuntimeError::cancelled());
+                }
+                event = receiver.recv() => event,
+            }
+        };
         match event {
             Some(TestStreamEvent::Item(item)) => Ok(StreamPoll::Item(item)),
             Some(TestStreamEvent::InternalItem(item)) => Ok(StreamPoll::InternalItem(item)),
             Some(TestStreamEvent::End) | None => {
-                self.channels
-                    .lock()
-                    .expect("test stream mutex poisoned")
-                    .remove(&id);
+                self.finish_channel(id, &channel);
                 Ok(StreamPoll::End)
             }
             Some(TestStreamEvent::Fail(error)) => {
-                self.channels
-                    .lock()
-                    .expect("test stream mutex poisoned")
-                    .remove(&id);
+                self.finish_channel(id, &channel);
                 Err(error)
             }
         }
     }
 
-    fn create_channel(&self) -> (Value, StreamSink) {
+    fn finish_channel(&self, id: u64, channel: &TestStreamChannel) {
+        self.channels
+            .lock()
+            .expect("test stream mutex poisoned")
+            .remove(&id);
+        channel
+            .lifetime
+            .lock()
+            .expect("test stream lifetime mutex poisoned")
+            .take();
+    }
+
+    fn create_channel(&self, lifetime: Option<StreamLifetimeGuard>) -> (Value, StreamSink) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = mpsc::channel(1);
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -199,6 +222,7 @@ impl TestStreamRuntime {
                     receiver: AsyncMutex::new(receiver),
                     cancelled: Arc::clone(&cancelled),
                     cancel_notify: Arc::clone(&cancel_notify),
+                    lifetime: Mutex::new(lifetime),
                 }),
             );
         (
@@ -218,6 +242,7 @@ struct TestStreamChannel {
     receiver: AsyncMutex<mpsc::Receiver<TestStreamEvent>>,
     cancelled: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
+    lifetime: Mutex<Option<StreamLifetimeGuard>>,
 }
 
 #[derive(Debug)]
@@ -365,11 +390,11 @@ impl skiff_runtime_capability_context::StreamCancelSignalApi for TestStreamCance
 
 impl StreamRuntimeApi for TestStreamRuntime {
     fn channel_stream(&self) -> (Value, StreamSink) {
-        self.create_channel()
+        self.create_channel(None)
     }
 
-    fn channel_stream_with_lifetime(&self, _lifetime: StreamLifetimeGuard) -> (Value, StreamSink) {
-        self.create_channel()
+    fn channel_stream_with_lifetime(&self, lifetime: StreamLifetimeGuard) -> (Value, StreamSink) {
+        self.create_channel(Some(lifetime))
     }
 
     fn pull_stream_with_cancellation(
@@ -428,9 +453,14 @@ impl StreamRuntimeApi for TestStreamRuntime {
             .channels
             .lock()
             .expect("test stream mutex poisoned")
-            .get(&id)
+            .remove(&id)
         {
             channel.cancelled.store(true, Ordering::Release);
+            channel
+                .lifetime
+                .lock()
+                .expect("test stream lifetime mutex poisoned")
+                .take();
             channel.cancel_notify.notify_waiters();
         }
     }

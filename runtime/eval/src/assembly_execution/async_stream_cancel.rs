@@ -414,6 +414,10 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
         .await
     };
 
+    finish_provider_stream(producer, terminal).await;
+}
+
+async fn finish_provider_stream(producer: ProviderStreamTask, terminal: ProviderTerminal) {
     match terminal {
         ProviderTerminal::Provider(Ok(_)) => {
             publish_provider_terminal(&producer, ProviderStreamPublication::End).await;
@@ -424,6 +428,9 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
                 .interpreter
                 .stream_runtime
                 .cancel(&producer.stream_value);
+        }
+        ProviderTerminal::Provider(Err(error)) if is_deadline_exceeded(&error) => {
+            publish_provider_deadline_terminal(&producer, error).await;
         }
         ProviderTerminal::Provider(Err(error)) => {
             let provider_context = producer.provider_context.borrow();
@@ -465,12 +472,7 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
                 .cancel(&producer.stream_value);
         }
         ProviderTerminal::DeadlineExceeded(error) => {
-            producer.request.cancel();
-            producer
-                .interpreter
-                .stream_runtime
-                .cancel(&producer.stream_value);
-            let _ = error;
+            publish_provider_deadline_terminal(&producer, error).await;
         }
     }
 }
@@ -494,15 +496,47 @@ async fn publish_provider_terminal(
     .await
     {
         ProviderPublication::Published => {}
-        ProviderPublication::ConsumerCancelled
-        | ProviderPublication::RequestCancelled
-        | ProviderPublication::DeadlineExceeded(_) => {
+        ProviderPublication::ConsumerCancelled | ProviderPublication::RequestCancelled => {
             producer.request.cancel();
             producer
                 .interpreter
                 .stream_runtime
                 .cancel(&producer.stream_value);
         }
+        ProviderPublication::DeadlineExceeded(error) => {
+            publish_provider_deadline_terminal(producer, error).await;
+        }
+    }
+}
+
+async fn publish_provider_deadline_terminal(producer: &ProviderStreamTask, error: RuntimeError) {
+    // Once the deadline branch wins, it is the producer's semantic terminal. Cancel provider
+    // work, but do not race publication against the now-cancelled request or the same expired
+    // deadline: either would downgrade the consumer-visible timeout to cancellation.
+    producer.request.cancel();
+    let publication = producer.sink.fail(StreamRuntimeError::producer(error));
+    tokio::pin!(publication);
+    tokio::select! {
+        biased;
+        _ = producer.stream_cancel.wait_cancelled() => {
+            producer
+                .interpreter
+                .stream_runtime
+                .cancel(&producer.stream_value);
+        }
+        _ = &mut publication => {}
+    }
+}
+
+fn is_deadline_exceeded(error: &RuntimeError) -> bool {
+    match error {
+        RuntimeError::ExecutionBudgetExceeded {
+            reason: crate::error::BudgetReason::DeadlineExceeded,
+            ..
+        } => true,
+        RuntimeError::WithSource { error, .. }
+        | RuntimeError::WithDiagnosticFrame { error, .. } => is_deadline_exceeded(error),
+        _ => false,
     }
 }
 
@@ -1027,6 +1061,17 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct TestLifetimeDrop(Arc<AtomicUsize>);
+
+    impl Drop for TestLifetimeDrop {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    impl StreamLifetimeGuardApi for TestLifetimeDrop {}
+
     fn test_stream_cancel() -> (CancellationToken, StreamCancelSignal) {
         let token = CancellationToken::new();
         (
@@ -1355,6 +1400,154 @@ mod tests {
         assert!(
             publication_request.open_stream().is_none(),
             "publication cancellation must propagate to the provider request"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_stream_deadline_terminal_reaches_pending_consumer_as_typed_timeout() {
+        let (mut task, _, stream_runtime, stream_value, _) = provider_stream_failure_task();
+        stream_runtime.cancel(&stream_value);
+        let lifetime_drops = Arc::new(AtomicUsize::new(0));
+        let (stream_value, sink) = stream_runtime.channel_stream_with_lifetime(
+            StreamLifetimeGuard::new(TestLifetimeDrop(Arc::clone(&lifetime_drops))),
+        );
+        task.stream_value = stream_value.clone();
+        task.stream_cancel = sink.cancel_signal();
+        task.sink = sink;
+        task.execution = test_runtime::execution_control_with_deadline(Some(
+            Instant::now() - std::time::Duration::from_millis(1),
+        ))
+        .owned();
+        let provider_request = task.request.clone();
+        let consumer = tokio::spawn({
+            let stream_runtime = stream_runtime.clone();
+            let stream_value = stream_value.clone();
+            async move { stream_runtime.next(&stream_value).await }
+        });
+
+        let terminal = await_provider_stream_terminal(
+            &task.execution,
+            &task.stream_cancel,
+            std::future::pending(),
+        )
+        .await;
+        finish_provider_stream(task, terminal).await;
+
+        let consumer_result = tokio::time::timeout(std::time::Duration::from_secs(1), consumer)
+            .await
+            .expect("deadline terminal must wake the pending stream consumer")
+            .expect("pending stream consumer must not panic");
+        let error = RuntimeError::from(
+            consumer_result.expect_err("deadline terminal must remain a typed error"),
+        );
+        assert!(
+            matches!(
+                &error,
+                RuntimeError::ExecutionBudgetExceeded {
+                    reason: crate::error::BudgetReason::DeadlineExceeded,
+                    ..
+                }
+            ),
+            "unexpected stream terminal: {error:?}"
+        );
+        assert!(
+            provider_request.open_stream().is_none(),
+            "deadline terminal must cancel the provider request"
+        );
+        assert_eq!(
+            lifetime_drops.load(Ordering::Acquire),
+            1,
+            "typed deadline consumption must release the stream lifetime exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_item_deadline_remains_typed_through_provider_terminal() {
+        let (mut task, _, stream_runtime, stream_value, _) = provider_stream_failure_task();
+        task.execution = test_runtime::execution_control_with_deadline(Some(
+            Instant::now() - std::time::Duration::from_millis(1),
+        ))
+        .owned();
+        let provider_request = task.request.clone();
+        let item_error = await_stream_item_publication(
+            &task.execution,
+            &provider_request,
+            std::future::pending::<StreamRuntimeResult<()>>(),
+        )
+        .await
+        .expect_err("item publication must return its deadline terminal");
+        let consumer = tokio::spawn({
+            let stream_runtime = stream_runtime.clone();
+            let stream_value = stream_value.clone();
+            async move { stream_runtime.next(&stream_value).await }
+        });
+
+        finish_provider_stream(
+            task,
+            ProviderTerminal::Provider(Err(RuntimeError::from(item_error))),
+        )
+        .await;
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), consumer)
+            .await
+            .expect("item deadline terminal must wake the pending consumer")
+            .expect("pending stream consumer must not panic")
+            .expect_err("item deadline must remain a typed terminal");
+        assert!(matches!(
+            RuntimeError::from(error),
+            RuntimeError::ExecutionBudgetExceeded {
+                reason: crate::error::BudgetReason::DeadlineExceeded,
+                ..
+            }
+        ));
+        assert!(
+            provider_request.open_stream().is_none(),
+            "item deadline must cancel the provider request"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_publication_deadline_replaces_blocked_terminal_with_typed_timeout() {
+        let (mut task, _, stream_runtime, stream_value, _) = provider_stream_failure_task();
+        task.sink
+            .send(serde_json::json!("buffered-before-terminal"))
+            .await
+            .expect("test stream buffer must be full before terminal publication");
+        task.execution = test_runtime::execution_control_with_deadline(Some(
+            Instant::now() + std::time::Duration::from_millis(20),
+        ))
+        .owned();
+        let provider_request = task.request.clone();
+        let consumer = async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let first = stream_runtime
+                .next(&stream_value)
+                .await
+                .expect("buffered item must remain visible before the deadline terminal");
+            assert!(matches!(
+                first,
+                skiff_runtime_capability_context::StreamPoll::Item(value)
+                    if value == serde_json::json!("buffered-before-terminal")
+            ));
+            stream_runtime.next(&stream_value).await
+        };
+
+        let ((), consumer_result) = tokio::join!(
+            publish_provider_terminal(&task, ProviderStreamPublication::End),
+            consumer,
+        );
+        let error =
+            consumer_result.expect_err("publication deadline must replace the blocked terminal");
+        assert!(matches!(
+            RuntimeError::from(error),
+            RuntimeError::ExecutionBudgetExceeded {
+                reason: crate::error::BudgetReason::DeadlineExceeded,
+                ..
+            }
+        ));
+        assert!(
+            provider_request.open_stream().is_none(),
+            "publication deadline must cancel the provider request"
         );
     }
 
