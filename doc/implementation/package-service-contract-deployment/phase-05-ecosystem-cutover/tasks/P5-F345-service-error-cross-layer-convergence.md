@@ -1,6 +1,6 @@
 # P5-F345 Service error cross-layer convergence
 
-状态：Ready（C1，test-only）。
+状态：Completed（C1，test-only；实现与合流验证通过，等待 F346 独立验收）。
 
 ## 直接父节点
 
