@@ -42,7 +42,9 @@ export const CHECKER_REGISTRY = Object.freeze([
     },
   ),
   checker('scripts/check-package-store-discovery.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
-    invocations: [invocation('checks:package-store-discovery', 'checks')],
+    invocations: [
+      invocation('implementation:tooling:dev-sync-fixture', 'scripts-dev-sync'),
+    ],
   }),
   checker('scripts/check-publication-resource-archive.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
     invocations: [invocation('checks:publication-resource-archive', 'checks')],

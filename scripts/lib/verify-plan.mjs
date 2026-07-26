@@ -248,11 +248,9 @@ function phaseBuilders({
     ],
     'scripts-syntax': async () => javascriptSyntaxPhases(root),
     'scripts-tests': async () => scriptTestPhases(root),
-    'scripts-dev-sync': async () => [
-      phase(root, 'implementation:tooling:dev-sync-fixture', 'implementation:tooling', 'node', [
-        'scripts/check-package-store-discovery.mjs',
-      ]),
-    ],
+    'scripts-dev-sync': async () => checkerPhases(root, 'scripts-dev-sync', {
+      kind: 'implementation:tooling',
+    }),
     'vscode-type-check': async () => [
       packagePhase(root, 'vscode:type-check', 'vscode', 'vscode', ['run', 'type-check']),
     ],
