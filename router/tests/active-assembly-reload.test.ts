@@ -367,11 +367,15 @@ function fakeSocket(): WebSocket {
 }
 
 function assembly(assemblyIdentity: string): LoadedRuntimeAssembly {
-  return { schemaVersion: 'skiff-runtime-assembly-v1', assemblyIdentity, globalIngress: [] };
+  return {
+    schemaVersion: 'skiff-runtime-assembly-v2',
+    assemblyIdentity,
+    gatewayIngress: []
+  };
 }
 
 function identity(character: string): string {
-  return `skiff-runtime-assembly-v1:sha256:${character.repeat(64)}`;
+  return `skiff-runtime-assembly-v2:sha256:${character.repeat(64)}`;
 }
 
 function controlsOfType(controls: readonly AssemblyActivationControl[], type: string) {

@@ -5,159 +5,496 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { FilesystemRuntimeAssemblySnapshotLoader } from '../src/router/filesystemRuntimeAssemblySnapshotLoader.js';
-import { sha256Hex, stableStringify } from '../src/manifest/identity.js';
 
 const roots: string[] = [];
-const protocolIdentity = serviceProtocolIdentity();
-const assemblyIdentity = runtimeAssemblyIdentity();
-const assemblyPath = `records/runtime-assemblies/${identityHash(assemblyIdentity)}.json`;
-const contractPath =
-  `records/service-contracts/skiff~drun~secho/1.0.0/${identityHash(protocolIdentity)}.json`;
+const ASSEMBLY_IDENTITY =
+  `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+const SERVICE_PROTOCOL_IDENTITY =
+  `skiff-service-protocol-v3:sha256:${'b'.repeat(64)}`;
+const GATEWAY_IDENTITIES = [
+  `skiff-gateway-entry-v1:sha256:${'1'.repeat(64)}`,
+  `skiff-gateway-entry-v1:sha256:${'2'.repeat(64)}`,
+  `skiff-gateway-entry-v1:sha256:${'3'.repeat(64)}`
+] as const;
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 describe('filesystem RuntimeAssembly snapshot loader', () => {
-  it('loads the exact immutable assembly and contract records', async () => {
+  it('loads raw unary, raw server stream and typed unary from exact deployments', async () => {
     const root = await fixtureRoot();
-    await writeJson(root, assemblyPath, assembly());
-    await writeJson(root, contractPath, contract());
+    const fixture = canonicalFixture();
+    await writeFixture(root, fixture);
 
-    await expect(loader(root).load({ assemblyIdentity })).resolves.toMatchObject({
-      assemblyIdentity,
+    const loaded = await loader(root).load({ assemblyIdentity: ASSEMBLY_IDENTITY });
+
+    expect(loaded).toMatchObject({
+      schemaVersion: 'skiff-runtime-assembly-v2',
+      assemblyIdentity: ASSEMBLY_IDENTITY,
       resolvedContracts: [{
         serviceId: 'skiff.run/echo',
         contractVersion: '1.0.0',
-        serviceProtocolIdentity: protocolIdentity
+        serviceProtocolIdentity: SERVICE_PROTOCOL_IDENTITY
       }],
-      globalIngress: []
+      gatewayIngress: [
+        {
+          gatewayEntryKey: 'rawUnary',
+          gatewayEntryIdentity: GATEWAY_IDENTITIES[0],
+          adapterKind: 'rawHttp',
+          operationMode: 'unary'
+        },
+        {
+          gatewayEntryKey: 'rawStream',
+          gatewayEntryIdentity: GATEWAY_IDENTITIES[1],
+          adapterKind: 'rawHttp',
+          operationMode: 'serverStream',
+          timeoutMs: 2_500
+        },
+        {
+          gatewayEntryKey: 'typedUnary',
+          gatewayEntryIdentity: GATEWAY_IDENTITIES[2],
+          adapterKind: 'typedJson',
+          operationMode: 'unary'
+        }
+      ]
     });
+    expect(loaded.gatewayIngress[0]).not.toHaveProperty('timeoutMs');
+    expect(loaded.gatewayIngress[0]).not.toHaveProperty('handler');
+    expect(loaded.gatewayIngress[0]).not.toHaveProperty('adapterPlan');
+    expect(loaded.gatewayIngress[0]).not.toHaveProperty('contractOperationId');
   });
 
-  it('fails closed for missing, malformed and identity-mismatched records', async () => {
+  it('uses declared v2 identities without recomputing Rust-owned content hashes', async () => {
+    const root = await fixtureRoot();
+    const fixture = canonicalFixture();
+    fixture.assembly.roots = [...fixture.assembly.roots].reverse();
+    await writeFixture(root, fixture);
+
+    await expect(
+      loader(root).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).resolves.toMatchObject({ assemblyIdentity: ASSEMBLY_IDENTITY });
+  });
+
+  it('rejects a v1 RuntimeAssembly identity prefix before artifact lookup', async () => {
+    const root = await fixtureRoot();
+    await expect(loader(root).load({
+      assemblyIdentity:
+        `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`
+    })).rejects.toThrow(/reference identity is invalid/);
+  });
+
+  it('fails closed for missing, malformed, mismatched and escaping records', async () => {
     const missing = await fixtureRoot();
-    await expect(loader(missing).load({ assemblyIdentity })).rejects.toThrow(/unavailable/);
+    await expect(
+      loader(missing).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow(/unavailable/);
 
     const malformed = await fixtureRoot();
     await writeText(
       malformed,
-      assemblyPath,
-      `{"assemblyIdentity":${JSON.stringify(assemblyIdentity)},"assemblyIdentity":"duplicate"}`
+      assemblyPath(),
+      `{"assemblyIdentity":${JSON.stringify(ASSEMBLY_IDENTITY)},"assemblyIdentity":"duplicate"}`
     );
-    await expect(loader(malformed).load({ assemblyIdentity })).rejects.toThrow(/strict JSON/);
+    await expect(
+      loader(malformed).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow(/strict JSON/);
 
     const mismatched = await fixtureRoot();
-    await writeJson(mismatched, assemblyPath, {
-      ...assembly(),
-      assemblyIdentity: `skiff-runtime-assembly-v1:sha256:${'c'.repeat(64)}`
-    });
-    await expect(loader(mismatched).load({ assemblyIdentity })).rejects.toThrow(
-      /identity does not match/
+    const fixture = canonicalFixture();
+    await writeFixture(mismatched, fixture);
+    fixture.deployments[0]!.deploymentArtifactIdentity =
+      `skiff-deployment-artifact-v2:sha256:${'f'.repeat(64)}`;
+    await writeJson(
+      mismatched,
+      deploymentPath(deploymentRef(fixture.assembly, 0)),
+      fixture.deployments[0]!
     );
-  });
+    await expect(
+      loader(mismatched).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow(/exact ServiceDeployment reference/);
 
-  it('rejects records whose identity-bearing content was corrupted', async () => {
-    const root = await fixtureRoot();
-    await writeJson(root, assemblyPath, { ...assembly(), roots: [{ tampered: true }] });
-    await writeJson(root, contractPath, contract());
-
-    await expect(loader(root).load({ assemblyIdentity })).rejects.toThrow(
-      /content does not match/
-    );
-  });
-
-  it('fails closed when a referenced contract is absent or mismatched', async () => {
-    const missing = await fixtureRoot();
-    await writeJson(missing, assemblyPath, assembly());
-    await expect(loader(missing).load({ assemblyIdentity })).rejects.toThrow(/ServiceContract.*unavailable/);
-
-    const mismatched = await fixtureRoot();
-    await writeJson(mismatched, assemblyPath, assembly());
-    await writeJson(mismatched, contractPath, {
-      ...contract(),
-      serviceProtocolIdentity: `skiff-service-protocol-v3:sha256:${'c'.repeat(64)}`
-    });
-    await expect(loader(mismatched).load({ assemblyIdentity })).rejects.toThrow(
-      /identity does not match/
-    );
-  });
-
-  it('rejects record symlinks that escape artifactsPath', async () => {
-    const root = await fixtureRoot();
+    const escaping = await fixtureRoot();
     const outside = await fixtureRoot();
     const outsideAssembly = join(outside, 'assembly.json');
-    await writeFile(outsideAssembly, JSON.stringify(assembly()));
-    const target = join(root, assemblyPath);
+    await writeFile(outsideAssembly, JSON.stringify(canonicalFixture().assembly));
+    const target = join(escaping, assemblyPath());
     await mkdir(dirname(target), { recursive: true });
     await symlink(outsideAssembly, target);
-
-    await expect(loader(root).load({ assemblyIdentity })).rejects.toThrow(/escapes artifactsPath/);
+    await expect(
+      loader(escaping).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow(/escapes artifactsPath/);
   });
 
-  it('loads the exact Actor method catalog from package code slots and File IR', async () => {
+  it.each([
+    {
+      name: 'v1 schema',
+      mutate: (fixture: Fixture) => {
+        fixture.assembly.schemaVersion = 'skiff-runtime-assembly-v1';
+      }
+    },
+    {
+      name: 'globalIngress',
+      mutate: (fixture: Fixture) => {
+        fixture.assembly.globalIngress = fixture.assembly.gatewayIngress;
+        delete fixture.assembly.gatewayIngress;
+      }
+    },
+    {
+      name: 'contract operation',
+      mutate: (fixture: Fixture) => {
+        fixture.assembly.gatewayIngress[0].contractOperationId =
+          `skiff-contract-operation-v1:sha256:${'c'.repeat(64)}`;
+      }
+    },
+    {
+      name: 'WebSocket selector',
+      mutate: (fixture: Fixture) => {
+        fixture.assembly.gatewayIngress[0].selector.protocol = 'webSocket';
+        fixture.assembly.gatewayIngress[0].selector.method = null;
+      }
+    }
+  ])('rejects legacy RuntimeAssembly surface: $name', async ({ mutate }) => {
     const root = await fixtureRoot();
-    const packageBuildId = `skiff-package-build-v4:sha256:${'a'.repeat(64)}`;
-    const fileIdentity = `skiff-file-ir-v5:sha256:${'b'.repeat(64)}`;
-    const value = {
-      ...assembly(),
-      packageLinkPlan: {
-        codeSlots: [{
-          package: {
-            packageId: 'skiff.run/actors',
-            packageVersion: '1.0.0',
-            packageBuildId,
-            packageLocalAbiIdentity:
-              `skiff-package-local-abi-v4:sha256:${'c'.repeat(64)}`,
-          },
-        }],
-        packageLinks: [],
-      },
-    };
-    const identity = assemblyIdentityFor(value);
-    const withIdentity = { ...value, assemblyIdentity: identity };
+    const fixture = canonicalFixture();
+    mutate(fixture);
+    await writeFixture(root, fixture);
+
+    await expect(
+      loader(root).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow();
+  });
+
+  it.each([
+    {
+      name: 'wrong key',
+      mutate: (fixture: Fixture) => {
+        fixture.assembly.gatewayIngress[0].gatewayEntryKey = 'other';
+      }
+    },
+    {
+      name: 'wrong identity',
+      mutate: (fixture: Fixture) => {
+        fixture.assembly.gatewayIngress[0].gatewayEntryIdentity =
+          GATEWAY_IDENTITIES[2];
+      }
+    },
+    {
+      name: 'missing assembly selector',
+      mutate: (fixture: Fixture) => {
+        fixture.assembly.gatewayIngress.pop();
+      }
+    },
+    {
+      name: 'extra assembly selector',
+      mutate: (fixture: Fixture) => {
+        const extra = structuredClone(fixture.assembly.gatewayIngress[0]);
+        extra.selector.path = '/extra';
+        fixture.assembly.gatewayIngress.push(extra);
+      }
+    },
+    {
+      name: 'duplicate assembly selector',
+      mutate: (fixture: Fixture) => {
+        fixture.assembly.gatewayIngress.push(
+          structuredClone(fixture.assembly.gatewayIngress[0])
+        );
+      }
+    },
+    {
+      name: 'missing deployment key',
+      mutate: (fixture: Fixture) => {
+        fixture.deployments[0]!.ingress[0].gatewayEntryKey = 'missing';
+      }
+    },
+    {
+      name: 'duplicate deployment selector',
+      mutate: (fixture: Fixture) => {
+        fixture.deployments[0]!.ingress.push(
+          structuredClone(fixture.deployments[0]!.ingress[0])
+        );
+      }
+    }
+  ])('rejects an inexact assembly/deployment join: $name', async ({ mutate }) => {
+    const root = await fixtureRoot();
+    const fixture = canonicalFixture();
+    mutate(fixture);
+    await writeFixture(root, fixture);
+
+    await expect(
+      loader(root).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow();
+  });
+
+  it.each([
+    {
+      name: 'contract service',
+      mutate: (deploymentRecord: Record<string, any>) => {
+        deploymentRecord.contract.serviceId = 'skiff.run/other';
+      }
+    },
+    {
+      name: 'contract version',
+      mutate: (deploymentRecord: Record<string, any>) => {
+        deploymentRecord.contract.contractVersion = '2.0.0';
+      }
+    },
+    {
+      name: 'revision',
+      mutate: (deploymentRecord: Record<string, any>) => {
+        deploymentRecord.deploymentRevision = 'other-revision';
+      }
+    },
+    {
+      name: 'deployment identity',
+      mutate: (deploymentRecord: Record<string, any>) => {
+        deploymentRecord.deploymentArtifactIdentity =
+          `skiff-deployment-artifact-v2:sha256:${'f'.repeat(64)}`;
+      }
+    }
+  ])('rejects a record with mismatched exact reference field: $name', async ({ mutate }) => {
+    const root = await fixtureRoot();
+    const fixture = canonicalFixture();
+    const reference = deploymentRef(fixture.assembly, 0);
+    mutate(fixture.deployments[0]!);
+    await writeFixture(root, fixture);
     await writeJson(
       root,
-      `records/runtime-assemblies/${identityHash(identity)}.json`,
-      withIdentity
+      deploymentPath(reference),
+      fixture.deployments[0]!
     );
-    await writeJson(root, contractPath, contract());
-    const packageRoot =
-      `records/package-artifacts/skiff~drun~sactors/1.0.0/${identityHash(packageBuildId)}`;
-    await writeJson(root, `${packageRoot}/package.json`, {
-      files: [{ fileIrIdentity: fileIdentity }],
-    });
-    await writeJson(root, `${packageRoot}/file-ir/${identityHash(fileIdentity)}.json`, {
-      numberLiterals: {
-        fraction: 0.1,
-        negative: -2,
-        exponent: 1e-7,
-      },
-      actorDeclarations: [{
-        actorAbiIdentity: `skiff-actor-abi-v1:sha256:${'d'.repeat(64)}`,
-        actorImplementationIdentity:
-          `skiff-actor-implementation-v1:sha256:${'e'.repeat(64)}`,
-        abi: { actorName: 'Counter' },
-        methodImplementations: {
-          [`skiff-actor-method-v1:sha256:${'f'.repeat(64)}`]: 0,
-        },
-      }],
-    });
 
-    const loaded = await loader(root).load({ assemblyIdentity: identity });
-    expect(loaded.actorMethods).toContainEqual({
-      declarationOwner: {
-        unit: { kind: 'package', value: 0 },
-        file: { kind: 'loadedFileIndex', value: 0 },
-        actorSymbol: 'Counter',
-      },
-      actorAbiIdentity: `skiff-actor-abi-v1:sha256:${'d'.repeat(64)}`,
-      actorImplementationIdentity:
-        `skiff-actor-implementation-v1:sha256:${'e'.repeat(64)}`,
-      methodIdentity: `skiff-actor-method-v1:sha256:${'f'.repeat(64)}`,
-    });
+    await expect(
+      loader(root).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow(/exact ServiceDeployment reference/);
+  });
+
+  it.each([
+    {
+      name: 'typed JSON server stream',
+      mutate: (fixture: Fixture) => {
+        const surface = httpSurface(fixture.deployments[2]!, 'typedUnary');
+        surface.dispatchMode = 'serverStream';
+        surface.responseSchema = null;
+        surface.streamItemSchema = { kind: 'string' };
+      }
+    },
+    {
+      name: 'non-HTTP protocol',
+      mutate: (fixture: Fixture) => {
+        protocol(fixture.deployments[0]!, 'rawUnary').kind = 'webSocket';
+      }
+    },
+    {
+      name: 'adapter kind mismatch',
+      mutate: (fixture: Fixture) => {
+        gatewayEntry(fixture.deployments[0]!, 'rawUnary').adapterPlan.kind =
+          'typedJson';
+      }
+    },
+    {
+      name: 'unary stream schema',
+      mutate: (fixture: Fixture) => {
+        httpSurface(fixture.deployments[0]!, 'rawUnary').streamItemSchema = {
+          kind: 'string'
+        };
+      }
+    },
+    {
+      name: 'zero timeout',
+      mutate: (fixture: Fixture) => {
+        fixture.deployments[1]!.policy.timeoutMs = 0;
+      }
+    },
+    {
+      name: 'null timeout',
+      mutate: (fixture: Fixture) => {
+        fixture.deployments[1]!.policy.timeoutMs = null;
+      }
+    }
+  ])('rejects invalid deployment mode or policy: $name', async ({ mutate }) => {
+    const root = await fixtureRoot();
+    const fixture = canonicalFixture();
+    mutate(fixture);
+    await writeFixture(root, fixture);
+
+    await expect(
+      loader(root).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow();
   });
 });
+
+interface Fixture {
+  assembly: Record<string, any>;
+  deployments: Array<Record<string, any>>;
+}
+
+function canonicalFixture(): Fixture {
+  const deployments = [
+    deployment('raw-unary', 'rawUnary', GATEWAY_IDENTITIES[0], {
+      adapterKind: 'rawHttp',
+      operationMode: 'unary',
+      path: '/raw'
+    }),
+    deployment('raw-stream', 'rawStream', GATEWAY_IDENTITIES[1], {
+      adapterKind: 'rawHttp',
+      operationMode: 'serverStream',
+      path: '/stream',
+      timeoutMs: 2_500
+    }),
+    deployment('typed-unary', 'typedUnary', GATEWAY_IDENTITIES[2], {
+      adapterKind: 'typedJson',
+      operationMode: 'unary',
+      path: '/typed'
+    })
+  ];
+  const references = deployments.map((value) => ({
+    serviceId: value.contract.serviceId,
+    contractVersion: value.contract.contractVersion,
+    deploymentRevision: value.deploymentRevision,
+    deploymentArtifactIdentity: value.deploymentArtifactIdentity
+  }));
+  return {
+    assembly: {
+      schemaVersion: 'skiff-runtime-assembly-v2',
+      assemblyIdentity: ASSEMBLY_IDENTITY,
+      roots: references,
+      resolvedDeployments: references,
+      resolvedContracts: [{
+        serviceId: 'skiff.run/echo',
+        contractVersion: '1.0.0',
+        serviceProtocolIdentity: SERVICE_PROTOCOL_IDENTITY
+      }],
+      resolvedPackages: [],
+      packageLinkPlan: { codeSlots: [], packageLinks: [] },
+      serviceBindingTemplates: [],
+      activationTemplates: [],
+      gatewayIngress: deployments.map((value, index) => ({
+        selector: structuredClone(value.ingress[0].selector),
+        deployment: references[index],
+        gatewayEntryKey: value.ingress[0].gatewayEntryKey,
+        gatewayEntryIdentity:
+          value.gatewayEntries[value.ingress[0].gatewayEntryKey].gatewayEntryIdentity
+      }))
+    },
+    deployments
+  };
+}
+
+function deployment(
+  revision: string,
+  gatewayEntryKey: string,
+  gatewayEntryIdentity: string,
+  options: {
+    adapterKind: 'rawHttp' | 'typedJson';
+    operationMode: 'unary' | 'serverStream';
+    path: string;
+    timeoutMs?: number;
+  }
+): Record<string, any> {
+  const typed = options.adapterKind === 'typedJson';
+  const stream = options.operationMode === 'serverStream';
+  return {
+    schemaVersion: 'skiff-service-deployment-v2',
+    contract: {
+      serviceId: 'skiff.run/echo',
+      contractVersion: '1.0.0',
+      serviceProtocolIdentity: SERVICE_PROTOCOL_IDENTITY
+    },
+    deploymentRevision: revision,
+    deploymentArtifactIdentity:
+      `skiff-deployment-artifact-v2:sha256:${(
+        gatewayEntryKey === 'rawUnary'
+          ? '4'
+          : gatewayEntryKey === 'rawStream'
+            ? '5'
+            : '6'
+      ).repeat(64)}`,
+    implementation: {
+      packageId: 'skiff.run/echo',
+      packageVersion: '1.0.0',
+      packageBuildId: `skiff-package-build-v4:sha256:${'d'.repeat(64)}`,
+      packageLocalAbiIdentity:
+        `skiff-package-local-abi-v4:sha256:${'e'.repeat(64)}`
+    },
+    operationBindings: [],
+    packageBindings: [],
+    serviceSelectors: [],
+    gatewayEntries: {
+      [gatewayEntryKey]: {
+        gatewayEntryIdentity,
+        protocolSurface: {
+          protocol: {
+            kind: 'http',
+            surface: {
+              adapterKind: options.adapterKind,
+              dispatchMode: options.operationMode,
+              externalSources: [{
+                kind: typed ? 'http.body' : 'http.request'
+              }],
+              requestBodySchema: typed ? { kind: 'string' } : null,
+              responseSchema: typed ? { kind: 'string' } : null,
+              streamItemSchema: stream ? { kind: 'string' } : null
+            }
+          },
+          externalErrorProjection: { kind: 'fixed', version: 'v1' }
+        },
+        handler: `skiff-package-callable-v1:sha256:${'f'.repeat(64)}`,
+        pre: null,
+        guard: null,
+        adapterPlan: {
+          kind: options.adapterKind,
+          args: [{
+            param: typed ? 'body' : 'request',
+            source: { kind: typed ? 'http.body' : 'http.request' }
+          }]
+        }
+      }
+    },
+    ingress: [{
+      selector: {
+        protocol: 'http',
+        host: 'echo.example.test',
+        method: 'POST',
+        path: options.path
+      },
+      gatewayEntryKey
+    }],
+    configLiterals: [],
+    secretRefs: [],
+    stateBindings: [],
+    resourceBindings: [],
+    runtimeCapabilityBindings: [],
+    policy: {
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      resources: { cpuMillis: 100, memoryBytes: 1_048_576 },
+      activation: { maxConcurrency: 8, idleTimeoutMs: null },
+      principal: 'service:skiff.run/echo'
+    },
+    diagnosticText: { displayName: gatewayEntryKey, notes: {} }
+  };
+}
+
+function gatewayEntry(
+  deploymentRecord: Record<string, any>,
+  key: string
+): Record<string, any> {
+  return deploymentRecord.gatewayEntries[key];
+}
+
+function protocol(
+  deploymentRecord: Record<string, any>,
+  key: string
+): Record<string, any> {
+  return gatewayEntry(deploymentRecord, key).protocolSurface.protocol;
+}
+
+function httpSurface(
+  deploymentRecord: Record<string, any>,
+  key: string
+): Record<string, any> {
+  return protocol(deploymentRecord, key).surface;
+}
 
 function loader(root: string): FilesystemRuntimeAssemblySnapshotLoader {
   return new FilesystemRuntimeAssemblySnapshotLoader(root);
@@ -169,6 +506,45 @@ async function fixtureRoot(): Promise<string> {
   return root;
 }
 
+async function writeFixture(root: string, fixture: Fixture): Promise<void> {
+  await writeJson(root, assemblyPath(), fixture.assembly);
+  for (const [index, deploymentRecord] of fixture.deployments.entries()) {
+    await writeJson(
+      root,
+      deploymentPath(deploymentRef(fixture.assembly, index)),
+      deploymentRecord
+    );
+  }
+}
+
+function deploymentRef(
+  assembly: Record<string, any>,
+  index: number
+): DeploymentRefFixture {
+  return assembly.resolvedDeployments[index] as DeploymentRefFixture;
+}
+
+function assemblyPath(): string {
+  return `records/runtime-assemblies/${identityHash(ASSEMBLY_IDENTITY)}.json`;
+}
+
+function deploymentPath(reference: DeploymentRefFixture): string {
+  return [
+    'records/service-deployments',
+    reference.serviceId.replaceAll('.', '~d').replaceAll('/', '~s'),
+    reference.contractVersion,
+    reference.deploymentRevision,
+    `${identityHash(reference.deploymentArtifactIdentity)}.json`
+  ].join('/');
+}
+
+interface DeploymentRefFixture {
+  serviceId: string;
+  contractVersion: string;
+  deploymentRevision: string;
+  deploymentArtifactIdentity: string;
+}
+
 async function writeJson(root: string, path: string, value: unknown): Promise<void> {
   await writeText(root, path, JSON.stringify(value));
 }
@@ -177,97 +553,6 @@ async function writeText(root: string, path: string, value: string): Promise<voi
   const target = join(root, path);
   await mkdir(dirname(target), { recursive: true });
   await writeFile(target, value);
-}
-
-function assembly(): Record<string, unknown> {
-  return {
-    schemaVersion: 'skiff-runtime-assembly-v1',
-    assemblyIdentity,
-    roots: [],
-    resolvedDeployments: [],
-    resolvedContracts: [{
-      serviceId: 'skiff.run/echo',
-      contractVersion: '1.0.0',
-      serviceProtocolIdentity: protocolIdentity
-    }],
-    resolvedPackages: [],
-    packageLinkPlan: { links: [] },
-    serviceBindingTemplates: [],
-    activationTemplates: [],
-    globalIngress: []
-  };
-}
-
-function contract(): Record<string, unknown> {
-  return {
-    schemaVersion: 'skiff-service-contract-v3',
-    serviceId: 'skiff.run/echo',
-    contractVersion: '1.0.0',
-    serviceProtocolIdentity: protocolIdentity,
-    operations: {},
-    packageTypeRequirements: [],
-    diagnosticText: null
-  };
-}
-
-function serviceProtocolIdentity(): string {
-  return `skiff-service-protocol-v3:sha256:${sha256Hex(stableStringify({
-    schema: 'skiff-service-protocol-identity-v3',
-    serviceId: 'skiff.run/echo',
-    operations: {},
-    packageTypeRequirements: []
-  }))}`;
-}
-
-function runtimeAssemblyIdentity(): string {
-  return `skiff-runtime-assembly-v1:sha256:${sha256Hex(stableStringify(canonicalAssemblyValue({
-    schema: 'skiff-runtime-assembly-identity-v1',
-    roots: [],
-    resolvedDeployments: [],
-    resolvedContracts: [{
-      serviceId: 'skiff.run/echo',
-      contractVersion: '1.0.0',
-      serviceProtocolIdentity: protocolIdentity
-    }],
-    resolvedPackages: [],
-    packageLinkPlan: { links: [] },
-    serviceBindingTemplates: [],
-    activationTemplates: [],
-    globalIngress: []
-  })))}`;
-}
-
-function assemblyIdentityFor(value: Record<string, unknown>): string {
-  return `skiff-runtime-assembly-v1:sha256:${sha256Hex(stableStringify(canonicalAssemblyValue({
-    schema: 'skiff-runtime-assembly-identity-v1',
-    roots: value.roots,
-    resolvedDeployments: value.resolvedDeployments,
-    resolvedContracts: value.resolvedContracts,
-    resolvedPackages: value.resolvedPackages,
-    packageLinkPlan: value.packageLinkPlan,
-    serviceBindingTemplates: value.serviceBindingTemplates,
-    activationTemplates: value.activationTemplates,
-    globalIngress: value.globalIngress,
-  })))}`;
-}
-
-function canonicalAssemblyValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(canonicalAssemblyValue).sort((left, right) => {
-      const leftJson = stableStringify(left);
-      const rightJson = stableStringify(right);
-      return leftJson < rightJson ? -1 : leftJson > rightJson ? 1 : 0;
-    });
-  }
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value)
-        .filter(([key]) =>
-          !['packageVersion', 'contractVersion', 'exactVersion'].includes(key))
-        .map(([key, item]) => [key, canonicalAssemblyValue(item)])
-    );
-  }
-  return value;
 }
 
 function identityHash(value: string): string {
