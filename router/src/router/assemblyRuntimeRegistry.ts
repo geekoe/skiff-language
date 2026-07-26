@@ -298,6 +298,30 @@ export class AssemblyRuntimeRegistry {
     if (requestError !== undefined) {
       return requestError;
     }
+    return this.pickHealthyDispatchConnection();
+  }
+
+  pickAssemblyTestDispatchConnection(
+    request: RuntimeDispatchFrameHeader
+  ): RuntimeDispatchConnection | ProviderUnavailableError | ServiceProtocolBoundaryError {
+    if (!isRuntimeAssemblyRequestDispatchHeader(request)) {
+      return new ServiceProtocolBoundaryError(
+        'test RuntimeAssembly dispatch requires canonical nested routing'
+      );
+    }
+    const requestError = validateAssemblyTestRequest(
+      request,
+      this.snapshots.get()
+    );
+    if (requestError !== undefined) {
+      return requestError;
+    }
+    return this.pickHealthyDispatchConnection();
+  }
+
+  private pickHealthyDispatchConnection():
+    | RuntimeDispatchConnection
+    | ProviderUnavailableError {
     const candidates = this.dispatchCandidates();
     if (candidates.length === 0) {
       return new ProviderUnavailableError(
@@ -523,6 +547,30 @@ function validateAssemblyRequest(
       'active RuntimeAssembly dispatch rejects test effect controls'
     );
   }
+  return validateAssemblyRequestFacts(request, active);
+}
+
+function validateAssemblyTestRequest(
+  candidate: RuntimeAssemblyRequestStartFrameHeader,
+  active: RouterActiveAssemblySnapshot
+): ServiceProtocolBoundaryError | undefined {
+  const validation = validateRuntimeAssemblyRequestStartFrameHeader(candidate);
+  if (!validation.ok) {
+    return new ServiceProtocolBoundaryError(validation.error);
+  }
+  const request = validation.envelope;
+  if (request.testEffectsEnabled !== true) {
+    return new ServiceProtocolBoundaryError(
+      'test RuntimeAssembly dispatch requires test effects enabled'
+    );
+  }
+  return validateAssemblyRequestFacts(request, active);
+}
+
+function validateAssemblyRequestFacts(
+  request: RuntimeAssemblyRequestStartFrameHeader,
+  active: RouterActiveAssemblySnapshot
+): ServiceProtocolBoundaryError | undefined {
   if (
     request.routing.assemblyIdentity !== active.assembly.assemblyIdentity ||
     request.routing.assemblyGeneration !== active.generation

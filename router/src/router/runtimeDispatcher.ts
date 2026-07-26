@@ -186,6 +186,9 @@ export type RuntimeDispatchRegistry = Pick<
   | 'refreshRuntimeStatesForRequest'
 > & {
   validateDispatchRequest?(request: RuntimeDispatchFrameHeader): GatewayError | undefined;
+  pickAssemblyTestDispatchConnection?(
+    request: RuntimeDispatchFrameHeader
+  ): RuntimeDispatchConnection | GatewayError | null | undefined;
 };
 
 export interface RuntimeDispatcherPendingCounters {
@@ -224,6 +227,45 @@ export class RuntimeDispatcher {
     options: RuntimeBinaryDispatchOptions = {}
   ): Promise<RuntimeBinaryDispatchResponseWithReceipt> {
     const connection = this.resolveDispatchConnection(request.header, options);
+    return this.dispatchBinaryWithConnection(
+      request,
+      timeoutMs,
+      options,
+      connection
+    );
+  }
+
+  dispatchAssemblyTestBinary(
+    request: RuntimeBinaryDispatchInput<RuntimeAssemblyRequestStartFrameHeader>,
+    timeoutMs: number
+  ): Promise<RuntimeBinaryDispatchResponseWithReceipt> {
+    const pickConnection =
+      this.options.registry.pickAssemblyTestDispatchConnection;
+    if (pickConnection === undefined) {
+      return Promise.reject(
+        new ServiceProtocolBoundaryError(
+          'runtime dispatcher does not provide the test RuntimeAssembly registry seam'
+        )
+      );
+    }
+    const connection = pickConnection.call(
+      this.options.registry,
+      request.header
+    );
+    return this.dispatchBinaryWithConnection(
+      request,
+      timeoutMs,
+      {},
+      connection
+    );
+  }
+
+  private dispatchBinaryWithConnection(
+    request: RuntimeBinaryDispatchInput<RuntimeUnaryDispatchFrameHeader>,
+    timeoutMs: number,
+    options: RuntimeBinaryDispatchOptions,
+    connection: RuntimeDispatchConnection | GatewayError | null | undefined
+  ): Promise<RuntimeBinaryDispatchResponseWithReceipt> {
     if (connection instanceof GatewayError) {
       return Promise.reject(connection);
     }

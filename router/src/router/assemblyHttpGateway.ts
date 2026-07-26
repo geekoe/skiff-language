@@ -10,7 +10,10 @@ import {
   RUNTIME_FRAME_SCHEMA_VERSION,
   type HttpRequestFrameMetadata
 } from '../protocol/envelope.js';
-import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
+import type {
+  RuntimeAssemblyRequestRoutingFrameHeader,
+  RuntimeAssemblyRequestStartFrameHeader
+} from '../protocol/runtimeAssemblyRequest.js';
 import { validateRuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeProtocol.js';
 import {
   REQUEST_CANCEL_SITUATION,
@@ -266,6 +269,60 @@ export function assemblyHttpRequestHeader(input: {
     throw new Error(validation.error);
   }
   return validation.envelope;
+}
+
+export function assemblyTestHttpRequestHeader(input: {
+  snapshot: RouterActiveAssemblySnapshot;
+  binding: RuntimeAssemblyIngressBinding;
+  requestId: string;
+  timeoutMs: number;
+  routing: RuntimeAssemblyRequestRoutingFrameHeader;
+  mode: RuntimeAssemblyRequestStartFrameHeader['mode'];
+  httpRequest: HttpRequestFrameMetadata;
+}): RuntimeAssemblyRequestStartFrameHeader {
+  const productionHeader = assemblyHttpRequestHeader({
+    snapshot: input.snapshot,
+    binding: input.binding,
+    requestId: input.requestId,
+    timeoutMs: input.timeoutMs,
+    httpRequest: input.httpRequest
+  });
+  if (
+    productionHeader.mode !== input.mode ||
+    !sameAssemblyRouting(productionHeader.routing, input.routing)
+  ) {
+    throw new Error(
+      'runtime assembly test dispatch does not match the exact active gateway binding'
+    );
+  }
+  const candidate = {
+    ...productionHeader,
+    mode: input.mode,
+    routing: input.routing,
+    httpRequest: input.httpRequest,
+    testEffectsEnabled: true
+  };
+  const validation = validateRuntimeAssemblyRequestStartFrameHeader(candidate);
+  if (!validation.ok) {
+    throw new Error(validation.error);
+  }
+  return validation.envelope;
+}
+
+function sameAssemblyRouting(
+  left: RuntimeAssemblyRequestRoutingFrameHeader,
+  right: RuntimeAssemblyRequestRoutingFrameHeader
+): boolean {
+  return (
+    left.kind === right.kind &&
+    left.assemblyIdentity === right.assemblyIdentity &&
+    left.assemblyGeneration === right.assemblyGeneration &&
+    left.gatewayEntryIdentity === right.gatewayEntryIdentity &&
+    left.ingress.protocol === right.ingress.protocol &&
+    left.ingress.host === right.ingress.host &&
+    left.ingress.method === right.ingress.method &&
+    left.ingress.path === right.ingress.path
+  );
 }
 
 function selectHttpIngress(
