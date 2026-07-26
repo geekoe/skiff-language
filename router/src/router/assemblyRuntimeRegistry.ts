@@ -9,7 +9,6 @@ import type {
 } from '../protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
 import { validateRuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeProtocol.js';
-import { sha256Hex, stableStringify } from '../manifest/identity.js';
 import { ProviderUnavailableError, ServiceProtocolBoundaryError } from './errors.js';
 import { isRuntimeAssemblyRequestDispatchHeader } from './runtimeRegistry.js';
 import type {
@@ -24,8 +23,7 @@ import {
   canonicalIngressHost,
   RouterActiveAssemblySnapshotStore,
   runtimeAssemblyIngressKey,
-  type RouterActiveAssemblySnapshot,
-  type RuntimeAssemblyIngressBinding
+  type RouterActiveAssemblySnapshot
 } from './runtimeAssemblySnapshot.js';
 
 type AssemblyRegisterControl = Extract<AssemblyActivationControl, { type: 'register' }>;
@@ -63,15 +61,6 @@ export interface AssemblyReplicaSnapshot {
   lastHealthAt?: string;
   healthCounters?: RuntimeHealthCounters;
 }
-
-export interface CanonicalAssemblyWebSocketIngressIdentity {
-  websocketEntryId: string;
-  gatewayEntryIdentity: string;
-}
-
-const CANONICAL_ASSEMBLY_WEBSOCKET_INGRESS_ARGS = [
-  { param: 'event', source: { kind: 'websocket.ingressEvent' } }
-] as const;
 
 export class AssemblyRuntimeRegistry {
   private readonly replicas = new Map<string, AssemblyReplica>();
@@ -467,12 +456,6 @@ function deploymentBindingsByService(
       serviceProtocolIdentity: contract.serviceProtocolIdentity
     });
   }
-  for (const ingress of snapshot.ingress.values()) {
-    setDeploymentBinding(bindings, ingress.contract.serviceId, {
-      deploymentRevision: ingress.deployment.deploymentRevision,
-      serviceProtocolIdentity: ingress.contract.serviceProtocolIdentity
-    });
-  }
   return bindings;
 }
 
@@ -524,11 +507,7 @@ function validateAssemblyRequest(
     return new ServiceProtocolBoundaryError(validation.error);
   }
   const request = validation.envelope;
-  if (
-    (request.testEffectsEnabled !== false ||
-      Object.keys(request.testEffectDoubles).length !== 0) &&
-    request.caller.target !== '__skiff.runtime-assembly-test-dispatch'
-  ) {
+  if (request.testEffectsEnabled !== false) {
     return new ServiceProtocolBoundaryError(
       'active RuntimeAssembly dispatch rejects test effect controls'
     );
@@ -546,10 +525,7 @@ function validateAssemblyRequest(
     canonicalIngress = {
       ...request.routing.ingress,
       host: canonicalIngressHost(request.routing.ingress.host),
-      method:
-        request.routing.ingress.method === null
-          ? null
-          : request.routing.ingress.method.toUpperCase()
+      method: request.routing.ingress.method.toUpperCase()
     };
     if (
       canonicalIngress.host !== request.routing.ingress.host ||
@@ -566,7 +542,11 @@ function validateAssemblyRequest(
   const binding = active.ingress.get(canonicalIngress);
   if (
     binding === undefined ||
-    binding.contractOperationId !== request.routing.contractOperationId
+    binding.selector.protocol !== request.routing.ingress.protocol ||
+    binding.selector.host !== request.routing.ingress.host ||
+    binding.selector.method !== request.routing.ingress.method ||
+    binding.selector.path !== request.routing.ingress.path ||
+    binding.gatewayEntryIdentity !== request.routing.gatewayEntryIdentity
   ) {
     return new ServiceProtocolBoundaryError(
       `request canonical ingress ${runtimeAssemblyIngressKey(request.routing.ingress)} does not match the committed assembly`
@@ -574,33 +554,35 @@ function validateAssemblyRequest(
   }
   if (request.mode !== binding.operationMode) {
     return new ServiceProtocolBoundaryError(
-      'request mode does not match the exact ServiceContract operation'
+      'request mode does not match the exact committed gateway binding'
     );
   }
-  return canonicalIngress.protocol === 'http'
-    ? validateAssemblyHttpRequest(request, canonicalIngress)
-    : validateAssemblyWebSocketRequest(request, binding);
+  if (
+    binding.operationMode === 'serverStream' &&
+    binding.adapterKind !== 'rawHttp'
+  ) {
+    return new ServiceProtocolBoundaryError(
+      'only rawHttp gateway bindings may use serverStream mode'
+    );
+  }
+  return validateAssemblyHttpRequest(request, canonicalIngress);
 }
 
 function validateAssemblyHttpRequest(
   request: RuntimeAssemblyRequestStartFrameHeader,
   ingress: RuntimeAssemblyRequestStartFrameHeader['routing']['ingress']
 ): ServiceProtocolBoundaryError | undefined {
-  if (
-    request.httpRequest === undefined ||
-    request.httpAdapter !== undefined ||
-    request.websocketAdapter !== undefined
-  ) {
-    return new ServiceProtocolBoundaryError(
-      'canonical RuntimeAssembly HTTP unary dispatch requires only HTTP request metadata'
-    );
-  }
   try {
     const requestUrl = new URL(request.httpRequest.url);
     if (
       request.httpRequest.method !== ingress.method ||
       request.httpRequest.path !== ingress.path ||
+      requestUrl.protocol !== 'http:' ||
+      requestUrl.username !== '' ||
+      requestUrl.password !== '' ||
+      requestUrl.hash !== '' ||
       requestUrl.pathname !== ingress.path ||
+      requestUrl.host !== ingress.host ||
       canonicalIngressHost(requestUrl.host) !== ingress.host
     ) {
       throw new Error('HTTP request metadata does not match routing ingress');
@@ -611,56 +593,4 @@ function validateAssemblyHttpRequest(
     );
   }
   return undefined;
-}
-
-function validateAssemblyWebSocketRequest(
-  request: RuntimeAssemblyRequestStartFrameHeader,
-  binding: RuntimeAssemblyIngressBinding
-): ServiceProtocolBoundaryError | undefined {
-  if (
-    request.mode !== 'unary' ||
-    request.websocketAdapter === undefined ||
-    request.httpRequest !== undefined ||
-    request.httpAdapter !== undefined
-  ) {
-    return new ServiceProtocolBoundaryError(
-      'canonical RuntimeAssembly WebSocket unary dispatch requires only WebSocket adapter metadata'
-    );
-  }
-  const expectedIdentity = canonicalAssemblyWebSocketIngressIdentity(binding);
-  if (
-    request.websocketEntryId !== expectedIdentity.websocketEntryId ||
-    request.gatewayEntryIdentity !== expectedIdentity.gatewayEntryIdentity
-  ) {
-    return new ServiceProtocolBoundaryError(
-      'request WebSocket entry and gateway identities do not match the committed assembly ingress'
-    );
-  }
-  return undefined;
-}
-
-export function canonicalAssemblyWebSocketIngressIdentity(
-  binding: RuntimeAssemblyIngressBinding
-): CanonicalAssemblyWebSocketIngressIdentity {
-  const selector = binding.selector;
-  if (selector.protocol !== 'webSocket' || selector.method !== null) {
-    throw new Error('canonical WebSocket identity requires a WebSocket ingress binding');
-  }
-  const body = {
-    adapterArgs: CANONICAL_ASSEMBLY_WEBSOCKET_INGRESS_ARGS,
-    contractOperationId: binding.contractOperationId,
-    selector: {
-      protocol: 'webSocket',
-      host: canonicalIngressHost(selector.host),
-      method: null,
-      path: selector.path
-    },
-    serviceId: binding.contract.serviceId,
-    serviceProtocolIdentity: binding.contract.serviceProtocolIdentity
-  };
-  const digest = sha256Hex(stableStringify(body));
-  return {
-    websocketEntryId: `skiff-websocket-entry-v1:sha256:${digest}`,
-    gatewayEntryIdentity: `skiff-gateway-v1:sha256:${digest}`
-  };
 }

@@ -15,25 +15,23 @@ import {
   type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
 
-const ASSEMBLY_A = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
-const ASSEMBLY_B = `skiff-runtime-assembly-v1:sha256:${'b'.repeat(64)}`;
+const ASSEMBLY_A = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+const ASSEMBLY_B = `skiff-runtime-assembly-v2:sha256:${'b'.repeat(64)}`;
 const PROTOCOL = `skiff-service-protocol-v3:sha256:${'c'.repeat(64)}`;
-const OPERATION = `skiff-contract-operation-v1:sha256:${'e'.repeat(64)}`;
+const GATEWAY_ENTRY_IDENTITY =
+  `skiff-gateway-entry-v1:sha256:${'e'.repeat(64)}`;
 const binding: RuntimeAssemblyIngressBinding = {
   selector: { protocol: 'http', host: 'api.localhost', method: 'GET', path: '/v1/models' },
   deployment: {
     serviceId: 'example/models',
     contractVersion: '1.0.0',
     deploymentRevision: 'revision-a',
-    deploymentArtifactIdentity: `skiff-deployment-artifact-v2:sha256:${'d'.repeat(64)}`
+      deploymentArtifactIdentity: `skiff-deployment-artifact-v2:sha256:${'d'.repeat(64)}`
   },
-  contract: {
-    serviceId: 'example/models',
-    contractVersion: '1.0.0',
-    serviceProtocolIdentity: PROTOCOL
-  },
+  gatewayEntryKey: 'listModels',
+  gatewayEntryIdentity: GATEWAY_ENTRY_IDENTITY,
+  adapterKind: 'typedJson',
   operationMode: 'unary',
-  contractOperationId: OPERATION
 };
 
 it('round-robins only healthy replicas of the exact committed assembly generation', () => {
@@ -114,6 +112,12 @@ function snapshot(generation: number, assemblyIdentity: string): RouterActiveAss
     environment: 'test',
     generation,
     assembly: { assemblyIdentity },
+    resolvedDeployments: [binding.deployment],
+    resolvedContracts: [{
+      serviceId: binding.deployment.serviceId,
+      contractVersion: binding.deployment.contractVersion,
+      serviceProtocolIdentity: PROTOCOL
+    }],
     ingress: new RuntimeAssemblyIngressIndex([binding])
   };
 }

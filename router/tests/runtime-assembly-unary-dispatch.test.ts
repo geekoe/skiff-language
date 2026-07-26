@@ -18,7 +18,8 @@ import {
 } from '../src/protocol/runtimeProtocol.js';
 import {
   assemblyHttpRequestHeader,
-  AssemblyHttpGateway
+  AssemblyHttpGateway,
+  effectiveHttpRequestTimeoutMs
 } from '../src/router/assemblyHttpGateway.js';
 import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
 import {
@@ -36,8 +37,9 @@ import {
   type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
 
-const ASSEMBLY = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
-const OPERATION = `skiff-contract-operation-v1:sha256:${'b'.repeat(64)}`;
+const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+const GATEWAY_ENTRY_IDENTITY =
+  `skiff-gateway-entry-v1:sha256:${'b'.repeat(64)}`;
 const RUNTIME_ID = 'runtime-unary-a';
 const HOST = 'api.localhost';
 const PATH = '/v1/invoke';
@@ -73,15 +75,14 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
         kind: 'runtimeAssembly',
         assemblyIdentity: ASSEMBLY,
         assemblyGeneration: 7,
-        contractOperationId: OPERATION,
+        gatewayEntryIdentity: GATEWAY_ENTRY_IDENTITY,
         ingress: { protocol: 'http', host: HOST, method: 'POST', path: PATH }
       },
       httpRequest: {
         method: 'POST',
         path: PATH
       },
-      testEffectsEnabled: false,
-      testEffectDoubles: {}
+      testEffectsEnabled: false
     });
     expect(zeroValidation.envelope).not.toHaveProperty('target');
     expect(zeroValidation.envelope).not.toHaveProperty('operationAbiId');
@@ -90,6 +91,17 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     expect(zeroValidation.envelope).not.toHaveProperty('assemblyIdentity');
     expect(zeroValidation.envelope).not.toHaveProperty('assemblyGeneration');
     expect(zeroValidation.envelope).not.toHaveProperty('contractOperationId');
+    expect(zeroValidation.envelope.caller).toEqual({ kind: 'gateway' });
+    expect(zeroValidation.envelope).not.toHaveProperty('gatewayEntryIdentity');
+    expect(zeroValidation.envelope).not.toHaveProperty('testEffectDoubles');
+    expect(Object.keys(zeroValidation.envelope.caller)).toEqual(['kind']);
+    expect(Object.keys(zeroValidation.envelope.routing).sort()).toEqual([
+      'assemblyGeneration',
+      'assemblyIdentity',
+      'gatewayEntryIdentity',
+      'ingress',
+      'kind'
+    ]);
     expect(zeroFrame.payloadBytes).toHaveLength(0);
 
     const opaqueResponseBytes = new Uint8Array([0, 255, 17, 128]);
@@ -97,7 +109,8 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
       type: 'response.end',
       requestId: zeroValidation.envelope.requestId,
-      payloadPresent: true
+      payloadPresent: true,
+      httpResponse: { status: 200, headers: [] }
     }, opaqueResponseBytes));
     const completedZero = await zeroResponse;
     expect(completedZero.status).toBe(200);
@@ -133,6 +146,116 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     expect(completedOpaque.body).toEqual(Buffer.from([9, 8, 7]));
   });
 
+  it('forwards typedJson request and response bytes without decoding or re-encoding', async () => {
+    const fixture = await createFixture({ binding: TYPED_BINDING });
+    const requestBytes = new Uint8Array([0, 255, 128, 17]);
+    const response = sendHttp(fixture.httpUrl, requestBytes);
+    const requestFrame = decodeBinaryFrame(await nextBinaryMessage(fixture.runtime));
+    const validation = validateRuntimeAssemblyRequestStartFrameHeader(
+      requestFrame.header
+    );
+    expect(validation).toMatchObject({ ok: true });
+    if (!validation.ok) throw new Error(validation.error);
+    expect(validation.envelope.routing.gatewayEntryIdentity).toBe(
+      TYPED_BINDING.gatewayEntryIdentity
+    );
+    expect(Buffer.from(requestFrame.payloadBytes)).toEqual(
+      Buffer.from(requestBytes)
+    );
+
+    const responseBytes = new Uint8Array([255, 0, 123, 128]);
+    fixture.runtime.send(
+      encodeRuntimeFrame(
+        {
+          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+          type: 'response.end',
+          requestId: validation.envelope.requestId,
+          payloadPresent: true,
+          httpResponse: {
+            status: 202,
+            headers: [{ name: 'content-type', value: 'application/json' }]
+          }
+        },
+        responseBytes
+      )
+    );
+    await expect(response).resolves.toMatchObject({
+      status: 202,
+      body: Buffer.from(responseBytes)
+    });
+  });
+
+  it('uses the smaller platform and deployment timeout for both deadline and cancel timer', async () => {
+    const cases: Array<{
+      platformCapMs: number;
+      deploymentTimeoutMs?: number;
+      expectedMs: number;
+    }> = [
+      { platformCapMs: 200, deploymentTimeoutMs: 40, expectedMs: 40 },
+      { platformCapMs: 50, expectedMs: 50 },
+      { platformCapMs: 30, deploymentTimeoutMs: 200, expectedMs: 30 }
+    ];
+
+    for (const [index, timeoutCase] of cases.entries()) {
+      const binding: RuntimeAssemblyIngressBinding = {
+        ...BINDING,
+        gatewayEntryKey: `timeout-${index}`,
+        ...(timeoutCase.deploymentTimeoutMs === undefined
+          ? {}
+          : { timeoutMs: timeoutCase.deploymentTimeoutMs })
+      };
+      const fixture = await createFixture({
+        binding,
+        requestTimeoutMs: timeoutCase.platformCapMs
+      });
+      const response = sendHttp(fixture.httpUrl, new Uint8Array());
+      const requestFrame = decodeBinaryFrame(
+        await nextBinaryMessage(fixture.runtime)
+      );
+      const validation = validateRuntimeAssemblyRequestStartFrameHeader(
+        requestFrame.header
+      );
+      if (!validation.ok) throw new Error(validation.error);
+      expect(validation.envelope.deadline?.timeoutMs).toBe(
+        timeoutCase.expectedMs
+      );
+      const cancelFrame = nextBinaryMessage(fixture.runtime);
+      const completed = await response;
+      expect(completed.status).toBe(504);
+      expect(JSON.parse(completed.body.toString())).toMatchObject({
+        error: {
+          code: 'TimeoutError',
+          message: `Runtime did not respond within ${timeoutCase.expectedMs}ms`
+        }
+      });
+      expect(decodeRuntimeFrame(await cancelFrame).header).toMatchObject({
+        type: 'request.cancel',
+        requestId: validation.envelope.requestId
+      });
+    }
+  });
+
+  it('rejects invalid timeout caps and overrides instead of extending them', () => {
+    expect(() => effectiveHttpRequestTimeoutMs(0)).toThrow(
+      /positive safe integer/
+    );
+    expect(() => effectiveHttpRequestTimeoutMs(-1)).toThrow(
+      /positive safe integer/
+    );
+    expect(() => effectiveHttpRequestTimeoutMs(1.5)).toThrow(
+      /positive safe integer/
+    );
+    expect(() =>
+      effectiveHttpRequestTimeoutMs(Number.MAX_SAFE_INTEGER + 1)
+    ).toThrow(/positive safe integer/);
+    expect(() => effectiveHttpRequestTimeoutMs(2_147_483_648)).toThrow(
+      /deadline and timer/
+    );
+    expect(() => effectiveHttpRequestTimeoutMs(100, 0)).toThrow(
+      /positive safe integer/
+    );
+  });
+
   it('rejects oversized requests before Runtime dispatch', async () => {
     const fixture = await createFixture({ maxRequestBytes: 3 });
 
@@ -156,7 +279,8 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
       type: 'response.end',
       requestId: String(requestFrame.header.requestId),
-      payloadPresent: true
+      payloadPresent: true,
+      httpResponse: { status: 200, headers: [] }
     }, new Uint8Array([1, 2, 3, 4])));
 
     const completed = await response;
@@ -166,6 +290,28 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     });
     expect(JSON.parse(completed.body.toString())).toMatchObject({
       error: { code: 'ResponseTooLarge' }
+    });
+  });
+
+  it('requires HTTP unary status and headers from Runtime', async () => {
+    const fixture = await createFixture();
+    const response = sendHttp(fixture.httpUrl, new Uint8Array());
+    const requestFrame = decodeBinaryFrame(
+      await nextBinaryMessage(fixture.runtime)
+    );
+    fixture.runtime.send(
+      encodeRuntimeFrame({
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.end',
+        requestId: String(requestFrame.header.requestId),
+        payloadPresent: false
+      })
+    );
+
+    const completed = await response;
+    expect(completed.status).toBe(502);
+    expect(JSON.parse(completed.body.toString())).toMatchObject({
+      error: { code: 'InvalidRuntimeResponse' }
     });
   });
 
@@ -346,7 +492,8 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     const legacy = mutate(valid, (header) => {
       header.assemblyIdentity = header.routing.assemblyIdentity;
       header.assemblyGeneration = header.routing.assemblyGeneration;
-      header.contractOperationId = header.routing.contractOperationId;
+      header.contractOperationId =
+        `skiff-contract-operation-v1:sha256:${'f'.repeat(64)}`;
       delete header.routing;
     });
     const invalid: RuntimeUnaryDispatchFrameHeader[] = [
@@ -356,6 +503,26 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       }),
       mutate(valid, (header) => {
         header.unknown = true;
+      }),
+      mutate(valid, (header) => {
+        header.routing.assemblyIdentity =
+          `skiff-runtime-assembly-v2:sha256:${'f'.repeat(64)}`;
+      }),
+      mutate(valid, (header) => {
+        header.routing.assemblyGeneration += 1;
+      }),
+      mutate(valid, (header) => {
+        header.routing.gatewayEntryIdentity =
+          `skiff-gateway-entry-v1:sha256:${'f'.repeat(64)}`;
+      }),
+      mutate(valid, (header) => {
+        header.routing.ingress.method = 'GET';
+      }),
+      mutate(valid, (header) => {
+        header.routing.ingress.host = 'wrong.localhost';
+      }),
+      mutate(valid, (header) => {
+        header.routing.ingress.path = '/wrong';
       }),
       mutate(valid, (header) => {
         header.mode = 'serverStream';
@@ -393,6 +560,9 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       }),
       mutate(valid, (header) => {
         header.httpRequest.url = 'http://wrong.localhost/v1/invoke';
+      }),
+      mutate(valid, (header) => {
+        header.httpRequest.url = `http://${HOST}/wrong`;
       }),
       mutate(valid, (header) => {
         header.testEffectsEnabled = true;
@@ -456,6 +626,27 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       requestId: header.requestId
     });
     expect(cancelFrame.payloadBytes).toHaveLength(0);
+    expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
+      pendingUnary: 0,
+      pendingStream: 0
+    });
+  });
+
+  it('cancels the exact Runtime request when the HTTP client disconnects', async () => {
+    const fixture = await createFixture();
+    const pendingHttp = startHttp(fixture.httpUrl, new Uint8Array([1, 2, 3]));
+    const responseOutcome = pendingHttp.response.catch((error: unknown) => error);
+    const requestFrame = decodeBinaryFrame(
+      await nextBinaryMessage(fixture.runtime)
+    );
+    const cancelFrame = nextBinaryMessage(fixture.runtime);
+    pendingHttp.request.destroy();
+
+    expect(await responseOutcome).toBeInstanceOf(Error);
+    expect(decodeRuntimeFrame(await cancelFrame).header).toMatchObject({
+      type: 'request.cancel',
+      requestId: requestFrame.header.requestId
+    });
     expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
       pendingUnary: 0,
       pendingStream: 0
@@ -534,6 +725,7 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
 });
 
 interface UnaryFixture {
+  binding: RuntimeAssemblyIngressBinding;
   dispatcher: RuntimeDispatcher;
   endpoint: RuntimeEndpoint;
   gateway: AssemblyHttpGateway;
@@ -549,26 +741,37 @@ const BINDING: RuntimeAssemblyIngressBinding = {
     serviceId: 'example/unary',
     contractVersion: '1.0.0',
     deploymentRevision: 'revision-a',
-    deploymentArtifactIdentity: `skiff-deployment-artifact-v2:sha256:${'c'.repeat(64)}`
+      deploymentArtifactIdentity: `skiff-deployment-artifact-v2:sha256:${'c'.repeat(64)}`
   },
-  contract: {
-    serviceId: 'example/unary',
-    contractVersion: '1.0.0',
-    serviceProtocolIdentity: `skiff-service-protocol-v3:sha256:${'d'.repeat(64)}`
-  },
+  gatewayEntryKey: 'invoke',
+  gatewayEntryIdentity: GATEWAY_ENTRY_IDENTITY,
+  adapterKind: 'rawHttp',
   operationMode: 'unary',
-  contractOperationId: OPERATION
+};
+
+const TYPED_BINDING: RuntimeAssemblyIngressBinding = {
+  ...BINDING,
+  gatewayEntryKey: 'typedInvoke',
+  gatewayEntryIdentity:
+    `skiff-gateway-entry-v1:sha256:${'e'.repeat(64)}`,
+  adapterKind: 'typedJson'
 };
 
 async function createFixture(
-  limits: { maxRequestBytes?: number; maxResponseBytes?: number } = {}
+  limits: {
+    binding?: RuntimeAssemblyIngressBinding;
+    maxRequestBytes?: number;
+    maxResponseBytes?: number;
+    requestTimeoutMs?: number;
+  } = {}
 ): Promise<UnaryFixture> {
+  const selectedBinding = limits.binding ?? BINDING;
   const snapshots = new RouterActiveAssemblySnapshotStore();
   snapshots.replace({
     environment: 'test',
     generation: 7,
     assembly: { assemblyIdentity: ASSEMBLY },
-    ingress: new RuntimeAssemblyIngressIndex([BINDING])
+    ingress: new RuntimeAssemblyIngressIndex([selectedBinding])
   });
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
   const runtimeRegistry = new RuntimeRegistry();
@@ -590,7 +793,7 @@ async function createFixture(
     port: 0,
     maxRequestBytes: limits.maxRequestBytes ?? 67108864,
     maxResponseBytes: limits.maxResponseBytes ?? 67108864,
-    requestTimeoutMs: 1000
+    requestTimeoutMs: limits.requestTimeoutMs ?? 1000
   });
   const httpListen = await gateway.listen();
   const runtime = await openSocket(runtimeListen.url);
@@ -608,6 +811,7 @@ async function createFixture(
   await until(() => assemblyRegistry.healthyParticipantReplicaIds().includes(RUNTIME_ID));
 
   const fixture: UnaryFixture = {
+    binding: selectedBinding,
     dispatcher,
     endpoint,
     gateway,
@@ -660,9 +864,29 @@ async function sendHttp(
   body: Uint8Array,
   query = ''
 ): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: Buffer }> {
+  return await startHttp(baseUrl, body, query).response;
+}
+
+function startHttp(
+  baseUrl: string,
+  body: Uint8Array,
+  query = ''
+): {
+  request: ReturnType<typeof httpRequest>;
+  response: Promise<{
+    status: number;
+    headers: Record<string, string | string[] | undefined>;
+    body: Buffer;
+  }>;
+} {
   const base = new URL(baseUrl);
-  return await new Promise((resolve, reject) => {
-    const outgoing = httpRequest({
+  let outgoing: ReturnType<typeof httpRequest>;
+  const response = new Promise<{
+    status: number;
+    headers: Record<string, string | string[] | undefined>;
+    body: Buffer;
+  }>((resolve, reject) => {
+    outgoing = httpRequest({
       hostname: base.hostname,
       port: base.port,
       path: `${PATH}${query}`,
@@ -683,6 +907,7 @@ async function sendHttp(
     outgoing.on('error', reject);
     outgoing.end(body);
   });
+  return { request: outgoing!, response };
 }
 
 async function openSocket(url: string): Promise<WebSocket> {

@@ -31,6 +31,10 @@ import {
   type RuntimeAssemblyIngressBinding
 } from './runtimeAssemblySnapshot.js';
 
+const DEFAULT_HTTP_REQUEST_TIMEOUT_MS = 120_000;
+const MAX_JAVASCRIPT_DATE_MS = 8_640_000_000_000_000;
+const MAX_NODE_TIMEOUT_MS = 2_147_483_647;
+
 export interface AssemblyHttpGatewayOptions {
   snapshots: RouterActiveAssemblySnapshotStore;
   dispatcher: RuntimeDispatcher;
@@ -112,8 +116,11 @@ export class AssemblyHttpGateway {
   ): Promise<void> {
     const snapshot = this.options.snapshots.get();
     const selection = selectHttpIngress(snapshot, request);
+    const timeoutMs = effectiveHttpRequestTimeoutMs(
+      this.options.requestTimeoutMs ?? DEFAULT_HTTP_REQUEST_TIMEOUT_MS,
+      selection.binding.timeoutMs
+    );
     const body = await readRequestBody(request, this.options.maxRequestBytes);
-    const timeoutMs = this.options.requestTimeoutMs ?? 120_000;
     const requestId = randomUUID();
     const clientDisconnect = clientDisconnectSignal(request, response);
     const header = assemblyHttpRequestHeader({
@@ -177,12 +184,6 @@ export class AssemblyHttpGateway {
           )
         }
       );
-      if (runtimeResponse.header.httpResponse !== undefined) {
-        response.statusCode = runtimeResponse.header.httpResponse.status;
-        writeResponseHeaders(response, runtimeResponse.header.httpResponse.headers);
-      } else {
-        response.statusCode = 200;
-      }
       if (runtimeResponse.payloadBytes.byteLength > this.options.maxResponseBytes) {
         throw new GatewayError(
           502,
@@ -190,6 +191,16 @@ export class AssemblyHttpGateway {
           `runtime response exceeds ${this.options.maxResponseBytes} bytes`
         );
       }
+      const httpResponse = runtimeResponse.header.httpResponse;
+      if (httpResponse === undefined) {
+        throw new GatewayError(
+          502,
+          'InvalidRuntimeResponse',
+          'HTTP unary response must include status and headers'
+        );
+      }
+      response.statusCode = httpResponse.status;
+      writeResponseHeaders(response, httpResponse.headers);
       response.end(Buffer.from(runtimeResponse.payloadBytes));
     } finally {
       clientDisconnect.complete();
@@ -213,16 +224,11 @@ export function assemblyHttpRequestHeader(input: {
   requestId: string;
   timeoutMs: number;
   httpRequest: HttpRequestFrameMetadata;
-  testEffectsEnabled?: boolean;
-  testEffectDoubles?: Record<
-    string,
-    Array<{ expectRequest?: unknown; response: unknown }>
-  >;
-  callerTarget?: string;
 }): RuntimeAssemblyRequestStartFrameHeader {
+  assertValidHttpTimeout(input.timeoutMs, 'request timeout');
   const selector = input.binding.selector;
-  if (selector.protocol !== 'http' || selector.method === null) {
-    throw new Error('canonical HTTP unary requests require an HTTP ingress binding');
+  if (selector.protocol !== 'http') {
+    throw new Error('canonical HTTP requests require an HTTP ingress binding');
   }
   const candidate = {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
@@ -230,14 +236,13 @@ export function assemblyHttpRequestHeader(input: {
     requestId: input.requestId,
     mode: input.binding.operationMode,
     caller: {
-      kind: 'gateway',
-      target: input.callerTarget ?? '__skiff.runtime-assembly-ingress'
+      kind: 'gateway'
     },
     routing: {
       kind: 'runtimeAssembly',
       assemblyIdentity: input.snapshot.assembly.assemblyIdentity,
       assemblyGeneration: input.snapshot.generation,
-      contractOperationId: input.binding.contractOperationId,
+      gatewayEntryIdentity: input.binding.gatewayEntryIdentity,
       ingress: {
         protocol: 'http',
         host: canonicalIngressHost(selector.host),
@@ -254,8 +259,7 @@ export function assemblyHttpRequestHeader(input: {
       spanId: randomUUID()
     },
     httpRequest: input.httpRequest,
-    testEffectsEnabled: input.testEffectsEnabled ?? false,
-    testEffectDoubles: input.testEffectDoubles ?? {}
+    testEffectsEnabled: false
   } as const;
   const validation = validateRuntimeAssemblyRequestStartFrameHeader(candidate);
   if (!validation.ok) {
@@ -302,7 +306,44 @@ function selectHttpIngress(
       `No committed RuntimeAssembly ingress matches ${host} ${request.method ?? 'GET'} ${url.pathname}`
     );
   }
+  if (
+    binding.operationMode === 'serverStream' &&
+    binding.adapterKind !== 'rawHttp'
+  ) {
+    throw new GatewayError(
+      500,
+      'InvalidAssemblyIngress',
+      'only rawHttp bindings may use serverStream mode'
+    );
+  }
   return { binding, url };
+}
+
+export function effectiveHttpRequestTimeoutMs(
+  platformCapMs: number,
+  deploymentTimeoutMs?: number
+): number {
+  assertValidHttpTimeout(platformCapMs, 'platform HTTP timeout cap');
+  if (deploymentTimeoutMs === undefined) {
+    return platformCapMs;
+  }
+  assertValidHttpTimeout(deploymentTimeoutMs, 'deployment HTTP timeout override');
+  return Math.min(platformCapMs, deploymentTimeoutMs);
+}
+
+function assertValidHttpTimeout(value: number, owner: string): void {
+  if (
+    !Number.isSafeInteger(value) ||
+    value <= 0 ||
+    value > MAX_NODE_TIMEOUT_MS ||
+    Date.now() + value > MAX_JAVASCRIPT_DATE_MS
+  ) {
+    throw new GatewayError(
+      500,
+      'InvalidHttpTimeout',
+      `${owner} must be a positive safe integer representable as a deadline and timer`
+    );
+  }
 }
 
 async function readRequestBody(request: IncomingMessage, limit: number): Promise<Buffer> {

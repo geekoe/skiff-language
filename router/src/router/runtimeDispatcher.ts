@@ -14,8 +14,7 @@ import {
 } from '../protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
 import {
-  type ValidatedResponseErrorFrame,
-  validateRuntimeAssemblyRequestStartFrameHeader
+  type ValidatedResponseErrorFrame
 } from '../protocol/runtimeProtocol.js';
 import type {
   WebSocketGenerationLifecycleTuple
@@ -45,11 +44,6 @@ import {
 export type RuntimeFrameSendCallback = (error?: Error) => void;
 
 export type StreamPendingState = 'waitingStart' | 'streaming' | 'terminal';
-
-export type RuntimeUnaryResponsePhase =
-  | 'standard'
-  | 'websocketConnect'
-  | 'websocketReceive';
 
 export type PendingTerminalSource =
   | 'runtime_response_end'
@@ -87,7 +81,6 @@ interface RuntimeInvocationBase extends RuntimeInFlightRequest {
 export interface RuntimeUnaryInvocation extends RuntimeInvocationBase {
   kind: 'unary';
   request: RuntimeUnaryDispatchFrameHeader;
-  responsePhase: RuntimeUnaryResponsePhase;
   connectionReceipt: RuntimeDispatchConnectionReceipt;
   resolve(response: RuntimeBinaryDispatchResponseWithReceipt): void;
 }
@@ -135,18 +128,6 @@ export interface RuntimeBinaryDispatchResponseWithReceipt
 
 interface RuntimeDispatchConnectionReceiptRecord {
   connection: RuntimeDispatchConnection;
-  websocketBinding?: RuntimeAssemblyWebSocketReceiptBinding;
-}
-
-interface RuntimeAssemblyWebSocketReceiptBinding {
-  assemblyIdentity: string;
-  assemblyGeneration: number;
-  contractOperationId: string;
-  ingressHost: string;
-  ingressPath: string;
-  websocketEntryId: string;
-  gatewayEntryIdentity: string;
-  connectionId: string;
 }
 
 export interface RuntimeBinaryDispatchError {
@@ -254,7 +235,7 @@ export class RuntimeDispatcher {
     }
     const dispatchHeader = dispatchHeaderForConnection(request.header, connection);
     const connectionReceipt =
-      options.connectionReceipt ?? this.issueConnectionReceipt(connection, dispatchHeader);
+      options.connectionReceipt ?? this.issueConnectionReceipt(connection);
 
     return new Promise<RuntimeBinaryDispatchResponseWithReceipt>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -276,7 +257,6 @@ export class RuntimeDispatcher {
         kind: 'unary',
         ...(connection.runtimeId !== undefined ? { runtimeId: connection.runtimeId } : {}),
         request: dispatchHeader,
-        responsePhase: unaryResponsePhase(dispatchHeader),
         connectionReceipt,
         timeout,
         ws: connection.ws,
@@ -314,28 +294,11 @@ export class RuntimeDispatcher {
   }
 
   isPendingWebSocketAcquireSender(
-    sender: WebSocket,
-    tuple: WebSocketGenerationLifecycleTuple
+    _sender: WebSocket,
+    _tuple: WebSocketGenerationLifecycleTuple
   ): boolean {
-    for (const pending of this.pending.values()) {
-      if (
-        pending.kind !== 'unary' ||
-        pending.responsePhase !== 'websocketConnect' ||
-        pending.ws !== sender ||
-        !isRuntimeAssemblyRequestDispatchHeader(pending.request)
-      ) {
-        continue;
-      }
-      const request = pending.request;
-      if (
-        request.routing.assemblyIdentity === tuple.assemblyIdentity &&
-        request.routing.assemblyGeneration === tuple.assemblyGeneration &&
-        request.websocketEntryId === tuple.websocketEntryId &&
-        webSocketAdapterConnectionId(request.websocketAdapter) === tuple.connectionId
-      ) {
-        return true;
-      }
-    }
+    // RuntimeAssembly business-message routing is not frozen. The canonical
+    // request lane is HTTP-only, so no acquire can be attributed here.
     return false;
   }
 
@@ -534,8 +497,9 @@ export class RuntimeDispatcher {
           'runtime dispatch connection receipt was not issued by this dispatcher'
         );
       }
-      const receiptError = validateReceiptRequest(request, record.websocketBinding);
-      return receiptError ?? record.connection;
+      return new ServiceProtocolBoundaryError(
+        'connection receipt dispatch is unavailable until RuntimeAssembly WebSocket business routing is frozen'
+      );
     }
     if (options.connection !== undefined) {
       const requestError = this.options.registry.validateDispatchRequest?.(request);
@@ -545,18 +509,13 @@ export class RuntimeDispatcher {
   }
 
   private issueConnectionReceipt(
-    connection: RuntimeDispatchConnection,
-    request: RuntimeUnaryDispatchFrameHeader
+    connection: RuntimeDispatchConnection
   ): RuntimeDispatchConnectionReceipt {
     const receipt = Object.freeze({
       ...(connection.runtimeId !== undefined ? { runtimeId: connection.runtimeId } : {}),
       [runtimeDispatchConnectionReceiptBrand]: true as const
     }) as RuntimeDispatchConnectionReceipt;
-    const websocketBinding = assemblyWebSocketReceiptBinding(request);
-    this.connectionByReceipt.set(receipt, {
-      connection,
-      ...(websocketBinding !== undefined ? { websocketBinding } : {})
-    });
+    this.connectionByReceipt.set(receipt, { connection });
     return receipt;
   }
 
@@ -593,13 +552,19 @@ export class RuntimeDispatcher {
       return;
     }
     if (!this.isPendingRuntimeSocket(ws, pending)) {
-      this.rejectForeignWebSocketResponseSender(pending);
       return;
     }
-    if (pending.kind === 'unary' && pending.responsePhase !== 'standard') {
-      const phaseError = validateWebSocketUnaryResponse(pending.responsePhase, response);
-      if (phaseError !== undefined) {
-        this.rejectPendingWebSocketProtocolViolation(ws, requestId, phaseError);
+    if (pending.kind === 'unary') {
+      const responseError = validateCanonicalHttpUnaryResponse(
+        pending.request,
+        response
+      );
+      if (responseError !== undefined) {
+        this.rejectPendingRuntimeError(ws, requestId, {
+          code: 'HttpResponseProtocolError',
+          message: responseError
+        });
+        return;
       }
     }
     if (pending.kind === 'stream') {
@@ -617,10 +582,13 @@ export class RuntimeDispatcher {
         });
         return;
       }
-      if (response.header.httpResponse !== undefined) {
+      if (
+        response.header.httpResponse !== undefined ||
+        response.header.websocketConnect !== undefined
+      ) {
         this.rejectPendingRuntimeError(ws, requestId, {
           code: 'StreamProtocolError',
-          message: 'streaming response.end must not include httpResponse metadata'
+          message: 'streaming response.end must not include response metadata'
         });
         return;
       }
@@ -657,7 +625,6 @@ export class RuntimeDispatcher {
       return;
     }
     if (!this.isPendingRuntimeSocket(ws, pending)) {
-      this.rejectForeignWebSocketResponseSender(pending);
       return;
     }
     if (pending.kind === 'unaryFrame') {
@@ -698,15 +665,7 @@ export class RuntimeDispatcher {
       return;
     }
     if (!this.isPendingRuntimeSocket(ws, pending)) {
-      this.rejectForeignWebSocketResponseSender(pending);
       return;
-    }
-    if (pending.kind === 'unary' && pending.responsePhase !== 'standard') {
-      this.rejectPendingWebSocketProtocolViolation(
-        ws,
-        requestId,
-        'WebSocket unary dispatch must not receive response.start HTTP metadata'
-      );
     }
     if (pending.kind !== 'stream') {
       this.rejectPendingRuntimeError(ws, requestId, {
@@ -751,15 +710,7 @@ export class RuntimeDispatcher {
       return;
     }
     if (!this.isPendingRuntimeSocket(ws, pending)) {
-      this.rejectForeignWebSocketResponseSender(pending);
       return;
-    }
-    if (pending.kind === 'unary' && pending.responsePhase !== 'standard') {
-      this.rejectPendingWebSocketProtocolViolation(
-        ws,
-        requestId,
-        'WebSocket unary dispatch must not receive response.chunk payloads'
-      );
     }
     if (pending.kind !== 'stream') {
       this.rejectPendingRuntimeError(ws, requestId, {
@@ -813,29 +764,6 @@ export class RuntimeDispatcher {
     error: { code: string; message: string; details?: unknown }
   ): void {
     this.rejectPendingWithError(ws, requestId, new RuntimeResponseError(error), 'protocol_error');
-  }
-
-  private rejectPendingWebSocketProtocolViolation(
-    ws: WebSocket,
-    requestId: string,
-    message: string
-  ): never {
-    const error = new RuntimeResponseError({
-      code: 'WebSocketResponseProtocolViolation',
-      message
-    });
-    this.rejectPendingWithError(ws, requestId, error, 'protocol_error');
-    throw error;
-  }
-
-  private rejectForeignWebSocketResponseSender(pending: RuntimeInvocation): void {
-    if (pending.kind !== 'unary' || pending.responsePhase === 'standard') {
-      return;
-    }
-    throw new RuntimeResponseError({
-      code: 'WebSocketResponseProtocolViolation',
-      message: 'WebSocket response arrived from a runtime other than the pinned sender'
-    });
   }
 
   private rejectPendingWithError(
@@ -1016,133 +944,20 @@ export class RuntimeDispatcher {
   }
 }
 
-function unaryResponsePhase(
-  request: RuntimeUnaryDispatchFrameHeader
-): RuntimeUnaryResponsePhase {
-  if (
-    !isRuntimeAssemblyRequestDispatchHeader(request) ||
-    request.routing.ingress.protocol !== 'webSocket'
-  ) {
-    return 'standard';
-  }
-  return request.websocketAdapter?.kind === 'connect'
-    ? 'websocketConnect'
-    : 'websocketReceive';
-}
-
-function validateWebSocketUnaryResponse(
-  phase: Exclude<RuntimeUnaryResponsePhase, 'standard'>,
+function validateCanonicalHttpUnaryResponse(
+  request: RuntimeUnaryDispatchFrameHeader,
   response: RuntimeBinaryDispatchResponse
 ): string | undefined {
-  const { header, payloadBytes } = response;
-  if (header.httpResponse !== undefined) {
-    return 'WebSocket unary response must not include HTTP response metadata';
-  }
-  if (phase === 'websocketReceive') {
-    if (header.websocketConnect !== undefined) {
-      return 'WebSocket receive response must not include connect metadata';
-    }
-    if (header.payloadPresent || payloadBytes.byteLength !== 0) {
-      return 'WebSocket receive response must be null with no response payload';
-    }
+  if (!isRuntimeAssemblyRequestDispatchHeader(request)) {
     return undefined;
   }
-
-  const connect = header.websocketConnect;
-  if (connect === undefined) {
-    return 'WebSocket connect response must include connect metadata';
+  if (response.header.websocketConnect !== undefined) {
+    return 'RuntimeAssembly HTTP unary response must not include WebSocket metadata';
   }
-  if (connect.result === 'reject') {
-    if (
-      header.payloadPresent ||
-      connect.contextPayloadPresent ||
-      payloadBytes.byteLength !== 0
-    ) {
-      return 'WebSocket connect reject must not include a context payload';
-    }
-    return undefined;
-  }
-  if (header.payloadPresent !== connect.contextPayloadPresent) {
-    return 'WebSocket connect payloadPresent must match contextPayloadPresent';
-  }
-  if (!connect.contextPayloadPresent && payloadBytes.byteLength !== 0) {
-    return 'WebSocket connect accept-null must not include context bytes';
-  }
-  // A typed Context is logically present even when its canonical encoding is zero bytes.
-  return undefined;
-}
-
-function validateReceiptRequest(
-  request: RuntimeUnaryDispatchFrameHeader,
-  receiptBinding: RuntimeAssemblyWebSocketReceiptBinding | undefined
-): ServiceProtocolBoundaryError | undefined {
-  if (
-    receiptBinding === undefined ||
-    !isRuntimeAssemblyRequestDispatchHeader(request) ||
-    request.routing.ingress.protocol !== 'webSocket'
-  ) {
-    return new ServiceProtocolBoundaryError(
-      'dispatcher connection receipts only pin canonical RuntimeAssembly WebSocket requests'
-    );
-  }
-  const validation = validateRuntimeAssemblyRequestStartFrameHeader(request);
-  if (!validation.ok) {
-    return new ServiceProtocolBoundaryError(validation.error);
-  }
-  const candidate = validation.envelope;
-  const connectionId = webSocketAdapterConnectionId(candidate.websocketAdapter);
-  if (
-    candidate.routing.assemblyIdentity !== receiptBinding.assemblyIdentity ||
-    candidate.routing.assemblyGeneration !== receiptBinding.assemblyGeneration ||
-    candidate.routing.contractOperationId !== receiptBinding.contractOperationId ||
-    candidate.routing.ingress.host !== receiptBinding.ingressHost ||
-    candidate.routing.ingress.method !== null ||
-    candidate.routing.ingress.path !== receiptBinding.ingressPath ||
-    candidate.websocketEntryId !== receiptBinding.websocketEntryId ||
-    candidate.gatewayEntryIdentity !== receiptBinding.gatewayEntryIdentity ||
-    connectionId !== receiptBinding.connectionId
-  ) {
-    return new ServiceProtocolBoundaryError(
-      'RuntimeAssembly WebSocket request does not match its dispatcher connection receipt'
-    );
+  if (response.header.payloadPresent !== (response.payloadBytes.byteLength > 0)) {
+    return 'RuntimeAssembly HTTP unary payloadPresent must match response body bytes';
   }
   return undefined;
-}
-
-function assemblyWebSocketReceiptBinding(
-  request: RuntimeUnaryDispatchFrameHeader
-): RuntimeAssemblyWebSocketReceiptBinding | undefined {
-  if (
-    !isRuntimeAssemblyRequestDispatchHeader(request) ||
-    request.routing.ingress.protocol !== 'webSocket' ||
-    request.websocketAdapter === undefined ||
-    typeof request.websocketEntryId !== 'string' ||
-    typeof request.gatewayEntryIdentity !== 'string'
-  ) {
-    return undefined;
-  }
-  const connectionId = webSocketAdapterConnectionId(request.websocketAdapter);
-  if (connectionId === undefined) {
-    return undefined;
-  }
-  return Object.freeze({
-    assemblyIdentity: request.routing.assemblyIdentity,
-    assemblyGeneration: request.routing.assemblyGeneration,
-    contractOperationId: request.routing.contractOperationId,
-    ingressHost: request.routing.ingress.host,
-    ingressPath: request.routing.ingress.path,
-    websocketEntryId: request.websocketEntryId,
-    gatewayEntryIdentity: request.gatewayEntryIdentity,
-    connectionId
-  });
-}
-
-function webSocketAdapterConnectionId(
-  adapter: RuntimeAssemblyRequestStartFrameHeader['websocketAdapter']
-): string | undefined {
-  return adapter?.kind === 'connect'
-    ? adapter.connectRequest?.connectionId
-    : adapter?.receiveEvent?.connectionId;
 }
 
 function dispatchHeaderForConnection(
