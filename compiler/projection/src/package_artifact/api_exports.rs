@@ -21,6 +21,7 @@ use crate::error::ProjectionError;
 pub struct PackageExports {
     pub entries: Vec<PackageExportEntry>,
     pub symbols: BTreeMap<String, PackageExportSymbol>,
+    pub service_call_functions: BTreeSet<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub public_instances: Vec<PackageExportPublicInstance>,
 }
@@ -48,6 +49,7 @@ pub struct PackageExportPublicInstance {
     pub receiver_module: String,
     pub receiver_symbol: String,
     pub interfaces: Vec<PackageExportPublicInstanceInterface>,
+    pub service_call: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -213,6 +215,7 @@ pub(super) fn project_package_exports(
                 receiver_module: public_instance.receiver.module_path().to_string(),
                 receiver_symbol: public_instance.receiver.symbol().to_string(),
                 interfaces,
+                service_call: public_instance.service_call,
             })
         })
         .collect::<Result<Vec<_>, ProjectionError>>()?;
@@ -220,6 +223,14 @@ pub(super) fn project_package_exports(
     Ok(PackageExports {
         entries,
         symbols,
+        service_call_functions: input
+            .source()
+            .export_bindings()
+            .public_callables()
+            .values()
+            .filter(|callable| callable.service_call)
+            .map(|callable| callable.public_path.clone())
+            .collect(),
         public_instances,
     })
 }

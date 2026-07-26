@@ -105,6 +105,8 @@ pub(super) fn build_projection_from_validated(
                 right.contract_operation_id.as_str(),
             ))
     });
+    let mut service_call_roots = artifact.service_call_roots.clone();
+    service_call_roots.sort_by(|left, right| left.public_path().cmp(right.public_path()));
 
     let mut runtime_requirements = artifact.runtime_requirements.clone();
     runtime_requirements
@@ -149,6 +151,7 @@ pub(super) fn build_projection_from_validated(
         runtime_requirements,
         callable_semantic_facts: artifact.callable_semantic_facts.clone(),
         boundary_projections: artifact.boundary_projections.clone(),
+        service_call_roots,
         service_call_refs,
     })
 }

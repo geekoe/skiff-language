@@ -14,10 +14,10 @@ pub const PACKAGE_LOCAL_ABI_IDENTITY_SCHEMA_MARKER: &str = "skiff-package-local-
 pub const PACKAGE_BUILD_IDENTITY_PREFIX: &str = "skiff-package-build-v2:sha256";
 pub const PACKAGE_LOCAL_ABI_IDENTITY_PREFIX: &str = "skiff-package-local-abi-v2:sha256";
 pub const PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER: &str =
-    "skiff-package-artifact-build-identity-v4";
+    "skiff-package-artifact-build-identity-v5";
 pub const PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER: &str =
     "skiff-package-artifact-local-abi-identity-v3";
-pub const PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX: &str = "skiff-package-build-v6:sha256";
+pub const PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX: &str = "skiff-package-build-v7:sha256";
 pub const PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX: &str = "skiff-package-local-abi-v5:sha256";
 pub const PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER: &str =
     "skiff-package-schema-type-identity-v1";

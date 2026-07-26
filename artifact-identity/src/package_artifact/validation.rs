@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     BoundaryCallableProjection, ExecutableSignatureIr, FileIrRef, InterfaceMethodSignature,
-    NominalTypeRefBaseIr, PackageArtifact, PackageLocalAbiSymbol, PackageTypeRef,
-    PublicationResourceRef, StateBindingKind, TypeDescriptorIr, TypeRefIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    NominalTypeRefBaseIr, OperationCallableKind, PackageArtifact, PackageLocalAbiSymbol,
+    PackageServiceCallRoot, PackageTypeRef, PublicationResourceRef, StateBindingKind,
+    TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use crate::Result;
@@ -46,6 +46,7 @@ pub(super) fn validate_package_artifact_surface(artifact: &PackageArtifact) -> R
     validate_unique_resources(&artifact.static_resources)?;
     validate_requirements(artifact)?;
     validate_callable_surfaces(artifact)?;
+    validate_service_call_roots(artifact)?;
     validate_service_calls(artifact)
 }
 
@@ -178,10 +179,21 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
                 )?;
             }
             PackageLocalAbiSymbol::PublicInstance {
+                instance_id,
                 declared_receiver_type,
                 interfaces,
                 ..
             } => {
+                if instance_id != public_path {
+                    return invalid_artifact(format!(
+                        "public instance {public_path} has mismatched instance identity {instance_id}"
+                    ));
+                }
+                if interfaces.is_empty() {
+                    return invalid_artifact(format!(
+                        "public instance {public_path} must list at least one interface"
+                    ));
+                }
                 validate_local_type_ref(
                     declared_receiver_type,
                     &[],
@@ -391,6 +403,107 @@ fn validate_implementation_link_type_refs(artifact: &PackageArtifact) -> Result<
             &export.signature,
             &format!("implementation link executable {path}"),
         )?;
+    }
+    Ok(())
+}
+
+fn validate_service_call_roots(artifact: &PackageArtifact) -> Result<()> {
+    let mut root_paths = BTreeSet::new();
+    let mut selected_callables = BTreeSet::new();
+    for root in &artifact.service_call_roots {
+        let public_path = root.public_path();
+        if public_path.trim().is_empty() || !root_paths.insert(public_path) {
+            return invalid_artifact(format!(
+                "serviceCall root path must be non-empty and unique, got {public_path:?}"
+            ));
+        }
+        match root {
+            PackageServiceCallRoot::Function {
+                callable_id,
+                public_path,
+            } => {
+                let Some(PackageLocalAbiSymbol::Callable {
+                    callable_id: public_callable_id,
+                    ..
+                }) = artifact.package_local_abi.public_symbols.get(public_path)
+                else {
+                    return invalid_artifact(format!(
+                        "serviceCall function root {public_path} is not a public callable"
+                    ));
+                };
+                if callable_id != public_callable_id {
+                    return invalid_artifact(format!(
+                        "serviceCall function root {public_path} binds {callable_id}, expected {public_callable_id}"
+                    ));
+                }
+                let Some(link) = artifact.callable_links.get(callable_id) else {
+                    return invalid_artifact(format!(
+                        "serviceCall function root {public_path} has no exact callable link"
+                    ));
+                };
+                if link.target.callable_kind != OperationCallableKind::PublicFunction {
+                    return invalid_artifact(format!(
+                        "serviceCall function root {public_path} must bind a public function"
+                    ));
+                }
+                if !selected_callables.insert(callable_id) {
+                    return invalid_artifact(format!(
+                        "serviceCall callable {callable_id} is selected by more than one root"
+                    ));
+                }
+            }
+            PackageServiceCallRoot::PublicInstance {
+                public_path,
+                methods,
+            } => {
+                let Some(PackageLocalAbiSymbol::PublicInstance {
+                    methods: public_methods,
+                    ..
+                }) = artifact.package_local_abi.public_symbols.get(public_path)
+                else {
+                    return invalid_artifact(format!(
+                        "serviceCall public instance root {public_path} is not a public instance"
+                    ));
+                };
+                if methods != public_methods {
+                    return invalid_artifact(format!(
+                        "serviceCall public instance root {public_path} methods do not exactly match its listed interface methods"
+                    ));
+                }
+                for (method, callable_id) in methods {
+                    let method_path = format!("{public_path}.{method}");
+                    let Some(PackageLocalAbiSymbol::Callable {
+                        callable_id: public_callable_id,
+                        ..
+                    }) = artifact.package_local_abi.public_symbols.get(&method_path)
+                    else {
+                        return invalid_artifact(format!(
+                            "serviceCall public instance root {public_path} method {method} has no public callable path {method_path}"
+                        ));
+                    };
+                    if callable_id != public_callable_id {
+                        return invalid_artifact(format!(
+                            "serviceCall public instance root {public_path} method {method} binds {callable_id}, expected {public_callable_id}"
+                        ));
+                    }
+                    let Some(link) = artifact.callable_links.get(callable_id) else {
+                        return invalid_artifact(format!(
+                            "serviceCall public instance root {public_path} method {method} has no exact callable link"
+                        ));
+                    };
+                    if link.target.callable_kind != OperationCallableKind::ImplMethod {
+                        return invalid_artifact(format!(
+                            "serviceCall public instance root {public_path} method {method} must bind an impl method"
+                        ));
+                    }
+                    if !selected_callables.insert(callable_id) {
+                        return invalid_artifact(format!(
+                            "serviceCall callable {callable_id} is selected by more than one root"
+                        ));
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }

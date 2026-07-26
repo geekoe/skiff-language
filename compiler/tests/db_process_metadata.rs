@@ -279,7 +279,7 @@ fn package_with_source(name: &str, source: &str) -> TestDir {
         "package.yml",
         "id: example.com/db-fixture\nversion: 1.0.0\nstate:\n  database:\n    kind: database\n",
     );
-    temp.write("api.yml", "");
+    temp.write("api.yml", "{}\n");
     temp.write("main.skiff", source);
     temp
 }

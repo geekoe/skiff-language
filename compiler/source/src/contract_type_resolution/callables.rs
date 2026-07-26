@@ -82,6 +82,7 @@ pub(super) fn public_instance_operation_exports(
                     source_module: receiver.module_path().to_string(),
                     source_symbol: format!("{}.{}", receiver.symbol(), operation.name),
                     kind: crate::api::PublicCallableKind::Method,
+                    service_call: false,
                 }),
         );
     }

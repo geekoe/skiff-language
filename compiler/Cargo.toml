@@ -103,6 +103,10 @@ name = "generated_service_deployment"
 path = "tests/generated_service_deployment.rs"
 
 [[test]]
+name = "service_call_roots"
+path = "tests/service_call_roots.rs"
+
+[[test]]
 name = "actor_dispatch_linking"
 path = "tests/actor_dispatch_linking.rs"
 

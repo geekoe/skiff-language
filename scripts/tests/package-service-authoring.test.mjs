@@ -85,6 +85,11 @@ test('human service API output renders the exact compiler projection', () => {
             serviceOperationId: 'create-operation',
           },
           {
+            publicPath: 'inspect',
+            callableId: 'inspect-id',
+            status: 'available',
+          },
+          {
             publicPath: 'mutate',
             callableId: 'mutate-id',
             status: 'unavailable',
@@ -98,8 +103,9 @@ test('human service API output renders the exact compiler projection', () => {
     renderAuthoringResult(result),
     'Service API for example.com/account\n'
       + 'Available: 1\n'
-      + 'Package-only: 1\n'
+      + 'Package-only: 2\n'
       + '  available create\n'
+      + '  package-only inspect\n'
       + '  package-only mutate\n'
       + '    - "writesCallerReachable"',
   );
@@ -137,7 +143,7 @@ test('service package build returns one stable API receipt with operation identi
   const root = join(temp, 'service');
   await writePackageRoot(root, {
     packageId: 'example.com/ping-implementation',
-    api: 'ping: main.ping\n',
+    api: 'ping:\n  source: main.ping\n  serviceCall: true\n',
     source: 'function ping() -> string { return "pong" }\n',
   });
   await writeFile(join(root, 'service.yml'), 'id: example.com/ping\n');
@@ -161,7 +167,7 @@ test('service package build returns one stable API receipt with operation identi
   assert.equal(result.serviceApiReceipt.serviceId, 'example.com/ping');
   assert.match(
     result.serviceApiReceipt.serviceProtocolIdentity,
-    /^skiff-service-protocol-v3:sha256:/,
+    /^skiff-service-protocol-v4:sha256:/,
   );
   assert.deepEqual(
     result.serviceApiReceipt.projection.functions.map((entry) => ({

@@ -7,8 +7,9 @@ use std::{
 
 use skiff_artifact_model::PackageArtifact;
 use skiff_compiler::{
-    compile_package, PackageCompileInput, PackageContractCompileDependency, PackageSourceInput,
-    PublishedPackageArtifact, ResolvedPackageSchema,
+    compile_package, compile_service_package, CompiledServicePackage, PackageCompileInput,
+    PackageContractCompileDependency, PackageSourceInput, PublishedPackageArtifact,
+    ResolvedPackageSchema,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_input::{
@@ -95,12 +96,59 @@ impl<'a> PackageGraphCompiler<'a> {
 
         self.visiting.push(key.clone());
         self.visiting_set.insert(key.clone());
-        let result = self.compile_manifest(&manifest);
+        let result = self.compile_manifest(&manifest, None);
         self.visiting.pop();
         self.visiting_set.remove(key);
-        let published = result?;
+        let (published, service_api) = result?;
+        debug_assert!(service_api.is_none());
         self.published.insert(key.clone(), published.clone());
         Ok(published)
+    }
+
+    pub(super) fn compile_service(
+        &mut self,
+        key: &PackageManifestKey,
+        service_id: &str,
+    ) -> Result<CompiledServicePackage, PackageProjectCompileError> {
+        if self.published.contains_key(key) {
+            return Err(PackageProjectCompileError::ServiceRootAlreadyCompiled {
+                package_id: key.0.clone(),
+                package_version: key.1.clone(),
+            });
+        }
+        if self.visiting_set.contains(key) {
+            let first = self
+                .visiting
+                .iter()
+                .position(|visiting| visiting == key)
+                .unwrap_or(0);
+            let coordinates = self.visiting[first..]
+                .iter()
+                .chain(std::iter::once(key))
+                .map(coordinate)
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            return Err(PackageProjectCompileError::DependencyCycle { coordinates });
+        }
+        let manifest = self.manifests.get(key).cloned().ok_or_else(|| {
+            PackageProjectCompileError::MissingDependencyManifest {
+                package_id: key.0.clone(),
+                package_version: key.1.clone(),
+            }
+        })?;
+
+        self.visiting.push(key.clone());
+        self.visiting_set.insert(key.clone());
+        let result = self.compile_manifest(&manifest, Some(service_id));
+        self.visiting.pop();
+        self.visiting_set.remove(key);
+        let (package, service_api) = result?;
+        let service_api = service_api.expect("service compile must project a service API");
+        self.published.insert(key.clone(), package.clone());
+        Ok(CompiledServicePackage {
+            package,
+            service_api,
+        })
     }
 
     pub(super) fn compiled_dependency_closure(
@@ -131,7 +179,14 @@ impl<'a> PackageGraphCompiler<'a> {
     fn compile_manifest(
         &mut self,
         manifest: &PackageManifest,
-    ) -> Result<PublishedPackageArtifact, PackageProjectCompileError> {
+        service_id: Option<&str>,
+    ) -> Result<
+        (
+            PublishedPackageArtifact,
+            Option<skiff_compiler::ServiceApiProjection>,
+        ),
+        PackageProjectCompileError,
+    > {
         let mut dependency_packages = Vec::with_capacity(manifest.dependencies.len());
         for dependency in &manifest.dependencies {
             let key = (dependency.id.clone(), dependency.version.clone());
@@ -200,7 +255,13 @@ impl<'a> PackageGraphCompiler<'a> {
         }) {
             input = input.for_test_service();
         }
-        Ok(compile_package(input)?)
+        match service_id {
+            Some(service_id) => {
+                let compiled = compile_service_package(input, service_id)?;
+                Ok((compiled.package, Some(compiled.service_api)))
+            }
+            None => Ok((compile_package(input)?, None)),
+        }
     }
 }
 

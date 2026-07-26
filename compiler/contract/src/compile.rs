@@ -78,9 +78,6 @@ pub fn definition_contract_operation_id(
 }
 
 fn validate_definition(definition: &ServiceContractDefinition) -> Result<()> {
-    if definition.operations.is_empty() {
-        return Err(ContractDefinitionError::EmptyOperations);
-    }
     if definition
         .operations
         .keys()

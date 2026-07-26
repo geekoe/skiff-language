@@ -52,10 +52,8 @@ pub fn read_service_package_root(
     root: &Path,
 ) -> Result<ServicePackageRoot, ServiceSourceConfigError> {
     let package_path = root.join("package.yml");
-    let api_path = root.join("api.yml");
     let service_path = root.join(SERVICE_CONFIG_FILE);
     require_control_file(&package_path)?;
-    require_control_file(&api_path)?;
     require_control_file(&service_path)?;
     let package = read_user_package_manifest(&package_path)?;
     let service = read_service_manifest(&service_path)?;
@@ -324,7 +322,7 @@ mod tests {
     fn reads_service_as_package_root_and_profiles() {
         let root = fixture_root("positive");
         write(&root, "package.yml", "id: example.com/account-package\nversion: 2.1.0\nservices:\n  - id: example.com/payment\n    version: 3.0.0\n    alias: payment\n");
-        write(&root, "api.yml", "functions: {}\n");
+        write(&root, "api.yml", "{}\n");
         write(
             &root,
             "service.yml",
@@ -384,7 +382,7 @@ http:
         let package = "id: example.com/widget-tests\nversion: 1.0.0\npackages:\n  - id: example.com/widget\n    version: 1.0.0\n    alias: widget\n    access: topLevel\n";
         let test_root = fixture_root("test-top-level");
         write(&test_root, "package.yml", package);
-        write(&test_root, "api.yml", "functions: {}\n");
+        write(&test_root, "api.yml", "{}\n");
         write(
             &test_root,
             "service.yml",
@@ -400,7 +398,7 @@ http:
 
         let production_root = fixture_root("production-top-level");
         write(&production_root, "package.yml", package);
-        write(&production_root, "api.yml", "functions: {}\n");
+        write(&production_root, "api.yml", "{}\n");
         write(
             &production_root,
             "service.yml",
@@ -421,7 +419,7 @@ http:
             "package.yml",
             "id: skiff.run/account\nversion: 0.1.0\n",
         );
-        write(&root, "api.yml", "functions: {}\n");
+        write(&root, "api.yml", "{}\n");
         write(&root, "service.yml", "id: skiff.run/account\nhttp: {}\n");
         write(
             &root,
@@ -442,7 +440,7 @@ http:
             "package.yml",
             "id: example.com/account\nversion: 0.1.0\n",
         );
-        write(&root, "api.yml", "functions: {}\n");
+        write(&root, "api.yml", "{}\n");
         write(&root, "service.yml", "id: example.com/account\n");
         write(
             &root,
@@ -460,10 +458,7 @@ http:
         for (name, files) in [
             (
                 "missing-package",
-                vec![
-                    ("api.yml", "functions: {}\n"),
-                    ("service.yml", "id: example.com/a\n"),
-                ],
+                vec![("api.yml", "{}\n"), ("service.yml", "id: example.com/a\n")],
             ),
             (
                 "missing-api",
@@ -476,7 +471,7 @@ http:
                 "missing-service",
                 vec![
                     ("package.yml", "id: example.com/a\nversion: 1.0.0\n"),
-                    ("api.yml", "functions: {}\n"),
+                    ("api.yml", "{}\n"),
                 ],
             ),
         ] {
@@ -500,7 +495,7 @@ http:
         ] {
             let root = fixture_root("service-owned-fields");
             write(&root, "package.yml", "id: example.com/a\nversion: 1.0.0\n");
-            write(&root, "api.yml", "functions: {}\n");
+            write(&root, "api.yml", "{}\n");
             write(
                 &root,
                 "service.yml",
@@ -521,7 +516,7 @@ http:
         ] {
             let root = fixture_root("removed-service-metadata");
             write(&root, "package.yml", "id: example.com/a\nversion: 1.0.0\n");
-            write(&root, "api.yml", "functions: {}\n");
+            write(&root, "api.yml", "{}\n");
             write(
                 &root,
                 "service.yml",
@@ -684,7 +679,7 @@ http:
     fn config_profile_rejects_dependencies() {
         let root = fixture_root("profile-dependencies");
         write(&root, "package.yml", "id: example.com/a\nversion: 1.0.0\n");
-        write(&root, "api.yml", "functions: {}\n");
+        write(&root, "api.yml", "{}\n");
         write(&root, "service.yml", "id: example.com/a\n");
         write(&root, "config.dev.yml", "services: []\n");
         assert!(read_service_package_root(&root).is_err());
@@ -701,7 +696,7 @@ http:
             "package.yml",
             "id: example.com/users\nversion: 1.0.0\n",
         );
-        write(&root, "api.yml", "functions: {}\n");
+        write(&root, "api.yml", "{}\n");
         write(&root, "service.yml", service_yml);
         let result = read_service_package_root(&root);
         fs::remove_dir_all(root).unwrap();

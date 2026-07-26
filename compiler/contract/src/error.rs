@@ -1,9 +1,10 @@
+use std::collections::BTreeMap;
+
+use skiff_artifact_model::BoundaryUnavailableReason;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ContractDefinitionError {
-    #[error("ServiceContractDefinition operations must contain at least one operation")]
-    EmptyOperations,
     #[error("ServiceContractDefinition {kind} key must be a non-empty string")]
     EmptyStableKey { kind: &'static str },
     #[error("contract diagnostic text references unknown operation stable key {key}")]
@@ -21,6 +22,10 @@ pub enum ContractDefinitionError {
         callable_id: String,
         first: String,
         second: String,
+    },
+    #[error("serviceCall roots are unavailable: {unavailable:?}")]
+    UnavailableServiceCallRoots {
+        unavailable: BTreeMap<String, Vec<BoundaryUnavailableReason>>,
     },
     #[error("service API schema type {public_path} has no implementation type source")]
     MissingPublicTypeSource { public_path: String },

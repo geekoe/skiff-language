@@ -106,13 +106,17 @@ fn render_authoring_receipt(
         .iter()
         .filter(|function| {
             function.get("status").and_then(serde_json::Value::as_str) == Some("available")
+                && function
+                    .get("serviceOperationId")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
         })
         .count();
-    let unavailable = functions.len() - available;
+    let package_only = functions.len() - available;
     let mut lines = vec![
         format!("Service API for {service}"),
         format!("Available: {available}"),
-        format!("Package-only: {unavailable}"),
+        format!("Package-only: {package_only}"),
     ];
     for function in functions {
         let path = function
@@ -120,7 +124,15 @@ fn render_authoring_receipt(
             .and_then(serde_json::Value::as_str)
             .ok_or("service API function is missing publicPath")?;
         match function.get("status").and_then(serde_json::Value::as_str) {
-            Some("available") => lines.push(format!("  available {path}")),
+            Some("available")
+                if function
+                    .get("serviceOperationId")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some() =>
+            {
+                lines.push(format!("  available {path}"))
+            }
+            Some("available") => lines.push(format!("  package-only {path}")),
             Some("unavailable") => {
                 lines.push(format!("  package-only {path}"));
                 let reasons = function
@@ -225,6 +237,11 @@ mod tests {
                             "serviceOperationId": "read-operation"
                         },
                         {
+                            "publicPath": "inspect",
+                            "callableId": "inspect-id",
+                            "status": "available"
+                        },
+                        {
                             "publicPath": "unsafeWrite",
                             "callableId": "write-id",
                             "status": "unavailable",
@@ -237,7 +254,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             rendered,
-            "Service API for example.registry\nAvailable: 1\nPackage-only: 1\n  available read\n  package-only unsafeWrite\n    - \"writesCallerReachable\"\n    - \"returnsCallerAlias\""
+            "Service API for example.registry\nAvailable: 1\nPackage-only: 2\n  available read\n  package-only inspect\n  package-only unsafeWrite\n    - \"writesCallerReachable\"\n    - \"returnsCallerAlias\""
         );
     }
 

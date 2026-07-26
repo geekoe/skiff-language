@@ -1,12 +1,11 @@
 mod common;
 
-use common::{package_project::compile_package_project, TestDir};
+use common::{package_project::compile_service_package_project, TestDir};
 use serde_json::json;
 use skiff_artifact_model::{ServiceConfigProfileAuthoring, ServiceManifestAuthoring};
 use skiff_compiler::{
     generate_service_deployment, GeneratedServiceDeploymentInput, ServiceApiProjection,
 };
-use skiff_compiler_contract::project_service_api;
 
 #[test]
 fn generates_exact_operations_and_profile_bindings() {
@@ -354,21 +353,17 @@ fn compile_fixture(
         "package.yml",
         "id: example.com/registry-package\nversion: 7.4.0\n",
     );
-    root.write("api.yml", "read: main.read\n");
+    root.write(
+        "api.yml",
+        "read:\n  source: main.read\n  serviceCall: true\n",
+    );
     root.write(
         "main.skiff",
         &format!(
             "function read() -> string {{ return {response} }}\nfunction configured() -> string {{ return config.require<string>(\"registry.token\") }}\n"
         ),
     );
-    let project = compile_package_project(root.path()).unwrap();
-    let api = project_service_api(
-        "example.com/registry",
-        &project.package.artifact,
-        &project.package.package_schema_type_records,
-    )
-    .unwrap();
-    (project, api)
+    compile_service_package_project(root.path(), "example.com/registry").unwrap()
 }
 
 fn manifest() -> ServiceManifestAuthoring {

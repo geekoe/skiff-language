@@ -90,6 +90,34 @@ pub struct PackageCallableLinkFact {
     pub target: OperationTargetRef,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum PackageServiceCallRoot {
+    Function {
+        public_path: String,
+        callable_id: PackageCallableId,
+    },
+    PublicInstance {
+        public_path: String,
+        methods: BTreeMap<String, PackageCallableId>,
+    },
+}
+
+impl PackageServiceCallRoot {
+    pub fn public_path(&self) -> &str {
+        match self {
+            Self::Function { public_path, .. } | Self::PublicInstance { public_path, .. } => {
+                public_path
+            }
+        }
+    }
+}
+
 /// Canonical user-code artifact. No PublicationAbiUnit, PackageUnit or
 /// ServiceUnit is embedded; the legacy DTOs remain separate runtime adapters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -112,6 +140,7 @@ pub struct PackageArtifact {
     pub runtime_requirements: PackageRuntimeRequirements,
     pub callable_semantic_facts: BTreeMap<PackageCallableId, CallableSemanticFacts>,
     pub boundary_projections: BTreeMap<PackageCallableId, BoundaryCallableProjection>,
+    pub service_call_roots: Vec<PackageServiceCallRoot>,
     pub service_call_refs: Vec<ServiceCallRef>,
 }
 
@@ -217,7 +246,7 @@ mod tests {
     #[test]
     fn package_artifact_wire_rejects_legacy_aggregate_fields() {
         let value = json!({
-            "schemaVersion": "skiff-package-artifact-v5",
+            "schemaVersion": "skiff-package-artifact-v6",
             "packageId": "example.pkg",
             "packageVersion": "1.0.0",
             "packageBuildId": "build",
@@ -242,6 +271,7 @@ mod tests {
             },
             "callableSemanticFacts": {},
             "boundaryProjections": {},
+            "serviceCallRoots": [],
             "serviceCallRefs": []
         });
         serde_json::from_value::<PackageArtifact>(value.clone())
@@ -255,5 +285,35 @@ mod tests {
                 .insert(forbidden.to_string(), json!({}));
             assert!(serde_json::from_value::<PackageArtifact>(invalid).is_err());
         }
+
+        let mut missing_roots = value.clone();
+        missing_roots
+            .as_object_mut()
+            .unwrap()
+            .remove("serviceCallRoots");
+        assert!(serde_json::from_value::<PackageArtifact>(missing_roots).is_err());
+
+        let mut roots = value;
+        roots["serviceCallRoots"] = json!([
+            {
+                "kind": "function",
+                "publicPath": "echo",
+                "callableId": "pkg-callable:example.pkg:echo"
+            },
+            {
+                "kind": "publicInstance",
+                "publicPath": "worker",
+                "methods": {
+                    "handle": "pkg-callable:example.pkg:worker.handle"
+                }
+            }
+        ]);
+        let decoded = serde_json::from_value::<PackageArtifact>(roots.clone()).unwrap();
+        assert_eq!(decoded.service_call_roots.len(), 2);
+        assert_eq!(serde_json::to_value(decoded).unwrap(), roots);
+
+        let mut unknown_kind = roots;
+        unknown_kind["serviceCallRoots"][0]["kind"] = json!("callable");
+        assert!(serde_json::from_value::<PackageArtifact>(unknown_kind).is_err());
     }
 }

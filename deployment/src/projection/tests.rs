@@ -197,6 +197,7 @@ impl ProjectionFixture {
                     implementation_requirements: requirements,
                 },
             )]),
+            service_call_roots: Vec::new(),
             service_call_refs: Vec::new(),
         };
         assign_package_artifact_identities(&mut implementation).unwrap();
@@ -1040,6 +1041,7 @@ fn dependency_artifact(resource_hash: &str) -> PackageArtifact {
         },
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
+        service_call_roots: Vec::new(),
         service_call_refs: Vec::new(),
     };
     assign_package_artifact_identities(&mut artifact).unwrap();

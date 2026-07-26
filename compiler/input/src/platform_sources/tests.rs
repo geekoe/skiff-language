@@ -215,6 +215,7 @@ fn platform_sources_authorize_manifest_and_source_provenance_only() {
         "id: skiff.run/std\nversion: 1.0.0\n",
     )
     .unwrap();
+    fs::write(fake_root.join("api.yml"), "{}\n").unwrap();
     let user_error = read_user_package_manifest(&fake_root.join("package.yml"))
         .unwrap_err()
         .to_string();
