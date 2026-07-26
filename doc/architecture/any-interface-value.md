@@ -198,7 +198,8 @@ dependency 调用路径（语法新、机制旧）。`const x = remoteLlm/manage
 远程装箱源额外要求：
 
 - `dependency_ref` 必须是已声明的 service dependency alias。
-- callee public instance必须在`api.yml`中带`serviceCall: true`，并在其`ServiceContract`中显式保留
+- callee public instance必须在`api.yml`中公开、被`service.yml.serviceCalls`选择，并在其
+  `ServiceContract`中显式保留
   `as I`选定的interface conformance（`InterfaceInstantiationRef`一致）及选定interface methods派生的
   `ContractOperationId`集合。
 - **选定 interface 的方法签名（参数与返回）不得含 `any I` 或任何 boundary-unsafe 类型**（**第一版约束**，
@@ -609,10 +610,10 @@ per-instance source type metadata。
   坐标机制去寻址运行期临时实例"，但**坐标与临时对象机制不匹配**：坐标只能指**有稳定身份的顶层符号**（顶层 const /
   public instance），临时对象没有这种身份，硬要给它坐标就得造注册表把它**伪装**成稳定实例——这是用错机制。正解是
   按对象类别分两条互不替代的机制：
-  - **顶层符号**（单例，不可复制）→ **传坐标**。其中带`serviceCall: true`的public instance坐标
+  - **顶层符号**（单例，不可复制）→ **传坐标**。其中被`service.yml.serviceCalls`选择的public instance坐标
     `(service, public_instance_key)`复用现状service dispatch、无需注册表/GC；而私有顶层const的内部路径
-    坐标需要跨service寻址层**新增能力**（非“复用现状”）。第一版跨service寻址单元只有`api.yml`显式带
-    `serviceCall: true`的public instance；调用按`ContractOperationId`寻址，未进入ServiceContract的symbol
+    坐标需要跨service寻址层**新增能力**（非“复用现状”）。第一版跨service寻址单元只有`api.yml`公开且被
+    `service.yml.serviceCalls`选择的public instance；调用按`ContractOperationId`寻址，未进入ServiceContract的symbol
     不在该寻址面中。故私有顶层const第一版**寻址层不认**，其坐标方案属演进（见
     `recoverable-value.md §Cross-Service`）。
   - **运行期临时（局部）对象** → **直传可恢复字节**，对端持有、回拨带回、构造侧按 build id 无状态重建等价副本，

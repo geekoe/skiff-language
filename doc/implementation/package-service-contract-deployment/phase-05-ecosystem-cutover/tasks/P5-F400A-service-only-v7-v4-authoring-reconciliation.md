@@ -1,6 +1,10 @@
 # P5-F400A Service-only v7/v4 authoring reconciliation
 
-状态：Ready。
+状态：Superseded；不得执行。
+
+本任务被`P5-F402-service-calls-manifest-selection-design-result.md`取代。其service-only source owner、
+markerless service自动选择全部public callable、retired `serviceCall` marker等前提均不再成立。
+后续实现必须从F402重新审计并拆分；不得复用本文production write set或fresh acceptance。
 
 ## 直接父节点
 

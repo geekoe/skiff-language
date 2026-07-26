@@ -107,6 +107,8 @@ PackageArtifact拥有代码和Package本地链接事实：
 - dependency/runtime requirements；
 - callable effect、provenance与boundary availability。
 
+它不含`serviceCallRoots`或任何`service.yml`选择；同一PackageArtifact可被不同service projection复用。
+
 Runtime linking可以把这些refs投影成`FileAddr`、`TypeAddr`、`ExecutableAddr`与linked indexes，但不能把地址
 写回artifact。
 
@@ -114,7 +116,7 @@ Runtime linking可以把这些refs投影成`FileAddr`、`TypeAddr`、`Executable
 
 ServiceContract是code-free service-to-service API：
 
-- 只含显式`serviceCall: true`生成的operations；
+- 只含`service.yml.serviceCalls`按Package public path显式选择后生成的operations；
 - 使用ContractOperationId和PackageSchemaTypeId closure；
 - 不含PackageCallableId、handler、route、config、build或external ingress；
 - 不声明operation-specific throw set。

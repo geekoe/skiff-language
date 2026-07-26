@@ -96,7 +96,8 @@ HTTP typed JSON route、raw HTTP route和WebSocket connect是当前已确认的g
 WebSocket frame receive由平台接收、排队和分派，不直接对应一个用户handler。未来选中的业务消息handler
 仍由runtime adapter构造typed参数，但不能把transport receive与业务入口混成同一个entry。
 
-这些external ingress entry由`service.yml`拥有，不是`api.yml`公开的service-call operation。Handler、
+这些external ingress entry由`service.yml`拥有，不是`serviceCalls`从`api.yml` public graph选择的
+service-call operation。Handler、
 pre和guard可以是当前Package中的非public callable；compiler直接解析其精确callable identity和linked
 signature。External selector绑定owner-local `gatewayEntryKey`，entry另带用于协议一致性校验的
 `gatewayEntryIdentity`；两者都不生成或借用`ContractOperationId`，也不进入

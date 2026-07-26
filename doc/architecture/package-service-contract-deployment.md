@@ -24,7 +24,8 @@ registry/release写入不可变artifact与更新pointer的动作名称。
 四个对象分别回答不同问题：
 
 - PackageArtifact：有哪些代码，如何在同一linked program内调用。
-- ServiceContract：同一个package公开API中哪些函数可作为service调用，以及跨boundary的语言语义。
+- ServiceContract：`service.yml`从同一个package公开API中选择哪些callable作为service调用，以及跨boundary
+  的语言语义。
 - ServiceDeployment：工具把哪个service package build、config profile和生成的routing/resource binding
   装配为一次不可变运行revision。
 - RuntimeAssembly：哪些deployment放在一起运行，它们的package/service依赖如何闭合。
@@ -45,10 +46,11 @@ framing等叶子类型，但不能用共享DTO重新制造隐式父模型。
 2. 普通package root包含`.skiff`、`package.yml`和`api.yml`；service root在此基础上增加
    `service.yml`与零个或多个`config.*.yml`。service root不得缺少`package.yml`，也不存在开发者维护的
    `deployment.yml`。`api.yml`也不得省略；没有公开API时必须显式写为`{}`。
-3. `api.yml`是package call与service-to-service call共用的公开API owner；HTTP、WebSocket等外部入口
-   由`service.yml`拥有。外部handler不因成为ingress而进入`api.yml`，也不因此对其它service可调用。
-4. `api.yml`中的`serviceCall: true`只标记service-to-service callable roots，不重复列type；未标记
-   callable只是Package API。ServiceContract只由compiler/tooling从这些显式roots及其typed
+3. `api.yml`是package call与service-to-service call共用的公开API owner；`service.yml.serviceCalls`
+   只按public path选择已有callable roots。HTTP、WebSocket等外部入口也由`service.yml`拥有。外部handler
+   不因成为ingress而进入`api.yml`，也不因此对其它service可调用。
+4. `service.yml.serviceCalls`不重复source selector、signature或type；未选择的callable只是Package API。
+   ServiceContract只由compiler/tooling从这些显式roots及其typed
    PackageSchema closure确定性投影；
    consumer只依赖发布后的code-free projection，不读取provider实现源码或外部ingress。
 5. ServiceDeployment不解析AST、不重新做type/effect分析；它由工具消费typed PackageArtifact、
@@ -82,11 +84,12 @@ Package source由`.skiff`源码、`package.yml`、`api.yml`和静态资源组成
 运算。
 
 Service仍走同一个package compiler入口；存在`service.yml`时，compiler/tooling再执行service projection。
-`service.yml`拥有service id与HTTP/WebSocket等外部ingress。HTTP包含route、handler/pre/guard source
+`service.yml`拥有service id、`serviceCalls` public-path选择与HTTP/WebSocket等外部ingress。HTTP包含route、handler/pre/guard source
 selector、adapter参数来源及外部协议metadata；WebSocket当前只冻结连接path与可选connect callback，业务
 消息handler部分待设计。External handler selector指向当前service package中的普通source callable，
-不要求该callable出现在`api.yml`。`service.yml`不含version、dependency、service-call API type/function
-映射、与handler类型重复的业务JSON schema、实现artifact binding、平台组织角色或request/response大小
+不要求该callable出现在`api.yml`。`serviceCalls`中的每个元素则必须精确解析到`api.yml`已有的public
+function或public-instance root；它不是source function映射。`service.yml`不含version、dependency、
+service-call API signature/type映射、与handler类型重复的业务JSON schema、实现artifact binding、平台组织角色或request/response大小
 策略。External schema和runtime codec plan由compiler从精确linked handler signature、adapter kind与参数
 来源确定性生成。`config.*.yml`只绑定已经声明的
 config/secret/state/resource requirement，不改变package/service dependency graph。
@@ -129,6 +132,12 @@ PackageArtifact
   boundary callable projections
   unresolved ServiceCallRefs
 ```
+
+PackageArtifact不保存`serviceCallRoots`或其它service selection字段，也不读取`service.yml`。
+它发布完整Package public callable graph及每个callable的boundary projection；ServiceContract projection
+再用`service.yml.serviceCalls`选择roots。只改变`serviceCalls`而Package source、`package.yml`与
+`api.yml`不变时，PackageArtifact与PackageLocalAbi identity必须bit-identical；operation集合变化只进入
+ServiceContract/ServiceProtocolIdentity及其后续deployment。
 
 `PackageLocalAbi`描述同一linked program内的public symbol、canonical signature、nominal type、
 public instance、const与executable link信息。concrete public callable的canonical signature包含其推断
@@ -225,19 +234,20 @@ BoundaryCallableProjection
   | Unavailable([BoundaryUnavailableReason...])
 ```
 
-普通package允许同时拥有Available和Unavailable public functions。未带`serviceCall: true`的callable无论
-Available或Unavailable都只是Package API。存在`service.yml`时，只有显式带marker且Available的public
-function或public-instance method成为service operation；显式marker但Unavailable必须让service projection
+普通package允许同时拥有Available和Unavailable public functions。未被`service.yml.serviceCalls`选择的
+callable无论Available或Unavailable都只是Package API。存在`service.yml`时，只有被显式选择且Available的
+public function或public-instance method成为service operation；被选择但Unavailable必须让service projection
 以完整结构化原因失败，不能静默排除。公开type、alias或interface也可以只服务package linkage而没有合法
 PackageSchema投影；generic declaration等不能进入service-call schema的public symbol必须保留在
 PackageLocalAbi，并以结构化boundary-unavailable事实阻止相关service operation，不能让整个Package因一个
 未被service-call使用的公开generic declaration失败。compiler/tooling必须输出完整、稳定、可机器读取的
 列表及结构化原因；构建摘要、CLI/JSON、artifact receipt与IDE应消费同一projection，不能静默排除。
 
-`serviceCall: true`是第一版唯一service-call选择机制，只能标在function leaf或public-instance leaf。
-它不复制参数、返回或错误类型；compiler从标记的callable signature递归闭合已在`api.yml`拥有canonical
-public path的PackageSchema types。普通Package出现marker必须报错；`service.yml`不维护第二份
-include/exclude清单。public instance标记一次表示其显式listed interfaces的全部methods；若只需部分methods，
+`service.yml.serviceCalls`是第一版唯一service-call选择机制。数组元素是`api.yml`已有function或
+public-instance root的canonical public path；它不复制source selector、参数、返回或错误类型。compiler从
+被选择的callable signature递归闭合已在`api.yml`拥有canonical public path的PackageSchema types。
+重复、unknown或non-callable path必须报错；字段省略或空数组生成零operation contract。public instance
+选择一次表示其显式listed interfaces的全部methods；若只需部分methods，
 作者必须使用更窄interface或wrapper function。
 
 `service.yml`引用的每个external handler另行生成typed ingress projection。它可以引用非public callable和
@@ -272,17 +282,17 @@ callback-capable interface的Package schema operation同样只保存interface re
 同一个PackageArtifact可以同时：
 
 - 被其它package直接链接；
-- 在存在`service.yml`时从显式service-call roots生成一个ServiceContract并实现其全部operations；
+- 在存在`service.yml`时从`serviceCalls`显式选择的roots生成一个ServiceContract并实现其全部operations；
 - 为同一个service生成不进入ServiceContract的typed external ingress entries；
 - 被多个ServiceDeployment revision复用；
 - 在同一assembly内只链接一份代码，由多个activation context调用。
 
 ## 4. ServiceContract
 
-ServiceContract是独立发布、无代码的service-to-service typed API projection artifact。它的唯一
-operation authoring source是service package自己的`.skiff` declarations与`api.yml`中显式
-`serviceCall: true` roots。`service.yml`只向这项projection提供service id；不存在独立contract
-YAML/IDL、类型映射或第二套service-call函数清单。ServiceContract不引用provider
+ServiceContract是独立发布、无代码的service-to-service typed API projection artifact。它的operation
+authoring source是service package自己的`.skiff` declarations、`api.yml` public graph与
+`service.yml.serviceCalls` public-path选择。不存在独立contract YAML/IDL、source映射或重复signature/type
+清单。ServiceContract不引用provider
 build、config、runtime replica或HTTP/WebSocket ingress。
 
 ```text
@@ -359,8 +369,9 @@ ServiceDeployment
 ```
 
 operation mapping由同一service package的ServiceContract projection与PackageArtifact public callable
-identity确定性生成。只有显式service-call roots进入；不得要求开发者在`service.yml`或`deployment.yml`
-重复映射。生成artifact必须写入稳定callable id，runtime禁止按display name猜target。
+identity确定性生成。只有`service.yml.serviceCalls`显式选择的roots进入；该数组只选择public path，
+不得再要求开发者在`deployment.yml`或其它位置重复source/callable映射。生成artifact必须写入稳定
+callable id，runtime禁止按display name猜target。
 
 deployment execution plan可以从绑定的PackageArtifact读取concrete callable suspension summary，用于选择
 provider内部执行lane、cancel signal投递或其它Host机制；该summary只验证implementation callable与其
@@ -416,7 +427,7 @@ binding或运行时猜测。
 
 deployment validation必须保证：
 
-- 每个由显式service-call root生成的operation恰好映射到其source public callable；
+- 每个由`service.yml.serviceCalls`显式选择的root生成的operation恰好映射到其source public callable；
 - 不存在手工增加、遗漏或重复operation；
 - target callable的boundary projection是`Available`；
 - operation descriptor、schema closure与同一canonical API projection逐项精确匹配；
@@ -605,10 +616,10 @@ ServiceContract作为对外声明：
 - ingress抛出的错误可复用固定service error carrier交给gateway做脱敏投影，但外部caller不会因此成为一个
   可`catch<E>`的Skiff service caller。
 
-同一个source function可以被作者分别列入`api.yml`和`service.yml`，但这是两个显式surface：
-`api.yml`中的function leaf只有显式带`serviceCall: true`才生成service-call operation，
-`service.yml`中的引用生成external gateway entry。Compiler必须分别验证并生成不同identity，不能因source
-target相同而把两者合并或互相推断。
+同一个source function可以通过`api.yml` public path被`service.yml.serviceCalls`选择，同时又被
+`service.yml.http`引用为external handler，但这是两个显式surface：前者生成service-call operation，
+后者生成external gateway entry。Compiler必须分别验证并生成不同identity，不能因source target相同而把
+两者合并或互相推断。
 
 ## 7. Linkable、Recoverable 与 Callback Capability
 

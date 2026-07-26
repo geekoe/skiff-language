@@ -3,8 +3,8 @@
 ## 本文负责 / 不负责
 
 本文负责定义 `api.yml` 的目标语义：Package 如何显式声明 public API surface、public path 如何绑定到
-当前 Package 的 source symbol、Package Local ABI 与 service-call schema closure 如何从这些显式 public
-roots 派生，以及同一个 service package 如何从该 API graph 生成 ServiceContract。
+当前 Package 的 source symbol、Package Local ABI 如何从这些显式 public roots 派生，以及
+`service.yml`如何从同一个Package API graph选择ServiceContract roots。
 
 本文不负责 compiler 迁移步骤、历史 `export` surface 语法、artifact JSON 字段细节、registry 操作流程、
 runtime 调度或完整 YAML parser 实现。
@@ -12,7 +12,8 @@ runtime 调度或完整 YAML parser 实现。
 ## 1. Source Layer
 
 每个 Package source root 必须放置一个固定名字的 `api.yml`。Service 首先是 Package，因此使用同一份
-`api.yml`；`service.yml` 不再声明或复制 service-to-service API。
+`api.yml`。`service.yml`只按public path选择哪些已有callable成为service-to-service API，不复制source
+selector、签名或类型。
 
 `api.yml` 是 source-layer metadata，不是 `.skiff` source module：
 
@@ -28,9 +29,10 @@ service-to-service operation。空文件会被 YAML 解析为 `null`，不是合
 public symbol。Service可以据此只暴露external ingress或只承担内部/test运行角色，其HTTP/WebSocket
 handler仍由`service.yml`直接引用。
 
-`package.yml` 和 `service.yml` 不列 package/service-call public symbol，也不声明 rename / namespace
-projection；public API 的唯一符号事实来源是 `api.yml`。`service.yml`可以为HTTP/WebSocket等external
-ingress显式引用非public handler/pre/guard，这只创建gateway entry，不把这些source symbol加入public API。
+`package.yml`不列public symbol。`service.yml.serviceCalls`可以引用`api.yml`已经声明的public callable
+root，但不声明新的public symbol，也不做rename/namespace projection；public API的唯一符号事实来源仍是
+`api.yml`。`service.yml`还可以为HTTP/WebSocket等external ingress显式引用非public
+handler/pre/guard，这只创建gateway entry，不把这些source symbol加入public API。
 
 Skiff source declaration 不使用 `export` 关键字表达 public visibility。普通 source file 没有 public
 visibility marker；source file 不是包内 privacy 边界。
@@ -45,18 +47,9 @@ decode: decode.decode
 LlmRequest: types.LlmRequest
 ```
 
-Scalar leaf只声明Package public binding。若一个public function还要成为service-to-service callable，使用
-显式object leaf：
-
-```yaml
-getUser:
-  source: users.getUser
-  serviceCall: true
-```
-
-该object leaf只允许`source`与值严格为`true`的`serviceCall`。`source`必须解析到top-level function；
-`serviceCall: false`、缺少`serviceCall`或附加其它字段都非法。Package-only binding继续使用scalar leaf，
-不提供两种等价写法。
+Scalar leaf声明Package public binding。Function、type、alias、interface与普通const都只使用这一种
+scalar写法；`api.yml`不再提供带`source`或`serviceCall`字段的function object leaf。Service若要选择
+其中的callable，必须在`service.yml.serviceCalls`中引用其public path。
 
 嵌套 mapping 表达 dotted public path：
 
@@ -89,7 +82,6 @@ managedLlm:
   const: root.llm.managedLlm
   interfaces:
     - root.llm.ManagedLlmService
-  serviceCall: true
 ```
 
 public instance leaf 的 `const` 必须解析到当前 production source set 的 top-level const；`interfaces` 必须
@@ -102,14 +94,14 @@ llm:
     const: root.llm.managedLlm
     interfaces:
       - root.llm.ManagedLlmService
-    serviceCall: true
 ```
 
 生成的 `public_instance_key` 是 `llm.managed`，不是 leaf `managed`。
 
-public instance的`serviceCall`可以省略；省略时该instance及其methods只进入Package Local ABI。值为
-`true`时，`interfaces`中显式列出的所有methods都成为service-call roots。第一版不在instance leaf中再
-维护method include/exclude清单；只希望暴露部分methods时，应定义更窄的interface或显式wrapper functions。
+`const`与`interfaces`是public-instance object leaf内的保留字段，不是service-call选择字段。该instance及
+其methods始终进入Package Local ABI；只有`service.yml.serviceCalls`列出该public instance path时，
+`interfaces`中显式列出的所有methods才成为service-call roots。第一版不维护method include/exclude清单；
+只希望暴露部分methods时，应定义更窄的interface或显式wrapper functions。
 
 ## 3. Public Path
 
@@ -185,7 +177,6 @@ Package API graph 覆盖：
 - public callable functions。
 - public instance roots。
 - Package Local ABI 中由 public root 可达、但没有独立 public path 的内部类型事实。
-- public callable leaf是否显式带有`serviceCall: true`。
 
 Public binding与service-call boundary availability不是一回事。Generic declaration、actor或其它不能生成
 PackageSchema的public symbol仍可供package dependency链接；compiler必须为其记录结构化boundary-unavailable
@@ -241,26 +232,33 @@ Package projection 使用当前 Package API graph：
 
 ## 8. Service Projection
 
-Service projection从同一Package API graph选择显式service-call roots：
+Service通过`service.yml`中的`serviceCalls`数组，从同一Package API graph选择service-call roots：
 
-- 只有带`serviceCall: true`的public function生成public function operation。
-- 带`serviceCall: true`的public instance root按其explicitly listed interface methods生成public instance
-  method operations。
+```yaml
+serviceCalls:
+  - getUser
+  - llm.managed
+```
+
+数组元素是`api.yml`左侧定义的完整public path，而不是source selector：
+
+- 指向public function时，生成一个public function operation。
+- 指向public instance root时，按其explicitly listed interface methods生成public instance method
+  operations；不能在数组中单独选择某个instance method。
+- dotted public path按字符串书写，例如`llm.managed`；它必须精确解析到一个public root。
+- 同一路径不得重复。数组顺序不参与ServiceProtocolIdentity；compiler按canonical public path排序后投影。
 - 每个public callable仍生成`BoundaryCallableProjection`，用于说明它技术上能否跨service boundary。
-  未标记的callable无论`Available`或`Unavailable`都只是合法Package API；显式标记的callable必须
+  未被选择的callable无论`Available`或`Unavailable`都只是合法Package API；被选择的callable必须
   `Available`，否则Service projection以全部结构化原因报错，不能静默排除。
 - ServiceContract operation 使用稳定 `ContractOperationId` 和 canonical boundary descriptor；
   ServiceDeployment再把该 id 精确绑定到 implementation `PackageCallableId`。
 - `ServiceProtocolIdentity` 使用 operation ids/descriptors 与实际可达的
   `PackageSchemaTypeId` closure，不包含 handler、route、deployment 或 implementation build。
 
-`serviceCall: true`是第一版唯一service-call选择机制。它只标记callable roots，不重复列出签名引用的
-types；compiler从这些roots递归计算ServiceContract的PackageSchema closure。`service.yml`不维护第二份
-函数清单。存在`service.yml`但没有任何marker时，生成合法的空operation ServiceContract，Service仍可只暴露
-HTTP/WebSocket external ingress。
-
-`serviceCall: true`只允许出现在带`service.yml`的Package中；普通Package使用该marker必须报错。它不能标在
-type、alias、interface或普通const leaf上。一个wire-safe public callable未带marker就是Package-only API，
+`service.yml.serviceCalls`是第一版唯一service-call选择机制。它只引用callable public paths，不重复source
+selector、参数、返回或签名引用的types；compiler从这些roots递归计算ServiceContract的PackageSchema
+closure。字段省略或写成空数组时，生成合法的空operation ServiceContract，Service仍可只暴露
+HTTP/WebSocket external ingress。一个wire-safe public callable未被该数组选择时就是Package-only API，
 不会因`BoundaryCallableProjection::Available`而被远程暴露。
 
 HTTP/WebSocket等external ingress不属于本节的public service-call operation。已冻结的HTTP entry由
@@ -301,8 +299,7 @@ ingress projection或部署metadata，不属于`api.yml`或`ServiceProtocolIdent
 - 缺少 `api.yml`、文件为空或顶层不是 mapping。
 - public key 不是合法 identifier segment。
 - leaf 不是合法 source selector string。
-- object function leaf缺少`source`或`serviceCall: true`，包含`serviceCall: false`或unknown field。
-- `serviceCall: true`指向非function，或出现在没有`service.yml`的Package。
+- function使用object leaf而不是string source selector。
 - source selector 少于两个 segment。
 - source selector 无法解析到当前 production source set 的 top-level symbol。
 - source selector 指向 test source、dependency symbol、`std.*` symbol 或 impl method。
@@ -310,7 +307,7 @@ ingress projection或部署metadata，不属于`api.yml`或`ServiceProtocolIdent
 - 同一个 source nominal declaration 被绑定到多个 public path。
 - public path 与保留 public namespace 规则冲突。
 - public instance leaf 缺少 `const` 或非空 `interfaces`。
-- public instance `serviceCall`存在但不是严格的`true`。
+- public instance object leaf包含`const`、`interfaces`之外的字段。
 - public instance `const` 不是当前 source set 的 top-level const。
 - public instance interface selector 不是 public/imported public interface，或 generic type args 未 fully
   substituted。
@@ -318,7 +315,9 @@ ingress projection或部署metadata，不属于`api.yml`或`ServiceProtocolIdent
 - public instance exposed interfaces 中出现重复 canonical `InterfaceInstantiationRef`。
 - 同一个 public instance 暴露的多个 interface 中出现相同 source method name。
 - public function path 与 `<public_instance_key>.<method>` 在 Package Local ABI source-call index 中冲突。
-- 显式service-call function或instance method的boundary projection为`Unavailable`。
+- `service.yml.serviceCalls`不是字符串数组、包含非法/重复public path，或引用不存在的public path。
+- `service.yml.serviceCalls`引用type、alias、interface、普通const或其它非callable public root。
+- 被`service.yml.serviceCalls`选择的function或instance method的boundary projection为`Unavailable`。
 
 不应作为语言级错误的情况：
 

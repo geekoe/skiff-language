@@ -1,6 +1,11 @@
 # P5-F400 Integrated service-only source gate result
 
-状态：Complete（`TASK_SCOPE_EXPANDED`）。
+状态：Superseded by `P5-F402-service-calls-manifest-selection-design-result.md`。
+
+> 本文保留当时代码与probe事实，但其把current service-only Relay source当成canonical输入、要求compiler
+> 恢复service-only owner，并让service role自动选择全部public callable的后续结论违反现行权威设计。
+> F400A不得执行。service source继续是Package root加`service.yml`；service-call roots由
+> `service.yml.serviceCalls`显式选择。
 
 ## 1. 判定
 

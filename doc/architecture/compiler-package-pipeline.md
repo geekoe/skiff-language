@@ -84,9 +84,9 @@ PackageCompileInput
 
 - `package.yml`：Package id/version、package dependencies、service dependencies，以及
   config/state/resource/runtime capability requirements 的声明入口；
-- `api.yml`：Package public source graph，以及 service package 可投影的 service-to-service API roots；
-- `service.yml`：service id、HTTP/WebSocket external ingress、handler/pre/guard selector、adapter source
-  与外部协议 metadata；
+- `api.yml`：Package public source graph；
+- `service.yml`：service id、`serviceCalls` public-path选择、HTTP/WebSocket external ingress、
+  handler/pre/guard selector、adapter source与外部协议 metadata；
 - `config.*.yml`：部署时为已声明 requirement 提供或选择值与 owner，不进入 Package compile。
 
 Service 首先是 Package。存在 `service.yml` 不会把 root 切换成另一种 source input，也不会让
@@ -209,18 +209,20 @@ Package projection 消费 `CompiledPackage = PackageSourceModel + LoweredPackage
 - config/state/resource/runtime requirements；
 - unresolved ServiceCallRefs。
 
-Package projection不得读取 `service.yml` route 或 config profile，也不得生成ServiceContract operation id、
-GatewayEntryIdentity 或 deployment binding。它可以保存后续 projection 所需的精确 implementation callable
-signature/link facts，包括非 public top-level handler。
+Package projection不得读取 `service.yml.serviceCalls`、route 或 config profile，也不得生成ServiceContract
+operation id、GatewayEntryIdentity 或 deployment binding。它只发布完整Package public callable graph与
+每个callable的boundary projection，供后续service projection按public path选择；也可以保存后续 projection
+所需的精确 implementation callable signature/link facts，包括非 public top-level handler。
 
 ## ServiceContract Projection
 
-存在`service.yml`时，tooling使用service id与Package API中显式`serviceCall: true`且
-boundary-available的roots生成ServiceContract：
+存在`service.yml`时，tooling使用service id与`serviceCalls`中列出的Package public paths生成
+ServiceContract：
 
-- operation authoring roots只来自`api.yml`；
-- 只有显式`serviceCall: true`的public function或public-instance methods进入；
-- marker对应的boundary projection必须Available，否则以结构化原因失败；未标记callable只是Package API；
+- 每个path必须精确解析到`api.yml`已有的public function或public-instance root；
+- 被选择root对应的boundary projection必须Available，否则以结构化原因失败；未选择callable只是Package API；
+- public instance root按其显式listed interfaces的全部methods展开；数组顺序不参与protocol identity；
+- `serviceCalls`不重复source selector、signature或type；
 - 每个 operation引用 canonical boundary descriptor 与 PackageSchemaTypeId closure；
 - service call的caller-side suspension由call target种类决定；operation descriptor不复制provider
   callable的`maySuspend`或由它派生的取消类别；

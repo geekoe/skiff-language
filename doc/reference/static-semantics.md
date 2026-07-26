@@ -308,13 +308,14 @@ actor执行权；保守分析本身不产生调度点。
 
 ## 14. Service API Static Boundary
 
-Service API roots只来自service package的Package API graph中显式`serviceCall: true`的callables。
+Service API roots只来自`service.yml.serviceCalls`按public path显式选择的Package API callable roots。
 
-ServiceContract projection先要求每个marker对应的`BoundaryCallableProjection`为`Available`，再派生
-operations；显式marker但Unavailable必须报出完整结构化原因，不能静默排除。未标记callable只是Package
+ServiceContract projection先要求每个被选择root对应的`BoundaryCallableProjection`为`Available`，再派生
+operations；被选择但Unavailable必须报出完整结构化原因，不能静默排除。未选择callable只是Package
 API，即使技术上boundary-available也不会成为service operation。普通const不直接成为service operation；
-带marker的public instance可作为receiver root，由其显式listed interface methods派生operations。public
-interface仍只是conformance contract，不直接成为service operation。
+被选择的public instance可作为receiver root，由其显式listed interface methods派生operations。public
+interface仍只是conformance contract，不直接成为service operation。`serviceCalls`只引用`api.yml`
+public path，不重复source selector或signature；重复、unknown或non-callable path均fail closed。
 
 HTTP、WebSocket等external ingress不属于service-call projection。它们由`service.yml`选择当前Package中的
 handler/pre/guard；这些callable不要求public，也不生成service operation。Compiler按其linked signature与
@@ -347,8 +348,8 @@ derived operation name重复是compile error。
 handler fields是构造依赖，不是request payload。
 
 `api.yml`中的public generic declaration可以供package linkage使用，但其声明本身没有第一版
-PackageSchema投影。未标记的generic public symbol不能让整个Package失败；若它被显式标记
-`serviceCall: true`，其不可投影原因必须作为结构化compile error报告，不能静默排除。External ingress的
+PackageSchema投影。未被选择的generic public symbol不能让整个Package失败；若其public path被
+`service.yml.serviceCalls`选择，其不可投影原因必须作为结构化compile error报告，不能静默排除。External ingress的
 handler第一版不能是generic function declaration；其concrete signature仍可包含fully instantiated的
 generic platform types，由linked signature和专用adapter处理，这些类型不因此获得ordinary service-call
 schema。

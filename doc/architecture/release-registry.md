@@ -89,7 +89,8 @@ Service workflow：
 
 ```text
 exact PackageArtifact
-  -> project ServiceContract from explicit serviceCall roots
+  -> resolve service.yml.serviceCalls against Package public paths
+  -> project ServiceContract from selected callable roots
   -> project typed gateway entries and ServiceDeployment
   -> write immutable records
   -> CAS compatible ServiceDeployment pointer

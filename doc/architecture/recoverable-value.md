@@ -342,7 +342,7 @@ enum RecoverableMapKey {
   state 仍是 `RecoverableNode`，可递归包含 plain data 或其它可恢复值。
 - **`any I` 的恢复机制不在 encode 点重新判，而是取自 `any I` 自己的 `InterfaceCarrier` 分支**
   （`any-interface-value.md §Runtime Value`，`Local` / `Remote`）。carrier在**装箱点`as I`就冻结**：装箱源
-  是局部 concrete 值 → `carrier = Local`（带 payload）；装箱源是带`serviceCall: true`的public instance
+  是局部 concrete 值 → `carrier = Local`（带 payload）；装箱源是被`service.yml.serviceCalls`选择的public instance
   （如`remoteLlm/llmInstance`）→
   `carrier = Remote`（带寻址坐标，不带 payload）。encode 点早已 type-erased、看不到装箱源，只读 carrier 已填好的
   分支。所以：
@@ -594,7 +594,7 @@ enum AdapterSchemaCompatibility {
 - decode：从 expected type plan 唯一取得 interface/projection，先 decode `self_node` 得到 concrete nominal object → 校验它仍
   implements I / projection → 重建 method table → 返回 `any I`。失败 fail closed（见 §Definition“当前 execution context 恢复”）。
 
-**`carrier = Remote`**（装箱源是带`serviceCall: true`的public instance，如
+**`carrier = Remote`**（装箱源是被`service.yml.serviceCalls`选择的public instance，如
 `remoteLlm/llmInstance`）→ 是consumer**主动调用**一个service-call public instance的正向引用。
 owner-internal DB/spawn/queue/persistent payload或显式recoverable envelope slot可以持久化它，
 但只保存：
@@ -604,8 +604,8 @@ owner-internal DB/spawn/queue/persistent payload或显式recoverable envelope sl
 - `operation table`：当前 linked program 下用于 dispatch 的 remote operation table。
 
 decode必须用当前expected type plan校验interface identity，并要求当前linked program能按同一
-dependency/public instance重建等价operation table；dependency不再存在、public instance不再带
-`serviceCall: true`、operation table不等价或interface不匹配时fail closed。该路径不调用local
+dependency/public instance重建等价operation table；dependency不再存在、public instance不再被当前
+ServiceContract选择、operation table不等价或interface不匹配时fail closed。该路径不调用local
 encode/restore hook，不保存remote self payload，也不新增artifact retention root。
 
 同 service 内（跨 package 同 runtime）的 `any I` 在 package public 入口之间传参时是 request-scope 本地值
@@ -670,7 +670,7 @@ const i = localImpl as I  ──sealed 可恢复字节随 wire 传──►   �
 
 - **坐标 = `(service, 版本, 内部 root 路径)`**，概念上不依赖把符号加入public API——一个顶层符号天然有
   内部路径。
-- 但Skiff第一版的**跨service寻址单元只有`api.yml`显式带`serviceCall: true`的public instance**：
+- 但Skiff第一版的**跨service寻址单元只有在`api.yml`公开且被`service.yml.serviceCalls`选择的public instance**：
   public instance只能来自`api.yml`显式公开的top-level const与interfaces leaf，普通public const不自动成为
   receiver root；跨service调用按`ContractOperationId`寻址，只对显式选择的public instance methods存在。
   未进入ServiceContract的内部root路径第一版根本无法跨service寻址。

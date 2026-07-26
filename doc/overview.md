@@ -28,8 +28,9 @@ Package：同一个 root 额外放置 `service.yml`，并可按环境提供 `con
 声明，包括未公开 helper。Skiff source 不使用 `export` 决定可见性；`api.yml` 是 Package public API 和
 service-to-service API 的唯一公开符号入口。
 
-`package.yml` 拥有 Package id/version以及package、service dependency。`service.yml`只增加service id和
-HTTP/WebSocket等外部入口，包括route、handler与协议适配信息；它不重复声明service-to-service API。
+`package.yml` 拥有 Package id/version以及package、service dependency。`service.yml`增加service id、
+`serviceCalls` public-path选择和HTTP/WebSocket等外部入口，包括route、handler与协议适配信息；
+`serviceCalls`只引用`api.yml`中的公开名字，不重复source path、签名或类型。
 `config.*.yml`为已经声明的配置、state与resource requirement提供部署绑定。
 
 Skiff 从 `api.yml` 与已类型检查的 Package API 确定性生成 ServiceContract。跨服务调用按该contract和
@@ -67,8 +68,9 @@ contract，并通过`service.yml`拥有HTTP/WebSocket入口。跨service调用�
 这个区分会影响代码组织：
 
 - 想复用逻辑，优先抽 package。
-- 想提供服务间能力，在service package的`api.yml`中公开callable并显式标记`serviceCall: true`。
-- 标记的callable必须能进入service boundary；其签名引用的公开types由compiler自动闭合，不重复列一份
+- 想提供服务间能力，先在`api.yml`中公开callable，再把其public path列入
+  `service.yml.serviceCalls`。
+- 被选择的callable必须能进入service boundary；其签名引用的公开types由compiler自动闭合，不重复列一份
   Service API。
 - 想共享类型或 helper，优先把它们放在可直接依赖的 Package API 中。
 
