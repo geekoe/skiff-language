@@ -7,7 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 use skiff_artifact_model::{
-    ContractTypeNameability, ContractTypeRef, InstructionSourceSite, PackageBuildId, SourceSpanRef,
+    ContractTypeRef, InstructionSourceSite, PackageBuildId, PackageSchemaIndexEntry, SourceSpanRef,
+    TypeExport,
 };
 use skiff_canonical_json::canonical_json_bytes;
 use skiff_runtime_boundary::{
@@ -20,9 +21,9 @@ use skiff_runtime_capability_context::{
     RestrictedServiceDiagnosticOwner, TelemetryCapabilityContext,
 };
 use skiff_runtime_linked_program::{
-    AssemblyExecutionImage, ExecutableAddr, PackageCodeSlotIndex, ServiceErrorDeclarationKind,
-    ServiceErrorExecutionContext, ServiceErrorExecutionKey, ServiceErrorPublicIdentity,
-    ServiceErrorTypeLink, TypeAddr, UnitAddr,
+    AssemblyExecutionImage, ExecutableAddr, FileAddr, PackageCodeSlotIndex,
+    ServiceErrorDeclarationKind, ServiceErrorExecutionContext, ServiceErrorExecutionKey,
+    ServiceErrorPublicIdentity, ServiceErrorTypeLink, SharedPackageCode, TypeAddr, UnitAddr,
 };
 use skiff_runtime_linked_type_plan::ProgramTypeView;
 use skiff_runtime_model::{
@@ -1139,49 +1140,180 @@ fn public_artifact_identity_for_addr(
                 "service-error execution identity points at missing package code slot {slot}"
             ))
         })?;
-    let file_identity = match &addr.file {
-        skiff_runtime_linked_program::FileAddr::LoadedFileIndex(index) => code
-            .files()
-            .get(*index)
-            .map(|file| file.file_ir_identity.as_str())
+    let schema_index = code.schema_index();
+    if schema_index.package_id != code.artifact().package_id
+        || code.artifact().package_schema_index.package_id != schema_index.package_id
+        || code
+            .artifact()
+            .package_schema_index
+            .package_schema_index_identity
+            != schema_index.package_schema_index_identity
+    {
+        return Err(RuntimeError::InvalidArtifact(
+            "service-error Package schema index owner or identity is inconsistent".to_string(),
+        ));
+    }
+    skiff_artifact_identity::validate_package_schema_index(schema_index).map_err(|error| {
+        RuntimeError::InvalidArtifact(format!(
+            "service-error Package schema index is invalid: {error}"
+        ))
+    })?;
+
+    let address_file_index = exact_address_file_index(code, &addr.file)?;
+    if code.files()[address_file_index]
+        .type_table
+        .get(addr.type_index)
+        .is_none()
+    {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "service-error execution identity points at missing type index {}",
+            addr.type_index
+        )));
+    }
+
+    let mut matched = None;
+    for (stable_schema_key, entry) in &schema_index.types {
+        let public_path = entry.public_path.as_deref().ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
+                "service-error schema entry {stable_schema_key} has no exact public path"
+            ))
+        })?;
+        let export = code
+            .artifact()
+            .implementation_links
+            .types
+            .get(public_path)
             .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(format!(
+                    "service-error public path {public_path} has no exact implementation type link"
+                ))
+            })?;
+        let identity = public_schema_entry_identity(code, stable_schema_key, entry)?;
+        let coordinate = exact_public_type_coordinate(code, public_path, export)?;
+        if coordinate != (address_file_index, addr.type_index) {
+            continue;
+        }
+        if matched
+            .as_ref()
+            .is_some_and(|first: &ServiceErrorPublicIdentity| first != &identity)
+        {
+            return Err(RuntimeError::InvalidArtifact(
+                "service-error execution address has multiple public Package schema identities"
+                    .to_string(),
+            ));
+        }
+        matched = Some(identity);
+    }
+    Ok(matched)
+}
+
+fn exact_address_file_index(code: &SharedPackageCode, file_addr: &FileAddr) -> Result<usize> {
+    match file_addr {
+        FileAddr::LoadedFileIndex(index) => {
+            code.files().get(*index).map(|_| *index).ok_or_else(|| {
                 RuntimeError::InvalidArtifact(format!(
                     "service-error execution identity points at missing file index {index}"
                 ))
-            })?,
-        skiff_runtime_linked_program::FileAddr::FileIrIdentity(identity) => identity,
-    };
-    let matches = code
-        .artifact()
-        .implementation_links
-        .types
-        .iter()
-        .filter(|(_, export)| {
-            export.file.file_ir_identity == file_identity
-                && usize::try_from(export.type_index).ok() == Some(addr.type_index)
-        })
-        .collect::<Vec<_>>();
-    let [(stable_schema_key, _)] = matches.as_slice() else {
-        return if matches.is_empty() {
-            Ok(None)
-        } else {
-            Err(RuntimeError::InvalidArtifact(
-                "service-error execution address has ambiguous implementation type exports"
-                    .to_string(),
-            ))
-        };
-    };
-    let Some(entry) = code.schema_index().types.get(*stable_schema_key) else {
-        return Ok(None);
-    };
-    if entry.nameability != ContractTypeNameability::PublicNameable {
-        return Ok(None);
+            })
+        }
+        FileAddr::FileIrIdentity(identity) => {
+            let mut matches = code
+                .files()
+                .iter()
+                .enumerate()
+                .filter(|(_, file)| file.file_ir_identity == *identity);
+            let (index, _) = matches.next().ok_or_else(|| {
+                RuntimeError::InvalidArtifact(format!(
+                    "service-error execution identity points at unloaded File IR {identity}"
+                ))
+            })?;
+            if matches.next().is_some() {
+                return Err(RuntimeError::InvalidArtifact(format!(
+                    "service-error execution identity points at ambiguous File IR {identity}"
+                )));
+            }
+            Ok(index)
+        }
     }
-    Ok(Some(ServiceErrorPublicIdentity::new(
-        code.artifact().package_id.clone(),
-        (*stable_schema_key).clone(),
-        entry.package_schema_type_id.clone(),
-    )))
+}
+
+fn exact_public_type_coordinate(
+    code: &SharedPackageCode,
+    public_path: &str,
+    export: &TypeExport,
+) -> Result<(usize, usize)> {
+    let mut files = code
+        .files()
+        .iter()
+        .enumerate()
+        .filter(|(_, file)| file.file_ir_identity == export.file.file_ir_identity);
+    let (file_index, file) = files.next().ok_or_else(|| {
+        RuntimeError::InvalidArtifact(format!(
+            "service-error public path {public_path} points at an unloaded File IR"
+        ))
+    })?;
+    if files.next().is_some()
+        || file.module_path != export.file.module_path
+        || export
+            .file
+            .source_ast_hash
+            .as_deref()
+            .is_some_and(|hash| hash != file.source_ast_hash)
+    {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "service-error public path {public_path} has a non-exact File IR link"
+        )));
+    }
+    let type_index = usize::try_from(export.type_index).map_err(|_| {
+        RuntimeError::InvalidArtifact(format!(
+            "service-error public path {public_path} type index does not fit the execution address space"
+        ))
+    })?;
+    if file.type_table.get(type_index).is_none() {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "service-error public path {public_path} points at a missing type declaration"
+        )));
+    }
+    Ok((file_index, type_index))
+}
+
+fn public_schema_entry_identity(
+    code: &SharedPackageCode,
+    stable_schema_key: &str,
+    entry: &PackageSchemaIndexEntry,
+) -> Result<ServiceErrorPublicIdentity> {
+    let artifact_record = code
+        .artifact()
+        .package_schema_type_records
+        .get(&entry.package_schema_type_id)
+        .ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
+                "service-error schema entry {stable_schema_key} has no exact artifact record reference"
+            ))
+        })?;
+    let record = code
+        .schema_records()
+        .get(&entry.package_schema_type_id)
+        .ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
+                "service-error schema entry {stable_schema_key} has no loaded record"
+            ))
+        })?;
+    if artifact_record.package_id != code.artifact().package_id
+        || artifact_record.package_schema_type_id != entry.package_schema_type_id
+        || record.package_id != code.artifact().package_id
+        || record.stable_schema_key != stable_schema_key
+        || record.package_schema_type_id != entry.package_schema_type_id
+    {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "service-error schema entry {stable_schema_key} owner/key/type-id invariant is broken"
+        )));
+    }
+    Ok(ServiceErrorPublicIdentity::new(
+        record.package_id.clone(),
+        record.stable_schema_key.clone(),
+        record.package_schema_type_id.clone(),
+    ))
 }
 
 fn encode_platform_payload(

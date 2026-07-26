@@ -21,8 +21,8 @@ use skiff_artifact_model::{
     RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_program::{
-    AssemblyExecutionImage, ExecutableAddr, FileAddr, HydratedPackageCode,
-    PublicationResourceTable, TypeAddr, UnitAddr,
+    AssemblyExecutionImage, ExecutableAddr, FileAddr, HydratedPackageCode, PackageSymbolKey,
+    PublicationResourceTable, ServiceErrorTypeIndex, SharedPackageLinkedImage, TypeAddr, UnitAddr,
 };
 use skiff_runtime_model::{
     request_heap::RequestHeap,
@@ -121,6 +121,8 @@ fn platform_registry_has_no_shape_code_or_message_inference() {
 
 #[test]
 fn record_linked_unlinked_and_three_hop_forward_preserve_exact_bytes() {
+    assert_public_reverse_lookup_uses_only_schema_paths();
+
     let fixture = CoreFixture::new();
     let projection = RuntimeAssemblyExecutionProjection::from_image(Arc::clone(&fixture.image));
     let provider_addr = fixture.addr(PROVIDER, "api.ProviderFault");
@@ -765,6 +767,8 @@ fn platform_round_trip_is_exact_and_resource_is_never_platform() {
 
 #[test]
 fn identity_ordinal_and_payload_mutations_fail_closed_while_unknown_owner_stays_opaque() {
+    assert_public_reverse_lookup_artifact_failures();
+
     let fixture = CoreFixture::new();
     let projection = RuntimeAssemblyExecutionProjection::from_image(Arc::clone(&fixture.image));
     let source = call_site();
@@ -1113,6 +1117,282 @@ fn assert_internal(error: &OpaqueServiceError, trace_id: &str, error_id: &str) {
             },
         }
     );
+}
+
+fn assert_public_reverse_lookup_uses_only_schema_paths() {
+    let mut public = reverse_lookup_package();
+    let public_export = public.artifact.implementation_links.types["Failure"].clone();
+    Arc::make_mut(&mut public.artifact)
+        .implementation_links
+        .types
+        .insert("main.Failure".to_string(), public_export);
+    let image = link_single_package_fixture(&public);
+    let identity = public_artifact_identity_for_addr(&image, &single_package_type_addr(0))
+        .expect("public reverse lookup")
+        .expect("public Failure identity");
+    let expected = &public.index.types["Failure"];
+    assert_eq!(identity.package_id(), public.package_id);
+    assert_eq!(identity.stable_schema_key(), "Failure");
+    assert_eq!(
+        identity.package_schema_type_id(),
+        &expected.package_schema_type_id
+    );
+
+    let mut implementation_only = reverse_lookup_package();
+    let source_export = implementation_only.artifact.implementation_links.types["Failure"].clone();
+    Arc::make_mut(&mut implementation_only.artifact)
+        .implementation_links
+        .types
+        .insert("main.Failure".to_string(), source_export);
+    Arc::make_mut(&mut implementation_only.index).types.clear();
+    implementation_only.records.clear();
+    Arc::make_mut(&mut implementation_only.artifact)
+        .package_schema_type_records
+        .clear();
+    refresh_schema_index_identity(&mut implementation_only);
+    let image = link_single_package_fixture(&implementation_only);
+    assert_eq!(
+        public_artifact_identity_for_addr(&image, &single_package_type_addr(0))
+            .expect("implementation-only reverse lookup"),
+        None
+    );
+}
+
+fn assert_public_reverse_lookup_artifact_failures() {
+    let mut ambiguous = reverse_lookup_package();
+    let baseline = link_single_package_fixture(&ambiguous);
+    add_second_public_identity_at_failure_addr(&mut ambiguous);
+    let (assembly, hydrated) = single_package_inputs(&ambiguous);
+    let admission =
+        skiff_runtime_linker::link_package_fixture_from_runtime_assembly(&assembly, [hydrated])
+            .expect_err("assembly admission must reject two public identities at one address");
+    assert!(
+        format!("{admission:#}").contains("multiple public Package schema identities"),
+        "{admission:#}"
+    );
+    let image = unchecked_reverse_lookup_image(&baseline, &ambiguous);
+    assert_invalid_reverse_lookup(&image, "multiple public Package schema identities");
+
+    let mut missing_path = reverse_lookup_package();
+    let baseline = link_single_package_fixture(&missing_path);
+    Arc::make_mut(&mut missing_path.index)
+        .types
+        .get_mut("Failure")
+        .expect("Failure schema entry")
+        .public_path = None;
+    refresh_schema_index_identity(&mut missing_path);
+    let image = unchecked_reverse_lookup_image(&baseline, &missing_path);
+    assert_invalid_reverse_lookup(&image, "Package schema index is invalid");
+
+    let mut forged_path = reverse_lookup_package();
+    let baseline = link_single_package_fixture(&forged_path);
+    let source_export = forged_path.artifact.implementation_links.types["Failure"].clone();
+    Arc::make_mut(&mut forged_path.artifact)
+        .implementation_links
+        .types
+        .insert("main.Failure".to_string(), source_export);
+    Arc::make_mut(&mut forged_path.index)
+        .types
+        .get_mut("Failure")
+        .expect("Failure schema entry")
+        .public_path = Some("main.Failure".to_string());
+    refresh_schema_index_identity(&mut forged_path);
+    let image = unchecked_reverse_lookup_image(&baseline, &forged_path);
+    assert_invalid_reverse_lookup(&image, "Package schema index is invalid");
+
+    let mut missing_link = reverse_lookup_package();
+    let baseline = link_single_package_fixture(&missing_link);
+    Arc::make_mut(&mut missing_link.artifact)
+        .implementation_links
+        .types
+        .remove("Failure");
+    let image = unchecked_reverse_lookup_image(&baseline, &missing_link);
+    assert_invalid_reverse_lookup(&image, "no exact implementation type link");
+
+    let mut missing_coordinate = reverse_lookup_package();
+    let baseline = link_single_package_fixture(&missing_coordinate);
+    Arc::make_mut(&mut missing_coordinate.artifact)
+        .implementation_links
+        .types
+        .get_mut("Failure")
+        .expect("Failure public link")
+        .type_index = 99;
+    let image = unchecked_reverse_lookup_image(&baseline, &missing_coordinate);
+    assert_invalid_reverse_lookup(&image, "missing type declaration");
+
+    let mut forged_record = reverse_lookup_package();
+    let baseline = link_single_package_fixture(&forged_record);
+    let type_id = forged_record.index.types["Failure"]
+        .package_schema_type_id
+        .clone();
+    Arc::make_mut(
+        forged_record
+            .records
+            .get_mut(&type_id)
+            .expect("Failure loaded record"),
+    )
+    .stable_schema_key = "ForgedFailure".to_string();
+    let image = unchecked_reverse_lookup_image(&baseline, &forged_record);
+    assert_invalid_reverse_lookup(&image, "owner/key/type-id invariant is broken");
+}
+
+fn assert_invalid_reverse_lookup(image: &AssemblyExecutionImage, expected: &str) {
+    let error = public_artifact_identity_for_addr(image, &single_package_type_addr(0))
+        .expect_err("malformed public reverse lookup must fail closed");
+    let RuntimeError::InvalidArtifact(message) = error else {
+        panic!("reverse lookup returned the wrong error kind: {error:?}");
+    };
+    assert!(message.contains(expected), "{message}");
+}
+
+fn reverse_lookup_package() -> PackageFixture {
+    package(
+        "example/reverse-lookup",
+        vec![PublicType::public(
+            "Failure",
+            TypeDescriptorIr::Record {
+                fields: BTreeMap::from([("message".to_string(), TypeRefIr::builtin("string"))]),
+            },
+            ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([(
+                    "message".to_string(),
+                    ContractTypeRef::builtin("string"),
+                )]),
+            },
+        )],
+    )
+}
+
+fn add_second_public_identity_at_failure_addr(package: &mut PackageFixture) {
+    let first_entry = package.index.types["Failure"].clone();
+    let first_record = package.records[&first_entry.package_schema_type_id].clone();
+    let stable_schema_key = "AlternateFailure";
+    let type_id = skiff_artifact_identity::package_schema_type_id(
+        &package.package_id,
+        stable_schema_key,
+        &first_record.canonical_descriptor,
+    )
+    .expect("alternate public identity");
+    Arc::make_mut(&mut package.index).types.insert(
+        stable_schema_key.to_string(),
+        PackageSchemaIndexEntry {
+            package_schema_type_id: type_id.clone(),
+            public_path: Some(stable_schema_key.to_string()),
+            nameability: ContractTypeNameability::PublicNameable,
+        },
+    );
+    package.records.insert(
+        type_id.clone(),
+        Arc::new(PackageSchemaTypeRecord {
+            package_id: package.package_id.clone(),
+            stable_schema_key: stable_schema_key.to_string(),
+            package_schema_type_id: type_id.clone(),
+            canonical_descriptor: first_record.canonical_descriptor.clone(),
+        }),
+    );
+    let failure_export = package.artifact.implementation_links.types["Failure"].clone();
+    let artifact = Arc::make_mut(&mut package.artifact);
+    artifact.package_schema_type_records.insert(
+        type_id.clone(),
+        PackageSchemaTypeRecordRef {
+            package_id: package.package_id.clone(),
+            package_schema_type_id: type_id,
+        },
+    );
+    artifact
+        .implementation_links
+        .types
+        .insert(stable_schema_key.to_string(), failure_export);
+    refresh_schema_index_identity(package);
+}
+
+fn refresh_schema_index_identity(package: &mut PackageFixture) {
+    let index = Arc::make_mut(&mut package.index);
+    index.package_schema_index_identity =
+        skiff_artifact_identity::package_schema_index_identity(&index.package_id, &index.types)
+            .expect("refreshed schema index identity");
+    Arc::make_mut(&mut package.artifact)
+        .package_schema_index
+        .package_schema_index_identity = index.package_schema_index_identity.clone();
+}
+
+fn single_package_type_addr(type_index: usize) -> TypeAddr {
+    TypeAddr {
+        unit: UnitAddr::Package(0),
+        file: FileAddr::LoadedFileIndex(0),
+        type_index,
+    }
+}
+
+fn single_package_inputs(package: &PackageFixture) -> (RuntimeAssembly, HydratedPackageCode) {
+    let assembly = RuntimeAssembly {
+        schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
+        assembly_identity: AssemblyIdentity::new("assembly:service-error-reverse-lookup"),
+        roots: Vec::new(),
+        resolved_deployments: Vec::new(),
+        resolved_contracts: Vec::new(),
+        resolved_packages: vec![package.artifact_ref.clone()],
+        package_link_plan: CanonicalPackageLinkPlan {
+            code_slots: vec![PackageCodeSlot {
+                package: package.artifact_ref.clone(),
+            }],
+            package_links: Vec::new(),
+        },
+        service_binding_templates: Vec::new(),
+        activation_templates: Vec::new(),
+        gateway_ingress: Vec::new(),
+    };
+    let hydrated = HydratedPackageCode::new(
+        Arc::clone(&package.artifact),
+        vec![Arc::clone(&package.file)],
+        PublicationResourceTable::default(),
+    )
+    .with_schema_index(Arc::clone(&package.index))
+    .with_schema_records(package.records.clone());
+    (assembly, hydrated)
+}
+
+fn link_single_package_fixture(package: &PackageFixture) -> Arc<AssemblyExecutionImage> {
+    let (assembly, hydrated) = single_package_inputs(package);
+    skiff_runtime_linker::link_package_fixture_from_runtime_assembly(&assembly, [hydrated])
+        .expect("link single-Package reverse-lookup fixture")
+}
+
+fn unchecked_reverse_lookup_image(
+    baseline: &Arc<AssemblyExecutionImage>,
+    package: &PackageFixture,
+) -> Arc<AssemblyExecutionImage> {
+    let (assembly, hydrated) = single_package_inputs(package);
+    let shared = Arc::new(
+        SharedPackageLinkedImage::from_runtime_assembly(&assembly, [hydrated])
+            .expect("hydrate unchecked reverse-lookup fixture"),
+    );
+    let mut types = baseline.types().clone();
+    for (public_path, export) in &package.artifact.implementation_links.types {
+        let file_index = package
+            .artifact
+            .files
+            .iter()
+            .position(|file| file.file_ir_identity == export.file.file_ir_identity)
+            .expect("fixture implementation link targets its loaded File IR");
+        types.exported_types.insert_package(
+            PackageSymbolKey::new(0, public_path.clone()),
+            TypeAddr {
+                unit: UnitAddr::Package(0),
+                file: FileAddr::LoadedFileIndex(file_index),
+                type_index: export.type_index as usize,
+            },
+        );
+    }
+    Arc::new(
+        AssemblyExecutionImage::try_new(
+            shared,
+            baseline.code_slots().to_vec(),
+            types,
+            Arc::new(ServiceErrorTypeIndex::default()),
+        )
+        .expect("construct function-level reverse-lookup image"),
+    )
 }
 
 struct CoreFixture {
