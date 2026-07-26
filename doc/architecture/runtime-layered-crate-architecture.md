@@ -534,8 +534,9 @@ IngressDispatcher
   transport writer internals。
 - package-test request wrapper 不进入通用 request runner 中央分支；它通过 package-test runtime
   adapter 产出普通 invocation。
-- binary HTTP、typed JSON adapter、server stream、WebSocket receive、普通 runtime payload
-  都必须被建模为 `IngressMode`，而不是在一个大函数中互相读取局部变量。
+- binary HTTP、typed JSON adapter、server stream、平台选中的WebSocket业务消息dispatch、普通runtime
+  payload都必须被建模为`IngressMode`，而不是在一个大函数中互相读取局部变量。现有raw WebSocket
+  receive只能视为待迁移的transport mode，不能据此冻结用户handler surface。
 - request crate 不拥有 route registry、lazy artifact loading、`ServiceRuntimeContext` 或
   `ServiceOperationContext`；它接收 host 已投影的 `RequestOperationContext`。
 - request crate 不直接消费 transport protocol frame；host/transport adapter 将 frame 投影成

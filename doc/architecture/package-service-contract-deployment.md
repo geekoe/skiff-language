@@ -78,21 +78,29 @@ Package source由`.skiff`源码、`package.yml`、`api.yml`和静态资源组成
 运算。
 
 Service仍走同一个package compiler入口；存在`service.yml`时，compiler/tooling再执行service projection。
-`service.yml`拥有service id与HTTP/WebSocket等外部ingress：route、handler/pre/guard source selector、
-adapter参数来源及外部协议metadata。handler selector指向当前service package中的普通source callable，
+`service.yml`拥有service id与HTTP/WebSocket等外部ingress。HTTP包含route、handler/pre/guard source
+selector、adapter参数来源及外部协议metadata；WebSocket当前只冻结连接path与可选connect callback，业务
+消息handler部分待设计。External handler selector指向当前service package中的普通source callable，
 不要求该callable出现在`api.yml`。`service.yml`不含version、dependency、service-call API type/function
 映射、与handler类型重复的业务JSON schema、实现artifact binding、平台组织角色或request/response大小
 策略。External schema和runtime codec plan由compiler从精确linked handler signature、adapter kind与参数
 来源确定性生成。`config.*.yml`只绑定已经声明的
 config/secret/state/resource requirement，不改变package/service dependency graph。
 
-Authoring层不要求开发者分别维护entry表与route表，也没有只起分类作用的`routes`中间层。`http`和
-`websocket`本身就是以稳定名字为key的entry mapping；每个value把external selector与该entry的
-handler/adapter声明写在一起。Mapping key就是service-owner-local `GatewayEntryKey`，且两个protocol
-mapping中的key在同一个service内必须全局唯一。Compiler必须把这一个authoring record确定性拆成
-`IngressSelector -> GatewayEntryKey`和`GatewayEntryKey -> resolved gateway entry`两个artifact事实。
-第一版一个authoring route只定义一个entry，不提供多个selector复用同一entry定义的别名/引用语法。
-`guard`/`pre`属于具体entry，不占用`http`或`websocket`下的保留key，也没有隐式全局继承。
+Authoring层不要求开发者分别维护entry表与route表，也没有只起分类作用的`routes`中间层。已冻结的HTTP
+写法中，`http`本身就是以稳定名字为key的entry mapping；每个value把external selector与该entry的
+handler/adapter声明写在一起。Mapping key就是service-owner-local `GatewayEntryKey`。Compiler必须把
+这一个HTTP authoring record确定性拆成`IngressSelector -> GatewayEntryKey`和
+`GatewayEntryKey -> resolved gateway entry`两个artifact事实。第一版一个HTTP authoring route只定义
+一个entry，不提供多个selector复用同一entry定义的别名/引用语法。`guard`/`pre`属于具体HTTP entry，
+不占用`http`下的保留key，也没有隐式全局继承。
+
+`websocket`仍由`service.yml`拥有，连接path和可选`connect`回调也属于这里；但业务消息入口的authoring与
+identity层级尚未冻结。Raw frame `receive`是平台transport阶段，不是与HTTP业务handler对等的service
+入口，目标设计不得把单一用户`receive`回调当成整个WebSocket业务API。后续必须先定义平台如何从frame
+得到业务消息selector、如何选择typed message handler，以及unknown/binary/error策略，再决定
+WebSocket connection key与嵌套message entry key如何进入artifact。该设计冻结前，不从HTTP写法类推或
+实现新的WebSocket `receive` authoring。
 
 PackageArtifact至少包含：
 
@@ -151,9 +159,10 @@ callable signature和专用gateway adapter plan编解码，不要求内部业务
 `api.yml`或PackageSchema。对外文档所需的JSON schema是entry-local协议描述，不是Skiff名义类型identity，
 也不能反向成为runtime binary codec的事实源。
 
-Compiler只对adapter实际映射到external source/sink的值计算entry-local schema closure。HTTP body、
-query/path/header参数、HTTP response与typed WebSocket message body可以形成外部wire shape；pre/guard内部
-context、WebSocket connection context及其它只在runtime adapter与handler之间流动的值不进入该closure。
+Compiler只对adapter实际映射到external source/sink的值计算entry-local schema closure。已冻结部分包括
+HTTP body、query/path/header参数与HTTP response。未来typed WebSocket业务消息handler的输入/输出也应形成
+外部wire shape，但其消息路由模型尚未冻结，当前不得据raw `receive`回调提前投影。Pre/guard内部context、
+WebSocket connection context及其它只在runtime adapter与handler之间流动的值不进入该closure。
 私有named type可以贡献外部shape，但其source name、module path与Skiff nominal identity不得泄露为public
 type；只改私有名字而保持canonical external shape不改变`GatewayEntryIdentity`。
 
@@ -336,9 +345,10 @@ Artifact模型允许多个selector绑定同一个key，但第一版`service.yml`
 named route同时声明唯一selector与entry definition。该限制只简化authoring，不得把selector并入
 `GatewayEntryIdentity`，也不得让Router跳过上述两步查找。
 
-`GatewayEntryIdentity`只标识external protocol surface。它的canonical preimage覆盖entry kind、外部
-request/response/stream shape、HTTP path/query/header/body等adapter source映射、WebSocket context
-expectation、公开错误投影及其它会改变gateway wire兼容性的metadata。它不包含source selector、
+`GatewayEntryIdentity`只标识external protocol surface。已冻结的HTTP canonical preimage覆盖entry kind、
+外部request/response/stream shape、HTTP adapter source映射、公开错误投影及其它会改变gateway wire
+兼容性的metadata。WebSocket identity必须在业务消息入口层级冻结后另行补齐；不能只对`connect/receive`
+两个transport回调做hash并把它误当成业务协议identity。Identity不包含source selector、
 handler/pre/guard `PackageCallableId`、内部名义类型identity、PackageArtifact/build或deployment policy。
 Compiler仍必须验证由linked handler signature导出的external schema和typed adapter plan与该surface逐项
 一致。

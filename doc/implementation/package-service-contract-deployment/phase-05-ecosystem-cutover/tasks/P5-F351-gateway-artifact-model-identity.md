@@ -1,6 +1,6 @@
-# P5-F351 Gateway artifact model / identity
+# P5-F351 HTTP gateway artifact model / identity foundation
 
-状态：Ready（C0 shared prerequisite）。
+状态：Ready（C0 shared prerequisite；2026-07-26按WebSocket业务消息抽象修正scope）。
 
 ## 直接父节点
 
@@ -11,20 +11,24 @@
 
 ## 目标
 
-在Rust artifact层建立所有后续consumer唯一复用的gateway external-protocol model与canonical identity
-owner。完成后，compiler/deployment/runtime/Router可以引用同一类型和golden，但本任务不接线任何consumer。
+在Rust artifact层建立HTTP后续consumer唯一复用的gateway external-protocol model与canonical identity
+owner，并提供未来其它external protocol可以复用的protocol-neutral schema/key/identity叶子类型。完成后，
+HTTP compiler/deployment/runtime/Router可以引用同一类型和golden，但本任务不接线任何consumer。
+
+本任务不设计WebSocket业务消息入口。原计划中的raw `websocketReceive`与message source已被权威父文档
+撤回；已有WIP若包含这些类型必须删除。WebSocket connect、message selector/envelope、message handler
+surface与两层identity等到单独设计冻结后再扩展shared model。
 
 必须形成：
 
 1. 强类型`GatewayEntryKey`与`GatewayEntryIdentity`。Key是validated service-owner-local opaque key，
    identity是带generation prefix的content identity；两者不得互换或接受空白/非法值。
 2. 一个新shared gateway artifact module，拥有：
-   - closed `GatewayAdapterKind`：HTTP typed JSON、HTTP raw、WebSocket connect、WebSocket receive；
-   - closed `GatewayAdapterSource`，精确覆盖权威gateway文档的三种HTTP source和八种WebSocket source；
+   - closed `GatewayAdapterKind`：HTTP typed JSON、HTTP raw；
+   - closed `GatewayAdapterSource`，精确覆盖权威gateway文档的三种HTTP source；
    - `GatewayAdapterArg`的`param + source`严格DTO，供后续execution-plan consumer复用；
-   - normalized `GatewayEntryProtocolSurface`，分别表达HTTP与WebSocket external surface；
+   - normalized HTTP `GatewayEntryProtocolSurface`；
    - HTTP raw/typed、unary/server-stream mode；
-   - WebSocket可选connect、必需receive、`none | typed` context expectation；
    - 只表示真正external source/sink的entry-local schema view；
    - fixed closed external error projection/version。
 3. Entry-local external schema是artifact/docs/diagnostics/identity表示，不是runtime codec：
@@ -36,9 +40,8 @@ owner。完成后，compiler/deployment/runtime/Router可以引用同一类型�
    - private named type只能留下结构，不可能通过DTO序列化其Skiff identity。
 4. Protocol surface只保留wire兼容性事实：
    - entry/protocol/adapter kind、dispatch mode；
-   - normalized external input/output/message schema；
+   - normalized external HTTP input/output schema；
    - 会改变外部wire的标准source选择；
-   - WebSocket是否需要typed connection context，但不含context type/codec identity；
    - fixed external error projection及显式external documentation metadata中确实影响wire的closed字段。
 5. `GatewayAdapterArg.param`、完整adapter execution plan与protocol surface分离。目标参数重命名、handler替换、
    build变化、内部context/codec变化不能改变`GatewayEntryIdentity`；后续compiler负责从execution plan
@@ -61,9 +64,7 @@ deployment、runtime或Router。
 | --- | --- |
 | HTTP raw ↔ typed、unary ↔ server stream | 必须变化 |
 | HTTP external request/response schema变化 | 必须变化 |
-| WebSocket connect有无、receive input/output wire shape变化 | 必须变化 |
-| external source语义变化，如raw request ↔ typed body、platform message ↔ typed message body | 必须变化 |
-| WebSocket `none ↔ typed` context expectation | 必须变化 |
+| HTTP external source语义变化，如raw request ↔ typed body | 必须变化 |
 | fixed external error projection/version变化 | 必须变化 |
 | map/list输入顺序的非语义变化 | 不得变化或必须被validation拒绝；不能静默产生两个identity |
 | selector host/method/path变化 | 不得变化，且selector不能出现在preimage类型 |
@@ -81,16 +82,17 @@ serialization golden，不能只在注释中声称。
 必须fail closed：
 
 - 空白key/identity、错误prefix、非小写64位hex digest、unknown enum kind/unknown field；
-- HTTP adapter使用WebSocket source或反之；
+- 非HTTP adapter/source，包括任何WebSocket connect/receive/message kind；
 - typed HTTP没有external body/response schema，raw HTTP伪造typed body schema；
 - server stream缺item schema或unary携带stream item；
-- WebSocket没有receive、connect/receive phase使用错误source；
 - external schema包含重复union branch、重复/非法required field、open/unknown record field；
 - external schema试图携带Skiff nominal/public/source identity；
 - 非canonical collection order在loaded canonical artifact边界被拒绝，而builder/normalizer只产生canonical
   order。
 
 不要为旧identity、旧gateway manifest或`ContractOperationId` ingress保留reader/fallback。
+不要为了“以后也许能用”预留`serde(other)`、unknown protocol variant、WebSocket placeholder或
+`serde_json::Value`扩展槽；WebSocket设计冻结后可以在Skiff尚未发布的前提下显式扩展并更新generation。
 
 ## 写入范围
 
@@ -140,7 +142,8 @@ cargo fmt --all -- --check
 
 还必须运行`git diff --check`并人工反搜本任务新增文件，确认没有
 `ContractOperationId`、`ServiceProtocolIdentity`、selector、handler target、Package build或
-`TypeRefIr`进入identity preimage。
+`TypeRefIr`进入identity preimage，也没有`websocket`、`receive`、`ConnectionMessage`或context
+expectation进入新增shared surface。
 
 不运行workspace/root、stable/live，不安装或更新依赖，不push。
 

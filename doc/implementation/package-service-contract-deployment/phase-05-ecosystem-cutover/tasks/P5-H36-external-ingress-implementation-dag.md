@@ -1,7 +1,7 @@
 # P5-H36 External ingress implementation DAG
 
-状态：Implementation parent ready；C0 shared model/identity leaf running。`service.yml` named-route
-authoring已由用户冻结。
+状态：Implementation parent ready；C0 HTTP/shared model foundation leaf running。HTTP `service.yml`
+named-route authoring已由用户冻结；WebSocket业务消息路由于2026-07-26撤回原raw `receive`方案并暂缓。
 
 ## 直接父节点
 
@@ -32,22 +32,27 @@ authoring已由用户冻结。
    进入service-to-service projection。没有marker的ServiceContract可以有零个operation。
 2. 一个显式marker若投影为`BoundaryCallableProjection::Unavailable`，compiler必须一次报告该root的全部
    结构化原因；不得静默省略。未标记的generic或其它boundary-unavailable callable仍是合法Package API。
-3. HTTP/WebSocket入口由`service.yml`拥有，直接解析当前Package中的精确handler/pre/guard callable；
-   handler不要求public，不生成`ContractOperationId`，不进入ServiceContract、
-   `PackageSchemaRequirements`或service dependency module。
-4. External schema只为真实跨external boundary的source/sink形成entry-local结构：
-   typed HTTP body/response、typed WebSocket message body及固定平台wire shape。`pre` context、guard值、
-   WebSocket connection context和其它runtime内部值不进入external schema。
+3. HTTP/WebSocket入口由`service.yml`拥有。HTTP直接解析当前Package中的精确handler/pre/guard
+   callable；WebSocket连接path与可选connect callback也在`service.yml`，但raw frame `receive`是平台
+   transport阶段，不是用户业务entry。所有external handler都不要求public，不生成
+   `ContractOperationId`，不进入ServiceContract、`PackageSchemaRequirements`或service dependency
+   module。
+4. External schema只为真实跨external boundary的source/sink形成entry-local结构。当前冻结typed HTTP
+   body/response及固定HTTP wire shape；未来typed WebSocket业务消息也遵守此规则，但须在消息路由模型
+   冻结后投影。`pre` context、guard值、WebSocket connection context和其它runtime内部值不进入external
+   schema。
 5. 私有named type可以贡献external structural shape，但它的source/public path、nominal identity、
    `PackageSchemaTypeId`或display name不得泄漏，也不得因ingress被补进`api.yml`、PackageLocalAbi、
    PackageSchema或ServiceContract。
-6. 第一版拒绝generic function declaration作为handler/pre/guard；concrete signature可包含fully
-   instantiated generic platform types。不得按`std.websocket`名称建立generic特例。
+6. 当前HTTP handler/pre/guard与WebSocket connect callback拒绝generic function declaration；concrete
+   signature可包含fully instantiated generic platform types。不得按`std.websocket`名称建立generic
+   特例。未来业务消息handler沿同一原则，但其签名尚未冻结。
 7. `GatewayEntryKey`是service-owner-local稳定键，不是内容identity。Selector只绑定key，同一个entry可被
    多个selector复用；第一版authoring不提供该复用语法。
-8. `GatewayEntryIdentity`只标识external protocol surface。其canonical preimage包含entry/protocol kind、
-   unary/stream mode、外部request/response/message shape、影响wire的标准source选择、
-   WebSocket context expectation、公开external error projection及其它wire兼容性metadata。
+8. `GatewayEntryIdentity`只标识external protocol surface。当前只冻结HTTP canonical preimage：
+   entry/protocol kind、unary/stream mode、外部request/response shape、影响wire的标准source选择、
+   公开external error projection及其它HTTP wire兼容性metadata。WebSocket identity必须等业务消息entry
+   层级冻结；不得hash `connect/receive`两个transport phase后冒充业务协议identity。
 9. `GatewayEntryIdentity`明确不包含selector、source selector、handler/pre/guard
    `PackageCallableId`、PackageArtifact/build、deployment policy、内部nominal identity、目标参数名、
    内部context type/codec identity或完整adapter execution plan。只换实现而wire不变时identity保持；
@@ -88,12 +93,13 @@ gateway entry bindings与selector bindings。
 
 - F351 `Gateway artifact model / identity`
   - 强类型`GatewayEntryKey`、`GatewayEntryIdentity`；
-  - shared closed adapter/source vocabulary；
-  - normalized external protocol surface与entry-local external schema DTO；
-  - Rust canonical identity owner、validation、golden与mutation matrix。
+  - protocol-neutral entry-local external schema DTO；
+  - HTTP closed adapter/source vocabulary与normalized HTTP protocol surface；
+  - HTTP canonical identity owner、validation、golden与mutation matrix；
+  - 不新增任何WebSocket receive/message surface。
 
-任何compiler、deployment、runtime或Router consumer不得先于F351自行新增另一份gateway
-surface/identity模型。
+任何HTTP compiler、deployment、runtime或Router consumer不得先于F351自行新增另一份gateway
+surface/identity模型。WebSocket consumer不得把F351的HTTP surface强行复用成raw receive模型。
 
 ### C1：C0之后可并行
 
@@ -101,15 +107,16 @@ surface/identity模型。
    - parser/projector只选择显式marker；
    - generic public Local ABI/link保留，PackageSchema只投影eligible closure；
    - marked unavailable聚合结构化错误，unmarked unavailable不阻断Package。
-2. `strict service.yml authoring`
-   - 冻结用户YAML shape；
-   - `http`/`websocket`本身是named mapping，没有`routes`或`entries`中间层；
-   - 两个mapping的key在service内全局唯一，并直接成为`GatewayEntryKey`；
-   - 每个named route把唯一selector与entry definition写在一起，compiler内部再拆成两个artifact事实；
+2. `strict HTTP service.yml authoring`
+   - 冻结HTTP用户YAML shape；
+   - `http`本身是named mapping，没有`routes`或`entries`中间层；
+   - mapping key直接成为`GatewayEntryKey`；
+   - 每个named HTTP route把唯一selector与entry definition写在一起，compiler内部再拆成两个artifact事实；
    - `guard`/`pre`只属于具体entry，无reserved key或隐式global inheritance；
    - 直接引用当前Package source callable；
-   - 旧`operation`、旧`handlerArgs`、旧WebSocket `bind`和unknown fields全部fail closed。
-3. `deployment gateway model`
+   - 旧HTTP `operation`、旧`handlerArgs`和unknown fields全部fail closed；
+   - 本leaf不定义或迁移WebSocket业务消息authoring。
+3. `deployment HTTP gateway model`
    - `gatewayEntries: GatewayEntryKey -> resolved entry`；
    - `ingress: IngressSelector -> GatewayEntryKey`；
    - exact handler/pre/guard `PackageCallableId`与execution plan由deployment拥有；
@@ -121,9 +128,9 @@ surface/identity模型。
 
 同时依赖C1三项：
 
-- 解析non-public top-level callable并校验exact link/signature；
+- 为HTTP解析non-public top-level callable并校验exact link/signature；
 - generic function handler/pre/guard fail closed；
-- 从signature、adapter kind与source形成execution plan、entry-local external schema与
+- 从HTTP signature、adapter kind与source形成execution plan、entry-local external schema与
   `GatewayEntryIdentity`；
 - ServiceContract只读取`serviceCall` roots；
 - PackageArtifact不需要为private ingress type伪造public/schema record；
@@ -131,12 +138,11 @@ surface/identity模型。
 
 ### C3：C2之后可并行consumer
 
-1. runtime loader/linker/Host：形成linked gateway entry，按key/identity/admitted plan执行普通gateway
-   request lane；关闭HTTP stream Host断裂。
-2. transport/Router：selector只映射gateway key/identity；删除Rust/TypeScript重复WebSocket synthetic
-   identity；HTTP/WS只转发opaque payload和平台metadata。
-3. WebSocket codec/generation：connect时pin exact entry/generation，receive沿旧generation entry；
-   保留receipt、release ack、disconnect cleanup与drain gate。
+1. runtime loader/linker/Host：形成linked HTTP gateway entry，按key/identity/admitted plan执行普通
+   gateway request lane；关闭HTTP stream Host断裂。
+2. transport/Router：HTTP selector只映射gateway key/identity；只转发opaque payload和平台metadata。
+3. WebSocket codec/generation暂缓：连接generation pin、队列、receipt、release ack、disconnect cleanup
+   与drain gate等既有生命周期约束保留，但不得在业务消息模型冻结前实现新的raw receive artifact。
 4. test-runner：删除两个合成`IngressSelector -> ContractOperationId` owner，测试服务走同一gateway entry
    模型；不在runner复制identity或codec。
 
@@ -149,7 +155,7 @@ production surface，最终验收必须按影响范围重跑。
 
 - Skiff compiler/runtime-live/legacy fixtures与canonical package/service roots；
 - Internals Account与Codex Relay；
-- Internals AIHub与Agine，包括WebSocket connect/receive；
+- Internals AIHub与Agine先迁移HTTP/serviceCall部分；WebSocket connect与业务消息入口另行迁移；
 - skiff-packages无ingress service只做新generation registry/release revalidation；
 - test-runner与F269生成的test-service roots由其各自owner刷新，不得重新引入旧co-located test。
 
@@ -167,7 +173,8 @@ production surface，最终验收必须按影响范围重跑。
 2. 同一F269 owner在新checkpoint上reconcile现有WIP，刷新receipt/identity并重跑canonical
    test-service workflow；不得由其它leaf改写其worktree。
 3. 做跨对象convergence：identity mutation matrix、strict generation、ServiceProtocol invariance、
-   Router/Host exact admission、HTTP raw/typed/stream、WebSocket generation与fixed error evidence。
+   Router/Host exact admission、HTTP raw/typed/stream与fixed error evidence。WebSocket generation证据在其
+   消息路由设计与实现合流后补齐。
 4. 新独立agent做高风险只读验收；PASS后才能进入Phase 05总验收、main merge和worktree/临时分支清理。
 
 ## `service.yml` named-route authoring checkpoint
@@ -184,26 +191,19 @@ http:
     adapterArgs:
       - param: body
         source: { kind: http.body }
-
-websocket:
-  chat:
-    path: /ws
-    connect:
-      handler: chat.connect
-      adapterArgs:
-        - param: request
-          source: { kind: websocket.connectRequest }
-    receive:
-      handler: chat.receive
-      adapterArgs:
-        - param: event
-          source: { kind: websocket.receiveEvent }
 ```
 
-`createUser`和`chat`就是owner-local稳定key，不再重复写`id`。Compiler从每个value同时投影一个selector
-binding和一个resolved entry。`http`与`websocket`的key在service内不得重名。第一版每个named entry只有
-一个selector；多个entry即使指向同一个handler也仍是独立entry。`guard`/`pre`写在具体entry中，没有
-global default或继承。Artifact层仍保持selector/key/entry分离，且identity preimage绝不能读取selector。
+`createUser`就是owner-local稳定key，不再重复写`id`。Compiler从每个HTTP value同时投影一个selector
+binding和一个resolved entry。第一版每个named HTTP entry只有一个selector；多个entry即使指向同一个
+handler也仍是独立entry。`guard`/`pre`写在具体entry中，没有global default或继承。Artifact层仍保持
+selector/key/entry分离，且identity preimage绝不能读取selector。
+
+WebSocket只冻结到“连接path与可选connect callback由`service.yml`拥有”。原示例中的`receive:
+handler: chat.receive`已撤回。未来目标是平台拥有raw frame receive，并在选择业务消息entry后调用与HTTP
+route同层的typed handler；`messages`字段名、discriminator/envelope、message key/identity、binary、
+unknown与response correlation均未冻结。HTTP有每次请求的标准`method + path`，WebSocket只有Upgrade
+握手path、后续frame没有route；因此该目标必然需要额外的Skiff application-message routing约定，不能靠
+隐藏`receive`自动得到。
 
 ## 验证与运行边界
 

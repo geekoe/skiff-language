@@ -4,7 +4,7 @@
 
 本文只记录当前 canonical 尚未规范化的问题。已解决的旧审阅项不再放在这里；历史交叉审阅记录只用于追溯设计背景。
 
-Package / Service 的 gateway identity、external schema owner、`api.yml`存在性、service-call显式选择、
+Package / Service 的HTTP gateway identity、external schema owner、`api.yml`存在性、service-call显式选择、
 nominal public path和service dependency cycle已经在
 [`package-service-contract-deployment.md`](package-service-contract-deployment.md)收敛，不再作为待决项。
 
@@ -50,9 +50,21 @@ nominal public path和service dependency cycle已经在
    明确isolation、lifetime、分页/stream语义、重试、跨request可恢复性和与写transaction的关系，不能把当前
    request heap或driver session handle直接暴露为持久值。
 
+9. **WebSocket业务消息入口**
+
+   Raw frame `receive`已确定为平台transport阶段，不再作为用户service handler。HTTP每次请求自带标准
+   `method + path`，WebSocket却只有Upgrade握手path，后续frame没有标准业务route；
+   `Sec-WebSocket-Protocol`也只能选择整条连接协议。因此目标上若要让每个业务消息handler与HTTP route
+   处于同一抽象层，平台必须额外定义Skiff application-message routing protocol。AIHub当前使用`type`，
+   Agine当前使用`eventName`，因此需要决定统一envelope、显式discriminator映射或typed literal union派生，
+   并同时定义binary、decode失败、unknown message、connection context、message key/identity和可选
+   request/response correlation。冻结前只推进HTTP gateway与service-call实现，不新增raw receive artifact。
+
 ## 建议处理顺序
 
-1. 先细化宿主互操作 / FFI，避免所有第三方 SDK 都必须进入核心平台；普通用户插件开放前必须先完成 ABI、沙箱、权限和崩溃隔离设计。
-2. 然后设计用户级 async task、cron、startup 和 managed worker surface。
-3. 再补观测生产化扩展，支撑长期运行、告警和聚合。
-4. 最后细化状态层、数据 migration 和未来 read view，避免过早引入语言级共享状态。
+1. 在HTTP gateway/service-call链收敛后，先冻结WebSocket业务消息入口，避免迁移服务时继续扩散raw
+   receive抽象。
+2. 再细化宿主互操作 / FFI，避免所有第三方 SDK 都必须进入核心平台；普通用户插件开放前必须先完成 ABI、沙箱、权限和崩溃隔离设计。
+3. 然后设计用户级 async task、cron、startup 和 managed worker surface。
+4. 再补观测生产化扩展，支撑长期运行、告警和聚合。
+5. 最后细化状态层、数据 migration 和未来 read view，避免过早引入语言级共享状态。

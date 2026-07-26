@@ -35,7 +35,7 @@ runtime prelude 类型包括 `Array<T>`、`Map<K,V>`、`Stream<T>`、`Config`、
 
 `Date` static surface 包括 `Date.now()`、`Date.fromEpochMilliseconds(ms)`、`Date.parse(value)` 和 `Date.requireParse(value)`。`parse` 对非法或越界文本返回 `null`；`requireParse` 抛 `std.time.DecodeError`。receiver surface 包括 `toEpochMilliseconds()`、`toISOString()`、`addMilliseconds(ms)`、`diffMilliseconds(other)`、`compare(other)`、`isBefore(other)` 和 `isAfter(other)`。
 
-HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.HttpHeader`、`std.http.HttpQueryParam`、`std.http.HttpRequest`、`std.http.HttpResponse`、`std.http.HttpClientRequest`、`std.http.HttpClientResponse`、`std.http.HttpClientStreamHandle`、`std.http.HttpSseEvent`、`std.http.HttpResponseStreamEvent` 和 `std.http.HttpError`（均不拍平到 `std` root，见 §11）。WebSocket message 类型在 `std.websocket.*` 下，包括 `ConnectionMessage`、`TextConnectionMessage` 和 `BinaryConnectionMessage`。Gateway/actor prelude不声明`ActorRef<T>`；每个actor声明的名义类型本身就是actor句柄类型。actor registry入口为`getOrCreate`、`replace`、`find`和`remove`。`ActorBinding`、`ClientSessionRef`和`ClientCapability`仍按各自surface定义；旧`std.actor.Actor<Id>`接口由显式actor声明及其id类型取代。
+HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.HttpHeader`、`std.http.HttpQueryParam`、`std.http.HttpRequest`、`std.http.HttpResponse`、`std.http.HttpClientRequest`、`std.http.HttpClientResponse`、`std.http.HttpClientStreamHandle`、`std.http.HttpSseEvent`、`std.http.HttpResponseStreamEvent` 和 `std.http.HttpError`（均不拍平到 `std` root，见 §11）。现有`std.websocket.ConnectionMessage`、`TextConnectionMessage`和`BinaryConnectionMessage`只属于raw receive迁移实现，不是冻结后的用户业务消息surface，见§13。Gateway/actor prelude不声明`ActorRef<T>`；每个actor声明的名义类型本身就是actor句柄类型。actor registry入口为`getOrCreate`、`replace`、`find`和`remove`。`ActorBinding`、`ClientSessionRef`和`ClientCapability`仍按各自surface定义；旧`std.actor.Actor<Id>`接口由显式actor声明及其id类型取代。
 
 这些 prelude 名字不能被用户声明、import alias 或局部绑定 shadow。
 
@@ -257,21 +257,23 @@ effect metadata 是 telemetry write，target 对应具体 log level，cancel saf
 
 `std.websocket` 是 client-facing WebSocket ingress 的标准库 surface。新业务入口由 service config 顶层 websocket 声明；path、domain 和 service selection 属于 ingress / router 配置。
 
-`WebSocketConnection<Context>`、`WebSocketReceiveEvent<Context>`、
-`WebSocketIngressEvent<Context>`和`WebSocketConnectResult<Context>`是external gateway adapter使用的
+`WebSocketConnectRequest`、`WebSocketConnectResult<Context>`与connection policy是connect adapter使用的
 generic platform types。它们可以通过std Package API被源码引用，但声明本身不生成ordinary
-PackageSchema，也不能作为service-to-service payload。`service.yml`选择的ingress handler从linked
+PackageSchema，也不能作为service-to-service payload。`service.yml`选择的connect handler从linked
 signature取得完整实例化类型；handler不要求出现在`api.yml`。
 
-connection message 只表达 transport frame：UTF-8 text 或 binary bytes 的 base64 表示。应用 JSON tag 由 service 代码解释，router 不理解业务 tag。
+旧`WebSocketReceiveEvent<Context>`、`WebSocketIngressEvent<Context>`和面向用户的raw
+`ConnectionMessage` receive surface不属于目标设计。Raw frame只表达transport事实；平台应在其上选择
+业务消息entry，service只实现typed业务消息handler。具体消息envelope/discriminator、binary/fallback以及
+handler context shape尚未冻结，因此当前reference不承诺替代类型或签名。现有实现可在迁移期间继续使用旧
+类型，但不能据此生成新artifact contract。
 
 connect request 包含 connection id、url、query、headers、cookies 和可选 version。headers、query 和 cookies 保留重复值。
 
 connect result 是 accept / reject discriminator union。accept branch 携带 typed connection context 和可选 actor binding；reject branch 携带可选 code 与 reason。
 
-receive 和 route handler 使用固定 event shape；event connection 包含当前 actor 和 typed connection context。业务 handler 不单独接收裸 connection id。
-
-receive 和 route handler 返回 `null` / `void`，并显式调用 send helper 向 client 发消息。返回 `ConnectionMessage` 不是 request-response path。
+未来业务消息handler不单独接收裸connection id。它如何接收当前actor、typed connection context和业务
+消息，以及返回值是否参与response correlation，必须随消息路由设计一起冻结。
 
 send target 分两套：`...ToConnection` 按单个 connection id 发送，`...ToBusinessIdentity` 按 business identity 发送（投递到该 business identity 当前的所有连接）。`std.websocket.sendTextToConnection` / `sendTextToBusinessIdentity` 发送 text frame，`std.websocket.sendBinaryToConnection` / `sendBinaryToBusinessIdentity` 发送 binary frame（不做 base64 编码）；这四个是 runtime host operation。
 
