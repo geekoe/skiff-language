@@ -75,7 +75,7 @@ export function readPackageServiceFixtureReceipt(
       method: 'POST',
       path: '/__skiff/package-test/0',
     },
-    serviceId: `test.skiff/package/${packageId}`,
+    serviceId: `test.skiff/package/${safeCoordinate(packageId)}/case-0`,
     contractVersion: packageVersion,
     deploymentRevision: `test-${identityHash(overlay.packageBuildId, PACKAGE_BUILD_IDENTITY)}`,
   });
@@ -379,6 +379,14 @@ function packageRecordPath(artifact) {
 
 function coordinateSegment(value) {
   return value.replaceAll('.', '~d').replaceAll('/', '~s');
+}
+
+function safeCoordinate(value) {
+  return [...value]
+    .map((character) => (
+      /[A-Za-z0-9./-]/.test(character) ? character : '-'
+    ))
+    .join('');
 }
 
 function identityHash(value, pattern) {

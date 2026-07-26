@@ -34,11 +34,9 @@ import {
   withTamperedI02PackageRecord,
 } from './package-service-i02-combined-transaction.mjs';
 import {
-  requestGenerationUnary,
-} from './package-service-generation-lifecycle-smoke-real.mjs';
-import {
-  validatePackageServiceGenerationUnaryResponse,
-} from './package-service-generation-lifecycle-smoke-oracle.mjs';
+  requestPackageServiceHttpUnary,
+  validatePackageServiceHttpUnaryStringResponse,
+} from './package-service-http-unary.mjs';
 
 const DEFAULT_TRANSACTION_DEADLINE_MS = 180_000;
 const I02_FIXTURE_RELATIVE_ROOT = join(
@@ -48,8 +46,6 @@ const I02_FIXTURE_RELATIVE_ROOT = join(
 );
 const I02_PACKAGE_ID = 'test.skiff/package-service-i02-spawn-submit';
 const I02_PACKAGE_VERSION = '1.0.0';
-const I02_PACKAGE_TEST_NAME =
-  'I02 normal source fixture compiles canonical spawn submit';
 
 export async function runPackageServiceI02Combined({
   checkout,
@@ -60,9 +56,9 @@ export async function runPackageServiceI02Combined({
   const runtimeOwner = dependencies.runtimeOwner ?? runInIsolatedTestRuntime;
   const runCommand = dependencies.runCommand ?? captureCheckedCommand;
   const activate = dependencies.activate ?? requestAssemblyActivation;
-  const requestUnary = dependencies.requestUnary ?? requestGenerationUnary;
+  const requestUnary = dependencies.requestUnary ?? requestPackageServiceHttpUnary;
   const validateUnary =
-    dependencies.validateUnary ?? validatePackageServiceGenerationUnaryResponse;
+    dependencies.validateUnary ?? validatePackageServiceHttpUnaryStringResponse;
   const waitForReady =
     dependencies.waitForReady ?? waitForPackageServiceAssemblyReady;
   const readHealth = dependencies.readHealth ?? readControlHealth;
@@ -114,7 +110,6 @@ export async function runPackageServiceI02Combined({
           {
             packageId: I02_PACKAGE_ID,
             packageVersion: I02_PACKAGE_VERSION,
-            packageTestName: I02_PACKAGE_TEST_NAME,
           },
         );
 
@@ -381,5 +376,4 @@ export const packageServiceI02CombinedConstants = Object.freeze({
   fixtureRelativeRoot: I02_FIXTURE_RELATIVE_ROOT,
   packageId: I02_PACKAGE_ID,
   packageVersion: I02_PACKAGE_VERSION,
-  packageTestName: I02_PACKAGE_TEST_NAME,
 });
