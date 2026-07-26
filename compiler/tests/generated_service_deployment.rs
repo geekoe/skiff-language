@@ -30,6 +30,16 @@ fn generates_exact_operations_and_profile_bindings() {
         skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap()
     );
     assert_eq!(deployment.operation_bindings.len(), 1);
+    assert_eq!(
+        deployment.operation_bindings[0].package_callable_id,
+        service_api.available["read"]
+    );
+    let operation_wire = serde_json::to_value(&deployment.operation_bindings[0]).unwrap();
+    assert_eq!(
+        operation_wire["packageCallableId"],
+        json!(service_api.available["read"].as_str())
+    );
+    assert!(operation_wire.get("packagePublicPath").is_none());
     assert!(deployment.gateway_entries.is_empty());
     assert!(deployment.ingress.is_empty());
     assert_eq!(deployment.config_literals[0].path, "registry.token");
@@ -351,6 +361,109 @@ fn compatible_rebuild_changes_package_identity_not_service_api_identity() {
 }
 
 #[test]
+fn manifest_selection_canonicalizes_revision_and_changes_only_service_outputs() {
+    let (left_project, left_api) =
+        compile_selection_fixture("generated-selection-left", &["read", "write"]);
+    let (right_project, right_api) =
+        compile_selection_fixture("generated-selection-right", &["write", "read"]);
+    assert_eq!(
+        left_project.package.artifact,
+        right_project.package.artifact
+    );
+    assert_eq!(left_api.contract, right_api.contract);
+
+    let left_manifest = manifest_with_calls(&["read", "write"]);
+    let right_manifest = manifest_with_calls(&["write", "read"]);
+    let left = generate_with_manifest(
+        &left_project.package.artifact,
+        &left_api,
+        &left_project.package.resolved_package_schema_type_records,
+        &left_manifest,
+    );
+    let right = generate_with_manifest(
+        &right_project.package.artifact,
+        &right_api,
+        &right_project.package.resolved_package_schema_type_records,
+        &right_manifest,
+    );
+    assert_eq!(left.deployment_revision, right.deployment_revision);
+    assert_eq!(
+        left.deployment_artifact_identity,
+        right.deployment_artifact_identity
+    );
+    assert_eq!(left.operation_bindings, right.operation_bindings);
+
+    let (subset_project, subset_api) =
+        compile_selection_fixture("generated-selection-subset", &["read"]);
+    assert_eq!(
+        left_project.package.artifact,
+        subset_project.package.artifact
+    );
+    assert_eq!(
+        left_project.package.artifact.package_build_id,
+        subset_project.package.artifact.package_build_id
+    );
+    assert_eq!(
+        left_project
+            .package
+            .artifact
+            .package_local_abi
+            .local_abi_identity,
+        subset_project
+            .package
+            .artifact
+            .package_local_abi
+            .local_abi_identity
+    );
+    assert_ne!(
+        left_api.contract.service_protocol_identity,
+        subset_api.contract.service_protocol_identity
+    );
+    let subset_manifest = manifest_with_calls(&["read"]);
+    let subset = generate_with_manifest(
+        &subset_project.package.artifact,
+        &subset_api,
+        &subset_project.package.resolved_package_schema_type_records,
+        &subset_manifest,
+    );
+    assert_ne!(left.operation_bindings, subset.operation_bindings);
+    assert_ne!(left.deployment_revision, subset.deployment_revision);
+    assert_ne!(
+        left.deployment_artifact_identity,
+        subset.deployment_artifact_identity
+    );
+
+    let (zero_project, zero_api) = compile_selection_fixture("generated-selection-zero", &[]);
+    let missing =
+        serde_yaml::from_str::<ServiceManifestAuthoring>("id: example.com/registry\n").unwrap();
+    let explicit_empty = serde_yaml::from_str::<ServiceManifestAuthoring>(
+        "id: example.com/registry\nserviceCalls: []\n",
+    )
+    .unwrap();
+    let missing_deployment = generate_with_manifest(
+        &zero_project.package.artifact,
+        &zero_api,
+        &zero_project.package.resolved_package_schema_type_records,
+        &missing,
+    );
+    let empty_deployment = generate_with_manifest(
+        &zero_project.package.artifact,
+        &zero_api,
+        &zero_project.package.resolved_package_schema_type_records,
+        &explicit_empty,
+    );
+    assert!(missing_deployment.operation_bindings.is_empty());
+    assert_eq!(
+        missing_deployment.deployment_revision,
+        empty_deployment.deployment_revision
+    );
+    assert_eq!(
+        missing_deployment.deployment_artifact_identity,
+        empty_deployment.deployment_artifact_identity
+    );
+}
+
+#[test]
 fn generated_service_package_and_deployment_identities_ignore_human_version_relabeling() {
     let (base, base_api) = compile_fixture("generated-version-base", "\"ok\"");
     let base_deployment = generate(
@@ -412,6 +525,27 @@ fn generate(
     .unwrap()
 }
 
+fn generate_with_manifest(
+    artifact: &skiff_artifact_model::PackageArtifact,
+    api: &ServiceApiProjection,
+    package_schema_records: &std::collections::BTreeMap<
+        skiff_artifact_model::PackageSchemaTypeId,
+        skiff_artifact_model::PackageSchemaTypeRecord,
+    >,
+    service: &ServiceManifestAuthoring,
+) -> skiff_artifact_model::ServiceDeployment {
+    generate_service_deployment(GeneratedServiceDeploymentInput {
+        service,
+        profile_name: "prod",
+        profile: &profile(),
+        service_api: api,
+        implementation: artifact,
+        package_closure: &[],
+        package_schema_records,
+    })
+    .unwrap()
+}
+
 fn compile_fixture(
     name: &str,
     response: &str,
@@ -424,11 +558,11 @@ fn compile_fixture(
         "package.yml",
         "id: example.com/registry-package\nversion: 7.4.0\n",
     );
-    root.write("service.yml", "id: example.com/registry\n");
     root.write(
-        "api.yml",
-        "read:\n  source: main.read\n  serviceCall: true\n",
+        "service.yml",
+        "id: example.com/registry\nserviceCalls:\n  - read\n",
     );
+    root.write("api.yml", "read: main.read\n");
     root.write(
         "main.skiff",
         &format!(
@@ -439,13 +573,55 @@ fn compile_fixture(
 }
 
 fn manifest() -> ServiceManifestAuthoring {
+    manifest_with_calls(&["read"])
+}
+
+fn manifest_with_calls(service_calls: &[&str]) -> ServiceManifestAuthoring {
     ServiceManifestAuthoring {
         id: "example.com/registry".to_string(),
         kind: skiff_artifact_model::ServiceAuthoringKind::Service,
+        service_calls: service_calls
+            .iter()
+            .map(|path| (*path).to_string())
+            .collect(),
         http: None,
         websocket: None,
         timeout: None,
     }
+}
+
+fn compile_selection_fixture(
+    name: &str,
+    service_calls: &[&str],
+) -> (
+    common::package_project::PublishedPackageProject,
+    ServiceApiProjection,
+) {
+    let root = TestDir::new("skiff-compiler", name);
+    root.write(
+        "package.yml",
+        "id: example.com/registry-package\nversion: 7.4.0\n",
+    );
+    root.write(
+        "service.yml",
+        if service_calls.is_empty() {
+            "id: example.com/registry\nserviceCalls: []\n".to_string()
+        } else {
+            format!(
+                "id: example.com/registry\nserviceCalls:\n{}",
+                service_calls
+                    .iter()
+                    .map(|path| format!("  - {path}\n"))
+                    .collect::<String>()
+            )
+        },
+    );
+    root.write("api.yml", "read: main.read\nwrite: main.write\n");
+    root.write(
+        "main.skiff",
+        "function read() -> string { return \"read\" }\nfunction write() -> string { return \"write\" }\nfunction configured() -> string { return config.require<string>(\"registry.token\") }\n",
+    );
+    compile_service_package_project(root.path()).unwrap()
 }
 
 fn profile() -> ServiceConfigProfileAuthoring {

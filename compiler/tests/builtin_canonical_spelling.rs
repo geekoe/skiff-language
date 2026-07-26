@@ -16,7 +16,7 @@ use common::{
 };
 
 const BASELINE_STD_BUILD: &str =
-    "skiff-package-build-v8:sha256:1828acdba6f3745db377255fc759fac3b3e87ed987001af97c67fa72bbbe4796";
+    "skiff-package-build-v9:sha256:8ac1d3ee235fb3f543df52430f1539610ca05c5631a09df22f7c4f4a7b6a8e17";
 const BASELINE_STD_LOCAL_ABI: &str =
     "skiff-package-local-abi-v6:sha256:c8be1d04060489a28f827a5313da12ae26891b1d3b21d1085b6e72884c9ab0ea";
 const BASELINE_STD_SCHEMA_INDEX: &str =
@@ -274,7 +274,7 @@ fn assert_fresh_std_conflict_error_is_canonical(
         std.artifact.package_local_abi.local_abi_identity.as_str(),
         BASELINE_STD_LOCAL_ABI
     );
-    assert_ne!(std.artifact.package_build_id.as_str(), BASELINE_STD_BUILD);
+    assert_eq!(std.artifact.package_build_id.as_str(), BASELINE_STD_BUILD);
 }
 
 fn record_field<'a>(descriptor: &'a TypeDescriptorIr, field: &str) -> &'a TypeRefIr {

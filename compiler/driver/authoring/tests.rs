@@ -150,7 +150,7 @@ fn package(
     let package_schema_index_identity =
         package_schema_index_identity(id, &Default::default()).unwrap();
     serde_json::from_value(json!({
-        "schemaVersion": "skiff-package-artifact-v7",
+        "schemaVersion": "skiff-package-artifact-v8",
         "packageId": id,
         "packageVersion": version,
         "packageBuildId": format!("build:{id}:{version}:{local_abi}"),
@@ -178,7 +178,6 @@ fn package(
         },
         "callableSemanticFacts": {},
         "boundaryProjections": {},
-        "serviceCallRoots": [],
         "serviceCallRefs": []
     }))
     .unwrap()

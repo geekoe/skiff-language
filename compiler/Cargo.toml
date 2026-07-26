@@ -119,8 +119,8 @@ name = "http_gateway_projection"
 path = "tests/http_gateway_projection.rs"
 
 [[test]]
-name = "service_call_roots"
-path = "tests/service_call_roots.rs"
+name = "service_calls_manifest_selection"
+path = "tests/service_calls_manifest_selection.rs"
 
 [[test]]
 name = "actor_dispatch_linking"

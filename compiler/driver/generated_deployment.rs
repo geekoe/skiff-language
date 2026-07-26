@@ -179,6 +179,12 @@ fn validate_exact_api(
             input.implementation.package_version, contract.contract_version
         )));
     }
+    let manifest_service_calls = canonical_service_calls(input.service)?;
+    if manifest_service_calls != input.service_api.service_calls {
+        return Err(invalid(
+            "service manifest serviceCalls do not match the typed service API selection",
+        ));
+    }
     let descriptor_paths = contract
         .operations
         .values()
@@ -222,26 +228,9 @@ fn operation_bindings(
                 .available
                 .get(&descriptor.stable_key)
                 .ok_or_else(|| invalid("automatic operation mapping is missing"))?;
-            let public_path = input
-                .implementation
-                .package_local_abi
-                .public_symbols
-                .iter()
-                .find_map(|(path, symbol)| match symbol {
-                    skiff_artifact_model::PackageLocalAbiSymbol::Callable {
-                        callable_id: actual,
-                        ..
-                    } if actual == callable_id => Some(path.clone()),
-                    _ => None,
-                })
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "source callable {callable_id} is absent from implementation API"
-                    ))
-                })?;
             Ok(ServiceDeploymentOperationInput {
                 contract_operation_id: operation_id.clone(),
-                package_public_path: public_path,
+                package_callable_id: callable_id.clone(),
             })
         })
         .collect()
@@ -475,18 +464,33 @@ fn optional_profile_field<T: for<'de> Deserialize<'de>>(
 fn generated_revision(
     input: &GeneratedServiceDeploymentInput<'_>,
 ) -> Result<DeploymentRevision, GeneratedServiceDeploymentError> {
+    let mut service = input.service.clone();
+    service.service_calls = input.service_api.service_calls.clone();
     let bytes = skiff_canonical_json::canonical_json_bytes(&(
-        &input.service.id,
+        &service.id,
         input.profile_name,
         &input.implementation.package_build_id,
         input.profile,
-        input.service,
+        &service,
     ))
     .map_err(|error| invalid(error.to_string()))?;
     Ok(DeploymentRevision::new(format!(
         "sha256-{}",
         hex::encode(Sha256::digest(bytes))
     )))
+}
+
+fn canonical_service_calls(
+    service: &ServiceManifestAuthoring,
+) -> Result<Vec<String>, GeneratedServiceDeploymentError> {
+    let mut paths = service.service_calls.clone();
+    paths.sort();
+    if paths.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(invalid(
+            "serviceCalls contains a duplicate path after canonical sorting",
+        ));
+    }
+    Ok(paths)
 }
 
 fn invalid(message: impl Into<String>) -> GeneratedServiceDeploymentError {

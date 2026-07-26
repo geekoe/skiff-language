@@ -5,17 +5,19 @@ use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryCallbackContract, BoundaryStreamContract,
     BoundaryUnavailableReason, ContractTypeDescriptor, ContractTypeRef, PackageArtifact,
     PackageCallableId, PackageLocalAbiSymbol, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    PackageServiceCallRoot, PackageTypeRequirement, ServiceContract,
+    PackageTypeRequirement, ServiceContract,
 };
 
 use crate::{
-    compile::compile_projected_service_contract_definition, ContractDefinitionError, Result,
-    ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
+    compile::compile_projected_service_contract_definition, selection::select_service_calls,
+    ContractDefinitionError, Result, ServiceContractDefinition,
+    ServiceContractDefinitionDiagnosticText,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceApiProjection {
+    pub service_calls: Vec<String>,
     pub contract: ServiceContract,
     pub visibility: ServiceApiVisibility,
     pub available: BTreeMap<String, PackageCallableId>,
@@ -60,17 +62,19 @@ pub fn project_package_api_visibility(package: &PackageArtifact) -> Result<Servi
 
 pub fn project_service_api(
     service_id: impl Into<String>,
+    selection_paths: &[String],
     package: &PackageArtifact,
     records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 ) -> Result<ServiceApiProjection> {
     let service_id = service_id.into();
-    let public_callables = public_callable_paths(package)?;
+    let selection = select_service_calls(package, selection_paths)?;
+    let selected_operations = selection.operations;
     let mut available = BTreeMap::new();
     let mut unavailable = BTreeMap::new();
     let mut operations = BTreeMap::new();
     let mut operation_text = BTreeMap::new();
     let mut roots = Vec::new();
-    for (callable_id, public_path) in selected_service_callables(package)? {
+    for (public_path, callable_id) in selected_operations {
         let projection = package
             .boundary_projections
             .get(&callable_id)
@@ -92,14 +96,7 @@ pub fn project_service_api(
         }
     }
     if !unavailable.is_empty() {
-        return Err(ContractDefinitionError::UnavailableServiceCallRoots { unavailable });
-    }
-    for callable_id in public_callables.keys() {
-        if !package.boundary_projections.contains_key(callable_id) {
-            return Err(ContractDefinitionError::MissingBoundaryProjection {
-                callable_id: callable_id.to_string(),
-            });
-        }
+        return Err(ContractDefinitionError::UnavailableServiceCalls { unavailable });
     }
     let closure = transitive_closure(&roots, records)?;
     let mut grouped: BTreeMap<String, Vec<PackageSchemaTypeId>> = BTreeMap::new();
@@ -135,49 +132,12 @@ pub fn project_service_api(
     })?;
     let visibility = project_api_visibility(package, Some(&contract))?;
     Ok(ServiceApiProjection {
+        service_calls: selection.roots,
         contract,
         visibility,
         available,
         unavailable,
     })
-}
-
-fn selected_service_callables(
-    package: &PackageArtifact,
-) -> Result<BTreeMap<PackageCallableId, String>> {
-    let mut selected = BTreeMap::new();
-    for root in &package.service_call_roots {
-        match root {
-            PackageServiceCallRoot::Function {
-                public_path,
-                callable_id,
-            } => {
-                if let Some(first) = selected.insert(callable_id.clone(), public_path.clone()) {
-                    return Err(ContractDefinitionError::DuplicatePublicCallable {
-                        callable_id: callable_id.to_string(),
-                        first,
-                        second: public_path.clone(),
-                    });
-                }
-            }
-            PackageServiceCallRoot::PublicInstance {
-                public_path,
-                methods,
-            } => {
-                for (method, callable_id) in methods {
-                    let method_path = format!("{public_path}.{method}");
-                    if let Some(first) = selected.insert(callable_id.clone(), method_path.clone()) {
-                        return Err(ContractDefinitionError::DuplicatePublicCallable {
-                            callable_id: callable_id.to_string(),
-                            first,
-                            second: method_path,
-                        });
-                    }
-                }
-            }
-        }
-    }
-    Ok(selected)
 }
 
 fn transitive_closure(
@@ -357,8 +317,8 @@ mod tests {
         BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
         BoundaryValuePlan, PackageBuildId, PackageCallableSignature, PackageImplementationLinks,
         PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements,
-        PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageSchemaTypeRef,
-        PackageServiceCallRoot, PackageTypeRef, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageSchemaTypeRef, PackageTypeRef,
+        TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -418,9 +378,11 @@ mod tests {
     }
 
     #[test]
-    fn service_call_projection_selects_only_marked_function_and_instance_methods() {
-        let package = service_call_package();
-        let projected = project_service_api("example.service", &package, &BTreeMap::new()).unwrap();
+    fn manifest_selection_projection_selects_function_and_complete_instance_methods() {
+        let package = package_fixture();
+        let selected = selection(&["worker", "selected"]);
+        let projected =
+            project_service_api("example.service", &selected, &package, &BTreeMap::new()).unwrap();
 
         assert_eq!(
             projected
@@ -483,21 +445,15 @@ mod tests {
     }
 
     #[test]
-    fn service_call_projection_reports_all_marked_unavailable_roots_and_reasons() {
-        let mut package = service_call_package();
-        for path in ["blocked", "blockedTwo"] {
-            package
-                .service_call_roots
-                .push(PackageServiceCallRoot::Function {
-                    public_path: path.to_string(),
-                    callable_id: package_callable_id(path),
-                });
-        }
+    fn manifest_selection_projection_reports_all_unavailable_callables_and_reasons() {
+        let package = package_fixture();
+        let selected = selection(&["blockedTwo", "blocked"]);
 
-        let ContractDefinitionError::UnavailableServiceCallRoots { unavailable } =
-            project_service_api("example.service", &package, &BTreeMap::new()).unwrap_err()
+        let ContractDefinitionError::UnavailableServiceCalls { unavailable } =
+            project_service_api("example.service", &selected, &package, &BTreeMap::new())
+                .unwrap_err()
         else {
-            panic!("marked unavailable roots must fail as one structured error")
+            panic!("selected unavailable callables must fail as one structured error")
         };
         assert_eq!(
             unavailable.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -517,12 +473,11 @@ mod tests {
     }
 
     #[test]
-    fn service_call_projection_allows_stable_zero_operation_contract() {
-        let mut package = service_call_package();
-        package.service_call_roots.clear();
+    fn manifest_selection_projection_allows_stable_zero_operation_contract() {
+        let package = package_fixture();
 
-        let first = project_service_api("example.empty", &package, &BTreeMap::new()).unwrap();
-        let second = project_service_api("example.empty", &package, &BTreeMap::new()).unwrap();
+        let first = project_service_api("example.empty", &[], &package, &BTreeMap::new()).unwrap();
+        let second = project_service_api("example.empty", &[], &package, &BTreeMap::new()).unwrap();
         assert!(first.contract.operations.is_empty());
         assert!(first.contract.package_type_requirements.is_empty());
         assert!(first.available.is_empty());
@@ -541,7 +496,7 @@ mod tests {
         }));
     }
 
-    fn service_call_package() -> PackageArtifact {
+    fn package_fixture() -> PackageArtifact {
         let paths = [
             "selected",
             "packageOnly",
@@ -695,21 +650,12 @@ mod tests {
             },
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections,
-            service_call_roots: vec![
-                PackageServiceCallRoot::Function {
-                    public_path: "selected".to_string(),
-                    callable_id: package_callable_id("selected"),
-                },
-                PackageServiceCallRoot::PublicInstance {
-                    public_path: "worker".to_string(),
-                    methods: BTreeMap::from([
-                        ("run".to_string(), package_callable_id("worker.run")),
-                        ("stop".to_string(), package_callable_id("worker.stop")),
-                    ]),
-                },
-            ],
             service_call_refs: Vec::new(),
         }
+    }
+
+    fn selection(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|path| (*path).to_string()).collect()
     }
 
     fn package_callable_id(path: &str) -> PackageCallableId {

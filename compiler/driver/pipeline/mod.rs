@@ -41,26 +41,10 @@ use crate::{
 pub fn compile_package(
     input: PackageCompileInput<'_>,
 ) -> Result<PublishedPackageArtifact, PackageCompileError> {
-    compile_package_with_service_call_roots(input, false)
-}
-
-fn compile_package_with_service_call_roots(
-    input: PackageCompileInput<'_>,
-    validated_service_root: bool,
-) -> Result<PublishedPackageArtifact, PackageCompileError> {
     skiff_compiler_source::prelude_registry::initialize_prelude_registry(input.platform_sources())
         .map_err(|error| PackageCompileError::ContractValidation {
             message: error.to_string(),
         })?;
-    let service_call_paths = service_call_paths(&input);
-    if !validated_service_root && !service_call_paths.is_empty() {
-        return Err(PackageCompileError::ContractValidation {
-            message: format!(
-                "api.yml serviceCall markers at {} require a validated package root with service.yml",
-                service_call_paths.join(", ")
-            ),
-        });
-    }
     let package_id = input.package_id.to_string();
     let package_version = input.package.manifest.version.clone();
     let declared_package_requirements = package_requirements(&input)?;
@@ -110,28 +94,6 @@ fn compile_package_with_service_call_roots(
         &projected,
         &file_ir_units,
     )?)
-}
-
-fn service_call_paths(input: &PackageCompileInput<'_>) -> Vec<String> {
-    let mut paths = input
-        .package
-        .manifest
-        .api
-        .entries()
-        .filter(|entry| entry.service_call)
-        .map(|entry| entry.public_path_string())
-        .chain(
-            input
-                .package
-                .manifest
-                .api
-                .public_instances()
-                .filter(|entry| entry.service_call)
-                .map(|entry| entry.public_path_string()),
-        )
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths
 }
 
 /// Resolves the exact canonical schema owners needed while validating service
@@ -444,9 +406,10 @@ pub fn compile_service_package(
         }
         .into());
     }
-    let package = compile_package_with_service_call_roots(input, true)?;
+    let package = compile_package(input)?;
     let service_api = project_service_api(
         &service_root.service.id,
+        &service_root.service.service_calls,
         &package.artifact,
         &package.resolved_package_schema_type_records,
     )?;
