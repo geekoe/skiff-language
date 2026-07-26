@@ -240,7 +240,6 @@ mod tests {
             return_type: TypeRefIr::TypeParam {
                 name: "T".to_string(),
             },
-            may_suspend: false,
             is_native: false,
             is_provider: false,
             is_static: false,

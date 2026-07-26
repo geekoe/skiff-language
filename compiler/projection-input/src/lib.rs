@@ -1267,7 +1267,7 @@ mod resolved_package_schema_tests {
     fn exact_binding_rejects_wrong_abi_and_build() {
         let schema = schema(Some("api.User"), ContractTypeNameability::PublicNameable).unwrap();
         let artifact = serde_json::from_value::<PackageArtifact>(json!({
-            "schemaVersion": "skiff-package-artifact-v8",
+            "schemaVersion": "skiff-package-artifact-v9",
             "packageId": "example.com/models",
             "packageVersion": "1.2.3",
             "packageBuildId": "wrong-build",

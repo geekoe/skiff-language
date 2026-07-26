@@ -6,13 +6,12 @@ use serde_json::json;
 use skiff_artifact_identity::validate_service_contract_identities;
 use skiff_artifact_model::{
     file_ir_service_call_sites, validate_file_ir_service_calls, BoundaryCallableProjection,
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
-    BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary, CallableMayEffects,
-    CallableProvenanceSummary, ContractRequirement, ContractTypeRef, PackageLocalAbiSymbol,
-    PackageSchemaTypeId, PackageTypeRef, PackageTypeRequirement, ServiceCallRef,
-    ServiceRequirement, ValueEscapeLane,
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryUnavailableReason,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
+    ContractRequirement, ContractTypeRef, PackageLocalAbiSymbol, PackageSchemaTypeId,
+    PackageTypeRef, PackageTypeRequirement, ServiceCallRef, ServiceRequirement, ValueEscapeLane,
 };
 use skiff_compiler::{
     definition_contract_operation_id, ContractDefinitionError, ServiceContractDefinition,
@@ -912,9 +911,7 @@ fn contract_definition() -> ServiceContractDefinition {
                     value_plan: linkable(BoundaryValueOwner::Provider),
                 },
                 stream: BoundaryStreamContract::Unary,
-                cancellation: BoundaryCancellationContract::NotCancellable,
                 callbacks: BoundaryCallbackContract::None,
-                may_suspend: false,
                 effect_guarantee: BoundaryEffectGuarantee {
                     detached_parameters: true,
                     detached_return: true,

@@ -2,11 +2,10 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_identity::package_schema_type_id;
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryOperationContract, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
-    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractTypeDescriptor, ContractTypeRef, PackageSchemaCanonicalDescriptor,
-    PackageTypeRequirement,
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract, BoundaryReturn,
+    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor, ContractTypeRef,
+    PackageSchemaCanonicalDescriptor, PackageTypeRequirement,
 };
 
 use crate::{
@@ -27,9 +26,7 @@ fn operation(ty: ContractTypeRef) -> BoundaryOperationContract {
             },
         },
         stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,
-        may_suspend: false,
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,
@@ -38,6 +35,28 @@ fn operation(ty: ContractTypeRef) -> BoundaryOperationContract {
             no_caller_value_escape: true,
             no_same_heap_identity: true,
         },
+    }
+}
+
+#[test]
+fn legacy_contract_suspension_fields_are_rejected() {
+    let current = serde_json::to_value(operation(ContractTypeRef::builtin("string"))).unwrap();
+    for (field, value) in [
+        ("maySuspend", serde_json::json!(true)),
+        (
+            "cancellation",
+            serde_json::json!({ "kind": "notCancellable" }),
+        ),
+    ] {
+        let mut legacy = current.clone();
+        legacy
+            .as_object_mut()
+            .expect("operation contract wire is an object")
+            .insert(field.to_string(), value);
+        assert!(
+            serde_json::from_value::<BoundaryOperationContract>(legacy).is_err(),
+            "legacy field {field} must fail strict contract decoding"
+        );
     }
 }
 

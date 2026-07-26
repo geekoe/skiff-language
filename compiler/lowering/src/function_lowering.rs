@@ -2413,6 +2413,7 @@ fn resolved_call_target_kind(target: &ResolvedCallTarget) -> &'static str {
         ResolvedCallTarget::NativeFunction { .. } => "NativeFunction",
         ResolvedCallTarget::ReceiverBuiltin { .. } => "ReceiverBuiltin",
         ResolvedCallTarget::DependencyPackageFunction { .. } => "DependencyPackageFunction",
+        ResolvedCallTarget::InterfaceMethod { .. } => "InterfaceMethod",
         ResolvedCallTarget::ContractOperation { .. } => "ContractOperation",
         ResolvedCallTarget::Unknown { .. } => "Unknown",
     }

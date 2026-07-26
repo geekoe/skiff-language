@@ -254,9 +254,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use skiff_artifact_model::{
-        BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-        BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueLifetime,
-        BoundaryValueOwner, ContractTypeRef, ValueEscapeLane,
+        BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryParameter, BoundaryReturn,
+        BoundaryStreamContract, BoundaryValueLifetime, BoundaryValueOwner, ContractTypeRef,
+        ValueEscapeLane,
     };
 
     use super::*;
@@ -280,9 +280,7 @@ mod tests {
                 value_plan: detached_plan(BoundaryValueOwner::Provider),
             },
             stream: BoundaryStreamContract::Unary,
-            cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,
-            may_suspend: true,
             effect_guarantee: BoundaryEffectGuarantee {
                 detached_parameters: true,
                 detached_return: true,

@@ -3,10 +3,10 @@ mod common;
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
-    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, CallableEffectSummary, ContractTypeRef,
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    CallableEffectSummary, ContractTypeRef,
 };
 use skiff_compiler::{ServiceContractDefinition, ServiceContractDefinitionDiagnosticText};
 
@@ -107,9 +107,7 @@ fn explicit_contract_lane_compiles_without_provider_source() {
             value_plan: linkable(BoundaryValueOwner::Provider),
         },
         stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,
-        may_suspend: false,
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,

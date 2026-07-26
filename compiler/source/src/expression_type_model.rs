@@ -814,7 +814,7 @@ impl<'a> OwnerChecker<'a> {
                                     })
                                     .collect(),
                                 return_type,
-                                may_suspend: contract.may_suspend,
+                                may_suspend: true,
                             },
                             ExactTestEffectTarget::Service {
                                 protocol_identity: requirement.expected_protocol_identity.clone(),

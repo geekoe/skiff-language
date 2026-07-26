@@ -3,11 +3,11 @@ mod common;
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCancellationContract,
-    BoundaryEffectGuarantee, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
-    BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
-    PackageLocalAbiSymbol, PackageTypeRequirement, TypeRefIr,
+    BoundaryCallableProjection, BoundaryCallbackContract, BoundaryEffectGuarantee,
+    BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
+    BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef, PackageLocalAbiSymbol,
+    PackageTypeRequirement, TypeRefIr,
 };
 use skiff_compiler::{
     definition_contract_operation_id, ServiceContractDefinition,
@@ -31,7 +31,7 @@ const PACKAGE_ID: &str = "example.com/websocket-provider";
 
 #[test]
 fn websocket_ingress_contract_first_source_is_structured_service_call_unavailable() {
-    let expected = websocket_operation(ContractTypeRef::builtin("null"), false);
+    let expected = websocket_operation(ContractTypeRef::builtin("null"));
     let contract = compile_service_contract(ServiceContractDefinition {
         service_id: SERVICE_ID.to_string(),
         contract_version: CONTRACT_VERSION.to_string(),
@@ -106,7 +106,7 @@ fn websocket_nominal_context_source_preserves_execution_but_is_service_call_unav
     seed.write("main.skiff", "type Context {}\n");
     let seed = compile_package_project(seed.path()).expect("Context schema seed should compile");
     let (context, context_id) = public_contract_type(&seed.package, "Context");
-    let expected = websocket_operation(context, false);
+    let expected = websocket_operation(context);
     let contract = compile_service_contract(ServiceContractDefinition {
         service_id: SERVICE_ID.to_string(),
         contract_version: CONTRACT_VERSION.to_string(),
@@ -309,7 +309,7 @@ fn generic_execution_type(name: &str, argument: TypeRefIr) -> TypeRefIr {
     }
 }
 
-fn websocket_operation(context: ContractTypeRef, may_suspend: bool) -> BoundaryOperationContract {
+fn websocket_operation(context: ContractTypeRef) -> BoundaryOperationContract {
     BoundaryOperationContract {
         parameters: vec![BoundaryParameter {
             name: "event".to_string(),
@@ -323,13 +323,7 @@ fn websocket_operation(context: ContractTypeRef, may_suspend: bool) -> BoundaryO
             value_plan: linkable(BoundaryValueOwner::Provider),
         },
         stream: BoundaryStreamContract::Unary,
-        cancellation: if may_suspend {
-            BoundaryCancellationContract::Cooperative
-        } else {
-            BoundaryCancellationContract::NotCancellable
-        },
         callbacks: BoundaryCallbackContract::None,
-        may_suspend,
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,

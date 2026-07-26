@@ -312,13 +312,13 @@ fn public_callable_paths(package: &PackageArtifact) -> Result<BTreeMap<PackageCa
 #[cfg(test)]
 mod tests {
     use skiff_artifact_model::{
-        BoundaryCallbackExpirationError, BoundaryCallbackLifetime, BoundaryCancellationContract,
-        BoundaryEffectGuarantee, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
-        BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-        BoundaryValuePlan, PackageBuildId, PackageCallableSignature, PackageImplementationLinks,
-        PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements,
-        PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageSchemaTypeRef, PackageTypeRef,
-        TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        BoundaryCallbackExpirationError, BoundaryCallbackLifetime, BoundaryEffectGuarantee,
+        BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryValueCarrier,
+        BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+        PackageBuildId, PackageCallableSignature, PackageImplementationLinks, PackageLocalAbi,
+        PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexIdentity,
+        PackageSchemaIndexRef, PackageSchemaTypeRef, PackageTypeRef, TypeRefIr,
+        PACKAGE_ARTIFACT_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -344,7 +344,6 @@ mod tests {
                 item_type: reference("stream", ids[2].clone()),
                 item_value_plan: value_plan(BoundaryValueOwner::Provider),
             },
-            cancellation: BoundaryCancellationContract::Cooperative,
             callbacks: BoundaryCallbackContract::RequestScoped {
                 interface_types: vec![PackageSchemaTypeRef {
                     package_id: "example.types".to_string(),
@@ -354,7 +353,6 @@ mod tests {
                 lifetime: BoundaryCallbackLifetime::Stream,
                 expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
             },
-            may_suspend: true,
             effect_guarantee: BoundaryEffectGuarantee {
                 detached_parameters: true,
                 detached_return: true,
@@ -670,9 +668,7 @@ mod tests {
                 value_plan: value_plan(BoundaryValueOwner::Provider),
             },
             stream: BoundaryStreamContract::Unary,
-            cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,
-            may_suspend: false,
             effect_guarantee: BoundaryEffectGuarantee {
                 detached_parameters: true,
                 detached_return: true,

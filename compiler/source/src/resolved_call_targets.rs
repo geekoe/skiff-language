@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
     ActorMethodIdentity, BoundaryOperationDescriptor, BuiltinReceiverOp, ContractOperationId,
-    ContractRequirement, PackageCallableId, PackageCallableSignature, PackageLocalAbiIdentity,
+    ContractRequirement, InterfaceInstantiationRef, PackageCallableId, PackageCallableSignature,
+    PackageLocalAbiIdentity,
 };
 
 use crate::{ExpressionKey, SourceSymbolKey};
@@ -53,6 +54,11 @@ pub enum ResolvedCallTarget {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exact_signature: Option<PackageCallableSignature>,
     },
+    InterfaceMethod {
+        interface: InterfaceInstantiationRef,
+        method_abi_id: String,
+        slot: u32,
+    },
     ContractOperation {
         contract_requirement: ContractRequirement,
         contract_operation_id: ContractOperationId,
@@ -80,6 +86,7 @@ impl ResolvedCallTarget {
             | Self::NativeFunction { .. }
             | Self::ReceiverBuiltin { .. }
             | Self::DependencyPackageFunction { .. }
+            | Self::InterfaceMethod { .. }
             | Self::ContractOperation { .. }
             | Self::Unknown { .. } => None,
         }

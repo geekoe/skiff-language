@@ -389,7 +389,6 @@ impl SchemaBuilder<'_> {
                                     .map(|param| self.project_ref(&param.ty))
                                     .collect::<Result<_, _>>()?,
                                 return_type: self.project_ref(&method.return_type)?,
-                                may_suspend: method.may_suspend,
                             },
                         ))
                     })
@@ -673,7 +672,6 @@ mod tests {
                 ty: TypeRefIr::builtin("string"),
             }],
             return_type: TypeRefIr::builtin("string"),
-            may_suspend: true,
             is_native: false,
             is_provider: false,
             is_static: false,
@@ -693,7 +691,6 @@ mod tests {
             BoundaryCallbackOperation {
                 parameters: vec![ContractTypeRef::builtin("string")],
                 return_type: ContractTypeRef::builtin("string"),
-                may_suspend: true,
             }
         );
     }
@@ -708,7 +705,6 @@ mod tests {
             type_params: Vec::new(),
             params: Vec::new(),
             return_type: TypeRefIr::builtin("string"),
-            may_suspend: false,
             is_native: false,
             is_provider: false,
             is_static: false,
@@ -785,7 +781,6 @@ mod tests {
             return_type: TypeRefIr::TypeParam {
                 name: "Item".to_string(),
             },
-            may_suspend: false,
             is_native: false,
             is_provider: false,
             is_static: false,

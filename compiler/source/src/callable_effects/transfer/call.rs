@@ -96,6 +96,7 @@ impl Evaluator<'_, '_> {
                 package_requirement_alias,
                 package_callable_id,
                 expected_local_abi,
+                exact_signature,
                 ..
             }) => {
                 let Some(callable) = self.dependency_analysis.package_callable(
@@ -110,10 +111,14 @@ impl Evaluator<'_, '_> {
                         EscapeLane::External,
                     );
                 };
-                let callee = CallableState::from_semantic_facts(
+                let mut callee = CallableState::from_semantic_facts(
                     &callable.semantic_facts().effects,
                     &callable.semantic_facts().provenance,
                 );
+                callee.effects.may_suspend = exact_signature
+                    .as_ref()
+                    .map(|signature| signature.may_suspend)
+                    .unwrap_or(true);
                 self.apply_callee(
                     &callee,
                     &actuals,
@@ -121,6 +126,13 @@ impl Evaluator<'_, '_> {
                     Some(package_callable_id.to_string()),
                 )
             }
+            Some(ResolvedCallTarget::InterfaceMethod { .. }) => self
+                .apply_unknown_call_with_callee(
+                    &callee_value,
+                    &actuals,
+                    return_reference,
+                    EscapeLane::External,
+                ),
             Some(ResolvedCallTarget::ContractOperation {
                 contract_requirement,
                 contract_operation_id,
@@ -644,7 +656,7 @@ fn detached_contract_callee(operation: &BoundaryOperationDescriptor) -> Option<C
         return None;
     }
     let mut state = CallableState::bottom();
-    state.effects.may_suspend = contract.may_suspend;
+    state.effects.may_suspend = true;
     state.return_origins.insert(Origin::Fresh);
     state.return_direct_origins.insert(Origin::Fresh);
     state.throw_origins.insert(Origin::Fresh);

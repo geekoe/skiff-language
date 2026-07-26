@@ -15,16 +15,16 @@ use common::{
     TestDir,
 };
 
-const BASELINE_STD_BUILD: &str =
-    "skiff-package-build-v9:sha256:8ac1d3ee235fb3f543df52430f1539610ca05c5631a09df22f7c4f4a7b6a8e17";
-const BASELINE_STD_LOCAL_ABI: &str =
-    "skiff-package-local-abi-v6:sha256:c8be1d04060489a28f827a5313da12ae26891b1d3b21d1085b6e72884c9ab0ea";
-const BASELINE_STD_SCHEMA_INDEX: &str =
-    "skiff-package-schema-index-v1:sha256:1f70d5626cddaab23d51d52db974a9292cf019cb0161d67ff560c599ed6fd7fe";
-const BASELINE_CONFLICT_ERROR_SCHEMA: &str =
-    "skiff-package-schema-type-v1:sha256:dd893e08035a093080419ff2c04beda67c1dab2e95ddcc23dec12f9ce6d8bdd0";
-const BASELINE_DB_FILE_IR: &str =
-    "skiff-file-ir-v8:sha256:bb39d35baa25cbfb50a1d146e21a18a2ad088940d34304b877e13e348543b069";
+const CURRENT_STD_BUILD: &str =
+    "skiff-package-build-v10:sha256:0dec996a2d6388245539fb000a0284a1561dc21ac3cc6e88ed3fbe0eadfe3d43";
+const CURRENT_STD_LOCAL_ABI: &str =
+    "skiff-package-local-abi-v7:sha256:ce09dc5902ce992d7b362f48ce1ea5466e12fc0e950d4fa90ec99ba46b86db9e";
+const CURRENT_STD_SCHEMA_INDEX: &str =
+    "skiff-package-schema-index-v1:sha256:593fb4150c7cffbfb1285bc00083abd9b059f2a7a0866e365e37bd9db1cba4bf";
+const CURRENT_CONFLICT_ERROR_SCHEMA: &str =
+    "skiff-package-schema-type-v2:sha256:55e0f59a69a2facc339d89ba12be27a0aaec3e1a60b3211b43259d153b480a4d";
+const CURRENT_DB_FILE_IR: &str =
+    "skiff-file-ir-v8:sha256:e62485ea5dcd42c0e4552db0e4271bc8bd573ca7478a09bfa238bd2183976cf8";
 
 #[test]
 fn declared_source_aliases_emit_only_canonical_file_ir_builtin_names() {
@@ -260,21 +260,21 @@ fn assert_fresh_std_conflict_error_is_canonical(
     assert_eq!(fields["retryable"], ContractTypeRef::builtin("bool"));
     assert_eq!(
         schema_entry.package_schema_type_id.as_str(),
-        BASELINE_CONFLICT_ERROR_SCHEMA
+        CURRENT_CONFLICT_ERROR_SCHEMA
     );
     assert_eq!(
         std.package_schema_index
             .package_schema_index_identity
             .as_str(),
-        BASELINE_STD_SCHEMA_INDEX
+        CURRENT_STD_SCHEMA_INDEX
     );
 
-    assert_ne!(db.identity, BASELINE_DB_FILE_IR);
-    assert_ne!(
+    assert_eq!(db.identity, CURRENT_DB_FILE_IR);
+    assert_eq!(
         std.artifact.package_local_abi.local_abi_identity.as_str(),
-        BASELINE_STD_LOCAL_ABI
+        CURRENT_STD_LOCAL_ABI
     );
-    assert_eq!(std.artifact.package_build_id.as_str(), BASELINE_STD_BUILD);
+    assert_eq!(std.artifact.package_build_id.as_str(), CURRENT_STD_BUILD);
 }
 
 fn record_field<'a>(descriptor: &'a TypeDescriptorIr, field: &str) -> &'a TypeRefIr {

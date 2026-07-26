@@ -1,6 +1,5 @@
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryOperationDescriptor,
-    BoundaryStreamContract, PackageTypeRef,
+    BoundaryCallbackContract, BoundaryOperationDescriptor, BoundaryStreamContract, PackageTypeRef,
 };
 
 use crate::{
@@ -267,14 +266,6 @@ fn operation_shape_diagnostics(
     if !matches!(operation.callbacks, BoundaryCallbackContract::None) {
         diagnostics.push(format!(
             "contract call `{path}` uses a callback contract unsupported by source calls"
-        ));
-    }
-    if matches!(
-        operation.cancellation,
-        BoundaryCancellationContract::Unsupported { .. }
-    ) {
-        diagnostics.push(format!(
-            "contract call `{path}` uses unsupported cancellation semantics"
         ));
     }
     diagnostics

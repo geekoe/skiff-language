@@ -644,8 +644,16 @@ impl SuspendContext<'_, '_> {
                     .unwrap_or(true);
             }
             Some(ResolvedCallTarget::ConfigIntrinsic { .. }) => return false,
+            Some(ResolvedCallTarget::DependencyPackageFunction {
+                exact_signature, ..
+            }) => {
+                return exact_signature
+                    .as_ref()
+                    .map(|signature| signature.may_suspend)
+                    .unwrap_or(true);
+            }
             Some(
-                ResolvedCallTarget::DependencyPackageFunction { .. }
+                ResolvedCallTarget::InterfaceMethod { .. }
                 | ResolvedCallTarget::ContractOperation { .. }
                 | ResolvedCallTarget::Unknown { .. },
             ) => return true,

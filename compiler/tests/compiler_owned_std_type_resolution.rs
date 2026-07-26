@@ -11,11 +11,11 @@ use common::{
     TestDir,
 };
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
-    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, CallIr, CallTargetIr, ContractTypeRef, ExprIr, PackageLocalAbiSymbol,
-    PackageRefIr, PackageTypeRef, ServiceSymbolRef, TypeRefIr,
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallIr,
+    CallTargetIr, ContractTypeRef, ExprIr, PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef,
+    ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler::{ServiceContractDefinition, ServiceContractDefinitionDiagnosticText};
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
@@ -188,9 +188,7 @@ fn probe_contract() -> skiff_compiler::ServiceContract {
                     value_plan: linkable(BoundaryValueOwner::Provider),
                 },
                 stream: BoundaryStreamContract::Unary,
-                cancellation: BoundaryCancellationContract::NotCancellable,
                 callbacks: BoundaryCallbackContract::None,
-                may_suspend: false,
                 effect_guarantee: BoundaryEffectGuarantee {
                     detached_parameters: true,
                     detached_return: true,

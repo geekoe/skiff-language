@@ -1,9 +1,8 @@
 use skiff_artifact_model::{
-    BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryOperationContract,
-    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryUnavailableReason,
-    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, ContractTypeRef, LiteralIr, PackageCallableSignature, PackageRefIr,
-    PackageSymbolRef, PackageTypeRef, TypeRefIr,
+    BoundaryEffectGuarantee, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
+    BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding,
+    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef, LiteralIr,
+    PackageCallableSignature, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_closure::{
     ArtifactNominalTypeSource, NoTypeClosureGuards, TypeClosureControl, TypeClosurePolicy,
@@ -60,13 +59,7 @@ pub(super) fn project_operation_contract(
         parameters,
         return_value,
         stream,
-        cancellation: if signature.may_suspend {
-            BoundaryCancellationContract::Cooperative
-        } else {
-            BoundaryCancellationContract::NotCancellable
-        },
         callbacks: skiff_artifact_model::BoundaryCallbackContract::None,
-        may_suspend: signature.may_suspend,
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,
@@ -555,6 +548,43 @@ mod tests {
         PackageSchemaIndex, PackageSchemaIndexEntry, PackageSchemaTypeId, PackageSchemaTypeRecord,
         TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr,
     };
+
+    #[test]
+    fn concrete_suspension_summary_does_not_enter_operation_contract_shape() {
+        let signature = PackageCallableSignature {
+            type_params: Vec::new(),
+            parameters: vec![skiff_artifact_model::PackageCallableParameter {
+                name: "input".to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: TypeRefIr::builtin("string"),
+                },
+            }],
+            return_type: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("string"),
+            },
+            may_suspend: false,
+        };
+        let mut suspending = signature.clone();
+        suspending.may_suspend = true;
+        let project = |signature| {
+            project_operation_contract(
+                "api",
+                signature,
+                &[],
+                &BTreeMap::new(),
+                &[],
+                &mut Vec::new(),
+            )
+            .expect("builtin signature is boundary-projectable")
+        };
+
+        let non_suspending_contract = project(&signature);
+        let suspending_contract = project(&suspending);
+        assert_eq!(non_suspending_contract, suspending_contract);
+        let wire = serde_json::to_value(non_suspending_contract).unwrap();
+        assert!(wire.get("maySuspend").is_none());
+        assert!(wire.get("cancellation").is_none());
+    }
 
     #[test]
     fn package_any_interface_projects_exact_contract_target_recursively() {

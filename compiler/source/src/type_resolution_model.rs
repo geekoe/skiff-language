@@ -2841,7 +2841,6 @@ impl TypeResolutionModel {
                         })
                         .collect::<Option<Vec<_>>>()?,
                     return_type: contract_type_ref_ir(alias, &operation.return_type).ok()?,
-                    may_suspend: operation.may_suspend,
                     is_native: false,
                     is_provider: false,
                     is_static: false,
@@ -6466,7 +6465,7 @@ mod tests {
             interface_methods: Vec::new(),
         };
         PackageArtifact {
-            schema_version: "skiff-package-artifact-v8".to_string(),
+            schema_version: "skiff-package-artifact-v9".to_string(),
             package_id: "example.com/provider".to_string(),
             package_version: "1.0.0".to_string(),
             package_build_id: PackageBuildId::new("provider-build"),
@@ -7843,7 +7842,6 @@ mod tests {
                     TypeRefIr::builtin("null"),
                 ],
             },
-            may_suspend: false,
             is_native: false,
             is_provider: false,
             is_static: false,
@@ -7881,7 +7879,7 @@ mod tests {
             )]),
         };
         let artifact = PackageArtifact {
-            schema_version: "skiff-package-artifact-v8".to_string(),
+            schema_version: "skiff-package-artifact-v9".to_string(),
             package_id: "llm-api".to_string(),
             package_version: "1.0.0".to_string(),
             package_build_id: PackageBuildId::new("build"),
@@ -8145,7 +8143,6 @@ mod tests {
             type_params: vec!["Chunk".to_string()],
             params,
             return_type: TypeRefIr::builtin("string"),
-            may_suspend: false,
             is_native: false,
             is_provider: false,
             is_static: false,

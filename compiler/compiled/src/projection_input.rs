@@ -161,6 +161,7 @@ fn callable_target_fact(target: &ResolvedCallTarget) -> Option<CallableTargetFac
         } => Some(CallableTargetFact::ContractOperation {
             operation_id: contract_operation_id.clone(),
         }),
+        ResolvedCallTarget::InterfaceMethod { .. } => Some(CallableTargetFact::Unknown),
         ResolvedCallTarget::Unknown { .. } => Some(CallableTargetFact::Unknown),
         ResolvedCallTarget::ConfigIntrinsic { .. }
         | ResolvedCallTarget::LocalFunction { .. }
@@ -1141,6 +1142,37 @@ fn abi_candidate_keys(
         ));
     }
     candidates
+}
+
+#[cfg(test)]
+mod callable_target_tests {
+    use super::*;
+
+    #[test]
+    fn interface_method_projects_to_public_unknown_without_losing_internal_target_kind() {
+        let target = ResolvedCallTarget::InterfaceMethod {
+            interface: InterfaceInstantiationRef {
+                interface_abi_id: "interface:reader".to_string(),
+                canonical_type_args: vec![TypeRefIr::builtin("string")],
+            },
+            method_abi_id: "method:read".to_string(),
+            slot: 2,
+        };
+
+        assert_eq!(
+            callable_target_fact(&target),
+            Some(CallableTargetFact::Unknown)
+        );
+        assert!(matches!(
+            target,
+            ResolvedCallTarget::InterfaceMethod {
+                interface,
+                method_abi_id,
+                slot: 2,
+            } if interface.interface_abi_id == "interface:reader"
+                && method_abi_id == "method:read"
+        ));
+    }
 }
 
 #[cfg(test)]

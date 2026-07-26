@@ -349,8 +349,18 @@ impl TargetCollector<'_> {
                     return target;
                 }
             }
+            if let Some(method) = receiver_type.and_then(|ty| {
+                self.type_resolution
+                    .any_interface_method_signature(&ty.ir, field)
+            }) {
+                return ResolvedCallTarget::InterfaceMethod {
+                    interface: method.interface,
+                    method_abi_id: method.method_abi_id,
+                    slot: method.slot,
+                };
+            }
             if receiver_type.is_some_and(|ty| matches!(ty.ir, TypeRefIr::AnyInterface { .. })) {
-                return unknown(UnknownCallTargetReason::UnsupportedDynamicDispatch);
+                return unknown(UnknownCallTargetReason::UnresolvedName);
             }
         }
 

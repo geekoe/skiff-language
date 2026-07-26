@@ -4,8 +4,11 @@ use skiff_artifact_identity::assign_service_contract_identities;
 use skiff_artifact_model::{
     CallableEffectSummary, CallableEffectUnknownReason, CallableMayEffects,
     CallableProvenanceSummary, CallableProvenanceUnknownReason, CallableSemanticFacts,
-    ContractTypeRef, PackageCallableId, PackageLocalAbiIdentity, ValueEscapeLane,
-    ValueProjectionPath, ValueProvenance,
+    ContractTypeRef, PackageArtifact, PackageBuildId, PackageCallableId, PackageCallableParameter,
+    PackageCallableSignature, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageTypeRef,
+    TypeRefIr, ValueEscapeLane, ValueProjectionPath, ValueProvenance,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_input::{CompilerPlatformSources, ResolvedContractDependency};
 
@@ -17,9 +20,9 @@ use crate::{
     parsed_sources::parse_publication_sources,
     prelude_registry::initialize_prelude_registry,
     source_graph::CompilerSourceFile,
-    CompileParsedPackageSourcesInput, PackageCompilePolicy, PackageDependencyAnalysisFacts,
-    PackageDependencyCallableAnalysis, PackageSourceModel, ResolvedCallTarget,
-    SourceDependencyAnalysisInput, SourceSymbolKey,
+    CompileParsedPackageSourcesInput, PackageCompilePolicy, PackageDependency,
+    PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis, PackageSourceModel,
+    ResolvedCallTarget, SourceDependencyAnalysisInput, SourceSymbolKey,
 };
 
 #[test]
@@ -719,6 +722,35 @@ fn concrete_interface_implementation_call_uses_exact_impl_method_target() {
 }
 
 #[test]
+fn interface_conformance_accepts_non_suspending_and_suspending_implementations() {
+    let model = analyze(
+        r#"
+            interface Runner {
+              function run(self: Self) -> void
+            }
+
+            type Immediate implements Runner {}
+            type Deferred implements Runner {}
+
+            impl Immediate {
+              function run() -> void {}
+            }
+
+            impl Deferred {
+              function run() -> void {
+                std.time.sleep(Duration.milliseconds(1))
+              }
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(model.interface_signatures().conformances().count(), 2);
+    assert!(!effects(&model, "Immediate.run").may_suspend);
+    assert!(effects(&model, "Deferred.run").may_suspend);
+}
+
+#[test]
 fn actor_receiver_call_uses_actor_method_target_and_exact_local_effects() {
     let model = analyze(
         r#"
@@ -1377,7 +1409,7 @@ fn dependency_container_projection_can_be_mutated_and_reinserted_into_fresh_map(
         container_projection_dependency(),
     );
 
-    assert_eq!(effects(&model, "local"), no_effects());
+    assert_eq!(effects(&model, "local"), suspend_only_effects());
     assert!(matches!(
         provenance(&model, "local"),
         CallableProvenanceSummary::Analyzed { .. }
@@ -1414,6 +1446,7 @@ fn dependency_fresh_wrapper_keeps_payload_reachable_without_becoming_caller_owne
         effects(&model, "mutate"),
         CallableMayEffects {
             returns_caller_alias: true,
+            may_suspend: true,
             ..no_effects()
         },
         "mutating the dependency's fresh return root must not become a caller write"
@@ -1438,6 +1471,7 @@ fn dependency_fresh_wrapper_keeps_payload_reachable_without_becoming_caller_owne
         effects(&model, "conditional"),
         CallableMayEffects {
             writes_caller_reachable: true,
+            may_suspend: true,
             ..no_effects()
         },
         "a direct Fresh/caller union remains conservative across a package boundary"
@@ -3881,9 +3915,11 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
             target,
-            ResolvedCallTarget::Unknown {
-                reason: crate::UnknownCallTargetReason::UnsupportedDynamicDispatch
-            }
+            ResolvedCallTarget::InterfaceMethod {
+                interface,
+                method_abi_id,
+                slot: 0,
+            } if !interface.interface_abi_id.is_empty() && !method_abi_id.is_empty()
         )
     }));
 }
@@ -3983,7 +4019,13 @@ fn exact_dependency_callee_does_not_poison_known_target() {
         dependency_input,
     );
 
-    assert_eq!(effects(&model, "wrapper"), dependency_effects);
+    assert_eq!(
+        effects(&model, "wrapper"),
+        CallableMayEffects {
+            may_suspend: true,
+            ..dependency_effects
+        }
+    );
     assert!(matches!(
         provenance(&model, "wrapper"),
         CallableProvenanceSummary::Analyzed { .. }
@@ -3995,12 +4037,84 @@ fn exact_dependency_callee_does_not_poison_known_target() {
                 package_requirement_alias,
                 package_callable_id,
                 expected_local_abi,
+                exact_signature,
                 ..
             } if package_requirement_alias == "dep"
                 && package_callable_id == &PackageCallableId::new("pkg-callable:dep-run")
                 && expected_local_abi == &PackageLocalAbiIdentity::new("pkg-local-abi:dep")
+                && exact_signature.is_none()
         )
     }));
+}
+
+#[test]
+fn dependency_exact_signature_controls_caller_suspension() {
+    let callable = |id: &str, may_suspend| {
+        PackageDependencyCallableAnalysis::new(
+            PackageCallableId::new(id),
+            CallableSemanticFacts {
+                effects: CallableEffectSummary::Analyzed {
+                    effects: no_effects(),
+                },
+                provenance: CallableProvenanceSummary::Analyzed {
+                    return_origins: vec![ValueProvenance::Fresh],
+                    direct_return_origins: vec![ValueProvenance::Fresh],
+                    throw_origins: Vec::new(),
+                    escape_lanes: Vec::new(),
+                },
+                resolved_call_targets: BTreeMap::new(),
+            },
+        )
+        .with_signature(PackageCallableSignature {
+            type_params: Vec::new(),
+            parameters: vec![PackageCallableParameter {
+                name: "input".to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: TypeRefIr::builtin("string"),
+                },
+            }],
+            return_type: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("string"),
+            },
+            may_suspend,
+        })
+    };
+    let dependencies = SourceDependencyAnalysisInput::new(
+        BTreeMap::from([(
+            "dep".to_string(),
+            PackageDependencyAnalysisFacts::new(
+                skiff_artifact_model::PackageBuildId::new("build:dep"),
+                PackageLocalAbiIdentity::new("pkg-local-abi:dep"),
+                BTreeMap::from([
+                    (
+                        "exactFalse".to_string(),
+                        callable("pkg-callable:dep-exact-false", false),
+                    ),
+                    (
+                        "exactTrue".to_string(),
+                        callable("pkg-callable:dep-exact-true", true),
+                    ),
+                ]),
+            ),
+        )]),
+        Vec::new(),
+    )
+    .unwrap();
+    let model = analyze_with_dependency_artifact(
+        r#"
+            function exactFalse(input: string) -> string {
+              return dep/exactFalse(input)
+            }
+
+            function exactTrue(input: string) -> string {
+              return dep/exactTrue(input)
+            }
+        "#,
+        dependencies,
+    );
+
+    assert_eq!(effects(&model, "exactFalse"), no_effects());
+    assert_eq!(effects(&model, "exactTrue"), suspend_only_effects());
 }
 
 #[test]
@@ -4021,7 +4135,11 @@ fn exact_dependency_field_callee_does_not_poison_known_target() {
     );
 
     for callable in ["wrapper", "genericWrapper"] {
-        assert_eq!(effects(&model, callable), no_effects(), "{callable}");
+        assert_eq!(
+            effects(&model, callable),
+            suspend_only_effects(),
+            "{callable}"
+        );
         assert!(matches!(
             provenance(&model, callable),
             CallableProvenanceSummary::Analyzed { .. }
@@ -4098,7 +4216,7 @@ fn exact_contract_field_callee_uses_detached_descriptor() {
         SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap(),
     );
 
-    assert_detached_contract_summary(&model, "wrapper", false);
+    assert_detached_contract_summary(&model, "wrapper");
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
             target,
@@ -4136,7 +4254,6 @@ fn detached_contract_target_uses_descriptor_effect_guarantees() {
         contract_and_schema("example.echo", "1.0.0", "send", "payload", "payloadClosure");
     let operation = contract.operations.values_mut().next().unwrap();
     operation.contract.return_value.ty = ContractTypeRef::builtin("string");
-    operation.contract.may_suspend = true;
     let required = match &operation.contract.parameters[0].ty {
         ContractTypeRef::PackageSchema {
             package_schema_type_id,
@@ -4167,7 +4284,7 @@ fn detached_contract_target_uses_descriptor_effect_guarantees() {
         dependency_input,
     );
 
-    assert_detached_contract_summary(&model, "wrapper", true);
+    assert_detached_contract_summary(&model, "wrapper");
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
             target,
@@ -4393,6 +4510,46 @@ fn analyze_named_result(
     module_path: &str,
     package_id: &str,
 ) -> Result<PackageSourceModel, crate::SourceCompileError> {
+    analyze_named_result_with_packages(
+        source,
+        dependency_analysis,
+        module_path,
+        package_id,
+        &BTreeMap::new(),
+        &[],
+        None,
+    )
+}
+
+fn analyze_with_dependency_artifact(
+    source: &str,
+    dependency_analysis: SourceDependencyAnalysisInput,
+) -> PackageSourceModel {
+    let mut dependency = PackageDependency::id("example.com/dep");
+    dependency.alias = Some("dep".to_string());
+    let artifact = exact_signature_dependency_artifact();
+    analyze_named_result_with_packages(
+        source,
+        dependency_analysis,
+        "api",
+        "example.com/effect-test",
+        &BTreeMap::from([("dep".to_string(), Vec::new())]),
+        &[dependency],
+        Some(std::slice::from_ref(&artifact)),
+    )
+    .expect("source model with exact dependency artifact builds")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn analyze_named_result_with_packages(
+    source: &str,
+    dependency_analysis: SourceDependencyAnalysisInput,
+    module_path: &str,
+    package_id: &str,
+    package_aliases: &BTreeMap<String, Vec<String>>,
+    package_dependencies: &[PackageDependency],
+    package_artifacts: Option<&[PackageArtifact]>,
+) -> Result<PackageSourceModel, crate::SourceCompileError> {
     let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
@@ -4414,22 +4571,55 @@ fn analyze_named_result(
     let parsed_sources =
         parse_publication_sources(Path::new("/tmp/effect-provenance"), &production_sources)
             .expect("fixture source facts build");
-    let package_aliases = BTreeMap::new();
-    let package_dependencies = Vec::new();
     build_package_from_parsed_sources_with_dependency_analysis(
         CompileParsedPackageSourcesInput {
             parsed_sources,
             production_sources,
             diagnostic_root: Path::new("/tmp/effect-provenance"),
             publication_api: None,
-            package_aliases: &package_aliases,
-            package_dependencies: &package_dependencies,
+            package_aliases,
+            package_dependencies,
             package_facts: None,
-            package_artifacts: None,
+            package_artifacts,
             policy: PackageCompilePolicy::new(package_id),
         },
         &dependency_analysis,
     )
+}
+
+fn exact_signature_dependency_artifact() -> PackageArtifact {
+    PackageArtifact {
+        schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
+        package_id: "example.com/dep".to_string(),
+        package_version: "1.0.0".to_string(),
+        package_build_id: PackageBuildId::new("build:dep"),
+        files: Vec::new(),
+        static_resources: Vec::new(),
+        package_local_abi: PackageLocalAbi {
+            local_abi_identity: PackageLocalAbiIdentity::new("pkg-local-abi:dep"),
+            public_symbols: BTreeMap::new(),
+            implementation_symbols: BTreeMap::new(),
+        },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: "example.com/dep".to_string(),
+            package_schema_index_identity: PackageSchemaIndexIdentity::new("schema-index:dep"),
+        },
+        package_schema_type_records: BTreeMap::new(),
+        implementation_links: PackageImplementationLinks::default(),
+        callable_links: BTreeMap::new(),
+        package_requirements: Vec::new(),
+        contract_requirements: Vec::new(),
+        service_requirements: Vec::new(),
+        runtime_requirements: PackageRuntimeRequirements {
+            config: Vec::new(),
+            state: Vec::new(),
+            resources: Vec::new(),
+            runtime_capabilities: Vec::new(),
+        },
+        callable_semantic_facts: BTreeMap::new(),
+        boundary_projections: BTreeMap::new(),
+        service_call_refs: Vec::new(),
+    }
 }
 
 fn analyze_sources(sources: &[(&str, &str)]) -> PackageSourceModel {
@@ -4561,13 +4751,8 @@ fn is_caller_parameter_provenance(origin: &ValueProvenance) -> bool {
     )
 }
 
-fn assert_detached_contract_summary(model: &PackageSourceModel, symbol: &str, may_suspend: bool) {
-    let expected_effects = if may_suspend {
-        suspend_only_effects()
-    } else {
-        no_effects()
-    };
-    assert_eq!(effects(model, symbol), expected_effects, "{symbol}");
+fn assert_detached_contract_summary(model: &PackageSourceModel, symbol: &str) {
+    assert_eq!(effects(model, symbol), suspend_only_effects(), "{symbol}");
     let CallableProvenanceSummary::Analyzed {
         return_origins,
         direct_return_origins,

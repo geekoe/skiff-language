@@ -2615,6 +2615,10 @@ mod tests {
         let unit = lower_package_call(&package_aliases, &targets).unwrap();
 
         let run = executable(&unit, "run");
+        assert!(
+            run.may_suspend,
+            "missing exact dependency signature must fail closed"
+        );
         assert!(run.body.expressions.iter().any(|expression| matches!(
             expression,
             ExprIr::Call { call }
@@ -2644,6 +2648,56 @@ mod tests {
         assert!(unit
             .file_ir_identity
             .starts_with("skiff-file-ir-v8:sha256:"));
+    }
+
+    #[test]
+    fn dependency_exact_signature_controls_lowered_suspend_flag_without_synthetic_calls() {
+        let lower = |may_suspend| {
+            let targets =
+                skiff_compiler_source::ResolvedCallTargetFacts::from_targets(BTreeMap::from([(
+                    package_call_expression(),
+                    skiff_compiler_source::ResolvedCallTarget::DependencyPackageFunction {
+                        package_requirement_alias: "utils".to_string(),
+                        compiler_owned: false,
+                        package_callable_id: PackageCallableId::new("callable:utils.format"),
+                        expected_local_abi: PackageLocalAbiIdentity::new("local-abi:utils"),
+                        exact_signature: Some(skiff_artifact_model::PackageCallableSignature {
+                            type_params: Vec::new(),
+                            parameters: Vec::new(),
+                            return_type: skiff_artifact_model::PackageTypeRef::Local {
+                                local_type: TypeRefIr::builtin("void"),
+                            },
+                            may_suspend,
+                        }),
+                    },
+                )]));
+            lower_package_call(
+                &BTreeMap::from([("utils".to_string(), vec![String::new()])]),
+                &targets,
+            )
+            .unwrap()
+        };
+        let non_suspending = lower(false);
+        let suspending = lower(true);
+        let non_suspending_run = executable(&non_suspending, "run");
+        let suspending_run = executable(&suspending, "run");
+
+        assert!(!non_suspending_run.may_suspend);
+        assert!(suspending_run.may_suspend);
+        assert_eq!(
+            non_suspending_run.body, suspending_run.body,
+            "conservative suspension changes only the executable summary, not the call body"
+        );
+        assert_eq!(
+            suspending_run
+                .body
+                .expressions
+                .iter()
+                .filter(|expression| matches!(expression, ExprIr::Call { .. }))
+                .count(),
+            1,
+            "suspension inference must not inject a synthetic runtime call"
+        );
     }
 
     #[test]

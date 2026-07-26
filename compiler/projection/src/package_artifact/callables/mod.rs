@@ -365,7 +365,6 @@ fn project_implementation_types(
                                     ),
                                 )
                             })?,
-                            may_suspend: false,
                             is_native: method.is_native,
                             is_provider: method.is_provider,
                             is_static: method.is_static,

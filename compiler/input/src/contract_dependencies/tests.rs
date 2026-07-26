@@ -5,14 +5,14 @@ use skiff_artifact_identity::{
     package_schema_type_id,
 };
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn,
-    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractDiagnosticText, ContractRequirement,
-    ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef, PackageBuildId,
-    PackageLocalAbiIdentity, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
-    PackageSchemaIndexEntry, PackageSchemaTypeId, PackageSchemaTypeRecord, PackageTypeRequirement,
-    ServiceContract, ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+    BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, ContractDiagnosticText, ContractRequirement, ContractTypeDescriptor,
+    ContractTypeNameability, ContractTypeRef, PackageBuildId, PackageLocalAbiIdentity,
+    PackageSchemaCanonicalDescriptor, PackageSchemaIndex, PackageSchemaIndexEntry,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, PackageTypeRequirement, ServiceContract,
+    ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 use skiff_compiler_projection_input::ResolvedPackageSchema;
 
@@ -224,9 +224,7 @@ fn fixture() -> (ServiceContract, ResolvedPackageSchema) {
                 value_plan: value_plan(BoundaryValueOwner::Provider),
             },
             stream: BoundaryStreamContract::Unary,
-            cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,
-            may_suspend: false,
             effect_guarantee: BoundaryEffectGuarantee {
                 detached_parameters: true,
                 detached_return: true,
