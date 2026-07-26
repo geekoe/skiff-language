@@ -6,7 +6,8 @@ pub mod resolver;
 
 pub use assembly::{
     link_runtime_assembly, AssemblyLinkedCandidate, AssemblyServiceCallError,
-    LinkedActivationTemplate, LinkedContractOperation, LinkedServiceBindingTemplate,
+    LinkedActivationTemplate, LinkedContractOperation, LinkedGatewayCallable, LinkedGatewayEntry,
+    LinkedServiceBindingTemplate,
 };
 pub use program::{
     anonymous_type_decl, config_and_effect_metadata_shape, package_config_shape,

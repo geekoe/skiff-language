@@ -9,13 +9,13 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     ConfigLiteralBinding, ContractOperationId, DeploymentIngressBinding,
-    DeploymentOperationBinding, GatewayAdapterArg, GatewayAdapterSource, GatewayEntryKey,
-    GatewayExternalSchema, GatewayProtocolSurface, GlobalIngressBinding, IngressProtocol,
-    IngressSelector, MetadataValue, PackageArtifactRef, PackageBinding, PackageBuildId,
-    PackageCallableId, PackageLocalAbiIdentity, PackageRequirementKey, ResolvedServiceBinding,
-    ResourceBinding, RuntimeAssembly, RuntimeCapabilityBinding, SecretRefBinding,
-    ServiceDeployment, ServiceRequirementKey, ServiceSelectorBinding, StateBinding,
-    StateBindingKind,
+    DeploymentOperationBinding, GatewayAdapterArg, GatewayAdapterSource, GatewayEntryIdentity,
+    GatewayEntryKey, GatewayExternalSchema, GatewayIngressBinding, GatewayProtocolSurface,
+    IngressProtocol, IngressSelector, MetadataValue, PackageArtifactRef, PackageBinding,
+    PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageRequirementKey,
+    ResolvedServiceBinding, ResourceBinding, RuntimeAssembly, RuntimeCapabilityBinding,
+    SecretRefBinding, ServiceDeployment, ServiceRequirementKey, ServiceSelectorBinding,
+    StateBinding, StateBindingKind, GATEWAY_ENTRY_IDENTITY_PREFIX,
 };
 
 use crate::fixtures::{
@@ -32,8 +32,8 @@ fn additional_package() -> PackageArtifactRef {
     }
 }
 
-fn runtime_assembly_ingress(assembly: &RuntimeAssembly) -> GlobalIngressBinding {
-    GlobalIngressBinding {
+fn runtime_assembly_ingress(assembly: &RuntimeAssembly) -> GatewayIngressBinding {
+    GatewayIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::Http,
             host: "example.test".to_string(),
@@ -41,8 +41,12 @@ fn runtime_assembly_ingress(assembly: &RuntimeAssembly) -> GlobalIngressBinding 
             path: "/echo".to_string(),
         },
         deployment: assembly.resolved_deployments[0].clone(),
-        contract: assembly.resolved_contracts[0].clone(),
-        contract_operation_id: ContractOperationId::new("operation.echo"),
+        gateway_entry_key: GatewayEntryKey::parse("echo").unwrap(),
+        gateway_entry_identity: GatewayEntryIdentity::parse(format!(
+            "{GATEWAY_ENTRY_IDENTITY_PREFIX}:{}",
+            "a".repeat(64)
+        ))
+        .unwrap(),
     }
 }
 
@@ -551,7 +555,7 @@ fn empty_assembly_assign_validate_and_round_trip_are_stable() {
     );
     assert_eq!(
         assembly.assembly_identity.as_str(),
-        "skiff-runtime-assembly-v1:sha256:4176e39122928fcf47db987c34884f2f7ab4a1833c502a33bb6fd0c861a5acf6"
+        "skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
     );
 }
 
@@ -613,7 +617,7 @@ fn assembly_identity_includes_graph_link_plan_and_templates() {
 
     let mut ingress = assembly.clone();
     ingress
-        .global_ingress
+        .gateway_ingress
         .push(runtime_assembly_ingress(&assembly));
     assert_ne!(runtime_assembly_identity(&ingress).unwrap(), expected);
 }
@@ -646,8 +650,14 @@ fn assembly_validation_rejects_dangling_collision_and_tamper() {
 
     let mut collision = assembly.clone();
     let ingress = runtime_assembly_ingress(&assembly);
-    collision.global_ingress = vec![ingress.clone(), ingress];
+    collision.gateway_ingress = vec![ingress.clone(), ingress];
     assert!(validate_runtime_assembly_surface(&collision).is_err());
+
+    let mut dangling_gateway = assembly.clone();
+    let mut ingress = runtime_assembly_ingress(&assembly);
+    ingress.deployment.deployment_revision = "missing-revision".into();
+    dangling_gateway.gateway_ingress.push(ingress);
+    assert!(validate_runtime_assembly_surface(&dangling_gateway).is_err());
 
     let mut duplicate_slot = assembly.clone();
     let binding = ResolvedServiceBinding {

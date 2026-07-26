@@ -2,9 +2,9 @@ use thiserror::Error;
 
 use skiff_artifact_identity::ArtifactIdentityError;
 use skiff_artifact_model::{
-    ContractOperationId, GatewayEntryKey, PackageArtifactRef, PackageBuildId, PackageRequirement,
-    PackageRequirementKey, ServiceContractRef, ServiceDeploymentRef, ServiceProtocolIdentity,
-    ServiceRequirementKey,
+    ContractOperationId, GatewayEntryKey, IngressSelector, PackageArtifactRef, PackageBuildId,
+    PackageRequirement, PackageRequirementKey, ServiceContractRef, ServiceDeploymentRef,
+    ServiceProtocolIdentity, ServiceRequirementKey,
 };
 
 /// A closed-world assembly resolution failure. Resolution never guesses a
@@ -130,12 +130,17 @@ pub enum AssemblyResolutionError {
         operation: ContractOperationId,
     },
 
-    #[error(
-        "activation {activation:?} has deployment gateway ingress {gateway_entry_keys:?}, but RuntimeAssembly gateway entries are not yet linked"
-    )]
-    GatewayIngressNotLinked {
+    #[error("activation {activation:?} references missing gateway entry {gateway_entry_key}")]
+    MissingGatewayEntry {
         activation: ServiceDeploymentRef,
-        gateway_entry_keys: Vec<GatewayEntryKey>,
+        gateway_entry_key: GatewayEntryKey,
+    },
+
+    #[error("gateway ingress selector {selector:?} is declared by both {first:?} and {second:?}")]
+    GatewayIngressCollision {
+        selector: IngressSelector,
+        first: ServiceDeploymentRef,
+        second: ServiceDeploymentRef,
     },
 }
 

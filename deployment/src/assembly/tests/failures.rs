@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use skiff_artifact_identity::assign_package_artifact_identities;
 use skiff_artifact_model::{
-    ContractOperationId, PackageBuildId, PackageConfigRequirement, PackageLocalAbiIdentity,
+    ContractOperationId, GatewayEntryIdentity, PackageBuildId, PackageConfigRequirement,
+    PackageLocalAbiIdentity, GATEWAY_ENTRY_IDENTITY_PREFIX,
 };
 
 use super::fixtures::*;
@@ -321,7 +322,7 @@ fn selectors_and_operations_must_describe_exact_template_edges() {
 }
 
 #[test]
-fn deployment_gateway_ingress_fails_until_runtime_assembly_linking_exists() {
+fn deployment_gateway_ingress_rejects_cross_deployment_selector_collision() {
     let contract_a = contract("service.ingress-a");
     let contract_b = contract("service.ingress-b");
     let package_a = package("package.ingress-a", &[], &[]);
@@ -352,7 +353,56 @@ fn deployment_gateway_ingress_fails_until_runtime_assembly_linking_exists() {
     .unwrap_err();
     assert!(matches!(
         error,
-        AssemblyResolutionError::GatewayIngressNotLinked { .. }
+        AssemblyResolutionError::GatewayIngressCollision { .. }
+    ));
+}
+
+#[test]
+fn deployment_gateway_ingress_rejects_missing_key_and_wrong_identity() {
+    let contract = contract("service.ingress-invalid");
+    let package = package("package.ingress-invalid", &[], &[]);
+    let mut deployment = deployment(
+        &contract,
+        &package,
+        "revision-invalid",
+        Vec::new(),
+        Vec::new(),
+    );
+    add_http_ingress(&mut deployment, &contract, "invalid.example.test", "/call");
+
+    let mut missing = deployment.clone();
+    missing.gateway_entries.clear();
+    assert!(matches!(
+        resolve_runtime_assembly(
+            &[deployment_ref(&missing)],
+            &[missing],
+            std::slice::from_ref(&contract),
+            std::slice::from_ref(&package),
+        )
+        .unwrap_err(),
+        AssemblyResolutionError::Artifact(_)
+    ));
+
+    let mut wrong_identity = deployment;
+    wrong_identity
+        .gateway_entries
+        .values_mut()
+        .next()
+        .unwrap()
+        .gateway_entry_identity = GatewayEntryIdentity::parse(format!(
+        "{GATEWAY_ENTRY_IDENTITY_PREFIX}:{}",
+        "f".repeat(64)
+    ))
+    .unwrap();
+    assert!(matches!(
+        resolve_runtime_assembly(
+            &[deployment_ref(&wrong_identity)],
+            &[wrong_identity],
+            &[contract],
+            &[package],
+        )
+        .unwrap_err(),
+        AssemblyResolutionError::Artifact(_)
     ));
 }
 

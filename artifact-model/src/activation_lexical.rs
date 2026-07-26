@@ -4,7 +4,7 @@ use serde::{de, Deserializer};
 
 pub const MAX_SAFE_ACTIVATION_GENERATION: u64 = 9_007_199_254_740_991;
 pub const MAX_EXPECTED_ACTIVATION_GENERATION: u64 = MAX_SAFE_ACTIVATION_GENERATION - 1;
-pub const RUNTIME_ASSEMBLY_IDENTITY_PREFIX: &str = "skiff-runtime-assembly-v1:sha256";
+pub const RUNTIME_ASSEMBLY_IDENTITY_PREFIX: &str = "skiff-runtime-assembly-v2:sha256";
 
 pub fn validate_activation_token(value: &str, label: &str) -> Result<(), String> {
     if value.is_empty()

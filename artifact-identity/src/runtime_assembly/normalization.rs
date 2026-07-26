@@ -8,7 +8,7 @@ pub(super) fn normalize_projection(projection: &mut AssemblyIdentityProjection) 
     canonicalize_json(&mut projection.package_link_plan);
     canonicalize_json(&mut projection.service_binding_templates);
     canonicalize_json(&mut projection.activation_templates);
-    canonicalize_json(&mut projection.global_ingress);
+    canonicalize_json(&mut projection.gateway_ingress);
 }
 
 fn canonicalize_json(value: &mut serde_json::Value) {

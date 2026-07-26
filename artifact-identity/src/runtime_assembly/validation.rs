@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    ActivationTemplate, GlobalIngressBinding, PackageArtifactRef, RuntimeAssembly,
-    ServiceBindingTemplate, ServiceContractRef, ServiceDeploymentRef,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    ActivationTemplate, GatewayEntryIdentity, GatewayEntryKey, GatewayIngressBinding,
+    PackageArtifactRef, RuntimeAssembly, ServiceBindingTemplate, ServiceContractRef,
+    ServiceDeploymentRef, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 
 use crate::{
@@ -28,7 +28,7 @@ pub fn validate_runtime_assembly_surface(assembly: &RuntimeAssembly) -> Result<(
     validate_link_plan(assembly, &packages)?;
     validate_service_templates(assembly, &deployments, &contracts, &packages)?;
     validate_activation_templates(assembly, &deployments, &packages)?;
-    validate_global_ingress(&assembly.global_ingress, &deployments, &contracts)?;
+    validate_gateway_ingress(&assembly.gateway_ingress, &deployments)?;
     validate_empty_closure(assembly)
 }
 
@@ -317,39 +317,34 @@ fn validate_activation_template(
     )
 }
 
-fn validate_global_ingress(
-    bindings: &[GlobalIngressBinding],
+fn validate_gateway_ingress(
+    bindings: &[GatewayIngressBinding],
     deployments: &BTreeSet<ServiceDeploymentRef>,
-    contracts: &BTreeSet<ServiceContractRef>,
 ) -> Result<()> {
     let mut selectors = BTreeSet::new();
     for binding in bindings {
         if !selectors.insert(binding.selector.clone()) {
             return invalid_assembly(format!(
-                "global ingress collision for {:?}",
+                "gateway ingress collision for {:?}",
                 binding.selector
             ));
         }
         if !deployments.contains(&binding.deployment) {
             return invalid_assembly(format!(
-                "global ingress deployment {:?} is dangling",
+                "gateway ingress deployment {:?} is dangling",
                 binding.deployment
             ));
         }
-        if !contracts.contains(&binding.contract) {
-            return invalid_assembly(format!(
-                "global ingress contract {:?} is dangling",
-                binding.contract
-            ));
-        }
-        if binding.deployment.service_id != binding.contract.service_id
-            || binding.deployment.contract_version != binding.contract.contract_version
-        {
-            return invalid_assembly("global ingress deployment coordinate mismatches contract");
-        }
-        if binding.contract_operation_id.as_str().trim().is_empty() {
-            return invalid_assembly("global ingress operation id must not be empty");
-        }
+        GatewayEntryKey::parse(binding.gateway_entry_key.as_str()).map_err(|error| {
+            crate::ArtifactIdentityError::InvalidRuntimeAssembly {
+                message: format!("gateway ingress key is invalid: {error}"),
+            }
+        })?;
+        GatewayEntryIdentity::parse(binding.gateway_entry_identity.as_str()).map_err(|error| {
+            crate::ArtifactIdentityError::InvalidRuntimeAssembly {
+                message: format!("gateway ingress identity is invalid: {error}"),
+            }
+        })?;
     }
     Ok(())
 }
@@ -365,7 +360,7 @@ fn validate_empty_closure(assembly: &RuntimeAssembly) -> Result<()> {
         && assembly.package_link_plan.package_links.is_empty()
         && assembly.service_binding_templates.is_empty()
         && assembly.activation_templates.is_empty()
-        && assembly.global_ingress.is_empty()
+        && assembly.gateway_ingress.is_empty()
     {
         Ok(())
     } else {

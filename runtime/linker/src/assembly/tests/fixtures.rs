@@ -15,23 +15,24 @@ use skiff_artifact_model::{
     CallableSemanticFacts, CanonicalPackageLinkPlan, ConfigLiteralBinding, ContractDiagnosticText,
     ContractOperationId, ContractRequirement, DeploymentArtifactIdentity, DeploymentDiagnosticText,
     DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy,
-    DeploymentRevision, ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, ExprRefIr, FileIrRef,
-    FileIrUnit, GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource,
-    GatewayDispatchMode, GatewayEntryKey, GatewayEntryProtocolSurface,
+    DeploymentRevision, ExecutableBody, ExecutableExport, ExecutableIr, ExecutableKind,
+    ExecutableSignatureIr, ExprIr, ExprRefIr, FileIrRef, FileIrUnit, GatewayAdapterArg,
+    GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
+    GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
     GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
-    GatewayProtocolSurface, GlobalIngressBinding, IngressProtocol, IngressSelector,
+    GatewayIngressBinding, GatewayProtocolSurface, IngressProtocol, IngressSelector,
     InstructionSourceSite, MetadataValue, OperationCallableKind, OperationTargetRef,
     PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId,
-    PackageCallableLinkFact, PackageCallableRef, PackageCallableSignature, PackageCodeSlot,
-    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
-    PackageRefIr, PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
-    PackageSchemaIndex, PackageSchemaIndexRef, PackageTypeRef, PublicationResourceRef,
-    ResolvedServiceBinding, ResourceBinding, ResourcePolicy, RuntimeAssembly, SecretRefBinding,
-    ServiceBindingTemplate, ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey,
-    ServiceSelectorBinding, SlotLayout, StateBinding, StateBindingKind,
-    SyntheticInstructionSiteReason, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    PackageCallableLinkFact, PackageCallableParameter, PackageCallableRef,
+    PackageCallableSignature, PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi,
+    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
+    PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
+    PackageServiceCallRoot, PackageTypeRef, PublicationResourceRef, ResolvedServiceBinding,
+    ResourceBinding, ResourcePolicy, RuntimeAssembly, SecretRefBinding, ServiceBindingTemplate,
+    ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
+    SlotLayout, StateBinding, StateBindingKind, SyntheticInstructionSiteReason, TypeDeclIr,
+    TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::RuntimeAssemblyContentResolver;
@@ -55,6 +56,12 @@ pub(super) struct CycleFixture {
     pub activation_a: ServiceDeploymentRef,
     pub activation_b: ServiceDeploymentRef,
     pub ingress_selector: IngressSelector,
+    pub ingress_alias_selector: IngressSelector,
+    pub gateway_handler: PackageCallableId,
+    pub gateway_pre: PackageCallableId,
+    pub gateway_guard: PackageCallableId,
+    pub gateway_entry_key: GatewayEntryKey,
+    pub gateway_entry_identity: GatewayEntryIdentity,
 }
 
 impl CycleFixture {
@@ -88,7 +95,7 @@ impl CycleFixture {
         skiff_artifact_identity::assign_service_contract_identities(&mut contract).unwrap();
         let contract_ref = contract_ref(&contract);
 
-        let helper_callable = PackageCallableId::new("callable:helper");
+        let helper_callable = PackageCallableId::new("pkg-callable:example.helper:entry");
         let mut helper_file = file("helper.main");
         skiff_artifact_identity::assign_file_ir_identity(&mut helper_file).unwrap();
         let mut helper = package(
@@ -113,7 +120,7 @@ impl CycleFixture {
             contract_operation_id: operation_id.clone(),
             expected_protocol_identity: contract_ref.service_protocol_identity.clone(),
         };
-        let service_callable = PackageCallableId::new("callable:service");
+        let service_callable = PackageCallableId::new("pkg-callable:example.shared:entry");
         let mut shared_file = file("shared.main");
         shared_file
             .external_refs
@@ -261,6 +268,16 @@ impl CycleFixture {
             used_operations: BTreeSet::from([operation_id.clone()]),
         });
         shared.service_call_refs.push(service_call);
+        let gateway_handler = PackageCallableId::new("pkg-callable:gateway:handler");
+        let gateway_pre = PackageCallableId::new("pkg-callable:gateway:pre");
+        let gateway_guard = PackageCallableId::new("pkg-callable:gateway:guard");
+        for (path, callable) in [
+            ("shared.main.gateway_handler", &gateway_handler),
+            ("shared.main.gateway_pre", &gateway_pre),
+            ("shared.main.gateway_guard", &gateway_guard),
+        ] {
+            add_private_gateway_callable(&mut shared, path, callable);
+        }
         skiff_artifact_identity::assign_package_artifact_identities(&mut shared).unwrap();
         let shared_ref = package_ref(&shared);
 
@@ -270,6 +287,10 @@ impl CycleFixture {
             method: Some("POST".to_string()),
             path: "/call".to_string(),
         };
+        let ingress_alias_selector = IngressSelector {
+            path: "/call-alias".to_string(),
+            ..ingress_selector.clone()
+        };
         let mut deployment_a = deployment(
             "revision-a",
             "a",
@@ -278,7 +299,12 @@ impl CycleFixture {
             &helper_ref,
             &service_callable,
             &operation_id,
-            Some(ingress_selector.clone()),
+            Some((
+                ingress_selector.clone(),
+                gateway_handler.clone(),
+                gateway_pre.clone(),
+                gateway_guard.clone(),
+            )),
         );
         let mut deployment_b = deployment(
             "revision-b",
@@ -290,6 +316,10 @@ impl CycleFixture {
             &operation_id,
             None,
         );
+        deployment_a.ingress.push(DeploymentIngressBinding {
+            selector: ingress_alias_selector.clone(),
+            gateway_entry_key: deployment_a.ingress[0].gateway_entry_key.clone(),
+        });
         skiff_artifact_identity::assign_service_deployment_identity(&mut deployment_a).unwrap();
         skiff_artifact_identity::assign_service_deployment_identity(&mut deployment_b).unwrap();
         let activation_a = skiff_artifact_identity::service_deployment_ref(&deployment_a);
@@ -347,12 +377,22 @@ impl CycleFixture {
                 activation_template(&activation_a, &deployment_a),
                 activation_template(&activation_b, &deployment_b),
             ],
-            global_ingress: vec![GlobalIngressBinding {
-                selector: ingress_selector.clone(),
-                deployment: activation_a.clone(),
-                contract: contract_ref.clone(),
-                contract_operation_id: operation_id.clone(),
-            }],
+            gateway_ingress: deployment_a
+                .ingress
+                .iter()
+                .map(|binding| {
+                    let entry = deployment_a
+                        .gateway_entries
+                        .get(&binding.gateway_entry_key)
+                        .unwrap();
+                    GatewayIngressBinding {
+                        selector: binding.selector.clone(),
+                        deployment: activation_a.clone(),
+                        gateway_entry_key: binding.gateway_entry_key.clone(),
+                        gateway_entry_identity: entry.gateway_entry_identity.clone(),
+                    }
+                })
+                .collect(),
         };
         skiff_artifact_identity::assign_runtime_assembly_identity(&mut assembly).unwrap();
 
@@ -377,7 +417,7 @@ impl CycleFixture {
             .collect();
         let resolver = FixtureResolver {
             deployments: BTreeMap::from([
-                (activation_a.clone(), Arc::new(deployment_a)),
+                (activation_a.clone(), Arc::new(deployment_a.clone())),
                 (activation_b.clone(), Arc::new(deployment_b)),
             ]),
             contracts: BTreeMap::from([(contract_ref.clone(), Arc::new(contract))]),
@@ -415,10 +455,41 @@ impl CycleFixture {
             activation_a,
             activation_b,
             ingress_selector,
+            ingress_alias_selector,
+            gateway_handler,
+            gateway_pre,
+            gateway_guard,
+            gateway_entry_key: deployment_a.ingress[0].gateway_entry_key.clone(),
+            gateway_entry_identity: deployment_a
+                .gateway_entries
+                .values()
+                .next()
+                .unwrap()
+                .gateway_entry_identity
+                .clone(),
         }
     }
 
     pub fn tamper_deployment_callable(&mut self) {
+        self.mutate_activation_a_deployment(|deployment| {
+            deployment.operation_bindings[0].package_callable_id =
+                PackageCallableId::new("callable:missing");
+        });
+    }
+
+    pub fn tamper_gateway_to_dependency_callable(&mut self) {
+        let dependency_callable = self.helper_callable.clone();
+        self.mutate_activation_a_deployment(|deployment| {
+            deployment
+                .gateway_entries
+                .values_mut()
+                .next()
+                .unwrap()
+                .handler = dependency_callable;
+        });
+    }
+
+    fn mutate_activation_a_deployment(&mut self, mutate: impl FnOnce(&mut ServiceDeployment)) {
         let old_reference = self.activation_a.clone();
         let mut deployment = self
             .resolver
@@ -427,8 +498,7 @@ impl CycleFixture {
             .unwrap()
             .as_ref()
             .clone();
-        deployment.operation_bindings[0].package_callable_id =
-            PackageCallableId::new("callable:missing");
+        mutate(&mut deployment);
         skiff_artifact_identity::assign_service_deployment_identity(&mut deployment).unwrap();
         let new_reference = skiff_artifact_identity::service_deployment_ref(&deployment);
         for root in &mut self.assembly.roots {
@@ -456,7 +526,7 @@ impl CycleFixture {
                 template.deployment = new_reference.clone();
             }
         }
-        for ingress in &mut self.assembly.global_ingress {
+        for ingress in &mut self.assembly.gateway_ingress {
             if ingress.deployment == old_reference {
                 ingress.deployment = new_reference.clone();
             }
@@ -504,6 +574,16 @@ impl CycleFixture {
         for callable in package.callable_links.values_mut() {
             if callable.target.file_ref.file_ir_identity == old_file_identity {
                 callable.target.file_ref = new_file_ref.clone();
+            }
+        }
+        for executable in package
+            .implementation_links
+            .functions
+            .values_mut()
+            .chain(package.implementation_links.impl_methods.values_mut())
+        {
+            if executable.file.file_ir_identity == old_file_identity {
+                executable.file = new_file_ref.clone();
             }
         }
         skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
@@ -591,7 +671,7 @@ impl CycleFixture {
                 template.implementation_package_build_id = new_build.clone();
             }
         }
-        for ingress in &mut self.assembly.global_ingress {
+        for ingress in &mut self.assembly.gateway_ingress {
             if let Some(new_reference) = deployment_refs.get(&ingress.deployment) {
                 ingress.deployment = new_reference.clone();
             }
@@ -759,7 +839,23 @@ fn package(
             .expect("empty Package schema index is canonical"),
         },
         package_schema_type_records: BTreeMap::new(),
-        implementation_links: PackageImplementationLinks::default(),
+        implementation_links: PackageImplementationLinks {
+            functions: BTreeMap::from([(
+                "entry".to_string(),
+                ExecutableExport {
+                    file: reference.clone(),
+                    executable_index: 0,
+                    symbol: "entry".to_string(),
+                    signature: ExecutableSignatureIr {
+                        params: Vec::new(),
+                        return_type: TypeRefIr::builtin("bool"),
+                        self_type: None,
+                        may_suspend: false,
+                    },
+                },
+            )]),
+            ..PackageImplementationLinks::default()
+        },
         callable_links: BTreeMap::from([(
             callable_id.clone(),
             PackageCallableLinkFact {
@@ -792,7 +888,7 @@ fn package(
             },
         )]),
         boundary_projections: BTreeMap::from([(
-            callable_id,
+            callable_id.clone(),
             BoundaryCallableProjection::Available {
                 operation_contract,
                 implementation_requirements: BoundaryImplementationRequirements {
@@ -805,8 +901,62 @@ fn package(
                 },
             },
         )]),
+        service_call_roots: vec![PackageServiceCallRoot::Function {
+            public_path: "entry".to_string(),
+            callable_id,
+        }],
         service_call_refs: Vec::new(),
     }
+}
+
+fn add_private_gateway_callable(
+    package: &mut PackageArtifact,
+    source_path: &str,
+    callable_id: &PackageCallableId,
+) {
+    let signature = PackageCallableSignature {
+        type_params: Vec::new(),
+        parameters: vec![PackageCallableParameter {
+            name: "body".to_string(),
+            ty: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("string"),
+            },
+        }],
+        return_type: PackageTypeRef::Local {
+            local_type: TypeRefIr::builtin("string"),
+        },
+        may_suspend: false,
+    };
+    package.package_local_abi.implementation_symbols.insert(
+        source_path.to_string(),
+        PackageLocalAbiSymbol::Callable {
+            callable_id: callable_id.clone(),
+            signature,
+        },
+    );
+    let public_callable = package
+        .package_local_abi
+        .public_symbols
+        .values()
+        .find_map(|symbol| match symbol {
+            PackageLocalAbiSymbol::Callable { callable_id, .. } => Some(callable_id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let mut target = package.callable_links[&public_callable].target.clone();
+    target.callable_abi_id = callable_id.to_string();
+    target.callable_kind = OperationCallableKind::InternalFunction;
+    package.callable_links.insert(
+        callable_id.clone(),
+        PackageCallableLinkFact {
+            callable_id: callable_id.clone(),
+            target,
+        },
+    );
+    package.callable_semantic_facts.insert(
+        callable_id.clone(),
+        package.callable_semantic_facts[&public_callable].clone(),
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -818,7 +968,12 @@ fn deployment(
     helper: &PackageArtifactRef,
     callable: &PackageCallableId,
     operation: &ContractOperationId,
-    ingress: Option<IngressSelector>,
+    gateway: Option<(
+        IngressSelector,
+        PackageCallableId,
+        PackageCallableId,
+        PackageCallableId,
+    )>,
 ) -> ServiceDeployment {
     let package_key = PackageRequirementKey {
         caller_package_build_id: implementation.package_build_id.clone(),
@@ -828,12 +983,15 @@ fn deployment(
         caller_package_build_id: implementation.package_build_id.clone(),
         service_requirement_slot: 0,
     };
-    let (gateway_entries, ingress) = match ingress {
-        Some(selector) => {
+    let (gateway_entries, ingress) = match gateway {
+        Some((selector, handler, pre, guard)) => {
             let gateway_entry_key =
                 GatewayEntryKey::parse("fixture-http").expect("fixture gateway entry key");
+            let mut entry = gateway_entry(handler);
+            entry.pre = Some(pre);
+            entry.guard = Some(guard);
             (
-                BTreeMap::from([(gateway_entry_key.clone(), gateway_entry(callable.clone()))]),
+                BTreeMap::from([(gateway_entry_key.clone(), entry)]),
                 vec![DeploymentIngressBinding {
                     selector,
                     gateway_entry_key,

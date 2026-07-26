@@ -9,17 +9,21 @@ use skiff_artifact_model::{
     BoundaryValuePlan, CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
     CallableSemanticFacts, ContractDiagnosticText, ContractOperationId, ContractTypeDescriptor,
     ContractTypeNameability, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision, ExecutableBody, ExecutableIr,
-    ExecutableKind, FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBuildId,
-    PackageCallableId, PackageCallableLinkFact, PackageCallableSignature, PackageCodeSlot,
-    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
-    PackageRuntimeRequirements, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
-    PackageSchemaIndexEntry, PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    PackageSchemaTypeRecordRef, PackageTypeRef, PackageTypeRequirement, PublicationResourceRef,
-    ResourcePolicy, RuntimeAssembly, ServiceBindingTemplate, ServiceContract, ServiceContractRef,
-    ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity, SlotLayout, TypeRefIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
+    ExecutableBody, ExecutableExport, ExecutableIr, ExecutableKind, ExecutableSignatureIr,
+    FileIrRef, FileIrUnit, GatewayEntryIdentity, GatewayEntryKey, GatewayIngressBinding,
+    IngressProtocol, IngressSelector, PackageArtifact, PackageArtifactRef, PackageBuildId,
+    PackageCallableId, PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
+    PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageLocalAbiSymbol, PackageRuntimeRequirements, PackageSchemaCanonicalDescriptor,
+    PackageSchemaIndex, PackageSchemaIndexEntry, PackageSchemaIndexRef, PackageSchemaTypeId,
+    PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, PackageServiceCallRoot, PackageTypeRef,
+    PackageTypeRequirement, PublicationResourceRef, ResourcePolicy, RuntimeAssembly,
+    ServiceBindingTemplate, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, ServiceProtocolIdentity, SlotLayout, TypeRefIr,
+    GATEWAY_ENTRY_IDENTITY_PREFIX, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -241,7 +245,7 @@ impl Fixture {
             source_ast_hash: Some(file.source_ast_hash.clone()),
         };
 
-        let callable_id = PackageCallableId::new("callable:health");
+        let callable_id = PackageCallableId::new("pkg-callable:example.health-provider:health");
         let target = skiff_artifact_model::OperationTargetRef {
             file_ref: file_ref.clone(),
             executable_index: 0,
@@ -277,7 +281,7 @@ impl Fixture {
             package_id: "example.health-provider".to_string(),
             package_version: "1.0.0".to_string(),
             package_build_id: PackageBuildId::new("unassigned"),
-            files: vec![file_ref],
+            files: vec![file_ref.clone()],
             static_resources: vec![resource_ref],
             package_local_abi: PackageLocalAbi {
                 local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
@@ -302,7 +306,23 @@ impl Fixture {
                 package_schema_index_identity: schema_index.package_schema_index_identity.clone(),
             },
             package_schema_type_records: BTreeMap::new(),
-            implementation_links: PackageImplementationLinks::default(),
+            implementation_links: PackageImplementationLinks {
+                functions: BTreeMap::from([(
+                    "health".to_string(),
+                    ExecutableExport {
+                        file: file_ref.clone(),
+                        executable_index: 0,
+                        symbol: "health".to_string(),
+                        signature: ExecutableSignatureIr {
+                            params: Vec::new(),
+                            return_type: TypeRefIr::builtin("bool"),
+                            self_type: None,
+                            may_suspend: false,
+                        },
+                    },
+                )]),
+                ..PackageImplementationLinks::default()
+            },
             callable_links: BTreeMap::from([(
                 callable_id.clone(),
                 PackageCallableLinkFact {
@@ -341,6 +361,10 @@ impl Fixture {
                     },
                 },
             )]),
+            service_call_roots: vec![PackageServiceCallRoot::Function {
+                public_path: "health".to_string(),
+                callable_id: callable_id.clone(),
+            }],
             service_call_refs: Vec::new(),
         };
         skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
@@ -400,7 +424,7 @@ impl Fixture {
                 resource_bindings: Vec::new(),
                 policy: deployment.policy.clone(),
             }],
-            global_ingress: Vec::new(),
+            gateway_ingress: Vec::new(),
         };
         skiff_artifact_identity::assign_runtime_assembly_identity(&mut assembly).unwrap();
 
@@ -531,13 +555,105 @@ impl Fixture {
         self.refresh_deployment_chain();
     }
 
+    fn add_http_gateway(&mut self) {
+        let handler = PackageCallableId::new("pkg-callable:gateway:handler");
+        let pre = PackageCallableId::new("pkg-callable:gateway:pre");
+        let guard = PackageCallableId::new("pkg-callable:gateway:guard");
+        for (path, callable_id) in [
+            ("provider.main.gateway_handler", &handler),
+            ("provider.main.gateway_pre", &pre),
+            ("provider.main.gateway_guard", &guard),
+        ] {
+            self.add_private_gateway_callable(path, callable_id);
+        }
+
+        let key = GatewayEntryKey::parse("health-http").unwrap();
+        let mut entry = skiff_deployment::fixtures::gateway_entry_fixture(handler);
+        entry.pre = Some(pre);
+        entry.guard = Some(guard);
+        self.deployment.gateway_entries.insert(key.clone(), entry);
+        self.deployment.ingress = ["/health", "/health-alias"]
+            .into_iter()
+            .map(|path| DeploymentIngressBinding {
+                selector: IngressSelector {
+                    protocol: IngressProtocol::Http,
+                    host: "api.example.test".to_string(),
+                    method: Some("POST".to_string()),
+                    path: path.to_string(),
+                },
+                gateway_entry_key: key.clone(),
+            })
+            .collect();
+        self.refresh_package_chain();
+    }
+
+    fn add_private_gateway_callable(&mut self, path: &str, callable_id: &PackageCallableId) {
+        let signature = PackageCallableSignature {
+            type_params: Vec::new(),
+            parameters: vec![PackageCallableParameter {
+                name: "body".to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: TypeRefIr::builtin("string"),
+                },
+            }],
+            return_type: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("string"),
+            },
+            may_suspend: false,
+        };
+        self.package
+            .package_local_abi
+            .implementation_symbols
+            .insert(
+                path.to_string(),
+                PackageLocalAbiSymbol::Callable {
+                    callable_id: callable_id.clone(),
+                    signature,
+                },
+            );
+        let mut target = self.package.callable_links[&self.callable_id]
+            .target
+            .clone();
+        target.callable_abi_id = callable_id.to_string();
+        target.callable_kind = skiff_artifact_model::OperationCallableKind::InternalFunction;
+        self.package.callable_links.insert(
+            callable_id.clone(),
+            PackageCallableLinkFact {
+                callable_id: callable_id.clone(),
+                target,
+            },
+        );
+        self.package.callable_semantic_facts.insert(
+            callable_id.clone(),
+            self.package.callable_semantic_facts[&self.callable_id].clone(),
+        );
+    }
+
     fn refresh_deployment_chain(&mut self) {
         skiff_artifact_identity::assign_service_deployment_identity(&mut self.deployment).unwrap();
         let reference = skiff_artifact_identity::service_deployment_ref(&self.deployment);
         self.assembly.roots = vec![reference.clone()];
         self.assembly.resolved_deployments = vec![reference.clone()];
         self.assembly.service_binding_templates[0].activation = reference.clone();
-        self.assembly.activation_templates[0].deployment = reference;
+        self.assembly.activation_templates[0].deployment = reference.clone();
+        self.assembly.gateway_ingress = self
+            .deployment
+            .ingress
+            .iter()
+            .map(|binding| {
+                let entry = self
+                    .deployment
+                    .gateway_entries
+                    .get(&binding.gateway_entry_key)
+                    .unwrap();
+                GatewayIngressBinding {
+                    selector: binding.selector.clone(),
+                    deployment: reference.clone(),
+                    gateway_entry_key: binding.gateway_entry_key.clone(),
+                    gateway_entry_identity: entry.gateway_entry_identity.clone(),
+                }
+            })
+            .collect();
         skiff_artifact_identity::assign_runtime_assembly_identity(&mut self.assembly).unwrap();
     }
 
@@ -568,7 +684,7 @@ fn canonical_empty_assembly_hydrates_without_storage_reads() {
         },
         service_binding_templates: Vec::new(),
         activation_templates: Vec::new(),
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     };
     skiff_artifact_identity::assign_runtime_assembly_identity(&mut assembly).unwrap();
 
@@ -643,6 +759,175 @@ fn typed_loader_preserves_contract_store_and_deterministic_code_lookup() {
         hydrated.assembly().activation_templates[0].implementation_package_build_id,
         fixture.package.package_build_id
     );
+}
+
+#[test]
+fn runtime_assembly_loader_joins_private_gateway_callables_and_shares_entry() {
+    let mut fixture = Fixture::new();
+    fixture.add_http_gateway();
+    let hydrated = RuntimeAssemblyLoader::new(&fixture.resolver())
+        .load(fixture.assembly.clone())
+        .unwrap();
+
+    assert_eq!(hydrated.gateway_entries().len(), 1);
+    assert_eq!(hydrated.gateway_ingress().len(), 2);
+    let entries = hydrated
+        .gateway_ingress()
+        .map(|(_, entry)| Arc::clone(entry))
+        .collect::<Vec<_>>();
+    assert!(Arc::ptr_eq(&entries[0], &entries[1]));
+    let entry = &entries[0];
+    assert_eq!(entry.owner(), &fixture.assembly.resolved_deployments[0]);
+    assert_eq!(entry.handler().signature().parameters[0].name, "body");
+    assert_eq!(
+        entry.handler().target().callable_kind,
+        skiff_artifact_model::OperationCallableKind::InternalFunction
+    );
+    assert!(entry.pre().is_some());
+    assert!(entry.guard().is_some());
+    assert!(hydrated
+        .contract_store()
+        .operation(&contract_ref(&fixture.contract), &fixture.operation_id)
+        .is_some());
+}
+
+#[test]
+fn runtime_assembly_loader_rejects_gateway_union_and_callable_mismatches() {
+    let mut fixture = Fixture::new();
+    fixture.add_http_gateway();
+
+    let mut missing_binding = fixture.assembly.clone();
+    missing_binding.gateway_ingress.pop();
+    skiff_artifact_identity::assign_runtime_assembly_identity(&mut missing_binding).unwrap();
+    let error = RuntimeAssemblyLoader::new(&fixture.resolver())
+        .load(missing_binding)
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("does not exactly match"),
+        "unexpected error: {error:#}"
+    );
+
+    let mut extra_binding = fixture.assembly.clone();
+    let mut extra = extra_binding.gateway_ingress[0].clone();
+    extra.selector.path = "/not-in-deployment".to_string();
+    extra_binding.gateway_ingress.push(extra);
+    skiff_artifact_identity::assign_runtime_assembly_identity(&mut extra_binding).unwrap();
+    assert!(RuntimeAssemblyLoader::new(&fixture.resolver())
+        .load(extra_binding)
+        .unwrap_err()
+        .to_string()
+        .contains("does not exactly match"));
+
+    let mut wrong_identity = fixture.assembly.clone();
+    wrong_identity.gateway_ingress[0].gateway_entry_identity = GatewayEntryIdentity::parse(
+        format!("{GATEWAY_ENTRY_IDENTITY_PREFIX}:{}", "f".repeat(64)),
+    )
+    .unwrap();
+    skiff_artifact_identity::assign_runtime_assembly_identity(&mut wrong_identity).unwrap();
+    assert!(RuntimeAssemblyLoader::new(&fixture.resolver())
+        .load(wrong_identity)
+        .unwrap_err()
+        .to_string()
+        .contains("does not exactly match"));
+
+    let mut missing_callable = Fixture::new();
+    missing_callable.add_http_gateway();
+    missing_callable
+        .deployment
+        .gateway_entries
+        .values_mut()
+        .next()
+        .unwrap()
+        .handler = PackageCallableId::new("pkg-callable:gateway:missing");
+    missing_callable.refresh_deployment_chain();
+    let error = RuntimeAssemblyLoader::new(&missing_callable.resolver())
+        .load(missing_callable.assembly)
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("is missing from implementation package"),
+        "unexpected error: {error:#}"
+    );
+
+    let mut public_fallback = Fixture::new();
+    public_fallback.add_http_gateway();
+    public_fallback
+        .deployment
+        .gateway_entries
+        .values_mut()
+        .next()
+        .unwrap()
+        .handler = public_fallback.callable_id.clone();
+    public_fallback.refresh_deployment_chain();
+    let error = RuntimeAssemblyLoader::new(&public_fallback.resolver())
+        .load(public_fallback.assembly)
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("mismatched implementation target"),
+        "unexpected error: {error:#}"
+    );
+
+    let mut websocket = Fixture::new();
+    websocket.add_http_gateway();
+    websocket.deployment.ingress[0].selector.protocol = IngressProtocol::WebSocket;
+    let error = RuntimeAssemblyLoader::new(&websocket.resolver())
+        .load(websocket.assembly)
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("only HTTP gateway ingress"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn runtime_assembly_loader_rejects_gateway_link_and_signature_tamper() {
+    let mut fixture = Fixture::new();
+    fixture.add_http_gateway();
+
+    let mut nested_id = fixture.resolver();
+    Arc::make_mut(&mut nested_id.package)
+        .callable_links
+        .get_mut(&PackageCallableId::new("pkg-callable:gateway:handler"))
+        .unwrap()
+        .callable_id = PackageCallableId::new("pkg-callable:gateway:wrong-nested-id");
+    assert!(RuntimeAssemblyLoader::new(&nested_id)
+        .load(fixture.assembly.clone())
+        .is_err());
+
+    let mut target = fixture.resolver();
+    Arc::make_mut(&mut target.package)
+        .callable_links
+        .get_mut(&PackageCallableId::new("pkg-callable:gateway:handler"))
+        .unwrap()
+        .target
+        .callable_abi_id = "pkg-callable:gateway:wrong-target".to_string();
+    assert!(RuntimeAssemblyLoader::new(&target)
+        .load(fixture.assembly.clone())
+        .is_err());
+
+    let mut missing_signature = fixture.resolver();
+    Arc::make_mut(&mut missing_signature.package)
+        .package_local_abi
+        .implementation_symbols
+        .remove("provider.main.gateway_handler");
+    assert!(RuntimeAssemblyLoader::new(&missing_signature)
+        .load(fixture.assembly.clone())
+        .is_err());
+
+    let mut ambiguous_signature = fixture.resolver();
+    let package = Arc::make_mut(&mut ambiguous_signature.package);
+    let duplicate = package
+        .package_local_abi
+        .implementation_symbols
+        .get("provider.main.gateway_handler")
+        .unwrap()
+        .clone();
+    package
+        .package_local_abi
+        .implementation_symbols
+        .insert("provider.main.gateway_handler_alias".to_string(), duplicate);
+    assert!(RuntimeAssemblyLoader::new(&ambiguous_signature)
+        .load(fixture.assembly)
+        .is_err());
 }
 
 #[test]
@@ -1250,13 +1535,21 @@ fn resource_hash_size_and_storage_path_fail_before_linking() {
 #[test]
 fn missing_file_link_target_and_contract_operation_mismatch_fail_closed() {
     let mut fixture = Fixture::new();
+    let missing = FileIrRef::new("missing-file", "missing.module");
     fixture
         .package
         .callable_links
         .get_mut(&fixture.callable_id)
         .unwrap()
         .target
-        .file_ref = FileIrRef::new("missing-file", "missing.module");
+        .file_ref = missing.clone();
+    fixture
+        .package
+        .implementation_links
+        .functions
+        .get_mut("health")
+        .unwrap()
+        .file = missing;
     fixture.refresh_package_chain();
     assert!(RuntimeAssemblyLoader::new(&fixture.resolver())
         .load(fixture.assembly.clone())

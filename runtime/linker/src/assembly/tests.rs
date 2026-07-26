@@ -149,7 +149,7 @@ fn empty_assembly_links_and_all_candidate_lookups_fail_closed() {
         },
         service_binding_templates: Vec::new(),
         activation_templates: Vec::new(),
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     };
     skiff_artifact_identity::assign_runtime_assembly_identity(&mut assembly).unwrap();
     let hydrated = RuntimeAssemblyLoader::new(&NoContent)
@@ -403,7 +403,7 @@ fn assembly_execution_image_keeps_code_shared_and_call_kinds_distinct() {
 }
 
 #[test]
-fn candidate_retains_canonical_contract_descriptor_and_typed_ingress() {
+fn assembly_candidate_retains_internal_operation_and_exact_linked_gateway_entry() {
     let fixture = CycleFixture::new();
     let hydrated = RuntimeAssemblyLoader::new(&fixture.resolver)
         .load(fixture.assembly.clone())
@@ -419,11 +419,40 @@ fn candidate_retains_canonical_contract_descriptor_and_typed_ingress() {
         .unwrap();
     assert!(std::ptr::eq(through_candidate, through_store));
     assert_eq!(through_candidate.operation_id, fixture.operation_id);
+    assert!(candidate
+        .activation(&fixture.activation_a)
+        .unwrap()
+        .operation(&fixture.operation_id)
+        .is_some());
 
     let ingress = candidate.ingress(&fixture.ingress_selector).unwrap();
-    assert_eq!(ingress.deployment, fixture.activation_a);
-    assert_eq!(ingress.contract, fixture.contract_ref);
-    assert_eq!(ingress.contract_operation_id, fixture.operation_id);
+    let alias = candidate.ingress(&fixture.ingress_alias_selector).unwrap();
+    assert!(Arc::ptr_eq(ingress, alias));
+    assert_eq!(ingress.owner(), &fixture.activation_a);
+    assert_eq!(ingress.gateway_entry_key(), &fixture.gateway_entry_key);
+    assert_eq!(
+        ingress.gateway_entry_identity(),
+        &fixture.gateway_entry_identity
+    );
+    assert!(matches!(
+        &ingress.protocol_surface().protocol,
+        skiff_artifact_model::GatewayProtocolSurface::Http(_)
+    ));
+    assert_eq!(ingress.adapter_plan().args[0].param, "body");
+    assert_eq!(ingress.handler().callable_id(), &fixture.gateway_handler);
+    assert_eq!(
+        ingress.handler().target().callable_kind,
+        skiff_artifact_model::OperationCallableKind::InternalFunction
+    );
+    assert_eq!(ingress.handler().signature().parameters[0].name, "body");
+    assert_eq!(ingress.pre().unwrap().callable_id(), &fixture.gateway_pre);
+    assert_eq!(
+        ingress.guard().unwrap().callable_id(),
+        &fixture.gateway_guard
+    );
+    assert!(candidate
+        .gateway_entry(&fixture.activation_a, &fixture.gateway_entry_key)
+        .is_some_and(|entry| Arc::ptr_eq(entry, ingress)));
 }
 
 #[test]
@@ -459,6 +488,21 @@ fn missing_provider_callable_is_rejected_before_linking_a_candidate() {
 }
 
 #[test]
+fn assembly_gateway_cannot_borrow_a_dependency_package_callable() {
+    let mut fixture = CycleFixture::new();
+    fixture.tamper_gateway_to_dependency_callable();
+
+    let error = RuntimeAssemblyLoader::new(&fixture.resolver)
+        .load(fixture.assembly)
+        .unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("is missing from implementation package"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
 fn link_plan_abi_protocol_and_ingress_tamper_fail_closed() {
     let fixture = CycleFixture::new();
 
@@ -480,8 +524,8 @@ fn link_plan_abi_protocol_and_ingress_tamper_fail_closed() {
 
     let mut ingress_collision = fixture.assembly;
     ingress_collision
-        .global_ingress
-        .push(ingress_collision.global_ingress[0].clone());
+        .gateway_ingress
+        .push(ingress_collision.gateway_ingress[0].clone());
     assert!(
         skiff_artifact_identity::assign_runtime_assembly_identity(&mut ingress_collision).is_err()
     );

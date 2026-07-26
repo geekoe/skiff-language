@@ -165,7 +165,7 @@ pub fn empty_runtime_assembly_fixture() -> Result<RuntimeAssembly> {
         },
         service_binding_templates: Vec::new(),
         activation_templates: Vec::new(),
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     };
     assign_runtime_assembly_identity(&mut assembly)?;
     Ok(assembly)
@@ -205,7 +205,7 @@ pub fn runtime_assembly_fixture() -> Result<RuntimeAssembly> {
             resource_bindings: deployment.resource_bindings.clone(),
             policy: deployment.policy.clone(),
         }],
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     };
     assign_runtime_assembly_identity(&mut assembly)?;
     Ok(assembly)
