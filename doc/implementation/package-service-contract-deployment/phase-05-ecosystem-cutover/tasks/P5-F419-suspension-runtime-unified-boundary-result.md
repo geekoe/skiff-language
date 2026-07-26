@@ -1,9 +1,14 @@
 # P5-F419 Suspension runtime unified boundary result
 
-状态：Complete（N3 implementation；combined focused gate待integration owner执行）。
+状态：Complete（N3 implementation + deadline terminal review correction；combined focused gate待
+integration owner执行）。
 
 N3 已在 `runtime/**` 完成 service boundary lane统一、deadline逐跳暴露、unary / stream
 cancel-deadline-provider竞争、旧 protocol summary consumer删除，以及F415 exact 13个mapping fixture补债。
+主审随后发现原实现把已选中的stream producer deadline转换成了stream cancellation，导致pending
+consumer观察到 `Cancelled` 而非typed `DeadlineExceeded`。follow-up已修正producer、item
+publication与terminal publication三条deadline终态链，并用真实 `TestStreamRuntime` consumer和
+concrete host清理探针锁定语义。
 本节点按并行开发约束停留在独立分支；需要经过 compiler N1与deployment N2合并后的selector仍被当前
 base中的旧消费者挡住，因此不宣称workspace或ecosystem稳定。
 
@@ -16,6 +21,7 @@ base中的旧消费者挡住，因此不宣称workspace或ecosystem稳定。
 | accepted F415 | `7303af9bc9452a4d1d6e04e35b0eccb1ccacdc8d` | `a2a10789acfc53f190abefcf02447ccdbb598b80` |
 | N3 implementation parent | `16c17b7d020d90ff5c97ad314f4ceeceaaa363c6` | `fae922e19dbb8ada9ae513b3b0c861c06adf6f2f` |
 | N3 implementation | `615a1ee055a72de5e660cde578e9aafbd02d7e91` | `bbe5a443044c030e21d010abae4139ba2358e8d6` |
+| deadline terminal review correction | `38a8b035e8299fdb87600a0d05f1592c7dfdff18` | `c573bd2c260189920967cb88a5d2407173a3441d` |
 
 三次 ancestry gate均成功：
 
@@ -30,9 +36,14 @@ implementation commit：
 ```text
 615a1ee055a72de5e660cde578e9aafbd02d7e91
 runtime: unify service suspension boundary
+
+38a8b035e8299fdb87600a0d05f1592c7dfdff18
+runtime: preserve typed stream deadline terminals
 ```
 
-该提交修改27个文件（799 insertions / 564 deletions），全部位于 `runtime/**`。没有修改
+首个提交修改27个文件（799 insertions / 564 deletions）；review correction修改3个
+`runtime/**` 文件（262 insertions / 25 deletions）。implementation改动全部位于
+`runtime/**`。没有修改
 artifact-model、artifact-identity、compiler、deployment、router、scripts、test-runner、
 cross-system fixture、ecosystem source或设计；没有 merge、rebase、push，也没有访问stable/live。
 
@@ -57,7 +68,8 @@ dispatch_in_process_boundary
                  -> capture OwnedExecutionControl + owned provider context
                  -> detached ProviderStreamTask
                  -> item / terminal / terminal-publication biased waits
-                 -> cancel request + stream on cancel/deadline
+                 -> cancel request + stream on cancellation
+                 -> cancel provider request + publish typed terminal on deadline
                  -> task guard and stream lifetime release
 ```
 
@@ -100,6 +112,18 @@ deadline分支调用既有typed execution-budget projection，结果保持
 request。若deadline分支选中后才到达cancel，fallback仍固定为typed `DeadlineExceeded`，不会降成
 `Cancelled`；同时ready时则因biased顺序由cancel获胜。
 
+review correction把stream deadline收敛到单独的
+`publish_provider_deadline_terminal`：deadline一旦赢得仲裁，先cancel provider request，再通过
+`StreamSink::fail(StreamRuntimeError::producer(error))` 向consumer发布typed终态。该发布不再与
+已经cancel的request token或同一个已过期deadline二次竞争，否则会把已确定的timeout降级成
+`Cancelled`；只有真实consumer cancellation可以丢弃该终态并cancel stream。
+
+item publication deadline可作为provider future的 `Err(RuntimeError)` 返回。终态收敛因此会递归
+识别顶层、`WithSource` 与 `WithDiagnosticFrame` 包装下的
+`ExecutionBudgetExceeded(DeadlineExceeded)`，绕过service failure export并进入同一typed
+deadline publisher。正常End/Error terminal publication若在背压中超时，也会用typed deadline
+替换原terminal，而不是cancel stream。
+
 新增测试证据覆盖：
 
 - Ready unary初次poll返回；
@@ -107,8 +131,14 @@ request。若deadline分支选中后才到达cancel，fallback仍固定为typed 
 - cancel + expired deadline + ready provider时cancel优先；
 - deadline typed error与provider request cancel signal；
 - stream terminal、item、publication的deadline typed结果；
+- pending `TestStreamRuntime` consumer实际收到typed producer deadline，而非helper enum或
+  `Cancelled`；
+- item publication deadline穿过provider terminal后仍由consumer收到typed deadline；
+- 被capacity-one背压阻塞的terminal publication超时后，以typed deadline替换原terminal；
 - stream item/publication的cancel-over-deadline顺序；
-- request cancel与deadline后的provider task、stream registry和lease清理；
+- request cancel与deadline后的provider task、stream registry和lease清理；deadline host探针先
+  确认detached task真实启动并阻塞，再观察task归零、provider request cancel、scope teardown后
+  concrete stream registry归零；
 - provider task counter exact-once guard。
 
 ## 4. 旧 protocol summary consumer与保留检查
@@ -201,7 +231,7 @@ CARGO_TARGET_DIR=/Users/geek/workspace/skiff-phase-05-integration/build/cargo-ta
 | `cargo fmt --all -- --check` | — | PASS |
 | `git diff --check` | — | PASS |
 
-### 6.2 当前并行base的out-of-scope阻断
+### 6.2 原始N3 base的out-of-scope阻断
 
 按任务要求先执行各selector的 `-- --list`。以下target在生成listing前就被N1/N2旧消费者阻断，
 因此没有把D93基线计数冒充本节点实际计数，也没有在listing失败后运行对应selector：
@@ -235,12 +265,63 @@ required八package `cargo check`同样在
 且正由并行N1/N2 owner迁移；本分支没有越权修补、merge或cherry-pick。integration owner需要在
 N1/N2/N3汇合后重新执行五个未列出selector及required八package check。
 
-### 6.3 静态验收
+### 6.3 Review correction的只读N1/N2 override验证
+
+follow-up验证时，clean integration worktree为：
+
+```text
+HEAD  ca8f15a866bea5e19bd96b22f315b914cb7e1285
+tree  439f949b3f6ce6b363990ae5ac3ac1c68cc94506
+N1    4ab80bb7f71e5b296df0d7169ab9e4ee5ca79b97
+N2    1fb86114d64ddda165bcb74e65343813d9cd8936
+```
+
+没有merge、rebase或cherry-pick。Cargo通过只读 `paths` override使用integration worktree中的
+`deployment` 以及N1修改的8个compiler subcrate，并保留本分支的 `runtime/**`：
+
+```text
+CARGO_TARGET_DIR=/tmp/skiff-f419-target
+cargo ... --locked --config 'paths=[
+  ".../skiff-phase-05-integration/deployment",
+  ".../skiff-phase-05-integration/compiler/compiled",
+  ".../skiff-phase-05-integration/compiler/contract",
+  ".../skiff-phase-05-integration/compiler/core",
+  ".../skiff-phase-05-integration/compiler/lowering",
+  ".../skiff-phase-05-integration/compiler/projection-input",
+  ".../skiff-phase-05-integration/compiler/projection",
+  ".../skiff-phase-05-integration/compiler/source"
+]'
+```
+
+| selector / command | listing | execution |
+| --- | ---: | --- |
+| `skiff-runtime-eval assembly_execution::async_stream_cancel::tests` | 24 tests / 0 benchmarks | 24 passed / 0 failed |
+| `skiff-runtime-host loader::assembly_admission::tests::execution::async_stream_cancel` | 14 tests / 0 benchmarks | 14 passed / 0 failed |
+| 3个新增real-consumer deadline probes逐条运行 | 各1 test | 3 passed / 0 failed |
+| concrete host deadline task/stream/lease probe逐条运行 | 1 test | 1 passed / 0 failed |
+| `cargo check -p skiff-runtime-eval --lib` | — | PASS |
+| `cargo fmt --all -- --check` | — | PASS |
+| `git diff --check` | — | PASS |
+
+补充执行 `cargo test -p skiff-runtime-eval --lib` 共216条：208 passed，8 failed。8条均是只读
+override把新N1 compiler校验与当前N3 base旧测试fixture组合后的已知integration mismatch：
+
+- 6条旧package-direct fixture仍使用
+  `callable:package-direct-mutate`，新校验要求
+  `pkg-callable:example.package-direct-callee:mutate`；
+- 2条source-inline fixture写入空 `api.yml`，新package parser拒绝
+  `api.yml must not be empty`。
+
+新增deadline probes与整个async stream cancel模块均全绿；上述8条未触及本次修改的stream
+terminal路径，也没有越权修改compiler或旧fixture。真正的N1/N2/N3 combined full gate仍由
+integration owner在汇合分支执行。
+
+### 6.4 静态验收
 
 | 检查 | 结果 |
 | --- | --- |
 | 三个required ancestor | PASS |
-| 改动只在implementation的 `runtime/**` | PASS（27 files） |
+| 改动只在implementation的 `runtime/**` | PASS（首提交27 files；review correction 3 files） |
 | old runtime protocol summary owner/access reverse search | PASS（0 matches） |
 | exact mapping initializer diff count | PASS（13；4/3/4/2） |
 | 四个production mapping owner unchanged | PASS |
@@ -251,13 +332,17 @@ N1/N2/N3汇合后重新执行五个未列出selector及required八package check�
 
 未运行：
 
-- 被N1/N2旧消费者挡住的request、eval、linker、loader、host实际selector；
-- N1/N2/N3 combined focused gate（由integration owner执行）；
+- 原始base上被N1/N2旧消费者挡住的request、linker、loader及完整host selector；
+- N1/N2/N3真实汇合分支上的combined focused gate（由integration owner执行）；follow-up只用只读
+  path override运行了eval/host async stream cancel模块；
 - workspace/full isolated；
 - stable instance、service watch、chat smoke或任何live验证。
 
 没有清理共享Cargo target，没有改stable instance配置，没有merge/rebase/cherry-pick/push。
 
-结论：P5-F419 N3 runtime implementation已完成并提交；独立可运行的11个required selector tests与
-14个supplemental boundary tests通过，静态owner/mapping验收通过。剩余验证项是已精确定位的并行
-N1/N2 integration gate，不是扩展本节点production scope的理由。
+结论：P5-F419 N3 runtime implementation及deadline terminal review correction均已完成并提交。
+独立可运行的11个required selector tests与14个supplemental boundary tests通过；只读N1/N2
+override下eval async stream cancel 24/24、host async stream cancel 14/14通过，真实pending
+consumer保持typed deadline，provider task、request、stream registry与lifetime均有清理证据；
+静态owner/mapping验收通过。剩余验证项是已精确定位的并行N1/N2 integration gate，不是扩展本节点
+production scope的理由。
