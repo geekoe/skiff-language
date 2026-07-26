@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn as spawnAdditionalRuntimeChild } from 'node:child_process';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -219,7 +219,8 @@ async function startIsolatedTestRuntime({
         runtimeHome,
         environment,
       }), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-      const child = spawn(
+      // child-process-owner: isolated-additional-runtime
+      const child = spawnAdditionalRuntimeChild(
         join(devHome, 'bin', runtimeBinaryName()),
         [runtimeConfig],
         { cwd: skiffRoot, env: isolatedEnv, stdio: 'inherit' },

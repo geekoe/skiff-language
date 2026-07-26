@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn as spawnPlatformSourceProbeChild } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import {
   access,
@@ -107,7 +107,8 @@ async function captureOwnedCommand(command, args, {
 } = {}) {
   signal?.throwIfAborted();
   const detached = process.platform !== 'win32';
-  const child = spawn(command, args, {
+  // child-process-owner: platform-source-probe-group
+  const child = spawnPlatformSourceProbeChild(command, args, {
     cwd,
     env,
     detached,
