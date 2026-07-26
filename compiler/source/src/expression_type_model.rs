@@ -5319,6 +5319,66 @@ mod tests {
     }
 
     #[test]
+    fn nullable_union_alias_record_field_matches_nullable_parameter() {
+        expression_type_result(
+            r#"
+              alias Format = "png" | "jpeg" | "webp"
+              type Request { format: Format? }
+
+              function consume(format: Format?) -> void {}
+
+              function run(input: Request) -> void {
+                consume(input.format)
+              }
+            "#,
+        )
+        .expect("nullable union alias field should match the same local parameter type");
+    }
+
+    #[test]
+    fn nullable_union_alias_does_not_drop_null_from_record_field() {
+        let error = expression_type_result(
+            r#"
+              alias Format = "png" | "jpeg" | "webp"
+              type Request { format: Format? }
+
+              function consume(format: Format) -> void {}
+
+              function run(input: Request) -> void {
+                consume(input.format)
+              }
+            "#,
+        )
+        .expect_err("nullable union alias field must not match a non-null parameter");
+        assert!(
+            error.message().contains("argument 1 type mismatch"),
+            "unexpected diagnostic: {}",
+            error.message()
+        );
+    }
+
+    #[test]
+    fn nullable_union_alias_rejects_non_member_literal() {
+        let error = expression_type_result(
+            r#"
+              alias Format = "png" | "jpeg" | "webp"
+
+              function consume(format: Format?) -> void {}
+
+              function run() -> void {
+                consume("gif")
+              }
+            "#,
+        )
+        .expect_err("non-member literal must not enter a nullable union alias");
+        assert!(
+            error.message().contains("argument 1 type mismatch"),
+            "unexpected diagnostic: {}",
+            error.message()
+        );
+    }
+
+    #[test]
     fn actor_self_field_assignment_requires_declared_field_type() {
         let error = expression_type_result(
             r#"

@@ -627,15 +627,12 @@ impl TypeResolutionModel {
         raw: &str,
         context: &TypeResolutionContext<'_>,
     ) -> Result<ResolvedTypeRef, String> {
-        self.reject_any_interface_selector_aliases(&TypeExpr::parse(raw), context)?;
-        let expanded = self.expand_alias_text(raw, context)?;
-        let expr = TypeExpr::parse(&expanded);
+        let expr = TypeExpr::parse(raw);
+        self.reject_any_interface_selector_aliases(&expr, context)?;
+        let source_text = self.expand_alias_text(raw, context)?;
         let ir = self.resolve_type_expr(&expr, context)?;
         let ir = self.expand_alias_type_ref(&ir, context)?;
-        Ok(ResolvedTypeRef {
-            ir,
-            source_text: expanded,
-        })
+        Ok(ResolvedTypeRef { ir, source_text })
     }
 
     /// Produces the exact semantic type represented by `ty`, recursively
@@ -656,6 +653,7 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Result<TypeRefIr, String> {
         self.expand_alias_type_ref_inner(ty, context, &mut BTreeSet::new())
+            .map(normalize_source_type_ref)
     }
 
     fn expand_alias_type_ref_inner(
@@ -1877,15 +1875,15 @@ impl TypeResolutionModel {
                     .map(|arg| self.canonicalize_type_ref(arg))
                     .collect(),
             },
-            TypeRefIr::Nullable { inner } => TypeRefIr::Nullable {
+            TypeRefIr::Nullable { inner } => normalize_source_type_ref(TypeRefIr::Nullable {
                 inner: Box::new(self.canonicalize_type_ref(inner)),
-            },
-            TypeRefIr::Union { items } => TypeRefIr::Union {
+            }),
+            TypeRefIr::Union { items } => normalize_source_type_ref(TypeRefIr::Union {
                 items: items
                     .iter()
                     .map(|item| self.canonicalize_type_ref(item))
                     .collect(),
-            },
+            }),
             TypeRefIr::Record { fields } => TypeRefIr::Record {
                 fields: fields
                     .iter()
@@ -1940,15 +1938,15 @@ impl TypeResolutionModel {
                     .map(|arg| self.canonicalize_type_ref_for_module(module_path, arg))
                     .collect(),
             },
-            TypeRefIr::Nullable { inner } => TypeRefIr::Nullable {
+            TypeRefIr::Nullable { inner } => normalize_source_type_ref(TypeRefIr::Nullable {
                 inner: Box::new(self.canonicalize_type_ref_for_module(module_path, inner)),
-            },
-            TypeRefIr::Union { items } => TypeRefIr::Union {
+            }),
+            TypeRefIr::Union { items } => normalize_source_type_ref(TypeRefIr::Union {
                 items: items
                     .iter()
                     .map(|item| self.canonicalize_type_ref_for_module(module_path, item))
                     .collect(),
-            },
+            }),
             TypeRefIr::Record { fields } => TypeRefIr::Record {
                 fields: fields
                     .iter()
@@ -5296,12 +5294,102 @@ fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<TypeRefIr> {
     }
 }
 
-fn union_type_ir(mut items: Vec<TypeRefIr>) -> TypeRefIr {
-    items.sort_by_key(type_ref_debug_text);
-    items.dedup();
-    match items.as_slice() {
+fn union_type_ir(items: Vec<TypeRefIr>) -> TypeRefIr {
+    normalize_source_type_ref(TypeRefIr::Union { items })
+}
+
+fn normalize_source_type_ref(ty: TypeRefIr) -> TypeRefIr {
+    match ty {
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
+            name,
+            args: args.into_iter().map(normalize_source_type_ref).collect(),
+        },
+        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+            base,
+            arguments: arguments
+                .into_iter()
+                .map(normalize_source_type_ref)
+                .collect(),
+        },
+        TypeRefIr::Record { fields } => TypeRefIr::Record {
+            fields: fields
+                .into_iter()
+                .map(|(name, ty)| (name, normalize_source_type_ref(ty)))
+                .collect(),
+        },
+        TypeRefIr::Union { items } => normalize_source_union(items, false),
+        TypeRefIr::Nullable { inner } => normalize_source_union(vec![*inner], true),
+        TypeRefIr::AnyInterface { interface } => TypeRefIr::AnyInterface {
+            interface: InterfaceInstantiationRef {
+                interface_abi_id: interface.interface_abi_id,
+                canonical_type_args: interface
+                    .canonical_type_args
+                    .into_iter()
+                    .map(normalize_source_type_ref)
+                    .collect(),
+            },
+        },
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => TypeRefIr::Function {
+            params: params
+                .into_iter()
+                .map(|param| FunctionTypeParamIr {
+                    name: param.name,
+                    ty: normalize_source_type_ref(param.ty),
+                })
+                .collect(),
+            return_type: Box::new(normalize_source_type_ref(*return_type)),
+        },
+        other => other,
+    }
+}
+
+fn normalize_source_union(items: Vec<TypeRefIr>, force_nullable: bool) -> TypeRefIr {
+    let mut flattened = Vec::new();
+    let mut has_null = force_nullable;
+    for item in items {
+        collect_source_union_member(
+            normalize_source_type_ref(item),
+            &mut flattened,
+            &mut has_null,
+        );
+    }
+    flattened.sort_by_key(type_ref_debug_text);
+    flattened.dedup();
+    let base = match flattened.as_slice() {
+        [] if has_null => return TypeRefIr::builtin("null"),
+        [] => return TypeRefIr::Union { items: flattened },
         [only] => only.clone(),
-        _ => TypeRefIr::Union { items },
+        _ => TypeRefIr::Union { items: flattened },
+    };
+    if has_null {
+        TypeRefIr::Nullable {
+            inner: Box::new(base),
+        }
+    } else {
+        base
+    }
+}
+
+fn collect_source_union_member(
+    item: TypeRefIr,
+    flattened: &mut Vec<TypeRefIr>,
+    has_null: &mut bool,
+) {
+    match item {
+        TypeRefIr::Union { items } => {
+            for item in items {
+                collect_source_union_member(item, flattened, has_null);
+            }
+        }
+        TypeRefIr::Nullable { inner } => {
+            *has_null = true;
+            collect_source_union_member(*inner, flattened, has_null);
+        }
+        item if is_null_type_ir(&item) => *has_null = true,
+        item => flattened.push(item),
     }
 }
 
@@ -5966,6 +6054,52 @@ mod tests {
             .expect("platform sources load");
         crate::prelude_registry::initialize_prelude_registry(&platform_sources)
             .expect("prelude registry initializes");
+    }
+
+    #[test]
+    fn nullable_union_alias_uses_one_outer_nullable_canonical_identity() {
+        let (_parsed, model) = type_resolution(
+            r#"
+              alias Format = "png" | "jpeg" | "webp"
+            "#,
+        );
+        let literal = |value: &str| TypeRefIr::Literal {
+            value: LiteralIr::String {
+                value: value.to_string(),
+            },
+        };
+        let union = TypeRefIr::Union {
+            items: vec![literal("jpeg"), literal("png"), literal("webp")],
+        };
+        let expected_nullable = TypeRefIr::Nullable {
+            inner: Box::new(union.clone()),
+        };
+
+        for spelling in [
+            "Format?",
+            "Format | null",
+            "\"png\" | \"jpeg\" | \"webp\"?",
+            "null | \"webp\" | \"png\" | \"jpeg\" | \"png\"",
+        ] {
+            let resolved = model
+                .resolve_type_text(spelling, &context())
+                .unwrap_or_else(|error| panic!("{spelling} should resolve: {error}"));
+            assert_eq!(
+                resolved.ir, expected_nullable,
+                "{spelling} must normalize nullable over the complete union"
+            );
+        }
+
+        let reordered_with_duplicates = model
+            .resolve_type_text(
+                "\"webp\" | \"png\" | \"jpeg\" | \"png\" | \"webp\"",
+                &context(),
+            )
+            .expect("reordered duplicate union should resolve");
+        assert_eq!(
+            reordered_with_duplicates.ir, union,
+            "non-null union ordering and deduplication must remain stable"
+        );
     }
 
     #[test]
