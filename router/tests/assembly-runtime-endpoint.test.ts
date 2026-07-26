@@ -45,7 +45,7 @@ const RUNTIME_ID = 'runtime-assembly-a';
 const SERVICE_ID = 'example.com/actors';
 const SERVICE_VERSION = '1.0.0';
 const SERVICE_PROTOCOL =
-  `skiff-service-protocol-v3:sha256:${'c'.repeat(64)}`;
+  `skiff-service-protocol-v4:sha256:${'c'.repeat(64)}`;
 const BUILD_ID = `skiff-service-build-v1:sha256:${'d'.repeat(64)}`;
 const TARGET = 'function:service.example~actors.ActorApi.spawn';
 const SPAWN_COMPATIBILITY = `${SERVICE_VERSION}:${SERVICE_PROTOCOL}:${TARGET}`;
@@ -312,7 +312,7 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     expect(runtimeRequests).toBe(0);
   });
 
-  it('authorizes active actor/spawn control and round-trips structured activation identity', async () => {
+  it('authorizes active actor/spawn control and preserves the current service protocol identity', async () => {
     const fixture = await createFixture();
     const ws = await openSocket(fixture.url);
     sendCapabilities(ws, RUNTIME_ID);
@@ -404,6 +404,7 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
         item: {
           serviceId: SERVICE_ID,
           buildId: BUILD_ID,
+          serviceProtocolIdentity: SERVICE_PROTOCOL,
           activationIdentity
         }
       }

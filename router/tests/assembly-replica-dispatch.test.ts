@@ -2,7 +2,10 @@ import WebSocket from 'ws';
 import { expect, it, vi } from 'vitest';
 
 import { assemblyHttpRequestHeader } from '../src/router/assemblyHttpGateway.js';
-import { validateRuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeProtocol.js';
+import {
+  runtimeFrameHeaderFixtures,
+  validateRuntimeAssemblyRequestStartFrameHeader
+} from '../src/protocol/runtimeProtocol.js';
 import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
 import {
   ProviderUnavailableError,
@@ -17,7 +20,7 @@ import {
 
 const ASSEMBLY_A = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 const ASSEMBLY_B = `skiff-runtime-assembly-v2:sha256:${'b'.repeat(64)}`;
-const PROTOCOL = `skiff-service-protocol-v3:sha256:${'c'.repeat(64)}`;
+const PROTOCOL = `skiff-service-protocol-v4:sha256:${'c'.repeat(64)}`;
 const GATEWAY_ENTRY_IDENTITY =
   `skiff-gateway-entry-v1:sha256:${'e'.repeat(64)}`;
 const binding: RuntimeAssemblyIngressBinding = {
@@ -42,6 +45,27 @@ it('round-robins only healthy replicas of the exact committed assembly generatio
   const socketB = fakeSocket();
   register(registry, socketA, 'replica-a', 1, ASSEMBLY_A);
   register(registry, socketB, 'replica-b', 1, ASSEMBLY_A);
+  const activationIdentity = {
+    assemblyIdentity: ASSEMBLY_A,
+    generation: 1,
+    runtimeReplicaId: 'replica-a',
+    deploymentRevision: binding.deployment.deploymentRevision
+  };
+  const registeredControlSource = registry.actorSpawnRuntimeControlSource(socketA, {
+    ...runtimeFrameHeaderFixtures['spawn.submit.request'],
+    runtimeId: 'replica-a',
+    activationIdentity,
+    serviceId: binding.deployment.serviceId,
+    serviceVersion: binding.deployment.contractVersion,
+    serviceProtocolIdentity: PROTOCOL
+  });
+  expect(registeredControlSource).toMatchObject({
+    runtimeId: 'replica-a',
+    serviceId: binding.deployment.serviceId,
+    serviceProtocolIdentity: PROTOCOL,
+    activationIdentity
+  });
+  expect(registeredControlSource?.serviceProtocolIdentity).toBe(PROTOCOL);
   expect(registry.actorRuntimeCandidates('example/models')).toEqual([
     { runtimeId: 'replica-a', ws: socketA },
     { runtimeId: 'replica-b', ws: socketB }

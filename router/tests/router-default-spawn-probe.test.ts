@@ -31,7 +31,7 @@ import {
 const runtimeId = 'runtime-default-spawn-probe';
 const serviceId = 'example.com/default-spawn-probe';
 const buildId = `skiff-service-build-v1:sha256:${'b'.repeat(64)}`;
-const assemblyIdentity = `skiff-runtime-assembly-v1:sha256:${'d'.repeat(64)}`;
+const assemblyIdentity = `skiff-runtime-assembly-v2:sha256:${'d'.repeat(64)}`;
 const deploymentRevision = 'deployment-revision-default-spawn-probe';
 const activationIdentity = {
   assemblyIdentity,
@@ -39,7 +39,7 @@ const activationIdentity = {
   runtimeReplicaId: runtimeId,
   deploymentRevision,
 } as const;
-const serviceProtocolIdentity = `skiff-service-protocol-v3:sha256:${'c'.repeat(64)}`;
+const serviceProtocolIdentity = `skiff-service-protocol-v4:sha256:${'c'.repeat(64)}`;
 const serviceVersion = '1.0.0';
 const target = 'function:service.example~com~~default~spawn~probe.Api.run';
 
