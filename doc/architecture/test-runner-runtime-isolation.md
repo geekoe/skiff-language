@@ -109,7 +109,7 @@ target 重复执行来规避隔离。
 
 `--service-artifact-root` 始终是只读输入。非 live runner 把输入 root 的全部 service
 pointers 和所需 artifact 复制进临时 root，使 direct dependency 的 transitive runtime
-closure 可用；它仍校验 publication 声明的 direct service IDs 确实存在。live mode 不扩大
+closure 可用；它仍校验`package.yml.services`声明的direct service IDs确实存在。live mode不扩大
 复制范围。runner 调用 `skiff-dev-sync` 时必须显式传入临时 build root。
 
 ## Lifecycle And Recovery

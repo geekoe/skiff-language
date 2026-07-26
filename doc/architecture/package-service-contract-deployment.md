@@ -4,7 +4,7 @@
 compiler、artifact、runtime、router和registry共同遵守的canonical架构契约，不是实现计划，也不
 冻结最终YAML字段名或CLI拼写。
 
-Skiff尚未发布。实现应直接收敛到本文模型，不为旧service源码、旧publication artifact或旧
+Skiff尚未发布。实现应直接收敛到本文模型，不为旧service源码、旧共同发布对象artifact或旧
 compiler pipeline保留兼容层。
 
 ## 1. 核心结论
@@ -44,10 +44,12 @@ framing等叶子类型，但不能用共享DTO重新制造隐式父模型。
    `config.*.yml`。
 2. 普通package root包含`.skiff`、`package.yml`和`api.yml`；service root在此基础上增加
    `service.yml`与零个或多个`config.*.yml`。service root不得缺少`package.yml`，也不存在开发者维护的
-   `deployment.yml`。
+   `deployment.yml`。`api.yml`也不得省略；没有公开API时必须显式写为`{}`。
 3. `api.yml`是package call与service-to-service call共用的公开API owner；HTTP、WebSocket等外部入口
    由`service.yml`拥有。外部handler不因成为ingress而进入`api.yml`，也不因此对其它service可调用。
-4. ServiceContract只由compiler/tooling从typed package API中的service-call可用子集确定性投影；
+4. `api.yml`中的`serviceCall: true`只标记service-to-service callable roots，不重复列type；未标记
+   callable只是Package API。ServiceContract只由compiler/tooling从这些显式roots及其typed
+   PackageSchema closure确定性投影；
    consumer只依赖发布后的code-free projection，不读取provider实现源码或外部ingress。
 5. ServiceDeployment不解析AST、不重新做type/effect分析；它由工具消费typed PackageArtifact、
    ServiceContract、compiler已经形成的typed ingress projection、`service.yml`和所选
@@ -79,7 +81,9 @@ Service仍走同一个package compiler入口；存在`service.yml`时，compiler
 `service.yml`拥有service id与HTTP/WebSocket等外部ingress：route、handler/pre/guard source selector、
 adapter参数来源及外部协议metadata。handler selector指向当前service package中的普通source callable，
 不要求该callable出现在`api.yml`。`service.yml`不含version、dependency、service-call API type/function
-映射、实现artifact binding、平台组织角色或request/response大小策略。`config.*.yml`只绑定已经声明的
+映射、与handler类型重复的业务JSON schema、实现artifact binding、平台组织角色或request/response大小
+策略。External schema和runtime codec plan由compiler从精确linked handler signature、adapter kind与参数
+来源确定性生成。`config.*.yml`只绑定已经声明的
 config/secret/state/resource requirement，不改变package/service dependency graph。
 
 PackageArtifact至少包含：
@@ -130,10 +134,20 @@ PackageSchemaIndex
 display string或某个ServiceContract的发现路径生成隐藏稳定键。匿名discriminator branch不是独立named
 type，没有自己的key；它只作为owner named union descriptor的一部分。
 
+同一个source nominal declaration第一版只能拥有一个canonical public path；record、representation、union
+或interface被`api.yml`重复绑定到多个public path必须fail closed。function可以显式拥有多个public path；
+每个path是独立callable surface并拥有独立public callable identity。
+
 外部HTTP/WebSocket ingress不是service-call boundary。其handler参数与返回值由compiler保存的linked
 callable signature和专用gateway adapter plan编解码，不要求内部业务类型为了external ingress而进入
 `api.yml`或PackageSchema。对外文档所需的JSON schema是entry-local协议描述，不是Skiff名义类型identity，
 也不能反向成为runtime binary codec的事实源。
+
+Compiler只对adapter实际映射到external source/sink的值计算entry-local schema closure。HTTP body、
+query/path/header参数、HTTP response与typed WebSocket message body可以形成外部wire shape；pre/guard内部
+context、WebSocket connection context及其它只在runtime adapter与handler之间流动的值不进入该closure。
+私有named type可以贡献外部shape，但其source name、module path与Skiff nominal identity不得泄露为public
+type；只改私有名字而保持canonical external shape不改变`GatewayEntryIdentity`。
 
 第一版Package boundary schema graph必须无递归环；用户递归record本来就不是SchemaClosed。projection在计算
 identity前对所有named-type引用建图并拒绝self-cycle或SCC。随后按拓扑序计算
@@ -181,18 +195,26 @@ BoundaryCallableProjection
   | Unavailable([BoundaryUnavailableReason...])
 ```
 
-普通package允许同时拥有Available和Unavailable public functions。存在`service.yml`时，`api.yml`中的每个
-service-call Available public function自动成为service operation；Unavailable function仍是合法package
-API，但不会进入ServiceContract。公开type、alias或interface也可以只服务package linkage而没有合法
+普通package允许同时拥有Available和Unavailable public functions。未带`serviceCall: true`的callable无论
+Available或Unavailable都只是Package API。存在`service.yml`时，只有显式带marker且Available的public
+function或public-instance method成为service operation；显式marker但Unavailable必须让service projection
+以完整结构化原因失败，不能静默排除。公开type、alias或interface也可以只服务package linkage而没有合法
 PackageSchema投影；generic declaration等不能进入service-call schema的public symbol必须保留在
 PackageLocalAbi，并以结构化boundary-unavailable事实阻止相关service operation，不能让整个Package因一个
 未被service-call使用的公开generic declaration失败。compiler/tooling必须输出完整、稳定、可机器读取的
 列表及结构化原因；构建摘要、CLI/JSON、artifact receipt与IDE应消费同一projection，不能静默排除。
 
+`serviceCall: true`是第一版唯一service-call选择机制，只能标在function leaf或public-instance leaf。
+它不复制参数、返回或错误类型；compiler从标记的callable signature递归闭合已在`api.yml`拥有canonical
+public path的PackageSchema types。普通Package出现marker必须报错；`service.yml`不维护第二份
+include/exclude清单。public instance标记一次表示其显式listed interfaces的全部methods；若只需部分methods，
+作者必须使用更窄interface或wrapper function。
+
 `service.yml`引用的每个external handler另行生成typed ingress projection。它可以引用非public callable和
 非public named type，但必须有完整linked signature、精确PackageCallableId、合法adapter plan以及可执行的
 external codec。Ingress availability与service-call availability分开报告；不能通过把handler补进
-`api.yml`来绕过ingress校验。
+`api.yml`来绕过ingress校验。第一版handler/pre/guard不能是generic function declaration；其concrete
+signature可以引用fully instantiated generic platform types。
 
 缺字段不表示不可用或尚未分析。PackageArtifact必须保存完成boundary判断所需的typed effect、
 provenance和link facts，使deployment无需读取源码。
@@ -207,7 +229,7 @@ config/state/native capability requirement和完整may-effect属于
 同一个PackageArtifact可以同时：
 
 - 被其它package直接链接；
-- 在存在`service.yml`时生成一个ServiceContract并实现其全部自动投影operations；
+- 在存在`service.yml`时从显式service-call roots生成一个ServiceContract并实现其全部operations；
 - 为同一个service生成不进入ServiceContract的typed external ingress entries；
 - 被多个ServiceDeployment revision复用；
 - 在同一assembly内只链接一份代码，由多个activation context调用。
@@ -215,8 +237,9 @@ config/state/native capability requirement和完整may-effect属于
 ## 4. ServiceContract
 
 ServiceContract是独立发布、无代码的service-to-service typed API projection artifact。它的唯一
-operation authoring source是service package自己的`.skiff` declarations与`api.yml`，`service.yml`只提供
-service id；不存在独立contract YAML/IDL、类型映射或第二套service-call函数清单。它不引用provider
+operation authoring source是service package自己的`.skiff` declarations与`api.yml`中显式
+`serviceCall: true` roots。`service.yml`只向这项projection提供service id；不存在独立contract
+YAML/IDL、类型映射或第二套service-call函数清单。ServiceContract不引用provider
 build、config、runtime replica或HTTP/WebSocket ingress。
 
 ```text
@@ -261,17 +284,10 @@ operation引用的任一`PackageSchemaTypeId`或其闭包变化都属于API内�
 类型identity不变，Package内部实现、无关public function、未被该contract引用的Package类型或version label
 变化都不能机械改变ServiceProtocolIdentity。
 
-为支持循环service dependency，compiler/tooling按两阶段处理同一批service package source：
-
-```text
-project/publish all service API declarations
-  -> compile package bodies against exact service API projections
-  -> generate ServiceDeployments
-```
-
-这不是第二套语言前端：declaration projection与package compile共用canonical typed API机制，只把函数体
-执行编译推迟到所有service API closure可用之后。Package type requirement只能指向content-addressed
-PackageSchemaTypeRecord，不能指向另一个ServiceContract；因此不会通过跨contract type引用重新制造循环closure。
+第一版`package.yml.services`形成的service dependency graph必须是DAG。Compiler/tooling按拓扑顺序解析已生成
+的精确ServiceContract并编译consumer；同一编译批次或已解析dependency closure中出现环必须在编译
+Package body前fail closed，不得隐式启动跨Package的两阶段全局源码批编译。需要反向调用时使用显式
+callback capability、actor或重新划分Service边界，而不是制造静态service dependency cycle。
 
 ## 5. ServiceDeployment
 
@@ -284,31 +300,40 @@ ServiceDeployment
   implementation PackageArtifact ref
   operationBindings: contractOperationId -> packageCallableId
   dependencyBindings
-  gatewayEntries: gatewayEntryIdentity -> {
+  gatewayEntries: gatewayEntryKey -> {
+    gatewayEntryIdentity
     protocol
     handler/pre/guard packageCallableId
     typed adapter plan
     external protocol metadata
   }
-  ingress: externalSelector -> gatewayEntryIdentity
+  ingress: externalSelector -> gatewayEntryKey
   config/secrets bindings
   state/DB/actor/queue ownership
   timeout/resource/activation policy
 ```
 
 operation mapping由同一service package的ServiceContract projection与PackageArtifact public callable
-identity确定性生成。所有Available public functions自动进入；不得要求开发者在`service.yml`或
-`deployment.yml`重复映射。生成artifact必须写入稳定callable id，runtime禁止按display name猜target。
+identity确定性生成。只有显式service-call roots进入；不得要求开发者在`service.yml`或`deployment.yml`
+重复映射。生成artifact必须写入稳定callable id，runtime禁止按display name猜target。
 
 Ingress不绑定`ContractOperationId`，也不进入ServiceContract。Compiler从`service.yml`的source selector
-解析当前implementation中的精确`PackageCallableId`，校验handler signature与adapter source，并生成
-`GatewayEntryIdentity`。Deployment只消费该typed projection并把external selector绑定到gateway entry；
+解析当前implementation中的精确`PackageCallableId`，校验handler signature与adapter source，生成typed
+gateway entry并计算`GatewayEntryIdentity`。`gatewayEntryKey`只是`service.yml`内稳定、owner-local的entry
+键，使同一协议identity可以绑定不同implementation或被多个selector复用；它不是内容identity。
+Deployment只消费该typed projection并把external selector绑定到gateway entry；
 Router和Runtime不得按source path、display name或同名service operation猜handler。
 
-`GatewayEntryIdentity`覆盖会改变gateway/runtime adapter wire shape或handler ABI的事实，包括entry kind、
-handler/pre/guard callable identity、adapterArgs、WebSocket context expectation和相关external protocol
-metadata；external selector与deployment binding也必须被deployment revision覆盖。Ingress变化可以产生新
-gateway identity和deployment revision，但不改变service-call protocol identity。
+`GatewayEntryIdentity`只标识external protocol surface。它的canonical preimage覆盖entry kind、外部
+request/response/stream shape、HTTP path/query/header/body等adapter source映射、WebSocket context
+expectation、公开错误投影及其它会改变gateway wire兼容性的metadata。它不包含source selector、
+handler/pre/guard `PackageCallableId`、内部名义类型identity、PackageArtifact/build或deployment policy。
+Compiler仍必须验证由linked handler signature导出的external schema和typed adapter plan与该surface逐项
+一致。
+
+具体handler/pre/guard callable、完整typed adapter execution plan、implementation artifact、external
+selector和policy只由ServiceDeployment及其revision覆盖。只替换实现且external protocol不变时，
+`GatewayEntryIdentity`保持不变而deployment revision改变；改变external wire surface时两者都改变。
 
 Package source中的service dependency alias使用现有qualified namespace，不新增另一套type/import语法：
 
@@ -334,7 +359,7 @@ binding或运行时猜测。
 
 deployment validation必须保证：
 
-- 每个自动生成的service operation恰好映射到其source public callable；
+- 每个由显式service-call root生成的operation恰好映射到其source public callable；
 - 不存在手工增加、遗漏或重复operation；
 - target callable的boundary projection是`Available`；
 - operation descriptor、schema closure与同一canonical API projection逐项精确匹配；
@@ -342,7 +367,7 @@ deployment validation必须保证：
 - 每个`service.yml` ingress selector恰好绑定一个canonical gateway entry；
 - gateway entry中的handler/pre/guard全部解析到当前implementation的精确callable，adapterArgs与其linked
   signature逐项匹配，且不会被加入ServiceContract；
-- gateway entry identity、external selector和deployment revision覆盖各自规定的全部事实；
+- gateway entry protocol identity与deployment binding/revision分别覆盖各自规定的全部事实，互不吞并；
 - 第一版不生成用户语义adapter、字段兼容或fallback；
 - implementation package及其依赖闭包可解析；
 - config、state与runtime capability requirements全部得到唯一binding。
@@ -500,7 +525,8 @@ service response只传输上面的错误envelope，不把callee的request-local`
 ### 6.4 External ingress
 
 HTTP、WebSocket及未来其它gateway entry不是service boundary call。外部请求按
-`IngressSelector -> GatewayEntryIdentity`进入当前activation，再由gateway entry中冻结的精确
+`IngressSelector -> GatewayEntryKey -> GatewayEntryIdentity`进入当前activation，再由deployment
+gateway entry binding中冻结的精确
 `PackageCallableId`执行handler；它不经过service dependency slot，也不伪造`ContractOperationId`。
 
 Ingress仍复用普通语言函数、Package本地链接、ActivationContext、错误通道和结构化取消，但不复用
@@ -515,9 +541,10 @@ ServiceContract作为对外声明：
 - ingress抛出的错误可复用固定service error carrier交给gateway做脱敏投影，但外部caller不会因此成为一个
   可`catch<E>`的Skiff service caller。
 
-同一个source function可以被作者分别列入`api.yml`和`service.yml`，但这是两个显式surface：前者生成
-service-call operation，后者生成external gateway entry。Compiler必须分别验证并生成不同identity，不能因
-source target相同而把两者合并或互相推断。
+同一个source function可以被作者分别列入`api.yml`和`service.yml`，但这是两个显式surface：
+`api.yml`中的function leaf只有显式带`serviceCall: true`才生成service-call operation，
+`service.yml`中的引用生成external gateway entry。Compiler必须分别验证并生成不同identity，不能因source
+target相同而把两者合并或互相推断。
 
 ## 7. Linkable、Recoverable 与 Callback Capability
 
@@ -729,76 +756,12 @@ Package link与service binding使用不同的可变性边界：
 pointer可以切换到新的deployment revision，不表示ServiceContract或任何不可变artifact可以被覆盖。
 API内容变化会产生新的service API identity；旧consumer不能仅凭相同人类版本label被静默迁移。
 
-第一版每个environment只有一个active assembly，root set是该环境全部active services。每个runtime
-replica加载完整相同assembly：
-
-- package code在replica内只链接一次；
-- service binding全部解析为`InProcessBoundary`；
-- 每个service拥有独立ActivationContext；
-- 每个ActivationContext拥有自己的service/config/state binding vector，共享package executable不共享这些
-  bindings；
-- replica内共享的是只读code/type/link image；activation-owned config view、state handle、callback table与
-  任何mutable runtime state不得因PackageBuildId相同而共享；
-- replica之间heap、CPU调度、request lifecycle与failure独立；
-- MongoDB、Redis等外部数据层按deployment配置共享。
-
-canonical runtime connection上的actor、spawn及后续同类跨request control frame必须显式携带当前
-ActivationIdentity，至少包含assembly identity、generation、runtime replica与deployment revision。Runtime
-从发起控制动作的当前ActivationContext填充该identity；callback、continuation或spawn source不能重建、删减
-或用ambient connection state替代它。
-
-`runtime.register.serviceProtocolIdentity`必须原样携带canonical
-`skiff-service-protocol-v2:sha256:<64 lowercase hex>`。register frame不得再包含`protocolVersion`：runtime
-transport版本只由frame的`schemaVersion`（当前为`skiff-runtime-frame-v1`）表达，禁止从
-ServiceProtocolIdentity前缀推导、复制或兼容读取第二份runtime protocol版本。
-
-Router先把frame绑定到发送者的exact assembly registration，再按该registration对应的active或draining
-generation snapshot验证完整identity。active generation可发起新控制动作；仍被request、stream、WebSocket或
-callback显式pin住的draining generation只在其pin生命周期内继续使用原ActivationContext。未注册sender、
-identity缺失/歧义、tuple不匹配、generation已完成drain或仅有legacy `runtime.register`/serviceId事实时一律
-fail closed。actor/spawn response继续按同一request与sender correlation返回，不能在Router中恢复
-service/build inference。
-
-这能整体扩CPU、内存与副本可用性，但不能单独隔离或扩缩某个service；一个service的CPU/memory故障
-可能影响同replica内其它service。第一版明确接受这一限制，并要求assembly admission、health、drain和
-atomic reload在runtime层可观测。
-
-Router与Runtime只通过共享artifact文件系统装载上述不可变记录，不依赖或感知registry service：
-
-- Router配置唯一`artifactsPath`与`serviceDb.mongoUrl`。Runtime连接后，Router必须先发送一次连接级
-  bootstrap control，其中包含规范化的绝对`artifactsPath`、`serviceDb: { mongoUrl }`和
-  `http: { maxResponseBytes }`；Runtime在任何activation/register之前固定这些值，同一连接内缺失、重复
-  冲突或变更一律fail closed；
-- Router与Runtime可以位于不同机器，但该路径在所有机器上具有相同字符串和内容语义；当前生产部署以网络文件
-  系统共享该路径；
-- Router从该路径读取release/assembly routing projection，只持有请求路由、generation与activation协调所需
-  的事实，不解析或链接package executable；
-- Runtime从同一路径读取选定RuntimeAssembly及其精确PackageArtifact/ServiceDeployment闭包，完成link与加载；
-- 路径中的immutable record必须先完整写入并校验identity，再原子更新pointer。Router reload只观察已经完成的
-  pointer，不接受半写入record。
-
-`artifactsPath`和`serviceDb.mongoUrl`都是部署拓扑配置，不进入PackageArtifact、ServiceContract、
-ServiceDeployment或RuntimeAssembly identity。Runtime不得为二者另设独立文件配置、环境变量或默认值。
-Runtime持有bootstrap DB transport binding不表示所有activation获得DB：只有声明并被deployment绑定DB
-requirement的activation才能得到`std.db` capability，service代码始终看不到URL。
-
-Router配置的HTTP形状固定为：
-
-```text
-http:
-  port: positive integer
-  maxRequestBytes: positive integer
-  maxResponseBytes: positive integer
-```
-
-两项大小都是整个Router实例的必填规则，不存在隐藏默认值或per-service override。Router在读取完整request
-body前执行`maxRequestBytes`；Runtime按bootstrap中的`maxResponseBytes`尽早停止生成过大response，Router在
-外部HTTP边界再次校验。对HTTP streaming，`maxResponseBytes`按同一response生命周期累计，不能通过拆chunk
-绕过。WebSocket不复用这两个字段。
-
-未来若需要独立扩缩容，平台可以为不同root set生成多个assembly。届时assembly projection把当前完整
-本地闭包拆成`LocalExecutableClosure`与`RemoteBindingRefs`；只有跨assembly service edge选择
-`RemoteBoundary`，远端provider不进入本地code closure。ServiceContract与PackageArtifact不需要改变。
+第一版的完整assembly-per-environment、replica隔离、ActivationIdentity/generation、Router/Runtime
+bootstrap、共享artifact filesystem、HTTP实例限制与未来多assembly扩展属于部署/runtime拓扑，不是
+Package/Service语言对象。完整契约见
+[`runtime-deployment-topology.md`](runtime-deployment-topology.md)。本节只冻结：RuntimeAssembly记录精确
+不可变选择，已生成assembly不随pointer漂移；任何拓扑都不得改变Package direct call、service boundary与
+external gateway entry三种语义。
 
 ## 13. Registry、Release 与 Publish
 

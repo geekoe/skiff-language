@@ -47,7 +47,8 @@ import 语法只接受 simple local package name，例如 `import std`、`import
 
 当前 package / service implementation 自身不通过 import 引入。跨文件访问当前 source set 使用内建 `root.<dotted-module-path>.<Symbol>`，其中 dotted module path 由相对源码路径去掉 `.skiff` 后转换得到。
 
-`root.*` 是当前 package / service 内部的绝对限定名，不是 import 语法，也不表示外部 API。source file 是模块命名和代码组织单位，不是包内 privacy 边界；包内顶层声明的外部可见性由 publication public API metadata 决定。
+`root.*` 是当前 Package内部的绝对限定名，不是import语法，也不表示外部API。source file是模块命名和
+代码组织单位，不是Package内privacy边界；顶层声明的外部可见性只由`api.yml`的Package API graph决定。
 
 import local binding 不能与保留 root、prelude 名、本文件顶层声明或局部绑定冲突。`config` 是内建 value root，不通过 import 引入。
 
@@ -80,7 +81,7 @@ requirement；空 body 可作为 marker interface。interface 的 conformance、
 qualified type name 和可选 type args。interface default / extension method 不是第一版目标态。
 
 `impl` method 不是 top-level symbol，第一版不能直接作为 public API source target。需要公开 receiver
-能力时，通过公开 receiver type、public instance 或后续单独设计的 method publication 机制表达。
+能力时，通过公开 receiver type、public instance 或后续单独设计的 method API机制表达。
 
 ## 5. Type Syntax
 
@@ -198,8 +199,8 @@ object literal、array literal、nominal construct、match arm body 和 catch ty
 
 import 只建立 local package binding token，不解析 package artifact、版本或导出符号。
 
-public API metadata 定义源码层 public path；最终 service operation、package ABI 和 protocol identity
-仍由 publication projection、schema closure 和 linkage policy 决定。
+`api.yml`定义源码层public path；最终service operation、Package Local ABI和protocol identity仍由
+Package/service projection、schema closure和linkage policy决定。
 
 concurrent、timeout、stream、with 和 callback 的调度、取消、effect、资源释放和 non-escaping 行为都不是语法规则。
 

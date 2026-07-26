@@ -19,15 +19,22 @@ Skiff 不是通用编程语言，也不是某个 Web 框架外面套一层新语
 
 ## 你写的是什么
 
-一个 Skiff 服务通常由 `.skiff` 源码和 `service.yml` 组成。
+一个Skiff Package由`.skiff`源码、`package.yml`和必需的`api.yml`组成。Service首先是
+Package：同一个 root 额外放置 `service.yml`，并可按环境提供 `config.*.yml`。
 
 `.skiff` 文件里写业务类型、函数、接口实现、测试、数据库对象和对平台能力的调用。源码以文件为模块，当前服务或包内的跨文件访问走 `root.*` 内部绝对路径，外部包通过配置里的 alias 引入。
 
-文件是组织单位，不是包内 privacy 边界。`root.*` 可以引用当前服务或包内 production source set 的顶层声明，包括 non-exported helper；`export` 只决定哪些声明有资格进入 package API、service API 或 schema closure。
+文件是组织单位，不是包内 privacy 边界。`root.*` 可以引用当前 Package production source set 的顶层
+声明，包括未公开 helper。Skiff source 不使用 `export` 决定可见性；`api.yml` 是 Package public API 和
+service-to-service API 的唯一公开符号入口。
 
-`service.yml` 描述这个服务的公开入口和运行需求，例如服务 id、版本、公开 API、依赖包、HTTP / WebSocket 入口、访问策略、超时和配置需求。也就是说，服务边界不只靠某个源码文件决定，而是由源码和服务配置共同决定。
+`package.yml` 拥有 Package id/version以及package、service dependency。`service.yml`只增加service id和
+HTTP/WebSocket等外部入口，包括route、handler与协议适配信息；它不重复声明service-to-service API。
+`config.*.yml`为已经声明的配置、state与resource requirement提供部署绑定。
 
-Skiff 会根据这些信息固定服务的公开 API 契约。跨服务调用按发布时记录的契约来调用目标服务，而不是靠运行时字符串、临时 service locator 或“差不多兼容”的猜测。
+Skiff 从 `api.yml` 与已类型检查的 Package API 确定性生成 ServiceContract。跨服务调用按该contract和
+deployment binding调用目标服务，而不是靠运行时字符串、临时service locator或“差不多兼容”的猜测。
+HTTP/WebSocket则按`service.yml`生成独立gateway entry，不会因为handler相同而变成service operation。
 
 ## 语言表面
 
@@ -49,16 +56,21 @@ Skiff 的语法故意克制。它优先让业务代码清楚、稳定、容易�
 
 Skiff 区分 package 和 service。
 
-Package 是复用单元。它适合放通用类型、工具函数、SDK wrapper、业务共享逻辑和可测试的能力封装。调用 package 是本地调用，不经过远程服务路由，也不拥有独立数据库或入口。
+Package 是唯一源码编译单元，也是复用单元。它适合放通用类型、工具函数、SDK wrapper、业务共享逻辑和
+可测试的能力封装。调用 Package 是同一 linked program 内的本地调用，不经过 service boundary；Package
+声明运行需求，但不拥有某个部署环境中的实际配置值、state namespace或外部入口。
 
-Service 是运行和资源归属边界。一个 service 可以暴露远程 API，可以拥有数据库、配置、HTTP / WebSocket 入口、观测归属和发布版本。跨 service 调用才是远程调用。
+Service 是 Package 的运行角色和 activation/resource owner。它可以从 Package API生成service-to-service
+contract，并通过`service.yml`拥有HTTP/WebSocket入口。跨service调用即使第一版在同一runtime进程内执行，
+仍保持独立heap materialization、错误、stream、取消与ActivationContext边界，不能退化成Package直接调用。
 
 这个区分会影响代码组织：
 
 - 想复用逻辑，优先抽 package。
-- 想提供远程能力，定义 service API。
-- 想让别的服务调用，暴露 service operation。
-- 想共享类型或 helper，不要把 service 当成库用。
+- 想提供服务间能力，在service package的`api.yml`中公开callable并显式标记`serviceCall: true`。
+- 标记的callable必须能进入service boundary；其签名引用的公开types由compiler自动闭合，不重复列一份
+  Service API。
+- 想共享类型或 helper，优先把它们放在可直接依赖的 Package API 中。
 
 ## 平台能力
 

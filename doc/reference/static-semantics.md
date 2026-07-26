@@ -200,7 +200,7 @@ resolver 不接受 `import std.http`、`import ext.openai`、`import skiff.run/l
 `skiff.run/std` 不能作为普通 package dependency 声明；用户 package、import alias、顶层声明和局部 binding 都不能 shadow `std`。
 
 当前 package / service source set 的跨文件访问统一使用 `root.*` all-symbol index。普通 source file
-没有 public visibility marker；内部 `root.*` 可见性不受 publication public API 影响。
+没有public visibility marker；内部`root.*`可见性不受Package public API影响。
 
 `root.<module>.<Symbol>` 解析到当前 source set 中对应模块的顶层 type / alias / interface / function / const 等声明。这里的 all-symbol 明确包含未进入 public API graph 的顶层声明；source file 不是包内 privacy 边界。`root.*` 不能解析局部变量、参数、pattern binding，也不能把 impl method 当作顶层符号访问；method 仍属于 receiver 的 method namespace。
 
@@ -269,20 +269,22 @@ metadata 改变不改变 service protocol identity，但会改变 code revision�
 
 ## 14. Service API Static Boundary
 
-service API root 来自 Publication API graph 的 remote projection。
+Service API roots只来自service package的Package API graph中显式`serviceCall: true`的callables。
 
-remote projection 从 public API graph 中选择 public callable 派生 operations。普通 const 不直接成为
-service operation；满足 public instance 规则的 public const 可以作为 receiver root，由其 interface
-methods 派生 operations。public interface 仍只是 conformance contract，不直接成为 service operation。
+ServiceContract projection先要求每个marker对应的`BoundaryCallableProjection`为`Available`，再派生
+operations；显式marker但Unavailable必须报出完整结构化原因，不能静默排除。未标记callable只是Package
+API，即使技术上boundary-available也不会成为service operation。普通const不直接成为service operation；
+带marker的public instance可作为receiver root，由其显式listed interface methods派生operations。public
+interface仍只是conformance contract，不直接成为service operation。
 
-HTTP、WebSocket等external ingress不属于remote projection。它们由`service.yml`选择当前Package中的
+HTTP、WebSocket等external ingress不属于service-call projection。它们由`service.yml`选择当前Package中的
 handler/pre/guard；这些callable不要求public，也不生成service operation。Compiler按其linked signature与
 gateway adapter source检查参数/返回，生成独立gateway entry identity。Ingress不得使用或伪造
 `ContractOperationId`。
 
-source module path 是组织方式，不是协议身份。service protocol identity 由 public path、
-operation name、canonical signature、public instance / binding target receiver root metadata、schema
-closure 和 cross-service dependency identity 计算。
+source module path是组织方式，不是协议身份。service protocol identity由显式service-call public path、
+operation name、canonical signature、public instance receiver root metadata、schema closure和
+cross-service dependency identity计算。
 
 API operation signature 中的用户自定义类型必须来自当前 source set 的 public API graph 或 schema closure、
 其他服务 / package 发布的 public schema，或 lang / platform `std` / package schema 中标记为
@@ -299,27 +301,31 @@ boundary closure。Public operation或public type字段引用到的named type必
 `api.yml`中显式公开；否则projection fail closed。compiler不得从内部模块路径、文件路径、遍历序号或
 发现路径为它生成隐藏的boundary identity。
 
-remote callable 必须按 source identity 解析，不能按短名或字符串后缀匹配。同一 public path 下 derived operation name 重复是 compile / publish error。
+service-call callable必须按source identity解析，不能按短名或字符串后缀匹配。同一public path下
+derived operation name重复是compile error。
 
-第一版不允许 generic remote method 或 static remote method。runtime-owned receiver / handler fields 是构造依赖，不是 request payload。
+第一版不允许generic service-call method或static service-call method。runtime-owned receiver /
+handler fields是构造依赖，不是request payload。
 
 `api.yml`中的public generic declaration可以供package linkage使用，但其声明本身没有第一版
-PackageSchema投影。只有引用闭包全部可投影的service-call operation才进入ServiceContract；无关generic
-public symbol不能让整个Package失败。External ingress的generic platform handler类型由linked signature和
-专用adapter处理，也不因此获得ordinary service-call schema。
+PackageSchema投影。未标记的generic public symbol不能让整个Package失败；若它被显式标记
+`serviceCall: true`，其不可投影原因必须作为结构化compile error报告，不能静默排除。External ingress的
+handler第一版不能是generic function declaration；其concrete signature仍可包含fully instantiated的
+generic platform types，由linked signature和专用adapter处理，这些类型不因此获得ordinary service-call
+schema。
 
 跨 service 调用必须静态解析到已声明 callee API，并绑定发布时记录的 exact protocol identity。业务代码不通过字符串 service id 或 service locator 发起远程调用。
 
 ## 15. Static Stream Boundary
 
-`Stream<T>` 可以作为 service operation 或 ingress entry operation 的返回类型。Service operation的chunk
+`Stream<T>` 可以作为service operation或external gateway entry的返回类型。Service operation的chunk
 类型`T`必须通过Package schema closure；external ingress的chunk按该gateway entry的linked handler
 signature与external codec验证，不要求仅为ingress进入PackageSchema。
 
 显式 stream-producing native std / package API 也可返回 `Stream<T>`，作为 request-local external source handle。平台 std 也可以把 `Stream<T>` 放在 runtime-owned handle record 字段里，例如 `std.http.HttpClientStreamHandle.body`；这类 handle 仍是 request-local 值，不是可持久化 schema。除非调用方把 chunk `emit` 到服务边界，或写入其他边界 payload，否则该 `T` 不因 handle 本身进入 boundary closure。
 
 普通 Skiff package / local 函数不能通过源码 body 创建本地 `Stream<T>`。它们可以在同一 request 内返回或
-转发从 service operation、ingress entry operation 或特权 source API 获得的 `Stream<T>` handle；这是
+转发从service operation、external gateway entry或特权source API获得的`Stream<T>` handle；这是
 request-local pass-through，不创建新的 stream sink，也不能跨请求持有。当前只有 server / source stream，
 不支持 bidirectional stream、stream 参数、半关闭、resume 或 cursor。
 

@@ -36,12 +36,12 @@ ParsedSourceSet
   -> TypeResolutionModel
   -> ExpressionTypeModel
   -> SourceCompileModel
-  -> LoweredPublication
-  -> CompiledPublication
+  -> LoweredPackage
+  -> CompiledPackage
   -> projections
 ```
 
-`TypeResolutionModel` 和 `ExpressionTypeModel` 不是 `LoweredPublication` 的缓存，也
+`TypeResolutionModel` 和 `ExpressionTypeModel` 不是 `LoweredPackage` 的缓存，也
 不是 projection 的派生结果。它们是 source-level typed facts 的 owner。
 
 ## Inputs And Outputs
@@ -50,11 +50,11 @@ ParsedSourceSet
 
 - parsed source AST 和 source spans；
 - source/module/package name resolution；
-- current publication source set；
+- current Package source set；
 - direct package dependency public type surface；
 - compiler-known std/prelude type registry；
 - DB object type declarations and attachment metadata；
-- external service type symbols already resolved by publication input.
+- external service type symbols already resolved by validated Package compile input.
 
 `TypeResolutionModel` 产出 compiler-owned `ResolvedTypeRef` 和 provenance。它不得产出
 File IR、runtime descriptor 或 artifact DTO。
@@ -239,8 +239,8 @@ not:
 - use `TypeExpr::parse_lossy` or display strings as source-of-truth；
 - silently continue when an expression fact required for lowering is missing.
 
-Projection may project `CompiledPublication` typed facts into contract/runtime/package
-outputs. It must not:
+Projection may project `CompiledPackage` typed facts into明确的PackageArtifact、ServiceContract、
+gateway entry或其它typed outputs. It must not:
 
 - import AST expression types to recover type facts；
 - call lowering helpers to reconstruct type resolution；

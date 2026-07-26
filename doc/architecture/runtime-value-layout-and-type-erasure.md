@@ -24,8 +24,8 @@ Skiff 尚未发布。本文目标态不要求兼容旧 artifact、旧 runtime pa
 - 用户可见语法和完整标准库 API。
 - artifact DTO ownership。该契约见
   `runtime-compiler-shared-artifact-types.md`。
-- compiler publication pipeline 的完整阶段定义。该契约见
-  `compiler-publication-pipeline.md`。
+- compiler Package pipeline 的完整阶段定义。该契约见
+  `compiler-package-pipeline.md`。
 - 具体 Rust 模块拆分和迁移步骤。
 
 ## Core Rule

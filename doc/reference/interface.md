@@ -5,7 +5,8 @@ interface、method requirement、marker interface、public instance 和 boundary
 interface value（`any I`，含远程能力）见 `any-interface.md`；capability binding 已退役并合并进 `any I`。
 
 本文不负责：parser 现状、artifact 字段表、runtime vtable 实现、package binding manifest 完整
-schema 或 actor manager 内部流程。发布和 binding 投影见 `publication.md`。
+schema 或 actor manager 内部流程。Package API 与 service contract 投影见 `api-yml.md` 和
+`../architecture/package-service-contract-deployment.md`。
 
 ## 1. 定位
 
@@ -26,14 +27,14 @@ type ManagedLlmServiceImpl implements ManagedLlmService {
 - conformance 必须由 nominal type 显式写 `implements`。
 - compiler 不按字段或 method set 做 structural matching。
 - interface 本身没有 runtime object layout，不是可序列化 payload。
-- interface 可以作为 compile-time contract、Publication ABI metadata、public instance conformance 和 marker。
+- interface 可以作为 compile-time contract、Package Local ABI metadata、public instance conformance 和 marker。
 - **裸** interface 名不当作普通 first-class value 传递、存储、返回或放进容器；`function f(x: I)` 这类裸
   interface 参数不是合法 value signature。需要 first-class 动态值时用 `any I`（见 `any-interface.md`），
-  它可在 publication 内部流动，装箱源可以是本地 concrete record 或远程 public instance。
+  它可在当前 Package/request 内流动，装箱源可以是本地 concrete record 或远程 public instance。
 
 ## 2. Interface Declaration
 
-interface 是顶层声明，可以有类型参数；是否成为外部源码可写 public name 由 publication public
+interface 是顶层声明，可以有类型参数；是否成为外部源码可写 public name 由 Package public
 API graph 决定：
 
 ```skiff
@@ -82,8 +83,9 @@ impl NotificationSink {
 }
 ```
 
-匹配必须基于 canonical method identity 和完整签名。参数数量、参数类型、返回类型、stream / effect /
-throw metadata 和后续 ABI 相关 metadata 不匹配时，conformance 失败。compiler 不允许靠同名但不同签名
+匹配必须基于 canonical method identity 和完整签名。参数数量、参数类型、返回类型、stream / callback /
+effect contract 和后续 ABI 相关 metadata 不匹配时，conformance 失败。具体可抛错误类型不属于签名。
+compiler 不允许靠同名但不同签名
 的方法“差不多匹配”。
 
 第一版不支持同一 interface 内的 method overload。源码 method token 必须在该 interface 内唯一映射到
@@ -107,8 +109,9 @@ type ManagedLlmServiceImpl implements llm.ManagedLlmService {
 - implements list 中必须写完整 interface type arguments。
 - 同一个 nominal type 对同一个 interface symbol 第一版最多实现一次；不能同时实现
   `Partitioned<UserId>` 和 `Partitioned<TenantId>`。
-- conformance 是 public / package ABI fact。删除 conformance 或改变 type arguments 必须改变相关
-  publication identity，并让依赖方 fail closed。
+- conformance 是 Package API / Local ABI fact。删除 conformance 或改变 type arguments 必须改变相关
+  Package Local ABI；若被ServiceContract operation引用，也必须改变对应service protocol identity并让依赖方
+  fail closed。
 
 ## 5. Generic Interface Identity
 
@@ -123,7 +126,8 @@ InterfaceInstantiationRef {
 ```
 
 non-generic interface 的 `canonical_type_args` 是空数组。generic interface 必须 fully substituted 后
-才能进入 Publication ABI、`any I` 类型 fact、operation projection、conformance fact 和 ABI identity。
+才能进入 Package Local ABI、`any I` 类型 fact、service operation projection、conformance fact 和相关
+identity。
 `Actor<ThreadId>` 和 `Actor<UserId>` 是不同 interface instantiation；equality、hash、sort 和
 compatibility check 都必须比较完整 `InterfaceInstantiationRef`。裸 `interface_abi_id` 只能表示
 interface declaration 自身，不能单独表示 public/binding contract。
@@ -148,7 +152,7 @@ type ChatPartition
 marker 仍然是显式 conformance，不是注解字符串。compiler 和 artifact 可以读取该 conformance，用于：
 
 - 资源分区或 shard id type binding。
-- publication / package capability metadata。
+- Package capability metadata。
 - 后续安全能力标记。
 
 marker 不应该引入 runtime wrapper value。
@@ -178,7 +182,7 @@ first-class interface value（动态分派）是 `any I`，见 `any-interface.md
 > first-class 值（是装箱源 / 寻址 root），只能在 `.method()` 或 `as I` 左边出现。详见 `any-interface.md`。
 
 pattern / narrowing 可以用 interface conformance 做有限类型测试，但不创建 interface value。当前
-publication 的普通 public const 不会自动成为可调用 root。
+Package 的普通 public const 不会自动成为可调用 root。
 
 `any I` 的 value layout 见 `any-interface.md §3` 和 `../architecture/any-interface-value.md`（含本地 /
 远程两类装箱源的泛化布局）。不能把 ordinary object 的 per-instance runtime shape 偷偷扩展成隐式 vtable。
@@ -190,19 +194,18 @@ publication 的普通 public const 不会自动成为可调用 root。
 > package 抽象依赖能力改为"入口吃 `any I` 参数 + consumer 调用点用 `as I`（本地/远程）装箱传入"。详见
 > `any-interface.md §8`。
 
-public instance 是 `api.yml` 显式公开的、可被装箱/调用的 receiver root（见 `publication-api-yml.md`）。
+public instance 是 `api.yml` 显式公开的、可被装箱/调用的 receiver root（见 `api-yml.md`）。
 它不是 interface 自身，也不是普通 public const 自动派生的能力。`public_instance_key` 是完整 API graph
 public path，例如嵌套 `llm.managed` 的 key 就是 `llm.managed`，不是 leaf/display name。consumer 跨
 service 引用它用 `/`：`remoteLlm/managed`。
 
-public instance method 的 operation identity 是 `operation_abi_id`。dependency compiler 使用
-`PublicationAbiUnit.sourceCallOperationIndex` 从完整 source-call path
-`<public_instance_key>.<method>` 解析到唯一 `OperationAbiRef`；runtime/linker/provider 只按
-`operation_abi_id` 执行或路由，不按 public instance 名、source method name、interface id + method name
-做动态派发。private receiver concrete type 只属于 implementation/runtime validation，不进入 public
-contract identity。远程 `as I` 装箱正是把这个 `(public_instance_key, operation_abi_id)` 寻址包进一个
-`any I` 值；fail-closed 在装箱点锁 callee protocol identity（见 `any-interface-value.md §Remote
-Fail-Closed`）。
+public instance method在Package直接调用与service调用中使用不同identity。Dependency compiler先以完整
+source-call path `<public_instance_key>.<method>` 从Package Local ABI解析到唯一`PackageCallableId`；
+ServiceContract再为service-call projection生成独立`ContractOperationId`。Runtime/linker不得按public
+instance名、source method名或interface id + method name动态猜target。private receiver concrete type只属于
+implementation/runtime validation，不进入public contract identity。远程`as I`装箱保存
+`(service requirement, public_instance_key, ContractOperationId)`寻址；fail-closed在装箱点锁callee
+protocol identity（见`any-interface-value.md §Remote Fail-Closed`）。
 
 ## 9. Boundary Rules
 
@@ -215,7 +218,7 @@ Fail-Closed`）。
 - record 字段、collection element、persistent work item payload。
 - ordinary JSON materialization。
 
-interface 可以出现在 publication metadata、public instance conformance metadata、`any I` 类型
+interface 可以出现在 Package API/Local ABI metadata、public instance conformance metadata、`any I` 类型
 fact（含 package 入口的 `any I` 参数）、远程 `as I` 装箱锁定的 callee conformance metadata 和 compiler
 内部 type-check facts 中。
 
@@ -246,12 +249,13 @@ compiler / artifact 必须保存足够的 interface metadata：
 - nominal type 的 explicit conformance list，包括完整 type arguments。
 - public instance 使用到的 implemented interface identities。
 - `any I` 装箱点的 interface identity；远程 `as I` 装箱还需保存 callee `(public_instance_key,
-  operation_abi_id)` 寻址与锁定的 protocol identity（见 `any-interface-value.md §Remote Fail-Closed`）。
+  ContractOperationId)` 寻址与锁定的protocol identity（见
+  `any-interface-value.md §Remote Fail-Closed`）。
 
 runtime 执行 concrete method 时不需要给 ordinary object 附加 interface identity。interface metadata
-只用于 compile / link / publish 阶段的静态解析、ABI identity 和 compatibility check。runtime 不依据
+只用于compile/link与artifact projection阶段的静态解析、ABI identity和compatibility check。runtime不依据
 interface id + method name 做动态派发；实际 call target 必须已经链接成 local executable、package
-operation target 或 service `operation_abi_id`。
+callable target或service `ContractOperationId`。
 
 ## 12. Non-Goals
 

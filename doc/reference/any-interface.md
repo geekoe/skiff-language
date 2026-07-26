@@ -1,6 +1,7 @@
 # Skiff `any I` —— First-Class Interface Value（动态分派）
 
-本文负责：稳定描述 `any I`（first-class interface value / 动态分派）的目标态用户语义——`any I` 类型、`as I` 装箱、裸 interface 名的使用规则、值布局、与单态化泛型的边界、以及 publication 内部适用范围。
+本文负责：稳定描述 `any I`（first-class interface value / 动态分派）的目标态用户语义——`any I` 类型、
+`as I` 装箱、裸 interface 名的使用规则、值布局、与单态化泛型的边界，以及 Package/request 内部适用范围。
 
 本文不负责：parser/lowering/runtime vtable 的实现细节、artifact 字段表。这是 `interface.md §7` 末尾点名的“另立设计”——它在 §7 已声明“如果未来需要 first-class interface value，必须另立设计，显式定义 value layout”。本文即该设计。
 
@@ -32,7 +33,7 @@ function f(p: any ToolProvider)        // ✅ 存在类型：动态分派，可�
 
 ### 2.2 `any I` 作类型
 
-`any I` 是一个类型，表示“某个实现了 `I` 的值，其具体类型已擦除”。它只可用于 publication 内部普通值位置：
+`any I` 是一个类型，表示“某个实现了 `I` 的值，其具体类型已擦除”。它只可用于 Package/request 内部普通值位置：
 内部函数参数、内部返回值、不经任何 boundary schema closure 投影的内部 record 字段（含具名 record 类型）、
 collection element、map value，以及内部 function type 的参数/返回位置（如 `fn(any I) -> void`）。
 
@@ -184,7 +185,7 @@ per-instance shape 偷偷扩成隐式 vtable（`interface.md §7` 明确禁止�
 - **吸收 binding**：原 binding alias / dependency public instance 受控 root 被 `any I` 合并取代——package
   能力依赖改为入口吃 `any I` 参数，consumer 在调用点用 `as I`（本地或远程）装箱传入（见 §8）。`any I`
   是显式的、可流动的 first-class 形态。
-- **Boundary**：`any I` 是 publication 内部普通值，但进入边界时按边界 policy 判定。
+- **Boundary**：`any I` 是 Package/request 内部普通值，但进入边界时按boundary policy判定。
   service public API payload、public instance operation signature、ordinary JSON materialization、config schema 或 test
   double external fixture schema 的默认 wire shape 不承载 interface value，也不会隐式生成 recoverable envelope。
   DB schema、

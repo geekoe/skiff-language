@@ -33,7 +33,7 @@ Gateway 可以理解平台事实：
 
 - HTTP method、path、query、headers、cookies、body bytes。
 - WebSocket connection id、upgrade request、message frame、close 状态。
-- service id、version、build id、WebSocket entry id、gateway entry identity、operation target。
+- service id、deployment revision、WebSocket entry id、gateway entry key与gateway entry identity。
 - request id、deadline、trace、telemetry。
 - WebSocket `businessIdentity` 这个 opaque string 作为连接管理 key。
 
@@ -86,15 +86,20 @@ Gateway 依赖 `RuntimeDispatcher`，不直接依赖 `RuntimeRegistry` 做 dispa
 
 Gateway adapter 是 runtime 侧的入口适配逻辑。它把 gateway 提供的平台 metadata 和 payload bytes 组装成用户 handler 参数。
 
-HTTP typed JSON route、raw HTTP route、WebSocket connect、WebSocket receive 都是 gateway adapter 场景。它们应共享同一类 manifest 概念：`adapterArgs`。
+HTTP typed JSON route、raw HTTP route、WebSocket connect、WebSocket receive 都是 gateway adapter 场景。它们应共享同一类 typed entry 概念：`adapterArgs`。
 
 这些external ingress entry由`service.yml`拥有，不是`api.yml`公开的service-call operation。Handler、
 pre和guard可以是当前Package中的非public callable；compiler直接解析其精确callable identity和linked
-signature。Gateway entry使用`gatewayEntryIdentity`寻址，不生成或借用`ContractOperationId`，也不进入
+signature。External selector绑定owner-local `gatewayEntryKey`，entry另带用于协议一致性校验的
+`gatewayEntryIdentity`；两者都不生成或借用`ContractOperationId`，也不进入
 `ServiceProtocolIdentity`。若同一source function同时公开为service call，两个surface仍各自拥有独立
 identity与校验。
 
-`gatewayEntryIdentity` 必须覆盖该 gateway entry 的 platform contract：entry id、handler/pre/guard callable identity、`adapterArgs`、WebSocket context expectation、HTTP typed body/response metadata，以及影响 gateway/runtime adapter frame shape 的字段。它不包含业务实现体。
+`gatewayEntryIdentity`只覆盖external protocol surface：entry kind、外部参数来源、公开
+request/response/stream shape、WebSocket context expectation与影响gateway wire兼容性的metadata。它不包含
+handler/pre/guard callable identity、source selector、Package build或业务实现体。具体callable binding、
+内部类型与codec execution plan由ServiceDeployment及其revision覆盖；只替换实现不会伪装成external protocol
+变化。
 
 ### Business Identity
 
@@ -337,12 +342,11 @@ type WebSocketConnectResponseMetadata =
 
 type WebSocketContextCodec = {
   kind: 'skiff-runtime-payload';
-  contextTypeIdentity: string;
-  operationAbiId: string;
+  contextCodecIdentity: string;
 };
 ```
 
-`contextCodec` 对 gateway 完全 opaque——gateway 只把它原样保存并在 receive 时回传，从不读它的字段。它存在的唯一目的，是让 runtime receive adapter 校验"这份 context bytes 确实来自本 entry 的 connect"。`contextTypeIdentity` 是 `Context` 类型的 identity（由现有类型 identity 机制产出，不是新引入的 descriptor identity），指向 `Context` 本身而非整个 `WebSocketConnectResult<Context>`。`operationAbiId` 是产生该 context 的 connect operation ABI id。两者都用既有的类型/operation 身份表达，不需要 router 或 gateway 理解类型结构。
+`contextCodec` 对 gateway 完全 opaque——gateway 只把它原样保存并在 receive 时回传，从不读它的字段。它存在的唯一目的，是让 runtime receive adapter 校验“这份 context bytes 确实由当前deployment中与receive兼容的connect codec产生”。`contextCodecIdentity`由compiler生成的精确context type/codec plan计算，属于deployment adapter execution plan，不是`ContractOperationId`、service operation ABI或external `GatewayEntryIdentity`。
 
 WebSocket entry manifest 必须保存 receive 期望的 context 身份：
 
@@ -350,15 +354,17 @@ WebSocket entry manifest 必须保存 receive 期望的 context 身份：
 type WebSocketContextExpectation =
   | {
       kind: 'context';
-      connectOperationAbiId: string;
-      contextTypeIdentity: string;
+      contextCodecIdentity: string;
     }
   | {
       kind: 'null';
     };
 ```
 
-有 connect handler 时，compiler 从 connect return `WebSocketConnectResult<Context>` 派生 `connectOperationAbiId` 和 `contextTypeIdentity`，两者必须从同一个 lowered connect 返回类型派生（不一致即 compiler bug）。没有 connect handler 时，expectation 是 `{ kind: "null" }`。Runtime receive adapter 在 decode context bytes 前必须比较 `contextCodec.operationAbiId` 和 `contextTypeIdentity` 与 entry expectation；不匹配 fail closed。Gateway 不参与该比较。
+有 connect handler 时，compiler从connect return `WebSocketConnectResult<Context>`与精确linked codec
+plan派生唯一`contextCodecIdentity`，并把同一identity写入receive expectation；没有connect handler时
+expectation是`{ kind: "null" }`。Runtime receive adapter在decode context bytes前必须比较wire codec
+identity与当前deployment entry expectation；不匹配fail closed。Gateway不参与该比较。
 
 Accept response 中，`contextPayloadPresent = true` 时 `response.end.payloadBytes` 是已编码 connection context，且 `contextCodec` 必填；否则 context 为 null，且 `contextCodec` 不出现。`contextPayloadPresent = false` 只在没有 connect handler、或 connect context 类型接受 null 时合法；非 nullable `Context` 必须产生 context bytes。这个 nullability 校验由 runtime WebSocket adapter 在投影 platform metadata 前完成。Gateway 只校验 `result`、`businessIdentity`、`connectionPolicy`、close code/reason、context byte presence 和 `contextCodec` presence 是否一致。Gateway 把 `contextBytes` 和 `contextCodec` 当作 opaque connection state 保存，绝不解码。
 
@@ -430,9 +436,9 @@ Payload segment validation:
 
 ## WebSocket connection model
 
-WebSocket connect 和 receive operation 可以挂起；例如 receive 在一次消息处理期间顺序消费
+WebSocket connect和receive handler可以挂起；例如receive在一次消息处理期间顺序消费
 上游 stream，并通过非挂起的 `connection.send` 发送多个下行事件。挂起不改变 ingress 的
-unary 边界：每个入站 connect 或 message 仍只创建一次 dispatch，Runtime 等待该 operation
+unary 边界：每个入站 connect 或 message 仍只创建一次 dispatch，Runtime 等待该 handler
 完成后才结束本次 dispatch，不把它隐式拆成 detached work，也不重复执行。
 
 同一物理连接同时最多有一个 receive dispatch 处于 active 状态。后续消息按到达顺序进入
@@ -516,37 +522,48 @@ Gateway 不定义 `ConnectionSubjectKind`。业务可以在自己的 `Context` �
 - 业务类型的权威表示是 compiler 产出、runtime 加载的 linked program 类型（`TypeRefIr` / `LinkedTypeRef`）。runtime adapter 从 linked program 取 handler 参数/响应类型构造 `RuntimeTypePlan` 做 payload codec——HTTP typed body 已经这样（`from_linked(&params[index].ty, …)`），WebSocket 同此。**runtime payload codec 不依赖 manifest。**
 - JsonSchema 保留给外部协议校验、文档、diagnostics 和 HTTP JSON contract，不作为 runtime 二进制 payload codec 的 source of truth，也不进入 router 的 dispatch 决策。
 
+Compiler只为adapter plan中真正连接external source/sink的值派生entry-local schema。Typed HTTP body、
+query/path/header参数、HTTP response和typed WebSocket message body属于该闭包；pre产生的业务context、
+guard内部值和WebSocket connection context不属于外部协议。私有named type可以贡献结构，但其Skiff
+source/public/nominal名字不自动出现在schema；entry-local component key必须由canonical external shape或显式
+external documentation metadata产生，不能借用Package public identity。
+
 关于"router 不理解业务类型"，这里要明确一个分界：
 
-- **类型的名字/身份是平台事实，router 可以知道。** 例如某个 route 是 `rawHttp` 还是 `typedJson`、某个 operation 的 `operationAbiId`、某个 connect context 的类型 identity。这些是字符串标签，router 用来寻址、分流、校验同源，不需要展开结构。
+- **External entry的协议身份是平台事实，router可以知道。** 例如某个route是`rawHttp`还是
+  `typedJson`、它的`gatewayEntryIdentity`以及opaque`contextCodecIdentity`。这些是字符串标签，router
+  用来寻址、分流或原样保存，不需要展开业务类型结构。
 - **类型的字段布局是业务事实，router 不持有。** 某个业务 record 有哪些字段、union 有哪些分支、怎么编解码——只有 runtime 知道。router 看到的永远是 opaque bytes。
 
 因此 router 不需要、也不应引入一个能描述任意业务类型结构的 closed-vocabulary descriptor。早期方案里的 `RuntimeTypeDescriptor`（让 compiler/runtime/router 三处都 parse 同一份类型 JSON）是不必要的，并且会引入第三份必须逐字节对齐的类型编码，叠加到已有的 `TypeRefIr` 和 build-id 投影上。它不进入本契约。
 
-目标 operation manifest：
+生成的gateway protocol manifest：
 
 ```ts
-type OperationParameterManifest = {
+type GatewayParameterManifest = {
   name: string;
-  schema?: JsonSchema; // display / external-protocol / diagnostics only
+  schema?: JsonSchema; // compiler-derived; external protocol/docs/diagnostics only
 };
 
-type OperationManifest = {
-  operation: string;
-  operationAbiId: string;
-  target: string;
+type GatewayEntryProtocolManifest = {
+  gatewayEntryKey: string;
+  gatewayEntryIdentity: string;
+  kind: GatewayAdapterKind;
   mode: DispatchMode;
-  parameters: OperationParameterManifest[];
-  responseSchema?: JsonSchema; // display / external-protocol / diagnostics only
+  parameters: GatewayParameterManifest[];
+  responseSchema?: JsonSchema; // compiler-derived; external protocol/docs/diagnostics only
 };
 ```
 
 类型表示规则：
 
-- manifest **不**携带业务 payload codec 用的类型。runtime adapter 从 linked program 取 handler 参数/响应类型（`TypeRefIr` → `RuntimeTypePlan`）做编解码。manifest 里的 `schema` 是注解过的 `JsonSchema`，仅供外部协议/文档/diagnostics。
-- 因此 router 看到的 operation 参数只有 `name` 和 display `schema`，二者都不用于 dispatch 决策。router 不解析业务类型结构，也不需要 `TypeRefIr`。
-- `operationAbiId` 沿用现有计算口径（参数名 + 参数/返回类型 + mode/target 等），不因为本次重构改变 ABI 输入；JsonSchema 本来就不进 ABI。
-- runtime 侧某个类型需要的"身份"（例如 connect context 同源校验，见下）用现有的类型 identity / `operationAbiId` 表达，不引入新的 descriptor identity domain。
+- manifest **不**携带业务payload codec用的类型。runtime adapter从linked program取handler参数/响应
+  类型（`TypeRefIr` → `RuntimeTypePlan`）做编解码。manifest里的schema由compiler从同一精确handler
+  signature和adapter source生成，只供外部协议、文档与diagnostics；`service.yml`不得手写重复业务schema。
+- 因此router看到的entry参数只有name和display schema，二者都不用于选择业务callable。router不解析业务
+  类型结构，也不需要`TypeRefIr`。
+- `GatewayEntryIdentity`只按external protocol surface计算；具体target、内部type/codec plan和
+  `contextCodecIdentity`由当前ServiceDeployment绑定并在runtime admission时精确校验。
 
 目标态 router production code 不解析业务类型，也不引用 Skiff business payload codec。任何业务 payload 的 encode/decode 都在 runtime adapter 内完成。
 
@@ -618,13 +635,14 @@ Gateway may also support direct connection id sends as low-level diagnostics/con
 
 ## Validation
 
-Manifest readers must fail closed:
+Authoring/deployment manifest readers must fail closed:
 
 - 旧 WebSocket `bind` field 非法。
 - 迁移后的旧 HTTP `handlerArgs` field 非法。
 - `adapterArgs[].source` unknown kind is invalid.
 - Any business context field binding is invalid.
-- Router manifest reader 把 `parameters[].type` / `responseType` 当 opaque 转发，不解析其内部结构；任何要求 router 展开业务类型结构的 manifest 形态都不该存在。
+- Router只消费compiler-derived external schema视图，不接收`parameters[].type`/`responseType`业务类型
+  descriptor；任何要求router展开业务类型结构的manifest形态都不该存在。
 
 Runtime connect response validation must fail closed:
 
@@ -644,7 +662,7 @@ Because Skiff is unreleased, no compatibility aliases are required.
 
 Router telemetry may log:
 
-- service id、version、build id、gateway entry identity、operation target。
+- service id、deployment revision、gateway entry key与gateway entry identity。
 - connection id。
 - presence of `businessIdentity` and a redacted/hash form if needed.
 - connection policy decision。

@@ -32,7 +32,8 @@ Service runtime 不维护外部 WebSocket 物理 socket 生命周期。WebSocket
 
 ## 2. Dispatch and request frame
 
-以下事件创建 request frame：unary service API call、server-stream service API call、raw HTTP entry dispatch、WebSocket connect operation、WebSocket receive / route dispatch，以及测试 runner 构造的等价 dispatch。
+以下事件创建request frame：unary service API call、server-stream service API call、raw HTTP entry
+dispatch、WebSocket connect/receive entry dispatch，以及测试runner构造的等价dispatch。
 
 Gateway / router 可以维护 entry envelope、routing context、transport state、Connection 和 stream pairing state，但这些不是 Skiff request frame。
 
@@ -70,7 +71,9 @@ Ingress entry identity描述external ingress。Handler/pre/guard callable identi
 WebSocket connect request schema、message event schema、Connection context schema和系统接口绑定变化会
 改变它。更改ingress不改变service protocol identity。
 
-Stable target id 描述 operation 类别，而不是资源实例。Service operation、HTTP entry、WebSocket connect / receive / close、std host operation 和 package wrapper 都必须能映射到稳定 target。Target 用于 effect metadata、timeout source、trace、日志、指标、测试替身和错误聚合。
+Stable target id描述执行类别，而不是资源实例。Service operation、HTTP entry、WebSocket
+connect/receive/close entry、std host operation和Package wrapper都必须能映射到stable target。Target用于
+effect metadata、timeout source、trace、日志、指标、测试替身和错误聚合。
 
 HTTP/WebSocket dispatch使用gateway entry identity做admission与观测。WebSocket Connection绑定entry
 identity与deployment/activation generation，不绑定或冒充service-call protocol operation；schema-changing
@@ -180,7 +183,10 @@ Skiff 当前只支持 server / source stream。Stream 是一次性值，不是�
 
 `Stream<T>` 当前不能作为用户 operation 参数、用户 record 字段、持久化字段、collection 元素或普通 public API type 字段。平台 std 的 runtime-owned handle 字段和 native host operation 参数是特权例外；例如 `std.file.createFromStream(source: Stream<bytes>, ...)` 在同一 request 内消费 source，不把 stream 传出为远程 API 或 durable value。普通 Skiff package / local function 不能通过源码 body 创建独立、可逃逸的 stream source。
 
-返回 `Stream<T>` 的 service / ingress entry operation 是 server-stream producer。Producer 共享当前 request frame、deadline、trace、call stack 和 request heap。函数体内 `emit expr` 要求 `expr` 可赋给 `T`，并向当前 stream sink 写一个 ordered chunk。函数体自然结束或裸 `return` 表示 stream normal end；`return expr` 在 server-stream operation 中是编译错误。当前不提供 `Stream<T, R>` 或 stream 完成后的独立 response 值。
+返回`Stream<T>`的service operation或external gateway entry是server-stream producer。Producer共享当前
+request frame、deadline、trace、call stack和request heap。函数体内`emit expr`要求`expr`可赋给`T`，并向
+当前stream sink写一个ordered chunk。函数体自然结束或裸`return`表示stream normal end；`return expr`在
+server-stream handler中是编译错误。当前不提供`Stream<T, R>`或stream完成后的独立response值。
 
 `emit` 是 backpressure point。Consumer 不读取、gateway / client 断开或 buffer 达到平台上限时，当前 request 必须暂停、取消或按平台错误结束，不能无限积压。`emit` 不允许出现在 `concurrent` surface 内；`concurrent value` 的 tail lane 也属于该 surface。需要并发计算后输出时，先在 lane 中计算值，等 `concurrent` block 结束后，在后续顺序代码中按确定顺序 emit。
 

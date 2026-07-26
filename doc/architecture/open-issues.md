@@ -1,10 +1,12 @@
 # Skiff 剩余问题
 
-日期：2026-04-26
+日期：2026-07-26
 
 本文只记录当前 canonical 尚未规范化的问题。已解决的旧审阅项不再放在这里；历史交叉审阅记录只用于追溯设计背景。
 
-这些问题不是当前 syntax / static semantics / runtime reference 的阻塞项。
+Package / Service 的 gateway identity、external schema owner、`api.yml`存在性、service-call显式选择、
+nominal public path和service dependency cycle已经在
+[`package-service-contract-deployment.md`](package-service-contract-deployment.md)收敛，不再作为待决项。
 
 ## 当前仍待规范化的问题
 
@@ -14,6 +16,9 @@
 
 2. **宿主互操作 / FFI**
 
+   当前native/platform surface由内建实现提供，还没有用户可扩展的FFI ABI、类型映射、权限声明、沙箱、
+   版本兼容、崩溃隔离或部署模型。在这些边界明确前，不应把任意Rust/JavaScript动态加载或SDK handle暴露为
+   普通Package能力。
 
 3. **观测生产化扩展**
 
@@ -29,13 +34,21 @@
 
 6. **状态层和存储边界**
 
+   DB object、queue、actor和外部resource已经分别有owner，但跨对象一致性、跨service transaction、共享
+   state namespace、缓存一致性和事件/outbox组合仍没有统一用户模型。后续设计必须保持ServiceDeployment
+   的state ownership与普通Package代码复用分离，不能从Package id或调用路径隐式推导物理namespace。
 
 7. **数据 migration**
 
-   Publication reference 已定义 protocol identity、ingress entry identity、dependency lock 和 revision retire 的边界，但当前不定义持久化数据 schema migration。后续需要单独设计 Mongo / Redis / future storage 的 schema evolution、backfill、dual-write、read repair 和回滚规则。
+   Package/Service contract architecture 已定义 protocol identity、gateway entry identity、dependency
+   binding 和 revision retire 的边界，但当前不定义持久化数据 schema migration。后续需要单独设计
+   Mongo / Redis / future storage 的 schema evolution、backfill、dual-write、read repair 和回滚规则。
 
 8. **snapshot / read view**
 
+   当前没有定义跨多个DB object、外部resource或长stream的一致read snapshot。若未来引入read view，需要
+   明确isolation、lifetime、分页/stream语义、重试、跨request可恢复性和与写transaction的关系，不能把当前
+   request heap或driver session handle直接暴露为持久值。
 
 ## 建议处理顺序
 
