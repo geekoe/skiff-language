@@ -15,9 +15,22 @@ use crate::{
 };
 
 pub fn compile_service_contract_definition(
-    mut definition: ServiceContractDefinition,
+    definition: ServiceContractDefinition,
 ) -> Result<ServiceContract> {
-    validate_definition(&definition)?;
+    compile_service_contract_definition_with_policy(definition, false)
+}
+
+pub(crate) fn compile_projected_service_contract_definition(
+    definition: ServiceContractDefinition,
+) -> Result<ServiceContract> {
+    compile_service_contract_definition_with_policy(definition, true)
+}
+
+fn compile_service_contract_definition_with_policy(
+    mut definition: ServiceContractDefinition,
+    allow_zero_operations: bool,
+) -> Result<ServiceContract> {
+    validate_definition(&definition, allow_zero_operations)?;
     let operation_ids = definition
         .operations
         .keys()
@@ -77,7 +90,16 @@ pub fn definition_contract_operation_id(
     )?)
 }
 
-fn validate_definition(definition: &ServiceContractDefinition) -> Result<()> {
+fn validate_definition(
+    definition: &ServiceContractDefinition,
+    allow_zero_operations: bool,
+) -> Result<()> {
+    if definition.operations.is_empty() && !allow_zero_operations {
+        return Err(ContractDefinitionError::EmptyOperations);
+    }
+    if definition.operations.is_empty() && !definition.package_type_requirements.is_empty() {
+        return Err(ContractDefinitionError::ZeroOperationTypeRequirements);
+    }
     if definition
         .operations
         .keys()

@@ -57,6 +57,7 @@ pub struct PackageExportPublicInstance {
 pub struct PackageExportPublicInstanceInterface {
     pub module: String,
     pub symbol: String,
+    pub arguments: Vec<skiff_artifact_model::PackageTypeRef>,
     pub methods: Vec<PackageExportPublicInstanceMethod>,
 }
 
@@ -195,6 +196,7 @@ pub(super) fn project_package_exports(
                 .map(|interface| PackageExportPublicInstanceInterface {
                     module: interface.interface.module_path().to_string(),
                     symbol: interface.interface.symbol().to_string(),
+                    arguments: interface.interface_arguments.clone(),
                     methods: interface
                         .methods
                         .iter()

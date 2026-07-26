@@ -408,6 +408,7 @@ fn implementation_package(
         PackageLocalAbiSymbol::Callable {
             callable_id: callable_id.clone(),
             signature: PackageCallableSignature {
+                type_params: Vec::new(),
                 parameters: Vec::new(),
                 return_type: PackageTypeRef::Local {
                     local_type: TypeRefIr::builtin("bool"),

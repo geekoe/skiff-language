@@ -137,7 +137,7 @@ fn build_package_after_platform_context_guard(
                 root.display()
             )));
         }
-        let compiled = compile_service_package(input, &service.service.id)?;
+        let compiled = compile_service_package(input, &service)?;
         let receipt = json!({
             "serviceId": &compiled.service_api.contract.service_id,
             "serviceProtocolIdentity": &compiled.service_api.contract.service_protocol_identity,

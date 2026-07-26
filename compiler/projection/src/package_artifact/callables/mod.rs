@@ -171,6 +171,7 @@ fn project_implementation_symbols(
                 "pkg-callable:{package_id}:top-level:{source_path}"
             ));
             let signature = PackageCallableSignature {
+                type_params: executable.type_params.clone(),
                 parameters: executable
                     .params
                     .iter()

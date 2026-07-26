@@ -31,6 +31,7 @@ fn stream_file_ir_contains_for_emit_and_native_sse_call() {
         "id: example.com/stream-file-ir\nversion: 1.0.0\n",
     )
     .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         temp.path().join("stream.skiff"),
         r#"
@@ -68,6 +69,7 @@ fn target_typed_record_chunks_compile_to_package_file_ir() {
         "id: example.com/target-typed-stream-chunks\nversion: 1.0.0\n",
     )
     .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         temp.path().join("stream.skiff"),
         r#"

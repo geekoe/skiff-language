@@ -2,14 +2,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     BoundaryCallableProjection, ExecutableSignatureIr, FileIrRef, InterfaceMethodSignature,
-    NominalTypeRefBaseIr, OperationCallableKind, PackageArtifact, PackageLocalAbiSymbol,
-    PackageServiceCallRoot, PackageTypeRef, PublicationResourceRef, StateBindingKind,
-    TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    NominalTypeRefBaseIr, OperationCallableKind, PackageArtifact, PackageCallableSignature,
+    PackageLocalAbiSymbol, PackageServiceCallRoot, PackageTypeRef, PublicationResourceRef,
+    StateBindingKind, TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use crate::Result;
 
 use super::invalid_artifact;
+
+mod public_instances;
+
+use public_instances::validate_public_instance_surface;
 
 pub(super) fn validate_package_artifact_surface(artifact: &PackageArtifact) -> Result<()> {
     if artifact.schema_version != PACKAGE_ARTIFACT_SCHEMA_VERSION {
@@ -140,22 +144,22 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
                 callable_id,
                 signature,
             } => {
+                let expected_callable_id =
+                    format!("pkg-callable:{}:{public_path}", artifact.package_id);
+                if callable_id.as_str() != expected_callable_id {
+                    return invalid_artifact(format!(
+                        "public callable {public_path} has non-canonical callable id {callable_id}, expected {expected_callable_id}"
+                    ));
+                }
                 if !public_callables.insert(callable_id.clone()) {
                     return invalid_artifact(format!(
                         "package local ABI repeats callable id {callable_id}"
                     ));
                 }
-                for parameter in &signature.parameters {
-                    validate_package_type_ref(
-                        artifact,
-                        &parameter.ty,
-                        &format!("callable {callable_id} parameter {}", parameter.name),
-                    )?;
-                }
-                validate_package_type_ref(
+                validate_package_callable_signature(
                     artifact,
-                    &signature.return_type,
-                    &format!("callable {callable_id} return type"),
+                    signature,
+                    &format!("callable {callable_id}"),
                 )?;
             }
             PackageLocalAbiSymbol::Constant { const_id, ty } => {
@@ -182,7 +186,7 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
                 instance_id,
                 declared_receiver_type,
                 interfaces,
-                ..
+                methods,
             } => {
                 if instance_id != public_path {
                     return invalid_artifact(format!(
@@ -194,18 +198,13 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
                         "public instance {public_path} must list at least one interface"
                     ));
                 }
-                validate_local_type_ref(
+                validate_public_instance_surface(
+                    artifact,
+                    public_path,
                     declared_receiver_type,
-                    &[],
-                    &format!("public instance {public_path} receiver"),
+                    interfaces,
+                    methods,
                 )?;
-                for interface in interfaces {
-                    validate_local_type_ref(
-                        interface,
-                        &[],
-                        &format!("public instance {public_path} interface"),
-                    )?;
-                }
             }
         }
     }
@@ -228,20 +227,10 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
                         "package implementation surface repeats callable id {callable_id}"
                     ));
                 }
-                for parameter in &signature.parameters {
-                    validate_package_type_ref(
-                        artifact,
-                        &parameter.ty,
-                        &format!(
-                            "implementation callable {source_path} parameter {}",
-                            parameter.name
-                        ),
-                    )?;
-                }
-                validate_package_type_ref(
+                validate_package_callable_signature(
                     artifact,
-                    &signature.return_type,
-                    &format!("implementation callable {source_path} return type"),
+                    signature,
+                    &format!("implementation callable {source_path}"),
                 )?;
             }
             PackageLocalAbiSymbol::Type {
@@ -360,14 +349,83 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
             }
         }
     }
-    for callable_id in &all_callables {
-        if !artifact.callable_semantic_facts.contains_key(callable_id) {
-            return invalid_artifact(format!(
-                "callable {callable_id} has no callableSemanticFacts entry"
-            ));
+    let semantic_fact_keys = artifact
+        .callable_semantic_facts
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if semantic_fact_keys != all_callables {
+        return invalid_artifact(format!(
+            "callableSemanticFacts keys must exactly match public and implementation callable ids; expected {all_callables:?}, got {semantic_fact_keys:?}"
+        ));
+    }
+    validate_public_callable_link_kinds(artifact, &public_callables)?;
+    validate_implementation_link_type_refs(artifact)?;
+    Ok(())
+}
+
+type ExecutableCoordinate = (String, String, u32);
+
+fn executable_coordinate(file: &FileIrRef, executable_index: u32) -> ExecutableCoordinate {
+    (
+        file.file_ir_identity.clone(),
+        file.module_path.clone(),
+        executable_index,
+    )
+}
+
+fn validate_public_callable_link_kinds(
+    artifact: &PackageArtifact,
+    public_callables: &BTreeSet<skiff_artifact_model::PackageCallableId>,
+) -> Result<()> {
+    let function_targets = artifact
+        .implementation_links
+        .functions
+        .values()
+        .map(|export| executable_coordinate(&export.file, export.executable_index))
+        .collect::<BTreeSet<_>>();
+    let method_targets = artifact
+        .implementation_links
+        .impl_methods
+        .values()
+        .map(|export| executable_coordinate(&export.file, export.executable_index))
+        .collect::<BTreeSet<_>>();
+    if let Some(overlap) = function_targets.intersection(&method_targets).next() {
+        return invalid_artifact(format!(
+            "implementation function and method links overlap at {overlap:?}"
+        ));
+    }
+
+    let mut public_function_targets = BTreeSet::new();
+    let mut public_method_targets = BTreeSet::new();
+    for callable_id in public_callables {
+        let target = &artifact.callable_links[callable_id].target;
+        let coordinate = executable_coordinate(&target.file_ref, target.executable_index);
+        match target.callable_kind {
+            OperationCallableKind::PublicFunction => {
+                public_function_targets.insert(coordinate);
+            }
+            OperationCallableKind::ImplMethod => {
+                public_method_targets.insert(coordinate);
+            }
+            OperationCallableKind::ReceiverMethod | OperationCallableKind::InternalFunction => {
+                return invalid_artifact(format!(
+                    "public callable {callable_id} has unsupported callable kind {:?}",
+                    target.callable_kind
+                ));
+            }
         }
     }
-    validate_implementation_link_type_refs(artifact)?;
+    if public_function_targets != function_targets {
+        return invalid_artifact(format!(
+            "public function callable targets must exactly match implementation function links; expected {function_targets:?}, got {public_function_targets:?}"
+        ));
+    }
+    if public_method_targets != method_targets {
+        return invalid_artifact(format!(
+            "public method callable targets must exactly match implementation method links; expected {method_targets:?}, got {public_method_targets:?}"
+        ));
+    }
     Ok(())
 }
 
@@ -399,15 +457,125 @@ fn validate_implementation_link_type_refs(artifact: &PackageArtifact) -> Result<
         .iter()
         .chain(&artifact.implementation_links.impl_methods)
     {
-        validate_executable_signature(
-            &export.signature,
-            &format!("implementation link executable {path}"),
+        let location = format!("implementation link executable {path}");
+        let scope = implementation_link_callable_scope(
+            artifact,
+            &export.file,
+            export.executable_index,
+            &location,
         )?;
+        validate_executable_signature(&export.signature, scope, &location)?;
     }
     Ok(())
 }
 
+fn implementation_link_callable_scope<'a>(
+    artifact: &'a PackageArtifact,
+    file: &FileIrRef,
+    executable_index: u32,
+    location: &str,
+) -> Result<&'a [String]> {
+    let mut scope = None;
+    for (callable_id, link) in &artifact.callable_links {
+        if link.target.file_ref != *file
+            || link.target.executable_index != executable_index
+            || !matches!(
+                link.target.callable_kind,
+                OperationCallableKind::PublicFunction | OperationCallableKind::ImplMethod
+            )
+        {
+            continue;
+        }
+        let signature = artifact
+            .package_local_abi
+            .public_symbols
+            .values()
+            .find_map(|symbol| match symbol {
+                PackageLocalAbiSymbol::Callable {
+                    callable_id: symbol_id,
+                    signature,
+                } if symbol_id == callable_id => Some(signature),
+                _ => None,
+            })
+            .ok_or_else(|| crate::ArtifactIdentityError::InvalidPackageArtifact {
+                message: format!(
+                    "{location} targets public callable {callable_id} without a Local ABI signature"
+                ),
+            })?;
+        if let Some(existing) = scope {
+            if existing != signature.type_params.as_slice() {
+                return invalid_artifact(format!(
+                    "{location} has public aliases with different callable type parameter scopes"
+                ));
+            }
+        } else {
+            scope = Some(signature.type_params.as_slice());
+        }
+    }
+    scope.ok_or_else(|| crate::ArtifactIdentityError::InvalidPackageArtifact {
+        message: format!("{location} has no matching public callable"),
+    })
+}
+
 fn validate_service_call_roots(artifact: &PackageArtifact) -> Result<()> {
+    let mut instance_method_paths = BTreeSet::new();
+    let mut instance_method_callables = BTreeSet::new();
+    for (instance_path, symbol) in &artifact.package_local_abi.public_symbols {
+        let PackageLocalAbiSymbol::PublicInstance { methods, .. } = symbol else {
+            continue;
+        };
+        let method_prefix = format!("{instance_path}.");
+        for (public_path, public_symbol) in &artifact.package_local_abi.public_symbols {
+            let Some(method) = public_path.strip_prefix(&method_prefix) else {
+                continue;
+            };
+            let PackageLocalAbiSymbol::Callable { callable_id, .. } = public_symbol else {
+                return invalid_artifact(format!(
+                    "public instance namespace {instance_path} contains non-callable path {public_path}"
+                ));
+            };
+            if methods.get(method) != Some(callable_id) {
+                return invalid_artifact(format!(
+                    "public instance {instance_path} does not list exact public method {method}"
+                ));
+            }
+        }
+        for (method, callable_id) in methods {
+            if method.trim().is_empty() {
+                return invalid_artifact(format!(
+                    "public instance {instance_path} has an empty method name"
+                ));
+            }
+            let method_path = format!("{instance_path}.{method}");
+            let Some(PackageLocalAbiSymbol::Callable {
+                callable_id: public_callable_id,
+                ..
+            }) = artifact.package_local_abi.public_symbols.get(&method_path)
+            else {
+                return invalid_artifact(format!(
+                    "public instance {instance_path} method {method} has no public callable path {method_path}"
+                ));
+            };
+            if callable_id != public_callable_id {
+                return invalid_artifact(format!(
+                    "public instance {instance_path} method {method} binds {callable_id}, expected {public_callable_id}"
+                ));
+            }
+            let Some(link) = artifact.callable_links.get(callable_id) else {
+                return invalid_artifact(format!(
+                    "public instance {instance_path} method {method} has no exact callable link"
+                ));
+            };
+            if link.target.callable_kind != OperationCallableKind::ImplMethod {
+                return invalid_artifact(format!(
+                    "public instance {instance_path} method {method} must bind an impl method"
+                ));
+            }
+            instance_method_paths.insert(method_path);
+            instance_method_callables.insert(callable_id.clone());
+        }
+    }
+
     let mut root_paths = BTreeSet::new();
     let mut selected_callables = BTreeSet::new();
     for root in &artifact.service_call_roots {
@@ -434,6 +602,13 @@ fn validate_service_call_roots(artifact: &PackageArtifact) -> Result<()> {
                 if callable_id != public_callable_id {
                     return invalid_artifact(format!(
                         "serviceCall function root {public_path} binds {callable_id}, expected {public_callable_id}"
+                    ));
+                }
+                if instance_method_paths.contains(public_path)
+                    || instance_method_callables.contains(callable_id)
+                {
+                    return invalid_artifact(format!(
+                        "serviceCall function root {public_path} cannot select a public instance method"
                     ));
                 }
                 let Some(link) = artifact.callable_links.get(callable_id) else {
@@ -508,15 +683,67 @@ fn validate_service_call_roots(artifact: &PackageArtifact) -> Result<()> {
     Ok(())
 }
 
-fn validate_executable_signature(signature: &ExecutableSignatureIr, location: &str) -> Result<()> {
+fn validate_executable_signature(
+    signature: &ExecutableSignatureIr,
+    scope: &[String],
+    location: &str,
+) -> Result<()> {
     for parameter in &signature.params {
-        validate_local_type_ref(&parameter.ty, &[], location)?;
+        validate_local_type_ref(&parameter.ty, scope, location)?;
     }
-    validate_local_type_ref(&signature.return_type, &[], location)?;
+    validate_local_type_ref(&signature.return_type, scope, location)?;
     if let Some(self_type) = &signature.self_type {
-        validate_local_type_ref(self_type, &[], location)?;
+        validate_local_type_ref(self_type, scope, location)?;
     }
     Ok(())
+}
+
+fn validate_package_callable_signature(
+    artifact: &PackageArtifact,
+    signature: &PackageCallableSignature,
+    location: &str,
+) -> Result<()> {
+    validate_type_parameter_scope(&signature.type_params, location)?;
+    for parameter in &signature.parameters {
+        validate_package_type_ref_with_scope(
+            artifact,
+            &parameter.ty,
+            &signature.type_params,
+            &format!("{location} parameter {}", parameter.name),
+        )?;
+    }
+    validate_package_type_ref_with_scope(
+        artifact,
+        &signature.return_type,
+        &signature.type_params,
+        &format!("{location} return type"),
+    )
+}
+
+fn validate_type_parameter_scope(scope: &[String], location: &str) -> Result<()> {
+    let mut declared = BTreeSet::new();
+    for parameter in scope {
+        if !is_canonical_identifier_segment(parameter) {
+            return invalid_artifact(format!(
+                "{location} contains an invalid callable type parameter name"
+            ));
+        }
+        if !declared.insert(parameter) {
+            return invalid_artifact(format!(
+                "{location} repeats callable type parameter {parameter}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn is_canonical_identifier_segment(name: &str) -> bool {
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
 }
 
 fn validate_interface_methods(
@@ -656,8 +883,19 @@ fn validate_package_type_ref(
     ty: &PackageTypeRef,
     location: &str,
 ) -> Result<()> {
+    validate_package_type_ref_with_scope(artifact, ty, &[], location)
+}
+
+fn validate_package_type_ref_with_scope(
+    artifact: &PackageArtifact,
+    ty: &PackageTypeRef,
+    scope: &[String],
+    location: &str,
+) -> Result<()> {
     match ty {
-        PackageTypeRef::Local { local_type } => validate_local_type_ref(local_type, &[], location),
+        PackageTypeRef::Local { local_type } => {
+            validate_local_type_ref(local_type, scope, location)
+        }
         PackageTypeRef::PackageSchema {
             package_id,
             stable_schema_key,
@@ -703,9 +941,9 @@ fn validate_package_type_ref(
                     "{location} anyInterface target must be an exact local or PackageSchema nominal"
                 ));
             }
-            validate_package_type_ref(artifact, interface, location)?;
+            validate_package_type_ref_with_scope(artifact, interface, scope, location)?;
             for argument in arguments {
-                validate_package_type_ref(artifact, argument, location)?;
+                validate_package_type_ref_with_scope(artifact, argument, scope, location)?;
             }
             Ok(())
         }
@@ -714,11 +952,13 @@ fn validate_package_type_ref(
                 return invalid_artifact(format!("{location} has an empty container name"));
             }
             for argument in arguments {
-                validate_package_type_ref(artifact, argument, location)?;
+                validate_package_type_ref_with_scope(artifact, argument, scope, location)?;
             }
             Ok(())
         }
-        PackageTypeRef::Nullable { inner } => validate_package_type_ref(artifact, inner, location),
+        PackageTypeRef::Nullable { inner } => {
+            validate_package_type_ref_with_scope(artifact, inner, scope, location)
+        }
     }
 }
 

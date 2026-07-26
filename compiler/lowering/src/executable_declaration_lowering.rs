@@ -30,7 +30,7 @@ use super::{
         LoweredExecutableSignature,
     },
     service_call_lowering::LoweredServiceCalls,
-    source_unit_lowering::{push_source_span, source_span_ref, symbol, type_param_scope},
+    source_unit_lowering::{push_source_span, source_span_ref, symbol},
     type_lowering::{
         bare_type_name, is_file_ir_builtin_generic_type, is_file_ir_builtin_type, lower_type_ref,
         type_root, TypeLoweringContext,
@@ -315,6 +315,7 @@ fn project_executable_signature(exact: &SourceExecutableSignature) -> LoweredExe
         SourceExecutableReceiver::Implicit { ty } => Some(execution_type_ref(ty)),
     };
     LoweredExecutableSignature {
+        type_params: exact.type_params.clone(),
         params,
         return_type: execution_type_ref(&exact.return_type),
         self_type,
@@ -629,7 +630,26 @@ fn lower_function_with_params(
     service_calls: &LoweredServiceCalls,
 ) -> Result<ExecutableIr> {
     validate_bare_return_statements(function, &executable_symbol)?;
-    let type_params = type_param_scope(inherited_type_params.iter(), function.type_params.iter());
+    let exact_signature = executable_signatures.get(&current_index).ok_or_else(|| {
+        CompileError::Semantic(format!(
+            "missing projected exact signature for File IR executable `{executable_symbol}` at index {current_index}"
+        ))
+    })?;
+    let declared_type_params = inherited_type_params
+        .iter()
+        .chain(&function.type_params)
+        .cloned()
+        .collect::<Vec<_>>();
+    if exact_signature.type_params != declared_type_params {
+        return Err(CompileError::Semantic(format!(
+            "exact signature type parameters for `{executable_symbol}` do not match its executable declaration"
+        )));
+    }
+    let type_params = exact_signature
+        .type_params
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
     let type_context = TypeLoweringContext::value_with_type_params(&type_params);
     let mut lowerer = FunctionLowerer::new(
         type_indices,
@@ -656,11 +676,6 @@ fn lower_function_with_params(
         executable_signatures,
         service_calls,
     );
-    let exact_signature = executable_signatures.get(&current_index).ok_or_else(|| {
-        CompileError::Semantic(format!(
-            "missing projected exact signature for File IR executable `{executable_symbol}` at index {current_index}"
-        ))
-    })?;
     lowerer.expected_return_type = Some(exact_signature.return_type.clone());
     if exact_signature.params.len() != params_source.len() {
         return Err(CompileError::Semantic(format!(
@@ -765,7 +780,7 @@ fn lower_function_with_params(
     Ok(ExecutableIr {
         kind,
         symbol: executable_symbol,
-        type_params: function.type_params.clone(),
+        type_params: exact_signature.type_params.clone(),
         params,
         return_type: exact_signature.return_type.clone(),
         self_type,

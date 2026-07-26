@@ -260,6 +260,11 @@ fn validate_service_contract_surface(contract: &ServiceContract) -> Result<()> {
     }
     validate_non_empty("serviceId", &contract.service_id)?;
     validate_non_empty("contractVersion", &contract.contract_version)?;
+    if contract.operations.is_empty() && !contract.package_type_requirements.is_empty() {
+        return invalid_contract(
+            "zero-operation service contracts cannot contain packageTypeRequirements",
+        );
+    }
     for (operation_id, descriptor) in &contract.operations {
         if operation_id != &descriptor.operation_id {
             return invalid_contract("operation map key does not match nested operationId");
@@ -719,6 +724,16 @@ mod tests {
 
         assert_eq!(first, second);
         validate_service_contract_identities(&contract).unwrap();
+
+        let mut unreachable_types = contract;
+        unreachable_types.package_type_requirements = vec![PackageTypeRequirement {
+            package_id: "example.types".to_string(),
+            required_type_ids: vec![PackageSchemaTypeId::new("type:unreachable")],
+        }];
+        assert!(matches!(
+            service_protocol_identity(&unreachable_types),
+            Err(ArtifactIdentityError::InvalidServiceContract { .. })
+        ));
     }
 
     #[test]

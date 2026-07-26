@@ -57,6 +57,7 @@ pub(super) fn projected_public_instance(
             interfaces: vec![PackageExportPublicInstanceInterface {
                 module: "api".to_string(),
                 symbol: "WorkerApi".to_string(),
+                arguments: Vec::new(),
                 methods,
             }],
             service_call: false,
@@ -228,7 +229,7 @@ pub(super) fn public_instance_file_ir() -> FileIrUnit {
                 is_native: false,
                 is_provider: false,
                 is_static: false,
-                implicit_self: None,
+                implicit_self: Some(TypeRefIr::builtin("Self")),
             }],
             source_span: None,
         },
@@ -253,18 +254,11 @@ pub(super) fn public_instance_file_ir() -> FileIrUnit {
         kind: ExecutableKind::ImplMethod,
         symbol: "api.Worker.handle".to_string(),
         type_params: Vec::new(),
-        params: vec![
-            ParamIr {
-                name: "self".to_string(),
-                slot: 0,
-                ty: worker_type.clone(),
-            },
-            ParamIr {
-                name: "value".to_string(),
-                slot: 1,
-                ty: TypeRefIr::builtin("string"),
-            },
-        ],
+        params: vec![ParamIr {
+            name: "value".to_string(),
+            slot: 1,
+            ty: TypeRefIr::builtin("string"),
+        }],
         return_type: TypeRefIr::builtin("string"),
         self_type: Some(worker_type),
         slots: SlotLayout::default(),

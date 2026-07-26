@@ -359,6 +359,7 @@ fn export_bindings_projection(
                             })?;
                         Ok(ExportPublicInstanceInterfaceProjection {
                             interface: source_symbol_key_projection(&conformance.key.interface),
+                            interface_arguments: conformance.interface_arguments.clone(),
                             methods: conformance
                                 .methods
                                 .iter()

@@ -10,7 +10,7 @@ use skiff_artifact_model::{
 };
 
 use crate::{
-    compile_service_contract_definition, ServiceContractDefinition,
+    compile_service_contract_definition, ContractDefinitionError, ServiceContractDefinition,
     ServiceContractDefinitionDiagnosticText,
 };
 
@@ -74,4 +74,29 @@ fn package_owned_type_identity_is_independent_of_service_and_version() {
         first.package_type_requirements[0].required_type_ids,
         second.package_type_requirements[0].required_type_ids
     );
+}
+
+#[test]
+fn standalone_zero_operation_definition_is_rejected_even_with_type_requirements() {
+    let definition = ServiceContractDefinition {
+        service_id: "example.empty".to_string(),
+        contract_version: "1.0.0".to_string(),
+        operations: BTreeMap::new(),
+        package_type_requirements: vec![PackageTypeRequirement {
+            package_id: "example.types".to_string(),
+            required_type_ids: vec![skiff_artifact_model::PackageSchemaTypeId::new(
+                "type:unreachable",
+            )],
+        }],
+        diagnostic_text: ServiceContractDefinitionDiagnosticText {
+            service: "example.empty".to_string(),
+            operations: BTreeMap::new(),
+            types: BTreeMap::new(),
+        },
+    };
+
+    assert!(matches!(
+        compile_service_contract_definition(definition),
+        Err(ContractDefinitionError::EmptyOperations)
+    ));
 }

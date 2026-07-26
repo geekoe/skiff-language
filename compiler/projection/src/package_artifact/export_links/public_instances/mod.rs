@@ -109,6 +109,7 @@ pub(super) fn project_package_public_instances(
             &public_path,
             &public_instance.module,
             &constant.ty,
+            &receiver_const.ty,
             &public_instance.receiver_module,
             &public_instance.receiver_symbol,
         )?;
@@ -161,6 +162,7 @@ pub(in crate::package_artifact) struct PackagePublicInstanceMethodExecutionLink 
 #[derive(Debug, Clone)]
 struct PackagePublicInstanceReceiver {
     symbol: ServiceSymbolRef,
+    type_params: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -172,6 +174,24 @@ struct PackagePublicInstanceInterface {
 fn receiver_type_ref(receiver: &ServiceSymbolRef) -> TypeRefIr {
     TypeRefIr::ServiceSymbol {
         symbol: receiver.clone(),
+    }
+}
+
+impl PackagePublicInstanceReceiver {
+    fn definition_type(&self) -> TypeRefIr {
+        if self.type_params.is_empty() {
+            return receiver_type_ref(&self.symbol);
+        }
+        TypeRefIr::AppliedNominal {
+            base: skiff_artifact_model::NominalTypeRefBaseIr::ServiceSymbol {
+                symbol: self.symbol.clone(),
+            },
+            arguments: self
+                .type_params
+                .iter()
+                .map(|name| TypeRefIr::TypeParam { name: name.clone() })
+                .collect(),
+        }
     }
 }
 
