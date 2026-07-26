@@ -49,6 +49,7 @@ pub(crate) fn package_type_ref_from_source_type(
 /// consumes this fact instead of reconstructing it from lowered types.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceExecutableSignature {
+    pub type_params: Vec<String>,
     pub parameters: Vec<PackageCallableParameter>,
     pub return_type: PackageTypeRef,
     pub receiver: SourceExecutableReceiver,
@@ -75,6 +76,7 @@ impl SourceExecutableSignature {
             }
         };
         Ok(PackageCallableSignature {
+            type_params: self.type_params.clone(),
             parameters,
             return_type: self.return_type.clone(),
             may_suspend: self.may_suspend,
@@ -265,6 +267,7 @@ impl SourceCallableSignatureFacts {
         exports: &ExportBindingModel,
         type_resolution: &TypeResolutionModel,
         executable_signatures: &SourceExecutableSignatureFacts,
+        interface_signatures: &SourceInterfaceSignatureFacts,
     ) -> Result<Self, String> {
         let mut by_public_path = BTreeMap::new();
         let mut callable_exports = exports
@@ -277,6 +280,7 @@ impl SourceCallableSignatureFacts {
                 parsed_sources,
                 instance,
                 type_resolution,
+                interface_signatures,
             )?);
         }
         for export in callable_exports {

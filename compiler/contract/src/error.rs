@@ -5,6 +5,10 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ContractDefinitionError {
+    #[error("ServiceContractDefinition operations must contain at least one operation")]
+    EmptyOperations,
+    #[error("a zero-operation ServiceContractDefinition cannot require package schema types")]
+    ZeroOperationTypeRequirements,
     #[error("ServiceContractDefinition {kind} key must be a non-empty string")]
     EmptyStableKey { kind: &'static str },
     #[error("contract diagnostic text references unknown operation stable key {key}")]

@@ -249,6 +249,7 @@ fn bind_callable_signature_identity(
     artifact: &PackageArtifact,
 ) -> PackageCallableSignature {
     PackageCallableSignature {
+        type_params: signature.type_params.clone(),
         parameters: signature
             .parameters
             .iter()
@@ -493,6 +494,35 @@ mod tests {
                 ],
             }
         );
+    }
+
+    #[test]
+    fn dependency_signature_identity_binding_preserves_ordered_callable_type_parameters() {
+        let dependency = package_artifact("example.dep", "abi:dep");
+        let signature = PackageCallableSignature {
+            type_params: vec!["T".to_string(), "Id".to_string()],
+            parameters: vec![skiff_artifact_model::PackageCallableParameter {
+                name: "id".to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: TypeRefIr::TypeParam {
+                        name: "Id".to_string(),
+                    },
+                },
+            }],
+            return_type: PackageTypeRef::Nullable {
+                inner: Box::new(PackageTypeRef::Local {
+                    local_type: TypeRefIr::TypeParam {
+                        name: "T".to_string(),
+                    },
+                }),
+            },
+            may_suspend: false,
+        };
+
+        let bound = bind_callable_signature_identity(&signature, &dependency);
+        assert_eq!(bound.type_params, ["T", "Id"]);
+        assert_eq!(bound.parameters, signature.parameters);
+        assert_eq!(bound.return_type, signature.return_type);
     }
 
     fn package_artifact(package_id: &str, local_abi: &str) -> PackageArtifact {

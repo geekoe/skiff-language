@@ -29,6 +29,7 @@ pub struct PackageCallableParameter {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageCallableSignature {
+    pub type_params: Vec<String>,
     pub parameters: Vec<PackageCallableParameter>,
     pub return_type: PackageTypeRef,
     pub may_suspend: bool,
@@ -171,6 +172,7 @@ mod tests {
     #[test]
     fn package_callable_signature_rejects_closed_throw_set_field() {
         let canonical = json!({
+            "typeParams": [],
             "parameters": [],
             "returnType": {
                 "kind": "local",
@@ -179,6 +181,10 @@ mod tests {
             "maySuspend": false
         });
         serde_json::from_value::<PackageCallableSignature>(canonical.clone()).unwrap();
+
+        let mut missing_scope = canonical.clone();
+        missing_scope.as_object_mut().unwrap().remove("typeParams");
+        assert!(serde_json::from_value::<PackageCallableSignature>(missing_scope).is_err());
 
         let mut legacy = canonical;
         legacy["throwTypes"] = json!([]);
@@ -246,7 +252,7 @@ mod tests {
     #[test]
     fn package_artifact_wire_rejects_legacy_aggregate_fields() {
         let value = json!({
-            "schemaVersion": "skiff-package-artifact-v6",
+            "schemaVersion": "skiff-package-artifact-v7",
             "packageId": "example.pkg",
             "packageVersion": "1.0.0",
             "packageBuildId": "build",

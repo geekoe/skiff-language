@@ -33,6 +33,7 @@ fn ordinary_find_one_member_stays_plain_file_ir() {
         "id: example.com/plain-find-one\nversion: 1.0.0\n",
     )
     .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         temp.path().join("repo.skiff"),
         r#"
@@ -124,6 +125,7 @@ function findUser() -> {} {
             format!("id: example.com/{name}\nversion: 1.0.0\n"),
         )
         .unwrap();
+        fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
         fs::write(temp.path().join("repo.skiff"), source).unwrap();
 
         let error = compile_package_project(temp.path())

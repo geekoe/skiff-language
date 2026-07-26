@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn generic_callable_binders_survive_executable_and_public_signature_handoff() {
+    let model = build_model(
+        r#"
+            function submit<T, Id>(id: Id) -> T? {
+                return null
+            }
+        "#,
+        &SourceDependencyAnalysisInput::default(),
+        &BTreeMap::new(),
+    )
+    .expect("generic callable signature builds");
+
+    let executable = model
+        .executable_signatures()
+        .signature(&crate::SourceSymbolKey::new("api", "submit"))
+        .expect("generic executable signature");
+    assert_eq!(executable.type_params, ["T", "Id"]);
+    assert!(matches!(
+        &executable.parameters[0].ty,
+        PackageTypeRef::Local {
+            local_type: TypeRefIr::TypeParam { name }
+        } if name == "Id"
+    ));
+
+    let public = model
+        .callable_signatures()
+        .signature("submit")
+        .expect("generic public signature");
+    assert_eq!(public.type_params, ["T", "Id"]);
+    assert!(matches!(
+        &public.return_type,
+        PackageTypeRef::Nullable { inner }
+            if matches!(
+                inner.as_ref(),
+                PackageTypeRef::Local {
+                    local_type: TypeRefIr::TypeParam { name }
+                } if name == "T"
+            )
+    ));
+}
+
+#[test]
 fn explicit_receiver_is_owned_by_the_executable_fact_and_trimmed_once_from_public_view() {
     let dependency_analysis = contract_dependencies();
     let publication_api = PublicationApiSpec::from_public_instances(vec![
@@ -75,6 +117,7 @@ fn public_view_fails_when_its_canonical_executable_fact_is_missing() {
         model.export_bindings(),
         model.type_resolution(),
         &executable_signatures,
+        model.interface_signatures(),
     )
     .expect_err("public view cannot reconstruct a missing executable fact");
     assert!(error.contains("has no exact source executable signature fact"));

@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     CallableProvenanceSummary, CallableSemanticFacts, ContractTypeRef, FileIrUnit,
     FunctionTypeParamIr, InterfaceInstantiationRef, NamedUnionBranchIr, NominalTypeRefBaseIr,
-    PackageCallableSignature, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeDescriptorIr,
-    TypeRefIr, ValueProjectionStep, ValueProvenance,
+    PackageCallableSignature, PackageRefIr, PackageSymbolRef, PackageTypeRef, ServiceSymbolRef,
+    TypeDescriptorIr, TypeRefIr, ValueProjectionStep, ValueProvenance,
 };
 
 use crate::package_artifact::boundary::ordering::escape_lane_rank;
@@ -431,7 +431,7 @@ fn normalize_local_type(
                 .collect(),
         },
         TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
-            base: base.clone(),
+            base: normalize_public_nominal_base(owner_module, base, file_ir_units),
             arguments: arguments
                 .iter()
                 .map(|argument| {
@@ -490,6 +490,33 @@ fn normalize_local_type(
             )),
         },
         _ => ty.clone(),
+    }
+}
+
+fn normalize_public_nominal_base(
+    owner_module: &str,
+    base: &NominalTypeRefBaseIr,
+    file_ir_units: &[FileIrUnit],
+) -> NominalTypeRefBaseIr {
+    let source = match base {
+        NominalTypeRefBaseIr::LocalType { type_index } => Some((owner_module, *type_index)),
+        NominalTypeRefBaseIr::PublicationType {
+            module_path,
+            type_index,
+        } => Some((module_path.as_str(), *type_index)),
+        _ => None,
+    };
+    let Some((module_path, type_index)) = source else {
+        return base.clone();
+    };
+    let Some(symbol) = local_type_binding(file_ir_units, module_path, type_index) else {
+        return base.clone();
+    };
+    NominalTypeRefBaseIr::ServiceSymbol {
+        symbol: ServiceSymbolRef {
+            module_path: module_path.to_string(),
+            symbol: symbol.to_string(),
+        },
     }
 }
 
@@ -619,6 +646,7 @@ mod tests {
             },
         };
         let mut signature = PackageCallableSignature {
+            type_params: Vec::new(),
             parameters: vec![PackageCallableParameter {
                 name: "values".into(),
                 ty: nested,
@@ -677,7 +705,12 @@ mod tests {
             normalize_package_type("api", &applied, &units, &refs),
             PackageTypeRef::Local {
                 local_type: TypeRefIr::AppliedNominal {
-                    base: NominalTypeRefBaseIr::LocalType { type_index: 1 },
+                    base: NominalTypeRefBaseIr::ServiceSymbol {
+                        symbol: ServiceSymbolRef {
+                            module_path: "api".to_string(),
+                            symbol: "PrivateDetail".to_string(),
+                        },
+                    },
                     arguments: vec![TypeRefIr::PackageSchema {
                         package_id: "example.pkg".into(),
                         stable_schema_key: "errors.PublicError".into(),

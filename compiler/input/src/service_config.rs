@@ -29,7 +29,11 @@ pub struct ServicePackageRoot {
     pub package: PackageManifest,
     pub service: ServiceManifestAuthoring,
     pub config_profiles: BTreeMap<String, ServiceConfigProfile>,
+    _validated: ServicePackageRootValidation,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServicePackageRootValidation;
 
 #[derive(Debug, Error)]
 pub enum ServiceSourceConfigError {
@@ -62,6 +66,7 @@ pub fn read_service_package_root(
         package,
         service,
         config_profiles,
+        _validated: ServicePackageRootValidation,
     })
 }
 

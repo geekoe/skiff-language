@@ -272,6 +272,7 @@ impl PackageSourceModel {
             &export_bindings,
             &type_resolution,
             &executable_signatures,
+            &interface_signatures,
         )
         .map_err(|message| PublicationError::ContractValidation {
             message: format!("source callable signature resolution failed:\n- {message}"),

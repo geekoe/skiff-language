@@ -2,11 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
-    ConstExport, ContractOperationId, ContractRequirement, ExecutableExport, ExecutableSignatureIr,
-    FileIrRef, PackageCallableParameter, PackageCallableSignature, PackageExportIndex,
-    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRequirement, PackageResourceRequirement,
-    PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements, PackageTypeRef,
-    ServiceCallRef, ServiceProtocolIdentity, ServiceRequirement, TypeRefIr, ValueProvenance,
+    ConstDeclarationIr, ConstExport, ConstIr, ContractOperationId, ContractRequirement,
+    ExecutableBody, ExecutableExport, ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr,
+    InterfaceDeclIr, InterfaceOperationIr, PackageCallableParameter, PackageCallableSignature,
+    PackageExportIndex, PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr,
+    PackageRequirement, PackageResourceRequirement, PackageRuntimeCapabilityRequirement,
+    PackageRuntimeRequirements, PackageSymbolRef, PackageTypeRef, ServiceCallRef,
+    ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef, TypeDeclIr, TypeDeclarationIr,
+    TypeDescriptorIr, TypeRefIr, ValueProvenance,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
@@ -129,6 +132,78 @@ pub(super) fn project_fixture_with_runtime_requirements(
     ]);
     let mut file = skiff_artifact_model::FileIrUnit::empty("api", "source-hash");
     file.file_ir_identity = file_ref.file_ir_identity.clone();
+    file.type_table.extend([
+        TypeDeclIr {
+            name: "Worker".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::new(),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        },
+        TypeDeclIr {
+            name: "WorkerInterface".to_string(),
+            descriptor: TypeDescriptorIr::Interface,
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        },
+    ]);
+    file.declarations.types.extend([
+        (
+            "Worker".to_string(),
+            TypeDeclarationIr {
+                type_index: 0,
+                symbol: "api.Worker".to_string(),
+                source_span: None,
+            },
+        ),
+        (
+            "WorkerInterface".to_string(),
+            TypeDeclarationIr {
+                type_index: 1,
+                symbol: "api.WorkerInterface".to_string(),
+                source_span: None,
+            },
+        ),
+    ]);
+    file.declarations.interfaces.insert(
+        "WorkerInterface".to_string(),
+        InterfaceDeclIr {
+            name: "WorkerInterface".to_string(),
+            type_params: Vec::new(),
+            operations: vec![InterfaceOperationIr {
+                name: "handle".to_string(),
+                type_params: Vec::new(),
+                params: vec![FunctionTypeParamIr {
+                    name: "value".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                }],
+                return_type: TypeRefIr::builtin("string"),
+                is_native: false,
+                is_provider: false,
+                is_static: false,
+                implicit_self: Some(TypeRefIr::builtin("Self")),
+            }],
+            source_span: None,
+        },
+    );
+    file.constants.push(ConstIr {
+        name: "worker".to_string(),
+        ty: TypeRefIr::LocalType { type_index: 0 },
+        body: ExecutableBody::default(),
+        source_span: None,
+    });
+    file.declarations.constants.insert(
+        "worker".to_string(),
+        ConstDeclarationIr {
+            const_index: 0,
+            symbol: "api.worker".to_string(),
+            ty: TypeRefIr::LocalType { type_index: 0 },
+            source_span: None,
+        },
+    );
     let protocol_identity = ServiceProtocolIdentity::new("protocol:greeter:v1");
     let operation_id = ContractOperationId::new("operation:greet");
     let contract_requirement = ContractRequirement {
@@ -189,16 +264,30 @@ pub(super) fn project_fixture_with_runtime_requirements(
 }
 
 fn public_instance(file: &FileIrRef) -> PackagePublicInstanceExecutionLink {
-    let interface_type = TypeRefIr::builtin("WorkerInterface");
+    let receiver_type = TypeRefIr::ServiceSymbol {
+        symbol: ServiceSymbolRef {
+            module_path: "api".to_string(),
+            symbol: "Worker".to_string(),
+        },
+    };
+    let interface_type = TypeRefIr::PackageSymbol {
+        symbol: PackageSymbolRef {
+            package: PackageRefIr::PackageId {
+                package_id: "example.pkg".to_string(),
+            },
+            symbol_path: "api.WorkerInterface".to_string(),
+            abi_expectation: None,
+        },
+    };
     PackagePublicInstanceExecutionLink {
         public_path: "worker".to_string(),
-        declared_receiver_type: TypeRefIr::builtin("Worker"),
+        declared_receiver_type: receiver_type.clone(),
         interfaces: vec![interface_type],
         receiver: ConstExport {
             file: file.clone(),
             const_index: 0,
             symbol: "worker".to_string(),
-            ty: TypeRefIr::builtin("Worker"),
+            ty: receiver_type,
         },
         methods: vec![PackagePublicInstanceMethodExecutionLink {
             name: "handle".to_string(),
@@ -209,24 +298,22 @@ fn public_instance(file: &FileIrRef) -> PackagePublicInstanceExecutionLink {
 }
 
 fn receiver_export(file: &FileIrRef) -> ExecutableExport {
-    let self_ty = TypeRefIr::builtin("Worker");
+    let self_ty = TypeRefIr::ServiceSymbol {
+        symbol: ServiceSymbolRef {
+            module_path: "api".to_string(),
+            symbol: "Worker".to_string(),
+        },
+    };
     ExecutableExport {
         file: file.clone(),
         executable_index: 2,
         symbol: "Worker.handle".to_string(),
         signature: ExecutableSignatureIr {
-            params: vec![
-                skiff_artifact_model::ParamIr {
-                    name: "self".to_string(),
-                    slot: 0,
-                    ty: self_ty.clone(),
-                },
-                skiff_artifact_model::ParamIr {
-                    name: "value".to_string(),
-                    slot: 1,
-                    ty: TypeRefIr::builtin("string"),
-                },
-            ],
+            params: vec![skiff_artifact_model::ParamIr {
+                name: "value".to_string(),
+                slot: 1,
+                ty: TypeRefIr::builtin("string"),
+            }],
             return_type: TypeRefIr::builtin("string"),
             self_type: Some(self_ty),
             may_suspend: false,
@@ -254,6 +341,7 @@ fn executable_export(file: &FileIrRef, index: u32, symbol: &str) -> ExecutableEx
 
 pub(super) fn signature(ty: TypeRefIr) -> PackageCallableSignature {
     PackageCallableSignature {
+        type_params: Vec::new(),
         parameters: vec![PackageCallableParameter {
             name: "value".to_string(),
             ty: PackageTypeRef::Local { local_type: ty },
@@ -272,6 +360,7 @@ pub(super) fn exact_typed_signature() -> PackageCallableSignature {
         package_schema_type_id: "package-type:user".into(),
     };
     PackageCallableSignature {
+        type_params: Vec::new(),
         parameters: vec![PackageCallableParameter {
             name: "value".to_string(),
             ty: PackageTypeRef::Nullable {

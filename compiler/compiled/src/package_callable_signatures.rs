@@ -5,7 +5,7 @@ use skiff_compiler_projection_input::{
     canonical_package_public_path, DuplicateProjectionPackageCallableSignature,
     ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
 };
-use skiff_compiler_source::PackageSourceModel;
+use skiff_compiler_source::{PackageSourceModel, SourceInterfaceConformanceKey, SourceSymbolKey};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -19,6 +19,15 @@ pub enum ProjectionInputBuildError {
         public_path: String,
         source_module: String,
         source_symbol: String,
+    },
+    #[error(
+        "public-instance callable signature `{public_path}` has no unique validated implementation for {receiver_module}.{receiver_symbol}.{method}"
+    )]
+    MissingValidatedPublicInstanceMethod {
+        public_path: String,
+        receiver_module: String,
+        receiver_symbol: String,
+        method: String,
     },
     #[error(
         "public instance `{public_path}` receiver {receiver_module}.{receiver_symbol} has no validated conformance to {interface_module}.{interface_symbol}"
@@ -118,15 +127,38 @@ fn package_callable_target(
             source_symbol: instance.source_symbol.clone(),
         },
     )?;
-    let source_symbol = skiff_compiler_source::semantic::impl_method_declaration_name(
-        &receiver.symbol,
-        method_name,
-    );
+    let receiver_key = SourceSymbolKey::new(&receiver.module_path, &receiver.symbol);
+    let validated_methods = instance
+        .interfaces
+        .iter()
+        .filter_map(|interface| {
+            model.interface_signatures().validated_method(
+                &SourceInterfaceConformanceKey {
+                    receiver: receiver_key.clone(),
+                    interface: SourceSymbolKey::new(
+                        &interface.source_module,
+                        &interface.source_symbol,
+                    ),
+                },
+                method_name,
+            )
+        })
+        .collect::<Vec<_>>();
+    let [validated_method] = validated_methods.as_slice() else {
+        return Err(
+            ProjectionInputBuildError::MissingValidatedPublicInstanceMethod {
+                public_path: public_path.to_string(),
+                receiver_module: receiver.module_path,
+                receiver_symbol: receiver.symbol,
+                method: method_name.to_string(),
+            },
+        );
+    };
     executable_target(
         units_by_module,
         public_path,
-        &receiver.module_path,
-        &source_symbol,
+        validated_method.executable.module_path(),
+        validated_method.executable.symbol(),
     )
 }
 
@@ -176,6 +208,17 @@ fn package_nominal_service_symbol(
             let decl = unit.type_table.get(*type_index as usize)?;
             Some(ServiceSymbolRef {
                 module_path: module_path.to_string(),
+                symbol: decl.name.clone(),
+            })
+        }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => {
+            let unit = file_units_by_module.get(module_path.as_str()).copied()?;
+            let decl = unit.type_table.get(*type_index as usize)?;
+            Some(ServiceSymbolRef {
+                module_path: module_path.clone(),
                 symbol: decl.name.clone(),
             })
         }
