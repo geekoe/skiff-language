@@ -1,8 +1,8 @@
 # P5-H36 External ingress implementation DAG
 
 状态：Implementation in progress；C0–C2、C3 loader/linker、HTTP request wire、
-package-test entrypoint 与 Router v2 snapshot 已合流；C3 request/eval execution seam 与 Router HTTP
-dispatch 正在执行。
+package-test entrypoint、Router v2 snapshot、request/eval execution seam 与 Router HTTP dispatch
+已合流；C3 Host admission/wire 正在执行，C4 Account 与 Codex Relay 迁移已进入 ready queue。
 HTTP `service.yml` named-route authoring已由用户冻结；WebSocket业务消息路由于2026-07-26撤回原raw
 `receive`方案并暂缓。
 
@@ -160,7 +160,8 @@ production surface，最终验收必须按影响范围重跑。
 按F350清单拆为不重叠owner：
 
 - Skiff compiler/runtime-live/legacy fixtures与canonical package/service roots；
-- Internals Account与Codex Relay；
+- Internals Account：F366，独立service目录，`21 -> 0`；
+- Internals Codex Relay：F367，独立service目录，`17 -> 2`；
 - Internals AIHub与Agine先迁移HTTP/serviceCall部分；WebSocket connect与业务消息入口另行迁移；
 - skiff-packages无ingress service只做新generation registry/release revalidation；
 - test-runner与F269生成的test-service roots由其各自owner刷新，不得重新引入旧co-located test。
