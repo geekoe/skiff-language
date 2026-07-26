@@ -1,3 +1,7 @@
 function ping() -> string {
   return "pong"
 }
+
+function __skiffHttpPing(body: null) -> string {
+  return ping()
+}
