@@ -984,46 +984,9 @@ impl TypeResolutionModel {
         };
         match ty {
             TypeRefIr::LocalType { type_index } => {
-                let candidates = self
-                    .package_type_slots
-                    .iter()
-                    .filter(|((owner, _, slot), _)| {
-                        (owner == dependency_ref || owner == package_id) && slot == type_index
-                    })
-                    .map(|((_, module_path, _), public_path)| {
-                        (module_path.clone(), public_path.clone())
-                    })
-                    .collect::<BTreeSet<_>>();
-                if candidates.len() != 1 {
-                    return Err(if candidates.is_empty() {
-                        format!(
-                            "dependency `{dependency_ref}` package `{package_id}` has no public Local ABI type slot #{type_index}"
-                        )
-                    } else {
-                        format!(
-                            "dependency `{dependency_ref}` package `{package_id}` Local ABI type slot #{type_index} has ambiguous owners: {}",
-                            candidates
-                                .iter()
-                                .map(|(module_path, public_path)| {
-                                    format!("{module_path} -> {public_path}")
-                                })
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    });
-                }
-                let (module_path, _) = candidates
-                    .iter()
-                    .next()
-                    .expect("one Local ABI slot candidate was established");
-                let canonical = self
-                    .canonical_package_local_type_slot(package_id, module_path, *type_index)
-                    .ok_or_else(|| {
-                        format!(
-                            "dependency `{dependency_ref}` package `{package_id}` cannot resolve Local ABI type slot {module_path}#{type_index}"
-                        )
-                    })?;
-                Ok(bind_owner(&canonical))
+                Err(format!(
+                    "dependency `{dependency_ref}` package `{package_id}` artifact producer wrote ownerless package signature LocalType slot #{type_index}"
+                ))
             }
             TypeRefIr::PublicationType {
                 module_path,

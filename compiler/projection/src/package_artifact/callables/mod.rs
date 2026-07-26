@@ -54,7 +54,16 @@ pub(super) fn project_package_callable_surface(
             &mut callable.signature,
             file_ir_units,
             package_schema_refs,
-        );
+        )
+        .map_err(|message| {
+            projection_error(
+                package_id,
+                format!(
+                    "public callable {} signature from module {}: {message}",
+                    callable.public_path, callable.owner_module
+                ),
+            )
+        })?;
         surface::insert_public_symbol(
             &mut local_surface.public_symbols,
             callable.public_path.clone(),

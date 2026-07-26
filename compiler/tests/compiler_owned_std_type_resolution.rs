@@ -15,7 +15,7 @@ use skiff_artifact_model::{
     BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
     BoundaryValuePlan, CallIr, CallTargetIr, ContractTypeRef, ExprIr, PackageLocalAbiSymbol,
-    PackageRefIr, TypeRefIr,
+    PackageRefIr, PackageTypeRef, ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler::{ServiceContractDefinition, ServiceContractDefinitionDiagnosticText};
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
@@ -102,6 +102,53 @@ function run(input: string) -> std.websocket.WebSocketIngressEvent<Context> {
     assert_eq!(
         project.package.artifact.package_requirements[0].expected_local_abi,
         std.artifact.package_local_abi.local_abi_identity
+    );
+}
+
+#[test]
+fn compiler_owned_std_http_stream_uses_exact_symbol_owner_and_lowers() {
+    let project = compile_with_contract(
+        "http-stream-exact-owner",
+        r#"import std
+
+function run(input: std.http.HttpClientRequest) -> integer {
+  const response = std.http.stream(input)
+  return response.status
+}
+"#,
+    );
+    let std = project
+        .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
+        .expect("canonical std artifact must remain in the package closure");
+    let PackageLocalAbiSymbol::Callable { signature, .. } =
+        &std.artifact.package_local_abi.public_symbols["std.http.stream"]
+    else {
+        panic!("std.http.stream must remain a public callable")
+    };
+    assert_eq!(
+        signature.return_type,
+        PackageTypeRef::Local {
+            local_type: TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: "std.http".to_string(),
+                    symbol: "HttpClientStreamHandle".to_string(),
+                },
+            },
+        }
+    );
+    assert_eq!(
+        count_json_kind(
+            &serde_json::to_value(&std.artifact.package_local_abi.public_symbols).unwrap(),
+            "localType",
+        ),
+        0,
+        "fresh official std public symbols must not contain ownerless LocalType values"
+    );
+
+    let stream_id = public_callable_id(std, "std.http.stream");
+    assert!(
+        package_call(module_artifact(&project.package, "main"), &stream_id).is_some(),
+        "the exact std.http.stream signature must rehydrate and lower through the real package compiler"
     );
 }
 
@@ -195,4 +242,21 @@ fn package_call<'a>(
             .then_some(call)
         })
     })
+}
+
+fn count_json_kind(value: &serde_json::Value, expected: &str) -> usize {
+    match value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|item| count_json_kind(item, expected))
+            .sum(),
+        serde_json::Value::Object(fields) => {
+            usize::from(fields.get("kind").and_then(serde_json::Value::as_str) == Some(expected))
+                + fields
+                    .values()
+                    .map(|field| count_json_kind(field, expected))
+                    .sum::<usize>()
+        }
+        _ => 0,
+    }
 }
