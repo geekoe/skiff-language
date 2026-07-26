@@ -117,7 +117,7 @@ export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         requiredAnchors: [
           'record_in_process_boundary_dispatch(',
           'BoundaryStreamContract',
-          'BoundaryCancellationContract',
+          'async_stream_cancel::execute_service_call(',
         ],
       },
       {

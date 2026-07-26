@@ -209,9 +209,9 @@ function readPackageUnitPointers(
       object.schemaVersion,
       `${label}.schemaVersion`,
     );
-    if (schemaVersion !== "skiff-package-unit-v1") {
+    if (schemaVersion !== "skiff-package-unit-v2") {
       throw new Error(
-        `${label}.schemaVersion must be skiff-package-unit-v1`,
+        `${label}.schemaVersion must be skiff-package-unit-v2`,
       );
     }
     return {

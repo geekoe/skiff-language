@@ -138,7 +138,7 @@ export async function readPackageServiceHostFixtureReceipt(path, expectedEnviron
     receipt.baseAssembly.assemblyIdentity,
     'base assembly assemblyIdentity',
   );
-  if (!/^skiff-runtime-assembly-v1:sha256:[a-f0-9]{64}$/.test(assemblyIdentity)) {
+  if (!/^skiff-runtime-assembly-v2:sha256:[a-f0-9]{64}$/.test(assemblyIdentity)) {
     throw new Error('base assembly assemblyIdentity must be canonical');
   }
   return receipt;

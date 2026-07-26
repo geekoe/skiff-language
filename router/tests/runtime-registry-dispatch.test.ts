@@ -35,7 +35,7 @@ import {
 } from './helpers/runtime.js';
 
 const CANONICAL_SERVICE_PROTOCOL_IDENTITY =
-  `skiff-service-protocol-v4:sha256:${'c'.repeat(64)}`;
+  `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`;
 
 afterEach(closeTrackedResources);
 
@@ -1702,7 +1702,7 @@ describe('router runtime registry dispatch', () => {
     const target = 'service.skiff~run~~hello.HelloApi.hello';
     const protocolA = manifest.service.protocolIdentity;
     const protocolB =
-      'skiff-service-protocol-v4:sha256:0000000000000000000000000000000000000000000000000000000000000004';
+      'skiff-service-protocol-v5:sha256:0000000000000000000000000000000000000000000000000000000000000004';
     const buildA =
       'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000000aa';
     const buildB =
@@ -1827,7 +1827,7 @@ describe('router runtime registry dispatch', () => {
     const serviceId = manifest.service.id;
     const callerExpectation = manifest.service.protocolIdentity;
     const incompatibleProtocol =
-      'skiff-service-protocol-v4:sha256:0000000000000000000000000000000000000000000000000000000000000009';
+      'skiff-service-protocol-v5:sha256:0000000000000000000000000000000000000000000000000000000000000009';
     const currentBuild =
       'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000000ee';
 

@@ -25,7 +25,7 @@ import {
   type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
 
-const ASSEMBLY = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
+const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 const OPERATION = `skiff-contract-operation-v1:sha256:${'c'.repeat(64)}`;
 const RUNTIME_ID = 'runtime-connection-send-a';
 const binding: RuntimeAssemblyIngressBinding = {

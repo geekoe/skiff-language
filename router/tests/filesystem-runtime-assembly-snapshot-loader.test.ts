@@ -10,7 +10,7 @@ const roots: string[] = [];
 const ASSEMBLY_IDENTITY =
   `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 const SERVICE_PROTOCOL_IDENTITY =
-  `skiff-service-protocol-v4:sha256:${'b'.repeat(64)}`;
+  `skiff-service-protocol-v5:sha256:${'b'.repeat(64)}`;
 const GATEWAY_IDENTITIES = [
   `skiff-gateway-entry-v1:sha256:${'1'.repeat(64)}`,
   `skiff-gateway-entry-v1:sha256:${'2'.repeat(64)}`,
@@ -76,13 +76,13 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     ).resolves.toMatchObject({ assemblyIdentity: ASSEMBLY_IDENTITY });
   });
 
-  it('accepts only PackageArtifact v8 records addressed by package build v9', async () => {
+  it('accepts only PackageArtifact v9 records addressed by package build v10', async () => {
     const packageRef: PackageRefFixture = {
       packageId: 'skiff.run/echo',
       packageVersion: '1.0.0',
-      packageBuildId: `skiff-package-build-v9:sha256:${'d'.repeat(64)}`,
+      packageBuildId: `skiff-package-build-v10:sha256:${'d'.repeat(64)}`,
       packageLocalAbiIdentity:
-        `skiff-package-local-abi-v6:sha256:${'e'.repeat(64)}`
+        `skiff-package-local-abi-v7:sha256:${'e'.repeat(64)}`
     };
 
     const current = await fixtureRoot();
@@ -90,7 +90,7 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     currentFixture.assembly.packageLinkPlan.codeSlots = [{ package: packageRef }];
     await writeFixture(current, currentFixture);
     await writeJson(current, packagePath(packageRef), {
-      schemaVersion: 'skiff-package-artifact-v8',
+      schemaVersion: 'skiff-package-artifact-v9',
       files: []
     });
     await expect(
@@ -100,19 +100,19 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     const legacySchema = await fixtureRoot();
     await writeFixture(legacySchema, currentFixture);
     await writeJson(legacySchema, packagePath(packageRef), {
-      schemaVersion: 'skiff-package-artifact-v7',
+      schemaVersion: 'skiff-package-artifact-v8',
       files: []
     });
     await expect(
       loader(legacySchema).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
-    ).rejects.toThrow(/schemaVersion must be skiff-package-artifact-v8/);
+    ).rejects.toThrow(/schemaVersion must be skiff-package-artifact-v9/);
 
     const legacyBuild = await fixtureRoot();
     const legacyBuildFixture = canonicalFixture();
     legacyBuildFixture.assembly.packageLinkPlan.codeSlots = [{
       package: {
         ...packageRef,
-        packageBuildId: `skiff-package-build-v8:sha256:${'d'.repeat(64)}`
+        packageBuildId: `skiff-package-build-v9:sha256:${'d'.repeat(64)}`
       }
     }];
     await writeFixture(legacyBuild, legacyBuildFixture);
@@ -458,9 +458,9 @@ function deployment(
     implementation: {
       packageId: 'skiff.run/echo',
       packageVersion: '1.0.0',
-      packageBuildId: `skiff-package-build-v9:sha256:${'d'.repeat(64)}`,
+      packageBuildId: `skiff-package-build-v10:sha256:${'d'.repeat(64)}`,
       packageLocalAbiIdentity:
-        `skiff-package-local-abi-v4:sha256:${'e'.repeat(64)}`
+        `skiff-package-local-abi-v7:sha256:${'e'.repeat(64)}`
     },
     operationBindings: [],
     packageBindings: [],

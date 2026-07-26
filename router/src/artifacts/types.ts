@@ -92,7 +92,7 @@ export interface SourcedArtifactPointer extends ArtifactPointer {
 }
 
 export interface PackageUnitArtifactPointer {
-  schemaVersion: "skiff-package-unit-v1";
+  schemaVersion: "skiff-package-unit-v2";
   packageId: string;
   version: string;
   buildIdentity: string;

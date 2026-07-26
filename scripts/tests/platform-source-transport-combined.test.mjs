@@ -99,7 +99,7 @@ test('merged compiler and test transports share one absolute platform root', asy
           skiffRoot,
           root: join(skiffRoot, 'test-runner/fixtures/package-service-host/consumer-tests'),
           artifactRoot,
-          baseAssembly: `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`,
+          baseAssembly: `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`,
         }),
       },
       {

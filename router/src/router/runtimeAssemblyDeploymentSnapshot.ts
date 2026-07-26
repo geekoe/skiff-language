@@ -15,7 +15,7 @@ const DEPLOYMENT_ARTIFACT_IDENTITY_PATTERN =
 const GATEWAY_ENTRY_IDENTITY_PATTERN =
   /^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$/;
 const SERVICE_PROTOCOL_IDENTITY_PATTERN =
-  /^skiff-service-protocol-v4:sha256:[0-9a-f]{64}$/;
+  /^skiff-service-protocol-v5:sha256:[0-9a-f]{64}$/;
 
 interface DecodedServiceDeployment {
   ref: RuntimeAssemblyDeploymentRef;

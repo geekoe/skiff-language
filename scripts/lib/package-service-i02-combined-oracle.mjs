@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 
 const ASSEMBLY_IDENTITY =
-  /^skiff-runtime-assembly-v1:sha256:[0-9a-f]{64}$/;
+  /^skiff-runtime-assembly-v2:sha256:[0-9a-f]{64}$/;
 const PACKAGE_BUILD_IDENTITY =
-  /^skiff-package-build-v4:sha256:[0-9a-f]{64}$/;
+  /^skiff-package-build-v10:sha256:[0-9a-f]{64}$/;
 const I02_SPAWN_SUBMIT_BUSINESS_RESULT =
   'P5-F45E-SPAWN-SUBMIT-TYPED-RESPONSE:submitted';
 

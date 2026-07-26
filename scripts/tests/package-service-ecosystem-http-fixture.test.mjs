@@ -60,7 +60,7 @@ test('v1 and retired contract or operation fields fail closed without dual-read'
     serviceId: 'retired',
     contractVersion: '1.0.0',
     serviceProtocolIdentity:
-      `skiff-service-protocol-v4:sha256:${'a'.repeat(64)}`,
+      `skiff-service-protocol-v5:sha256:${'a'.repeat(64)}`,
   };
   cases.push(['contract field', contract]);
 

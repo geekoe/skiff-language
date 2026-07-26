@@ -160,13 +160,13 @@ async function writeCandidate(
   const packageUnits = [];
   if (withPackage) {
     const packageUnit = {
-      schemaVersion: "skiff-package-unit-v1" as const,
+      schemaVersion: "skiff-package-unit-v2" as const,
       packageId: "example.com/pkg",
       version: "1.0.0",
       buildIdentity:
-        "skiff-package-build-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "skiff-package-build-v10:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       abiIdentity:
-        "skiff-package-local-abi-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "skiff-package-local-abi-v7:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       unitHash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       unitPath: "units/packages/pkg/package.json",
     };

@@ -36,8 +36,8 @@ import {
   type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
 
-const ASSEMBLY = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
-const ASSEMBLY_B = `skiff-runtime-assembly-v1:sha256:${'9'.repeat(64)}`;
+const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+const ASSEMBLY_B = `skiff-runtime-assembly-v2:sha256:${'9'.repeat(64)}`;
 const OPERATION = `skiff-contract-operation-v1:sha256:${'b'.repeat(64)}`;
 const PROTOCOL = `skiff-service-protocol-v3:sha256:${'c'.repeat(64)}`;
 const HOST = 'component-websocket.skiff.localhost';

@@ -198,23 +198,14 @@ test('I02 combined owner performs valid commit, two zero-I/O requests, and real 
   const environment = 'skiff-cutover';
   const fixture = validI02SpawnSubmitFixtureReceipt(environment);
   assert.deepEqual(
-    fixture.candidate.entrypoints.map(({ kind, name }) => ({ kind, name })),
+    fixture.candidate.entrypoints.map(({ gatewayEntryKey, selector }) => ({
+      gatewayEntryKey,
+      protocol: selector.protocol,
+    })),
     [
-      {
-        kind: 'packageTest',
-        name: 'I02 normal source fixture compiles canonical spawn submit',
-      },
-      { kind: 'unary', name: 'marker' },
-      { kind: 'websocket', name: 'websocket' },
+      { gatewayEntryKey: 'run', protocol: 'http' },
+      { gatewayEntryKey: 'probe', protocol: 'http' },
     ],
-  );
-  assert.deepEqual(
-    fixture.candidate.entrypoints[1].contract,
-    fixture.candidate.entrypoints[2].contract,
-  );
-  assert.deepEqual(
-    fixture.candidate.entrypoints[1].deployment,
-    fixture.candidate.entrypoints[2].deployment,
   );
   const bootstrap = validBootstrapReceipt(environment);
   const parentSignalTarget = new EventEmitter();
@@ -255,7 +246,7 @@ test('I02 combined owner performs valid commit, two zero-I/O requests, and real 
       await writeFile(
         stdPath,
         `${JSON.stringify({
-          schemaVersion: 'skiff-package-artifact-v4',
+          schemaVersion: 'skiff-package-artifact-v9',
           ...bootstrap.bootstrap.std.package.artifact,
         })}\n`,
       );
@@ -390,7 +381,7 @@ async function createOwnedStack() {
 
 function assemblyRecord(fixture, bootstrap) {
   return {
-    schemaVersion: 'skiff-runtime-assembly-v1',
+    schemaVersion: 'skiff-runtime-assembly-v2',
     assemblyIdentity: fixture.candidate.assembly.assemblyIdentity,
     roots: [],
     resolvedDeployments: [],
@@ -412,7 +403,7 @@ function assemblyRecord(fixture, bootstrap) {
           fixture.candidate.overlay.packageBuildId,
       },
     ],
-    globalIngress: [],
+    gatewayIngress: [],
   };
 }
 
@@ -423,10 +414,6 @@ function validI02SpawnSubmitFixtureReceipt(environment) {
   fixture.candidate.overlay.packageId = packageId;
   fixture.candidate.overlayRecordPath = fixture.candidate.overlayRecordPath
     .replace('package-service-websocket-smoke', 'package-service-i02-spawn-submit');
-  fixture.candidate.entrypoints[0].name =
-    'I02 normal source fixture compiles canonical spawn submit';
-  fixture.candidate.entrypoints[0].contract.serviceId =
-    `test.skiff/package/${packageId}`;
   fixture.candidate.entrypoints[0].deployment.serviceId =
     `test.skiff/package/${packageId}`;
   return fixture;

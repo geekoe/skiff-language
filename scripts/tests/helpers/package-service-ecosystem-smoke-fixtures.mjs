@@ -3,17 +3,17 @@ const identity = (prefix, character) => `${prefix}:${character.repeat(64)}`;
 export const smokeFixtureIdentities = Object.freeze({
   assembly: identity('skiff-runtime-assembly-v2:sha256', 'a'),
   bootstrapAssembly: identity('skiff-runtime-assembly-v2:sha256', '0'),
-  productionBuild: identity('skiff-package-build-v9:sha256', '1'),
-  productionAbi: identity('skiff-package-local-abi-v6:sha256', '2'),
-  overlayBuild: identity('skiff-package-build-v9:sha256', '3'),
-  overlayAbi: identity('skiff-package-local-abi-v6:sha256', '4'),
+  productionBuild: identity('skiff-package-build-v10:sha256', '1'),
+  productionAbi: identity('skiff-package-local-abi-v7:sha256', '2'),
+  overlayBuild: identity('skiff-package-build-v10:sha256', '3'),
+  overlayAbi: identity('skiff-package-local-abi-v7:sha256', '4'),
   packageTestDeployment: identity('skiff-deployment-artifact-v2:sha256', '7'),
   smokeDeployment: identity('skiff-deployment-artifact-v2:sha256', '8'),
   packageTestGateway:
     'skiff-gateway-entry-v1:sha256:cfcfced94f984612809ce837f81e975016b09f206925389d95e925e087fc32d4',
   smokeProbeGateway:
     'skiff-gateway-entry-v1:sha256:adfaa17c077af0388f2b5751bbe4b9ba392ec647f5ce33022c8e8ec83eaf6653',
-  stdAbi: identity('skiff-package-local-abi-v6:sha256', 'd'),
+  stdAbi: identity('skiff-package-local-abi-v7:sha256', 'd'),
 });
 
 export function validSmokeFixtureReceipt(environment) {
@@ -83,7 +83,7 @@ export function validSmokeFixtureReceipt(environment) {
 }
 
 export function validBootstrapReceipt(environment, {
-  packageBuildId = identity('skiff-package-build-v9:sha256', 'a'),
+  packageBuildId = identity('skiff-package-build-v10:sha256', 'a'),
 } = {}) {
   const artifact = {
     packageId: 'skiff.run/std',

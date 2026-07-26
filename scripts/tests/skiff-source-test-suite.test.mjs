@@ -19,7 +19,7 @@ import {
   skiffSourceSubjectPublishArgs,
 } from '../lib/skiff-source-test-suite.mjs';
 
-const assemblyIdentity = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
+const assemblyIdentity = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 
 test('F270 legacy overlay smoke debt remains an exact closed inventory', async () => {
   const fixtureRoot = fileURLToPath(

@@ -76,8 +76,10 @@
           }
         }
       },
-      "externalRefs": {},
-      "fileIrIdentity": "skiff-file-ir-v3:sha256:5a2727d8d82d1119722c87855627958d88debe43b5bea372d258f9a0cebde253",
+      "externalRefs": {
+        "serviceCallRefs": []
+      },
+      "fileIrIdentity": "skiff-file-ir-v8:sha256:c5d2b3e00db2cbcc927485966bc79bb312e0e39af0997c27f95843eec8df7cbc",
       "irFormatVersion": "skiff-file-ir-format-v1",
       "linkTargets": {
         "types": {
@@ -94,8 +96,8 @@
       },
       "modulePath": "std",
       "opcodeTableVersion": "skiff-opcode-table-v1",
-      "schemaVersion": "skiff-file-ir-v3",
-      "sourceAstHash": "source:skiff-file-ir-v3:sha256:5a2727d8d82d1119722c87855627958d88debe43b5bea372d258f9a0cebde253",
+      "schemaVersion": "skiff-file-ir-v8",
+      "sourceAstHash": "source:skiff-file-ir-v8:sha256:c5d2b3e00db2cbcc927485966bc79bb312e0e39af0997c27f95843eec8df7cbc",
       "sourceMap": {
         "format": "skiff-file-ir-source-map-v1"
       },
@@ -137,54 +139,47 @@
         {
           "descriptor": {
             "kind": "union",
-            "variants": [
+            "branches": [
               {
-                "fields": {
-                  "headers": {
-                    "kind": "builtin",
-                    "name": "Json"
-                  },
-                  "status": {
-                    "kind": "builtin",
-                    "name": "integer"
-                  },
-                  "tag": {
-                    "kind": "literal",
-                    "value": {
-                      "kind": "string",
-                      "value": "start"
+                "kind": "syntheticDiscriminator",
+                "payloadType": {
+                  "kind": "record",
+                  "fields": {
+                    "headers": {
+                      "kind": "builtin",
+                      "name": "Json"
+                    },
+                    "status": {
+                      "kind": "builtin",
+                      "name": "integer"
                     }
                   }
                 },
-                "kind": "record"
+                "discriminatorField": "tag",
+                "discriminatorValue": "start"
               },
               {
-                "fields": {
-                  "tag": {
-                    "kind": "literal",
+                "kind": "syntheticDiscriminator",
+                "payloadType": {
+                  "kind": "record",
+                  "fields": {
                     "value": {
-                      "kind": "string",
-                      "value": "chunk"
+                      "kind": "builtin",
+                      "name": "bytes"
                     }
-                  },
-                  "value": {
-                    "kind": "builtin",
-                    "name": "bytes"
                   }
                 },
-                "kind": "record"
+                "discriminatorField": "tag",
+                "discriminatorValue": "chunk"
               },
               {
-                "fields": {
-                  "tag": {
-                    "kind": "literal",
-                    "value": {
-                      "kind": "string",
-                      "value": "end"
-                    }
-                  }
+                "kind": "syntheticDiscriminator",
+                "payloadType": {
+                  "kind": "record",
+                  "fields": {}
                 },
-                "kind": "record"
+                "discriminatorField": "tag",
+                "discriminatorValue": "end"
               }
             ]
           },
@@ -298,6 +293,7 @@
         }
       ],
       "externalRefs": {
+        "serviceCallRefs": [],
         "packageSymbols": [
           {
             "package": {
@@ -322,7 +318,7 @@
           }
         ]
       },
-      "fileIrIdentity": "skiff-file-ir-v3:sha256:90796f2cc21f331e65712c6a9b09bd76d6663b936cd9a9dc3a5b7af5365c8897",
+      "fileIrIdentity": "skiff-file-ir-v8:sha256:58e4f32f13cf835cce6adb426cb2c4c902dccc96f02e55165285daae4f820438",
       "irFormatVersion": "skiff-file-ir-format-v1",
       "linkTargets": {
         "executables": {
@@ -338,8 +334,8 @@
       },
       "modulePath": "pkg.alpha",
       "opcodeTableVersion": "skiff-opcode-table-v1",
-      "schemaVersion": "skiff-file-ir-v3",
-      "sourceAstHash": "source:skiff-file-ir-v3:sha256:90796f2cc21f331e65712c6a9b09bd76d6663b936cd9a9dc3a5b7af5365c8897",
+      "schemaVersion": "skiff-file-ir-v8",
+      "sourceAstHash": "source:skiff-file-ir-v8:sha256:58e4f32f13cf835cce6adb426cb2c4c902dccc96f02e55165285daae4f820438",
       "sourceMap": {
         "format": "skiff-file-ir-source-map-v1"
       },
@@ -425,6 +421,7 @@
         }
       ],
       "externalRefs": {
+        "serviceCallRefs": [],
         "packageSymbols": [
           {
             "package": {
@@ -442,7 +439,7 @@
           }
         ]
       },
-      "fileIrIdentity": "skiff-file-ir-v3:sha256:d10a1c056e51bcd5a859c5208d8a670382671b9cef00c193c55e6f4953567ace",
+      "fileIrIdentity": "skiff-file-ir-v8:sha256:2533aee2ce1aa273b9aecd59dc1551295f85d1e41e60929c7a793fdc40a68014",
       "irFormatVersion": "skiff-file-ir-format-v1",
       "linkTargets": {
         "executables": {
@@ -458,43 +455,43 @@
       },
       "modulePath": "pkg.beta",
       "opcodeTableVersion": "skiff-opcode-table-v1",
-      "schemaVersion": "skiff-file-ir-v3",
-      "sourceAstHash": "source:skiff-file-ir-v3:sha256:d10a1c056e51bcd5a859c5208d8a670382671b9cef00c193c55e6f4953567ace",
+      "schemaVersion": "skiff-file-ir-v8",
+      "sourceAstHash": "source:skiff-file-ir-v8:sha256:2533aee2ce1aa273b9aecd59dc1551295f85d1e41e60929c7a793fdc40a68014",
       "sourceMap": {
         "format": "skiff-file-ir-source-map-v1"
       },
       "typeTable": [
         {
           "name": "BetaEvent",
-          "discriminator": "tag",
           "descriptor": {
             "kind": "union",
-            "variants": [
+            "branches": [
               {
-                "kind": "packageSymbol",
-                "symbol": {
-                  "package": {
-                    "kind": "packageId",
-                    "packageId": "skiff.run/std"
-                  },
-                  "symbolPath": "std.http.HttpResponseStreamEvent"
+                "kind": "concreteNominal",
+                "nominalType": {
+                  "kind": "packageSymbol",
+                  "symbol": {
+                    "package": {
+                      "kind": "packageId",
+                      "packageId": "skiff.run/std"
+                    },
+                    "symbolPath": "std.http.HttpResponseStreamEvent"
+                  }
                 }
               },
               {
-                "kind": "record",
-                "fields": {
-                  "tag": {
-                    "kind": "literal",
-                    "value": {
-                      "kind": "string",
-                      "value": "raw"
+                "kind": "syntheticDiscriminator",
+                "payloadType": {
+                  "kind": "record",
+                  "fields": {
+                    "body": {
+                      "kind": "builtin",
+                      "name": "bytes"
                     }
-                  },
-                  "body": {
-                    "kind": "builtin",
-                    "name": "bytes"
                   }
-                }
+                },
+                "discriminatorField": "tag",
+                "discriminatorValue": "raw"
               }
             ]
           }
@@ -618,6 +615,7 @@
         }
       ],
       "externalRefs": {
+        "serviceCallRefs": [],
         "packageSymbols": [
           {
             "package": {
@@ -649,7 +647,7 @@
           }
         ]
       },
-      "fileIrIdentity": "skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769",
+      "fileIrIdentity": "skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68",
       "irFormatVersion": "skiff-file-ir-format-v1",
       "linkTargets": {
         "constants": {
@@ -668,19 +666,19 @@
       },
       "modulePath": "svc.main",
       "opcodeTableVersion": "skiff-opcode-table-v1",
-      "schemaVersion": "skiff-file-ir-v3",
-      "sourceAstHash": "source:skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769",
+      "schemaVersion": "skiff-file-ir-v8",
+      "sourceAstHash": "source:skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68",
       "sourceMap": {
         "format": "skiff-file-ir-source-map-v1"
       },
       "typeTable": []
     },
     "units/packages/pkg-alpha/1.0.0.json": {
-      "schemaVersion": "skiff-package-unit-v1",
+      "schemaVersion": "skiff-package-unit-v2",
       "packageId": "example.com/pkg-alpha",
       "version": "1.0.0",
-      "buildIdentity": "skiff-package-build-v2:sha256:4740f1593c50092e7b1c0614c2547e3b5675ac19e30a68f1fe6c432a3050097f",
-      "abiIdentity": "skiff-package-local-abi-v2:sha256:02e9e89f3315e5aa53fb3c7b2f6dafd4308d76140d99c943a3d7214387dc269d",
+      "buildIdentity": "skiff-package-build-v3:sha256:79ab58136a6b17fc462a3fbc3bdd5d86010ea33ed61cf1c85c72992342ffe223",
+      "abiIdentity": "skiff-package-local-abi-v2:sha256:bab4413f1509aecb49ed4c3c5ac88ec6a61b71854fdef5c627eb28f25cf124e5",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "example.com/pkg-alpha",
@@ -689,20 +687,20 @@
       },
       "files": [
         {
-          "fileIrIdentity": "skiff-file-ir-v3:sha256:90796f2cc21f331e65712c6a9b09bd76d6663b936cd9a9dc3a5b7af5365c8897",
+          "fileIrIdentity": "skiff-file-ir-v8:sha256:58e4f32f13cf835cce6adb426cb2c4c902dccc96f02e55165285daae4f820438",
           "modulePath": "pkg.alpha",
           "artifactPath": "units/files/pkg-alpha-main.json",
-          "sourceAstHash": "source:skiff-file-ir-v3:sha256:90796f2cc21f331e65712c6a9b09bd76d6663b936cd9a9dc3a5b7af5365c8897"
+          "sourceAstHash": "source:skiff-file-ir-v8:sha256:58e4f32f13cf835cce6adb426cb2c4c902dccc96f02e55165285daae4f820438"
         }
       ],
       "implementationLinks": {
         "types": {
           "pkg.alpha.StatusPayload": {
             "file": {
-              "fileIrIdentity": "skiff-file-ir-v3:sha256:90796f2cc21f331e65712c6a9b09bd76d6663b936cd9a9dc3a5b7af5365c8897",
+              "fileIrIdentity": "skiff-file-ir-v8:sha256:58e4f32f13cf835cce6adb426cb2c4c902dccc96f02e55165285daae4f820438",
               "modulePath": "pkg.alpha",
               "artifactPath": "units/files/pkg-alpha-main.json",
-              "sourceAstHash": "source:skiff-file-ir-v3:sha256:90796f2cc21f331e65712c6a9b09bd76d6663b936cd9a9dc3a5b7af5365c8897"
+              "sourceAstHash": "source:skiff-file-ir-v8:sha256:58e4f32f13cf835cce6adb426cb2c4c902dccc96f02e55165285daae4f820438"
             },
             "typeIndex": 0,
             "symbol": "pkg.alpha.StatusPayload"
@@ -711,10 +709,10 @@
         "functions": {
           "handle": {
             "file": {
-              "fileIrIdentity": "skiff-file-ir-v3:sha256:90796f2cc21f331e65712c6a9b09bd76d6663b936cd9a9dc3a5b7af5365c8897",
+              "fileIrIdentity": "skiff-file-ir-v8:sha256:58e4f32f13cf835cce6adb426cb2c4c902dccc96f02e55165285daae4f820438",
               "modulePath": "pkg.alpha",
               "artifactPath": "units/files/pkg-alpha-main.json",
-              "sourceAstHash": "source:skiff-file-ir-v3:sha256:90796f2cc21f331e65712c6a9b09bd76d6663b936cd9a9dc3a5b7af5365c8897"
+              "sourceAstHash": "source:skiff-file-ir-v8:sha256:58e4f32f13cf835cce6adb426cb2c4c902dccc96f02e55165285daae4f820438"
             },
             "executableIndex": 0,
             "symbol": "handle",
@@ -781,11 +779,11 @@
       }
     },
     "units/packages/pkg-beta/1.0.0.json": {
-      "schemaVersion": "skiff-package-unit-v1",
+      "schemaVersion": "skiff-package-unit-v2",
       "packageId": "example.com/pkg-beta",
       "version": "1.0.0",
-      "buildIdentity": "skiff-package-build-v2:sha256:b628dea7776a0699d5a24f48a897d55a02c670b5255fdd43354cfa06d9e8be81",
-      "abiIdentity": "skiff-package-local-abi-v2:sha256:b7cf2f4ab2689b286f3f2415b6f0c08d27136ce9a1cf4abdbc421286794d5833",
+      "buildIdentity": "skiff-package-build-v3:sha256:dd477367800d42a00e9583d512ff849dd4e10fd81f61d107b6f3bc17cc0581e3",
+      "abiIdentity": "skiff-package-local-abi-v2:sha256:154de5a4f357f4e7f6f5cce45e59e7b4de73145dfe014aab788466e753716a81",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "example.com/pkg-beta",
@@ -794,20 +792,20 @@
       },
       "files": [
         {
-          "fileIrIdentity": "skiff-file-ir-v3:sha256:d10a1c056e51bcd5a859c5208d8a670382671b9cef00c193c55e6f4953567ace",
+          "fileIrIdentity": "skiff-file-ir-v8:sha256:2533aee2ce1aa273b9aecd59dc1551295f85d1e41e60929c7a793fdc40a68014",
           "modulePath": "pkg.beta",
           "artifactPath": "units/files/pkg-beta-main.json",
-          "sourceAstHash": "source:skiff-file-ir-v3:sha256:d10a1c056e51bcd5a859c5208d8a670382671b9cef00c193c55e6f4953567ace"
+          "sourceAstHash": "source:skiff-file-ir-v8:sha256:2533aee2ce1aa273b9aecd59dc1551295f85d1e41e60929c7a793fdc40a68014"
         }
       ],
       "implementationLinks": {
         "types": {
           "pkg.beta.BetaEvent": {
             "file": {
-              "fileIrIdentity": "skiff-file-ir-v3:sha256:d10a1c056e51bcd5a859c5208d8a670382671b9cef00c193c55e6f4953567ace",
+              "fileIrIdentity": "skiff-file-ir-v8:sha256:2533aee2ce1aa273b9aecd59dc1551295f85d1e41e60929c7a793fdc40a68014",
               "modulePath": "pkg.beta",
               "artifactPath": "units/files/pkg-beta-main.json",
-              "sourceAstHash": "source:skiff-file-ir-v3:sha256:d10a1c056e51bcd5a859c5208d8a670382671b9cef00c193c55e6f4953567ace"
+              "sourceAstHash": "source:skiff-file-ir-v8:sha256:2533aee2ce1aa273b9aecd59dc1551295f85d1e41e60929c7a793fdc40a68014"
             },
             "typeIndex": 0,
             "symbol": "pkg.beta.BetaEvent"
@@ -816,10 +814,10 @@
         "functions": {
           "handle": {
             "file": {
-              "fileIrIdentity": "skiff-file-ir-v3:sha256:d10a1c056e51bcd5a859c5208d8a670382671b9cef00c193c55e6f4953567ace",
+              "fileIrIdentity": "skiff-file-ir-v8:sha256:2533aee2ce1aa273b9aecd59dc1551295f85d1e41e60929c7a793fdc40a68014",
               "modulePath": "pkg.beta",
               "artifactPath": "units/files/pkg-beta-main.json",
-              "sourceAstHash": "source:skiff-file-ir-v3:sha256:d10a1c056e51bcd5a859c5208d8a670382671b9cef00c193c55e6f4953567ace"
+              "sourceAstHash": "source:skiff-file-ir-v8:sha256:2533aee2ce1aa273b9aecd59dc1551295f85d1e41e60929c7a793fdc40a68014"
             },
             "executableIndex": 0,
             "symbol": "handle",
@@ -864,11 +862,11 @@
       }
     },
     "units/packages/pkg-leaf/1.0.0.json": {
-      "schemaVersion": "skiff-package-unit-v1",
+      "schemaVersion": "skiff-package-unit-v2",
       "packageId": "example.com/pkg-leaf",
       "version": "1.0.0",
-      "buildIdentity": "skiff-package-build-v2:sha256:8bbf501c35f5633c0f81f726a918be4262ffb0ef18088ff1649238f87bf1f0e1",
-      "abiIdentity": "skiff-package-local-abi-v2:sha256:ff28a8b5e0b0adb82a99b3e74b3cba7d685d6d5ba77c40c7136fcc5d5ebb4420",
+      "buildIdentity": "skiff-package-build-v3:sha256:3b29384136e5afcb3a6efe7d15efe537a31fd21be0031dce977ebb24de98c4c9",
+      "abiIdentity": "skiff-package-local-abi-v2:sha256:b3001fd45f7fec0d91dd644c2bad08d32180312c0df42204b6801879a527666e",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "example.com/pkg-leaf",
@@ -883,11 +881,11 @@
       }
     },
     "units/packages/pkg-shared/1.0.0.json": {
-      "schemaVersion": "skiff-package-unit-v1",
+      "schemaVersion": "skiff-package-unit-v2",
       "packageId": "example.com/pkg-shared",
       "version": "1.0.0",
-      "buildIdentity": "skiff-package-build-v2:sha256:02952095c63ec8526cae0c61711749c273f29ecfea6c986fc04b2a9e191084b1",
-      "abiIdentity": "skiff-package-local-abi-v2:sha256:521f6cbfa026a7fde4bf373f98308aca666bbb047dc6d2d05839e604c47afcf3",
+      "buildIdentity": "skiff-package-build-v3:sha256:6031f2f8620c3c647e34e3c36533182c38e22807f848f028a8f5887b111bf8cd",
+      "abiIdentity": "skiff-package-local-abi-v2:sha256:58b2a2133443f9080f18940aff5a88af62e63b05363a9df72205227f46d0e43d",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "example.com/pkg-shared",
@@ -912,11 +910,11 @@
       }
     },
     "units/packages/skiff~run~~std/0.1.0.json": {
-      "schemaVersion": "skiff-package-unit-v1",
+      "schemaVersion": "skiff-package-unit-v2",
       "packageId": "skiff.run/std",
       "version": "0.1.0",
-      "buildIdentity": "skiff-package-build-v2:sha256:e94cad044596d9e1f5f57b749b1d51f86c809bf75a9dd5c9035cb58776f18ebd",
-      "abiIdentity": "skiff-package-local-abi-v2:sha256:298e0d0d7256748afa0953b78a61c80e408abc5422939ea22c0aa6e01d06a06e",
+      "buildIdentity": "skiff-package-build-v3:sha256:8a678e7de1c097670a58625387bbc8e06d9ea22e891ce34483d44c24e0b84d11",
+      "abiIdentity": "skiff-package-local-abi-v2:sha256:e079253b31ccd4013a4d8bf1e9331209a3bc2197e9fcb96c1e50d7cd88911773",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "skiff.run/std",
@@ -925,40 +923,40 @@
       },
       "files": [
         {
-          "fileIrIdentity": "skiff-file-ir-v3:sha256:5a2727d8d82d1119722c87855627958d88debe43b5bea372d258f9a0cebde253",
+          "fileIrIdentity": "skiff-file-ir-v8:sha256:c5d2b3e00db2cbcc927485966bc79bb312e0e39af0997c27f95843eec8df7cbc",
           "modulePath": "std",
           "artifactPath": "units/files/std-types.json",
-          "sourceAstHash": "source:skiff-file-ir-v3:sha256:5a2727d8d82d1119722c87855627958d88debe43b5bea372d258f9a0cebde253"
+          "sourceAstHash": "source:skiff-file-ir-v8:sha256:c5d2b3e00db2cbcc927485966bc79bb312e0e39af0997c27f95843eec8df7cbc"
         }
       ],
       "implementationLinks": {
         "types": {
           "std.file.ImmutableFile": {
             "file": {
-              "fileIrIdentity": "skiff-file-ir-v3:sha256:5a2727d8d82d1119722c87855627958d88debe43b5bea372d258f9a0cebde253",
+              "fileIrIdentity": "skiff-file-ir-v8:sha256:c5d2b3e00db2cbcc927485966bc79bb312e0e39af0997c27f95843eec8df7cbc",
               "modulePath": "std",
               "artifactPath": "units/files/std-types.json",
-              "sourceAstHash": "source:skiff-file-ir-v3:sha256:5a2727d8d82d1119722c87855627958d88debe43b5bea372d258f9a0cebde253"
+              "sourceAstHash": "source:skiff-file-ir-v8:sha256:c5d2b3e00db2cbcc927485966bc79bb312e0e39af0997c27f95843eec8df7cbc"
             },
             "typeIndex": 2,
             "symbol": "std.file.ImmutableFile"
           },
           "std.http.HttpClientRequest": {
             "file": {
-              "fileIrIdentity": "skiff-file-ir-v3:sha256:5a2727d8d82d1119722c87855627958d88debe43b5bea372d258f9a0cebde253",
+              "fileIrIdentity": "skiff-file-ir-v8:sha256:c5d2b3e00db2cbcc927485966bc79bb312e0e39af0997c27f95843eec8df7cbc",
               "modulePath": "std",
               "artifactPath": "units/files/std-types.json",
-              "sourceAstHash": "source:skiff-file-ir-v3:sha256:5a2727d8d82d1119722c87855627958d88debe43b5bea372d258f9a0cebde253"
+              "sourceAstHash": "source:skiff-file-ir-v8:sha256:c5d2b3e00db2cbcc927485966bc79bb312e0e39af0997c27f95843eec8df7cbc"
             },
             "typeIndex": 0,
             "symbol": "std.http.HttpClientRequest"
           },
           "std.http.HttpResponseStreamEvent": {
             "file": {
-              "fileIrIdentity": "skiff-file-ir-v3:sha256:5a2727d8d82d1119722c87855627958d88debe43b5bea372d258f9a0cebde253",
+              "fileIrIdentity": "skiff-file-ir-v8:sha256:c5d2b3e00db2cbcc927485966bc79bb312e0e39af0997c27f95843eec8df7cbc",
               "modulePath": "std",
               "artifactPath": "units/files/std-types.json",
-              "sourceAstHash": "source:skiff-file-ir-v3:sha256:5a2727d8d82d1119722c87855627958d88debe43b5bea372d258f9a0cebde253"
+              "sourceAstHash": "source:skiff-file-ir-v8:sha256:c5d2b3e00db2cbcc927485966bc79bb312e0e39af0997c27f95843eec8df7cbc"
             },
             "typeIndex": 1,
             "symbol": "std.http.HttpResponseStreamEvent"
@@ -1145,10 +1143,10 @@
       },
       "files": [
         {
-          "fileIrIdentity": "skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769",
+          "fileIrIdentity": "skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68",
           "modulePath": "svc.main",
           "artifactPath": "units/files/service-main.json",
-          "sourceAstHash": "source:skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769"
+          "sourceAstHash": "source:skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68"
         }
       ],
       "packageDependencies": [
@@ -1245,7 +1243,7 @@
         {
           "id": "example.com/pkg-alpha",
           "version": "1.0.0",
-          "abiIdentity": "skiff-package-local-abi-v2:sha256:02e9e89f3315e5aa53fb3c7b2f6dafd4308d76140d99c943a3d7214387dc269d",
+          "abiIdentity": "skiff-package-local-abi-v2:sha256:bab4413f1509aecb49ed4c3c5ac88ec6a61b71854fdef5c627eb28f25cf124e5",
           "usedSymbols": [
             {
               "symbolPath": "handle",
@@ -1260,7 +1258,7 @@
         {
           "id": "example.com/pkg-beta",
           "version": "1.0.0",
-          "abiIdentity": "skiff-package-local-abi-v2:sha256:b7cf2f4ab2689b286f3f2415b6f0c08d27136ce9a1cf4abdbc421286794d5833",
+          "abiIdentity": "skiff-package-local-abi-v2:sha256:154de5a4f357f4e7f6f5cce45e59e7b4de73145dfe014aab788466e753716a81",
           "usedSymbols": [
             {
               "symbolPath": "handle",
@@ -1284,10 +1282,10 @@
           },
           "executable": {
             "fileRef": {
-              "fileIrIdentity": "skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769",
+              "fileIrIdentity": "skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68",
               "modulePath": "svc.main",
               "artifactPath": "units/files/service-main.json",
-              "sourceAstHash": "source:skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769"
+              "sourceAstHash": "source:skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68"
             },
             "executableIndex": 0,
             "callableAbiId": "callable:svc.main.run",
@@ -1310,10 +1308,10 @@
           "receiverExecutable": {
             "receiver": {
               "fileRef": {
-                "fileIrIdentity": "skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769",
+                "fileIrIdentity": "skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68",
                 "modulePath": "svc.main",
                 "artifactPath": "units/files/service-main.json",
-                "sourceAstHash": "source:skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769"
+                "sourceAstHash": "source:skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68"
               },
               "constIndex": 0,
               "constAbiId": "const:svc.main.managedLlmService",
@@ -1321,10 +1319,10 @@
             },
             "executableTarget": {
               "fileRef": {
-                "fileIrIdentity": "skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769",
+                "fileIrIdentity": "skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68",
                 "modulePath": "svc.main",
                 "artifactPath": "units/files/service-main.json",
-                "sourceAstHash": "source:skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769"
+                "sourceAstHash": "source:skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68"
               },
               "executableIndex": 1,
               "callableAbiId": "callable:svc.main.managedLlmService.call",
@@ -1378,10 +1376,10 @@
               "receiverExecutable": {
                 "receiver": {
                   "fileRef": {
-                    "fileIrIdentity": "skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769",
+                    "fileIrIdentity": "skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68",
                     "modulePath": "svc.main",
                     "artifactPath": "units/files/service-main.json",
-                    "sourceAstHash": "source:skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769"
+                    "sourceAstHash": "source:skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68"
                   },
                   "constIndex": 0,
                   "constAbiId": "const:svc.main.managedLlmService",
@@ -1389,10 +1387,10 @@
                 },
                 "executableTarget": {
                   "fileRef": {
-                    "fileIrIdentity": "skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769",
+                    "fileIrIdentity": "skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68",
                     "modulePath": "svc.main",
                     "artifactPath": "units/files/service-main.json",
-                    "sourceAstHash": "source:skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769"
+                    "sourceAstHash": "source:skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68"
                   },
                   "executableIndex": 1,
                   "callableAbiId": "callable:svc.main.managedLlmService.call",
@@ -1481,10 +1479,10 @@
           "kind": "function",
           "executableTarget": {
             "fileRef": {
-              "fileIrIdentity": "skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769",
+              "fileIrIdentity": "skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68",
               "modulePath": "svc.main",
               "artifactPath": "units/files/service-main.json",
-              "sourceAstHash": "source:skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769"
+              "sourceAstHash": "source:skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68"
             },
             "executableIndex": 0,
             "callableAbiId": "callable:svc.main.run",
@@ -1524,10 +1522,10 @@
               "methodIdentity": "actor.dynamic.run",
               "executableTarget": {
                 "fileRef": {
-                  "fileIrIdentity": "skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769",
+                  "fileIrIdentity": "skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68",
                   "modulePath": "svc.main",
                   "artifactPath": "units/files/service-main.json",
-                  "sourceAstHash": "source:skiff-file-ir-v3:sha256:ebb81600b590d0d8617c585019aa09a6cb554d861de0858336b4bfe1dc711769"
+                  "sourceAstHash": "source:skiff-file-ir-v8:sha256:6f532d879dcc4b48679b06acf594c1066caaed06529f4bc41af507d67186dd68"
                 },
                 "executableIndex": 0,
                 "callableAbiId": "callable:svc.main.run",
@@ -1597,8 +1595,8 @@
     }
   },
   "description": "Runtime program dynamicBuildId parity across compiler publish, runtime, and router; covers std normal record, std normal union, and builtin type refs.",
-  "expectedDynamicBuildId": "skiff-service-build-v1:sha256:88ad1295c2a757abce6f666a4f79dc588b3809906b70cb7bb6ba3cc505d7e349",
-  "expectedServiceUnitIdentity": "skiff-service-unit-v1:sha256:1ecd6fa259a0795b75040876db89c0a2dee194efca7755be970b132328822be6",
+  "expectedDynamicBuildId": "skiff-service-build-v1:sha256:ed32b93ba8d48f7cb93cb4ef13720e943eec758b3e87a757eaec32b0a290ed26",
+  "expectedServiceUnitIdentity": "skiff-service-unit-v1:sha256:1ed23e89365f01cde88881a41d5f13a14895fc899d39be255ef9f3a9e98c81c7",
   "pointerBuildId": "skiff-service-build-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   "schemaVersion": 1,
   "serviceId": "example.com/dynamic-golden",

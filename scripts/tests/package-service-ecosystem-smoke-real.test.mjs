@@ -338,7 +338,7 @@ test('bootstrap oracle accepts receipt-owned canonical std build identities', ()
   const environment = 'f28a-bootstrap-identity';
   for (const character of ['1', 'f']) {
     const receipt = validBootstrapReceipt(environment, {
-      packageBuildId: `skiff-package-build-v4:sha256:${character.repeat(64)}`,
+      packageBuildId: `skiff-package-build-v10:sha256:${character.repeat(64)}`,
     });
     assert.strictEqual(
       validatePackageServiceBootstrapReceipt(receipt, environment),
@@ -373,7 +373,7 @@ test('bootstrap receipt mutations fail before fixture Cargo or WebSocket creatio
       name: 'invalid std build identity framing',
       mutate: (receipt) => {
         receipt.bootstrap.std.package.artifact.packageBuildId =
-          `skiff-package-build-v4:sha256:${'A'.repeat(64)}`;
+          `skiff-package-build-v10:sha256:${'A'.repeat(64)}`;
       },
       error: /did not match/,
     },
@@ -381,7 +381,7 @@ test('bootstrap receipt mutations fail before fixture Cargo or WebSocket creatio
       name: 'published artifact does not match pointer artifact',
       mutate: (receipt) => {
         receipt.bootstrap.std.pointer.artifact.packageBuildId =
-          `skiff-package-build-v4:sha256:${'f'.repeat(64)}`;
+          `skiff-package-build-v10:sha256:${'f'.repeat(64)}`;
       },
       error: /Expected values to be strictly equal/,
     },
@@ -460,7 +460,7 @@ test('activation receipt mutations fail before health or WebSocket creation', as
       name: 'committed assembly is wrong',
       mutate: (activation) => {
         activation.response.committed.assembly.assemblyIdentity =
-          `skiff-runtime-assembly-v1:sha256:${'f'.repeat(64)}`;
+          `skiff-runtime-assembly-v2:sha256:${'f'.repeat(64)}`;
       },
       error: /Expected values to be strictly equal/,
     },
@@ -532,7 +532,7 @@ test('readiness failures stay on the control plane and never create a WebSocket'
       name: 'wrong assembly tuple',
       health: readyAssemblyHealth(environment, {
         activeAssembly: {
-          assemblyIdentity: `skiff-runtime-assembly-v1:sha256:${'f'.repeat(64)}`,
+          assemblyIdentity: `skiff-runtime-assembly-v2:sha256:${'f'.repeat(64)}`,
         },
       }),
       error: /active assembly tuple does not match/,

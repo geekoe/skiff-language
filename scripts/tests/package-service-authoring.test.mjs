@@ -170,7 +170,7 @@ test('service package build returns one stable API receipt with operation identi
   assert.equal(result.serviceApiReceipt.serviceId, 'example.com/ping');
   assert.match(
     result.serviceApiReceipt.serviceProtocolIdentity,
-    /^skiff-service-protocol-v4:sha256:/,
+    /^skiff-service-protocol-v5:sha256:/,
   );
   assert.deepEqual(
     result.serviceApiReceipt.projection.functions.map((entry) => ({
@@ -251,7 +251,7 @@ test('activation request construction rejects values outside the frozen T01 wire
     expectedGeneration: 0,
     environment: 'dev',
     assembly: {
-      assemblyIdentity: `skiff-runtime-assembly-v1:sha256:${'1'.repeat(64)}`,
+      assemblyIdentity: `skiff-runtime-assembly-v2:sha256:${'1'.repeat(64)}`,
     },
   };
   let requests = 0;
@@ -283,7 +283,7 @@ test('activation request transports its AbortSignal and preserves the abort reas
     expectedGeneration: 0,
     environment: 'dev',
     assembly: {
-      assemblyIdentity: `skiff-runtime-assembly-v1:sha256:${'1'.repeat(64)}`,
+      assemblyIdentity: `skiff-runtime-assembly-v2:sha256:${'1'.repeat(64)}`,
     },
     signal: controller.signal,
     fetchImpl: async (_url, options) => {

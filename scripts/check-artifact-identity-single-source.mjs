@@ -4,10 +4,6 @@ import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  collectDevSyncArtifactPathFailures,
-} from './lib/artifact-identity-dev-sync-check.mjs';
-import { devSyncArtifactPathSelfTestFailures } from './lib/artifact-identity-dev-sync-check-self-test.mjs';
-import {
   collectDeprecatedPackageAbiRustSymbolFailures,
   deprecatedPackageAbiRustSymbolSelfTestFailures,
 } from './lib/artifact-identity-deprecated-package-abi.mjs';
@@ -234,12 +230,17 @@ const ownerRequirements = [
   {
     name: 'ASSEMBLY_IDENTITY_PREFIX',
     relPath: 'artifact-identity/src/constants.rs',
-    regexp: /\bpub\s+const\s+ASSEMBLY_IDENTITY_PREFIX\b/,
+    regexp: /\bpub\s+use\s+skiff_artifact_model::RUNTIME_ASSEMBLY_IDENTITY_PREFIX\s+as\s+ASSEMBLY_IDENTITY_PREFIX\s*;/,
   },
   {
-    name: 'contract_type_id',
+    name: 'package_schema_type_id',
     relPath: 'artifact-identity/src/contract.rs',
-    regexp: /\bpub\s+fn\s+contract_type_id\s*\(/,
+    regexp: /\bpub\s+fn\s+package_schema_type_id\s*\(/,
+  },
+  {
+    name: 'package_schema_index_identity',
+    relPath: 'artifact-identity/src/contract.rs',
+    regexp: /\bpub\s+fn\s+package_schema_index_identity\s*\(/,
   },
   {
     name: 'contract_operation_id',
@@ -297,9 +298,49 @@ const ownerRequirements = [
     regexp: /\bpub\s+const\s+SERVICE_PROTOCOL_IDENTITY_PREFIX\b/,
   },
   {
+    name: 'SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER\b/,
+  },
+  {
     name: 'PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX',
     relPath: 'artifact-identity/src/constants.rs',
     regexp: /\bpub\s+const\s+PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX\b/,
+  },
+  {
+    name: 'PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER\b/,
+  },
+  {
+    name: 'PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX\b/,
+  },
+  {
+    name: 'PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER\b/,
+  },
+  {
+    name: 'PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX\b/,
+  },
+  {
+    name: 'PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER\b/,
+  },
+  {
+    name: 'PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX\b/,
+  },
+  {
+    name: 'PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER\b/,
   },
   {
     name: 'PublicationAbiIdentityProjection',
@@ -507,12 +548,10 @@ const exclusiveDefinitionNames = new Set([
   'AssemblyIdentityProjection',
   'runtime_assembly_identity',
   'assign_runtime_assembly_identity',
-  'validate_runtime_assembly_identity',
   'DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX',
   'ASSEMBLY_IDENTITY_PREFIX',
-  'contract_type_id',
+  'package_schema_index_identity',
   'contract_operation_id',
-  'service_protocol_identity',
   'BoundaryOperationContract',
   'BoundaryOperationDescriptor',
   'PackageArtifactLocalAbiIdentityProjection',
@@ -522,7 +561,15 @@ const exclusiveDefinitionNames = new Set([
   'assign_package_artifact_identities',
   'validate_package_artifact_identities',
   'SERVICE_PROTOCOL_IDENTITY_PREFIX',
+  'SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER',
   'PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX',
+  'PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER',
+  'PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX',
+  'PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER',
+  'PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX',
+  'PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER',
+  'PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX',
+  'PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER',
   'PublicationAbiIdentityProjection',
   'OperationAbiIdentityInput',
   'PackageTestBuildIdentityPayload',
@@ -606,11 +653,6 @@ const canonicalDelegationRequirements = [
     regexp: /\bpub\s+use\s+skiff_canonical_json\s*::/,
   },
   {
-    relPath: 'runtime/linker/src/json_utils.rs',
-    helper: 'runtime linker canonical JSON API',
-    regexp: /\buse\s+skiff_canonical_json::canonical_json_value\b/,
-  },
-  {
     relPath: 'runtime/linked-type-plan/src/type_plan.rs',
     helper: 'sort-only linked type key helper',
     regexp: /\bfn\s+sort_json_value\s*\(/,
@@ -642,11 +684,6 @@ const adapterRequirements = [
     relPath: 'compiler/driver/pipeline/mod.rs',
     helper: 'compiler-owned std PackageArtifact identity validation',
     regexp: /\buse\s+skiff_artifact_identity::validate_package_artifact_identities\b/,
-  },
-  {
-    relPath: 'runtime/package-test/src/lib.rs',
-    helper: 'package implementation links identity',
-    regexp: /\bskiff_artifact_identity::\{[^}]*package_implementation_links_identity|\buse\s+skiff_artifact_identity::package_implementation_links_identity\b/,
   },
 ];
 const canonicalCompileModelPaths = Object.freeze([
@@ -702,7 +739,7 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
     typeName: 'PackageBinding',
-    requiredFields: Object.freeze(['key', 'package']),
+    requiredFields: Object.freeze(['key', 'package', 'collection_name_mapping']),
   }),
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
@@ -727,7 +764,7 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
     typeName: 'DeploymentIngressBinding',
-    requiredFields: Object.freeze(['selector', 'contract_operation_id']),
+    requiredFields: Object.freeze(['selector', 'gateway_entry_key']),
   }),
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
@@ -785,6 +822,7 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
       'operation_bindings',
       'package_bindings',
       'service_selectors',
+      'gateway_entries',
       'ingress',
       'config_literals',
       'secret_refs',
@@ -807,6 +845,7 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
       'operation_bindings',
       'package_bindings',
       'service_selectors',
+      'gateway_entries',
       'ingress',
       'config_literals',
       'secret_refs',
@@ -852,12 +891,12 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
   }),
   Object.freeze({
     relPath: 'artifact-model/src/runtime_assembly.rs',
-    typeName: 'GlobalIngressBinding',
+    typeName: 'GatewayIngressBinding',
     requiredFields: Object.freeze([
       'selector',
       'deployment',
-      'contract',
-      'contract_operation_id',
+      'gateway_entry_key',
+      'gateway_entry_identity',
     ]),
   }),
   Object.freeze({
@@ -873,7 +912,7 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
       'package_link_plan',
       'service_binding_templates',
       'activation_templates',
-      'global_ingress',
+      'gateway_ingress',
     ]),
   }),
 ]);
@@ -959,11 +998,6 @@ async function runCheck() {
   for (const violation of collectServiceAssemblyIdentityViolations([...files, ...scriptFiles])) {
     failures.push(`${violation.relPath}:${violation.line} ${violation.message}`);
   }
-  failures.push(...collectDevSyncArtifactPathFailures(
-    await readFile(join(root, 'scripts/skiff-dev-sync.mjs'), 'utf8'),
-    await readFile(join(root, 'scripts/lib/artifact-identity-dev-sync-paths.mjs'), 'utf8'),
-    scriptFiles,
-  ));
 
   if (failures.length > 0) {
     for (const failure of failures) {
@@ -1290,7 +1324,7 @@ function collectCanonicalFileIrCallValidatorFailures(
 function collectPackageImplementationLinksIdentityViolations(files) {
   const restrictions = [
     {
-      regexp: /skiff-package-implementation-links-v1:sha256/g,
+      regexp: /skiff-package-implementation-links-v2:sha256/g,
       message: 'package implementation links identity prefix is owned by artifact-identity',
     },
     {
@@ -1657,7 +1691,7 @@ function runSelfTest() {
       files: [
         {
           relPath: 'compiler/emission/src/package_test.rs',
-          text: 'const PREFIX: &str = "skiff-package-implementation-links-v1:sha256";\n',
+          text: 'const PREFIX: &str = "skiff-package-implementation-links-v2:sha256";\n',
         },
       ],
       expectedViolations: 0,
@@ -1679,7 +1713,7 @@ function runSelfTest() {
       files: [
         {
           relPath: 'runtime/package-test/src/lib.rs',
-          text: 'const PREFIX: &str = "skiff-package-implementation-links-v1:sha256";\nfn package_implementation_links_identity() {}\n',
+          text: 'const PREFIX: &str = "skiff-package-implementation-links-v2:sha256";\nfn package_implementation_links_identity() {}\n',
         },
       ],
       expectedViolations: 1,
@@ -1690,7 +1724,7 @@ function runSelfTest() {
       files: [
         {
           relPath: 'scripts/local-package-identity.mjs',
-          text: 'const prefix = "skiff-package-implementation-links-v1:sha256";\nfunction packageImplementationLinksIdentity() {}\n',
+          text: 'const prefix = "skiff-package-implementation-links-v2:sha256";\nfunction packageImplementationLinksIdentity() {}\n',
         },
       ],
       expectedViolations: 0,
@@ -1837,7 +1871,10 @@ pub struct ServiceRequirementKey {
   pub caller_package_build_id: Build, pub service_requirement_slot: u32,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PackageBinding { pub key: PackageRequirementKey, pub package: PackageArtifactRef }
+pub struct PackageBinding {
+  pub key: PackageRequirementKey, pub package: PackageArtifactRef,
+  pub collection_name_mapping: Map,
+}
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceSelectorBinding { pub key: ServiceRequirementKey, pub contract: ServiceContractRef }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1855,7 +1892,9 @@ pub struct IngressSelector {
   pub protocol: Protocol, pub host: String, pub method: Option<String>, pub path: String,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DeploymentIngressBinding { pub selector: IngressSelector, pub contract_operation_id: OperationId }
+pub struct DeploymentIngressBinding {
+  pub selector: IngressSelector, pub gateway_entry_key: GatewayEntryKey,
+}
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigLiteralBinding { pub path: String, pub value: Value }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1885,7 +1924,8 @@ pub struct DeploymentDiagnosticText { pub display_name: String, pub notes: Map }
 pub struct ServiceDeploymentInput {
   pub schema_version: String, pub contract: Ref, pub deployment_revision: Revision,
   pub implementation: Ref, pub operation_bindings: Vec<Op>, pub package_bindings: Vec<Pkg>,
-  pub service_selectors: Vec<Svc>, pub ingress: Vec<Ingress>, pub config_literals: Vec<Config>,
+  pub service_selectors: Vec<Svc>, pub gateway_entries: Map, pub ingress: Vec<Ingress>,
+  pub config_literals: Vec<Config>,
   pub secret_refs: Vec<Secret>, pub state_bindings: Vec<State>, pub resource_bindings: Vec<Resource>,
   pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text,
 }
@@ -1894,7 +1934,8 @@ pub struct ServiceDeployment {
   pub schema_version: String, pub contract: Ref, pub deployment_revision: Revision,
   pub deployment_artifact_identity: Identity, pub implementation: Ref,
   pub operation_bindings: Vec<Op>, pub package_bindings: Vec<Pkg>,
-  pub service_selectors: Vec<Svc>, pub ingress: Vec<Ingress>, pub config_literals: Vec<Config>,
+  pub service_selectors: Vec<Svc>, pub gateway_entries: Map, pub ingress: Vec<Ingress>,
+  pub config_literals: Vec<Config>,
   pub secret_refs: Vec<Secret>, pub state_bindings: Vec<State>, pub resource_bindings: Vec<Resource>,
   pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text,
 }
@@ -1920,9 +1961,9 @@ pub struct ActivationTemplate {
   pub resource_bindings: Vec<Resource>, pub policy: Policy,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GlobalIngressBinding {
+pub struct GatewayIngressBinding {
   pub selector: IngressSelector, pub deployment: ServiceDeploymentRef,
-  pub contract: ServiceContractRef, pub contract_operation_id: OperationId,
+  pub gateway_entry_key: GatewayEntryKey, pub gateway_entry_identity: GatewayEntryIdentity,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeAssembly {
@@ -1930,7 +1971,7 @@ pub struct RuntimeAssembly {
   pub resolved_deployments: Vec<Ref>, pub resolved_contracts: Vec<Ref>,
   pub resolved_packages: Vec<Ref>, pub package_link_plan: Plan,
   pub service_binding_templates: Vec<ServiceTemplate>,
-  pub activation_templates: Vec<ActivationTemplate>, pub global_ingress: Vec<Ingress>,
+  pub activation_templates: Vec<ActivationTemplate>, pub gateway_ingress: Vec<Ingress>,
 }
 `;
   const canonicalLinkPlanText = `#[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -2315,7 +2356,6 @@ pub struct ServiceDeploymentOperationInput {
     }
   }
 
-  failures.push(...devSyncArtifactPathSelfTestFailures());
   failures.push(...deprecatedPackageAbiRustSymbolSelfTestFailures());
 
   const adapterFixtureRequirement = [

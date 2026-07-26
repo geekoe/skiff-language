@@ -6,7 +6,7 @@ import {
   initialActivationState
 } from '../src/index.js';
 
-const ASSEMBLY = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
+const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 
 describe('MongoAssemblyActivationStateStore', () => {
   it('persists CAS state and one derived audit event for idempotent retries', async () => {
@@ -15,7 +15,7 @@ describe('MongoAssemblyActivationStateStore', () => {
     await store.initialize(initialActivationState({
       environment: 'test',
       generation: 0,
-      assemblyIdentity: `skiff-runtime-assembly-v1:sha256:${'0'.repeat(64)}`
+      assemblyIdentity: `skiff-runtime-assembly-v2:sha256:${'0'.repeat(64)}`
     }));
     const request = {
       schemaVersion: 'skiff-assembly-activation-request-v1' as const,
@@ -65,7 +65,7 @@ describe('MongoAssemblyActivationStateStore', () => {
     await store.initialize(initialActivationState({
       environment: 'test',
       generation: 0,
-      assemblyIdentity: `skiff-runtime-assembly-v1:sha256:${'0'.repeat(64)}`
+      assemblyIdentity: `skiff-runtime-assembly-v2:sha256:${'0'.repeat(64)}`
     }));
 
     await store.prepare({
@@ -89,7 +89,7 @@ describe('MongoAssemblyActivationStateStore', () => {
     const initial = await store.initialize(initialActivationState({
       environment: 'test',
       generation: 0,
-      assemblyIdentity: `skiff-runtime-assembly-v1:sha256:${'0'.repeat(64)}`
+      assemblyIdentity: `skiff-runtime-assembly-v2:sha256:${'0'.repeat(64)}`
     }));
 
     await expect(store.prepare({

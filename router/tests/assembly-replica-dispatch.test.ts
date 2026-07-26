@@ -20,7 +20,7 @@ import {
 
 const ASSEMBLY_A = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 const ASSEMBLY_B = `skiff-runtime-assembly-v2:sha256:${'b'.repeat(64)}`;
-const PROTOCOL = `skiff-service-protocol-v4:sha256:${'c'.repeat(64)}`;
+const PROTOCOL = `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`;
 const GATEWAY_ENTRY_IDENTITY =
   `skiff-gateway-entry-v1:sha256:${'e'.repeat(64)}`;
 const binding: RuntimeAssemblyIngressBinding = {

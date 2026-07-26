@@ -12,12 +12,11 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    BoundaryCallableProjection, BoundaryCancellationContract, BoundaryUnavailableReason,
-    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, GatewayAdapterKind,
-    GatewayAdapterSource, GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey,
-    GatewayExternalSchema, GatewayProtocolSurface, IngressProtocol, PackageArtifactRef,
-    PackageLocalAbiSymbol, RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
-    StateBindingKind,
+    BoundaryCallableProjection, BoundaryUnavailableReason, CallableEffectSummary,
+    CallableMayEffects, CallableProvenanceSummary, GatewayAdapterKind, GatewayAdapterSource,
+    GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayExternalSchema,
+    GatewayProtocolSurface, IngressProtocol, PackageArtifactRef, PackageLocalAbiSymbol,
+    RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef, StateBindingKind,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -48,7 +47,7 @@ use skiff_test_runner::{
 const EXPECTED_PRELUDE_IDENTITY: &str =
     "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699";
 const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
-    "skiff-package-build-v9:sha256:8ac1d3ee235fb3f543df52430f1539610ca05c5631a09df22f7c4f4a7b6a8e17";
+    "skiff-package-build-v10:sha256:0dec996a2d6388245539fb000a0284a1561dc21ac3cc6e88ed3fbe0eadfe3d43";
 
 #[test]
 fn platform_source_context_contract() {
@@ -2000,11 +1999,25 @@ fn i02_submit_probe_is_private_http_gateway_not_service_operation() {
         2
     );
     let marker = public_operation_projection(&project, "marker");
-    assert!(marker.may_suspend);
-    assert_eq!(
-        marker.cancellation,
-        BoundaryCancellationContract::Cooperative
-    );
+    assert!(marker.effect_guarantee.no_caller_reachable_mutation);
+    let PackageLocalAbiSymbol::Callable {
+        callable_id: marker_callable_id,
+        ..
+    } = &project
+        .package
+        .artifact
+        .package_local_abi
+        .public_symbols["marker"]
+    else {
+        panic!("marker must be a concrete callable")
+    };
+    let CallableEffectSummary::Analyzed {
+        effects: marker_effects,
+    } = &project.package.artifact.callable_semantic_facts[marker_callable_id].effects
+    else {
+        panic!("marker effects must be analyzed")
+    };
+    assert!(marker_effects.may_suspend);
 
     let cases = discover_package_test_cases(&package, &package, false).unwrap();
     assert_eq!(cases.len(), 1);

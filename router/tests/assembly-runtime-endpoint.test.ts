@@ -45,7 +45,7 @@ const RUNTIME_ID = 'runtime-assembly-a';
 const SERVICE_ID = 'example.com/actors';
 const SERVICE_VERSION = '1.0.0';
 const SERVICE_PROTOCOL =
-  `skiff-service-protocol-v4:sha256:${'c'.repeat(64)}`;
+  `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`;
 const BUILD_ID = `skiff-service-build-v1:sha256:${'d'.repeat(64)}`;
 const TARGET = 'function:service.example~actors.ActorApi.spawn';
 const SPAWN_COMPATIBILITY = `${SERVICE_VERSION}:${SERVICE_PROTOCOL}:${TARGET}`;

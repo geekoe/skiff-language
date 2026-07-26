@@ -436,7 +436,7 @@ async function writeSafeFixture(root) {
         'async fn dispatch_in_process_boundary(context: &Context) {',
         '    record_in_process_boundary_dispatch(context);',
         '    match BoundaryStreamContract::Unary {',
-        '        BoundaryStreamContract::Unary => use_contract(BoundaryCancellationContract::NotCancellable),',
+        '        BoundaryStreamContract::Unary => async_stream_cancel::execute_service_call(context).await,',
         '    }',
         '}',
         '',

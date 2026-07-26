@@ -16,9 +16,9 @@ describe('compiler generated HTTP gateway compatibility', () => {
       const root = await mkdtemp(join(tmpdir(), 'skiff-router-authoring-'));
       try {
         const generated = await writeCompilerGeneratedFixtureArtifactRoot(root);
-        expect(generated.packageValue.schemaVersion).toBe('skiff-package-artifact-v8');
+        expect(generated.packageValue.schemaVersion).toBe('skiff-package-artifact-v9');
         expect(generated.packageArtifact.artifact.packageBuildId).toMatch(
-          /^skiff-package-build-v9:sha256:[0-9a-f]{64}$/
+          /^skiff-package-build-v10:sha256:[0-9a-f]{64}$/
         );
         expect(generated.packageValue.files).toEqual([
           expect.objectContaining({
@@ -70,10 +70,10 @@ describe('compiler generated HTTP gateway compatibility', () => {
           typeParams: [],
         });
 
-        expect(generated.contractValue.schemaVersion).toBe('skiff-service-contract-v4');
+        expect(generated.contractValue.schemaVersion).toBe('skiff-service-contract-v5');
         expect(generated.contractValue.operations).toEqual({});
         expect(generated.serviceContract.contract.serviceProtocolIdentity).toMatch(
-          /^skiff-service-protocol-v4:sha256:[0-9a-f]{64}$/
+          /^skiff-service-protocol-v5:sha256:[0-9a-f]{64}$/
         );
         expect(generated.deploymentValue.schemaVersion).toBe('skiff-service-deployment-v2');
         expect(generated.deploymentValue.operationBindings).toEqual([]);

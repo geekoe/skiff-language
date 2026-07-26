@@ -11,7 +11,7 @@ export const maxExpectedAssemblyGeneration = Number.MAX_SAFE_INTEGER - 1;
 const activationEnvironmentPattern = /^[A-Za-z0-9._-]{1,200}$/;
 const activationTokenPattern = /^[\x21-\x7e]{1,200}$/;
 const runtimeAssemblyIdentityPattern =
-  /^skiff-runtime-assembly-v1:sha256:[0-9a-f]{64}$/;
+  /^skiff-runtime-assembly-v2:sha256:[0-9a-f]{64}$/;
 
 export async function runAuthoringObjectCommand(kind, rawArgs, {
   skiffRoot,

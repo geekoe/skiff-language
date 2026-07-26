@@ -14,8 +14,8 @@ const STD_PACKAGE_VERSION = '1.0.0';
 
 const HASH = '[a-f0-9]{64}';
 const ASSEMBLY_IDENTITY = new RegExp(`^skiff-runtime-assembly-v2:sha256:${HASH}$`);
-const PACKAGE_BUILD_IDENTITY = new RegExp(`^skiff-package-build-v9:sha256:${HASH}$`);
-const PACKAGE_ABI_IDENTITY = new RegExp(`^skiff-package-local-abi-v6:sha256:${HASH}$`);
+const PACKAGE_BUILD_IDENTITY = new RegExp(`^skiff-package-build-v10:sha256:${HASH}$`);
+const PACKAGE_ABI_IDENTITY = new RegExp(`^skiff-package-local-abi-v7:sha256:${HASH}$`);
 const DEPLOYMENT_IDENTITY = new RegExp(`^skiff-deployment-artifact-v2:sha256:${HASH}$`);
 const GATEWAY_IDENTITY = new RegExp(`^skiff-gateway-entry-v1:sha256:${HASH}$`);
 const PACKAGE_TEST_GATEWAY_IDENTITY =

@@ -21,11 +21,11 @@ const serviceUnit = {
   unitPath: `units/services/example~com~~service/${'2'.repeat(64)}.json`,
 };
 const packageUnit = {
-  schemaVersion: 'skiff-package-unit-v1',
+  schemaVersion: 'skiff-package-unit-v2',
   packageId: 'example.com/package',
   version: '1.0.0',
-  buildIdentity: `skiff-package-build-v2:sha256:${'3'.repeat(64)}`,
-  abiIdentity: `skiff-package-local-abi-v2:sha256:${'4'.repeat(64)}`,
+  buildIdentity: `skiff-package-build-v10:sha256:${'3'.repeat(64)}`,
+  abiIdentity: `skiff-package-local-abi-v7:sha256:${'4'.repeat(64)}`,
   unitHash: '5'.repeat(64),
   unitPath: `units/packages/example~com~~package/1.0.0/${'3'.repeat(64)}.json`,
 };
@@ -196,7 +196,7 @@ process.stdout.write(JSON.stringify({
     },
     packageUnits: service.packageUnits.map((unit) => ({
       path: unit.unitPath,
-      value: { schemaVersion: 'skiff-package-unit-v1' },
+      value: { schemaVersion: 'skiff-package-unit-v2' },
     })),
   })),
 }));

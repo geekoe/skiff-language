@@ -3949,7 +3949,7 @@ async function writePackageUnit(
       }
     : { effects: { operations: {} } };
   const value: Record<string, any> = {
-    schemaVersion: "skiff-package-unit-v1",
+    schemaVersion: "skiff-package-unit-v2",
     packageId: id,
     version,
     buildIdentity: fixtureIdentity("skiff-package-build-v1", `${seed}:placeholder`),
@@ -3985,7 +3985,7 @@ async function writePackageUnit(
 
 function packageUnitPointer(unit: WrittenPackageUnit): Record<string, unknown> {
   return {
-    schemaVersion: "skiff-package-unit-v1",
+    schemaVersion: "skiff-package-unit-v2",
     packageId: unit.value.packageId,
     version: unit.value.version,
     buildIdentity: unit.buildIdentity,

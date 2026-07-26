@@ -646,11 +646,11 @@ describe('runtime protocol fixtures and schemas', () => {
     });
   });
 
-  it('accepts exact current ServiceProtocolIdentity v4 and rejects legacy v3 registration', () => {
+  it('accepts exact current ServiceProtocolIdentity v5 and rejects legacy v4/v3 registration', () => {
     const currentRegistration = {
       ...runtimeFrameHeaderFixtures['runtime.register'],
       serviceProtocolIdentity:
-        'skiff-service-protocol-v4:sha256:2222222222222222222222222222222222222222222222222222222222222222'
+        'skiff-service-protocol-v5:sha256:2222222222222222222222222222222222222222222222222222222222222222'
     };
     expect(validateRuntimeToRouterFrameHeader(currentRegistration)).toEqual({
       ok: true,
@@ -666,7 +666,7 @@ describe('runtime protocol fixtures and schemas', () => {
     ).toEqual({
       ok: false,
       error:
-        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v4:sha256:<64 lowercase hex>'
+        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v5:sha256:<64 lowercase hex>'
     });
 
     expect(
@@ -677,7 +677,7 @@ describe('runtime protocol fixtures and schemas', () => {
     ).toEqual({
       ok: false,
       error:
-        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v4:sha256:<64 lowercase hex>'
+        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v5:sha256:<64 lowercase hex>'
     });
 
     expect(
@@ -689,7 +689,7 @@ describe('runtime protocol fixtures and schemas', () => {
     ).toEqual({
       ok: false,
       error:
-        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v4:sha256:<64 lowercase hex>'
+        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v5:sha256:<64 lowercase hex>'
     });
 
     expect(
@@ -738,7 +738,7 @@ describe('runtime protocol fixtures and schemas', () => {
     });
   });
 
-  it('requires current ServiceProtocolIdentity v4 on retained legacy request.start', () => {
+  it('requires current ServiceProtocolIdentity v5 on retained legacy request.start', () => {
     expect(
       validateRouterToRuntimeFrameHeader({
         ...runtimeFrameHeaderFixtures['request.start'],
@@ -748,13 +748,14 @@ describe('runtime protocol fixtures and schemas', () => {
     ).toEqual({
       ok: false,
       error:
-        'invalid request.start envelope: serviceProtocolIdentity must be skiff-service-protocol-v4:sha256:<64 lowercase hex>'
+        'invalid request.start envelope: serviceProtocolIdentity must be skiff-service-protocol-v5:sha256:<64 lowercase hex>'
     });
 
     for (const serviceProtocolIdentity of [
       'skiff-service-protocol-v3:sha256:1111111111111111111111111111111111111111111111111111111111111111',
-      'skiff-service-protocol-v4:sha256:1111',
-      'skiff-service-protocol-v4:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+      'skiff-service-protocol-v4:sha256:1111111111111111111111111111111111111111111111111111111111111111',
+      'skiff-service-protocol-v5:sha256:1111',
+      'skiff-service-protocol-v5:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
     ]) {
       expect(
         validateRouterToRuntimeFrameHeader({
@@ -776,17 +777,19 @@ describe('runtime protocol fixtures and schemas', () => {
     });
   });
 
-  it('requires current ServiceProtocolIdentity v4 on spawn submit, claim, and claimed items', () => {
+  it('requires current ServiceProtocolIdentity v5 on spawn submit, claim, and claimed items', () => {
     const legacyV1 =
       'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111';
     const legacyV3 =
       'skiff-service-protocol-v3:sha256:1111111111111111111111111111111111111111111111111111111111111111';
-    const invalidV4 = [
-      'skiff-service-protocol-v4:sha256:1111',
-      'skiff-service-protocol-v4:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    const legacyV4 =
+      'skiff-service-protocol-v4:sha256:1111111111111111111111111111111111111111111111111111111111111111';
+    const invalidV5 = [
+      'skiff-service-protocol-v5:sha256:1111',
+      'skiff-service-protocol-v5:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
     ];
 
-    for (const serviceProtocolIdentity of [legacyV1, legacyV3, ...invalidV4]) {
+    for (const serviceProtocolIdentity of [legacyV1, legacyV3, legacyV4, ...invalidV5]) {
       expect(
         validateRuntimeToRouterFrameHeader({
           ...runtimeFrameHeaderFixtures['spawn.submit.request'],
