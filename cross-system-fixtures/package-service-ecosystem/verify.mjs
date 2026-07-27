@@ -152,31 +152,38 @@ assert.throws(
   "typed state decoder must reject sparse participant arrays",
 );
 
-assert.deepEqual(checkpoint.authoringFields["package.yml services[]"], [
-  "alias",
-  "id",
-  "version",
-]);
-assert.deepEqual(checkpoint.authoringFields["service.yml"], [
-  "id",
-  "http",
-  "websocket",
-  "timeout",
-]);
-assert.deepEqual(checkpoint.authoringFields["config.<profile>.yml"], [
-  "config",
-  "secrets",
-  "state",
-  "resources",
-  "timeout",
-  "quota",
-  "principal",
-  "lifecycle",
-]);
-assert.deepEqual(checkpoint.authoringFields["assembly.yml"], [
-  "environment",
-  "rootDeployments",
-]);
+assert.deepEqual(checkpoint.externalAuthoring["package.yml services[]"], {
+  fields: ["alias", "id", "version"],
+});
+assert.deepEqual(checkpoint.externalAuthoring["service.yml"], {
+  fields: ["id", "serviceCalls"],
+  testServiceExtension: {
+    kind: "test",
+  },
+});
+assert.deepEqual(checkpoint.externalAuthoring["http.yml"], {
+  topLevel: "named entry mapping",
+});
+assert.deepEqual(checkpoint.externalAuthoring["websocket.yml"], {
+  physicalEntryCount: 1,
+  requiredFields: ["path"],
+  optionalFields: ["connect", "jsonRpc"],
+});
+assert.deepEqual(checkpoint.externalAuthoring["config.<profile>.yml"], {
+  fields: [
+    "config",
+    "secrets",
+    "state",
+    "resources",
+    "timeout",
+    "quota",
+    "principal",
+    "lifecycle",
+  ],
+});
+assert.deepEqual(checkpoint.externalAuthoring["assembly.yml"], {
+  fields: ["environment", "rootDeployments"],
+});
 assert.deepEqual(checkpoint.activationStateFields.committed, [
   "generation",
   "assembly",

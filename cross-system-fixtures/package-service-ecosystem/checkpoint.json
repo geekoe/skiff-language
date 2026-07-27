@@ -1,9 +1,28 @@
 {
-  "authoringFields": {
-    "package.yml services[]": ["alias", "id", "version"],
-    "service.yml": ["id", "http", "websocket", "timeout"],
-    "config.<profile>.yml": ["config", "secrets", "state", "resources", "timeout", "quota", "principal", "lifecycle"],
-    "assembly.yml": ["environment", "rootDeployments"]
+  "externalAuthoring": {
+    "package.yml services[]": {
+      "fields": ["alias", "id", "version"]
+    },
+    "service.yml": {
+      "fields": ["id", "serviceCalls"],
+      "testServiceExtension": {
+        "kind": "test"
+      }
+    },
+    "http.yml": {
+      "topLevel": "named entry mapping"
+    },
+    "websocket.yml": {
+      "physicalEntryCount": 1,
+      "requiredFields": ["path"],
+      "optionalFields": ["connect", "jsonRpc"]
+    },
+    "config.<profile>.yml": {
+      "fields": ["config", "secrets", "state", "resources", "timeout", "quota", "principal", "lifecycle"]
+    },
+    "assembly.yml": {
+      "fields": ["environment", "rootDeployments"]
+    }
   },
   "recordPaths": {
     "PackageArtifact": "records/package-artifacts/<package-id>/<package-version>/<package-build-sha256>/package.json",

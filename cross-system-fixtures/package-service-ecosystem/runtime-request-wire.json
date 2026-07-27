@@ -395,7 +395,7 @@
       "serviceId": "example.com/legacy",
       "version": "1.0.0",
       "buildId": "skiff-service-build-v1:sha256:9999999999999999999999999999999999999999999999999999999999999999",
-      "serviceProtocolIdentity": "skiff-service-protocol-v3:sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "serviceProtocolIdentity": "skiff-service-protocol-v5:sha256:8888888888888888888888888888888888888888888888888888888888888888",
       "trace": {
         "traceId": "legacy-trace",
         "spanId": "legacy-span"
