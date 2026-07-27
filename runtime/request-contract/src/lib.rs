@@ -10,10 +10,11 @@ pub use envelope::{
 pub use outbound::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
     ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
-    ConnectionSendControl, OutboundControlMessage, OutboundResponse, RequestCancelControl,
-    RequestEffectDoubleControl, RequestStartControl, RuntimeCallerControl, RuntimeDeadlineControl,
-    RuntimeTraceContextControl, SpawnClaimControlRequest, SpawnCompleteControlRequest,
-    SpawnFailControlRequest, SpawnRenewControlRequest, SpawnSubmitControlRequest,
+    ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
+    OutboundControlMessage, OutboundResponse, RequestCancelControl, RequestEffectDoubleControl,
+    RequestStartControl, RuntimeCallerControl, RuntimeDeadlineControl, RuntimeTraceContextControl,
+    SpawnClaimControlRequest, SpawnCompleteControlRequest, SpawnFailControlRequest,
+    SpawnRenewControlRequest, SpawnSubmitControlRequest,
 };
 pub use response_event::{
     BoundaryResponse, FixedServiceResponseFailure, HttpResponseMetadata, ResponseEnd,

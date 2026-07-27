@@ -129,6 +129,7 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_scalar_native("std.websocket.sendBinaryToConnection"),
     detached_scalar_native("std.websocket.sendTextToBusinessIdentity"),
     detached_scalar_native("std.websocket.sendBinaryToBusinessIdentity"),
+    detached_native("std.websocket.requestJsonToConnection", true),
 ];
 
 pub fn native_callable_semantics(binding_key: &str) -> Option<&'static NativeCallableSemantics> {
@@ -858,6 +859,14 @@ pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
         params: &[STRING, BYTES],
         return_type: VOID,
     },
+    NativeSignatureDef {
+        target: "std.websocket.requestJsonToConnection",
+        binding_key: "std.websocket.requestJsonToConnection",
+        aliases: &[],
+        type_param_count: 2,
+        params: &[STRING, STRING, T0],
+        return_type: T1,
+    },
 ];
 
 pub fn is_runtime_receiver_native_binding_key(binding_key: &str) -> bool {
@@ -901,7 +910,46 @@ mod tests {
     use super::{
         is_runtime_receiver_native_binding_key, native_callable_semantics,
         native_signature_for_receiver_op, STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
+        STRING, T0, T1,
     };
+
+    #[test]
+    fn websocket_request_signature_and_suspension_are_exact() {
+        let request = STD_NATIVE_SIGNATURES
+            .iter()
+            .find(|signature| signature.binding_key == "std.websocket.requestJsonToConnection")
+            .expect("WebSocket request native signature must be registered");
+        assert_eq!(request.target, "std.websocket.requestJsonToConnection");
+        assert!(request.aliases.is_empty());
+        assert_eq!(request.type_param_count, 2);
+        assert_eq!(request.params, &[STRING, STRING, T0]);
+        assert_eq!(request.return_type, T1);
+
+        let request_semantics = native_callable_semantics("std.websocket.requestJsonToConnection")
+            .expect("WebSocket request callable semantics must be registered");
+        assert!(request_semantics.effects.may_suspend);
+        assert!(!request_semantics.effects.writes_caller_reachable);
+        assert!(!request_semantics.effects.returns_caller_alias);
+        assert!(!request_semantics.effects.throws_caller_alias);
+        assert!(!request_semantics.effects.escapes_caller_value);
+        assert!(!request_semantics.effects.requires_same_heap_identity);
+        assert!(!request_semantics.effects.invokes_unknown_target);
+
+        for raw_send in [
+            "std.websocket.sendTextToConnection",
+            "std.websocket.sendBinaryToConnection",
+            "std.websocket.sendTextToBusinessIdentity",
+            "std.websocket.sendBinaryToBusinessIdentity",
+        ] {
+            assert!(
+                !native_callable_semantics(raw_send)
+                    .expect("raw WebSocket send semantics must remain registered")
+                    .effects
+                    .may_suspend,
+                "{raw_send} must remain non-suspending"
+            );
+        }
+    }
 
     #[test]
     fn native_callable_semantics_registry_is_sparse_exact_and_safe() {
@@ -953,6 +1001,7 @@ mod tests {
             "std.websocket.sendBinaryToConnection",
             "std.websocket.sendTextToBusinessIdentity",
             "std.websocket.sendTextToConnection",
+            "std.websocket.requestJsonToConnection",
         ]);
         let actual = STD_NATIVE_CALLABLE_SEMANTICS
             .iter()
@@ -987,6 +1036,7 @@ mod tests {
                             | "std.http.client.sse"
                             | "std.http.client.stream"
                             | "std.time.sleep"
+                            | "std.websocket.requestJsonToConnection"
                     )
             );
             assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);

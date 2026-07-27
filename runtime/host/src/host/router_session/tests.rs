@@ -6,6 +6,9 @@ use skiff_runtime_transport::{
         decode_assembly_activation_frame, encode_assembly_activation_frame,
         AssemblyActivationFrameDirection,
     },
+    connection_protocol::{
+        encode_connection_response_frame, ConnectionResponseFrameHeader, ConnectionResponseOutcome,
+    },
     protocol::{
         encode_binary_frame, RequestCancelFrameHeader, ResponseChunkFrameHeader,
         ResponseEndFrameHeader, ResponseEndFrameMetadata, ResponseErrorFrameHeader,
@@ -14,6 +17,58 @@ use skiff_runtime_transport::{
         RuntimeRegisteredFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
+
+#[tokio::test]
+async fn connection_request_response_demux_uses_exact_router_session() {
+    let host = test_host();
+    let session = skiff_runtime_capability_context::ConnectionRequestSession::new(
+        "skiff-router-session-v1:opaque:test-session",
+    )
+    .expect("test session");
+    let cancellation = skiff_runtime_capability_context::CancellationSource::new();
+    let mut pending = host
+        .connection_requests
+        .install(
+            session,
+            cancellation.token(),
+            None,
+            std::sync::Arc::new(|_, _| Ok(())),
+        )
+        .expect("pending request");
+    let request_id = pending.request_id().to_string();
+    let frame = encode_connection_response_frame(
+        &ConnectionResponseFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "connection.response".to_string(),
+            request_id,
+            outcome: ConnectionResponseOutcome::Success,
+            remote: None,
+        },
+        b"null",
+    )
+    .expect("strict response frame");
+    let (sender, _receiver) = mpsc::unbounded_channel();
+    let mut control = None;
+    let mut artifact_fingerprint = None;
+
+    dispatch_router_binary_frame(
+        &host,
+        &frame,
+        &sender,
+        &mut control,
+        &mut artifact_fingerprint,
+    )
+    .await
+    .expect("response should dispatch");
+
+    assert_eq!(
+        pending.wait().await,
+        skiff_runtime_capability_context::ConnectionRequestTerminal::Success(b"null".to_vec())
+    );
+    assert_eq!(host.connection_requests.pending_count(), 0);
+    assert_eq!(host.connection_requests.active_lease_count(), 0);
+    assert_eq!(host.connection_requests.active_timer_count(), 0);
+}
 
 mod runtime_assembly_request;
 mod websocket_generation_lifecycle;

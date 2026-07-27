@@ -7,6 +7,7 @@ import {
   encodeBinaryFrame,
   encodeRuntimeFrame,
   RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+  RUNTIME_FRAME_SCHEMA_VERSION,
   TELEMETRY_PROTOCOL,
   TELEMETRY_TOPICS
 } from '../src/protocol/envelope.js';
@@ -75,7 +76,10 @@ const runtimeFrameHeaderTypes = [
   'response.error',
   'response.chunk',
   'request.cancel',
-  'connection.send'
+  'connection.send',
+  'connection.request',
+  'connection.request.cancel',
+  'connection.response'
 ] as const satisfies readonly RuntimeProtocolFrameHeaderName[];
 
 const runtimeToRouterFrameHeaderTypes = [
@@ -97,7 +101,9 @@ const runtimeToRouterFrameHeaderTypes = [
   'response.error',
   'response.chunk',
   'request.cancel',
-  'connection.send'
+  'connection.send',
+  'connection.request',
+  'connection.request.cancel'
 ] as const satisfies readonly RuntimeToRouterFrameHeaderName[];
 
 const routerToRuntimeFrameHeaderTypes = [
@@ -125,6 +131,7 @@ const routerToRuntimeFrameHeaderTypes = [
   'request.start',
   'package-test.start',
   'request.cancel',
+  'connection.response',
   'response.start',
   'response.end',
   'response.error',
@@ -668,7 +675,7 @@ describe('runtime protocol fixtures and schemas', () => {
     expect(validateRuntimeToRouterFrameHeader({ type: 'not.real' })).toEqual({
       ok: false,
       error:
-        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, runtime.health, actor.getOrCreate.request, actor.replace.request, actor.find.request, actor.remove.request, spawn.submit.request, spawn.claim.request, spawn.renew.request, spawn.complete.request, spawn.fail.request, request.start, request.cancel, connection.send, response.start, response.chunk, response.end, response.error'
+        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, runtime.health, actor.getOrCreate.request, actor.replace.request, actor.find.request, actor.remove.request, spawn.submit.request, spawn.claim.request, spawn.renew.request, spawn.complete.request, spawn.fail.request, request.start, request.cancel, connection.send, connection.request, connection.request.cancel, response.start, response.chunk, response.end, response.error'
     });
   });
 
@@ -1972,6 +1979,118 @@ describe('runtime binary frame foundations', () => {
       ok: false,
       error: 'invalid connection.send envelope: exactly one of businessIdentity or connectionId must be set'
     });
+  });
+
+  it('accepts strict connection request, cancel, and response frame headers', () => {
+    const websocketEntryId =
+      `skiff-websocket-entry-v1:sha256:${'a'.repeat(64)}`;
+    const request = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'connection.request',
+      requestId: 'connection-request-1',
+      serviceId: 'example.com/chat',
+      websocketEntryId,
+      connectionId: 'connection-1',
+      profile: 'jsonrpc-2.0-text',
+      method: 'chat.send',
+      deadline: {
+        timeoutMs: 1000,
+        expiresAt: '2030-01-02T03:04:05Z'
+      }
+    };
+    expect(validateRuntimeToRouterFrameHeader(request)).toEqual({
+      ok: true,
+      envelope: request
+    });
+    const cancel = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'connection.request.cancel',
+      requestId: request.requestId,
+      reason: 'caller_cancel'
+    };
+    expect(validateRuntimeToRouterFrameHeader(cancel)).toEqual({
+      ok: true,
+      envelope: cancel
+    });
+    const response = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'connection.response',
+      requestId: request.requestId,
+      outcome: 'remote',
+      remote: {
+        code: -32603,
+        message: ' peer failed ',
+        dataPresent: true
+      }
+    };
+    expect(validateRouterToRuntimeFrameHeader(response)).toEqual({
+      ok: true,
+      envelope: response
+    });
+  });
+
+  it('rejects unknown fields and invalid connection response branches', () => {
+    const websocketEntryId =
+      `skiff-websocket-entry-v1:sha256:${'a'.repeat(64)}`;
+    const request = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'connection.request',
+      requestId: 'connection-request-1',
+      serviceId: 'example.com/chat',
+      websocketEntryId,
+      connectionId: 'connection-1',
+      profile: 'jsonrpc-2.0-text',
+      method: 'chat.send',
+      deadline: {
+        timeoutMs: 1000,
+        expiresAt: '2030-01-02T03:04:05Z'
+      }
+    };
+    for (const expiresAt of [
+      '2030-02-30T03:04:05Z',
+      '2030-01-02T03:04:05suffixZ',
+      '2030-01-02T24:04:05Z',
+      '2030-01-02T03:04:05+24:00'
+    ]) {
+      expect(validateRuntimeToRouterFrameHeader({
+        ...request,
+        deadline: {
+          ...request.deadline,
+          expiresAt
+        }
+      }).ok).toBe(false);
+    }
+    expect(validateRuntimeToRouterFrameHeader({
+      ...request,
+      deadline: {
+        ...request.deadline,
+        timeoutMs: Number.MAX_SAFE_INTEGER + 1
+      }
+    }).ok).toBe(false);
+
+    const base = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'connection.response',
+      requestId: 'connection-request-1'
+    };
+    expect(validateRouterToRuntimeFrameHeader({
+      ...base,
+      outcome: 'protocolError',
+      unexpected: true
+    }).ok).toBe(false);
+    expect(validateRouterToRuntimeFrameHeader({
+      ...base,
+      outcome: 'remote'
+    }).ok).toBe(false);
+    expect(validateRouterToRuntimeFrameHeader({
+      ...base,
+      outcome: 'success',
+      remote: {
+        code: 1,
+        message: 'forbidden',
+        dataPresent: false
+      }
+    }).ok).toBe(false);
   });
 
   it('requires service, entry, and connection identity for direct connection.send targets', () => {

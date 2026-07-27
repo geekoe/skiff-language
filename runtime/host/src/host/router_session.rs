@@ -5,6 +5,7 @@ use serde::Serialize;
 use serde_json::Value;
 use skiff_runtime_capability_context::{
     ActorInvocationCancellation, ActorInvocationError, ActorInvocationOutcome,
+    ConnectionRequestSession, ConnectionRequestTerminal,
 };
 use skiff_runtime_request::{OutboundResponse, ResponseError};
 #[cfg(test)]
@@ -22,6 +23,7 @@ use skiff_runtime_transport::{
         decode_assembly_activation_frame, AssemblyActivationFrameDirection,
         ASSEMBLY_ACTIVATION_FRAME_TYPE,
     },
+    connection_protocol::{decode_connection_response_frame, ConnectionResponseOutcome},
     control_mapper::encode_outbound_control_message,
     control_response_mapper::spawn_claim_response_control_payload,
     protocol::{
@@ -116,6 +118,9 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     .await;
 
     host.discard_actor_instances_for_session(&router_session_id);
+    if let Ok(session) = ConnectionRequestSession::new(router_session_id.clone()) {
+        host.connection_requests.disconnect_session(&session);
+    }
     host.actor_owner_invocations.cancel_session();
     let disconnect_result = host.websocket_generations.disconnect(&router_session_id);
     drop(sender);
@@ -461,6 +466,51 @@ async fn dispatch_router_binary_frame_inner(
             }
             host.cancel_request(request_cancel_from_frame_header(header))
                 .await;
+        }
+        "connection.response" => {
+            let (header, payload) = decode_connection_response_frame(bytes)
+                .map_err(super::transport_error_into_runtime_error)?;
+            let request_id = header.request_id.clone();
+            let session = ConnectionRequestSession::new(router_session_id.to_string())
+                .map_err(RuntimeError::Decode)?;
+            let terminal = match header.outcome {
+                ConnectionResponseOutcome::Success => ConnectionRequestTerminal::Success(payload),
+                ConnectionResponseOutcome::DeadlineExceeded => {
+                    ConnectionRequestTerminal::DeadlineExceeded
+                }
+                ConnectionResponseOutcome::ConnectionUnavailable => {
+                    ConnectionRequestTerminal::ConnectionUnavailable
+                }
+                ConnectionResponseOutcome::TransportUnavailable => {
+                    ConnectionRequestTerminal::TransportUnavailable
+                }
+                ConnectionResponseOutcome::ProtocolError => {
+                    ConnectionRequestTerminal::ProtocolError
+                }
+                ConnectionResponseOutcome::ResourceLimit => {
+                    ConnectionRequestTerminal::ResourceLimit
+                }
+                ConnectionResponseOutcome::Remote => {
+                    let remote = header
+                        .remote
+                        .expect("strict connection response decoder requires remote metadata");
+                    ConnectionRequestTerminal::Remote {
+                        code: remote.code,
+                        message: remote.message,
+                        data: remote.data_present.then_some(payload),
+                    }
+                }
+            };
+            if !host
+                .connection_requests
+                .complete(&session, &request_id, terminal)
+            {
+                warn!(
+                    event = "runtime.unmatched_connection_response",
+                    request_id = %request_id,
+                    router_session_id
+                );
+            }
         }
         ACTOR_OWNER_INVOKE_FRAME_TYPE => {
             if bootstrap.is_none() {

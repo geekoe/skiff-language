@@ -20,6 +20,9 @@ import {
   encodeRuntimeFrame,
   RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
   RUNTIME_FRAME_SCHEMA_VERSION,
+  type ConnectionRequestCancelFrameHeader,
+  type ConnectionRequestFrameHeader,
+  type ConnectionResponseFrameHeader,
   type ConnectionSendEnvelope,
   type RequestCancelEnvelope,
   type RouterBootstrapEnvelope,
@@ -32,6 +35,7 @@ import type {
 } from '../protocol/runtimeAssemblyRequest.js';
 import {
   validateResponseErrorFrame,
+  validateRouterToRuntimeFrameHeader,
   validateRuntimeToRouterFrameHeader
 } from '../protocol/runtimeProtocol.js';
 import {
@@ -69,6 +73,8 @@ import {
 } from '../protocol/actorOwnerProtocol.js';
 
 const CONNECTION_SEND_TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
+const CONNECTION_REQUEST_TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
+const CONNECTION_REQUEST_MAX_PAYLOAD_BYTES = 1024 * 1024;
 
 export interface RuntimeEndpointListenOptions {
   controlPlane?: RuntimeEndpointControlPlane;
@@ -138,6 +144,36 @@ export interface RuntimeConnectionSendSource {
   onConnectionSend(handler: ConnectionSendHandler): () => void;
 }
 
+export interface RuntimeConnectionRequestSource {
+  readonly sender: WebSocket;
+  readonly sessionToken: string;
+}
+
+export type RuntimeConnectionRequestMessage =
+  | {
+      readonly kind: 'request';
+      readonly header: ConnectionRequestFrameHeader;
+      readonly payloadBytes: Uint8Array;
+    }
+  | {
+      readonly kind: 'cancel';
+      readonly header: ConnectionRequestCancelFrameHeader;
+    };
+
+export type ConnectionRequestHandler = (
+  message: RuntimeConnectionRequestMessage,
+  source: RuntimeConnectionRequestSource
+) => void | Promise<void>;
+
+export interface RuntimeConnectionRequestSourceApi {
+  onConnectionRequest(handler: ConnectionRequestHandler): () => void;
+  sendConnectionResponse(
+    source: RuntimeConnectionRequestSource,
+    header: ConnectionResponseFrameHeader,
+    payloadBytes?: Uint8Array
+  ): void;
+}
+
 export interface RuntimeControlBroadcaster {
   broadcastControl(control: Omit<RouterControlEnvelope, 'type'>): void;
 }
@@ -184,11 +220,15 @@ export class RuntimeEndpoint
   implements
     RuntimeFrameSender,
     RuntimeConnectionSendSource,
+    RuntimeConnectionRequestSourceApi,
     RuntimeControlBroadcaster,
     AssemblyActivationControlSender,
     WebSocketGenerationLifecycleControlSender
 {
+  private readonly connectionRequestHandlers = new Set<ConnectionRequestHandler>();
   private readonly connectionSendHandlers = new Set<ConnectionSendHandler>();
+  private readonly runtimeSessionTokens = new WeakMap<WebSocket, string>();
+  private nextRuntimeSessionToken = 1;
   private coordinator: AssemblyActivationCoordinator | undefined;
   private actorMethodsInstance: RuntimeActorMethodRouter | undefined;
   private control: Omit<RouterControlEnvelope, 'type'> | undefined;
@@ -262,6 +302,10 @@ export class RuntimeEndpoint
     });
 
     webSocketServer.on('connection', (ws) => {
+      this.runtimeSessionTokens.set(
+        ws,
+        `skiff-runtime-session-v1:opaque:${this.nextRuntimeSessionToken++}`
+      );
       if (this.options.bootstrap !== undefined) {
         this.sendFrame(ws, {
           schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
@@ -284,6 +328,7 @@ export class RuntimeEndpoint
       });
 
       ws.on('close', () => {
+        this.runtimeSessionTokens.delete(ws);
         const actorDisconnect = (this.actorMethodsInstance ?? this.options.actorMethods)
           ?.handleRuntimeDisconnect?.(ws);
         void actorDisconnect?.catch((error: unknown) => {
@@ -398,6 +443,39 @@ export class RuntimeEndpoint
     return () => {
       this.connectionSendHandlers.delete(handler);
     };
+  }
+
+  onConnectionRequest(handler: ConnectionRequestHandler): () => void {
+    this.connectionRequestHandlers.add(handler);
+    return () => {
+      this.connectionRequestHandlers.delete(handler);
+    };
+  }
+
+  sendConnectionResponse(
+    source: RuntimeConnectionRequestSource,
+    header: ConnectionResponseFrameHeader,
+    payloadBytes: Uint8Array = new Uint8Array()
+  ): void {
+    if (
+      this.runtimeSessionTokens.get(source.sender) !== source.sessionToken ||
+      source.sender.readyState !== WebSocket.OPEN
+    ) {
+      throw new Error(
+        'connection response source does not match the captured runtime session'
+      );
+    }
+    this.options.registry.assertRuntimeCapabilityConnection(source.sender);
+    const validation = validateRouterToRuntimeFrameHeader(header);
+    if (!validation.ok || validation.envelope.type !== 'connection.response') {
+      throw new Error(
+        validation.ok
+          ? 'connection response frame type is invalid'
+          : validation.error
+      );
+    }
+    validateConnectionResponsePayload(header, payloadBytes);
+    this.sendFrame(source.sender, header, payloadBytes);
   }
 
   sendFrame(
@@ -653,6 +731,32 @@ export class RuntimeEndpoint
           this.forwardConnectionSend(ws, envelope);
         }
         return;
+      case 'connection.request':
+        {
+          this.options.registry.assertRuntimeCapabilityConnection(ws);
+          const payloadBytes = validateConnectionRequestPayload(frame.payloadBytes);
+          await this.forwardConnectionRequest(
+            ws,
+            {
+              kind: 'request',
+              header,
+              payloadBytes
+            }
+          );
+        }
+        return;
+      case 'connection.request.cancel':
+        {
+          this.options.registry.assertRuntimeCapabilityConnection(ws);
+          if (frame.payloadBytes.byteLength !== 0) {
+            throw new Error('connection.request.cancel payload must be empty');
+          }
+          await this.forwardConnectionRequest(ws, {
+            kind: 'cancel',
+            header
+          });
+        }
+        return;
       case 'response.end':
         this.dispatcher().resolveRequest(ws, {
           header,
@@ -742,6 +846,23 @@ export class RuntimeEndpoint
     }
   }
 
+  private async forwardConnectionRequest(
+    ws: WebSocket,
+    message: RuntimeConnectionRequestMessage
+  ): Promise<void> {
+    const sessionToken = this.runtimeSessionTokens.get(ws);
+    if (sessionToken === undefined) {
+      throw new Error('connection request requires a captured runtime session');
+    }
+    const source = Object.freeze({
+      sender: ws,
+      sessionToken
+    }) satisfies RuntimeConnectionRequestSource;
+    for (const handler of this.connectionRequestHandlers) {
+      await handler(message, source);
+    }
+  }
+
   private dispatcher(): RuntimeDispatcher {
     if (!this.dispatcherInstance) {
       throw new Error('runtime endpoint dispatcher is not attached');
@@ -796,6 +917,85 @@ function validateConnectionSendTextPayload(payloadBytes: Uint8Array): void {
     CONNECTION_SEND_TEXT_DECODER.decode(payloadBytes);
   } catch {
     throw new Error('connection.send text payload must be valid UTF-8');
+  }
+}
+
+function validateConnectionRequestPayload(payloadBytes: Uint8Array): Uint8Array {
+  if (
+    payloadBytes.byteLength === 0 ||
+    payloadBytes.byteLength > CONNECTION_REQUEST_MAX_PAYLOAD_BYTES
+  ) {
+    throw new Error(
+      'connection.request payload must be present and within the payload limit'
+    );
+  }
+  let text: string;
+  try {
+    text = CONNECTION_REQUEST_TEXT_DECODER.decode(payloadBytes);
+  } catch {
+    throw new Error('connection.request payload must be valid UTF-8');
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error('connection.request payload must be valid JSON');
+  }
+  if (
+    value === null ||
+    typeof value !== 'object'
+  ) {
+    throw new Error(
+      'connection.request payload must be a JSON object or array'
+    );
+  }
+  return payloadBytes;
+}
+
+function validateConnectionResponsePayload(
+  header: ConnectionResponseFrameHeader,
+  payloadBytes: Uint8Array
+): void {
+  if (payloadBytes.byteLength > CONNECTION_REQUEST_MAX_PAYLOAD_BYTES) {
+    throw new Error('connection.response payload exceeds the payload limit');
+  }
+  if (header.outcome === 'success') {
+    if (payloadBytes.byteLength === 0) {
+      throw new Error('connection.response success payload must be present');
+    }
+    validateConnectionResponseJson(payloadBytes);
+    return;
+  }
+  if (header.outcome === 'remote') {
+    const payloadPresent = payloadBytes.byteLength !== 0;
+    if (header.remote?.dataPresent !== payloadPresent) {
+      throw new Error(
+        'connection.response remote dataPresent must match payload presence'
+      );
+    }
+    if (payloadPresent) {
+      validateConnectionResponseJson(payloadBytes);
+    }
+    return;
+  }
+  if (payloadBytes.byteLength !== 0) {
+    throw new Error(
+      'connection.response non-payload outcome must have empty payload'
+    );
+  }
+}
+
+function validateConnectionResponseJson(payloadBytes: Uint8Array): void {
+  let text: string;
+  try {
+    text = CONNECTION_REQUEST_TEXT_DECODER.decode(payloadBytes);
+  } catch {
+    throw new Error('connection.response payload must be valid UTF-8 JSON');
+  }
+  try {
+    JSON.parse(text);
+  } catch {
+    throw new Error('connection.response payload must be valid UTF-8 JSON');
   }
 }
 

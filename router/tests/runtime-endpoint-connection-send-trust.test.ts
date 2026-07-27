@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { encodeAssemblyActivationFrame } from '../src/protocol/assemblyActivationFrame.js';
 import {
+  decodeRuntimeFrame,
   encodeRuntimeFrame,
-  RUNTIME_FRAME_SCHEMA_VERSION
+  RUNTIME_FRAME_SCHEMA_VERSION,
+  type ConnectionRequestFrameHeader
 } from '../src/protocol/envelope.js';
 import { runtimeFrameHeaderFixtures } from '../src/protocol/runtimeProtocol.js';
 import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
@@ -13,6 +15,7 @@ import {
   RuntimeEndpoint,
   type ConnectionSendDisposition,
   type ConnectionSendProtocolViolationReason,
+  type RuntimeConnectionRequestSource,
   type RuntimeConnectionSendObservation
 } from '../src/router/runtimeEndpoint.js';
 import { RuntimeRegistry } from '../src/router/runtimeRegistry.js';
@@ -142,6 +145,113 @@ describe('runtime connection.send sender binding and observability', () => {
       'invalid response.error control frame: payload must be empty'
     );
   });
+
+  it('routes a connection request with its captured runtime session and fences forged response sources', async () => {
+    const fixture = await createFixture([]);
+    const captured: Array<{
+      source: RuntimeConnectionRequestSource;
+      requestId: string;
+      kind: 'request' | 'cancel';
+      payload?: string;
+    }> = [];
+    fixture.endpoint.onConnectionRequest((message, source) => {
+      captured.push({
+        source,
+        requestId: message.header.requestId,
+        kind: message.kind,
+        ...(message.kind === 'request'
+          ? { payload: Buffer.from(message.payloadBytes).toString('utf8') }
+          : {})
+      });
+    });
+    const header = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'connection.request',
+      requestId: 'connection-request-trust-1',
+      serviceId: SERVICE_ID,
+      websocketEntryId: WEBSOCKET_ENTRY_ID,
+      connectionId: 'connection-a',
+      profile: 'jsonrpc-2.0-text',
+      method: 'chat.send'
+    } satisfies ConnectionRequestFrameHeader;
+
+    fixture.runtime.send(
+      encodeRuntimeFrame(header, Buffer.from('{"message":"hello"}', 'utf8'))
+    );
+    await until(() => captured.length === 1);
+    expect(captured[0]).toEqual(expect.objectContaining({
+      requestId: header.requestId,
+      kind: 'request',
+      payload: '{"message":"hello"}'
+    }));
+    expect(captured[0]!.source.sender.readyState).toBe(WebSocket.OPEN);
+
+    fixture.runtime.send(
+      encodeRuntimeFrame({
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'connection.request.cancel',
+        requestId: header.requestId,
+        reason: 'caller_cancel'
+      })
+    );
+    await until(() => captured.length === 2);
+    expect(captured[1]).toEqual(expect.objectContaining({
+      requestId: header.requestId,
+      kind: 'cancel'
+    }));
+    expect(captured[1]!.source.sessionToken).toBe(
+      captured[0]!.source.sessionToken
+    );
+
+    const responsePromise = nextRuntimeFrame(fixture.runtime);
+    fixture.endpoint.sendConnectionResponse(
+      captured[0]!.source,
+      {
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'connection.response',
+        requestId: header.requestId,
+        outcome: 'success'
+      },
+      Buffer.from('null', 'utf8')
+    );
+    const response = await responsePromise;
+    expect(response.header).toEqual({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'connection.response',
+      requestId: header.requestId,
+      outcome: 'success'
+    });
+    expect(Buffer.from(response.payloadBytes).toString('utf8')).toBe('null');
+
+    expect(() =>
+      fixture.endpoint.sendConnectionResponse(
+        captured[0]!.source,
+        {
+          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+          type: 'connection.response',
+          requestId: header.requestId,
+          outcome: 'remote',
+          remote: {
+            code: -32603,
+            message: 'peer failed',
+            dataPresent: true
+          }
+        }
+      )
+    ).toThrow('dataPresent must match payload presence');
+
+    expect(() =>
+      fixture.endpoint.sendConnectionResponse(
+        { ...captured[0]!.source, sessionToken: 'forged-session' },
+        {
+          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+          type: 'connection.response',
+          requestId: header.requestId,
+          outcome: 'protocolError'
+        }
+      )
+    ).toThrow('captured runtime session');
+  });
 });
 
 interface EndpointFixture {
@@ -227,6 +337,20 @@ async function waitForClose(ws: WebSocket): Promise<[number, string]> {
     ws.once('close', (code, reason) => {
       clearTimeout(timeout);
       resolve([code, reason.toString('utf8')]);
+    });
+  });
+}
+
+async function nextRuntimeFrame(ws: WebSocket): Promise<ReturnType<typeof decodeRuntimeFrame>> {
+  return await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('timed out waiting for frame')), 1_000);
+    ws.once('message', (data) => {
+      clearTimeout(timeout);
+      try {
+        resolve(decodeRuntimeFrame(data));
+      } catch (error) {
+        reject(error);
+      }
     });
   });
 }

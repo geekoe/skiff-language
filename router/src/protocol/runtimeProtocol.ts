@@ -141,6 +141,8 @@ const runtimeToRouterFrameHeaderTypes = [
   'request.start',
   'request.cancel',
   'connection.send',
+  'connection.request',
+  'connection.request.cancel',
   'response.start',
   'response.chunk',
   'response.end',
@@ -172,6 +174,7 @@ const routerToRuntimeFrameHeaderTypes = [
   'request.start',
   'package-test.start',
   'request.cancel',
+  'connection.response',
   'response.start',
   'response.chunk',
   'response.end',
@@ -876,6 +879,31 @@ const requestCancelProperties = {
   requestId: { type: 'string' },
   reason: { type: 'string', enum: cancelReasons }
 } as const satisfies Record<string, ProtocolSchemaProperty>;
+
+const connectionRequestDeadlineProperty = {
+  type: 'object',
+  required: ['timeoutMs', 'expiresAt'],
+  properties: {
+    timeoutMs: { type: 'integer', minimum: 1 },
+    expiresAt: { type: 'string', minLength: 20 }
+  },
+  additionalProperties: false
+} as const satisfies ProtocolSchemaProperty;
+
+const connectionRemoteErrorProperty = {
+  type: 'object',
+  required: ['code', 'message', 'dataPresent'],
+  properties: {
+    code: {
+      type: 'integer',
+      minimum: Number.MIN_SAFE_INTEGER,
+      maximum: Number.MAX_SAFE_INTEGER
+    },
+    message: { type: 'string', minLength: 1 },
+    dataPresent: { type: 'boolean' }
+  },
+  additionalProperties: false
+} as const satisfies ProtocolSchemaProperty;
 
 export const runtimeFrameHeaderSchemas = {
   'runtime.register': {
@@ -1878,6 +1906,82 @@ export const runtimeFrameHeaderSchemas = {
       payloadKind: { type: 'string', enum: ['text', 'binary'] }
     },
     additionalProperties: false
+  },
+  'connection.request': {
+    type: 'object',
+    required: [
+      'schemaVersion',
+      'type',
+      'requestId',
+      'serviceId',
+      'websocketEntryId',
+      'connectionId',
+      'profile',
+      'method'
+    ],
+    properties: {
+      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+      type: { type: 'string', enum: ['connection.request'] },
+      requestId: { type: 'string', minLength: 1 },
+      serviceId: { type: 'string', minLength: 1 },
+      websocketEntryId: {
+        type: 'string',
+        pattern: '^skiff-websocket-entry-v1:sha256:[0-9a-f]{64}$'
+      },
+      connectionId: { type: 'string', minLength: 1 },
+      profile: { type: 'string', enum: ['jsonrpc-2.0-text'] },
+      method: { type: 'string', minLength: 1 },
+      deadline: connectionRequestDeadlineProperty
+    },
+    additionalProperties: false
+  },
+  'connection.request.cancel': {
+    type: 'object',
+    required: ['schemaVersion', 'type', 'requestId', 'reason'],
+    properties: {
+      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+      type: { type: 'string', enum: ['connection.request.cancel'] },
+      requestId: { type: 'string', minLength: 1 },
+      reason: { type: 'string', enum: cancelReasons }
+    },
+    additionalProperties: false
+  },
+  'connection.response': {
+    oneOf: [
+      {
+        type: 'object',
+        required: ['schemaVersion', 'type', 'requestId', 'outcome'],
+        properties: {
+          schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+          type: { type: 'string', enum: ['connection.response'] },
+          requestId: { type: 'string', minLength: 1 },
+          outcome: {
+            type: 'string',
+            enum: [
+              'success',
+              'deadlineExceeded',
+              'connectionUnavailable',
+              'transportUnavailable',
+              'protocolError',
+              'resourceLimit'
+            ]
+          }
+        },
+        additionalProperties: false
+      },
+      {
+        type: 'object',
+        required: ['schemaVersion', 'type', 'requestId', 'outcome', 'remote'],
+        properties: {
+          schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+          type: { type: 'string', enum: ['connection.response'] },
+          requestId: { type: 'string', minLength: 1 },
+          outcome: { type: 'string', enum: ['remote'] },
+          remote: connectionRemoteErrorProperty
+        },
+        additionalProperties: false
+      }
+    ]
   }
 } as const satisfies Record<RuntimeProtocolFrameHeaderName, ProtocolEnvelopeSchema>;
 
@@ -2017,6 +2121,17 @@ const connectionSendFixture = {
   serviceId: 'example.com/hello',
   websocketEntryId: 'client',
   businessIdentity: 'user-fixture-1'
+} as const;
+
+const connectionRequestFixture = {
+  type: 'connection.request',
+  requestId: 'connection-request-fixture-1',
+  serviceId: 'example.com/hello',
+  websocketEntryId:
+    'skiff-websocket-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  connectionId: 'connection-fixture-1',
+  profile: 'jsonrpc-2.0-text',
+  method: 'chat.send'
 } as const;
 
 const actorKeyFixture = {
@@ -2417,6 +2532,22 @@ export const runtimeFrameHeaderFixtures = {
     websocketEntryId: connectionSendFixture.websocketEntryId,
     businessIdentity: connectionSendFixture.businessIdentity,
     payloadKind: 'binary'
+  },
+  'connection.request': {
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    ...connectionRequestFixture
+  },
+  'connection.request.cancel': {
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    type: 'connection.request.cancel',
+    requestId: connectionRequestFixture.requestId,
+    reason: 'caller_cancel'
+  },
+  'connection.response': {
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    type: 'connection.response',
+    requestId: connectionRequestFixture.requestId,
+    outcome: 'success'
   }
 } as const satisfies FrameHeaderFixtureMap;
 
@@ -2461,6 +2592,10 @@ export function validateRuntimeToRouterFrameHeader(
         ? validateRequestCancel(envelope)
         : type === 'connection.send'
           ? validateConnectionSendFrameHeader(envelope)
+        : type === 'connection.request'
+          ? validateConnectionRequestFrameHeader(envelope)
+        : type === 'connection.request.cancel'
+          ? validateConnectionRequestCancelFrameHeader(envelope)
           : type === 'response.start'
             ? validateResponseStartFrameHeader(envelope)
           : type === 'response.chunk'
@@ -2539,6 +2674,8 @@ export function validateRouterToRuntimeFrameHeader(
         ? validatePackageTestStartFrameHeader(envelope)
       : type === 'request.cancel'
         ? validateRequestCancel(envelope)
+      : type === 'connection.response'
+        ? validateConnectionResponseFrameHeader(envelope)
       : type === 'response.start'
         ? validateResponseStartFrameHeader(envelope)
       : type === 'response.chunk'
@@ -4673,6 +4810,208 @@ function validateConnectionSendFrameHeader(envelope: Record<string, unknown>): s
     validateConnectionSendTarget(envelope) ??
     optionalEnum(envelope, 'connection.send', 'payloadKind', ['text', 'binary'])
   );
+}
+
+function validateConnectionRequestFrameHeader(
+  envelope: Record<string, unknown>
+): string | null {
+  const envelopeType = 'connection.request';
+  const fieldError =
+    rejectHeaderPayloadFields(envelope, envelopeType) ??
+    rejectUnsupportedFrameHeaderFields(envelope, envelopeType, [
+      'schemaVersion',
+      'type',
+      'requestId',
+      'serviceId',
+      'websocketEntryId',
+      'connectionId',
+      'profile',
+      'method',
+      'deadline'
+    ]) ??
+    requireCanonicalBoundedString(envelope, envelopeType, 'requestId', 1024) ??
+    requireCanonicalBoundedString(envelope, envelopeType, 'serviceId', 1024) ??
+    requireStringPattern(
+      envelope,
+      envelopeType,
+      'websocketEntryId',
+      /^skiff-websocket-entry-v1:sha256:[0-9a-f]{64}$/,
+      'skiff-websocket-entry-v1:sha256:<64 lowercase hex>'
+    ) ??
+    requireCanonicalBoundedString(envelope, envelopeType, 'connectionId', 1024) ??
+    requireEnum(envelope, envelopeType, 'profile', ['jsonrpc-2.0-text']) ??
+    requireCanonicalBoundedString(envelope, envelopeType, 'method', 256);
+  if (fieldError !== null || envelope.deadline === undefined) {
+    return fieldError;
+  }
+  if (!isRecord(envelope.deadline)) {
+    return 'invalid connection.request envelope: deadline must be an object';
+  }
+  const unsupported = rejectUnsupportedObjectFields(
+    envelope.deadline,
+    envelopeType,
+    'deadline',
+    ['timeoutMs', 'expiresAt']
+  );
+  if (unsupported !== null) {
+    return unsupported;
+  }
+  const timeoutMs = envelope.deadline.timeoutMs;
+  const expiresAt = envelope.deadline.expiresAt;
+  if (!Number.isSafeInteger(timeoutMs) || Number(timeoutMs) <= 0) {
+    return 'invalid connection.request envelope: deadline.timeoutMs must be a positive safe integer';
+  }
+  if (
+    typeof expiresAt !== 'string' ||
+    !isStrictRfc3339UtcOrOffset(expiresAt)
+  ) {
+    return 'invalid connection.request envelope: deadline.expiresAt must be RFC3339';
+  }
+  return null;
+}
+
+function isStrictRfc3339UtcOrOffset(value: string): boolean {
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(
+      value
+    );
+  if (match === null) {
+    return false;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offsetHour = match[8] === undefined ? 0 : Number(match[8]);
+  const offsetMinute = match[9] === undefined ? 0 : Number(match[9]);
+  return (
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= daysInMonth(year, month) &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59 &&
+    offsetHour <= 23 &&
+    offsetMinute <= 59
+  );
+}
+
+function daysInMonth(year: number, month: number): number {
+  switch (month) {
+    case 1:
+    case 3:
+    case 5:
+    case 7:
+    case 8:
+    case 10:
+    case 12:
+      return 31;
+    case 4:
+    case 6:
+    case 9:
+    case 11:
+      return 30;
+    case 2:
+      return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+        ? 29
+        : 28;
+    default:
+      return 0;
+  }
+}
+
+function validateConnectionRequestCancelFrameHeader(
+  envelope: Record<string, unknown>
+): string | null {
+  const envelopeType = 'connection.request.cancel';
+  return (
+    rejectHeaderPayloadFields(envelope, envelopeType) ??
+    rejectUnsupportedFrameHeaderFields(envelope, envelopeType, [
+      'schemaVersion',
+      'type',
+      'requestId',
+      'reason'
+    ]) ??
+    requireCanonicalBoundedString(envelope, envelopeType, 'requestId', 1024) ??
+    requireEnum(envelope, envelopeType, 'reason', cancelReasons)
+  );
+}
+
+function validateConnectionResponseFrameHeader(
+  envelope: Record<string, unknown>
+): string | null {
+  const envelopeType = 'connection.response';
+  const common =
+    rejectHeaderPayloadFields(envelope, envelopeType) ??
+    rejectUnsupportedFrameHeaderFields(envelope, envelopeType, [
+      'schemaVersion',
+      'type',
+      'requestId',
+      'outcome',
+      'remote'
+    ]) ??
+    requireCanonicalBoundedString(envelope, envelopeType, 'requestId', 1024) ??
+    requireEnum(envelope, envelopeType, 'outcome', [
+      'success',
+      'deadlineExceeded',
+      'connectionUnavailable',
+      'transportUnavailable',
+      'protocolError',
+      'resourceLimit',
+      'remote'
+    ]);
+  if (common !== null) {
+    return common;
+  }
+  if (envelope.outcome !== 'remote') {
+    return envelope.remote === undefined
+      ? null
+      : 'invalid connection.response envelope: remote is only valid for remote outcome';
+  }
+  if (!isRecord(envelope.remote)) {
+    return 'invalid connection.response envelope: remote outcome requires remote metadata';
+  }
+  const unsupported = rejectUnsupportedObjectFields(
+    envelope.remote,
+    envelopeType,
+    'remote',
+    ['code', 'message', 'dataPresent']
+  );
+  if (unsupported !== null) {
+    return unsupported;
+  }
+  if (!Number.isSafeInteger(envelope.remote.code)) {
+    return 'invalid connection.response envelope: remote.code must be a safe integer';
+  }
+  if (
+    typeof envelope.remote.message !== 'string' ||
+    envelope.remote.message.trim().length === 0 ||
+    Buffer.byteLength(envelope.remote.message, 'utf8') > 4096
+  ) {
+    return 'invalid connection.response envelope: remote.message must be a bounded non-empty string';
+  }
+  return typeof envelope.remote.dataPresent === 'boolean'
+    ? null
+    : 'invalid connection.response envelope: remote.dataPresent must be a boolean';
+}
+
+function requireCanonicalBoundedString(
+  envelope: Record<string, unknown>,
+  envelopeType: string,
+  field: string,
+  maxBytes: number
+): string | null {
+  const value = getPathValue(envelope, field);
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    value.trim() === value &&
+    Buffer.byteLength(value, 'utf8') <= maxBytes &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+    ? null
+    : `invalid ${envelopeType} envelope: ${field} must be a bounded non-empty canonical string`;
 }
 
 function validateConnectionSendTarget(envelope: Record<string, unknown>): string | null {

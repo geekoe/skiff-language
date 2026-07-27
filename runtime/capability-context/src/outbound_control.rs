@@ -41,6 +41,13 @@ pub enum OutboundControlMessage {
         request: ConnectionSendControl,
         payload: Vec<u8>,
     },
+    ConnectionRequest {
+        request: ConnectionRequestControl,
+        payload: Vec<u8>,
+    },
+    ConnectionRequestCancel {
+        request: ConnectionRequestCancelControl,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,4 +256,20 @@ pub struct ConnectionSendControl {
     pub business_identity: Option<String>,
     pub connection_id: Option<String>,
     pub payload_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionRequestControl {
+    pub request_id: String,
+    pub service_id: String,
+    pub websocket_entry_id: String,
+    pub connection_id: String,
+    pub method: String,
+    pub deadline: Option<RuntimeDeadlineControl>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionRequestCancelControl {
+    pub request_id: String,
+    pub reason: String,
 }

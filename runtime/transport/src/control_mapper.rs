@@ -2,13 +2,18 @@ use serde::Serialize;
 use skiff_runtime_request_contract::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
     ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
-    ConnectionSendControl, OutboundControlMessage, RequestCancelControl,
-    RequestEffectDoubleControl, RequestStartControl, RuntimeCallerControl, RuntimeDeadlineControl,
-    RuntimeTraceContextControl, SpawnSubmitControlRequest,
+    ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
+    OutboundControlMessage, RequestCancelControl, RequestEffectDoubleControl, RequestStartControl,
+    RuntimeCallerControl, RuntimeDeadlineControl, RuntimeTraceContextControl,
+    SpawnSubmitControlRequest,
 };
 
 use crate::{
-    cancel_reason::request_cancel_wire_reason_for_internal,
+    cancel_reason::{request_cancel_wire_reason_for_internal, RequestCancelReason},
+    connection_protocol::{
+        encode_connection_request_cancel_frame, encode_connection_request_frame,
+        ConnectionRequestCancelFrameHeader, ConnectionRequestFrameHeader, WebSocketRpcProfile,
+    },
     error::TransportResult,
     protocol::{
         encode_binary_frame, ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
@@ -50,6 +55,14 @@ pub fn encode_outbound_control_message(
         }
         OutboundControlMessage::ConnectionSend { request, payload } => {
             connection_send_frame(connection_send_frame_header(request), &payload)
+        }
+        OutboundControlMessage::ConnectionRequest { request, payload } => {
+            encode_connection_request_frame(&connection_request_frame_header(request)?, &payload)
+        }
+        OutboundControlMessage::ConnectionRequestCancel { request } => {
+            encode_connection_request_cancel_frame(&connection_request_cancel_frame_header(
+                request,
+            )?)
         }
     }
 }
@@ -304,6 +317,42 @@ fn connection_send_frame_header(request: ConnectionSendControl) -> ConnectionSen
         connection_id: request.connection_id,
         payload_kind: request.payload_kind,
     }
+}
+
+fn connection_request_frame_header(
+    request: ConnectionRequestControl,
+) -> TransportResult<ConnectionRequestFrameHeader> {
+    let websocket_entry_id =
+        skiff_artifact_model::WebSocketEntryId::parse(request.websocket_entry_id)
+            .map_err(|error| crate::TransportError::decode(error.to_string()))?;
+    Ok(ConnectionRequestFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: "connection.request".to_string(),
+        request_id: request.request_id,
+        service_id: request.service_id,
+        websocket_entry_id,
+        connection_id: request.connection_id,
+        profile: WebSocketRpcProfile::JsonRpc2_0Text,
+        method: request.method,
+        deadline: request.deadline.map(runtime_deadline_frame_header),
+    })
+}
+
+fn connection_request_cancel_frame_header(
+    request: ConnectionRequestCancelControl,
+) -> TransportResult<ConnectionRequestCancelFrameHeader> {
+    let reason = RequestCancelReason::from_wire(&request.reason).ok_or_else(|| {
+        crate::TransportError::decode(format!(
+            "invalid connection request cancel reason {}",
+            request.reason
+        ))
+    })?;
+    Ok(ConnectionRequestCancelFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: "connection.request.cancel".to_string(),
+        request_id: request.request_id,
+        reason,
+    })
 }
 
 fn encode_control_frame<THeader: Serialize>(

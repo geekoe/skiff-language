@@ -22,10 +22,22 @@ type WebSocketConnectResult discriminator "tag" =
   { tag: "accept", businessIdentity: string?, connectionPolicy: WebSocketConnectionPolicy? }
   | { tag: "reject", code: integer, reason: string }
 
+type WebSocketRequestError discriminator "kind" =
+  { kind: "connectionUnavailable", message: string }
+  | { kind: "transportUnavailable", message: string }
+  | { kind: "protocolError", message: string }
+  | { kind: "resourceLimit", message: string }
+  | { kind: "remote", code: integer, message: string, data: Json? }
+
 native function sendTextToConnection(connectionId: string, text: string) -> void
 native function sendBinaryToConnection(connectionId: string, value: bytes) -> void
 native function sendTextToBusinessIdentity(businessIdentity: string, text: string) -> void
 native function sendBinaryToBusinessIdentity(businessIdentity: string, value: bytes) -> void
+native function requestJsonToConnection<TRequest, TResponse>(
+  connectionId: string,
+  method: string,
+  value: TRequest
+) -> TResponse
 
 function sendJsonToConnection<T>(connectionId: string, value: T) -> void {
   return sendTextToConnection(connectionId, std.json.encode<T>(value))

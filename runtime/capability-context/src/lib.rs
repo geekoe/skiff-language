@@ -3,6 +3,7 @@ mod actor_invocation;
 mod cancellation;
 mod capability_error;
 mod config;
+mod connection_request;
 mod db;
 mod execution_control;
 mod file;
@@ -21,6 +22,8 @@ mod websocket;
 
 #[cfg(test)]
 mod cancellation_terminal_tests;
+#[cfg(test)]
+mod connection_request_tests;
 
 pub use actor::{
     ActorCapabilityApi, ActorCapabilityContext, ActorClient, OwnedActorCapabilityContext,
@@ -37,6 +40,11 @@ pub use cancellation::{
 };
 pub use capability_error::{CapabilityError, CapabilityFuture, CapabilityResult};
 pub use config::{ConfigCapabilityApi, ConfigCapabilityContext, OwnedConfigCapabilityContext};
+pub use connection_request::{
+    ConnectionRequestCancelReason, ConnectionRequestCancelSender, ConnectionRequestRegistry,
+    ConnectionRequestRegistryError, ConnectionRequestSession, ConnectionRequestTerminal,
+    PendingConnectionRequest,
+};
 pub use db::{
     DbCapabilityContext, DbCapabilityContextApi, DbCapabilityError, DbCapabilityFactory,
     DbCapabilityFuture, DbCapabilityLeaseHandle, DbCapabilityLeaseHold,
@@ -68,12 +76,12 @@ pub use native_projection::{
 pub use outbound_control::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
     ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
-    ConnectionSendControl, OutboundControlMessage, RequestCancelControl,
-    RequestEffectDoubleControl, RequestStartControl, RouterWriterMessage, RuntimeCallerControl,
-    RuntimeClientSessionControl, RuntimeDeadlineControl, RuntimeTraceContextControl,
-    SpawnClaimControlRequest, SpawnCompleteControlRequest, SpawnFailControlRequest,
-    SpawnRenewControlRequest, SpawnSubmitControlRequest, WebSocketConnectionPolicyControl,
-    WebSocketConnectionPolicyOverflowControl,
+    ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
+    OutboundControlMessage, RequestCancelControl, RequestEffectDoubleControl, RequestStartControl,
+    RouterWriterMessage, RuntimeCallerControl, RuntimeClientSessionControl, RuntimeDeadlineControl,
+    RuntimeTraceContextControl, SpawnClaimControlRequest, SpawnCompleteControlRequest,
+    SpawnFailControlRequest, SpawnRenewControlRequest, SpawnSubmitControlRequest,
+    WebSocketConnectionPolicyControl, WebSocketConnectionPolicyOverflowControl,
 };
 pub use outbound_request::{OutboundServiceRequestStart, OutboundStartedRequest};
 pub use outbound_response::{

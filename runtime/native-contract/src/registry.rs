@@ -198,6 +198,10 @@ mod tests {
                 "std.websocket.sendTextToConnection",
                 NativeRequiredContext::Websocket,
             ),
+            (
+                "std.websocket.requestJsonToConnection",
+                NativeRequiredContext::Websocket,
+            ),
             ("std.telemetry.emit", NativeRequiredContext::Telemetry),
             ("std.resource.bytes", NativeRequiredContext::Resource),
             ("std.resource.text", NativeRequiredContext::Resource),

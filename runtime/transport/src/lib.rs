@@ -2,6 +2,9 @@ pub mod actor_method;
 pub mod actor_owner;
 pub mod assembly_activation;
 pub mod cancel_reason;
+pub mod connection_protocol;
+#[cfg(test)]
+mod connection_protocol_tests;
 pub mod control_mapper;
 pub mod control_response_mapper;
 mod error;

@@ -91,10 +91,12 @@ websocket:
   WebSocketConnectRequest: websocket.WebSocketConnectRequest
   WebSocketConnectionPolicy: websocket.WebSocketConnectionPolicy
   WebSocketConnectResult: websocket.WebSocketConnectResult
+  WebSocketRequestError: websocket.WebSocketRequestError
   sendTextToConnection: websocket.sendTextToConnection
   sendBinaryToConnection: websocket.sendBinaryToConnection
   sendTextToBusinessIdentity: websocket.sendTextToBusinessIdentity
   sendBinaryToBusinessIdentity: websocket.sendBinaryToBusinessIdentity
+  requestJsonToConnection: websocket.requestJsonToConnection
   sendJsonToConnection: websocket.sendJsonToConnection
   sendJsonToBusinessIdentity: websocket.sendJsonToBusinessIdentity
 telemetry:

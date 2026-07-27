@@ -1,7 +1,12 @@
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{json, Value};
 use skiff_artifact_model::{InstructionSourceSite, LiteralIr, PackageSchemaTypeId};
 
-use crate::{addr::TypeAddr, value::RuntimeValueCarrier};
+use crate::{
+    addr::TypeAddr,
+    error::{RuntimeErrorPayload, WirePayload},
+    value::RuntimeValueCarrier,
+};
 
 /// Canonical identity of one fully-instantiated type argument. The value is a
 /// typed identity input, never a display label or runtime shape.
@@ -179,6 +184,125 @@ pub enum CatchIdentity {
         union: NamedUnionOwnerIdentity,
         branch: NamedUnionBranchIdentity,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebSocketRequestErrorKind {
+    ConnectionUnavailable,
+    TransportUnavailable,
+    ProtocolError,
+    ResourceLimit,
+    Remote,
+}
+
+impl WebSocketRequestErrorKind {
+    pub const ALL: [Self; 5] = [
+        Self::ConnectionUnavailable,
+        Self::TransportUnavailable,
+        Self::ProtocolError,
+        Self::ResourceLimit,
+        Self::Remote,
+    ];
+
+    pub const fn discriminator(self) -> &'static str {
+        match self {
+            Self::ConnectionUnavailable => "connectionUnavailable",
+            Self::TransportUnavailable => "transportUnavailable",
+            Self::ProtocolError => "protocolError",
+            Self::ResourceLimit => "resourceLimit",
+            Self::Remote => "remote",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WebSocketRequestError {
+    owner: NamedUnionOwnerIdentity,
+    kind: WebSocketRequestErrorKind,
+    message: String,
+    code: Option<i64>,
+    data: Option<Value>,
+}
+
+impl WebSocketRequestError {
+    pub fn new(
+        owner: NamedUnionOwnerIdentity,
+        kind: WebSocketRequestErrorKind,
+        message: impl Into<String>,
+        code: Option<i64>,
+        data: Option<Value>,
+    ) -> Result<Self, String> {
+        let message = non_empty("WebSocket request error message", message.into())?;
+        if (kind == WebSocketRequestErrorKind::Remote) != code.is_some() {
+            return Err("only remote WebSocket request errors carry a code".to_string());
+        }
+        if kind != WebSocketRequestErrorKind::Remote && data.is_some() {
+            return Err("only remote WebSocket request errors carry data".to_string());
+        }
+        Ok(Self {
+            owner,
+            kind,
+            message,
+            code,
+            data,
+        })
+    }
+
+    pub fn kind(&self) -> WebSocketRequestErrorKind {
+        self.kind
+    }
+
+    pub fn exact_catch_identity(&self) -> CatchIdentity {
+        CatchIdentity::NamedUnionBranch {
+            union: self.owner.clone(),
+            branch: NamedUnionBranchIdentity::SyntheticDiscriminator {
+                discriminator_field: "kind".to_string(),
+                discriminator_value: self.kind.discriminator().to_string(),
+            },
+        }
+    }
+
+    pub fn local_payload(&self) -> Value {
+        match self.kind {
+            WebSocketRequestErrorKind::Remote => json!({
+                "kind": self.kind.discriminator(),
+                "code": self.code.expect("remote error code validated"),
+                "message": self.message,
+                "data": self.data,
+            }),
+            _ => json!({
+                "kind": self.kind.discriminator(),
+                "message": self.message,
+            }),
+        }
+    }
+}
+
+impl std::fmt::Display for WebSocketRequestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for WebSocketRequestError {}
+
+impl WirePayload for WebSocketRequestError {
+    fn payload(&self) -> RuntimeErrorPayload {
+        RuntimeErrorPayload {
+            code: "std.websocket.WebSocketRequestError".to_string(),
+            message: self.message.clone(),
+            status: None,
+            details: Some(self.local_payload()),
+        }
+    }
+
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
+        Some((self.exact_catch_identity(), self.local_payload()))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -615,6 +739,59 @@ mod tests {
     #[test]
     fn legacy_cancel_json_string_is_rejected_by_the_finite_registry() {
         assert!(serde_json::from_str::<PlatformBuiltinErrorIdentity>(r#""CancelError""#).is_err());
+    }
+
+    #[test]
+    fn websocket_request_errors_keep_all_five_exact_named_union_branch_identities() {
+        let owner = NamedUnionOwnerIdentity::LocalExecution(LocalExecutionTypeIdentity {
+            addr: TypeAddr {
+                unit: UnitAddr::Service,
+                file: FileAddr::loaded_file(0),
+                type_index: 42,
+            },
+            type_arguments: Vec::new(),
+        });
+        for kind in WebSocketRequestErrorKind::ALL {
+            let remote = kind == WebSocketRequestErrorKind::Remote;
+            let error = WebSocketRequestError::new(
+                owner.clone(),
+                kind,
+                "sanitized",
+                remote.then_some(-32603),
+                remote.then(|| json!({"peer": true})),
+            )
+            .expect("exact WebSocket request branch");
+            assert_eq!(
+                error.exact_catch_identity(),
+                CatchIdentity::NamedUnionBranch {
+                    union: owner.clone(),
+                    branch: NamedUnionBranchIdentity::SyntheticDiscriminator {
+                        discriminator_field: "kind".to_string(),
+                        discriminator_value: kind.discriminator().to_string(),
+                    },
+                }
+            );
+            assert_eq!(
+                error.catch_projection().unwrap().1["kind"],
+                kind.discriminator()
+            );
+        }
+        assert_eq!(
+            PlatformBuiltinErrorIdentity::from_symbol("std.websocket.WebSocketRequestError"),
+            None
+        );
+        assert_eq!(
+            PlatformBuiltinErrorIdentity::JsonDecode.catch_identity(),
+            CatchIdentity::Nominal(NominalTypeIdentity::PlatformBuiltin(
+                PlatformBuiltinErrorIdentity::JsonDecode
+            ))
+        );
+        assert_eq!(
+            PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
+            CatchIdentity::Nominal(NominalTypeIdentity::PlatformBuiltin(
+                PlatformBuiltinErrorIdentity::Timeout
+            ))
+        );
     }
 
     #[test]

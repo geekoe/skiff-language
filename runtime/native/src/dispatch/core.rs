@@ -234,7 +234,8 @@ where
             diagnostic_target,
             args,
             heap,
-        );
+        )
+        .await;
     }
     if TelemetryNativeDispatch::matches(binding_key) {
         let telemetry_context = match native_capability_context {

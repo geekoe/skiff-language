@@ -3,7 +3,9 @@ use std::{
     sync::{Arc, Mutex as StdMutex},
 };
 
-use skiff_runtime_capability_context::{DbProviderSource, HttpRuntimeOptions};
+use skiff_runtime_capability_context::{
+    ConnectionRequestRegistry, DbProviderSource, HttpRuntimeOptions,
+};
 use skiff_runtime_eval::actor_instance::{
     ActorInstanceFence, ActorInstanceHandle, ActorInstanceSessionTrackError,
     ActorInstanceSessionTracker, ActorInstanceStore,
@@ -72,6 +74,7 @@ pub struct RuntimeHost {
     pub(super) telemetry: TelemetryProducer,
     pub(super) telemetry_exporter: Arc<Mutex<Option<TelemetryExporterHandle>>>,
     pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
+    pub(crate) connection_requests: Arc<ConnectionRequestRegistry>,
     pub(crate) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
     pub(crate) actor_owner_invocations: Arc<ActorOwnerInvocationRegistry>,
     pub(crate) actor_instances: Arc<ActorInstanceSessionTracker>,
@@ -130,6 +133,7 @@ impl RuntimeHost {
             telemetry,
             telemetry_exporter: Arc::new(Mutex::new(None)),
             outbound_requests: Arc::new(OutboundRequestRegistry::default()),
+            connection_requests: Arc::new(ConnectionRequestRegistry::new(1024)),
             actor_method_outbound: Arc::new(ActorMethodOutboundRegistry::default()),
             actor_owner_invocations: Arc::new(ActorOwnerInvocationRegistry::default()),
             actor_instances: Arc::new(ActorInstanceSessionTracker::new(actor_instance_store)),

@@ -5,10 +5,11 @@ use serde_json::Value;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
-    ActorRemoveControlRequest, ActorReplaceControlRequest, FileCapabilityFuture, FileChunkFuture,
-    FileChunkSource, StreamConsumerCleanup,
+    ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestTerminal,
+    FileCapabilityFuture, FileChunkFuture, FileChunkSource, StreamConsumerCleanup,
 };
 use skiff_runtime_model::addr::ExecutableAddr;
+use skiff_runtime_model::service_error::NamedUnionOwnerIdentity;
 use skiff_runtime_model::{PublicationResourceTable, RuntimeProgramResourceView};
 
 use crate::error::Result;
@@ -153,6 +154,24 @@ pub trait NativeHttpResponseStreamCapability {
 }
 
 pub trait NativeWebsocketCapability {
+    fn websocket_request_error_owner(&self) -> Option<NamedUnionOwnerIdentity> {
+        None
+    }
+
+    fn request_json_to_connection<'a>(
+        &'a self,
+        connection_id: String,
+        method: String,
+        payload: Vec<u8>,
+    ) -> NativeCapabilityFuture<'a, ConnectionRequestTerminal> {
+        let _ = (connection_id, method, payload);
+        Box::pin(async {
+            Err(crate::error::RuntimeError::Unsupported(
+                "std.websocket.requestJsonToConnection execution is not attached".to_string(),
+            ))
+        })
+    }
+
     fn send_connection_text_to_business_identity(
         &self,
         business_identity: String,

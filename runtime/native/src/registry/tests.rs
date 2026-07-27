@@ -946,6 +946,7 @@ fn native_callable_semantics_registry_accepts_exact_websocket_route_matrix() {
         "std.websocket.sendBinaryToConnection",
         "std.websocket.sendTextToBusinessIdentity",
         "std.websocket.sendBinaryToBusinessIdentity",
+        "std.websocket.requestJsonToConnection",
     ] {
         let semantics = STD_NATIVE_CALLABLE_SEMANTICS
             .iter()

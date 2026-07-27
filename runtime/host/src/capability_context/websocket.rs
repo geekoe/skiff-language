@@ -1,9 +1,13 @@
-use tokio::sync::mpsc;
+use std::sync::Arc;
+
+use tokio::{sync::mpsc, time::Instant};
 
 use crate::error::{Result, RuntimeError};
 
 use skiff_runtime_capability_context::{
-    ConnectionSendControl, OutboundControlMessage, RouterWriterMessage,
+    CancellationToken, ConnectionRequestCancelControl, ConnectionRequestControl,
+    ConnectionRequestRegistry, ConnectionRequestSession, ConnectionRequestTerminal,
+    ConnectionSendControl, OutboundControlMessage, RouterWriterMessage, RuntimeDeadlineControl,
 };
 
 #[derive(Clone, Copy)]
@@ -11,6 +15,16 @@ pub struct WebsocketCapabilityContext<'a> {
     service_id: &'a str,
     websocket_entry_id: Option<&'a str>,
     router_sender: Option<&'a mpsc::UnboundedSender<RouterWriterMessage>>,
+    request_transport: Option<ConnectionRequestTransport<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct ConnectionRequestTransport<'a> {
+    registry: &'a ConnectionRequestRegistry,
+    session: &'a ConnectionRequestSession,
+    cancellation: &'a CancellationToken,
+    deadline: Option<Instant>,
+    deadline_control: Option<&'a RuntimeDeadlineControl>,
 }
 
 impl<'a> WebsocketCapabilityContext<'a> {
@@ -23,7 +37,26 @@ impl<'a> WebsocketCapabilityContext<'a> {
             service_id,
             websocket_entry_id,
             router_sender,
+            request_transport: None,
         }
+    }
+
+    pub fn with_request_transport(
+        mut self,
+        registry: &'a ConnectionRequestRegistry,
+        session: &'a ConnectionRequestSession,
+        cancellation: &'a CancellationToken,
+        deadline: Option<Instant>,
+        deadline_control: Option<&'a RuntimeDeadlineControl>,
+    ) -> Self {
+        self.request_transport = Some(ConnectionRequestTransport {
+            registry,
+            session,
+            cancellation,
+            deadline,
+            deadline_control,
+        });
+        self
     }
 
     pub fn service_id(&self) -> &'a str {
@@ -105,6 +138,91 @@ impl<'a> WebsocketCapabilityContext<'a> {
         )
     }
 
+    pub async fn request_json_to_connection(
+        &self,
+        connection_id: String,
+        method: String,
+        payload: Vec<u8>,
+    ) -> ConnectionRequestTerminal {
+        let Some(transport) = self.request_transport else {
+            return ConnectionRequestTerminal::TransportUnavailable;
+        };
+        let Some(websocket_entry_id) = self.websocket_entry_id else {
+            return ConnectionRequestTerminal::ConnectionUnavailable;
+        };
+        let Some(router_sender) = self.router_sender else {
+            return ConnectionRequestTerminal::TransportUnavailable;
+        };
+        if skiff_artifact_model::WebSocketEntryId::parse(websocket_entry_id).is_err()
+            || transport.deadline.is_some() != transport.deadline_control.is_some()
+        {
+            return ConnectionRequestTerminal::ProtocolError;
+        }
+        if connection_id.is_empty()
+            || connection_id.trim() != connection_id
+            || method.is_empty()
+            || method.trim() != method
+        {
+            return ConnectionRequestTerminal::ProtocolError;
+        }
+        if method.as_bytes().len()
+            > skiff_runtime_transport::connection_protocol::CONNECTION_REQUEST_MAX_METHOD_BYTES
+            || payload.len()
+                > skiff_runtime_transport::connection_protocol::CONNECTION_REQUEST_MAX_PAYLOAD_BYTES
+        {
+            return ConnectionRequestTerminal::ResourceLimit;
+        }
+        if payload.is_empty()
+            || !serde_json::from_slice::<serde_json::Value>(&payload)
+                .is_ok_and(|value| value.is_object() || value.is_array())
+        {
+            return ConnectionRequestTerminal::ProtocolError;
+        }
+
+        let cancel_sender = router_sender.clone();
+        let mut pending = match transport.registry.install(
+            transport.session.clone(),
+            transport.cancellation.clone(),
+            transport.deadline,
+            Arc::new(move |request_id, reason| {
+                cancel_sender
+                    .send(RouterWriterMessage::Control(
+                        OutboundControlMessage::ConnectionRequestCancel {
+                            request: ConnectionRequestCancelControl {
+                                request_id: request_id.to_string(),
+                                reason: reason.as_str().to_string(),
+                            },
+                        },
+                    ))
+                    .map_err(|_| ())
+            }),
+        ) {
+            Ok(pending) => pending,
+            Err(_) => return ConnectionRequestTerminal::ResourceLimit,
+        };
+        let request = ConnectionRequestControl {
+            request_id: pending.request_id().to_string(),
+            service_id: self.service_id.to_string(),
+            websocket_entry_id: websocket_entry_id.to_string(),
+            connection_id,
+            method,
+            deadline: transport.deadline_control.cloned(),
+        };
+        if router_sender
+            .send(RouterWriterMessage::Control(
+                OutboundControlMessage::ConnectionRequest { request, payload },
+            ))
+            .is_err()
+        {
+            transport.registry.complete(
+                transport.session,
+                pending.request_id(),
+                ConnectionRequestTerminal::TransportUnavailable,
+            );
+        }
+        pending.wait().await
+    }
+
     fn send_connection_frame(
         &self,
         connection_target: ConnectionSendTarget,
@@ -172,5 +290,67 @@ impl ConnectionSendTarget {
             ConnectionSendTarget::BusinessIdentity(_) => None,
             ConnectionSendTarget::Connection(value) => Some(value.clone()),
         }
+    }
+}
+
+#[cfg(test)]
+mod connection_request_tests {
+    use super::*;
+    use skiff_runtime_capability_context::{
+        CancellationSource, ConnectionRequestRegistry, ConnectionRequestSession,
+        ConnectionRequestTerminal,
+    };
+
+    #[tokio::test]
+    async fn connection_request_installs_before_queue_and_returns_opaque_terminal() {
+        let registry = ConnectionRequestRegistry::new(4);
+        let session = ConnectionRequestSession::new("router-session-1").expect("canonical session");
+        let cancellation = CancellationSource::new();
+        let cancellation_token = cancellation.token();
+        let websocket_entry_id = format!("skiff-websocket-entry-v1:sha256:{}", "a".repeat(64));
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let context = WebsocketCapabilityContext::with_entry_id(
+            "example.com/chat",
+            Some(&websocket_entry_id),
+            Some(&sender),
+        )
+        .with_request_transport(&registry, &session, &cancellation_token, None, None);
+
+        let request = context.request_json_to_connection(
+            "connection-1".to_string(),
+            "chat.send".to_string(),
+            br#"{"message":"hi"}"#.to_vec(),
+        );
+        tokio::pin!(request);
+        let queued = tokio::select! {
+            message = receiver.recv() => message.expect("request control"),
+            terminal = &mut request => panic!("request settled before queue: {terminal:?}"),
+        };
+        let request_id = match queued {
+            RouterWriterMessage::Control(OutboundControlMessage::ConnectionRequest {
+                request,
+                payload,
+            }) => {
+                assert_eq!(request.service_id, "example.com/chat");
+                assert_eq!(request.connection_id, "connection-1");
+                assert_eq!(request.method, "chat.send");
+                assert_eq!(payload, br#"{"message":"hi"}"#);
+                request.request_id
+            }
+            other => panic!("unexpected writer message: {other:?}"),
+        };
+        assert_eq!(registry.pending_count(), 1);
+        assert!(registry.complete(
+            &session,
+            &request_id,
+            ConnectionRequestTerminal::Success(b"null".to_vec())
+        ));
+        assert_eq!(
+            request.await,
+            ConnectionRequestTerminal::Success(b"null".to_vec())
+        );
+        assert_eq!(registry.pending_count(), 0);
+        assert_eq!(registry.active_lease_count(), 0);
+        assert_eq!(registry.active_timer_count(), 0);
     }
 }

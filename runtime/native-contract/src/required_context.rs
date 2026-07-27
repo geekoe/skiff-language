@@ -94,7 +94,8 @@ impl NativeRequiredContext {
             "std.websocket.sendTextToConnection"
             | "std.websocket.sendBinaryToConnection"
             | "std.websocket.sendTextToBusinessIdentity"
-            | "std.websocket.sendBinaryToBusinessIdentity" => Self::Websocket,
+            | "std.websocket.sendBinaryToBusinessIdentity"
+            | "std.websocket.requestJsonToConnection" => Self::Websocket,
             _ => return None,
         })
     }

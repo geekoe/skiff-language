@@ -100,6 +100,9 @@ export type RuntimeFrameHeaderName =
   | 'package-test.start'
   | 'request.cancel'
   | 'connection.send'
+  | 'connection.request'
+  | 'connection.request.cancel'
+  | 'connection.response'
   | 'response.start'
   | 'response.chunk'
   | 'response.end'
@@ -608,6 +611,50 @@ export interface ConnectionSendFrameHeader extends RuntimeFrameHeaderBase<'conne
   payloadKind?: ConnectionSendPayloadKind;
 }
 
+export interface ConnectionRequestDeadlineFrameHeader {
+  timeoutMs: number;
+  expiresAt: string;
+}
+
+export interface ConnectionRequestFrameHeader
+  extends RuntimeFrameHeaderBase<'connection.request'> {
+  requestId: string;
+  serviceId: string;
+  websocketEntryId: string;
+  connectionId: string;
+  profile: 'jsonrpc-2.0-text';
+  method: string;
+  deadline?: ConnectionRequestDeadlineFrameHeader;
+}
+
+export interface ConnectionRequestCancelFrameHeader
+  extends RuntimeFrameHeaderBase<'connection.request.cancel'> {
+  requestId: string;
+  reason: RequestCancelReason;
+}
+
+export type ConnectionResponseOutcome =
+  | 'success'
+  | 'deadlineExceeded'
+  | 'connectionUnavailable'
+  | 'transportUnavailable'
+  | 'protocolError'
+  | 'resourceLimit'
+  | 'remote';
+
+export interface ConnectionRemoteErrorFrameHeader {
+  code: number;
+  message: string;
+  dataPresent: boolean;
+}
+
+export interface ConnectionResponseFrameHeader
+  extends RuntimeFrameHeaderBase<'connection.response'> {
+  requestId: string;
+  outcome: ConnectionResponseOutcome;
+  remote?: ConnectionRemoteErrorFrameHeader;
+}
+
 export interface RuntimeErrorPayload {
   code: string;
   message: string;
@@ -844,6 +891,7 @@ export type RouterToRuntimeFrameHeader =
   | RuntimeAssemblyRequestStartFrameHeader
   | PackageTestStartFrameHeader
   | RequestCancelFrameHeader
+  | ConnectionResponseFrameHeader
   | ResponseStartFrameHeader
   | ResponseChunkFrameHeader
   | ResponseEndFrameHeader
@@ -857,6 +905,8 @@ export type RuntimeToRouterFrameHeader =
   | RequestStartFrameHeader
   | RequestCancelFrameHeader
   | ConnectionSendFrameHeader
+  | ConnectionRequestFrameHeader
+  | ConnectionRequestCancelFrameHeader
   | ResponseStartFrameHeader
   | ResponseChunkFrameHeader
   | ResponseEndFrameHeader
