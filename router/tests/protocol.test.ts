@@ -6,6 +6,7 @@ import {
   decodeRuntimeFrame,
   encodeBinaryFrame,
   encodeRuntimeFrame,
+  RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
   TELEMETRY_PROTOCOL,
   TELEMETRY_TOPICS
 } from '../src/protocol/envelope.js';
@@ -529,6 +530,51 @@ describe('runtime protocol fixtures and schemas', () => {
         ).ok,
         testCase.name
       ).toBe(false);
+    }
+  });
+
+  it('rejects legacy cancellation from both ordinary response.error channels', () => {
+    const fixedResult = validateResponseErrorFrame(
+      {
+        schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+        type: 'response.error',
+        requestId: 'legacy-fixed-cancel',
+        errorKind: 'fixedService'
+      },
+      Buffer.from(
+        JSON.stringify({
+          kind: 'platformError',
+          builtinErrorIdentity: 'CancelError',
+          encodedPayload: [1],
+          traceId: 'trace-legacy-fixed-cancel',
+          errorId: 'error-legacy-fixed-cancel'
+        }),
+        'utf8'
+      )
+    );
+    const controlResult = validateResponseErrorFrame(
+      {
+        schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+        type: 'response.error',
+        requestId: 'legacy-control-cancel',
+        errorKind: 'control',
+        error: {
+          code: 'CancelError',
+          message: 'legacy cancellation must not become an ordinary response'
+        }
+      },
+      new Uint8Array()
+    );
+
+    expect.soft(fixedResult.ok).toBe(false);
+    expect.soft(controlResult.ok).toBe(false);
+    if (!fixedResult.ok) {
+      expect(fixedResult.error).toContain('builtinErrorIdentity is not supported');
+    }
+    if (!controlResult.ok) {
+      expect(controlResult.error).toContain(
+        'error.code is reserved for internal cancellation'
+      );
     }
   });
 

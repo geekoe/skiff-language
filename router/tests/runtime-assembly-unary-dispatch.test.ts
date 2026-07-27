@@ -1,7 +1,7 @@
 import { request as httpRequest } from 'node:http';
 
 import WebSocket from 'ws';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { encodeAssemblyActivationFrame } from '../src/protocol/assemblyActivationFrame.js';
 import {
@@ -315,6 +315,7 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
         binding,
         requestTimeoutMs: timeoutCase.platformCapMs
       });
+      const finishPending = spyOnFinishPending(fixture.dispatcher);
       const response = sendHttp(fixture.httpUrl, new Uint8Array());
       const requestFrame = decodeBinaryFrame(
         await nextBinaryMessage(fixture.runtime)
@@ -325,6 +326,10 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       if (!validation.ok) throw new Error(validation.error);
       expect(validation.envelope.deadline?.timeoutMs).toBe(
         timeoutCase.expectedMs
+      );
+      const cancelObservation = observeRequestCancels(
+        fixture.runtime,
+        validation.envelope.requestId
       );
       const cancelFrame = nextBinaryMessage(fixture.runtime);
       const completed = await response;
@@ -337,8 +342,21 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       });
       expect(decodeRuntimeFrame(await cancelFrame).header).toMatchObject({
         type: 'request.cancel',
-        requestId: validation.envelope.requestId
+        requestId: validation.envelope.requestId,
+        reason: 'timeout'
       });
+      fixture.runtime.send(encodeRuntimeFrame({
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.end',
+        requestId: validation.envelope.requestId,
+        payloadPresent: false
+      }));
+      await nextTurn();
+      cancelObservation.stop();
+      expect(cancelObservation.count()).toBe(1);
+      expect(
+        finishPendingCalls(finishPending, validation.envelope.requestId)
+      ).toBe(1);
     }
   });
 
@@ -535,6 +553,89 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     expect(controlError).not.toBeInstanceOf(FixedServiceResponseError);
   });
 
+  it('does not project the rejected legacy cancellation code to HTTP 499', () => {
+    const legacyCancellation = new RuntimeResponseError({
+      code: 'CancelError',
+      message: 'legacy cancellation must not be an ordinary runtime error'
+    });
+
+    expect(legacyCancellation.statusCode).toBe(500);
+  });
+
+  it('fails closed on legacy fixed and control cancellation before HTTP projection', async () => {
+    for (const errorKind of ['fixedService', 'control'] as const) {
+      const fixture = await createFixture();
+      const response = sendHttp(fixture.httpUrl, new Uint8Array());
+      const request = decodeBinaryFrame(await nextBinaryMessage(fixture.runtime));
+      const closeFacts: Array<{ code: number; reason: string }> = [];
+      fixture.runtime.once('close', (code, reason) => {
+        closeFacts.push({
+          code,
+          reason: Buffer.from(reason).toString('utf8')
+        });
+      });
+
+      if (errorKind === 'fixedService') {
+        fixture.runtime.send(
+          encodeRuntimeFrame(
+            {
+              schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+              type: 'response.error',
+              requestId: String(request.header.requestId),
+              errorKind
+            },
+            Buffer.from(
+              JSON.stringify({
+                kind: 'platformError',
+                builtinErrorIdentity: 'CancelError',
+                encodedPayload: [1],
+                traceId: 'trace-legacy-fixed-cancel',
+                errorId: 'error-legacy-fixed-cancel'
+              }),
+              'utf8'
+            )
+          )
+        );
+      } else {
+        fixture.runtime.send(
+          encodeRuntimeFrame({
+            schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+            type: 'response.error',
+            requestId: String(request.header.requestId),
+            errorKind,
+            error: {
+              code: 'CancelError',
+              message: 'legacy cancellation must not become an ordinary response'
+            }
+          })
+        );
+      }
+
+      const completed = await response;
+      expect(completed.status).toBe(503);
+      expect(JSON.parse(completed.body.toString())).toMatchObject({
+        error: {
+          code: 'std.service.ProviderUnavailableError',
+          message: 'Runtime disconnected before responding'
+        }
+      });
+      await until(() => fixture.runtime.readyState === WebSocket.CLOSED);
+      expect(closeFacts).toEqual([
+        {
+          code: 1008,
+          reason:
+            errorKind === 'fixedService'
+              ? 'invalid response.error fixedService frame: builtinErrorIdentity is not supported'
+              : 'invalid response.error envelope: error.code is reserved for internal cancellation'
+        }
+      ]);
+      expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
+        pendingUnary: 0,
+        pendingStream: 0
+      });
+    }
+  });
+
   it('maps every fixed kind to one redacted HTTP 5xx fact and redacts generic 5xx details', async () => {
     const fixture = await createFixture();
     for (const [index, kind] of (
@@ -718,21 +819,35 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     const fixture = await createFixture();
     const controller = new AbortController();
     const header = canonicalHeader(fixture.snapshot, 'caller-abort');
+    const finishPending = spyOnFinishPending(fixture.dispatcher);
     const dispatch = fixture.dispatcher.dispatchBinary({
       header,
       payloadBytes: new Uint8Array()
     }, 1000, { signal: controller.signal });
     const requestFrame = decodeBinaryFrame(await nextBinaryMessage(fixture.runtime));
     expect(requestFrame.header.requestId).toBe(header.requestId);
+    const cancelObservation = observeRequestCancels(fixture.runtime, header.requestId);
     const cancelFramePromise = nextBinaryMessage(fixture.runtime);
+    controller.abort();
     controller.abort();
     await expect(dispatch).rejects.toThrow(/cancelled before completion/);
     const cancelFrame = decodeRuntimeFrame(await cancelFramePromise);
     expect(cancelFrame.header).toMatchObject({
       type: 'request.cancel',
-      requestId: header.requestId
+      requestId: header.requestId,
+      reason: 'caller_cancel'
     });
     expect(cancelFrame.payloadBytes).toHaveLength(0);
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.end',
+      requestId: header.requestId,
+      payloadPresent: false
+    }));
+    await nextTurn();
+    cancelObservation.stop();
+    expect(cancelObservation.count()).toBe(1);
+    expect(finishPendingCalls(finishPending, header.requestId)).toBe(1);
     expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
       pendingUnary: 0,
       pendingStream: 0
@@ -741,19 +856,157 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
 
   it('cancels the exact Runtime request when the HTTP client disconnects', async () => {
     const fixture = await createFixture();
+    const finishPending = spyOnFinishPending(fixture.dispatcher);
     const pendingHttp = startHttp(fixture.httpUrl, new Uint8Array([1, 2, 3]));
     const responseOutcome = pendingHttp.response.catch((error: unknown) => error);
     const requestFrame = decodeBinaryFrame(
       await nextBinaryMessage(fixture.runtime)
     );
+    const requestId = String(requestFrame.header.requestId);
+    const cancelObservation = observeRequestCancels(fixture.runtime, requestId);
     const cancelFrame = nextBinaryMessage(fixture.runtime);
+    pendingHttp.request.destroy();
     pendingHttp.request.destroy();
 
     expect(await responseOutcome).toBeInstanceOf(Error);
     expect(decodeRuntimeFrame(await cancelFrame).header).toMatchObject({
       type: 'request.cancel',
-      requestId: requestFrame.header.requestId
+      requestId,
+      reason: 'client_disconnect'
     });
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.end',
+      requestId,
+      payloadPresent: false
+    }));
+    await nextTurn();
+    cancelObservation.stop();
+    expect(cancelObservation.count()).toBe(1);
+    expect(finishPendingCalls(finishPending, requestId)).toBe(1);
+    expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
+      pendingUnary: 0,
+      pendingStream: 0
+    });
+  });
+
+  it('settles runtime cancel once across duplicate cancel, late responses, and disconnect', async () => {
+    const fixture = await createFixture();
+    const header = canonicalHeader(fixture.snapshot, 'runtime-cancel-race');
+    const finishPending = spyOnFinishPending(fixture.dispatcher);
+    const dispatch = fixture.dispatcher.dispatchBinary({
+      header,
+      payloadBytes: new Uint8Array()
+    }, 1000);
+    await nextBinaryMessage(fixture.runtime);
+    const cancelObservation = observeRequestCancels(fixture.runtime, header.requestId);
+
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'request.cancel',
+      requestId: header.requestId,
+      reason: 'drain'
+    }));
+    await expect(dispatch).rejects.toMatchObject({
+      code: 'std.service.ProviderUnavailableError',
+      message: 'Runtime cancelled request: drain'
+    });
+
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'request.cancel',
+      requestId: header.requestId,
+      reason: 'drain'
+    }));
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.end',
+      requestId: header.requestId,
+      payloadPresent: false
+    }));
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+      type: 'response.error',
+      requestId: header.requestId,
+      errorKind: 'control',
+      error: {
+        code: 'LateError',
+        message: 'late response must not reopen the pending request'
+      }
+    }));
+    await nextTurn();
+    fixture.runtime.close();
+    await until(() => fixture.runtime.readyState === WebSocket.CLOSED);
+    cancelObservation.stop();
+
+    expect(cancelObservation.count()).toBe(0);
+    expect(finishPendingCalls(finishPending, header.requestId)).toBe(1);
+    expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
+      pendingUnary: 0,
+      pendingStream: 0
+    });
+  });
+
+  it('keeps a live caller provider failure as ProviderUnavailable on runtime disconnect', async () => {
+    const fixture = await createFixture();
+    const header = canonicalHeader(fixture.snapshot, 'provider-disconnect');
+    const finishPending = spyOnFinishPending(fixture.dispatcher);
+    const dispatch = fixture.dispatcher.dispatchBinary({
+      header,
+      payloadBytes: new Uint8Array()
+    }, 1000);
+    await nextBinaryMessage(fixture.runtime);
+
+    fixture.runtime.close();
+    await expect(dispatch).rejects.toMatchObject({
+      statusCode: 503,
+      code: 'std.service.ProviderUnavailableError',
+      message: 'Runtime disconnected before responding'
+    });
+    await until(() => fixture.runtime.readyState === WebSocket.CLOSED);
+
+    expect(finishPendingCalls(finishPending, header.requestId)).toBe(1);
+    expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
+      pendingUnary: 0,
+      pendingStream: 0
+    });
+  });
+
+  it('settles Router shutdown once and sends one bounded control cancellation', async () => {
+    const fixture = await createFixture();
+    const header = canonicalHeader(fixture.snapshot, 'router-shutdown');
+    const finishPending = spyOnFinishPending(fixture.dispatcher);
+    const dispatch = fixture.dispatcher.dispatchBinary({
+      header,
+      payloadBytes: new Uint8Array()
+    }, 1000);
+    await nextBinaryMessage(fixture.runtime);
+    const cancelObservation = observeRequestCancels(fixture.runtime, header.requestId);
+    const cancelFrame = nextBinaryMessage(fixture.runtime);
+
+    fixture.dispatcher.close();
+    fixture.dispatcher.close();
+    await expect(dispatch).rejects.toMatchObject({
+      statusCode: 503,
+      code: 'std.service.ProviderUnavailableError',
+      message: 'Runtime registry is closing'
+    });
+    expect(decodeRuntimeFrame(await cancelFrame).header).toMatchObject({
+      type: 'request.cancel',
+      requestId: header.requestId,
+      reason: 'router_shutdown'
+    });
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.end',
+      requestId: header.requestId,
+      payloadPresent: false
+    }));
+    await nextTurn();
+    cancelObservation.stop();
+
+    expect(cancelObservation.count()).toBe(1);
+    expect(finishPendingCalls(finishPending, header.requestId)).toBe(1);
     expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
       pendingUnary: 0,
       pendingStream: 0
@@ -1044,6 +1297,46 @@ function rawDataBuffer(data: WebSocket.RawData): Buffer {
   if (Array.isArray(data)) return Buffer.concat(data);
   if (data instanceof ArrayBuffer) return Buffer.from(new Uint8Array(data));
   return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+}
+
+function spyOnFinishPending(dispatcher: RuntimeDispatcher) {
+  return vi.spyOn(
+    dispatcher as unknown as {
+      finishPending(requestId: string, ...args: unknown[]): void;
+    },
+    'finishPending'
+  );
+}
+
+function finishPendingCalls(
+  spy: ReturnType<typeof spyOnFinishPending>,
+  requestId: string
+): number {
+  return spy.mock.calls.filter(([candidate]) => candidate === requestId).length;
+}
+
+function observeRequestCancels(
+  ws: WebSocket,
+  requestId: string
+): { count(): number; stop(): void } {
+  let count = 0;
+  const listener = (data: WebSocket.RawData, isBinary: boolean) => {
+    if (!isBinary) {
+      return;
+    }
+    const frame = decodeRuntimeFrame(rawDataBuffer(data));
+    if (
+      frame.header.type === 'request.cancel' &&
+      frame.header.requestId === requestId
+    ) {
+      count += 1;
+    }
+  };
+  ws.on('message', listener);
+  return {
+    count: () => count,
+    stop: () => ws.off('message', listener)
+  };
 }
 
 async function until(predicate: () => boolean): Promise<void> {

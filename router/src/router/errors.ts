@@ -149,8 +149,6 @@ function runtimeErrorStatus(error: RuntimeErrorPayload): number {
       return 409;
     case 'std.service.ProviderUnavailableError':
       return 503;
-    case 'CancelError':
-      return 499;
     case 'TimeoutError':
       return 504;
     case 'std.service.ProtocolError':

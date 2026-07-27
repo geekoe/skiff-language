@@ -195,8 +195,8 @@ const CONFIG_REDACTION_IDENTITY_PATTERN =
 const REVISION_ID_PATTERN = /^[0-9a-f]{64}$/;
 const ACTOR_ID_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const INTERNAL_CANCELLATION_RESERVED_ERROR_CODE = ['Cancel', 'Error'].join('');
 const PLATFORM_SERVICE_ERROR_IDENTITIES = [
-  'CancelError',
   'TimeoutError',
   'config.DecodeError',
   'std.bytes.DecodeError',
@@ -4471,8 +4471,21 @@ function validateResponseError(envelope: Record<string, unknown>): string | null
     ]) ??
     validateErrorPayload(envelope, 'response.error') ??
     requireNonBlankString(envelope, 'response.error', 'error.code') ??
-    requireNonBlankString(envelope, 'response.error', 'error.message')
+    requireNonBlankString(envelope, 'response.error', 'error.message') ??
+    rejectInternalCancellationErrorCode(envelope)
   );
+}
+
+function rejectInternalCancellationErrorCode(
+  envelope: Record<string, unknown>
+): string | null {
+  if (
+    isRecord(envelope.error) &&
+    envelope.error.code === INTERNAL_CANCELLATION_RESERVED_ERROR_CODE
+  ) {
+    return 'invalid response.error envelope: error.code is reserved for internal cancellation';
+  }
+  return null;
 }
 
 function decodeServiceErrorEnvelope(
