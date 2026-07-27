@@ -664,6 +664,7 @@ fn lower_any_interface_selector_identity(
             "interface selector `{name}` targets primitive/builtin type `{canonical_name}`, not an interface"
         )));
     }
+    reject_unknown_compiler_owned_type(name)?;
     if let Some(symbol) = package_type_symbol_ref(service_name, package_aliases) {
         return Ok(TypeRefIr::PackageSymbol { symbol });
     }
@@ -713,6 +714,7 @@ fn lower_generic_type_text(
     context: TypeLoweringContext<'_>,
 ) -> Result<TypeRefIr> {
     let root = root.trim();
+    reject_unknown_compiler_owned_type(root)?;
     let arguments = args
         .iter()
         .map(|arg| {
@@ -825,6 +827,7 @@ pub(super) fn lower_named_type(
                 .collect::<Result<Vec<_>>>()?,
         });
     }
+    reject_unknown_compiler_owned_type(name)?;
     let service_name = name.strip_prefix("root.").unwrap_or(name);
     let package_scoped_root = name
         .strip_prefix("root.")
@@ -966,6 +969,15 @@ fn canonical_builtin_std_type_name(name: &str) -> Option<String> {
         return Some(symbol);
     }
     symbol.starts_with("std.").then_some(symbol)
+}
+
+fn reject_unknown_compiler_owned_type(name: &str) -> Result<()> {
+    if name.starts_with("std.") || name.starts_with("config.") {
+        return Err(CompileError::Semantic(format!(
+            "unknown compiler-owned type `{name}`"
+        )));
+    }
+    Ok(())
 }
 
 fn is_file_ir_native_builtin_type(name: &str) -> bool {

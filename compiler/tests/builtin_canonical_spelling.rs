@@ -4,7 +4,9 @@ use skiff_artifact_model::{
     ContractTypeDescriptor, ContractTypeRef, PackageLocalAbiSymbol, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler::CompilerPlatformSources;
-use skiff_compiler_core::prelude_registry::file_ir_builtin_source_spellings;
+use skiff_compiler_core::prelude_registry::{
+    compiler_builtin_type, file_ir_builtin_source_spellings, CompilerBuiltinTypeKind,
+};
 use skiff_compiler_lowering::source_file_lowering::compile_source_file_ir_unit;
 use skiff_compiler_source::prelude_registry::initialize_prelude_registry;
 
@@ -139,15 +141,115 @@ fn undeclared_builtin_spellings_are_not_implicit_source_aliases() {
     }
 }
 
+#[test]
+fn compiler_builtin_registry_retires_cancel_error_and_keeps_timeout_error() {
+    for spelling in ["CancelError", "std.error.CancelError"] {
+        assert!(
+            compiler_builtin_type(spelling).is_none(),
+            "retired cancellation spelling {spelling} must have no compiler builtin owner"
+        );
+    }
+
+    let timeout = compiler_builtin_type("TimeoutError")
+        .expect("TimeoutError must retain its compiler builtin owner");
+    assert_eq!(timeout.symbol, "std.error.TimeoutError");
+    assert_eq!(timeout.arity, 0);
+    assert_eq!(timeout.kind, CompilerBuiltinTypeKind::Error);
+    assert_eq!(compiler_builtin_type(timeout.symbol), Some(timeout));
+}
+
+#[test]
+fn cancel_error_short_and_qualified_type_spellings_are_rejected() {
+    assert_cancel_error_spellings_are_rejected("type", |spelling| {
+        format!("type Bad {{ value: {spelling} }}\n")
+    });
+}
+
+#[test]
+fn cancel_error_short_and_qualified_constructors_are_rejected() {
+    assert_cancel_error_spellings_are_rejected("constructor", |spelling| {
+        format!(
+            r#"function bad() -> {spelling} {{
+  return {spelling} {{}}
+}}
+"#
+        )
+    });
+}
+
+#[test]
+fn cancel_error_short_and_qualified_throw_payloads_are_rejected() {
+    assert_cancel_error_spellings_are_rejected("throw", |spelling| {
+        format!(
+            r#"function bad(value: {spelling}) -> void {{
+  throw value
+}}
+"#
+        )
+    });
+}
+
+#[test]
+fn cancel_error_short_and_qualified_catch_types_are_rejected() {
+    assert_cancel_error_spellings_are_rejected("catch", |spelling| {
+        format!(
+            r#"function bad(value: TimeoutError) -> void {{
+  const attempted = catch<{spelling}>(value)
+}}
+"#
+        )
+    });
+}
+
+#[test]
+fn cancel_error_short_and_qualified_rethrow_envelopes_are_rejected() {
+    assert_cancel_error_spellings_are_rejected("rethrow", |spelling| {
+        format!(
+            r#"function bad(exception: Exception<{spelling}>) -> void {{
+  rethrow exception
+}}
+"#
+        )
+    });
+}
+
+#[test]
+fn cancel_error_short_and_qualified_union_leaves_are_rejected() {
+    assert_cancel_error_spellings_are_rejected("union-leaf", |spelling| {
+        format!(
+            r#"function bad(value: TimeoutError) -> void {{
+  const attempted = catch<TimeoutError | {spelling}>(value)
+}}
+"#
+        )
+    });
+}
+
+fn assert_cancel_error_spellings_are_rejected(surface: &str, source: impl Fn(&str) -> String) {
+    initialize_test_prelude_registry();
+    for spelling in ["CancelError", "std.error.CancelError"] {
+        let error = compile_source_file_ir_unit(
+            &source(spelling),
+            format!("retired-cancel-error-{surface}.skiff"),
+            "retired",
+            "package",
+        )
+        .expect_err("retired cancellation error spelling must fail source compilation");
+        let diagnostic = error.to_string();
+        assert!(
+            diagnostic.contains(spelling),
+            "{surface} failure should retain rejected spelling {spelling}: {error}"
+        );
+        assert!(
+            diagnostic.contains("unresolved type")
+                || diagnostic.contains("unknown compiler-owned type"),
+            "{surface} must fail because {spelling} cannot resolve: {error}"
+        );
+    }
+}
+
 fn assert_direct_lowering_canonicalizes_qualified_aliases() {
-    let compiler_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let platform_root = compiler_root
-        .parent()
-        .expect("compiler crate should be directly below the workspace root");
-    initialize_prelude_registry(
-        &CompilerPlatformSources::new(platform_root).expect("platform sources should load"),
-    )
-    .expect("prelude registry should initialize");
+    initialize_test_prelude_registry();
     let unit = compile_source_file_ir_unit(
         r#"type QualifiedBuiltinProbe {
   actor: std.actor.Actor<string>,
@@ -162,7 +264,6 @@ fn assert_direct_lowering_canonicalizes_qualified_aliases() {
   stackTrace: std.error.StackTrace,
   stackFrame: std.error.StackFrame,
   timeout: std.error.TimeoutError,
-  cancel: std.error.CancelError,
   session: std.session.ClientSessionRef,
   capability: std.session.ClientCapability,
   callback: fn(flag: boolean) -> std.collection.Array<boolean?>,
@@ -198,7 +299,6 @@ fn assert_direct_lowering_canonicalizes_qualified_aliases() {
         "StackTrace",
         "StackFrame",
         "TimeoutError",
-        "CancelError",
         "ClientSessionRef",
         "ClientCapability",
         "bool",
@@ -208,6 +308,17 @@ fn assert_direct_lowering_canonicalizes_qualified_aliases() {
             "direct lowering should emit canonical builtin {canonical}: {value}"
         );
     }
+}
+
+fn initialize_test_prelude_registry() {
+    let compiler_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let platform_root = compiler_root
+        .parent()
+        .expect("compiler crate should be directly below the workspace root");
+    initialize_prelude_registry(
+        &CompilerPlatformSources::new(platform_root).expect("platform sources should load"),
+    )
+    .expect("prelude registry should initialize");
 }
 
 fn assert_fresh_std_conflict_error_is_canonical(

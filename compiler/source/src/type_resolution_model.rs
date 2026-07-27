@@ -2667,6 +2667,9 @@ impl TypeResolutionModel {
             validate_prelude_type_arity(name, resolved_args.len())?;
             return Ok(type_ref);
         }
+        if name.starts_with("std.") || name.starts_with("config.") {
+            return Err(format!("unknown compiler-owned type `{name}`"));
+        }
         if let Some((_alias, schema_type)) = self.service_api_type(name)? {
             if schema_type.canonical_descriptor.type_params.len() != resolved_args.len() {
                 return Err(format!(

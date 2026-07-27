@@ -96,6 +96,9 @@ pub(super) fn file_ir_expressions(
 }
 
 pub const FILE_IR_SOURCE_MAP_FORMAT: &str = "skiff-file-ir-source-map-v1";
+// Retired canonical spellings remain only as admission tombstones. They must
+// never be lowered to another builtin/native identity.
+const RETIRED_FILE_IR_BUILTIN_TYPES: &[&str] = &["CancelError"];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -716,6 +719,14 @@ fn validate_type_ref_node(
     location: &str,
 ) -> Result<(), FileIrTypeRefValidationError> {
     match ty {
+        TypeRefIr::Builtin { name, .. }
+            if RETIRED_FILE_IR_BUILTIN_TYPES.contains(&name.as_str()) =>
+        {
+            return type_ref_error(
+                location,
+                format!("retired File IR builtin type {name} is not admitted"),
+            );
+        }
         TypeRefIr::LocalType { type_index } => {
             validate_local_nominal(unit, *type_index, None, location)?;
         }
@@ -1041,6 +1052,9 @@ mod applied_nominal_tests {
             .contains("non-empty"));
     }
 }
+
+#[cfg(test)]
+mod legacy_builtin_tests;
 
 #[cfg(test)]
 mod representation_wrap_tests;

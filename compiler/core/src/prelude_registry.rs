@@ -157,12 +157,6 @@ pub const COMPILER_BUILTIN_TYPES: &[CompilerBuiltinType] = &[
         kind: CompilerBuiltinTypeKind::Error,
     },
     CompilerBuiltinType {
-        name: "CancelError",
-        symbol: "std.error.CancelError",
-        arity: 0,
-        kind: CompilerBuiltinTypeKind::Error,
-    },
-    CompilerBuiltinType {
         name: "ClientSessionRef",
         symbol: "std.session.ClientSessionRef",
         arity: 0,
