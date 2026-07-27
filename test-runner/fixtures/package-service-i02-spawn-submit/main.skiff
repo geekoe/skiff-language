@@ -2,10 +2,6 @@ import std
 
 function acceptSubmittedReceipt(receipt: string) -> void {}
 
-function marker() -> string {
-  return "P5-F45E-WEBSOCKET-MARKER"
-}
-
 function submitSpawnReceipt() -> string {
   spawn acceptSubmittedReceipt("P5-F45E-SPAWN-SUBMIT")
   return "P5-F45E-SPAWN-SUBMIT-TYPED-RESPONSE:submitted"
@@ -15,21 +11,13 @@ function __skiffHttpProbe(body: null) -> string {
   return submitSpawnReceipt()
 }
 
-function acceptConnection() -> std.websocket.WebSocketConnectResult<null> {
+function websocketConnect(
+  request: std.websocket.WebSocketConnectRequest,
+  connectionId: string
+) -> std.websocket.WebSocketConnectResult {
   return {
     tag: "accept",
-    context: null,
-    businessIdentity: null,
+    businessIdentity: connectionId,
     connectionPolicy: null
   }
-}
-
-function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.websocket.WebSocketConnectResult<null>? {
-  if event.tag == "connect" {
-    return acceptConnection()
-  }
-  if event.tag == "receive" {
-    std.websocket.sendTextToConnection(event.receiveEvent.connection.id, marker())
-  }
-  return null
 }

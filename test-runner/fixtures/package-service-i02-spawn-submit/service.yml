@@ -1,0 +1,11 @@
+id: test.skiff/package-service-i02-spawn-submit
+kind: test
+websocket:
+  path: /socket
+  connect:
+    handler: main.websocketConnect
+    adapterArgs:
+      - param: request
+        source: { kind: websocket.connectRequest }
+      - param: connectionId
+        source: { kind: websocket.connectionId }

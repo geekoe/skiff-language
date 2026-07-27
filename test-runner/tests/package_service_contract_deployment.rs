@@ -15,15 +15,21 @@ use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryUnavailableReason, CallableEffectSummary,
     CallableMayEffects, CallableProvenanceSummary, GatewayAdapterKind, GatewayAdapterSource,
     GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayExternalSchema,
-    GatewayProtocolSurface, IngressProtocol, PackageArtifactRef, PackageLocalAbiSymbol,
-    RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef, StateBindingKind,
+    GatewayProtocolSurface, IngressProtocol, PackageArtifact, PackageArtifactRef,
+    PackageLocalAbiSymbol, RuntimeAssemblyRef, ServiceAuthoringKind, ServiceContract,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, StateBindingKind,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
-    CompilerPlatformSources, ManifestOwner, ManifestProvenance, PackageSourceInput,
-    PublicationManifest, PublicationSourceGraph, SourceTree,
+    compile_service_package, generate_service_deployment, CompilerPlatformSources,
+    GeneratedServiceDeploymentInput, ManifestOwner, ManifestProvenance, PackageCompileInput,
+    PackageSourceInput, PublicationManifest, PublicationSourceGraph, SourceTree,
 };
-use skiff_deployment::storage::CanonicalArtifactStore;
+use skiff_compiler_input::{
+    package_config::read_user_package_manifest, package_sources::read_package_sources,
+    read_publication_resources, read_service_package_root,
+};
+use skiff_deployment::{assembly::resolve_runtime_assembly, storage::CanonicalArtifactStore};
 use skiff_test_runner::{
     canonical_fixture::{
         assemble_package_test_fixture, discover_package_test_cases, CanonicalBaseAssembly,
@@ -1859,33 +1865,12 @@ fn ecosystem_http_fixture_uses_two_gateway_entries_without_ws_compat() {
     write_package(
         &package,
         "id: example.com/smoke\nversion: 1.0.0\n",
-        Some("marker: main.marker\nwebsocket: main.websocket\n"),
+        Some("marker: main.marker\n"),
         Some(
-            r#"import std
-
-function marker() -> string { return "A" }
+            r#"function marker() -> string { return "A" }
 
 function __skiffHttpProbe(body: null) -> string {
   return marker()
-}
-
-function acceptConnection() -> std.websocket.WebSocketConnectResult<null> {
-  return {
-    tag: "accept",
-    context: null,
-    businessIdentity: null,
-    connectionPolicy: null
-  }
-}
-
-function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.websocket.WebSocketConnectResult<null>? {
-  if event.tag == "connect" {
-    return acceptConnection()
-  }
-  if event.tag == "receive" {
-    std.websocket.sendTextToConnection(event.receiveEvent.connection.id, marker())
-  }
-  return null
 }
 "#,
         ),
@@ -1895,19 +1880,6 @@ function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.webs
         "test \"smoke\" { assert true }\n",
     )
     .unwrap();
-    let missing_std =
-        compile_package_project(&platform_sources(), &package, &artifacts).unwrap_err();
-    assert!(
-        missing_std.to_string().contains(
-            "references platform std, but the same compile graph has no canonical PackageArtifact"
-        ),
-        "{missing_std}"
-    );
-    let std = seed_canonical_std(&platform_sources(), &artifacts).unwrap();
-    assert_eq!(
-        std.package.artifact.package_build_id.as_str(),
-        EXPECTED_STD_PACKAGE_BUILD_ID
-    );
     let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
     let production =
         skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
@@ -1956,12 +1928,7 @@ function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.webs
         .gateway_ingress
         .iter()
         .any(|binding| binding.selector.path == "/socket"));
-    assert_eq!(fixture.records.assembly.resolved_packages.len(), 3);
-    assert!(fixture
-        .records
-        .assembly
-        .resolved_packages
-        .contains(&std.package.artifact));
+    assert_eq!(fixture.records.assembly.resolved_packages.len(), 2);
 }
 
 #[test]
@@ -1987,7 +1954,10 @@ fn i02_submit_probe_is_private_http_gateway_not_service_operation() {
     assert!(!fs::read_to_string(package.join("api.yml"))
         .unwrap()
         .contains("__skiffHttpProbe"));
-    let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
+    assert_current_websocket_test_service(&package, "test.skiff/package-service-i02-spawn-submit");
+    let project =
+        compile_package_project_for_test(&platform_sources(), &package, &artifacts, "skiff-test")
+            .unwrap();
     let production =
         skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
 
@@ -1998,7 +1968,7 @@ fn i02_submit_probe_is_private_http_gateway_not_service_operation() {
             .package_local_abi
             .public_symbols
             .len(),
-        2
+        1
     );
     let marker = public_operation_projection(&project, "marker");
     assert!(marker.effect_guarantee.no_caller_reachable_mutation);
@@ -2087,15 +2057,62 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
     let root = TestRoot::new("ecosystem-http-source-wrappers");
     let artifacts = root.child("artifacts");
     create_store(&artifacts);
-    seed_canonical_std(&platform_sources(), &artifacts).unwrap();
-
-    for (fixture_name, expected_call) in [
-        ("package-service-websocket-smoke", "return marker()"),
-        ("package-service-websocket-generation-a", "return marker()"),
-        ("package-service-websocket-generation-b", "return marker()"),
+    let std = seed_canonical_std(&platform_sources(), &artifacts).unwrap();
+    let std_artifact = CanonicalArtifactStore::open(&artifacts)
+        .unwrap()
+        .read_package_artifact(&std.package.artifact)
+        .unwrap()
+        .as_ref()
+        .clone();
+    for (
+        fixture_name,
+        service_id,
+        expected_api,
+        expected_call,
+        expected_build,
+        expected_abi,
+        expected_deployment,
+        expected_assembly,
+    ) in [
+        (
+            "package-service-websocket-smoke",
+            "test.skiff/package-service-websocket-smoke",
+            "marker: main.marker\n",
+            "return marker()",
+            "skiff-package-build-v10:sha256:5ce089038445f6ea1bf05a5d8876ebb784c9193f4509ee993f0eb6b415c25880",
+            "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
+            "skiff-deployment-artifact-v2:sha256:3e020a778a528ff61ddb4b953186299b9145beaa7c368bb8fa121a8c7db8ccf5",
+            "skiff-runtime-assembly-v2:sha256:d949679862b2e0b5cff67cbd517bab56b6bb7b2165906a3860811b3db181c342",
+        ),
+        (
+            "package-service-websocket-generation-a",
+            "test.skiff/package-service-websocket-smoke",
+            "marker: main.marker\n",
+            "return marker()",
+            "skiff-package-build-v10:sha256:25b98b03e66c0a7398859a6d0362dd53c20ff39f77ea36377408b74da6bfb37b",
+            "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
+            "skiff-deployment-artifact-v2:sha256:6a4e17954474836b8a2511442e44855b16a0d51d77e4b82fd90d8842daf9c9c5",
+            "skiff-runtime-assembly-v2:sha256:6cae8bf053cba5247aafe4ef4ab635d453cd9688f6935ad01891679d6ed3f1dd",
+        ),
+        (
+            "package-service-websocket-generation-b",
+            "test.skiff/package-service-websocket-smoke",
+            "marker: main.marker\n",
+            "return marker()",
+            "skiff-package-build-v10:sha256:3f42eb72f997ccf6a65b986cb49af485ae63c67db32e5b587822cfadf9c5e791",
+            "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
+            "skiff-deployment-artifact-v2:sha256:0897f23f6972709688cf420e30589ff2cb64380cd63a4e45cc6938aa96308d8b",
+            "skiff-runtime-assembly-v2:sha256:f73298e2908b53e535d1fe4f6b7c654166a304c1f0468b0c88a8feba08c4f079",
+        ),
         (
             "package-service-i02-spawn-submit",
+            "test.skiff/package-service-i02-spawn-submit",
+            "marker: main.submitSpawnReceipt\n",
             "return submitSpawnReceipt()",
+            "skiff-package-build-v10:sha256:6f686ba330266ad08baf8dd04baba0bfcc315ec4e0ed8308344f9f8a7f8230b8",
+            "skiff-package-local-abi-v7:sha256:3db7056f815676834489b34a069b5016f05973b3be9379eb55736a545d7dcdf9",
+            "skiff-deployment-artifact-v2:sha256:6eb0fffd40ee1d373db397063ae81e587ec564852be149bfa1f225bc763c8766",
+            "skiff-runtime-assembly-v2:sha256:11b8f9d38d44c642438f37a6b787b58b3deca8545d9c48d850a6a0c00813752a",
         ),
     ] {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2107,15 +2124,96 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
                 && source.contains(expected_call),
             "{fixture_name} must carry the exact private HTTP wrapper"
         );
-        assert!(
-            !fs::read_to_string(package.join("api.yml"))
-                .unwrap()
-                .contains("__skiffHttpProbe"),
-            "{fixture_name} must not publish the private HTTP wrapper"
+        assert_eq!(
+            fs::read_to_string(package.join("api.yml")).unwrap(),
+            expected_api,
+            "{fixture_name} must publish only its real business marker surface"
         );
-        let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
+        assert_current_websocket_test_service(&package, service_id);
+        let project = compile_package_project_for_test(
+            &platform_sources(),
+            &package,
+            &artifacts,
+            "skiff-test",
+        )
+        .unwrap();
         let production =
             skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
+        assert_eq!(production.package_build_id.as_str(), expected_build);
+        assert_eq!(production.package_local_abi_identity.as_str(), expected_abi);
+        let (generated_package, generated_contract, generated_deployment) =
+            generate_current_websocket_service_fixture(&package, &artifacts, &std_artifact);
+        assert_eq!(
+            skiff_artifact_identity::package_artifact_ref(&generated_package).unwrap(),
+            production,
+            "{fixture_name} service and test compilation must select the same package artifact"
+        );
+        assert!(generated_contract.operations.is_empty());
+        assert!(generated_deployment.operation_bindings.is_empty());
+        assert_eq!(generated_deployment.gateway_entries.len(), 1);
+        assert_eq!(generated_deployment.ingress.len(), 1);
+        let websocket_key = GatewayEntryKey::parse("websocket").unwrap();
+        let websocket = &generated_deployment.gateway_entries[&websocket_key];
+        assert_eq!(
+            websocket.gateway_entry_identity.as_str(),
+            concat!(
+                "skiff-gateway-entry-v1:sha256:",
+                "d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936"
+            )
+        );
+        assert!(matches!(
+            websocket.protocol_surface.protocol,
+            GatewayProtocolSurface::WebSocketConnect(_)
+        ));
+        assert_eq!(
+            websocket.adapter_plan.args,
+            [
+                skiff_artifact_model::GatewayAdapterArg {
+                    param: "request".to_string(),
+                    source: GatewayAdapterSource::WebSocketConnectRequest,
+                },
+                skiff_artifact_model::GatewayAdapterArg {
+                    param: "connectionId".to_string(),
+                    source: GatewayAdapterSource::WebSocketConnectionId,
+                },
+            ]
+        );
+        let PackageLocalAbiSymbol::Callable {
+            callable_id: connect_callable,
+            ..
+        } = &generated_package.package_local_abi.implementation_symbols["main.websocketConnect"]
+        else {
+            panic!("{fixture_name} connect target must compile as a private callable")
+        };
+        assert_eq!(websocket.handler.as_ref(), Some(connect_callable));
+        assert_eq!(
+            generated_deployment.ingress[0].selector.protocol,
+            IngressProtocol::WebSocket
+        );
+        assert_eq!(generated_deployment.ingress[0].selector.path, "/socket");
+        assert_eq!(
+            generated_deployment.ingress[0].gateway_entry_key,
+            websocket_key
+        );
+        let deployment = skiff_artifact_identity::service_deployment_ref(&generated_deployment);
+        let assembly = resolve_runtime_assembly(
+            std::slice::from_ref(&deployment),
+            std::slice::from_ref(&generated_deployment),
+            std::slice::from_ref(&generated_contract),
+            &[generated_package, std_artifact.clone()],
+        )
+        .unwrap();
+        assert_eq!(
+            deployment.deployment_artifact_identity.as_str(),
+            expected_deployment
+        );
+        assert_eq!(
+            skiff_artifact_identity::runtime_assembly_ref(&assembly)
+                .unwrap()
+                .assembly_identity
+                .as_str(),
+            expected_assembly
+        );
         assert!(project
             .package
             .artifact
@@ -2147,6 +2245,80 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
             )
         );
     }
+}
+
+fn assert_current_websocket_test_service(package: &Path, expected_service_id: &str) {
+    let service = read_service_package_root(package)
+        .unwrap_or_else(|error| panic!("{} service authoring: {error}", package.display()))
+        .service;
+    assert_eq!(service.id, expected_service_id);
+    assert_eq!(service.kind, ServiceAuthoringKind::Test);
+    let websocket = service
+        .websocket
+        .expect("current singleton WebSocket entry");
+    assert_eq!(websocket.host, "*");
+    assert_eq!(websocket.path, "/socket");
+    let connect = websocket.connect.expect("private connect target");
+    assert_eq!(connect.handler, "main.websocketConnect");
+    assert_eq!(
+        connect
+            .adapter_args
+            .iter()
+            .map(|argument| (argument.param.as_str(), argument.source))
+            .collect::<Vec<_>>(),
+        [
+            ("request", GatewayAdapterSource::WebSocketConnectRequest),
+            ("connectionId", GatewayAdapterSource::WebSocketConnectionId),
+        ]
+    );
+}
+
+fn generate_current_websocket_service_fixture(
+    package: &Path,
+    artifacts: &Path,
+    std: &PackageArtifact,
+) -> (PackageArtifact, ServiceContract, ServiceDeployment) {
+    let manifest = read_user_package_manifest(&package.join("package.yml")).unwrap();
+    let raw_sources = read_package_sources(&manifest, package).unwrap();
+    let source_tree = raw_sources.source_tree();
+    let source_graph =
+        PublicationSourceGraph::parse_raw_publication_sources(&raw_sources.into_source_graph())
+            .unwrap();
+    let resources = read_publication_resources(package, &manifest.resources).unwrap();
+    let source = PackageSourceInput::new(
+        manifest.publication.clone(),
+        source_tree,
+        source_graph,
+        resources,
+    );
+    let service = read_service_package_root(package).unwrap();
+    let aliases = BTreeMap::new();
+    let available = [std.clone()];
+    let store = CanonicalArtifactStore::open(artifacts).unwrap();
+    let compiled = compile_service_package(
+        PackageCompileInput::new(&platform_sources(), &source, &aliases, manifest.id.as_str())
+            .with_available_canonical_packages(&available)
+            .with_canonical_artifact_store(&store)
+            .for_test_service(),
+        &service,
+    )
+    .unwrap();
+    let profile = &service.config_profiles["skiff-test"].authoring;
+    let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &service.service,
+        profile_name: "skiff-test",
+        profile,
+        service_api: &compiled.service_api,
+        implementation: &compiled.package.artifact,
+        package_closure: &available,
+        package_schema_records: &compiled.package.resolved_package_schema_type_records,
+    })
+    .unwrap();
+    (
+        compiled.package.artifact,
+        compiled.service_api.contract,
+        deployment,
+    )
 }
 
 fn public_operation_projection<'a>(

@@ -118,13 +118,29 @@ test('I02 fixture uses the canonical normal-source spawn statement', async () =>
     'fixtures',
     'package-service-i02-spawn-submit',
   );
-  const [api, source] = await Promise.all([
+  const [api, service, source] = await Promise.all([
     readFile(join(fixtureRoot, 'api.yml'), 'utf8'),
+    readFile(join(fixtureRoot, 'service.yml'), 'utf8'),
     readFile(join(fixtureRoot, 'main.skiff'), 'utf8'),
   ]);
   assert.equal(
     api,
-    'marker: main.submitSpawnReceipt\nwebsocket: main.websocket\n',
+    'marker: main.submitSpawnReceipt\n',
+  );
+  assert.equal(
+    service,
+    `id: test.skiff/package-service-i02-spawn-submit
+kind: test
+websocket:
+  path: /socket
+  connect:
+    handler: main.websocketConnect
+    adapterArgs:
+      - param: request
+        source: { kind: websocket.connectRequest }
+      - param: connectionId
+        source: { kind: websocket.connectionId }
+`,
   );
   assert.match(
     source,
@@ -133,15 +149,17 @@ test('I02 fixture uses the canonical normal-source spawn statement', async () =>
   assert.match(source, new RegExp(packageServiceI02SpawnSubmitBusinessResult));
   assert.match(
     source,
-    /function marker\(\) -> string \{\s+return "P5-F45E-WEBSOCKET-MARKER"\s+\}/,
+    /function websocketConnect\(\s+request: std\.websocket\.WebSocketConnectRequest,\s+connectionId: string\s+\) -> std\.websocket\.WebSocketConnectResult \{\s+return \{\s+tag: "accept",\s+businessIdentity: connectionId,\s+connectionPolicy: null\s+\}\s+\}/,
   );
-  assert.match(
-    source,
-    /sendTextToConnection\(event\.receiveEvent\.connection\.id, marker\(\)\)/,
-  );
-  assert.doesNotMatch(
-    source.match(/function marker\(\)[\s\S]*?\n\}/)?.[0] ?? '',
-    /SPAWN-SUBMIT-TYPED-RESPONSE|spawn /,
+  assert.deepEqual(
+    [...source.matchAll(/^function ([A-Za-z0-9_]+)\(/gm)]
+      .map((match) => match[1]),
+    [
+      'acceptSubmittedReceipt',
+      'submitSpawnReceipt',
+      '__skiffHttpProbe',
+      'websocketConnect',
+    ],
   );
   assert.doesNotMatch(source, /std\.actor|runtime\.register|spawn\.(?:claim|renew|complete|fail)/);
 });

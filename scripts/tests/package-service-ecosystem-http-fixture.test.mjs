@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { readPackageServiceFixtureReceipt } from '../lib/package-service-ecosystem-smoke-oracle.mjs';
@@ -8,6 +10,75 @@ import {
 } from './helpers/package-service-ecosystem-smoke-fixtures.mjs';
 
 const ENVIRONMENT = 'p5-f387-http-fixture';
+
+test('owned WebSocket source fixtures use private current connect authoring', async () => {
+  for (const [name, serviceId, api, functionNames] of [
+    [
+      'package-service-websocket-smoke',
+      'test.skiff/package-service-websocket-smoke',
+      'marker: main.marker\n',
+      ['marker', '__skiffHttpProbe', 'websocketConnect'],
+    ],
+    [
+      'package-service-websocket-generation-a',
+      'test.skiff/package-service-websocket-smoke',
+      'marker: main.marker\n',
+      ['marker', '__skiffHttpProbe', 'websocketConnect'],
+    ],
+    [
+      'package-service-websocket-generation-b',
+      'test.skiff/package-service-websocket-smoke',
+      'marker: main.marker\n',
+      ['marker', '__skiffHttpProbe', 'websocketConnect'],
+    ],
+    [
+      'package-service-i02-spawn-submit',
+      'test.skiff/package-service-i02-spawn-submit',
+      'marker: main.submitSpawnReceipt\n',
+      [
+        'acceptSubmittedReceipt',
+        'submitSpawnReceipt',
+        '__skiffHttpProbe',
+        'websocketConnect',
+      ],
+    ],
+  ]) {
+    const root = join('test-runner', 'fixtures', name);
+    const [actualApi, service, source] = await Promise.all([
+      readFile(join(root, 'api.yml'), 'utf8'),
+      readFile(join(root, 'service.yml'), 'utf8'),
+      readFile(join(root, 'main.skiff'), 'utf8'),
+    ]);
+    assert.equal(actualApi, api, `${name} API`);
+    assert.equal(
+      service,
+      `id: ${serviceId}
+kind: test
+websocket:
+  path: /socket
+  connect:
+    handler: main.websocketConnect
+    adapterArgs:
+      - param: request
+        source: { kind: websocket.connectRequest }
+      - param: connectionId
+        source: { kind: websocket.connectionId }
+`,
+      `${name} service authoring`,
+    );
+    assert.match(
+      source,
+      /function websocketConnect\(\s+request: std\.websocket\.WebSocketConnectRequest,\s+connectionId: string\s+\) -> std\.websocket\.WebSocketConnectResult \{\s+return \{\s+tag: "accept",\s+businessIdentity: connectionId,\s+connectionPolicy: null\s+\}\s+\}/,
+      `${name} connect callable`,
+    );
+    assert.deepEqual(
+      [...source.matchAll(/^function ([A-Za-z0-9_]+)\(/gm)]
+        .map((match) => match[1]),
+      functionNames,
+      `${name} source callable inventory`,
+    );
+  }
+});
 
 test('v2 receipt accepts exactly the package-test and probe HTTP gateways', () => {
   const receipt = validSmokeFixtureReceipt(ENVIRONMENT);
