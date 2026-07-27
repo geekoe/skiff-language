@@ -94,7 +94,7 @@ pub(crate) fn canonical_typed_null_gateway(
     Ok(DeploymentGatewayEntry {
         gateway_entry_identity: identity,
         protocol_surface,
-        handler: callable_id.clone(),
+        handler: Some(callable_id.clone()),
         pre: None,
         guard: None,
         adapter_plan: GatewayAdapterPlan {

@@ -235,10 +235,15 @@ fn package_test_gateway_inputs(
         GatewayExternalSchema::Null,
     )
     .map_err(CanonicalFixtureError::InvalidInput)?;
-    if entry.handler != binding.gateway_callable_id {
+    let handler = entry.handler.as_ref().ok_or_else(|| {
+        CanonicalFixtureError::InvalidInput(
+            "package-test HTTP gateway is missing its required handler".to_string(),
+        )
+    })?;
+    if handler != &binding.gateway_callable_id {
         return Err(CanonicalFixtureError::InvalidInput(format!(
             "package-test gateway handler {} does not match overlay binding {}",
-            entry.handler, binding.gateway_callable_id
+            handler, binding.gateway_callable_id
         )));
     }
     Ok((

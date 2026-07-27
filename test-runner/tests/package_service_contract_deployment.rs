@@ -1274,7 +1274,7 @@ fn package_test_http_fixture_is_zero_operation_reference_closed_and_fail_closed(
         entry.gateway_entry_identity,
         entrypoint.gateway_entry_identity
     );
-    assert_eq!(entry.handler, binding.gateway_callable_id);
+    assert_eq!(entry.handler.as_ref(), Some(&binding.gateway_callable_id));
     assert_eq!(entry.pre, None);
     assert_eq!(entry.guard, None);
     assert_eq!(entry.adapter_plan.kind, GatewayAdapterKind::TypedJson);
@@ -2056,7 +2056,7 @@ fn i02_submit_probe_is_private_http_gateway_not_service_operation() {
     else {
         panic!("I02 private HTTP wrapper must compile as a callable")
     };
-    assert_eq!(handler, wrapper);
+    assert_eq!(handler.as_ref(), Some(wrapper));
     assert!(!project
         .package
         .artifact
