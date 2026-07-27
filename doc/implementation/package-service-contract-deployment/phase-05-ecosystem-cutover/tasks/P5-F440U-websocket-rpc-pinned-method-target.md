@@ -41,6 +41,8 @@ F440T已冻结inbound request/response DTO；F440S证明E0应先关闭loader/adm
 - `runtime/host/src/host/request_entry/{assembly.rs,assembly_wire.rs}`中admission/acquire/synthetic accept所需
   的最小机械分支
 - 上述Host范围的colocated fixtures/tests
+- `runtime/request/src/{http_gateway_target.rs,websocket_connect_target.rs}`只允许在`#[cfg(test)]`
+  fixture/constructor补current S0已要求的`rpc_profiles`字段，不得修改production逻辑或原测试语义
 - 本leaf result
 
 禁止修改runtime/eval、JSON-RPC execution/outcome、Host eval adapter、transport/wire、Router、
