@@ -28,4 +28,5 @@ export * from './router/assemblyControlPlane.js';
 export * from './router/assemblyHttpGateway.js';
 export * from './router/webSocketRequestBroker.js';
 export * from './gateway/webSocketGateway.js';
+export * from './gateway/webSocketRpcBridge.js';
 export * from './config/index.js';

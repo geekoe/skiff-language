@@ -7,6 +7,11 @@ import type {
   WebSocketRpcProfileAdapter
 } from '../protocol/jsonRpc20TextProfileContracts.js';
 import {
+  REQUEST_CANCEL_SITUATION,
+  requestCancelReasonForSituation,
+  type RequestCancelReason
+} from '../protocol/cancelReason.js';
+import {
   BrokerTombstoneStore,
   SYSTEM_BROKER_CLOCK,
   validateBrokerOptions
@@ -22,6 +27,7 @@ import type {
   InboundDispatchResult,
   InboundExecutionToken,
   WebSocketRequestBrokerClock,
+  WebSocketRequestBrokerLimits,
   WebSocketRequestBrokerOptions,
   WebSocketRequestBrokerSnapshot
 } from './webSocketRequestBrokerTypes.js';
@@ -35,6 +41,9 @@ import {
   type InboundTerminal
 } from './webSocketRequestBrokerWire.js';
 
+export {
+  DEFAULT_WEB_SOCKET_REQUEST_BROKER_LIMITS
+} from './webSocketRequestBrokerTypes.js';
 export type {
   AttachBrokerGenerationOptions,
   BrokerConnectionGeneration,
@@ -48,6 +57,7 @@ export type {
   InboundExecutionToken,
   InboundNotificationAction,
   WebSocketRequestBrokerClock,
+  WebSocketRequestBrokerLimits,
   WebSocketRequestBrokerOptions,
   WebSocketRequestBrokerSnapshot
 } from './webSocketRequestBrokerTypes.js';
@@ -58,6 +68,7 @@ interface GenerationState {
   readonly uid: number;
   readonly ownerToken: unknown;
   readonly adapter: WebSocketRpcProfileAdapter;
+  readonly inboundTimeoutMs: number;
   readonly writer: CapturedPeerWriter;
   readonly acceptInboundMethod?: (method: string) => boolean;
   readonly idGeneration: {
@@ -89,6 +100,18 @@ interface InboundEntry {
 }
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const INBOUND_CALLER_CANCEL_REASON = requestCancelReasonForSituation(
+  REQUEST_CANCEL_SITUATION.callerAbort
+);
+const INBOUND_DEADLINE_REASON = requestCancelReasonForSituation(
+  REQUEST_CANCEL_SITUATION.deadlineExceeded
+);
+const INBOUND_PEER_DISCONNECT_REASON = requestCancelReasonForSituation(
+  REQUEST_CANCEL_SITUATION.clientDisconnect
+);
+const INBOUND_PROTOCOL_REASON = requestCancelReasonForSituation(
+  REQUEST_CANCEL_SITUATION.protocolError
+);
 
 export class WebSocketRequestBroker {
   private readonly adapters = new Map<
@@ -151,9 +174,20 @@ export class WebSocketRequestBroker {
     ) {
       throw new Error('broker generation identity fields must be non-empty');
     }
-    const adapter = this.adapters.get(input.profile);
-    if (adapter === undefined) {
+    if (!this.adapters.has(input.profile)) {
       throw new Error(`unsupported WebSocket RPC profile ${input.profile}`);
+    }
+    const adapter = input.profileAdapter;
+    if (adapter.profile !== input.profile) {
+      throw new Error(
+        'captured WebSocket RPC profile adapter does not match its profile'
+      );
+    }
+    if (
+      !Number.isSafeInteger(input.inboundTimeoutMs) ||
+      input.inboundTimeoutMs <= 0
+    ) {
+      throw new Error('inboundTimeoutMs must be a positive safe integer');
     }
     const identityKey = JSON.stringify([
       input.connectionId,
@@ -175,6 +209,7 @@ export class WebSocketRequestBroker {
       uid: this.nextGenerationUid++,
       ownerToken: input.ownerToken,
       adapter,
+      inboundTimeoutMs: input.inboundTimeoutMs,
       writer: input.writer,
       ...(input.acceptInboundMethod === undefined
         ? {}
@@ -221,41 +256,41 @@ export class WebSocketRequestBroker {
       request.method.length === 0 ||
       request.profile !== state.handle.profile
     ) {
-      this.runtimeProtocolViolation(
-        request.source,
-        'invalid connection.request broker metadata'
-      );
       this.respond(request.source, {
         requestId: request.requestId,
         outcome: 'protocolError'
       });
+      this.runtimeProtocolViolation(
+        request.source,
+        'invalid connection.request broker metadata'
+      );
       return;
     }
     if (
       request.deadlineAtMs !== undefined &&
       !Number.isFinite(request.deadlineAtMs)
     ) {
-      this.runtimeProtocolViolation(
-        request.source,
-        'invalid connection.request deadline'
-      );
       this.respond(request.source, {
         requestId: request.requestId,
         outcome: 'protocolError'
       });
+      this.runtimeProtocolViolation(
+        request.source,
+        'invalid connection.request deadline'
+      );
       return;
     }
 
     const runtimeKey = this.runtimeKey(request.source, request.requestId);
     if (this.outboundByRuntime.has(runtimeKey)) {
-      this.runtimeProtocolViolation(
-        request.source,
-        'duplicate active connection.request correlation'
-      );
       this.respond(request.source, {
         requestId: request.requestId,
         outcome: 'protocolError'
       });
+      this.runtimeProtocolViolation(
+        request.source,
+        'duplicate active connection.request correlation'
+      );
       return;
     }
     if (
@@ -305,14 +340,14 @@ export class WebSocketRequestBroker {
       this.outboundByPeer.has(peerKey) ||
       this.outboundTombstones.has(peerKey)
     ) {
-      this.runtimeProtocolViolation(
-        request.source,
-        'outbound peer id generator reused an id'
-      );
       this.respond(request.source, {
         requestId: request.requestId,
         outcome: 'protocolError'
       });
+      this.runtimeProtocolViolation(
+        request.source,
+        'outbound peer id generator reused an id'
+      );
       return;
     }
     const entry: OutboundEntry = {
@@ -437,6 +472,7 @@ export class WebSocketRequestBroker {
         this.closeGeneration(
           state,
           'protocolError',
+          INBOUND_PROTOCOL_REASON,
           action.code,
           action.reason
         );
@@ -452,6 +488,7 @@ export class WebSocketRequestBroker {
     this.closeGeneration(
       state,
       'protocolError',
+      INBOUND_PROTOCOL_REASON,
       1003,
       'binary RPC frames are not supported'
     );
@@ -462,7 +499,11 @@ export class WebSocketRequestBroker {
     if (state === undefined || !state.open) {
       return;
     }
-    this.closeGeneration(state, 'transportUnavailable');
+    this.closeGeneration(
+      state,
+      'transportUnavailable',
+      INBOUND_PEER_DISCONNECT_REASON
+    );
   }
 
   debugSnapshot(): WebSocketRequestBrokerSnapshot {
@@ -502,6 +543,7 @@ export class WebSocketRequestBroker {
       this.closeGeneration(
         state,
         'protocolError',
+        INBOUND_PROTOCOL_REASON,
         1002,
         'unknown JSON-RPC response id'
       );
@@ -520,6 +562,7 @@ export class WebSocketRequestBroker {
       this.closeGeneration(
         state,
         'protocolError',
+        INBOUND_PROTOCOL_REASON,
         1002,
         'invalid JSON-RPC response payload'
       );
@@ -544,6 +587,7 @@ export class WebSocketRequestBroker {
       this.closeGeneration(
         state,
         'protocolError',
+        INBOUND_PROTOCOL_REASON,
         1002,
         'duplicate JSON-RPC request id'
       );
@@ -594,9 +638,13 @@ export class WebSocketRequestBroker {
     state.inboundActive += 1;
     this.armDeadline(
       entry,
-      this.clock.now() + this.options.inboundTimeoutMs,
+      this.clock.now() + state.inboundTimeoutMs,
       () => {
-        this.finishInbound(entry, { kind: 'timeout' }, true);
+        this.finishInbound(
+          entry,
+          { kind: 'timeout' },
+          INBOUND_DEADLINE_REASON
+        );
       }
     );
 
@@ -636,6 +684,7 @@ export class WebSocketRequestBroker {
       this.closeGeneration(
         state,
         'protocolError',
+        INBOUND_PROTOCOL_REASON,
         1002,
         'duplicate JSON-RPC request id'
       );
@@ -656,7 +705,11 @@ export class WebSocketRequestBroker {
     if (entry === undefined) {
       return;
     }
-    this.finishInbound(entry, { kind: 'cancelled' }, true);
+    this.finishInbound(
+      entry,
+      { kind: 'cancelled' },
+      INBOUND_CALLER_CANCEL_REASON
+    );
   }
 
   private completeInbound(
@@ -667,13 +720,17 @@ export class WebSocketRequestBroker {
     if (plan === undefined) {
       return;
     }
-    this.finishInbound(entry, plan.terminal, plan.abort);
+    this.finishInbound(
+      entry,
+      plan.terminal,
+      plan.abort ? INBOUND_DEADLINE_REASON : undefined
+    );
   }
 
   private finishInbound(
     entry: InboundEntry,
     terminal: InboundTerminal,
-    abort = false
+    abortReason?: RequestCancelReason
   ): void {
     if (!this.inboundIsActive(entry)) {
       return;
@@ -685,8 +742,8 @@ export class WebSocketRequestBroker {
       terminal
     });
     this.detachInbound(entry);
-    if (abort) {
-      entry.controller.abort();
+    if (abortReason !== undefined) {
+      entry.controller.abort(abortReason);
     }
     this.writeTerminalFrame(entry.generation, frame);
   }
@@ -734,6 +791,7 @@ export class WebSocketRequestBroker {
   private closeGeneration(
     state: GenerationState,
     outboundOutcome: 'transportUnavailable' | 'protocolError',
+    abortReason: RequestCancelReason,
     closeCode?: number,
     closeReason?: string
   ): void {
@@ -759,7 +817,7 @@ export class WebSocketRequestBroker {
     this.inboundTombstones.removeGeneration(state.uid);
 
     for (const entry of inboundEntries) {
-      entry.controller.abort();
+      entry.controller.abort(abortReason);
     }
     for (const entry of outboundEntries) {
       this.respond(entry.source, {
@@ -789,7 +847,11 @@ export class WebSocketRequestBroker {
 
   private writeTerminalFrame(state: GenerationState, frame: string): void {
     this.writePeer(state, frame, () => {
-      this.closeGeneration(state, 'transportUnavailable');
+      this.closeGeneration(
+        state,
+        'transportUnavailable',
+        'gateway_disconnect'
+      );
     });
   }
 

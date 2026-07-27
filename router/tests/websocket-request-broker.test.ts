@@ -7,6 +7,7 @@ import {
   type ProfileLimits
 } from '../src/protocol/jsonRpc20TextProfile.js';
 import {
+  DEFAULT_WEB_SOCKET_REQUEST_BROKER_LIMITS,
   WebSocketRequestBroker,
   type BrokerRuntimeResponse,
   type BrokerRuntimeSource,
@@ -16,6 +17,13 @@ import {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+it('owns one frozen production default limit object', () => {
+  expect(Object.isFrozen(DEFAULT_WEB_SOCKET_REQUEST_BROKER_LIMITS)).toBe(true);
+  expect(DEFAULT_WEB_SOCKET_REQUEST_BROKER_LIMITS.profileLimits).toBe(
+    DEFAULT_JSON_RPC_20_TEXT_LIMITS
+  );
 });
 
 describe('WebSocketRequestBroker outbound core', () => {
@@ -259,6 +267,7 @@ describe('WebSocketRequestBroker outbound core', () => {
       expect.objectContaining({ outcome: 'transportUnavailable' })
     ]);
     expect(harness.dispatches[0]!.signal.aborted).toBe(true);
+    expect(harness.dispatches[0]!.signal.reason).toBe('client_disconnect');
     pending.resolve({
       kind: 'success',
       result: opaqueResult(harness.profile, '{"late":true}')
@@ -269,9 +278,16 @@ describe('WebSocketRequestBroker outbound core', () => {
   });
 
   it('binary/protocol close reports protocolError and closes with 1003', async () => {
-    const harness = createHarness();
+    const pending = deferred<InboundDispatchResult>();
+    const harness = createHarness({
+      dispatchInbound: () => pending.promise
+    });
     const runtime = createRuntime('session-a');
     harness.request(runtime, 'runtime-a');
+    harness.broker.handlePeerText(
+      harness.generation,
+      '{"jsonrpc":"2.0","id":"peer-a","method":"status.get","params":{}}'
+    );
 
     harness.broker.handlePeerBinary(harness.generation);
     await flush();
@@ -282,6 +298,12 @@ describe('WebSocketRequestBroker outbound core', () => {
     expect(runtime.responses).toEqual([
       expect.objectContaining({ outcome: 'protocolError' })
     ]);
+    expect(harness.dispatches[0]!.signal.reason).toBe('protocol_error');
+    pending.resolve({
+      kind: 'success',
+      result: opaqueResult(harness.profile, '{"late":true}')
+    });
+    await flush();
     expectNoActive(harness.broker);
   });
 
@@ -324,6 +346,8 @@ describe('WebSocketRequestBroker outbound core', () => {
       websocketEntryId: 'entry-a',
       ownerToken: {},
       profile: 'jsonrpc-2.0-text',
+      profileAdapter: harness.profile,
+      inboundTimeoutMs: 1_000,
       outboundIdPrefix: 'generation-b',
       writer: replacementPeer
     });
@@ -523,6 +547,7 @@ describe('WebSocketRequestBroker inbound core', () => {
       '{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"peer-a"}}'
     );
     expect(harness.dispatches[0]!.signal.aborted).toBe(true);
+    expect(harness.dispatches[0]!.signal.reason).toBe('caller_cancel');
     completion.resolve({
       kind: 'success',
       result: opaqueResult(harness.profile, '{"late":true}')
@@ -555,6 +580,9 @@ describe('WebSocketRequestBroker inbound core', () => {
     await flush();
 
     expect(harness.dispatches[0]!.signal.aborted).toBe(true);
+    expect(harness.dispatches[0]!.signal.reason).toBe(
+      'deadline_exceeded'
+    );
     expect(harness.peer.writes).toEqual([
       '{"jsonrpc":"2.0","id":"peer-a","error":{"code":-32001,"message":"Request timed out"}}'
     ]);
@@ -835,6 +863,8 @@ function createHarness(options: HarnessOptions = {}) {
     websocketEntryId: 'entry-a',
     ownerToken,
     profile: 'jsonrpc-2.0-text',
+    profileAdapter: profile,
+    inboundTimeoutMs: options.inboundTimeoutMs ?? 1_000,
     outboundIdPrefix: 'generation-a',
     writer: peer,
     acceptInboundMethod: (method) => method === 'status.get'

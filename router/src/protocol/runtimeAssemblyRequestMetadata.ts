@@ -14,6 +14,30 @@ const GATEWAY_ENTRY_IDENTITY_PATTERN =
 const WEBSOCKET_ENTRY_ID_PATTERN =
   /^skiff-websocket-entry-v1:sha256:[0-9a-f]{64}$/;
 
+export function isCanonicalRuntimeAssemblyWebSocketConnectionId(
+  value: unknown,
+): value is string {
+  return typeof value === "string" && CONNECTION_ID_PATTERN.test(value);
+}
+
+export function isCanonicalRuntimeAssemblyWebSocketEntryId(
+  value: unknown,
+): value is string {
+  return typeof value === "string" && WEBSOCKET_ENTRY_ID_PATTERN.test(value);
+}
+
+export function isCanonicalRuntimeAssemblyWebSocketBusinessIdentity(
+  value: unknown,
+): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.trim() === value &&
+    !/\p{Cc}/u.test(value) &&
+    Buffer.byteLength(value, "utf8") <= 1024
+  );
+}
+
 export function validateRuntimeAssemblyRequestMetadata(
   envelope: Record<string, unknown>,
   wireKind: RuntimeAssemblyRequestWireKind,
@@ -105,22 +129,20 @@ function validateWebSocketConnect(envelope: Record<string, unknown>): void {
     ],
     ["version"],
   );
-  requirePattern(
+  requireCanonicalConnectionId(
     connect,
     "connectionId",
     "websocketConnect.connectionId",
-    CONNECTION_ID_PATTERN,
   );
   requireString(connect, "url", "websocketConnect.url");
   validateNameValueArray(connect.query, "websocketConnect.query");
   validateNameValueArray(connect.headers, "websocketConnect.headers");
   validateNameValueArray(connect.cookies, "websocketConnect.cookies");
   optionalString(connect, "version", "websocketConnect.version");
-  requirePattern(
+  requireCanonicalWebSocketEntryId(
     connect,
     "websocketEntryId",
     "websocketConnect.websocketEntryId",
-    WEBSOCKET_ENTRY_ID_PATTERN,
   );
   requirePattern(
     connect,
@@ -159,17 +181,15 @@ function validateWebSocketJsonRpc(
   if (request.profile !== "jsonrpc-2.0-text") {
     fail("websocketJsonRpc.profile must be jsonrpc-2.0-text");
   }
-  requirePattern(
+  requireCanonicalConnectionId(
     request,
     "connectionId",
     "websocketJsonRpc.connectionId",
-    CONNECTION_ID_PATTERN,
   );
-  requirePattern(
+  requireCanonicalWebSocketEntryId(
     request,
     "websocketEntryId",
     "websocketJsonRpc.websocketEntryId",
-    WEBSOCKET_ENTRY_ID_PATTERN,
   );
   requirePattern(
     request,
@@ -177,11 +197,10 @@ function validateWebSocketJsonRpc(
     "websocketJsonRpc.gatewayEntryIdentity",
     GATEWAY_ENTRY_IDENTITY_PATTERN,
   );
-  optionalBoundedCanonicalString(
+  optionalBusinessIdentity(
     request,
     "businessIdentity",
     "websocketJsonRpc.businessIdentity",
-    1024,
   );
   const routing = exactObject(envelope.routing, "routing", [
     "kind",
@@ -242,22 +261,34 @@ function optionalString(
   }
 }
 
-function optionalBoundedCanonicalString(
+function optionalBusinessIdentity(
   owner: Record<string, unknown>,
   field: string,
   label: string,
-  maxBytes: number,
 ): void {
   if (!has(owner, field)) return;
-  const value = owner[field];
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.trim() !== value ||
-    /\p{Cc}/u.test(value) ||
-    Buffer.byteLength(value, "utf8") > maxBytes
-  ) {
+  if (!isCanonicalRuntimeAssemblyWebSocketBusinessIdentity(owner[field])) {
     fail(`${label} must be a bounded non-empty canonical string`);
+  }
+}
+
+function requireCanonicalConnectionId(
+  owner: Record<string, unknown>,
+  field: string,
+  label: string,
+): void {
+  if (!isCanonicalRuntimeAssemblyWebSocketConnectionId(owner[field])) {
+    fail(`${label} is not canonical`);
+  }
+}
+
+function requireCanonicalWebSocketEntryId(
+  owner: Record<string, unknown>,
+  field: string,
+  label: string,
+): void {
+  if (!isCanonicalRuntimeAssemblyWebSocketEntryId(owner[field])) {
+    fail(`${label} is not canonical`);
   }
 }
 

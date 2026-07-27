@@ -1,9 +1,10 @@
-import type {
-  OpaquePayload,
-  OpaquePeerId,
-  ProfileId,
-  ProfileLimits,
-  WebSocketRpcProfileAdapter
+import {
+  DEFAULT_JSON_RPC_20_TEXT_LIMITS,
+  type OpaquePayload,
+  type OpaquePeerId,
+  type ProfileId,
+  type ProfileLimits,
+  type WebSocketRpcProfileAdapter
 } from '../protocol/jsonRpc20TextProfile.js';
 
 export interface CapturedPeerWriter {
@@ -83,8 +84,7 @@ export interface WebSocketRequestBrokerClock {
   clearTimeout(handle: unknown): void;
 }
 
-export interface WebSocketRequestBrokerOptions {
-  readonly profiles: readonly WebSocketRpcProfileAdapter[];
+export interface WebSocketRequestBrokerLimits {
   readonly profileLimits: ProfileLimits;
   readonly outboundGlobalCapacity: number;
   readonly outboundPerGenerationCapacity: number;
@@ -95,6 +95,25 @@ export interface WebSocketRequestBrokerOptions {
   readonly outboundTombstoneTtlMs: number;
   readonly inboundTombstoneTtlMs: number;
   readonly inboundTimeoutMs: number;
+}
+
+export const DEFAULT_WEB_SOCKET_REQUEST_BROKER_LIMITS:
+  WebSocketRequestBrokerLimits = Object.freeze({
+    profileLimits: DEFAULT_JSON_RPC_20_TEXT_LIMITS,
+    outboundGlobalCapacity: 4_096,
+    outboundPerGenerationCapacity: 128,
+    inboundGlobalCapacity: 4_096,
+    inboundPerGenerationCapacity: 128,
+    outboundTombstoneCapacity: 4_096,
+    inboundTombstoneCapacity: 4_096,
+    outboundTombstoneTtlMs: 60_000,
+    inboundTombstoneTtlMs: 60_000,
+    inboundTimeoutMs: 120_000
+  });
+
+export interface WebSocketRequestBrokerOptions
+  extends WebSocketRequestBrokerLimits {
+  readonly profiles: readonly WebSocketRpcProfileAdapter[];
   readonly clock?: WebSocketRequestBrokerClock;
   readonly dispatchInbound: (
     action: InboundDispatchAction
@@ -113,6 +132,8 @@ export interface AttachBrokerGenerationOptions {
   readonly websocketEntryId: string;
   readonly ownerToken: unknown;
   readonly profile: ProfileId;
+  readonly profileAdapter: WebSocketRpcProfileAdapter;
+  readonly inboundTimeoutMs: number;
   readonly outboundIdPrefix: string;
   readonly writer: CapturedPeerWriter;
   readonly acceptInboundMethod?: (method: string) => boolean;
