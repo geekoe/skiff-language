@@ -45,12 +45,17 @@ reference拥有。
 - 上述eval文件的colocated tests
 - `runtime/host/src/capability_context/native_projection.rs`
 - `runtime/host/src/eval_capability_adapter/{websocket.rs,factory.rs,mod.rs}`
-- F440P新增的Host connection-request tests所需机械call-site
+- `runtime/host/src/host/request_entry/{assembly.rs,assembly_wire.rs}`只允许把F440P已冻结的captured
+  Router session/registry参数机械贯穿到现有capability construction
+- Host loader范围只允许修补current model字段导致的test fixture compile mask，不得修改loader
+  production behavior
+- F440P新增的Host connection-request tests所需其它机械call-site
 - 本leaf result
 
 禁止修改std/public ABI、artifact gateway schema、wire/registry语义、`runtime/request`、新
-`runtime_websocket_jsonrpc*`、Host request-entry/loader、Router、fixture、test-runner、scripts、其它
-task/result。不得派子Agent。
+`runtime_websocket_jsonrpc*`、Host request-entry/loader的target、routing、wire或production loader
+语义、Router、fixture、test-runner、scripts、其它task/result。上述request-entry参数贯穿与loader
+test fixture compile mask是唯一窄例外。不得派子Agent。
 
 ## Exact owner与调用边界
 
