@@ -1,11 +1,12 @@
 # P5-F445H-E3 Actor concurrent continuation bridge result
 
-状态：`IMPLEMENTATION_COMPLETE / EVAL_GREEN`。
+状态：`IMPLEMENTATION_COMPLETE / EVAL_GREEN / CORRECTION_GREEN`。
 
 E3 已完成 Actor concurrent continuation bridge。outer 当前同步 segment 只提交一次；每个 lane
 拥有独立 lease slot，并继续通过真实 `ActorInstanceStore` scheduler 串行化同步 segment。只有
 future 首次真实返回 `Pending` 才释放 segment，因此多个外部异步操作可以同时 pending，ready
-future 仍留在当前 segment 内。
+future 仍留在当前 segment 内。独立验收修正后，child continuation 也可以按同一合同嵌套 bridge；
+每一层 gate 独立跟踪其直接 child，最外层 lane 在嵌套期间保持 open。
 
 本节点没有修改 `actor_instance.rs`、`eval_context.rs` 或 Actor ABI，也没有引入
 `maySuspend` 运行时分支、兼容路径或 fallback。
@@ -17,6 +18,7 @@ future 仍留在当前 segment 内。
 | production prerequisite | `648627fe` |
 | task document | `141653da` |
 | implementation | `bc4f3719` |
+| independent acceptance correction | `d80271e7` |
 
 implementation 写集精确为：
 
@@ -25,7 +27,7 @@ implementation 写集精确为：
 - `runtime/eval/src/actor_executor/actor_concurrent_continuation/bridge.rs`
 - `runtime/eval/src/actor_executor/tests/actor_concurrent_continuation_tests.rs`
 
-既有 `ActorExecutionFrame` 从 1200 行以上的 root 移入 392 行 child module；297 行的 bridge
+既有 `ActorExecutionFrame` 从 1200 行以上的 root 移入 405 行 child module；291 行的 bridge
 module 独立负责 lane ownership、active-child gate 与 RAII cleanup。root 只保留 module 声明、
 E4 后继所需的 crate-private re-export 和 test module 声明。
 
@@ -49,6 +51,30 @@ CARGO_TARGET_DIR=/Users/geek/workspace/skiff-p5-f445h-e3-actor-continuation/buil
 该 RED 来自缺失的 concurrent continuation 合同，不来自旧 exhaustive match、mock scheduler
 或写集外组件。随后才加入 production bridge，并扩展完整行为矩阵。
 
+独立验收指出嵌套 bridge 被错误拒绝，以及已安装 lease 的 frame 调用 `resume` 会在同一 scheduler
+上自等待。修正仍先加入两个 focused 测试：
+
+```text
+CARGO_TARGET_DIR=/tmp/skiff-p5-f445h-e3-actor-continuation-target \
+  cargo test -p skiff-runtime-eval \
+  actor_concurrent_continuation_nested_bridge_composes_both_gates_and_commits \
+  -- --nocapture
+
+CARGO_TARGET_DIR=/tmp/skiff-p5-f445h-e3-actor-continuation-target \
+  cargo test -p skiff-runtime-eval \
+  actor_concurrent_continuation_resume_with_installed_lease_fails_on_first_poll \
+  -- --nocapture
+```
+
+两次均为预期 RED，exit `101`：
+
+- 嵌套测试收到 `Actor child continuation cannot create a nested outer bridge`；
+- installed-lease 测试第一次直接 poll 得到 `Pending`，触发
+  `resume with an installed lease must fail before scheduler acquisition`。
+
+第二个测试不使用 timeout；它只 poll 一次，直接证明失败必须发生在 scheduler acquisition 之前。
+随后修正 production，并提交 `d80271e7`。
+
 ## 3. Frame、scheduler 与 actual-Pending
 
 parent 与所有 child frame 共享一个不可变 continuation metadata `Arc`，其中包含 store、handle、
@@ -66,6 +92,10 @@ child 在进入同步 Actor 代码前调用真实 store `acquire_execution`。st
 继续保证同一 incarnation 任一时刻最多一个同步 segment。resume acquisition 使用
 cancellation-safe permit；等待 acquire 的 future 被取消或报错时，lane 不会永久停在 acquiring
 状态，也不会安装 lease。
+
+`resume` 在 outer gate、budget 与 store acquire 之前先检查当前 lease slot。slot 已安装时稳定返回
+`InvalidArtifact("Actor continuation attempted to resume while an execution token is already installed")`，
+因此不会对自己持有的 scheduler guard 发起 acquire。acquire 后仍保留同一错误的竞态复查。
 
 既有 `await_if_pending` poll-once 语义原样保留在 frame core：
 
@@ -90,6 +120,13 @@ outer 只能通过 gate 为零后的 `resume_parent` 重新进入 scheduler。�
 后，outer 从 store 读取最新 committed fields；传入的 outer heap 不被替换，因此 continuation-local
 heap handle 继续有效。
 
+嵌套 bridge 复用相同状态机而不共享 gate：开始嵌套时，outer child 提交并释放它在直接 parent
+gate 上的 active segment，但该 lane 的 remaining-child 计数保持 open；嵌套 lanes 只登记到新
+gate。嵌套 parent 恢复时重新取得 outer child 的 segment，使直接 parent gate 从 0 个 held
+segment 回到 1 个；outer child 最终完成后，最外层 gate 才归零。真实 store 测试逐步验证字段
+`2 -> 3 -> 4 -> 5` 的提交可见性、两层 gate 的 `0/1` held-segment 计数、最终 outer restore，
+并通过后续 linked Actor 调用证明没有 scheduler guard 泄漏。
+
 replacement、stale epoch、cancel 和 deadline budget error 都沿既有错误类型返回。失败路径保持
 child frame 无 lease，且 RAII cleanup 不泄漏 scheduler guard。
 
@@ -106,20 +143,23 @@ child frame 无 lease，且 RAII cleanup 不泄漏 scheduler guard。
 | outer fail closed，结束后恢复 | remaining-child gate + `resume_parent` | error/drop test 和 winner test 都先/后验证 gate |
 | winner 取消全部 child | `abandon` 与 bridge fail-safe cleanup | `winner_abandons_all_children_before_outer_resume` |
 | outer local heap 保留 | resume 只 codec-import Actor fields | `commits_children_in_order_and_preserves_outer_heap` |
-| 单 continuation 不回归 | frame core 行为未改成 preemptive path | 既有 buffered、pending、stale、cancel tests 全部包含在 19/19 filter 中 |
+| child 可嵌套 bridge | 每层 frame 自有 `outer_gate`；child state 只更新直接 parent gate | `nested_bridge_composes_both_gates_and_commits` 验证两层 gate、字段提交、outer restore 与无 lease 泄漏 |
+| installed lease fail closed | `resume` 在 gate/budget/store acquire 前检查 lease slot | `resume_with_installed_lease_fails_on_first_poll` 不使用 timeout，首 poll 即获稳定 `InvalidArtifact` |
+| 单 continuation 不回归 | frame core 行为未改成 preemptive path | 既有 buffered、pending、stale、cancel tests 全部包含在 21/21 filter 中 |
 
 ## 6. 验证
 
-所有 Cargo 命令使用独立 target：
+首次实现的 Cargo 命令使用 worktree 内独立 target；独立验收修正使用另一个独立 target：
 
 ```text
 /Users/geek/workspace/skiff-p5-f445h-e3-actor-continuation/build/cargo-target
+/tmp/skiff-p5-f445h-e3-actor-continuation-target
 ```
 
 | 命令 | 结果 |
 | --- | --- |
-| `cargo test -p skiff-runtime-eval actor_concurrent_continuation -- --nocapture` | PASS：实际执行 8/8 unit tests；其它 test binary 为 0 个匹配测试，不计作证据 |
-| `cargo test -p skiff-runtime-eval actor_executor::tests -- --nocapture` | PASS：实际执行 19/19 unit tests，其中 8 个新 bridge tests、11 个既有 executor tests |
+| `cargo test -p skiff-runtime-eval actor_concurrent_continuation -- --nocapture` | PASS：实际执行 10/10 unit tests；其它 test binary 为 0 个匹配测试，不计作证据 |
+| `cargo test -p skiff-runtime-eval actor_executor::tests -- --nocapture` | PASS：实际执行 21/21 unit tests，其中 10 个 bridge tests、11 个既有 executor tests |
 | `cargo check -p skiff-runtime-eval --locked` | PASS |
 | `cargo fmt --check` | PASS |
 | `git diff --check` | PASS |
@@ -136,7 +176,7 @@ rg 'may_suspend|maySuspend|native_call_suspends|suspend_actor_segment' \
   runtime/eval/src/actor_executor/tests/actor_concurrent_continuation_tests.rs
 ```
 
-结果为空。`git diff 141653da..bc4f3719 -- runtime/eval/src/actor_instance.rs
+结果为空。`git diff 141653da..d80271e7 -- runtime/eval/src/actor_instance.rs
 runtime/eval/src/eval_context.rs` 同样为空，确认没有越过禁止写集。
 
 ## 7. E4 后继接口
