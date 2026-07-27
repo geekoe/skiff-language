@@ -61,7 +61,6 @@ impl TypedExecutionRuntime {
             activation_identity: None,
             ingress_selector: None,
             http_adapter: None,
-            websocket_adapter: None,
             binary_http: None,
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
@@ -207,6 +206,7 @@ impl TypedExecutionRuntime {
             outbound,
             request_heap_limits: self.heap_limits.clone(),
         })
+        .with_websocket_capability_rebinder(eval_capability_adapter::websocket_rebinder(None))
         .with_runtime_assembly_target(target.clone())
     }
 }

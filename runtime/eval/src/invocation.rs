@@ -316,15 +316,6 @@ pub enum AdapterArgSource {
     HttpRequest,
     HttpBody,
     HttpContext,
-    WebSocketIngressEvent,
-    WebSocketConnectRequest,
-    WebSocketReceiveEvent,
-    WebSocketConnection,
-    WebSocketConnectionContext,
-    WebSocketMessage,
-    WebSocketMessageBody,
-    WebSocketConnectionId,
-    WebSocketBusinessIdentity,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -364,123 +355,6 @@ pub enum HttpAdapterResponseProjection {
     InvalidArtifact(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WebSocketAdapterProjectionKind {
-    Connect,
-    Receive,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EvalWebSocketContextExpectation {
-    Null,
-    Typed {
-        connect_operation_abi_id: String,
-        context_type_identity: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvalWebSocketContextCodec {
-    pub operation_abi_id: String,
-    pub context_type_identity: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum EvalWebSocketAdapterResult {
-    ConnectAccept(EvalWebSocketConnectAccept),
-    ConnectReject(EvalWebSocketConnectReject),
-    Receive,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct EvalWebSocketConnectAccept {
-    pub business_identity: Option<String>,
-    pub connection_policy:
-        Option<skiff_runtime_capability_context::WebSocketConnectionPolicyControl>,
-    pub context: EvalWebSocketConnectContext,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EvalWebSocketConnectContext {
-    Null,
-    Typed {
-        payload: Vec<u8>,
-        codec: EvalWebSocketContextCodec,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvalWebSocketConnectReject {
-    pub code: u16,
-    pub reason: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvalWebSocketNameValue {
-    pub name: String,
-    pub value: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvalWebSocketConnectRequest {
-    pub connection_id: String,
-    pub url: String,
-    pub query: Vec<EvalWebSocketNameValue>,
-    pub headers: Vec<EvalWebSocketNameValue>,
-    pub cookies: Vec<EvalWebSocketNameValue>,
-    pub version: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvalWebSocketReceiveRequest {
-    pub connection_id: String,
-    pub business_identity: Option<String>,
-    pub message: EvalWebSocketMessage,
-    pub context_codec: Option<EvalWebSocketContextCodec>,
-    pub payload_segments: Vec<EvalWebSocketPayloadSegment>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EvalWebSocketMessage {
-    pub tag: EvalWebSocketMessageTag,
-    pub encoding: EvalWebSocketMessageEncoding,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EvalWebSocketMessageTag {
-    Text,
-    Binary,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EvalWebSocketMessageEncoding {
-    Utf8,
-    Raw,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvalWebSocketPayloadSegment {
-    pub kind: EvalWebSocketPayloadSegmentKind,
-    pub offset: usize,
-    pub length: usize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EvalWebSocketPayloadSegmentKind {
-    Context,
-    Message,
-}
-
-#[derive(Clone)]
-pub struct WebSocketAdapterProjection<'a> {
-    pub kind: WebSocketAdapterProjectionKind,
-    pub handler: Box<EvalInvocation<'a>>,
-    pub handler_args: Vec<AdapterArgPlan>,
-    pub context_expectation: Option<EvalWebSocketContextExpectation>,
-    pub connect_request: Option<EvalWebSocketConnectRequest>,
-    pub receive_request: Option<EvalWebSocketReceiveRequest>,
-}
-
 #[derive(Clone)]
 pub enum EvalBoundaryProjection<'a> {
     RuntimeUnary {
@@ -498,9 +372,6 @@ pub enum EvalBoundaryProjection<'a> {
     AdapterCallable,
     HttpAdapter {
         adapter: HttpAdapterProjection<'a>,
-    },
-    WebSocketAdapter {
-        adapter: WebSocketAdapterProjection<'a>,
     },
 }
 

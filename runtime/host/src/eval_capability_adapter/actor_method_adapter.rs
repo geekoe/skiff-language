@@ -118,7 +118,6 @@ impl ActorMethodEvalExecution {
             ingress_selector: None,
             binary_http: None,
             http_adapter: None,
-            websocket_adapter: None,
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
             payload_bytes: Vec::new(),
@@ -244,6 +243,7 @@ impl ActorMethodEvalExecution {
             ),
             request_heap_limits: self.request_heap_limits.clone(),
         })
+        .with_websocket_capability_rebinder(websocket_rebinder(self.router_sender.as_ref()))
         .with_runtime_assembly_target(target))
     }
 }

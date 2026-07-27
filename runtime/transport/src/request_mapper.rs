@@ -4,10 +4,7 @@ use serde_json::Value;
 use skiff_runtime_request_contract::{
     BinaryHttpRequest, BinaryHttpRequestMetadata, GatewayAdapterArg, GatewayAdapterSource,
     HttpAdapter, HttpAdapterCallable, HttpAdapterKind, HttpNameValue, RequestCancel,
-    RequestEffectDouble, RequestEnvelope, WebSocketAdapter, WebSocketAdapterKind,
-    WebSocketConnectRequest, WebSocketContextCodec, WebSocketContextExpectation, WebSocketMessage,
-    WebSocketMessageEncoding, WebSocketMessageTag, WebSocketPayloadSegment,
-    WebSocketPayloadSegmentKind, WebSocketReceiveRequest,
+    RequestEffectDouble, RequestEnvelope,
 };
 
 use crate::ingress_selector::ingress_selector_from_start_frame;
@@ -16,13 +13,7 @@ use crate::protocol::{
     RuntimeGatewayAdapterArgFrameHeader, RuntimeGatewayAdapterSourceFrameHeader,
     RuntimeHttpAdapterCallableFrameHeader, RuntimeHttpAdapterFrameHeader,
     RuntimeHttpAdapterKindFrameHeader, RuntimeHttpNameValueFrameHeader,
-    RuntimeHttpRequestFrameHeader, RuntimeWebSocketAdapterFrameHeader,
-    RuntimeWebSocketAdapterKindFrameHeader, RuntimeWebSocketConnectRequestFrameHeader,
-    RuntimeWebSocketContextCodecFrameHeader, RuntimeWebSocketContextExpectationFrameHeader,
-    RuntimeWebSocketMessageEncodingFrameHeader, RuntimeWebSocketMessageFrameHeader,
-    RuntimeWebSocketMessageTagFrameHeader, RuntimeWebSocketPayloadSegmentFrameHeader,
-    RuntimeWebSocketPayloadSegmentKindFrameHeader, RuntimeWebSocketReceiveRequestFrameHeader,
-    RUNTIME_FRAME_SCHEMA_VERSION,
+    RuntimeHttpRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 
 pub fn request_envelope_from_start_frame(
@@ -59,7 +50,6 @@ pub fn request_envelope_from_start_frame(
         ingress_selector: Some(ingress_selector),
         binary_http: binary_http_request_from_frame(header.http_request.clone(), &payload_bytes),
         http_adapter: http_adapter_from_frame(header.http_adapter.clone()),
-        websocket_adapter: websocket_adapter_from_frame(header.websocket_adapter.clone()),
         test_effects_enabled: header.test_effects_enabled,
         test_effect_doubles: request_effect_doubles_from_frame(&header.test_effect_doubles),
         payload_bytes,
@@ -152,136 +142,6 @@ fn gateway_adapter_source_from_frame(
         RuntimeGatewayAdapterSourceFrameHeader::HttpRequest => GatewayAdapterSource::HttpRequest,
         RuntimeGatewayAdapterSourceFrameHeader::HttpBody => GatewayAdapterSource::HttpBody,
         RuntimeGatewayAdapterSourceFrameHeader::HttpContext => GatewayAdapterSource::HttpContext,
-        RuntimeGatewayAdapterSourceFrameHeader::WebSocketConnectRequest => {
-            GatewayAdapterSource::WebSocketConnectRequest
-        }
-        RuntimeGatewayAdapterSourceFrameHeader::WebSocketReceiveEvent => {
-            GatewayAdapterSource::WebSocketReceiveEvent
-        }
-        RuntimeGatewayAdapterSourceFrameHeader::WebSocketConnection => {
-            GatewayAdapterSource::WebSocketConnection
-        }
-        RuntimeGatewayAdapterSourceFrameHeader::WebSocketConnectionContext => {
-            GatewayAdapterSource::WebSocketConnectionContext
-        }
-        RuntimeGatewayAdapterSourceFrameHeader::WebSocketMessage => {
-            GatewayAdapterSource::WebSocketMessage
-        }
-        RuntimeGatewayAdapterSourceFrameHeader::WebSocketMessageBody => {
-            GatewayAdapterSource::WebSocketMessageBody
-        }
-        RuntimeGatewayAdapterSourceFrameHeader::WebSocketConnectionId => {
-            GatewayAdapterSource::WebSocketConnectionId
-        }
-        RuntimeGatewayAdapterSourceFrameHeader::WebSocketBusinessIdentity => {
-            GatewayAdapterSource::WebSocketBusinessIdentity
-        }
-    }
-}
-
-fn websocket_adapter_from_frame(
-    metadata: Option<RuntimeWebSocketAdapterFrameHeader>,
-) -> Option<WebSocketAdapter> {
-    metadata.map(|metadata| WebSocketAdapter {
-        kind: match metadata.kind {
-            RuntimeWebSocketAdapterKindFrameHeader::Connect => WebSocketAdapterKind::Connect,
-            RuntimeWebSocketAdapterKindFrameHeader::Receive => WebSocketAdapterKind::Receive,
-        },
-        adapter_args: gateway_adapter_args_from_frame(metadata.adapter_args),
-        context_expectation: metadata
-            .context_expectation
-            .map(websocket_context_expectation_from_frame),
-        connect_request: metadata
-            .connect_request
-            .map(websocket_connect_request_from_frame),
-        receive_request: metadata
-            .receive_request
-            .map(websocket_receive_request_from_frame),
-    })
-}
-
-fn websocket_context_expectation_from_frame(
-    expectation: RuntimeWebSocketContextExpectationFrameHeader,
-) -> WebSocketContextExpectation {
-    match expectation {
-        RuntimeWebSocketContextExpectationFrameHeader::Null => WebSocketContextExpectation::Null,
-        RuntimeWebSocketContextExpectationFrameHeader::Typed {
-            connect_operation_abi_id,
-            context_type_identity,
-        } => WebSocketContextExpectation::Typed {
-            connect_operation_abi_id,
-            context_type_identity,
-        },
-    }
-}
-
-fn websocket_context_codec_from_frame(
-    codec: RuntimeWebSocketContextCodecFrameHeader,
-) -> WebSocketContextCodec {
-    WebSocketContextCodec {
-        operation_abi_id: codec.operation_abi_id,
-        context_type_identity: codec.context_type_identity,
-    }
-}
-
-fn websocket_connect_request_from_frame(
-    request: RuntimeWebSocketConnectRequestFrameHeader,
-) -> WebSocketConnectRequest {
-    WebSocketConnectRequest {
-        connection_id: request.connection_id,
-        url: request.url,
-        query: http_name_values_from_frame(request.query),
-        headers: http_name_values_from_frame(request.headers),
-        cookies: http_name_values_from_frame(request.cookies),
-        version: request.version,
-    }
-}
-
-fn websocket_receive_request_from_frame(
-    request: RuntimeWebSocketReceiveRequestFrameHeader,
-) -> WebSocketReceiveRequest {
-    WebSocketReceiveRequest {
-        connection_id: request.connection_id,
-        business_identity: request.business_identity,
-        message: websocket_message_from_frame(request.message),
-        context_codec: request
-            .context_codec
-            .map(websocket_context_codec_from_frame),
-        payload_segments: request
-            .payload_segments
-            .into_iter()
-            .map(websocket_payload_segment_from_frame)
-            .collect(),
-    }
-}
-
-fn websocket_message_from_frame(message: RuntimeWebSocketMessageFrameHeader) -> WebSocketMessage {
-    WebSocketMessage {
-        tag: match message.tag {
-            RuntimeWebSocketMessageTagFrameHeader::Text => WebSocketMessageTag::Text,
-            RuntimeWebSocketMessageTagFrameHeader::Binary => WebSocketMessageTag::Binary,
-        },
-        encoding: match message.encoding {
-            RuntimeWebSocketMessageEncodingFrameHeader::Utf8 => WebSocketMessageEncoding::Utf8,
-            RuntimeWebSocketMessageEncodingFrameHeader::Raw => WebSocketMessageEncoding::Raw,
-        },
-    }
-}
-
-fn websocket_payload_segment_from_frame(
-    segment: RuntimeWebSocketPayloadSegmentFrameHeader,
-) -> WebSocketPayloadSegment {
-    WebSocketPayloadSegment {
-        kind: match segment.kind {
-            RuntimeWebSocketPayloadSegmentKindFrameHeader::Context => {
-                WebSocketPayloadSegmentKind::Context
-            }
-            RuntimeWebSocketPayloadSegmentKindFrameHeader::Message => {
-                WebSocketPayloadSegmentKind::Message
-            }
-        },
-        offset: segment.offset,
-        length: segment.length,
     }
 }
 
@@ -331,24 +191,6 @@ fn request_start_extra_from_frame(
     if let Some(selector) = &header.selector {
         extra.insert("selector".to_string(), Value::String(selector.clone()));
     }
-    if let Some(business_identity) = &header.business_identity {
-        extra.insert(
-            "businessIdentity".to_string(),
-            Value::String(business_identity.clone()),
-        );
-    }
-    if let Some(websocket_entry_id) = &header.websocket_entry_id {
-        extra.insert(
-            "websocketEntryId".to_string(),
-            Value::String(websocket_entry_id.clone()),
-        );
-    }
-    if let Some(websocket_adapter) = &header.websocket_adapter {
-        extra.insert(
-            "websocketAdapter".to_string(),
-            serde_json::to_value(websocket_adapter).unwrap_or(Value::Null),
-        );
-    }
     if let Some(client_session) = &header.client_session {
         extra.insert(
             "clientSession".to_string(),
@@ -382,13 +224,10 @@ mod tests {
         RuntimeGatewayAdapterSourceFrameHeader, RuntimeHttpAdapterCallableFrameHeader,
         RuntimeHttpAdapterFrameHeader, RuntimeHttpAdapterKindFrameHeader,
         RuntimeHttpNameValueFrameHeader, RuntimeHttpRequestFrameHeader,
-        RuntimeTraceContextFrameHeader, RuntimeWebSocketAdapterFrameHeader,
-        RuntimeWebSocketAdapterKindFrameHeader, RuntimeWebSocketConnectRequestFrameHeader,
-        RUNTIME_FRAME_SCHEMA_VERSION,
+        RuntimeTraceContextFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     };
     use skiff_runtime_request_contract::{
         GatewayAdapterSource, HttpAdapterCallable, HttpAdapterKind, RuntimeClientSessionControl,
-        WebSocketAdapterKind,
     };
 
     #[test]
@@ -413,8 +252,6 @@ mod tests {
                 service_protocol_identity: "protocol-1".to_string(),
                 activation_identity: Some("activation-1".to_string()),
                 gateway_entry_identity: Some("gateway-entry-1".to_string()),
-                business_identity: Some("business-1".to_string()),
-                websocket_entry_id: Some("ws-entry-1".to_string()),
                 client_session: Some(RuntimeClientSessionControl {
                     id: "client".to_string(),
                 }),
@@ -454,7 +291,6 @@ mod tests {
                         source: RuntimeGatewayAdapterSourceFrameHeader::HttpRequest,
                     }],
                 }),
-                websocket_adapter: None,
                 test_effects_enabled: true,
                 test_effect_doubles: [(
                     "effect.target".to_string(),
@@ -509,8 +345,6 @@ mod tests {
             GatewayAdapterSource::HttpRequest
         );
 
-        assert!(request.websocket_adapter.is_none());
-
         let doubles = request
             .test_effect_doubles
             .get("effect.target")
@@ -529,46 +363,6 @@ mod tests {
                 .get("trace")
                 .and_then(|value| value.get("traceId")),
             Some(&json!("trace-1"))
-        );
-    }
-
-    #[test]
-    fn websocket_connect_frame_maps_with_canonical_ingress_selector() {
-        let mut header = minimal_request_start_header(
-            RUNTIME_FRAME_SCHEMA_VERSION,
-            "request.start",
-            "legacy-build-display-only",
-        );
-        header.websocket_adapter = Some(RuntimeWebSocketAdapterFrameHeader {
-            kind: RuntimeWebSocketAdapterKindFrameHeader::Connect,
-            adapter_args: Vec::new(),
-            context_expectation: None,
-            connect_request: Some(RuntimeWebSocketConnectRequestFrameHeader {
-                connection_id: "conn-1".to_string(),
-                url: "wss://socket.example.com/chat?token=opaque".to_string(),
-                query: Vec::new(),
-                headers: Vec::new(),
-                cookies: Vec::new(),
-                version: Some("13".to_string()),
-            }),
-            receive_request: None,
-        });
-
-        let request = request_envelope_from_start_frame(header, Vec::new())
-            .expect("WebSocket connect should map");
-        let ingress = request
-            .ingress_selector
-            .expect("WebSocket connect should project canonical ingress");
-        assert_eq!(ingress.protocol, IngressProtocol::WebSocket);
-        assert_eq!(ingress.host, "socket.example.com");
-        assert!(ingress.method.is_none());
-        assert_eq!(ingress.path, "/chat");
-        assert_eq!(
-            request
-                .websocket_adapter
-                .expect("WebSocket adapter should map")
-                .kind,
-            WebSocketAdapterKind::Connect
         );
     }
 
@@ -641,8 +435,6 @@ mod tests {
             service_protocol_identity: "protocol-1".to_string(),
             activation_identity: None,
             gateway_entry_identity: None,
-            business_identity: None,
-            websocket_entry_id: None,
             client_session: None,
             deadline: None,
             trace: RuntimeTraceContextFrameHeader {
@@ -653,7 +445,6 @@ mod tests {
             },
             http_request: None,
             http_adapter: None,
-            websocket_adapter: None,
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
         }

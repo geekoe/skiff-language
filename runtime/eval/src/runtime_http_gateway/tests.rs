@@ -651,6 +651,7 @@ fn execution_context<'a>(
         outbound: test_runtime::outbound_context(),
         request_heap_limits: RequestHeapLimits::default(),
     })
+    .with_websocket_capability_rebinder(test_runtime::websocket_rebinder())
     .with_runtime_assembly_target(target)
 }
 

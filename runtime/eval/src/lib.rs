@@ -54,14 +54,12 @@ mod test_effect_registry;
 pub mod test_support;
 pub mod type_descriptor;
 pub mod type_projection;
-pub mod websocket_adapter;
 
 use env::{Env, Flow};
 use runtime_ops::*;
 
 pub use assembly_execution::{
-    dispatch_ingress_via_in_process_boundary, dispatch_websocket_ingress_via_in_process_boundary,
-    AdmittedWebSocketIngressIdentity, InProcessBoundaryIngressResponse,
+    dispatch_ingress_via_in_process_boundary, InProcessBoundaryIngressResponse,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use assembly_execution::{
@@ -84,15 +82,7 @@ pub use program_invocation::ProgramInvocationContext as EvalProgramContext;
 pub use request_boundary::{
     EvalRequestInvocation, EvalRequestInvocationArg, EvalRequestInvocationArgFrom,
     EvalRequestInvocationCallable, EvalRequestInvocationHttpAdapter, EvalRequestInvocationHttpKind,
-    EvalRequestInvocationInput, EvalRequestInvocationMode, EvalRequestInvocationWebSocketAdapter,
-    EvalRequestInvocationWebSocketConnectRequest, EvalRequestInvocationWebSocketContextCodec,
-    EvalRequestInvocationWebSocketContextExpectation, EvalRequestInvocationWebSocketKind,
-    EvalRequestInvocationWebSocketMessage, EvalRequestInvocationWebSocketMessageEncoding,
-    EvalRequestInvocationWebSocketMessageTag, EvalRequestInvocationWebSocketNameValue,
-    EvalRequestInvocationWebSocketPayloadSegment, EvalRequestInvocationWebSocketPayloadSegmentKind,
-    EvalRequestInvocationWebSocketReceiveRequest, EvalRequestWebSocketAdapterResult,
-    EvalRequestWebSocketConnectAccept, EvalRequestWebSocketConnectContext,
-    EvalRequestWebSocketConnectReject, EvalRequestWebSocketContextCodec,
+    EvalRequestInvocationInput, EvalRequestInvocationMode,
 };
 pub use runtime_http_gateway::{RuntimeHttpGatewayCallable, RuntimeHttpGatewayExecutionTarget};
 pub use runtime_websocket_connect::{

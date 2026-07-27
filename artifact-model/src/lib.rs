@@ -46,7 +46,6 @@ pub mod service_unit;
 pub mod symbols;
 pub mod targets;
 pub mod types;
-pub mod websocket_ingress;
 
 pub use activation_lexical::{
     deserialize_activation_generation, runtime_assembly_identity_hash,
@@ -228,10 +227,5 @@ pub use types::{
     FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, LiteralIr, NamedUnionBranchIr,
     NominalTypeRefBaseIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
 };
-pub use websocket_ingress::{
-    websocket_ingress_context, WebSocketIngressContext, WebSocketIngressContractError,
-    WEBSOCKET_CONNECT_RESULT_TYPE, WEBSOCKET_INGRESS_EVENT_TYPE, WEBSOCKET_INGRESS_OPERATION_NAME,
-};
-
 #[cfg(test)]
 mod tests;

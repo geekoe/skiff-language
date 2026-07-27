@@ -1872,7 +1872,6 @@ fn test_request() -> RequestEnvelope {
         activation_identity: None,
         ingress_selector: None,
         http_adapter: None,
-        websocket_adapter: None,
         binary_http: None,
         test_effects_enabled: false,
         test_effect_doubles: Default::default(),

@@ -65,7 +65,6 @@ fn request_with_deadline(deadline: Value) -> RequestEnvelope {
         ingress_selector: None,
         binary_http: None,
         http_adapter: None,
-        websocket_adapter: None,
         test_effects_enabled: false,
         test_effect_doubles: HashMap::new(),
         payload_bytes: Vec::new(),

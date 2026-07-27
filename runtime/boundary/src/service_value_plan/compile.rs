@@ -1,9 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    websocket_ingress::{
-        canonical_websocket_shape_spec, WebSocketShape, WebSocketShapeId, WebSocketShapeType,
-    },
     ContractLiteral, ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeId,
     PackageSchemaTypeRecord,
 };
@@ -36,7 +33,6 @@ struct ServiceValuePlanCompiler<'schema> {
     schema: &'schema PackageSchema,
     active_contract_types: BTreeSet<PackageSchemaTypeId>,
     compiled_contract_types: BTreeMap<PackageSchemaTypeId, RuntimeTypePlan>,
-    active_websocket_shapes: BTreeSet<WebSocketShapeId>,
 }
 
 impl<'schema> ServiceValuePlanCompiler<'schema> {
@@ -45,7 +41,6 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
             schema,
             active_contract_types: BTreeSet::new(),
             compiled_contract_types: BTreeMap::new(),
-            active_websocket_shapes: BTreeSet::new(),
         }
     }
 
@@ -152,26 +147,6 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
             }
             return self.compile(&http_type);
         }
-        if let Some(builtin) = canonical_websocket_shape_spec().contract_builtin_named(name) {
-            if arguments.len() != builtin.context_arity() {
-                return invalid_contract_plan(format!(
-                    "builtin {name} expects {} argument(s), got {}",
-                    builtin.context_arity(),
-                    arguments.len()
-                ));
-            }
-            let context_type = arguments
-                .first()
-                .expect("canonical WebSocket builtins have one Context argument");
-            if !is_websocket_context_type(context_type) {
-                return invalid_contract_plan(format!(
-                    "builtin {name} Context must be null or one exact PackageSchema type"
-                ));
-            }
-            let context = self.compile(context_type)?;
-            return self.compile_websocket_shape(builtin.shape(), &context);
-        }
-
         let no_arguments = arguments.is_empty();
         let node = match name {
             "void" | "null" if no_arguments => RuntimeTypeNode::Null,
@@ -465,132 +440,6 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
             ),
         ))
     }
-
-    fn compile_websocket_shape(
-        &mut self,
-        shape_id: WebSocketShapeId,
-        context: &RuntimeTypePlan,
-    ) -> Result<RuntimeTypePlan, ServiceLinkableMaterializationError> {
-        if !self.active_websocket_shapes.insert(shape_id) {
-            return invalid_contract_plan(format!(
-                "canonical WebSocket shape graph cycles at {}",
-                shape_id.canonical_name()
-            ));
-        }
-        let shape = canonical_websocket_shape_spec().shape(shape_id);
-        let node = match shape {
-            WebSocketShape::Record { fields } => RuntimeTypeNode::Record {
-                fields: fields
-                    .iter()
-                    .map(|field| {
-                        Ok(RuntimeRecordFieldPlan::new(
-                            field.name(),
-                            self.compile_websocket_shape_type(field.ty(), context)?,
-                            true,
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, ServiceLinkableMaterializationError>>()?,
-                boundary_record_kind: Some(shape_id.canonical_name().to_string()),
-            },
-            WebSocketShape::TaggedUnion {
-                discriminator_field,
-                variants,
-            } => {
-                let mut tags = BTreeSet::new();
-                let mut plans = Vec::with_capacity(variants.len());
-                for variant in variants {
-                    let tag = variant.tag(discriminator_field).ok_or_else(|| {
-                        ServiceLinkableMaterializationError::InvalidContractPlan {
-                            message: format!(
-                                "canonical WebSocket variant {} has no exact {discriminator_field} tag",
-                                variant.canonical_name()
-                            ),
-                        }
-                    })?;
-                    if !tags.insert(tag) {
-                        return invalid_contract_plan(format!(
-                            "canonical WebSocket shape {} repeats tag {tag}",
-                            shape_id.canonical_name()
-                        ));
-                    }
-                    let fields = variant
-                        .fields()
-                        .iter()
-                        .map(|field| {
-                            Ok(RuntimeRecordFieldPlan::new(
-                                field.name(),
-                                self.compile_websocket_shape_type(field.ty(), context)?,
-                                true,
-                            ))
-                        })
-                        .collect::<Result<Vec<_>, ServiceLinkableMaterializationError>>()?;
-                    plans.push(plan(
-                        variant.canonical_name(),
-                        Some(variant.canonical_name().to_string()),
-                        RuntimeTypeNode::Record {
-                            fields,
-                            boundary_record_kind: Some(variant.canonical_name().to_string()),
-                        },
-                    ));
-                }
-                RuntimeTypeNode::Union(plans)
-            }
-        };
-        self.active_websocket_shapes.remove(&shape_id);
-        Ok(plan(
-            shape_id.canonical_name(),
-            Some(shape_id.canonical_name().to_string()),
-            node,
-        ))
-    }
-
-    fn compile_websocket_shape_type(
-        &mut self,
-        shape_type: &WebSocketShapeType,
-        context: &RuntimeTypePlan,
-    ) -> Result<RuntimeTypePlan, ServiceLinkableMaterializationError> {
-        match shape_type {
-            WebSocketShapeType::String => Ok(plan(
-                "canonical WebSocket string",
-                Some("string".to_string()),
-                RuntimeTypeNode::String,
-            )),
-            WebSocketShapeType::Integer => Ok(plan(
-                "canonical WebSocket integer",
-                Some("integer".to_string()),
-                RuntimeTypeNode::Integer,
-            )),
-            WebSocketShapeType::Context => Ok(context.clone()),
-            WebSocketShapeType::Shape(shape_id) => self.compile_websocket_shape(*shape_id, context),
-            WebSocketShapeType::Array(item) => Ok(plan(
-                "canonical WebSocket array",
-                Some("Array".to_string()),
-                RuntimeTypeNode::Array(Box::new(self.compile_websocket_shape_type(item, context)?)),
-            )),
-            WebSocketShapeType::Nullable(inner) => Ok(plan(
-                "canonical WebSocket nullable",
-                None,
-                RuntimeTypeNode::Nullable(Box::new(
-                    self.compile_websocket_shape_type(inner, context)?,
-                )),
-            )),
-            WebSocketShapeType::StringLiteral(value) => Ok(literal_plan(value)),
-            WebSocketShapeType::StringLiteralUnion(values) => {
-                if values.is_empty() {
-                    return invalid_contract_plan(
-                        "canonical WebSocket literal union has no variants",
-                    );
-                }
-                Ok(plan(
-                    "canonical WebSocket literal union",
-                    None,
-                    RuntimeTypeNode::Union(
-                        values.iter().map(|value| literal_plan(value)).collect(),
-                    ),
-                ))
-            }
-        }
-    }
 }
 
 fn plan(
@@ -660,14 +509,6 @@ fn literal_plan(value: &str) -> RuntimeTypePlan {
         None,
         RuntimeTypeNode::LiteralString(value.to_string()),
     )
-}
-
-fn is_websocket_context_type(contract_type: &ContractTypeRef) -> bool {
-    matches!(
-        contract_type,
-        ContractTypeRef::Builtin { name, arguments }
-            if name == "null" && arguments.is_empty()
-    ) || matches!(contract_type, ContractTypeRef::PackageSchema { .. })
 }
 
 fn record_literal_field<'a>(plan: &'a RuntimeTypePlan, field_name: &str) -> Option<&'a str> {

@@ -17,8 +17,7 @@ pub(super) fn validate_unary_response(
         | BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Http { payload, .. })) => {
             payload.len()
         }
-        BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::WebSocket(_)))
-        | BoundaryResponse::Event(ResponseEvent::FixedServiceFailure(_))
+        BoundaryResponse::Event(ResponseEvent::FixedServiceFailure(_))
         | BoundaryResponse::Event(ResponseEvent::Error(_))
         | BoundaryResponse::StreamSent => return Ok(()),
     };
@@ -79,7 +78,6 @@ mod tests {
     use skiff_runtime_model::service_error::OpaqueServiceError;
     use skiff_runtime_request::{
         BoundaryResponse, FixedServiceResponseFailure, ResponseEvent, ResponseStreamEvent,
-        WebSocketConnectContext, WebSocketResponse,
     };
 
     use super::*;
@@ -126,22 +124,10 @@ mod tests {
     }
 
     #[test]
-    fn non_http_and_websocket_responses_do_not_consume_http_budget() {
+    fn non_http_responses_do_not_consume_http_budget() {
         assert!(
             validate_unary_response(&BoundaryResponse::payload(vec![0; 100]), 1, false).is_ok()
         );
-        assert!(validate_unary_response(
-            &BoundaryResponse::websocket(WebSocketResponse::ConnectAccept(
-                skiff_runtime_request::WebSocketConnectAccept {
-                    business_identity: None,
-                    connection_policy: None,
-                    context: WebSocketConnectContext::Null,
-                }
-            )),
-            1,
-            true,
-        )
-        .is_ok());
     }
 
     #[test]

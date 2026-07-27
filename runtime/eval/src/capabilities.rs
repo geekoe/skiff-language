@@ -36,6 +36,40 @@ use crate::error::{eval_error_to_native, Result};
 
 pub type EvalCapabilityFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
+type WebsocketCapabilityRebind =
+    dyn for<'a> Fn(&'a str, Option<&'a str>) -> OwnedWebsocketCapabilityContext + Send + Sync;
+
+/// Rebuilds the WebSocket native capability when execution crosses into a provider activation.
+///
+/// The returned context is owned so provider unary and stream execution can retain it for their
+/// full lifetime without borrowing caller-local routing data.
+#[derive(Clone)]
+pub struct WebsocketCapabilityRebinder {
+    rebind: Arc<WebsocketCapabilityRebind>,
+}
+
+impl WebsocketCapabilityRebinder {
+    pub fn new<F>(rebind: F) -> Self
+    where
+        F: for<'a> Fn(&'a str, Option<&'a str>) -> OwnedWebsocketCapabilityContext
+            + Send
+            + Sync
+            + 'static,
+    {
+        Self {
+            rebind: Arc::new(rebind),
+        }
+    }
+
+    pub fn for_activation(
+        &self,
+        service_id: &str,
+        websocket_entry_id: Option<&str>,
+    ) -> OwnedWebsocketCapabilityContext {
+        (self.rebind)(service_id, websocket_entry_id)
+    }
+}
+
 pub use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorCapabilityApi, ActorCapabilityContext, ActorClient,
     ActorFindControlRequest, ActorGetOrCreateControlRequest, ActorRemoveControlRequest,

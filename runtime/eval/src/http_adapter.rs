@@ -395,18 +395,6 @@ fn http_adapter_handler_values(
                 })?;
                 args.push(value);
             }
-            AdapterArgSource::WebSocketIngressEvent
-            | AdapterArgSource::WebSocketConnectRequest
-            | AdapterArgSource::WebSocketReceiveEvent
-            | AdapterArgSource::WebSocketConnection
-            | AdapterArgSource::WebSocketConnectionContext
-            | AdapterArgSource::WebSocketMessage
-            | AdapterArgSource::WebSocketMessageBody
-            | AdapterArgSource::WebSocketConnectionId
-            | AdapterArgSource::WebSocketBusinessIdentity => {
-                return Err(context
-                    .protocol_error("WebSocket adapter source is not valid for HTTP adapter"));
-            }
         }
     }
     Ok(args)
@@ -439,18 +427,6 @@ fn http_raw_adapter_handler_values(
                 return Err(
                     context.protocol_error("HTTP raw adapter does not support body handler arg")
                 );
-            }
-            AdapterArgSource::WebSocketIngressEvent
-            | AdapterArgSource::WebSocketConnectRequest
-            | AdapterArgSource::WebSocketReceiveEvent
-            | AdapterArgSource::WebSocketConnection
-            | AdapterArgSource::WebSocketConnectionContext
-            | AdapterArgSource::WebSocketMessage
-            | AdapterArgSource::WebSocketMessageBody
-            | AdapterArgSource::WebSocketConnectionId
-            | AdapterArgSource::WebSocketBusinessIdentity => {
-                return Err(context
-                    .protocol_error("WebSocket adapter source is not valid for HTTP raw adapter"));
             }
         }
     }

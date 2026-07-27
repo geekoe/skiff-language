@@ -5,10 +5,7 @@ pub mod response_event;
 pub use envelope::{
     BinaryHttpRequest, BinaryHttpRequestMetadata, GatewayAdapterArg, GatewayAdapterSource,
     HttpAdapter, HttpAdapterCallable, HttpAdapterKind, HttpNameValue, RequestCancel,
-    RequestEffectDouble, RequestEnvelope, WebSocketAdapter, WebSocketAdapterKind,
-    WebSocketConnectRequest, WebSocketContextCodec, WebSocketContextExpectation, WebSocketMessage,
-    WebSocketMessageEncoding, WebSocketMessageTag, WebSocketPayloadSegment,
-    WebSocketPayloadSegmentKind, WebSocketReceiveRequest,
+    RequestEffectDouble, RequestEnvelope,
 };
 pub use outbound::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
@@ -20,8 +17,7 @@ pub use outbound::{
 };
 pub use response_event::{
     BoundaryResponse, FixedServiceResponseFailure, HttpResponseMetadata, ResponseEnd,
-    ResponseError, ResponseEvent, ResponseStreamEvent, WebSocketConnectAccept,
-    WebSocketConnectContext, WebSocketConnectReject, WebSocketResponse,
+    ResponseError, ResponseEvent, ResponseStreamEvent,
 };
 pub use skiff_runtime_capability_context::{
     RuntimeClientSessionControl, WebSocketConnectionPolicyControl,

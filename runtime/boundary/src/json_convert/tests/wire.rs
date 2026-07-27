@@ -19,10 +19,7 @@ use skiff_runtime_model::service_error::{
 
 use super::{
     super::{from_wire, to_wire},
-    helpers::{
-        alias, array, generic, map, named, record, representation, union,
-        websocket_connection_message_descriptor,
-    },
+    helpers::{alias, array, generic, map, named, record, representation, union},
 };
 
 fn package_catch_identity(key: &str, type_id: &str) -> CatchIdentity {
@@ -305,127 +302,6 @@ fn ordinary_record_stream_field_is_not_a_request_local_handle_boundary() {
             .contains("Stream handles are only allowed"),
         "unexpected error: {error}"
     );
-}
-
-#[test]
-fn websocket_connection_message_descriptor_decodes_and_encodes_text_message() {
-    let expected = websocket_connection_message_descriptor();
-    let input = json!({ "tag": "text", "text": "{\"type\":\"hello\"}" });
-    let mut heap = RequestHeap::default();
-
-    let value = from_wire(&input, &expected, &mut heap).expect("text message should decode");
-    let RuntimeValue::Heap(handle) = value else {
-        panic!("expected heap value");
-    };
-    let HeapNode::Object(object) = heap.get(handle).expect("message should resolve") else {
-        panic!("expected object payload");
-    };
-    assert_eq!(
-        object.fields().get("tag"),
-        Some(&RuntimeValue::String("text".to_string()))
-    );
-
-    let output =
-        to_wire(&RuntimeValue::Heap(handle), &expected, &mut heap).expect("message should encode");
-    assert_eq!(output, input);
-}
-
-#[test]
-fn websocket_connect_result_builtin_descriptors_decode_and_encode() {
-    let context = record(
-        "api.example.ConnectionContext",
-        vec![("userId", named("string"))],
-    );
-    let cases = vec![
-        (
-            generic(
-                "std.websocket.WebSocketConnectResult",
-                vec![context.clone()],
-            ),
-            json!({
-                "tag": "accept",
-                "context": { "userId": "user-1" },
-                "businessIdentity": "user-1",
-                "connectionPolicy": {
-                    "maxConnections": 1,
-                    "overflow": "close-oldest",
-                    "closeCode": 4009,
-                    "closeReason": "host connection replaced",
-                },
-            }),
-        ),
-        (
-            generic(
-                "std.websocket.WebSocketConnectResult",
-                vec![context.clone()],
-            ),
-            json!({
-                "tag": "accept",
-                "context": { "userId": "user-1" },
-                "businessIdentity": "user-1",
-                "connectionPolicy": {
-                    "maxConnections": 1,
-                    "overflow": "reject-new",
-                    "closeCode": null,
-                    "closeReason": null,
-                },
-            }),
-        ),
-        (
-            generic("WebSocketConnectResult", vec![context.clone()]),
-            json!({
-                "tag": "reject",
-                "code": 1008,
-                "reason": "policy",
-            }),
-        ),
-        (
-            generic("std.websocket.WebSocketConnectResult", vec![context]),
-            json!({
-                "tag": "reject",
-                "code": 1013,
-                "reason": "try-again",
-            }),
-        ),
-    ];
-
-    for (expected, input) in cases {
-        let mut heap = RequestHeap::default();
-        let value = from_wire(&input, &expected, &mut heap)
-            .expect("WebSocketConnectResult should decode from builtin descriptor");
-        let output = to_wire(&value, &expected, &mut heap)
-            .expect("WebSocketConnectResult should encode from builtin descriptor");
-        assert_eq!(output, input);
-    }
-}
-
-#[test]
-fn websocket_event_builtin_descriptors_decode_and_encode() {
-    let context = record(
-        "api.example.ConnectionContext",
-        vec![("userId", named("string"))],
-    );
-    let connection = json!({
-        "id": "connection-1",
-        "businessIdentity": "user-1",
-        "context": { "userId": "user-1" },
-    });
-    let cases = vec![(
-        generic("std.websocket.WebSocketReceiveEvent", vec![context.clone()]),
-        json!({
-            "connection": connection.clone(),
-            "message": { "tag": "text", "text": "{\"type\":\"hello\"}" },
-        }),
-    )];
-
-    for (expected, input) in cases {
-        let mut heap = RequestHeap::default();
-        let value = from_wire(&input, &expected, &mut heap)
-            .expect("websocket event should decode from builtin descriptor");
-        let output = to_wire(&value, &expected, &mut heap)
-            .expect("websocket event should encode from builtin descriptor");
-        assert_eq!(output, input);
-    }
 }
 
 #[test]

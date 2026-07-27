@@ -97,7 +97,6 @@ pub(crate) fn http_gateway_eval_adapter(
         ingress_selector: Some(input.ingress_selector),
         binary_http: None,
         http_adapter: None,
-        websocket_adapter: None,
         test_effects_enabled: input.header.test_effects_enabled,
         test_effect_doubles: Default::default(),
         payload_bytes: Vec::new(),
@@ -218,7 +217,6 @@ pub(crate) fn websocket_connect_eval_adapter(
         ingress_selector: Some(input.ingress_selector),
         binary_http: None,
         http_adapter: None,
-        websocket_adapter: None,
         test_effects_enabled: input.header.test_effects_enabled,
         test_effect_doubles: Default::default(),
         payload_bytes: Vec::new(),
@@ -355,6 +353,7 @@ impl RuntimeHttpGatewayEvalAdapterImpl {
             outbound: retired_assembly_outbound(cancellation, request_heap_limits.clone()),
             request_heap_limits,
         })
+        .with_websocket_capability_rebinder(websocket_rebinder(self.router_sender.as_ref()))
         .with_runtime_assembly_target(eval_target.clone())
     }
 }

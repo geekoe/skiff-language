@@ -94,7 +94,6 @@ mod tests {
             ingress_selector: None,
             binary_http: None,
             http_adapter: None,
-            websocket_adapter: None,
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
             payload_bytes: Vec::new(),
@@ -104,10 +103,10 @@ mod tests {
 
     #[test]
     fn outbound_context_uses_canonical_operation_target_as_caller_target() {
-        let request = request_with_target("entry.agine~ai~~api.websocket.receive");
+        let request = request_with_target("entry.example.service.call");
         let context = outbound_service_context_from_request(
             &request,
-            "AgineService.receive",
+            "ExampleService.call",
             Arc::new(skiff_runtime_request::ExecutionBudget::disabled()),
             skiff_runtime_request::cancellation::CancellationToken::new(),
             RequestHeapLimits::default(),
@@ -135,6 +134,6 @@ mod tests {
         );
 
         assert_eq!(start.caller.kind, "service");
-        assert_eq!(start.caller.target, "AgineService.receive");
+        assert_eq!(start.caller.target, "ExampleService.call");
     }
 }

@@ -14,12 +14,6 @@ pub use skiff_runtime_model::type_plan::{
 #[cfg(any(test, feature = "test-support"))]
 use crate::error::Result;
 use crate::error::RuntimeError;
-#[cfg(any(test, feature = "test-support"))]
-use crate::websocket_shape_descriptor::canonical_websocket_descriptor_plan;
-#[cfg(any(test, feature = "test-support"))]
-use skiff_artifact_model::websocket_ingress::{
-    canonical_websocket_shape_spec, WebSocketContractBuiltin, WebSocketShapeId,
-};
 
 #[derive(Clone, Copy, Debug)]
 pub enum RuntimeTypeNameError {
@@ -1013,81 +1007,10 @@ fn std_http_client_stream_handle_plan() -> RuntimeTypePlan {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn std_websocket_runtime_builtin_node(
-    root_name: &str,
-    bare: &str,
-    args: &[Value],
-) -> Option<Result<RuntimeTypeNode>> {
-    let shape_spec = canonical_websocket_shape_spec();
-    let event = shape_spec.contract_builtin(WebSocketContractBuiltin::Event);
-    let result = shape_spec.contract_builtin(WebSocketContractBuiltin::Result);
-    let (shape_id, context_index) = match bare {
-        "ConnectionMessage"
-            if args.is_empty() && root_name == WebSocketShapeId::Message.canonical_name() =>
-        {
-            (WebSocketShapeId::Message, None)
-        }
-        "WebSocketConnection"
-            if args.len() == 1
-                && matches!(
-                    root_name,
-                    "WebSocketConnection" | "std.websocket.WebSocketConnection"
-                ) =>
-        {
-            (WebSocketShapeId::Connection, Some(0))
-        }
-        "WebSocketConnectResult"
-            if result.context_arity() == 1
-                && args.len() == result.context_arity()
-                && (root_name == "WebSocketConnectResult" || root_name == result.name()) =>
-        {
-            (result.shape(), Some(0))
-        }
-        "WebSocketIngressEvent"
-            if event.context_arity() == 1
-                && args.len() == event.context_arity()
-                && (root_name == "WebSocketIngressEvent" || root_name == event.name()) =>
-        {
-            (event.shape(), Some(0))
-        }
-        "WebSocketReceiveEvent"
-            if args.len() == 1
-                && matches!(
-                    root_name,
-                    "WebSocketReceiveEvent" | "std.websocket.WebSocketReceiveEvent"
-                ) =>
-        {
-            (WebSocketShapeId::ReceiveEvent, Some(0))
-        }
-        _ => return None,
-    };
-    let context = match context_index {
-        Some(index) => match RuntimeTypePlan::from_descriptor(&args[index]) {
-            Ok(plan) => Some(plan),
-            Err(error) => return Some(Err(error)),
-        },
-        None => None,
-    };
-    Some(
-        canonical_websocket_descriptor_plan(shape_id, context.as_ref())
-            .map(|plan| plan.node)
-            .ok_or_else(|| {
-                RuntimeError::InvalidArtifact(format!(
-                    "canonical WebSocket shape {} requires a missing Context or is cyclic",
-                    shape_id.canonical_name()
-                ))
-            }),
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
 fn std_runtime_builtin_node_from_descriptor(descriptor: &Value) -> Option<Result<RuntimeTypeNode>> {
     let (root, args) = generic_type_parts(descriptor)?;
     let root_name = type_name_root(&root);
     let bare = bare_type_name(root_name);
-    if let Some(node) = std_websocket_runtime_builtin_node(root_name, bare, &args) {
-        return Some(node);
-    }
     let node = match bare {
         "HttpClientRequest" if args.is_empty() && root_name == "std.http.HttpClientRequest" => {
             std_http_client_request_plan().node

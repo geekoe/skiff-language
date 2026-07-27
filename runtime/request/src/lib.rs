@@ -23,7 +23,6 @@ mod runner;
 mod runtime_ingress;
 mod websocket_connect_execution;
 mod websocket_connect_target;
-mod websocket_ingress;
 
 pub use assembly_ingress::{
     execute_runtime_assembly_request, AssemblyRequestExecutionHandles,
@@ -37,10 +36,7 @@ pub use effect_context::request_deadline_ms;
 pub use envelope::{
     BinaryHttpRequest, BinaryHttpRequestMetadata, GatewayAdapterArg, GatewayAdapterSource,
     HttpAdapter, HttpAdapterCallable, HttpAdapterKind, HttpNameValue, RequestCancel,
-    RequestEffectDouble, RequestEnvelope, WebSocketAdapter, WebSocketAdapterKind,
-    WebSocketConnectRequest, WebSocketContextCodec, WebSocketContextExpectation, WebSocketMessage,
-    WebSocketMessageEncoding, WebSocketMessageTag, WebSocketPayloadSegment,
-    WebSocketPayloadSegmentKind, WebSocketReceiveRequest,
+    RequestEffectDouble, RequestEnvelope,
 };
 pub use error::{RequestError, RequestResult};
 pub use eval_adapter::{
@@ -70,8 +66,7 @@ pub use outbound::{
 };
 pub use response_event::{
     BoundaryResponse, FixedServiceResponseFailure, HttpResponseMetadata, ResponseEnd,
-    ResponseError, ResponseEvent, ResponseStreamEvent, WebSocketConnectAccept,
-    WebSocketConnectContext, WebSocketConnectReject, WebSocketResponse,
+    ResponseError, ResponseEvent, ResponseStreamEvent,
 };
 pub use response_writer::ResponseEventSink;
 pub use runner::{

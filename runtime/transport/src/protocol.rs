@@ -8,9 +8,7 @@ use skiff_artifact_model::{
     ConfigShape,
 };
 use skiff_runtime_model::service_error::OpaqueServiceError;
-use skiff_runtime_request_contract::{
-    RuntimeClientSessionControl, WebSocketConnectionPolicyControl,
-};
+use skiff_runtime_request_contract::RuntimeClientSessionControl;
 
 pub const BINARY_FRAME_MAGIC: [u8; 4] = *b"SKBF";
 pub const BINARY_FRAME_VERSION: u8 = 1;
@@ -447,254 +445,6 @@ pub enum RuntimeGatewayAdapterSourceFrameHeader {
     HttpBody,
     #[serde(rename = "http.context")]
     HttpContext,
-    #[serde(rename = "websocket.connectRequest")]
-    WebSocketConnectRequest,
-    #[serde(rename = "websocket.receiveEvent")]
-    WebSocketReceiveEvent,
-    #[serde(rename = "websocket.connection")]
-    WebSocketConnection,
-    #[serde(rename = "websocket.connectionContext")]
-    WebSocketConnectionContext,
-    #[serde(rename = "websocket.message")]
-    WebSocketMessage,
-    #[serde(rename = "websocket.messageBody")]
-    WebSocketMessageBody,
-    #[serde(rename = "websocket.connectionId")]
-    WebSocketConnectionId,
-    #[serde(rename = "websocket.businessIdentity")]
-    WebSocketBusinessIdentity,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RuntimeWebSocketAdapterKindFrameHeader {
-    Connect,
-    Receive,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWebSocketAdapterFrameHeader {
-    pub kind: RuntimeWebSocketAdapterKindFrameHeader,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub adapter_args: Vec<RuntimeGatewayAdapterArgFrameHeader>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_expectation: Option<RuntimeWebSocketContextExpectationFrameHeader>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connect_request: Option<RuntimeWebSocketConnectRequestFrameHeader>,
-    #[serde(rename = "receiveEvent")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub receive_request: Option<RuntimeWebSocketReceiveRequestFrameHeader>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum RuntimeWebSocketContextExpectationFrameHeader {
-    Null,
-    Typed {
-        connect_operation_abi_id: String,
-        context_type_identity: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWebSocketContextCodecFrameHeader {
-    pub operation_abi_id: String,
-    pub context_type_identity: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWebSocketConnectRequestFrameHeader {
-    pub connection_id: String,
-    pub url: String,
-    pub query: Vec<RuntimeHttpNameValueFrameHeader>,
-    pub headers: Vec<RuntimeHttpNameValueFrameHeader>,
-    pub cookies: Vec<RuntimeHttpNameValueFrameHeader>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWebSocketReceiveRequestFrameHeader {
-    pub connection_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub business_identity: Option<String>,
-    pub message: RuntimeWebSocketMessageFrameHeader,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_codec: Option<RuntimeWebSocketContextCodecFrameHeader>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub payload_segments: Vec<RuntimeWebSocketPayloadSegmentFrameHeader>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWebSocketMessageFrameHeader {
-    pub tag: RuntimeWebSocketMessageTagFrameHeader,
-    pub encoding: RuntimeWebSocketMessageEncodingFrameHeader,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RuntimeWebSocketMessageTagFrameHeader {
-    Text,
-    Binary,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RuntimeWebSocketMessageEncodingFrameHeader {
-    Utf8,
-    #[serde(rename = "binary")]
-    Raw,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RuntimeWebSocketPayloadSegmentKindFrameHeader {
-    #[serde(rename = "websocket.context")]
-    Context,
-    #[serde(rename = "websocket.message")]
-    Message,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWebSocketPayloadSegmentFrameHeader {
-    pub kind: RuntimeWebSocketPayloadSegmentKindFrameHeader,
-    pub offset: usize,
-    pub length: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    try_from = "RawRuntimeWebSocketResponseFrameHeader",
-    into = "RawRuntimeWebSocketResponseFrameHeader"
-)]
-pub enum RuntimeWebSocketResponseFrameHeader {
-    ConnectAccept(RuntimeWebSocketConnectAcceptFrameHeader),
-    ConnectReject(RuntimeWebSocketConnectRejectFrameHeader),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeWebSocketConnectAcceptFrameHeader {
-    pub business_identity: Option<String>,
-    pub connection_policy: Option<WebSocketConnectionPolicyControl>,
-    pub context: RuntimeWebSocketConnectContextFrameHeader,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RuntimeWebSocketConnectContextFrameHeader {
-    Null,
-    Typed(RuntimeWebSocketContextCodecFrameHeader),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeWebSocketConnectRejectFrameHeader {
-    pub code: u16,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "result",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-enum RawRuntimeWebSocketResponseFrameHeader {
-    Accept {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        business_identity: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        connection_policy: Option<WebSocketConnectionPolicyControl>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        context_codec: Option<RuntimeWebSocketContextCodecFrameHeader>,
-        context_payload_present: bool,
-    },
-    Reject {
-        context_payload_present: bool,
-        code: u16,
-        reason: String,
-    },
-}
-
-impl TryFrom<RawRuntimeWebSocketResponseFrameHeader> for RuntimeWebSocketResponseFrameHeader {
-    type Error = String;
-
-    fn try_from(raw: RawRuntimeWebSocketResponseFrameHeader) -> Result<Self, Self::Error> {
-        match raw {
-            RawRuntimeWebSocketResponseFrameHeader::Accept {
-                business_identity,
-                connection_policy,
-                context_codec: None,
-                context_payload_present: false,
-            } => Ok(Self::ConnectAccept(
-                RuntimeWebSocketConnectAcceptFrameHeader {
-                    business_identity,
-                    connection_policy,
-                    context: RuntimeWebSocketConnectContextFrameHeader::Null,
-                },
-            )),
-            RawRuntimeWebSocketResponseFrameHeader::Accept {
-                business_identity,
-                connection_policy,
-                context_codec: Some(codec),
-                context_payload_present: true,
-            } => Ok(Self::ConnectAccept(
-                RuntimeWebSocketConnectAcceptFrameHeader {
-                    business_identity,
-                    connection_policy,
-                    context: RuntimeWebSocketConnectContextFrameHeader::Typed(codec),
-                },
-            )),
-            RawRuntimeWebSocketResponseFrameHeader::Accept { .. } => Err(
-                "websocket accept contextPayloadPresent and contextCodec are inconsistent"
-                    .to_string(),
-            ),
-            RawRuntimeWebSocketResponseFrameHeader::Reject {
-                context_payload_present: false,
-                code,
-                reason,
-            } => Ok(Self::ConnectReject(
-                RuntimeWebSocketConnectRejectFrameHeader { code, reason },
-            )),
-            RawRuntimeWebSocketResponseFrameHeader::Reject { .. } => {
-                Err("websocket reject contextPayloadPresent must be false".to_string())
-            }
-        }
-    }
-}
-
-impl From<RuntimeWebSocketResponseFrameHeader> for RawRuntimeWebSocketResponseFrameHeader {
-    fn from(header: RuntimeWebSocketResponseFrameHeader) -> Self {
-        match header {
-            RuntimeWebSocketResponseFrameHeader::ConnectAccept(accept) => {
-                let (context_payload_present, context_codec) = match accept.context {
-                    RuntimeWebSocketConnectContextFrameHeader::Null => (false, None),
-                    RuntimeWebSocketConnectContextFrameHeader::Typed(codec) => (true, Some(codec)),
-                };
-                Self::Accept {
-                    business_identity: accept.business_identity,
-                    connection_policy: accept.connection_policy,
-                    context_codec,
-                    context_payload_present,
-                }
-            }
-            RuntimeWebSocketResponseFrameHeader::ConnectReject(reject) => Self::Reject {
-                context_payload_present: false,
-                code: reject.code,
-                reason: reject.reason,
-            },
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -733,10 +483,6 @@ pub struct RequestStartFrameHeader {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway_entry_identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub business_identity: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub websocket_entry_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_session: Option<RuntimeClientSessionControl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline: Option<RuntimeDeadlineFrameHeader>,
@@ -745,8 +491,6 @@ pub struct RequestStartFrameHeader {
     pub http_request: Option<RuntimeHttpRequestFrameHeader>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_adapter: Option<RuntimeHttpAdapterFrameHeader>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub websocket_adapter: Option<RuntimeWebSocketAdapterFrameHeader>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub test_effects_enabled: bool,
     #[serde(
@@ -820,7 +564,6 @@ pub struct ResponseEndFrameHeader {
 pub enum ResponseEndFrameMetadata {
     None,
     Http(RuntimeHttpResponseFrameHeader),
-    WebSocketConnect(RuntimeWebSocketResponseFrameHeader),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -833,24 +576,15 @@ struct RawResponseEndFrameHeader {
     payload_present: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     http_response: Option<RuntimeHttpResponseFrameHeader>,
-    #[serde(rename = "websocketConnect")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    websocket_connect: Option<RuntimeWebSocketResponseFrameHeader>,
 }
 
 impl TryFrom<RawResponseEndFrameHeader> for ResponseEndFrameHeader {
     type Error = String;
 
     fn try_from(raw: RawResponseEndFrameHeader) -> Result<Self, Self::Error> {
-        let metadata = match (raw.http_response, raw.websocket_connect) {
-            (None, None) => ResponseEndFrameMetadata::None,
-            (Some(http), None) => ResponseEndFrameMetadata::Http(http),
-            (None, Some(websocket)) => ResponseEndFrameMetadata::WebSocketConnect(websocket),
-            (Some(_), Some(_)) => {
-                return Err(
-                    "response.end cannot mix HTTP and WebSocket response metadata".to_string(),
-                )
-            }
+        let metadata = match raw.http_response {
+            None => ResponseEndFrameMetadata::None,
+            Some(http) => ResponseEndFrameMetadata::Http(http),
         };
         Ok(Self {
             schema_version: raw.schema_version,
@@ -864,10 +598,9 @@ impl TryFrom<RawResponseEndFrameHeader> for ResponseEndFrameHeader {
 
 impl From<ResponseEndFrameHeader> for RawResponseEndFrameHeader {
     fn from(header: ResponseEndFrameHeader) -> Self {
-        let (http_response, websocket_connect) = match header.metadata {
-            ResponseEndFrameMetadata::None => (None, None),
-            ResponseEndFrameMetadata::Http(http) => (Some(http), None),
-            ResponseEndFrameMetadata::WebSocketConnect(websocket) => (None, Some(websocket)),
+        let http_response = match header.metadata {
+            ResponseEndFrameMetadata::None => None,
+            ResponseEndFrameMetadata::Http(http) => Some(http),
         };
         Self {
             schema_version: header.schema_version,
@@ -875,7 +608,6 @@ impl From<ResponseEndFrameHeader> for RawResponseEndFrameHeader {
             request_id: header.request_id,
             payload_present: header.payload_present,
             http_response,
-            websocket_connect,
         }
     }
 }

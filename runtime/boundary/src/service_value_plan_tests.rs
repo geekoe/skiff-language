@@ -5,7 +5,6 @@ use skiff_artifact_model::{
     BoundaryCallbackOperation, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
     BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor, ContractTypeRef,
     PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    WEBSOCKET_CONNECT_RESULT_TYPE, WEBSOCKET_INGRESS_EVENT_TYPE,
 };
 use skiff_runtime_model::service_error::{
     CatchIdentity, NominalTypeIdentity, PackageSchemaTypeIdentity,
@@ -36,14 +35,6 @@ fn generic(name: &str, arguments: Vec<ContractTypeRef>) -> ContractTypeRef {
         name: name.to_string(),
         arguments,
     }
-}
-
-fn websocket_event(context: ContractTypeRef) -> ContractTypeRef {
-    generic(WEBSOCKET_INGRESS_EVENT_TYPE, vec![context])
-}
-
-fn websocket_result(context: ContractTypeRef) -> ContractTypeRef {
-    generic(WEBSOCKET_CONNECT_RESULT_TYPE, vec![context])
 }
 
 fn schema_type(
@@ -190,70 +181,6 @@ fn rich_context_json() -> Value {
     })
 }
 
-fn connect_event_json() -> Value {
-    json!({
-        "tag": "connect",
-        "connectRequest": {
-            "connectionId": "connection-1",
-            "url": "wss://example.test/chat?room=one",
-            "query": [{"name": "room", "value": "one"}],
-            "headers": [{"name": "x-request-id", "value": "request-1"}],
-            "cookies": [{"name": "session", "value": "abc"}],
-            "version": null
-        }
-    })
-}
-
-fn receive_event_json(context: Value) -> Value {
-    json!({
-        "tag": "receive",
-        "receiveEvent": {
-            "connection": {
-                "id": "connection-1",
-                "businessIdentity": null,
-                "context": context
-            },
-            "message": {"tag": "binary", "base64": "AAEC"}
-        }
-    })
-}
-
-fn receive_text_event_json(context: Value) -> Value {
-    json!({
-        "tag": "receive",
-        "receiveEvent": {
-            "connection": {
-                "id": "connection-1",
-                "businessIdentity": "tenant-1",
-                "context": context
-            },
-            "message": {"tag": "text", "text": "hello"}
-        }
-    })
-}
-
-fn accept_result_json(context: Value) -> Value {
-    json!({
-        "tag": "accept",
-        "context": context,
-        "businessIdentity": "tenant-1",
-        "connectionPolicy": {
-            "maxConnections": 4,
-            "overflow": "close-oldest",
-            "closeCode": null,
-            "closeReason": null
-        }
-    })
-}
-
-fn reject_result_json() -> Value {
-    json!({"tag": "reject", "code": 1008, "reason": "policy"})
-}
-
-fn websocket_boundary() -> PayloadBoundary {
-    PayloadBoundary::external_untrusted(PayloadBoundaryKind::WebsocketRequest)
-}
-
 #[test]
 fn canonical_http_value_plans_preserve_exact_detached_fields() {
     let schema = BTreeMap::new();
@@ -379,11 +306,11 @@ fn assert_json_binary_round_trip(
     );
 
     let bytes = plan
-        .encode_binary(&value, &websocket_boundary(), &source)
+        .encode_binary(&value, &service_response_boundary(), &source)
         .expect("canonical binary should encode from the same plan");
     let mut decoded_heap = RequestHeap::default();
     let decoded = plan
-        .decode_binary(&bytes, &websocket_boundary(), &mut decoded_heap)
+        .decode_binary(&bytes, &service_response_boundary(), &mut decoded_heap)
         .expect("canonical binary should decode from the same plan");
     assert_eq!(
         plan.encode_json_value(&decoded, &mut decoded_heap)
@@ -753,38 +680,6 @@ fn selected_binary_returns_only_root_for_nested_union_and_keeps_service_response
     assert_eq!(restricted_heap.len(), 0);
 }
 
-#[test]
-fn service_value_plan_closes_websocket_connect_receive_accept_and_reject() {
-    let schema = rich_context_schema();
-    let context = rich_context_ref();
-    let event_type = websocket_event(context.clone());
-    let result_type = websocket_result(context);
-    let event_plan = ServiceValuePlan::compile(&event_type, &schema).unwrap();
-    let result_plan = ServiceValuePlan::compile(&result_type, &schema).unwrap();
-
-    for event in [
-        connect_event_json(),
-        receive_event_json(rich_context_json()),
-        receive_text_event_json(rich_context_json()),
-    ] {
-        assert_json_binary_round_trip(&event_plan, &event);
-    }
-    for result in [
-        accept_result_json(rich_context_json()),
-        reject_result_json(),
-    ] {
-        assert_json_binary_round_trip(&result_plan, &result);
-    }
-
-    let null_schema = BTreeMap::new();
-    let null_event_type = websocket_event(ContractTypeRef::builtin("null"));
-    let null_result_type = websocket_result(ContractTypeRef::builtin("null"));
-    let null_event_plan = ServiceValuePlan::compile(&null_event_type, &null_schema).unwrap();
-    let null_result_plan = ServiceValuePlan::compile(&null_result_type, &null_schema).unwrap();
-    assert_json_binary_round_trip(&null_event_plan, &receive_event_json(Value::Null));
-    assert_json_binary_round_trip(&null_result_plan, &accept_result_json(Value::Null));
-}
-
 fn detached_plan(owner: BoundaryValueOwner) -> BoundaryValuePlan {
     BoundaryValuePlan::Linkable {
         carrier: BoundaryValueCarrier::DetachedValueGraph,
@@ -904,152 +799,6 @@ fn service_value_plan_detaches_nominal_record_both_directions_with_erased_values
         labels.get(&RuntimeValueKey::string("user-1")),
         Some(&RuntimeValue::String("owner".to_string()))
     );
-}
-
-#[test]
-fn service_value_plan_rejects_websocket_shape_and_value_mutations() {
-    let schema = rich_context_schema();
-    let event_type = websocket_event(rich_context_ref());
-    let result_type = websocket_result(rich_context_ref());
-    let event_plan = ServiceValuePlan::compile(&event_type, &schema).unwrap();
-    let result_plan = ServiceValuePlan::compile(&result_type, &schema).unwrap();
-
-    let mut mutations = Vec::new();
-
-    let mut missing_nullable = connect_event_json();
-    missing_nullable["connectRequest"]
-        .as_object_mut()
-        .unwrap()
-        .remove("version");
-    mutations.push((&event_plan, missing_nullable, "missing nullable field"));
-
-    let mut extra = connect_event_json();
-    extra["connectRequest"]
-        .as_object_mut()
-        .unwrap()
-        .insert("legacy".to_string(), json!(true));
-    mutations.push((&event_plan, extra, "extra nested field"));
-
-    let mut wrong_tag = connect_event_json();
-    wrong_tag["tag"] = json!("legacy-connect");
-    mutations.push((&event_plan, wrong_tag, "wrong event tag"));
-
-    let mut wrong_message_tag = receive_event_json(rich_context_json());
-    wrong_message_tag["receiveEvent"]["message"]["tag"] = json!("text");
-    mutations.push((
-        &event_plan,
-        wrong_message_tag,
-        "message tag/payload mismatch",
-    ));
-
-    let mut missing_context = receive_event_json(rich_context_json());
-    missing_context["receiveEvent"]["connection"]
-        .as_object_mut()
-        .unwrap()
-        .remove("context");
-    mutations.push((&event_plan, missing_context, "missing nominal Context"));
-
-    let mut reserved_json = receive_event_json(rich_context_json());
-    reserved_json["receiveEvent"]["connection"]["context"]["attributes"]
-        .as_object_mut()
-        .unwrap()
-        .insert("__skiffType".to_string(), json!("legacy.Context"));
-    mutations.push((&event_plan, reserved_json, "reserved legacy JSON metadata"));
-
-    let mut wrong_date = receive_event_json(rich_context_json());
-    wrong_date["receiveEvent"]["connection"]["context"]["createdAt"] =
-        json!("10000-01-01T00:00:00.000Z");
-    mutations.push((&event_plan, wrong_date, "Date outside canonical range"));
-
-    let mut unsafe_duration = accept_result_json(rich_context_json());
-    unsafe_duration["context"]["ttl"] = json!(9_007_199_254_740_992_u64);
-    mutations.push((&result_plan, unsafe_duration, "unsafe Duration"));
-
-    let mut fractional_integer = reject_result_json();
-    fractional_integer["code"] = json!(1008.5);
-    mutations.push((&result_plan, fractional_integer, "fractional integer"));
-
-    let mut unsafe_integer = reject_result_json();
-    unsafe_integer["code"] = json!(9_007_199_254_740_992_u64);
-    mutations.push((&result_plan, unsafe_integer, "unsafe integer"));
-
-    let mut wrong_policy_tag = accept_result_json(rich_context_json());
-    wrong_policy_tag["connectionPolicy"]["overflow"] = json!("drop-new");
-    mutations.push((&result_plan, wrong_policy_tag, "wrong policy literal"));
-
-    let mut wrong_result_tag = reject_result_json();
-    wrong_result_tag["tag"] = json!("legacy-reject");
-    mutations.push((&result_plan, wrong_result_tag, "wrong result tag"));
-
-    let mut missing_result_nullable = accept_result_json(rich_context_json());
-    missing_result_nullable["connectionPolicy"]
-        .as_object_mut()
-        .unwrap()
-        .remove("closeReason");
-    mutations.push((
-        &result_plan,
-        missing_result_nullable,
-        "missing result nullable field",
-    ));
-
-    let mut extra_result = reject_result_json();
-    extra_result
-        .as_object_mut()
-        .unwrap()
-        .insert("legacy".to_string(), json!(true));
-    mutations.push((&result_plan, extra_result, "extra result field"));
-
-    for (plan, mutation, label) in mutations {
-        let mut heap = RequestHeap::default();
-        let before = heap.len();
-        assert!(
-            plan.decode_json_value(&mutation, &mut heap).is_err(),
-            "{label} must fail closed"
-        );
-        assert_eq!(heap.len(), before, "{label} must roll back allocations");
-    }
-
-    let mut valid_heap = RequestHeap::default();
-    let valid = result_plan
-        .decode_json_value(&reject_result_json(), &mut valid_heap)
-        .unwrap();
-    let binary = result_plan
-        .encode_binary(&valid, &websocket_boundary(), &valid_heap)
-        .unwrap();
-    let binary_mutations = [
-        {
-            let mut bytes = binary.clone();
-            bytes[5] = u8::MAX;
-            bytes
-        },
-        {
-            let mut bytes = binary.clone();
-            bytes.push(0);
-            bytes
-        },
-        binary[..binary.len() - 1].to_vec(),
-    ];
-    for mutation in binary_mutations {
-        let mut heap = RequestHeap::default();
-        assert!(result_plan
-            .decode_binary(&mutation, &websocket_boundary(), &mut heap)
-            .is_err());
-        assert_eq!(heap.len(), 0, "binary mutation must roll back allocations");
-    }
-
-    let integer_type = ContractTypeRef::builtin("integer");
-    let integer_plan = ServiceValuePlan::compile(&integer_type, &BTreeMap::new()).unwrap();
-    let mut unsafe_binary = b"SKPV".to_vec();
-    unsafe_binary.extend_from_slice(&[2, 3]);
-    unsafe_binary.extend_from_slice(&(MAX_SAFE_INTEGER + 1.0).to_le_bytes());
-    assert!(matches!(
-        integer_plan.decode_binary(
-            &unsafe_binary,
-            &websocket_boundary(),
-            &mut RequestHeap::default()
-        ),
-        Err(ServiceLinkableMaterializationError::TypeMismatch)
-    ));
 }
 
 #[test]
@@ -1199,11 +948,6 @@ fn service_value_plan_rejects_alias_callback_cycle_foreign_and_invalid_map_key()
         &BTreeMap::new()
     )
     .is_err());
-    assert!(ServiceValuePlan::compile(
-        &websocket_event(ContractTypeRef::builtin("string")),
-        &BTreeMap::new()
-    )
-    .is_err());
 }
 
 #[test]
@@ -1296,10 +1040,14 @@ fn service_value_plan_uses_expected_type_for_null_nominal_and_zero_byte_values()
     assert!(bytes_plan.value_matches(&zero_bytes, &bytes_heap).unwrap());
     assert!(!null_plan.value_matches(&zero_bytes, &bytes_heap).unwrap());
     let encoded = bytes_plan
-        .encode_binary(&zero_bytes, &websocket_boundary(), &bytes_heap)
+        .encode_binary(&zero_bytes, &service_response_boundary(), &bytes_heap)
         .unwrap();
     let decoded = bytes_plan
-        .decode_binary(&encoded, &websocket_boundary(), &mut RequestHeap::default())
+        .decode_binary(
+            &encoded,
+            &service_response_boundary(),
+            &mut RequestHeap::default(),
+        )
         .unwrap();
     assert!(matches!(decoded, RuntimeValue::Heap(_)));
 }

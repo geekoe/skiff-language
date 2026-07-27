@@ -610,7 +610,6 @@ fn websocket_connect_supervisor_request(
         ingress_selector: Some(route.selector().clone()),
         binary_http: None,
         http_adapter: None,
-        websocket_adapter: None,
         test_effects_enabled: header.test_effects_enabled,
         test_effect_doubles: Default::default(),
         payload_bytes: Vec::new(),

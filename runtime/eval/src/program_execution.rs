@@ -29,7 +29,7 @@ use super::{
         OwnedActorCapabilityContext, OwnedConfigCapabilityContext, OwnedExecutionControl,
         OwnedWebsocketCapabilityContext, StreamRuntime, StreamRuntimeOwner,
         TelemetryCapabilityContext, TestEffectDoubleContext, TimeCapabilityContext,
-        WebsocketCapabilityContext,
+        WebsocketCapabilityContext, WebsocketCapabilityRebinder,
     },
     error::attach_source_frame,
     eval_context::EvalContext,
@@ -74,6 +74,7 @@ pub struct ProgramExecutionContext<'a> {
     file_source_stream: FileSourceStreamContext<'a>,
     time: TimeCapabilityContext<'a>,
     websocket: WebsocketCapabilityContext<'a>,
+    websocket_rebinder: Option<WebsocketCapabilityRebinder>,
     effects: EffectDispatchContext,
     http_client: HttpClientCapabilityContext,
     test_effect_doubles: TestEffectDoubleContext,
@@ -100,6 +101,7 @@ impl<'a> Clone for ProgramExecutionContext<'a> {
             file_source_stream: self.file_source_stream.clone(),
             time: self.time.clone(),
             websocket: self.websocket.clone(),
+            websocket_rebinder: self.websocket_rebinder.clone(),
             effects: self.effects.clone(),
             http_client: self.http_client.clone(),
             test_effect_doubles: self.test_effect_doubles.clone(),
@@ -133,6 +135,7 @@ impl<'a> ProgramExecutionContext<'a> {
             file_source_stream: input.file_source_stream,
             time: input.time,
             websocket: input.websocket,
+            websocket_rebinder: None,
             effects: input.effects,
             http_client: input.http_client,
             test_effect_doubles: input.test_effect_doubles,
@@ -163,6 +166,28 @@ impl<'a> ProgramExecutionContext<'a> {
         }
         self.runtime_assembly_target = Some(target);
         self
+    }
+
+    pub fn with_websocket_capability_rebinder(
+        mut self,
+        rebinder: WebsocketCapabilityRebinder,
+    ) -> Self {
+        self.websocket_rebinder = Some(rebinder);
+        self
+    }
+
+    pub(crate) fn with_provider_websocket_capability(
+        mut self,
+        service_id: &str,
+        websocket_entry_id: Option<&str>,
+    ) -> Result<Self> {
+        let rebinder = self.websocket_rebinder.as_ref().ok_or_else(|| {
+            RuntimeError::InvalidArtifact(
+                "provider activation requires a WebSocket capability rebinder".to_string(),
+            )
+        })?;
+        self.websocket = rebinder.for_activation(service_id, websocket_entry_id);
+        Ok(self)
     }
 
     /// Starts a provider-local service stack while retaining request-wide
@@ -358,6 +383,7 @@ pub struct OwnedProgramExecutionContext {
     file_source: FileCapabilitySource,
     stream_runtime: StreamRuntime,
     websocket: OwnedWebsocketCapabilityContext,
+    websocket_rebinder: Option<WebsocketCapabilityRebinder>,
     effects: EffectDispatchContext,
     http_client: HttpClientCapabilityContext,
     test_effect_doubles: TestEffectDoubleContext,
@@ -385,6 +411,7 @@ impl OwnedProgramExecutionContext {
             file_source: context.file.source(),
             stream_runtime: context.file_source_stream.stream_runtime_handle(),
             websocket: context.websocket.owned(),
+            websocket_rebinder: context.websocket_rebinder.clone(),
             effects: context.effects.clone(),
             http_client: context.http_client.clone(),
             test_effect_doubles: context.test_effect_doubles.clone(),
@@ -429,6 +456,7 @@ impl OwnedProgramExecutionContext {
             request_heap_limits: self.request_heap_limits.clone(),
         });
         context.exception_trace_id = self.exception_trace_id.clone();
+        context.websocket_rebinder = self.websocket_rebinder.clone();
         context.exception_error_sequence = self.exception_error_sequence.clone();
         context.local_call_stack = self.local_call_stack.clone();
         match &self.runtime_assembly_target {

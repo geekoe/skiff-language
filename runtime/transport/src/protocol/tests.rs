@@ -1066,8 +1066,6 @@ fn runtime_binary_frame_round_trips_typed_header_and_payload_bytes() {
                 .to_string(),
         activation_identity: None,
         gateway_entry_identity: None,
-        business_identity: None,
-        websocket_entry_id: None,
         client_session: None,
         deadline: Some(RuntimeDeadlineFrameHeader {
             timeout_ms: 2_000,
@@ -1080,7 +1078,6 @@ fn runtime_binary_frame_round_trips_typed_header_and_payload_bytes() {
             sampled: Some(true),
         },
         http_adapter: None,
-        websocket_adapter: None,
         http_request: None,
         test_effects_enabled: false,
         test_effect_doubles: HashMap::new(),
@@ -1133,8 +1130,6 @@ fn runtime_binary_request_start_decodes_test_effect_fields() {
         service_protocol_identity: SERVICE_PROTOCOL_A.to_string(),
         activation_identity: None,
         gateway_entry_identity: None,
-        business_identity: None,
-        websocket_entry_id: None,
         client_session: None,
         deadline: None,
         trace: RuntimeTraceContextFrameHeader {
@@ -1144,7 +1139,6 @@ fn runtime_binary_request_start_decodes_test_effect_fields() {
             sampled: Some(true),
         },
         http_adapter: None,
-        websocket_adapter: None,
         http_request: None,
         test_effects_enabled: true,
         test_effect_doubles: test_effect_doubles.clone(),
@@ -1493,8 +1487,6 @@ fn runtime_http_binary_frame_headers_round_trip_metadata_without_body_base64() {
         service_protocol_identity: SERVICE_PROTOCOL_A.to_string(),
         activation_identity: None,
         gateway_entry_identity: None,
-        business_identity: None,
-        websocket_entry_id: None,
         client_session: None,
         deadline: None,
         trace: RuntimeTraceContextFrameHeader {
@@ -1504,7 +1496,6 @@ fn runtime_http_binary_frame_headers_round_trip_metadata_without_body_base64() {
             sampled: None,
         },
         http_adapter: None,
-        websocket_adapter: None,
         http_request: Some(crate::protocol::RuntimeHttpRequestFrameHeader {
             method: "POST".to_string(),
             url: "https://example.test/items?x=1".to_string(),

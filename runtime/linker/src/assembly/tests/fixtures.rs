@@ -487,7 +487,7 @@ impl CycleFixture {
                 .values_mut()
                 .next()
                 .unwrap()
-                .handler = dependency_callable;
+                .handler = Some(dependency_callable);
         });
     }
 
@@ -1062,7 +1062,7 @@ fn gateway_entry(handler: PackageCallableId) -> DeploymentGatewayEntry {
         gateway_entry_identity: skiff_artifact_identity::gateway_entry_identity(&protocol_surface)
             .expect("fixture gateway surface identity"),
         protocol_surface,
-        handler,
+        handler: Some(handler),
         pre: None,
         guard: None,
         adapter_plan: GatewayAdapterPlan {

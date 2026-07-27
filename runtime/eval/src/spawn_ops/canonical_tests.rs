@@ -580,7 +580,8 @@ fn execution_context<'a>(
         spawn: actor,
         outbound: test_runtime::outbound_context(),
         request_heap_limits: RequestHeapLimits::default(),
-    });
+    })
+    .with_websocket_capability_rebinder(test_runtime::websocket_rebinder());
     match target {
         Some(target) => context.with_runtime_assembly_target(target),
         None => context,

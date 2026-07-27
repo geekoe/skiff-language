@@ -688,8 +688,12 @@ fn provider_execution_context<'a>(
     let provider_target = receiver
         .runtime_assembly_target()?
         .with_request_activation(target.provider_request().clone())?;
+    let provider = target.provider_activation();
+    let service_id = provider.identity().deployment.service_id.as_str();
+    let websocket_entry_id = provider.websocket_entry_id().map(|entry| entry.as_str());
     Ok(receiver
         .clone()
+        .with_provider_websocket_capability(service_id, websocket_entry_id)?
         .with_runtime_assembly_target(provider_target)
         .with_provider_service_stack_scope())
 }
@@ -1588,6 +1592,81 @@ mod tests {
         assert!(
             take_restricted_service_diagnostics_for_test(generation).is_empty(),
             "request cancellation must bypass provider failure export"
+        );
+    }
+
+    #[test]
+    fn ordinary_service_call_rebinds_websocket_capability_to_provider_activation() {
+        let fixture = ServiceErrorConsumerFixture::new(
+            ProviderFailureKind::PublicRecord,
+            ConsumerTopology::OneHop,
+            true,
+            false,
+        );
+        let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+        let receiver_target = fixture.caller_eval_target();
+        let projection = RuntimeAssemblyExecutionProjection::from_image(Arc::clone(
+            receiver_target.execution_image(),
+        ));
+        let caller = projection
+            .resolve_executable(fixture.caller_addr())
+            .expect("linked caller executable");
+        let instruction = caller
+            .executable
+            .body
+            .expressions
+            .iter()
+            .find_map(|expression| match expression {
+                LinkedExprIr::Call { call } => match &call.target {
+                    LinkedCallTarget::ActivationRelativeService { instruction } => {
+                        Some(instruction)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("linked ordinary service call");
+        let target = receiver_target
+            .resolve_service_call(instruction)
+            .expect("resolved provider target");
+        let receiver_context = fixture.execution_context(&interpreter, receiver_target);
+        assert_eq!(
+            receiver_context.websocket_context().service_id(),
+            "test-service"
+        );
+
+        let provider_context =
+            provider_execution_context(&receiver_context, &target).expect("provider context");
+        assert_eq!(
+            provider_context.websocket_context().service_id(),
+            target
+                .provider_activation()
+                .identity()
+                .deployment
+                .service_id
+                .as_str()
+        );
+        assert_eq!(
+            provider_context.websocket_context().websocket_entry_id(),
+            target
+                .provider_activation()
+                .websocket_entry_id()
+                .map(|entry| entry.as_str())
+        );
+        assert_ne!(
+            provider_context.websocket_context().service_id(),
+            receiver_context.websocket_context().service_id()
+        );
+
+        let owned = OwnedProgramExecutionContext::capture(&provider_context);
+        let borrowed = owned.borrow();
+        assert_eq!(
+            borrowed.websocket_context().service_id(),
+            provider_context.websocket_context().service_id()
+        );
+        assert_eq!(
+            borrowed.websocket_context().websocket_entry_id(),
+            provider_context.websocket_context().websocket_entry_id()
         );
     }
 

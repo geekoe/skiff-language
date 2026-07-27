@@ -1,12 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use crate::{
-    error::{Error as RuntimeError, Result},
-    websocket_shape::canonical_websocket_runtime_plan,
-};
-use skiff_artifact_model::websocket_ingress::{
-    canonical_websocket_shape_spec, WebSocketContractBuiltin, WebSocketShapeId,
-};
+use crate::error::{Error as RuntimeError, Result};
 use skiff_runtime_linked_program::{
     ExecutableAddr, FileAddr, LinkOverlay, LinkedFileUnit, LinkedNamedUnionBranch,
     LinkedNominalTypeRefBase, LinkedProgramImage, LinkedTypeDescriptor, LinkedTypeRef, LiteralIr,
@@ -1853,26 +1847,6 @@ fn std_field(name: &str, ty: RuntimeTypePlan) -> RuntimeRecordFieldPlan {
     }
 }
 
-enum StdRuntimeTypeArg<'a> {
-    Artifact(&'a skiff_artifact_model::TypeRefIr),
-    ArtifactInProgram(&'a skiff_artifact_model::TypeRefIr, &'a PlanContext<'a>),
-    Linked(&'a LinkedTypeRef, &'a PlanContext<'a>),
-}
-
-impl StdRuntimeTypeArg<'_> {
-    fn plan(&self) -> Result<RuntimeTypePlan> {
-        match self {
-            Self::Artifact(type_ref) => RuntimeTypePlan::from_artifact_type_ref(type_ref),
-            Self::ArtifactInProgram(type_ref, ctx) => {
-                RuntimeTypePlan::from_artifact_type_ref_in_program_ref(type_ref, ctx)
-            }
-            Self::Linked(type_ref, ctx) => {
-                RuntimeTypePlan::from_linked_ref(type_ref, &ctx.deeper_by(2))
-            }
-        }
-    }
-}
-
 fn leaf_string_plan() -> RuntimeTypePlan {
     leaf_builtin_plan("string", RuntimeTypeNode::String)
 }
@@ -1957,92 +1931,17 @@ fn std_http_client_stream_handle_plan() -> RuntimeTypePlan {
     )
 }
 
-fn std_websocket_runtime_builtin_node(
-    root: &str,
-    bare: &str,
-    args: &[StdRuntimeTypeArg<'_>],
-) -> Option<Result<RuntimeTypeNode>> {
-    let shape_spec = canonical_websocket_shape_spec();
-    let event = shape_spec.contract_builtin(WebSocketContractBuiltin::Event);
-    let result = shape_spec.contract_builtin(WebSocketContractBuiltin::Result);
-    let (shape_id, context_index) = match bare {
-        "ConnectionMessage"
-            if args.is_empty() && root == WebSocketShapeId::Message.canonical_name() =>
-        {
-            (WebSocketShapeId::Message, None)
-        }
-        "WebSocketConnection"
-            if args.len() == 1
-                && matches!(
-                    root,
-                    "WebSocketConnection" | "std.websocket.WebSocketConnection"
-                ) =>
-        {
-            (WebSocketShapeId::Connection, Some(0))
-        }
-        "WebSocketConnectResult"
-            if result.context_arity() == 1
-                && args.len() == result.context_arity()
-                && (root == "WebSocketConnectResult" || root == result.name()) =>
-        {
-            (result.shape(), Some(0))
-        }
-        "WebSocketIngressEvent"
-            if event.context_arity() == 1
-                && args.len() == event.context_arity()
-                && (root == "WebSocketIngressEvent" || root == event.name()) =>
-        {
-            (event.shape(), Some(0))
-        }
-        "WebSocketReceiveEvent"
-            if args.len() == 1
-                && matches!(
-                    root,
-                    "WebSocketReceiveEvent" | "std.websocket.WebSocketReceiveEvent"
-                ) =>
-        {
-            (WebSocketShapeId::ReceiveEvent, Some(0))
-        }
-        _ => return None,
-    };
-    let context = match context_index {
-        Some(index) => match args[index].plan() {
-            Ok(plan) => Some(plan),
-            Err(error) => return Some(Err(error)),
-        },
-        None => None,
-    };
-    Some(
-        canonical_websocket_runtime_plan(shape_id, context.as_ref())
-            .map(|plan| plan.node)
-            .ok_or_else(|| {
-                RuntimeError::InvalidArtifact(format!(
-                    "canonical WebSocket shape {} requires a missing Context or is cyclic",
-                    shape_id.canonical_name()
-                ))
-            }),
-    )
-}
-
-fn std_runtime_builtin_node(
-    name: &str,
-    args: &[StdRuntimeTypeArg<'_>],
-) -> Option<Result<RuntimeTypeNode>> {
+fn std_runtime_builtin_node(name: &str, arg_count: usize) -> Option<Result<RuntimeTypeNode>> {
     let root = type_name_root(name);
     let bare = bare_type_name(root);
-    if let Some(node) = std_websocket_runtime_builtin_node(root, bare, args) {
-        return Some(node);
-    }
     let node = match bare {
-        "HttpClientRequest" if args.is_empty() && root == "std.http.HttpClientRequest" => {
+        "HttpClientRequest" if arg_count == 0 && root == "std.http.HttpClientRequest" => {
             std_http_client_request_plan().node
         }
-        "HttpClientResponse" if args.is_empty() && root == "std.http.HttpClientResponse" => {
+        "HttpClientResponse" if arg_count == 0 && root == "std.http.HttpClientResponse" => {
             std_http_client_response_plan().node
         }
-        "HttpClientStreamHandle"
-            if args.is_empty() && root == "std.http.HttpClientStreamHandle" =>
-        {
+        "HttpClientStreamHandle" if arg_count == 0 && root == "std.http.HttpClientStreamHandle" => {
             std_http_client_stream_handle_plan().node
         }
         _ => return None,
@@ -2054,35 +1953,23 @@ fn std_runtime_builtin_node_from_artifact_parts(
     name: &str,
     args: &[skiff_artifact_model::TypeRefIr],
 ) -> Option<Result<RuntimeTypeNode>> {
-    let args = args
-        .iter()
-        .map(StdRuntimeTypeArg::Artifact)
-        .collect::<Vec<_>>();
-    std_runtime_builtin_node(name, &args)
+    std_runtime_builtin_node(name, args.len())
 }
 
-fn std_runtime_builtin_node_from_artifact_parts_in_program<'a>(
+fn std_runtime_builtin_node_from_artifact_parts_in_program(
     name: &str,
-    args: &'a [skiff_artifact_model::TypeRefIr],
-    ctx: &'a PlanContext<'a>,
+    args: &[skiff_artifact_model::TypeRefIr],
+    _ctx: &PlanContext<'_>,
 ) -> Option<Result<RuntimeTypeNode>> {
-    let args = args
-        .iter()
-        .map(|arg| StdRuntimeTypeArg::ArtifactInProgram(arg, ctx))
-        .collect::<Vec<_>>();
-    std_runtime_builtin_node(name, &args)
+    std_runtime_builtin_node(name, args.len())
 }
 
-fn std_runtime_builtin_node_from_linked_parts<'a>(
+fn std_runtime_builtin_node_from_linked_parts(
     name: &str,
-    args: &'a [LinkedTypeRef],
-    ctx: &'a PlanContext<'a>,
+    args: &[LinkedTypeRef],
+    _ctx: &PlanContext<'_>,
 ) -> Option<Result<RuntimeTypeNode>> {
-    let args = args
-        .iter()
-        .map(|arg| StdRuntimeTypeArg::Linked(arg, ctx))
-        .collect::<Vec<_>>();
-    std_runtime_builtin_node(name, &args)
+    std_runtime_builtin_node(name, args.len())
 }
 
 pub(crate) fn native_builtin_plan(name: &str) -> Result<RuntimeTypePlan> {
@@ -2097,7 +1984,7 @@ pub(crate) fn native_builtin_plan(name: &str) -> Result<RuntimeTypePlan> {
             },
         });
     }
-    if let Some(node) = std_runtime_builtin_node(name, &[]) {
+    if let Some(node) = std_runtime_builtin_node(name, 0) {
         return Ok(builtin_plan(name, node?));
     }
     let node = match bare_type_name(name) {

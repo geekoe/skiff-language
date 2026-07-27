@@ -39,7 +39,7 @@ use crate::{
     capabilities::{
         EffectDispatchApi, EffectDispatchContext, EvalRuntimeFactory, EvalRuntimeFactoryApi,
         HttpRuntimeOptions, OutboundServiceApi, OutboundServiceContext, TestEffectDouble,
-        TestEffectDoubleContext, TestEffectDoubleContextApi,
+        TestEffectDoubleContext, TestEffectDoubleContextApi, WebsocketCapabilityRebinder,
     },
     error::{Result, RuntimeError},
 };
@@ -73,7 +73,20 @@ pub(crate) fn file_source_stream_context(
 }
 
 pub(crate) fn websocket_context() -> WebsocketCapabilityContext<'static> {
-    WebsocketCapabilityContext::new(TestWebsocket)
+    WebsocketCapabilityContext::new(TestWebsocket {
+        service_id: "test-service".to_string(),
+        websocket_entry_id: None,
+    })
+}
+
+pub(crate) fn websocket_rebinder() -> WebsocketCapabilityRebinder {
+    WebsocketCapabilityRebinder::new(|service_id, websocket_entry_id| {
+        WebsocketCapabilityContext::new(TestWebsocket {
+            service_id: service_id.to_string(),
+            websocket_entry_id: websocket_entry_id.map(str::to_string),
+        })
+        .owned()
+    })
 }
 
 pub(crate) fn actor_context() -> ActorCapabilityContext<'static> {
@@ -824,7 +837,10 @@ impl ActorCapabilityApi for TestActor {
 }
 
 #[derive(Clone)]
-struct TestWebsocket;
+struct TestWebsocket {
+    service_id: String,
+    websocket_entry_id: Option<String>,
+}
 
 impl WebsocketCapabilityApi for TestWebsocket {
     fn owned(&self) -> OwnedWebsocketCapabilityContext {
@@ -836,10 +852,10 @@ impl WebsocketCapabilityApi for TestWebsocket {
     }
 
     fn service_id(&self) -> &str {
-        "test-service"
+        &self.service_id
     }
     fn websocket_entry_id(&self) -> Option<&str> {
-        None
+        self.websocket_entry_id.as_deref()
     }
 
     fn send_connection_text_to_business_identity(

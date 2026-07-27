@@ -3431,7 +3431,6 @@ fn test_invocation(target: &str) -> ProgramTestInvocation {
             activation_identity: None,
             ingress_selector: None,
             http_adapter: None,
-            websocket_adapter: None,
             binary_http: None,
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),

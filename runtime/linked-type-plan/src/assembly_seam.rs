@@ -130,7 +130,7 @@ mod tests {
             },
             service_binding_templates: Vec::new(),
             activation_templates: Vec::new(),
-            global_ingress: Vec::new(),
+            gateway_ingress: Vec::new(),
         };
         let shared = Arc::new(
             SharedPackageLinkedImage::from_runtime_assembly(&assembly, Vec::new()).unwrap(),

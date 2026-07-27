@@ -773,9 +773,21 @@ fn runtime_assembly_loader_joins_private_gateway_callables_and_shares_entry() {
     assert!(Arc::ptr_eq(&entries[0], &entries[1]));
     let entry = &entries[0];
     assert_eq!(entry.owner(), &fixture.assembly.resolved_deployments[0]);
-    assert_eq!(entry.handler().signature().parameters[0].name, "body");
     assert_eq!(
-        entry.handler().target().callable_kind,
+        entry
+            .handler()
+            .expect("fixture has a handler")
+            .signature()
+            .parameters[0]
+            .name,
+        "body"
+    );
+    assert_eq!(
+        entry
+            .handler()
+            .expect("fixture has a handler")
+            .target()
+            .callable_kind,
         skiff_artifact_model::OperationCallableKind::InternalFunction
     );
     assert!(entry.pre().is_some());
@@ -833,7 +845,7 @@ fn runtime_assembly_loader_rejects_gateway_union_and_callable_mismatches() {
         .values_mut()
         .next()
         .unwrap()
-        .handler = PackageCallableId::new("pkg-callable:gateway:missing");
+        .handler = Some(PackageCallableId::new("pkg-callable:gateway:missing"));
     missing_callable.refresh_deployment_chain();
     let error = RuntimeAssemblyLoader::new(&missing_callable.resolver())
         .load(missing_callable.assembly)
@@ -851,7 +863,7 @@ fn runtime_assembly_loader_rejects_gateway_union_and_callable_mismatches() {
         .values_mut()
         .next()
         .unwrap()
-        .handler = public_fallback.callable_id.clone();
+        .handler = Some(public_fallback.callable_id.clone());
     public_fallback.refresh_deployment_chain();
     let error = RuntimeAssemblyLoader::new(&public_fallback.resolver())
         .load(public_fallback.assembly)
@@ -868,7 +880,7 @@ fn runtime_assembly_loader_rejects_gateway_union_and_callable_mismatches() {
         .load(websocket.assembly)
         .unwrap_err();
     assert!(
-        format!("{error:#}").contains("only HTTP gateway ingress"),
+        format!("{error:#}").contains("WebSocket ingress must not declare method"),
         "unexpected error: {error:#}"
     );
 }

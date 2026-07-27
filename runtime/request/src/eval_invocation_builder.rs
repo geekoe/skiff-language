@@ -1,22 +1,13 @@
 use skiff_runtime_eval::{
     EvalRequestInvocation, EvalRequestInvocationArg, EvalRequestInvocationArgFrom,
     EvalRequestInvocationCallable, EvalRequestInvocationHttpAdapter, EvalRequestInvocationHttpKind,
-    EvalRequestInvocationInput, EvalRequestInvocationMode, EvalRequestInvocationWebSocketAdapter,
-    EvalRequestInvocationWebSocketConnectRequest, EvalRequestInvocationWebSocketContextCodec,
-    EvalRequestInvocationWebSocketContextExpectation, EvalRequestInvocationWebSocketKind,
-    EvalRequestInvocationWebSocketMessage, EvalRequestInvocationWebSocketMessageEncoding,
-    EvalRequestInvocationWebSocketMessageTag, EvalRequestInvocationWebSocketNameValue,
-    EvalRequestInvocationWebSocketPayloadSegment, EvalRequestInvocationWebSocketPayloadSegmentKind,
-    EvalRequestInvocationWebSocketReceiveRequest, EvalRuntimeProgram,
+    EvalRequestInvocationInput, EvalRequestInvocationMode, EvalRuntimeProgram,
 };
 use skiff_runtime_linked_program::ExecutableAddr;
 
 use crate::{
     request_payload_context_from_request, GatewayAdapterArg, GatewayAdapterSource, HttpAdapter,
-    HttpAdapterCallable, HttpAdapterKind, HttpNameValue, RequestEnvelope, RequestResult,
-    WebSocketAdapter, WebSocketAdapterKind, WebSocketConnectRequest, WebSocketContextCodec,
-    WebSocketContextExpectation, WebSocketMessage, WebSocketMessageEncoding, WebSocketMessageTag,
-    WebSocketPayloadSegment, WebSocketPayloadSegmentKind, WebSocketReceiveRequest,
+    HttpAdapterCallable, HttpAdapterKind, RequestEnvelope, RequestResult,
 };
 
 pub(crate) fn build_eval_invocation<'a>(
@@ -39,10 +30,6 @@ fn eval_invocation_build_input<'a>(request: &'a RequestEnvelope) -> EvalRequestI
         has_binary_http: request.binary_http.is_some(),
         has_retired_actor_call_metadata: request.extra.contains_key("actorCall"),
         http_adapter: request.http_adapter.as_ref().map(eval_http_adapter),
-        websocket_adapter: request
-            .websocket_adapter
-            .as_ref()
-            .map(eval_websocket_adapter),
     }
 }
 
@@ -56,30 +43,6 @@ fn eval_http_adapter(adapter: &HttpAdapter) -> EvalRequestInvocationHttpAdapter 
         guard: adapter.guard.as_ref().map(eval_callable),
         pre: adapter.pre.as_ref().map(eval_callable),
         args: eval_args(&adapter.adapter_args),
-    }
-}
-
-pub(crate) fn eval_websocket_adapter(
-    adapter: &WebSocketAdapter,
-) -> EvalRequestInvocationWebSocketAdapter {
-    EvalRequestInvocationWebSocketAdapter {
-        kind: match adapter.kind {
-            WebSocketAdapterKind::Connect => EvalRequestInvocationWebSocketKind::Connect,
-            WebSocketAdapterKind::Receive => EvalRequestInvocationWebSocketKind::Receive,
-        },
-        args: eval_args(&adapter.adapter_args),
-        context_expectation: adapter
-            .context_expectation
-            .as_ref()
-            .map(eval_websocket_context_expectation),
-        connect_request: adapter
-            .connect_request
-            .as_ref()
-            .map(eval_websocket_connect_request),
-        receive_request: adapter
-            .receive_request
-            .as_ref()
-            .map(eval_websocket_receive_request),
     }
 }
 
@@ -116,128 +79,5 @@ fn eval_arg_from(source: GatewayAdapterSource) -> EvalRequestInvocationArgFrom {
         GatewayAdapterSource::HttpRequest => EvalRequestInvocationArgFrom::HttpRequest,
         GatewayAdapterSource::HttpBody => EvalRequestInvocationArgFrom::HttpBody,
         GatewayAdapterSource::HttpContext => EvalRequestInvocationArgFrom::HttpContext,
-        GatewayAdapterSource::WebSocketIngressEvent => {
-            EvalRequestInvocationArgFrom::WebSocketIngressEvent
-        }
-        GatewayAdapterSource::WebSocketConnectRequest => {
-            EvalRequestInvocationArgFrom::WebSocketConnectRequest
-        }
-        GatewayAdapterSource::WebSocketReceiveEvent => {
-            EvalRequestInvocationArgFrom::WebSocketReceiveEvent
-        }
-        GatewayAdapterSource::WebSocketConnection => {
-            EvalRequestInvocationArgFrom::WebSocketConnection
-        }
-        GatewayAdapterSource::WebSocketConnectionContext => {
-            EvalRequestInvocationArgFrom::WebSocketConnectionContext
-        }
-        GatewayAdapterSource::WebSocketMessage => EvalRequestInvocationArgFrom::WebSocketMessage,
-        GatewayAdapterSource::WebSocketMessageBody => {
-            EvalRequestInvocationArgFrom::WebSocketMessageBody
-        }
-        GatewayAdapterSource::WebSocketConnectionId => {
-            EvalRequestInvocationArgFrom::WebSocketConnectionId
-        }
-        GatewayAdapterSource::WebSocketBusinessIdentity => {
-            EvalRequestInvocationArgFrom::WebSocketBusinessIdentity
-        }
-    }
-}
-
-fn eval_websocket_context_expectation(
-    expectation: &WebSocketContextExpectation,
-) -> EvalRequestInvocationWebSocketContextExpectation {
-    match expectation {
-        WebSocketContextExpectation::Null => EvalRequestInvocationWebSocketContextExpectation::Null,
-        WebSocketContextExpectation::Typed {
-            connect_operation_abi_id,
-            context_type_identity,
-        } => EvalRequestInvocationWebSocketContextExpectation::Typed {
-            connect_operation_abi_id: connect_operation_abi_id.clone(),
-            context_type_identity: context_type_identity.clone(),
-        },
-    }
-}
-
-fn eval_websocket_context_codec(
-    codec: &WebSocketContextCodec,
-) -> EvalRequestInvocationWebSocketContextCodec {
-    EvalRequestInvocationWebSocketContextCodec {
-        operation_abi_id: codec.operation_abi_id.clone(),
-        context_type_identity: codec.context_type_identity.clone(),
-    }
-}
-
-fn eval_websocket_connect_request(
-    request: &WebSocketConnectRequest,
-) -> EvalRequestInvocationWebSocketConnectRequest {
-    EvalRequestInvocationWebSocketConnectRequest {
-        connection_id: request.connection_id.clone(),
-        url: request.url.clone(),
-        query: eval_websocket_name_values(&request.query),
-        headers: eval_websocket_name_values(&request.headers),
-        cookies: eval_websocket_name_values(&request.cookies),
-        version: request.version.clone(),
-    }
-}
-
-fn eval_websocket_receive_request(
-    request: &WebSocketReceiveRequest,
-) -> EvalRequestInvocationWebSocketReceiveRequest {
-    EvalRequestInvocationWebSocketReceiveRequest {
-        connection_id: request.connection_id.clone(),
-        business_identity: request.business_identity.clone(),
-        message: eval_websocket_message(&request.message),
-        context_codec: request
-            .context_codec
-            .as_ref()
-            .map(eval_websocket_context_codec),
-        payload_segments: request
-            .payload_segments
-            .iter()
-            .map(eval_websocket_payload_segment)
-            .collect(),
-    }
-}
-
-fn eval_websocket_name_values(
-    items: &[HttpNameValue],
-) -> Vec<EvalRequestInvocationWebSocketNameValue> {
-    items
-        .iter()
-        .map(|item| EvalRequestInvocationWebSocketNameValue {
-            name: item.name.clone(),
-            value: item.value.clone(),
-        })
-        .collect()
-}
-
-fn eval_websocket_message(message: &WebSocketMessage) -> EvalRequestInvocationWebSocketMessage {
-    EvalRequestInvocationWebSocketMessage {
-        tag: match message.tag {
-            WebSocketMessageTag::Text => EvalRequestInvocationWebSocketMessageTag::Text,
-            WebSocketMessageTag::Binary => EvalRequestInvocationWebSocketMessageTag::Binary,
-        },
-        encoding: match message.encoding {
-            WebSocketMessageEncoding::Utf8 => EvalRequestInvocationWebSocketMessageEncoding::Utf8,
-            WebSocketMessageEncoding::Raw => EvalRequestInvocationWebSocketMessageEncoding::Raw,
-        },
-    }
-}
-
-fn eval_websocket_payload_segment(
-    segment: &WebSocketPayloadSegment,
-) -> EvalRequestInvocationWebSocketPayloadSegment {
-    EvalRequestInvocationWebSocketPayloadSegment {
-        kind: match segment.kind {
-            WebSocketPayloadSegmentKind::Context => {
-                EvalRequestInvocationWebSocketPayloadSegmentKind::Context
-            }
-            WebSocketPayloadSegmentKind::Message => {
-                EvalRequestInvocationWebSocketPayloadSegmentKind::Message
-            }
-        },
-        offset: segment.offset,
-        length: segment.length,
     }
 }

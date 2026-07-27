@@ -108,23 +108,7 @@ impl ServiceErrorConsumerFixture {
         linked_caller: bool,
         catch_in_caller: bool,
     ) -> Self {
-        Self::build(
-            kind,
-            topology,
-            linked_caller,
-            catch_in_caller,
-            ContractFlavor::Ordinary,
-        )
-    }
-
-    pub(crate) fn websocket(kind: ProviderFailureKind) -> Self {
-        Self::build(
-            kind,
-            ConsumerTopology::OneHop,
-            true,
-            false,
-            ContractFlavor::WebSocket,
-        )
+        Self::build(kind, topology, linked_caller, catch_in_caller)
     }
 
     fn build(
@@ -132,13 +116,9 @@ impl ServiceErrorConsumerFixture {
         topology: ConsumerTopology,
         linked_caller: bool,
         catch_in_caller: bool,
-        flavor: ContractFlavor,
     ) -> Self {
-        let operation_id = ContractOperationId::new(match flavor {
-            ContractFlavor::Ordinary => "operation:ordinary-errors",
-            ContractFlavor::WebSocket => "operation:websocket-errors",
-        });
-        let contract = Arc::new(service_contract(operation_id.clone(), flavor));
+        let operation_id = ContractOperationId::new("operation:ordinary-errors");
+        let contract = Arc::new(service_contract(operation_id.clone()));
         let contract_ref = service_contract_ref(&contract);
         let service_call = ServiceCallRef {
             service_requirement_slot: 0,
@@ -147,7 +127,7 @@ impl ServiceErrorConsumerFixture {
         };
 
         let std = std_package();
-        let provider = provider_package(&std.reference, &contract_ref, &service_call, flavor);
+        let provider = provider_package(&std.reference, &contract_ref, &service_call);
         let caller = caller_package(
             &std.reference,
             &provider.reference,
@@ -352,12 +332,6 @@ impl ServiceErrorConsumerFixture {
     pub(crate) fn relay_site(&self) -> &InstructionSourceSite {
         &self.relay_site
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ContractFlavor {
-    Ordinary,
-    WebSocket,
 }
 
 #[tokio::test]
@@ -982,38 +956,7 @@ impl PackageFixture {
     }
 }
 
-fn service_contract(operation_id: ContractOperationId, flavor: ContractFlavor) -> ServiceContract {
-    let (parameters, return_value) = match flavor {
-        ContractFlavor::Ordinary => (
-            Vec::new(),
-            BoundaryReturn {
-                ty: ContractTypeRef::builtin("string"),
-                value_plan: detached_value_plan(BoundaryValueOwner::Provider),
-            },
-        ),
-        ContractFlavor::WebSocket => {
-            let context = ContractTypeRef::builtin("null");
-            (
-                vec![BoundaryParameter {
-                    name: "event".to_string(),
-                    ty: ContractTypeRef::Builtin {
-                        name: WEBSOCKET_INGRESS_EVENT_TYPE.to_string(),
-                        arguments: vec![context.clone()],
-                    },
-                    value_plan: detached_value_plan(BoundaryValueOwner::Caller),
-                }],
-                BoundaryReturn {
-                    ty: ContractTypeRef::Nullable {
-                        inner: Box::new(ContractTypeRef::Builtin {
-                            name: WEBSOCKET_CONNECT_RESULT_TYPE.to_string(),
-                            arguments: vec![context],
-                        }),
-                    },
-                    value_plan: detached_value_plan(BoundaryValueOwner::Provider),
-                },
-            )
-        }
-    };
+fn service_contract(operation_id: ContractOperationId) -> ServiceContract {
     ServiceContract {
         schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
         service_id: SERVICE_ID.to_string(),
@@ -1023,13 +966,13 @@ fn service_contract(operation_id: ContractOperationId, flavor: ContractFlavor) -
             operation_id.clone(),
             BoundaryOperationDescriptor {
                 operation_id: operation_id.clone(),
-                stable_key: match flavor {
-                    ContractFlavor::Ordinary => "throw".to_string(),
-                    ContractFlavor::WebSocket => WEBSOCKET_INGRESS_OPERATION_NAME.to_string(),
-                },
+                stable_key: "throw".to_string(),
                 contract: BoundaryOperationContract {
-                    parameters,
-                    return_value,
+                    parameters: Vec::new(),
+                    return_value: BoundaryReturn {
+                        ty: ContractTypeRef::builtin("string"),
+                        value_plan: detached_value_plan(BoundaryValueOwner::Provider),
+                    },
                     stream: BoundaryStreamContract::Unary,
                     callbacks: BoundaryCallbackContract::None,
                     effect_guarantee: BoundaryEffectGuarantee {
@@ -1056,7 +999,6 @@ fn provider_package(
     std_ref: &PackageArtifactRef,
     contract: &ServiceContractRef,
     service_call: &ServiceCallRef,
-    flavor: ContractFlavor,
 ) -> PackageFixture {
     let std_file = package_symbol(std_ref, "std.file.FileError");
     let std_resource = package_symbol(std_ref, "std.resource.ResourceError");
@@ -1124,35 +1066,6 @@ fn provider_package(
             "resource denied",
         ),
     ];
-    if flavor == ContractFlavor::WebSocket {
-        let context = TypeRefIr::builtin("null");
-        let event = TypeRefIr::Builtin {
-            name: WEBSOCKET_INGRESS_EVENT_TYPE.to_string(),
-            args: vec![context.clone()],
-        };
-        let result = TypeRefIr::Nullable {
-            inner: Box::new(TypeRefIr::Builtin {
-                name: WEBSOCKET_CONNECT_RESULT_TYPE.to_string(),
-                args: vec![context],
-            }),
-        };
-        for executable in file.executables.iter_mut().skip(1) {
-            executable.params = vec![ParamIr {
-                name: "event".to_string(),
-                slot: 0,
-                ty: event.clone(),
-            }];
-            executable.slots = SlotLayout {
-                slots: vec![SlotIr {
-                    index: 0,
-                    name: "event".to_string(),
-                    kind: SlotKind::Param,
-                }],
-                frame_size: 1,
-            };
-            executable.return_type = result.clone();
-        }
-    }
     skiff_artifact_identity::assign_file_ir_identity(&mut file).expect("provider file identity");
     let file_ref = file_reference(&file);
     let build = PackageBuildId::new("build:ordinary-error-provider");

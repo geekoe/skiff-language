@@ -24,7 +24,6 @@ pub struct RequestEnvelope {
     pub ingress_selector: Option<IngressSelector>,
     pub binary_http: Option<BinaryHttpRequest>,
     pub http_adapter: Option<HttpAdapter>,
-    pub websocket_adapter: Option<WebSocketAdapter>,
     pub test_effects_enabled: bool,
     pub test_effect_doubles: HashMap<String, Vec<RequestEffectDouble>>,
     pub payload_bytes: Vec<u8>,
@@ -103,95 +102,6 @@ pub enum GatewayAdapterSource {
     HttpRequest,
     HttpBody,
     HttpContext,
-    WebSocketIngressEvent,
-    WebSocketConnectRequest,
-    WebSocketReceiveEvent,
-    WebSocketConnection,
-    WebSocketConnectionContext,
-    WebSocketMessage,
-    WebSocketMessageBody,
-    WebSocketConnectionId,
-    WebSocketBusinessIdentity,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WebSocketAdapter {
-    pub kind: WebSocketAdapterKind,
-    pub adapter_args: Vec<GatewayAdapterArg>,
-    pub context_expectation: Option<WebSocketContextExpectation>,
-    pub connect_request: Option<WebSocketConnectRequest>,
-    pub receive_request: Option<WebSocketReceiveRequest>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WebSocketAdapterKind {
-    Connect,
-    Receive,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WebSocketContextExpectation {
-    Null,
-    Typed {
-        connect_operation_abi_id: String,
-        context_type_identity: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WebSocketContextCodec {
-    pub operation_abi_id: String,
-    pub context_type_identity: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WebSocketConnectRequest {
-    pub connection_id: String,
-    pub url: String,
-    pub query: Vec<HttpNameValue>,
-    pub headers: Vec<HttpNameValue>,
-    pub cookies: Vec<HttpNameValue>,
-    pub version: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WebSocketReceiveRequest {
-    pub connection_id: String,
-    pub business_identity: Option<String>,
-    pub message: WebSocketMessage,
-    pub context_codec: Option<WebSocketContextCodec>,
-    pub payload_segments: Vec<WebSocketPayloadSegment>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WebSocketMessage {
-    pub tag: WebSocketMessageTag,
-    pub encoding: WebSocketMessageEncoding,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WebSocketMessageTag {
-    Text,
-    Binary,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WebSocketMessageEncoding {
-    Utf8,
-    Raw,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WebSocketPayloadSegment {
-    pub kind: WebSocketPayloadSegmentKind,
-    pub offset: usize,
-    pub length: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WebSocketPayloadSegmentKind {
-    Context,
-    Message,
 }
 
 #[derive(Debug, Clone, Deserialize)]

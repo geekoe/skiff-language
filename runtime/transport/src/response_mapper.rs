@@ -1,7 +1,6 @@
 use skiff_runtime_request_contract::{
     HttpNameValue, HttpResponseMetadata, OutboundResponse, ResponseEnd, ResponseError,
-    ResponseEvent, ResponseStreamEvent, WebSocketConnectAccept, WebSocketConnectContext,
-    WebSocketConnectReject, WebSocketContextCodec, WebSocketResponse,
+    ResponseEvent, ResponseStreamEvent,
 };
 
 use crate::{
@@ -10,10 +9,7 @@ use crate::{
         encode_binary_frame, validate_response_error_frame, ResponseChunkFrameHeader,
         ResponseEndFrameHeader, ResponseEndFrameMetadata, ResponseErrorFrameHeader,
         ResponseStartFrameHeader, RuntimeErrorFramePayload, RuntimeHttpNameValueFrameHeader,
-        RuntimeHttpResponseFrameHeader, RuntimeWebSocketConnectAcceptFrameHeader,
-        RuntimeWebSocketConnectContextFrameHeader, RuntimeWebSocketConnectRejectFrameHeader,
-        RuntimeWebSocketContextCodecFrameHeader, RuntimeWebSocketResponseFrameHeader,
-        ValidatedResponseErrorFrame, RUNTIME_FRAME_SCHEMA_VERSION,
+        RuntimeHttpResponseFrameHeader, ValidatedResponseErrorFrame, RUNTIME_FRAME_SCHEMA_VERSION,
     },
     runtime_assembly_request::{
         RuntimeAssemblyWebSocketConnectResponseEndFrameHeader,
@@ -125,13 +121,9 @@ pub fn response_end_to_outbound(
 pub enum ResponseEndPhase {
     Payload,
     Http,
-    WebSocketConnect,
-    WebSocketReceive,
 }
 
 /// Validates the phase facts that cannot be represented by the shared wire header alone.
-/// In particular, a typed WebSocket Context is nominally present even when its payload encodes to
-/// zero bytes, while receive never carries a response payload or connect metadata.
 pub fn validate_response_end_frame(
     header: &ResponseEndFrameHeader,
     payload: &[u8],
@@ -148,26 +140,6 @@ pub fn validate_response_end_frame(
         (ResponseEndPhase::Payload, ResponseEndFrameMetadata::None)
         | (ResponseEndPhase::Http, ResponseEndFrameMetadata::Http(_)) => {
             header.payload_present == !payload.is_empty()
-        }
-        (
-            ResponseEndPhase::WebSocketConnect,
-            ResponseEndFrameMetadata::WebSocketConnect(
-                RuntimeWebSocketResponseFrameHeader::ConnectAccept(accept),
-            ),
-        ) => match &accept.context {
-            RuntimeWebSocketConnectContextFrameHeader::Null => {
-                !header.payload_present && payload.is_empty()
-            }
-            RuntimeWebSocketConnectContextFrameHeader::Typed(_) => header.payload_present,
-        },
-        (
-            ResponseEndPhase::WebSocketConnect,
-            ResponseEndFrameMetadata::WebSocketConnect(
-                RuntimeWebSocketResponseFrameHeader::ConnectReject(_),
-            ),
-        )
-        | (ResponseEndPhase::WebSocketReceive, ResponseEndFrameMetadata::None) => {
-            !header.payload_present && payload.is_empty()
         }
         _ => false,
     };
@@ -288,69 +260,7 @@ fn response_end_frame_parts(
                 ResponseEndPhase::Http,
             )
         }
-        ResponseEnd::WebSocket(WebSocketResponse::ConnectAccept(response)) => {
-            let (payload, payload_present, metadata) = protocol_websocket_connect_accept(response);
-            (
-                payload,
-                payload_present,
-                metadata,
-                ResponseEndPhase::WebSocketConnect,
-            )
-        }
-        ResponseEnd::WebSocket(WebSocketResponse::ConnectReject(response)) => (
-            Vec::new(),
-            false,
-            ResponseEndFrameMetadata::WebSocketConnect(protocol_websocket_connect_reject(response)),
-            ResponseEndPhase::WebSocketConnect,
-        ),
-        ResponseEnd::WebSocket(WebSocketResponse::Receive) => (
-            Vec::new(),
-            false,
-            ResponseEndFrameMetadata::None,
-            ResponseEndPhase::WebSocketReceive,
-        ),
     }
-}
-
-fn protocol_websocket_connect_accept(
-    response: WebSocketConnectAccept,
-) -> (Vec<u8>, bool, ResponseEndFrameMetadata) {
-    let (payload, payload_present, context) = match response.context {
-        WebSocketConnectContext::Null => (
-            Vec::new(),
-            false,
-            RuntimeWebSocketConnectContextFrameHeader::Null,
-        ),
-        WebSocketConnectContext::Typed { payload, codec } => (
-            payload,
-            true,
-            RuntimeWebSocketConnectContextFrameHeader::Typed(protocol_websocket_context_codec(
-                codec,
-            )),
-        ),
-    };
-    (
-        payload,
-        payload_present,
-        ResponseEndFrameMetadata::WebSocketConnect(
-            RuntimeWebSocketResponseFrameHeader::ConnectAccept(
-                RuntimeWebSocketConnectAcceptFrameHeader {
-                    business_identity: response.business_identity,
-                    connection_policy: response.connection_policy,
-                    context,
-                },
-            ),
-        ),
-    )
-}
-
-fn protocol_websocket_connect_reject(
-    response: WebSocketConnectReject,
-) -> RuntimeWebSocketResponseFrameHeader {
-    RuntimeWebSocketResponseFrameHeader::ConnectReject(RuntimeWebSocketConnectRejectFrameHeader {
-        code: response.code,
-        reason: response.reason,
-    })
 }
 
 fn invalid_response_end(message: &str) -> OutboundResponse {
@@ -369,15 +279,6 @@ fn invalid_response_error(message: &str) -> OutboundResponse {
         status: None,
         details: None,
     })
-}
-
-fn protocol_websocket_context_codec(
-    codec: WebSocketContextCodec,
-) -> RuntimeWebSocketContextCodecFrameHeader {
-    RuntimeWebSocketContextCodecFrameHeader {
-        operation_abi_id: codec.operation_abi_id,
-        context_type_identity: codec.context_type_identity,
-    }
 }
 
 #[cfg(test)]

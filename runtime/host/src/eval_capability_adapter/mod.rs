@@ -84,7 +84,7 @@ pub(crate) use factory::retired_assembly_outbound;
 pub use factory::TestActorCapabilityFactory;
 pub use factory::{
     config_context, db_context, effects, execution_control, file_source, outbound, runtime_factory,
-    websocket, websocket_from_request,
+    websocket, websocket_from_request, websocket_rebinder,
 };
 pub use request_contexts::{
     effect_dispatch_context_from_request, outbound_service_context_from_request,

@@ -159,58 +159,80 @@ pub enum RuntimeAssemblyWebSocketConnectTargetError {
 fn validate_entry_facts(
     entry: &LinkedGatewayEntry,
 ) -> Result<(), RuntimeAssemblyWebSocketConnectTargetError> {
-    let handler = entry
-        .optional_handler()
+    validate_entry_fact_view(WebSocketEntryValidationFacts {
+        key: entry.gateway_entry_key(),
+        identity: entry.gateway_entry_identity(),
+        surface: entry.protocol_surface(),
+        plan: entry.adapter_plan(),
+        handler_signature: entry.optional_handler().map(|handler| handler.signature()),
+        has_pre: entry.pre().is_some(),
+        has_guard: entry.guard().is_some(),
+    })
+}
+
+struct WebSocketEntryValidationFacts<'a> {
+    key: &'a GatewayEntryKey,
+    identity: &'a GatewayEntryIdentity,
+    surface: &'a GatewayEntryProtocolSurface,
+    plan: &'a GatewayAdapterPlan,
+    handler_signature: Option<&'a PackageCallableSignature>,
+    has_pre: bool,
+    has_guard: bool,
+}
+
+fn validate_entry_fact_view(
+    facts: WebSocketEntryValidationFacts<'_>,
+) -> Result<(), RuntimeAssemblyWebSocketConnectTargetError> {
+    let handler_signature = facts
+        .handler_signature
         .ok_or(RuntimeAssemblyWebSocketConnectTargetError::HandlerRequired)?;
-    if entry.gateway_entry_key().as_str() != WEBSOCKET_GATEWAY_ENTRY_KEY {
+    if facts.key.as_str() != WEBSOCKET_GATEWAY_ENTRY_KEY {
         return Err(RuntimeAssemblyWebSocketConnectTargetError::InvalidKey);
     }
-    validate_gateway_entry_protocol_surface(entry.protocol_surface()).map_err(|error| {
+    validate_gateway_entry_protocol_surface(facts.surface).map_err(|error| {
         RuntimeAssemblyWebSocketConnectTargetError::InvalidProtocolSurface {
             detail: error.to_string(),
         }
     })?;
-    let expected_identity = gateway_entry_identity(entry.protocol_surface()).map_err(|error| {
+    let expected_identity = gateway_entry_identity(facts.surface).map_err(|error| {
         RuntimeAssemblyWebSocketConnectTargetError::InvalidProtocolSurface {
             detail: error.to_string(),
         }
     })?;
-    if entry.gateway_entry_identity() != &expected_identity {
+    if facts.identity != &expected_identity {
         return Err(RuntimeAssemblyWebSocketConnectTargetError::InvalidGatewayIdentity);
     }
-    if entry.pre().is_some()
-        || entry.guard().is_some()
+    if facts.has_pre
+        || facts.has_guard
         || !matches!(
-            entry.protocol_surface().protocol,
+            facts.surface.protocol,
             GatewayProtocolSurface::WebSocketConnect(_)
         )
-        || entry.adapter_plan().kind != GatewayAdapterKind::WebSocketConnect
+        || facts.plan.kind != GatewayAdapterKind::WebSocketConnect
     {
         return Err(RuntimeAssemblyWebSocketConnectTargetError::PlanSurfaceMismatch);
     }
-    validate_gateway_adapter_args(entry.adapter_plan().kind, false, &entry.adapter_plan().args)
-        .map_err(
-            |error| RuntimeAssemblyWebSocketConnectTargetError::InvalidAdapterPlan {
-                detail: error.to_string(),
-            },
-        )?;
-    if !handler.signature().type_params.is_empty() {
+    validate_gateway_adapter_args(facts.plan.kind, false, &facts.plan.args).map_err(|error| {
+        RuntimeAssemblyWebSocketConnectTargetError::InvalidAdapterPlan {
+            detail: error.to_string(),
+        }
+    })?;
+    if !handler_signature.type_params.is_empty() {
         return Err(RuntimeAssemblyWebSocketConnectTargetError::HandlerPlanMismatch);
     }
-    let formal_names = handler
-        .signature()
+    let formal_names = handler_signature
         .parameters
         .iter()
         .map(|parameter| parameter.name.as_str())
         .collect::<BTreeSet<_>>();
-    let actual_names = entry
-        .adapter_plan()
+    let actual_names = facts
+        .plan
         .args
         .iter()
         .map(|arg| arg.param.as_str())
         .collect::<BTreeSet<_>>();
-    if formal_names.len() != handler.signature().parameters.len()
-        || actual_names.len() != entry.adapter_plan().args.len()
+    if formal_names.len() != handler_signature.parameters.len()
+        || actual_names.len() != facts.plan.args.len()
         || formal_names != actual_names
     {
         return Err(RuntimeAssemblyWebSocketConnectTargetError::HandlerPlanMismatch);
@@ -314,5 +336,104 @@ impl RuntimeWebSocketConnectExecutionTarget for RuntimeAssemblyWebSocketConnectT
             signature: handler.signature(),
             addr: &self.handler_addr,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skiff_artifact_model::{
+        GatewayAdapterArg, GatewayAdapterSource, GatewayExternalErrorProjection,
+        GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
+        GatewayWebSocketShapeVersion, PackageCallableParameter, PackageTypeRef, TypeRefIr,
+    };
+
+    fn surface() -> GatewayEntryProtocolSurface {
+        GatewayEntryProtocolSurface {
+            protocol: GatewayProtocolSurface::WebSocketConnect(
+                GatewayWebSocketConnectProtocolSurface {
+                    connect_request_shape: GatewayWebSocketShapeVersion::V1,
+                    connect_result_shape: GatewayWebSocketShapeVersion::V1,
+                    connection_policy_shape: GatewayWebSocketShapeVersion::V1,
+                    external_sources: vec![
+                        GatewayAdapterSource::WebSocketConnectRequest,
+                        GatewayAdapterSource::WebSocketConnectionId,
+                    ],
+                    downlink_frames: vec![
+                        GatewayWebSocketDownlinkFrame::Binary,
+                        GatewayWebSocketDownlinkFrame::Text,
+                    ],
+                },
+            ),
+            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+        }
+    }
+
+    fn signature(parameter: &str) -> PackageCallableSignature {
+        PackageCallableSignature {
+            type_params: Vec::new(),
+            parameters: vec![PackageCallableParameter {
+                name: parameter.to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: TypeRefIr::builtin("string"),
+                },
+            }],
+            return_type: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("string"),
+            },
+            may_suspend: false,
+        }
+    }
+
+    #[test]
+    fn websocket_connect_target_requires_real_handler_and_exact_plan() {
+        let key = GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap();
+        let surface = surface();
+        let identity = gateway_entry_identity(&surface).unwrap();
+        let plan = GatewayAdapterPlan {
+            kind: GatewayAdapterKind::WebSocketConnect,
+            args: vec![GatewayAdapterArg {
+                param: "request".to_string(),
+                source: GatewayAdapterSource::WebSocketConnectRequest,
+            }],
+        };
+        let canonical_signature = signature("request");
+
+        validate_entry_fact_view(WebSocketEntryValidationFacts {
+            key: &key,
+            identity: &identity,
+            surface: &surface,
+            plan: &plan,
+            handler_signature: Some(&canonical_signature),
+            has_pre: false,
+            has_guard: false,
+        })
+        .expect("canonical connect target facts");
+
+        assert!(matches!(
+            validate_entry_fact_view(WebSocketEntryValidationFacts {
+                key: &key,
+                identity: &identity,
+                surface: &surface,
+                plan: &plan,
+                handler_signature: None,
+                has_pre: false,
+                has_guard: false,
+            }),
+            Err(RuntimeAssemblyWebSocketConnectTargetError::HandlerRequired)
+        ));
+
+        assert!(matches!(
+            validate_entry_fact_view(WebSocketEntryValidationFacts {
+                key: &key,
+                identity: &identity,
+                surface: &surface,
+                plan: &plan,
+                handler_signature: Some(&signature("other")),
+                has_pre: false,
+                has_guard: false,
+            }),
+            Err(RuntimeAssemblyWebSocketConnectTargetError::HandlerPlanMismatch)
+        ));
     }
 }
