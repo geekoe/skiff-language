@@ -128,6 +128,12 @@ impl ExecutionBudget {
         Ok(())
     }
 
+    pub(crate) fn record_scoped_poll(&self) {
+        if self.config.enabled {
+            self.poll_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     pub fn record_cancelled(&self) {
         let _ = self.fail(ExecutionBudgetReason::Cancelled);
     }

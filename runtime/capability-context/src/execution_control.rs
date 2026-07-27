@@ -6,12 +6,16 @@ use std::{
 };
 
 use serde_json::json;
+use skiff_artifact_model::InstructionSourceSite;
 use skiff_runtime_model::{
     error::RuntimeErrorPayload,
     service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
 };
 
-use crate::{CancellationToken, FileSourceStreamContext, StreamRuntime};
+use crate::{
+    CancellationToken, ExecutionScope, ExecutionScopeAccessError, FileSourceStreamContext,
+    StreamRuntime,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionBudgetReason {
@@ -152,6 +156,24 @@ pub trait ExecutionControlApi: Send + Sync {
     fn cancel_flag(&self) -> Arc<AtomicBool>;
     fn cancellation_token(&self) -> CancellationToken;
     fn deadline(&self) -> Option<Instant>;
+    /// Returns the full current scope when the adapter has preserved it.
+    ///
+    /// The default is deliberately unavailable rather than reconstructing a
+    /// lossy request-only scope from `deadline` and `cancellation_token`.
+    fn execution_scope(&self) -> Result<ExecutionScope, ExecutionScopeAccessError> {
+        Err(ExecutionScopeAccessError::Unavailable)
+    }
+    /// Derives an owned control suitable for installing as the current scope.
+    ///
+    /// Scope-aware adapters must override this together with
+    /// `execution_scope`; the default fails closed.
+    fn derive_scope(
+        &self,
+        _local_deadline: Instant,
+        _site: InstructionSourceSite,
+    ) -> Result<OwnedExecutionControl, ExecutionScopeAccessError> {
+        Err(ExecutionScopeAccessError::Unavailable)
+    }
     fn check_cancelled(&self) -> ExecutionControlResult<()>;
     fn add_instruction_units(&self, units: u64) -> ExecutionControlResult<()>;
     fn poll_execution_budget(&self) -> ExecutionControlResult<()>;
@@ -194,6 +216,18 @@ impl<'a> ExecutionControl<'a> {
         self.inner.deadline()
     }
 
+    pub fn execution_scope(&self) -> Result<ExecutionScope, ExecutionScopeAccessError> {
+        self.inner.execution_scope()
+    }
+
+    pub fn derive_scope(
+        &self,
+        local_deadline: Instant,
+        site: InstructionSourceSite,
+    ) -> Result<OwnedExecutionControl, ExecutionScopeAccessError> {
+        self.inner.derive_scope(local_deadline, site)
+    }
+
     pub fn check_cancelled(&self) -> ExecutionControlResult<()> {
         self.inner.check_cancelled()
     }
@@ -219,6 +253,16 @@ pub trait OwnedExecutionControlApi: Send + Sync {
     fn cancelled(&self) -> &AtomicBool;
     fn cancellation_token(&self) -> CancellationToken;
     fn deadline(&self) -> Option<Instant>;
+    fn execution_scope(&self) -> Result<ExecutionScope, ExecutionScopeAccessError> {
+        self.borrow().execution_scope()
+    }
+    fn derive_scope(
+        &self,
+        local_deadline: Instant,
+        site: InstructionSourceSite,
+    ) -> Result<OwnedExecutionControl, ExecutionScopeAccessError> {
+        self.borrow().derive_scope(local_deadline, site)
+    }
 }
 
 #[derive(Clone)]
@@ -250,5 +294,17 @@ impl OwnedExecutionControl {
 
     pub fn deadline(&self) -> Option<Instant> {
         self.inner.deadline()
+    }
+
+    pub fn execution_scope(&self) -> Result<ExecutionScope, ExecutionScopeAccessError> {
+        self.inner.execution_scope()
+    }
+
+    pub fn derive_scope(
+        &self,
+        local_deadline: Instant,
+        site: InstructionSourceSite,
+    ) -> Result<Self, ExecutionScopeAccessError> {
+        self.inner.derive_scope(local_deadline, site)
     }
 }

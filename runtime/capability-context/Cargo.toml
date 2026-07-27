@@ -17,3 +17,6 @@ skiff-runtime-boundary = { path = "../boundary" }
 skiff-runtime-model = { path = "../model" }
 skiff-runtime-native-contract = { path = "../native-contract" }
 tokio = { version = "1.44", features = ["macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1.44", features = ["test-util"] }

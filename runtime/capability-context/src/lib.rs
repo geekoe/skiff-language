@@ -14,6 +14,7 @@ mod outbound_request;
 mod outbound_response;
 mod request_payload;
 mod response;
+mod scoped_execution;
 mod stream;
 mod stream_cleanup;
 mod telemetry;
@@ -24,6 +25,8 @@ mod websocket;
 mod cancellation_terminal_tests;
 #[cfg(test)]
 mod connection_request_tests;
+#[cfg(test)]
+mod scoped_execution_tests;
 
 pub use actor::{
     ActorCapabilityApi, ActorCapabilityContext, ActorClient, OwnedActorCapabilityContext,
@@ -96,6 +99,11 @@ pub use request_payload::{
 };
 pub use response::{
     FixedServiceResponseFailure, HttpNameValue, HttpResponseMetadata, ResponseError,
+};
+pub use scoped_execution::{
+    EffectiveDeadline, ExecutionDeadlineSource, ExecutionScope, ExecutionScopeAccessError,
+    ExecutionScopeDeriveError, ExecutionScopeLease, ExecutionScopeLeaseCompletion,
+    ExecutionScopeLeaseTerminal, ExecutionScopeLifecycleSnapshot, ExecutionScopeTerminal,
 };
 pub use stream::{
     HttpResponseStreamCapabilityContext, StreamCancelSignal, StreamCancelSignalApi,
