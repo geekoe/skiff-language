@@ -485,6 +485,23 @@ export interface RuntimeAssemblyWebSocketConnectResponseEndFrameHeader
   websocketConnect: RuntimeAssemblyWebSocketConnectResponseFrameMetadata;
 }
 
+export type RuntimeAssemblyWebSocketJsonRpcResponseOutcome =
+  | 'success'
+  | 'invalidParams'
+  | 'internalError'
+  | 'deadlineExceeded';
+
+export interface RuntimeAssemblyWebSocketJsonRpcResponseFrameMetadata {
+  outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome;
+}
+
+export interface RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader
+  extends RuntimeFrameHeaderBase<'response.end'> {
+  requestId: string;
+  payloadPresent: boolean;
+  websocketJsonRpc: RuntimeAssemblyWebSocketJsonRpcResponseFrameMetadata;
+}
+
 export interface RequestStartFrameHeader extends RuntimeFrameHeaderBase<'request.start'> {
   requestId: string;
   mode: DispatchMode;
@@ -561,6 +578,7 @@ export interface ResponseEndFrameHeader extends RuntimeFrameHeaderBase<'response
   payloadPresent: boolean;
   httpResponse?: HttpResponseFrameMetadata;
   websocketConnect?: WebSocketConnectResponseFrameMetadata;
+  websocketJsonRpc?: RuntimeAssemblyWebSocketJsonRpcResponseFrameMetadata;
 }
 
 export interface FixedServiceResponseErrorFrameHeader {

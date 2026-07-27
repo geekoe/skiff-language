@@ -11,6 +11,7 @@ import {
   type ResponseErrorFrameHeader,
   type RouterToRuntimeFrameHeader,
   type RuntimeAssemblyWebSocketConnectResponseEndFrameHeader,
+  type RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader,
   type RuntimeFrameHeader,
   type RuntimeFrameHeaderName,
   type RuntimeToRouterFrameHeader,
@@ -27,6 +28,7 @@ import {
   hasRuntimeAssemblyRouting,
   normalizeRuntimeAssemblyRequestStartHeader,
   type RuntimeAssemblyRequestStartFrameHeader,
+  type RuntimeAssemblyRequestStartFrameTransportWireHeader,
   type RuntimeAssemblyRequestStartFrameWireHeader,
   validateRuntimeAssemblyRequestStartHeader
 } from './runtimeAssemblyRequest.js';
@@ -1696,6 +1698,102 @@ export const runtimeFrameHeaderSchemas = {
           testEffectsEnabled: { type: 'boolean' }
         },
         additionalProperties: false
+      },
+      {
+        type: 'object',
+        required: [
+          'schemaVersion',
+          'type',
+          'requestId',
+          'mode',
+          'caller',
+          'routing',
+          'trace',
+          'websocketJsonRpc'
+        ],
+        properties: {
+          schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+          type: { type: 'string', enum: ['request.start'] },
+          requestId: { type: 'string', minLength: 1 },
+          mode: { type: 'string', enum: ['unary'] },
+          caller: {
+            type: 'object',
+            required: ['kind'],
+            properties: {
+              kind: { type: 'string', enum: ['gateway'] }
+            },
+            additionalProperties: false
+          },
+          routing: {
+            type: 'object',
+            required: [
+              'kind',
+              'assemblyIdentity',
+              'assemblyGeneration',
+              'gatewayEntryIdentity',
+              'ingress'
+            ],
+            properties: {
+              kind: { type: 'string', enum: ['runtimeAssembly'] },
+              assemblyIdentity: {
+                type: 'string',
+                pattern: '^skiff-runtime-assembly-v2:sha256:[0-9a-f]{64}$'
+              },
+              assemblyGeneration: {
+                type: 'integer',
+                minimum: 0,
+                maximum: Number.MAX_SAFE_INTEGER
+              },
+              gatewayEntryIdentity: {
+                type: 'string',
+                pattern: '^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$'
+              },
+              ingress: {
+                type: 'object',
+                required: ['protocol', 'host', 'method', 'path'],
+                properties: {
+                  protocol: { type: 'string', enum: ['webSocket'] },
+                  host: { type: 'string', minLength: 1 },
+                  method: { type: 'string', minLength: 1 },
+                  path: { type: 'string', pattern: '^/' }
+                },
+                additionalProperties: false
+              }
+            },
+            additionalProperties: false
+          },
+          clientSession: requestStartFrameProperties.clientSession,
+          deadline: requestStartFrameProperties.deadline,
+          trace: requestStartFrameProperties.trace,
+          websocketJsonRpc: {
+            type: 'object',
+            required: [
+              'profile',
+              'connectionId',
+              'websocketEntryId',
+              'gatewayEntryIdentity'
+            ],
+            properties: {
+              profile: { type: 'string', enum: ['jsonrpc-2.0-text'] },
+              connectionId: {
+                type: 'string',
+                pattern: '^(?=.{1,255}$)[A-Za-z0-9._:~-]+$'
+              },
+              websocketEntryId: {
+                type: 'string',
+                pattern: '^skiff-websocket-entry-v1:sha256:[0-9a-f]{64}$'
+              },
+              gatewayEntryIdentity: {
+                type: 'string',
+                pattern: '^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$'
+              },
+              businessIdentity: { type: 'string', minLength: 1 }
+            },
+            additionalProperties: false
+          },
+          testEffectsEnabled: { type: 'boolean' }
+        },
+        additionalProperties: false
       }
     ]
   },
@@ -1875,6 +1973,59 @@ export const runtimeFrameHeaderSchemas = {
               result: { type: 'string', enum: ['reject'] },
               code: { type: 'integer', minimum: 0, maximum: 65_535 },
               reason: { type: 'string' }
+            },
+            additionalProperties: false
+          }
+        },
+        additionalProperties: false
+      },
+      {
+        type: 'object',
+        required: [
+          'schemaVersion',
+          'type',
+          'requestId',
+          'payloadPresent',
+          'websocketJsonRpc'
+        ],
+        properties: {
+          schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+          type: { type: 'string', enum: ['response.end'] },
+          requestId: { type: 'string', minLength: 1 },
+          payloadPresent: { type: 'boolean', enum: [true] },
+          websocketJsonRpc: {
+            type: 'object',
+            required: ['outcome'],
+            properties: {
+              outcome: { type: 'string', enum: ['success'] }
+            },
+            additionalProperties: false
+          }
+        },
+        additionalProperties: false
+      },
+      {
+        type: 'object',
+        required: [
+          'schemaVersion',
+          'type',
+          'requestId',
+          'payloadPresent',
+          'websocketJsonRpc'
+        ],
+        properties: {
+          schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+          type: { type: 'string', enum: ['response.end'] },
+          requestId: { type: 'string', minLength: 1 },
+          payloadPresent: { type: 'boolean', enum: [false] },
+          websocketJsonRpc: {
+            type: 'object',
+            required: ['outcome'],
+            properties: {
+              outcome: {
+                type: 'string',
+                enum: ['invalidParams', 'internalError', 'deadlineExceeded']
+              }
             },
             additionalProperties: false
           }
@@ -2863,7 +3014,7 @@ export function validateRuntimeAssemblyRequestStartFrameHeader(
 
 export function validateRuntimeAssemblyRequestStartFrameWireHeader(
   value: unknown
-): EnvelopeValidationResult<RuntimeAssemblyRequestStartFrameWireHeader> {
+): EnvelopeValidationResult<RuntimeAssemblyRequestStartFrameTransportWireHeader> {
   const typeResult = validateEnvelopeType(value, ['request.start'], 'runtimeAssembly frame header');
   if (!typeResult.ok) {
     return typeResult;
@@ -2909,6 +3060,33 @@ export function validateRuntimeAssemblyWebSocketConnectResponseEndFrameHeader(
         ok: true,
         envelope:
           envelope as unknown as RuntimeAssemblyWebSocketConnectResponseEndFrameHeader
+      }
+    : { ok: false, error };
+}
+
+export function validateRuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader(
+  value: unknown
+): EnvelopeValidationResult<RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader> {
+  const typeResult = validateEnvelopeType(
+    value,
+    ['response.end'],
+    'runtimeAssembly websocketJsonRpc response frame header'
+  );
+  if (!typeResult.ok) {
+    return typeResult;
+  }
+  const { envelope } = typeResult;
+  const error =
+    validateFrameHeaderBase(envelope, 'response.end') ??
+    validateResponseEndFrameHeader(envelope) ??
+    (envelope.websocketJsonRpc === undefined
+      ? 'invalid response.end runtimeAssembly envelope: websocketJsonRpc is required'
+      : null);
+  return error === null
+    ? {
+        ok: true,
+        envelope:
+          envelope as unknown as RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader
       }
     : { ok: false, error };
 }
@@ -4184,19 +4362,26 @@ function validateResponseEndFrameHeader(envelope: Record<string, unknown>): stri
       'requestId',
       'payloadPresent',
       'httpResponse',
-      'websocketConnect'
+      'websocketConnect',
+      'websocketJsonRpc'
     ]) ??
     requireString(envelope, 'response.end', 'requestId') ??
     requireBoolean(envelope, 'response.end', 'payloadPresent') ??
     validateHttpResponseFrameMetadata(envelope, 'response.end') ??
     validateWebSocketConnectResponseFrameMetadata(envelope) ??
+    validateWebSocketJsonRpcResponseFrameMetadata(envelope) ??
     validateResponseEndVariant(envelope)
   );
 }
 
 function validateResponseEndVariant(envelope: Record<string, unknown>): string | null {
-  if (envelope.httpResponse !== undefined && envelope.websocketConnect !== undefined) {
-    return 'invalid response.end envelope: HTTP and WebSocket response metadata cannot be mixed';
+  const metadataCount = [
+    envelope.httpResponse,
+    envelope.websocketConnect,
+    envelope.websocketJsonRpc
+  ].filter((value) => value !== undefined).length;
+  if (metadataCount > 1) {
+    return 'invalid response.end envelope: response metadata variants cannot be mixed';
   }
   if (envelope.websocketConnect !== undefined && envelope.payloadPresent !== false) {
     return 'invalid response.end envelope: websocketConnect payloadPresent must be false';
@@ -4481,6 +4666,44 @@ function validateWebSocketConnectResponseFrameMetadata(
     }
   }
   return null;
+}
+
+function validateWebSocketJsonRpcResponseFrameMetadata(
+  envelope: Record<string, unknown>
+): string | null {
+  if (envelope.websocketJsonRpc === undefined) {
+    return null;
+  }
+  if (!isRecord(envelope.websocketJsonRpc)) {
+    return 'invalid response.end envelope: websocketJsonRpc must be an object';
+  }
+  const metadata = envelope.websocketJsonRpc;
+  const fieldError =
+    rejectUnsupportedObjectFields(
+      metadata,
+      'response.end',
+      'websocketJsonRpc',
+      ['outcome']
+    ) ??
+    requireEnum(envelope, 'response.end', 'websocketJsonRpc.outcome', [
+      'success',
+      'invalidParams',
+      'internalError',
+      'deadlineExceeded'
+    ]) ??
+    requireRuntimeAssemblyWebSocketJsonRpcCanonicalBoundedString(
+      envelope,
+      'response.end',
+      'requestId',
+      1024
+    );
+  if (fieldError !== null) {
+    return fieldError;
+  }
+  const expectedPayloadPresent = metadata.outcome === 'success';
+  return envelope.payloadPresent === expectedPayloadPresent
+    ? null
+    : 'invalid response.end envelope: websocketJsonRpc payloadPresent must match outcome';
 }
 
 function validateWebSocketConnectionPolicy(value: unknown): string | null {
@@ -5010,6 +5233,22 @@ function requireCanonicalBoundedString(
     value.trim() === value &&
     Buffer.byteLength(value, 'utf8') <= maxBytes &&
     !/[\u0000-\u001f\u007f]/.test(value)
+    ? null
+    : `invalid ${envelopeType} envelope: ${field} must be a bounded non-empty canonical string`;
+}
+
+function requireRuntimeAssemblyWebSocketJsonRpcCanonicalBoundedString(
+  envelope: Record<string, unknown>,
+  envelopeType: string,
+  field: string,
+  maxBytes: number
+): string | null {
+  const value = getPathValue(envelope, field);
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    value.trim() === value &&
+    Buffer.byteLength(value, 'utf8') <= maxBytes &&
+    !/\p{Cc}/u.test(value)
     ? null
     : `invalid ${envelopeType} envelope: ${field} must be a bounded non-empty canonical string`;
 }

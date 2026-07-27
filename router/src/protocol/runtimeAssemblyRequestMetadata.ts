@@ -1,14 +1,16 @@
 import { isRecord } from "./envelope.js";
 import type {
-  RuntimeAssemblyRequestStartFrameWireHeader,
+  RuntimeAssemblyRequestStartFrameTransportWireHeader,
   RuntimeAssemblyRequestWireKind,
 } from "./runtimeAssemblyRequest.js";
 
 class RuntimeAssemblyRequestMetadataError extends Error {}
 
 const CONNECTION_ID_PATTERN = /^(?=.{1,255}$)[A-Za-z0-9._:~-]+$/;
-const GATEWAY_ENTRY_IDENTITY_PATTERN =
+const LEGACY_GATEWAY_ENTRY_IDENTITY_PATTERN =
   /^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$/;
+const GATEWAY_ENTRY_IDENTITY_PATTERN =
+  /^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$/;
 const WEBSOCKET_ENTRY_ID_PATTERN =
   /^skiff-websocket-entry-v1:sha256:[0-9a-f]{64}$/;
 
@@ -22,8 +24,10 @@ export function validateRuntimeAssemblyRequestMetadata(
     validateTrace(envelope);
     if (wireKind === "http") {
       validateHttpRequest(envelope);
-    } else {
+    } else if (wireKind === "websocketConnect") {
       validateWebSocketConnect(envelope);
+    } else {
+      validateWebSocketJsonRpc(envelope);
     }
     optionalBoolean(envelope, "testEffectsEnabled");
     return null;
@@ -37,11 +41,11 @@ export function validateRuntimeAssemblyRequestMetadata(
 
 export function normalizeRuntimeAssemblyRequestMetadata(
   envelope: Record<string, unknown>,
-): RuntimeAssemblyRequestStartFrameWireHeader {
+): RuntimeAssemblyRequestStartFrameTransportWireHeader {
   return {
     ...envelope,
     testEffectsEnabled: envelope.testEffectsEnabled ?? false,
-  } as unknown as RuntimeAssemblyRequestStartFrameWireHeader;
+  } as unknown as RuntimeAssemblyRequestStartFrameTransportWireHeader;
 }
 
 function validateClientSession(envelope: Record<string, unknown>): void {
@@ -122,7 +126,7 @@ function validateWebSocketConnect(envelope: Record<string, unknown>): void {
     connect,
     "gatewayEntryIdentity",
     "websocketConnect.gatewayEntryIdentity",
-    GATEWAY_ENTRY_IDENTITY_PATTERN,
+    LEGACY_GATEWAY_ENTRY_IDENTITY_PATTERN,
   );
   const routing = exactObject(envelope.routing, "routing", [
     "kind",
@@ -134,6 +138,61 @@ function validateWebSocketConnect(envelope: Record<string, unknown>): void {
   if (connect.gatewayEntryIdentity !== routing.gatewayEntryIdentity) {
     fail(
       "websocketConnect.gatewayEntryIdentity must match routing.gatewayEntryIdentity",
+    );
+  }
+}
+
+function validateWebSocketJsonRpc(
+  envelope: Record<string, unknown>,
+): void {
+  const request = exactObject(
+    envelope.websocketJsonRpc,
+    "websocketJsonRpc",
+    [
+      "profile",
+      "connectionId",
+      "websocketEntryId",
+      "gatewayEntryIdentity",
+    ],
+    ["businessIdentity"],
+  );
+  if (request.profile !== "jsonrpc-2.0-text") {
+    fail("websocketJsonRpc.profile must be jsonrpc-2.0-text");
+  }
+  requirePattern(
+    request,
+    "connectionId",
+    "websocketJsonRpc.connectionId",
+    CONNECTION_ID_PATTERN,
+  );
+  requirePattern(
+    request,
+    "websocketEntryId",
+    "websocketJsonRpc.websocketEntryId",
+    WEBSOCKET_ENTRY_ID_PATTERN,
+  );
+  requirePattern(
+    request,
+    "gatewayEntryIdentity",
+    "websocketJsonRpc.gatewayEntryIdentity",
+    GATEWAY_ENTRY_IDENTITY_PATTERN,
+  );
+  optionalBoundedCanonicalString(
+    request,
+    "businessIdentity",
+    "websocketJsonRpc.businessIdentity",
+    1024,
+  );
+  const routing = exactObject(envelope.routing, "routing", [
+    "kind",
+    "assemblyIdentity",
+    "assemblyGeneration",
+    "gatewayEntryIdentity",
+    "ingress",
+  ]);
+  if (request.gatewayEntryIdentity !== routing.gatewayEntryIdentity) {
+    fail(
+      "websocketJsonRpc.gatewayEntryIdentity must match routing.gatewayEntryIdentity",
     );
   }
 }
@@ -180,6 +239,25 @@ function optionalString(
 ): void {
   if (has(owner, field) && typeof owner[field] !== "string") {
     fail(`${label} must be a string when present`);
+  }
+}
+
+function optionalBoundedCanonicalString(
+  owner: Record<string, unknown>,
+  field: string,
+  label: string,
+  maxBytes: number,
+): void {
+  if (!has(owner, field)) return;
+  const value = owner[field];
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.trim() !== value ||
+    /\p{Cc}/u.test(value) ||
+    Buffer.byteLength(value, "utf8") > maxBytes
+  ) {
+    fail(`${label} must be a bounded non-empty canonical string`);
   }
 }
 

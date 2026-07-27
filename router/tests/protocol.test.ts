@@ -386,11 +386,11 @@ const observabilityFixture = JSON.parse(
 };
 
 describe('runtime protocol fixtures and schemas', () => {
-  it('registers disjoint legacy, current HTTP, and current websocketConnect request.start schema branches', () => {
+  it('registers disjoint legacy, HTTP, websocketConnect, and websocketJsonRpc request.start schema branches', () => {
     const schema = runtimeFrameHeaderSchemas['request.start'];
     expect('oneOf' in schema).toBe(true);
     if (!('oneOf' in schema)) throw new Error('request.start schema must be oneOf');
-    expect(schema.oneOf).toHaveLength(3);
+    expect(schema.oneOf).toHaveLength(4);
     expect(runtimeAssemblyRequestCorpus.requestStartHeaders.length).toBeGreaterThan(0);
     expect(runtimeAssemblyRequestCorpus.legacyRequestStartHeaders.length).toBeGreaterThan(0);
     expect(runtimeWebSocketConnectWireCorpus.requestCases).toHaveLength(3);
@@ -405,6 +405,42 @@ describe('runtime protocol fixtures and schemas', () => {
         true
       );
     }
+    const websocketJsonRpc = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'request.start',
+      requestId: 'request-websocket-jsonrpc-schema',
+      mode: 'unary',
+      caller: { kind: 'gateway' },
+      routing: {
+        kind: 'runtimeAssembly',
+        assemblyIdentity:
+          'skiff-runtime-assembly-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+        assemblyGeneration: 11,
+        gatewayEntryIdentity:
+          'skiff-gateway-entry-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+        ingress: {
+          protocol: 'webSocket',
+          host: 'socket.example.com',
+          method: 'status.get',
+          path: '/chat'
+        }
+      },
+      trace: {
+        traceId: 'trace-websocket-jsonrpc',
+        spanId: 'span-websocket-jsonrpc'
+      },
+      websocketJsonRpc: {
+        profile: 'jsonrpc-2.0-text',
+        connectionId: 'connection-1',
+        websocketEntryId:
+          'skiff-websocket-entry-v1:sha256:3a0f9b39b684e0c324ff3f729395273987f86ed648e6c0ddd0cb35b67b1aa616',
+        gatewayEntryIdentity:
+          'skiff-gateway-entry-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+        businessIdentity: 'tenant-1'
+      },
+      testEffectsEnabled: false
+    };
+    expect(matchesProtocolEnvelopeSchema(schema, websocketJsonRpc)).toBe(true);
     for (const header of runtimeAssemblyRequestCorpus.legacyRequestStartHeaders) {
       expect(matchesProtocolEnvelopeSchema(schema, header), String(header.requestId)).toBe(
         true
@@ -421,11 +457,11 @@ describe('runtime protocol fixtures and schemas', () => {
     expect(matchesProtocolEnvelopeSchema(schema, websocket)).toBe(false);
   });
 
-  it('matches the current websocketConnect accept/reject response corpus declaratively', () => {
+  it('matches websocketConnect and websocketJsonRpc response branches declaratively', () => {
     const schema = runtimeFrameHeaderSchemas['response.end'];
     expect('oneOf' in schema).toBe(true);
     if (!('oneOf' in schema)) throw new Error('response.end schema must be oneOf');
-    expect(schema.oneOf).toHaveLength(4);
+    expect(schema.oneOf).toHaveLength(6);
     expect(runtimeWebSocketConnectWireCorpus.responseCases).toHaveLength(3);
 
     for (const testCase of runtimeWebSocketConnectWireCorpus.responseCases) {
@@ -433,6 +469,33 @@ describe('runtime protocol fixtures and schemas', () => {
         true
       );
     }
+    expect(
+      matchesProtocolEnvelopeSchema(schema, {
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.end',
+        requestId: 'request-websocket-jsonrpc-schema',
+        payloadPresent: true,
+        websocketJsonRpc: { outcome: 'success' }
+      })
+    ).toBe(true);
+    expect(
+      matchesProtocolEnvelopeSchema(schema, {
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.end',
+        requestId: 'request-websocket-jsonrpc-schema',
+        payloadPresent: false,
+        websocketJsonRpc: { outcome: 'deadlineExceeded' }
+      })
+    ).toBe(true);
+    expect(
+      matchesProtocolEnvelopeSchema(schema, {
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.end',
+        requestId: 'request-websocket-jsonrpc-schema',
+        payloadPresent: false,
+        websocketJsonRpc: { outcome: 'cancelled' }
+      })
+    ).toBe(false);
   });
 
   it('evaluates the response.error declarative oneOf against the shared header corpus', () => {

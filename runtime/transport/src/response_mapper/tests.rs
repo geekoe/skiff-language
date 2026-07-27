@@ -2,13 +2,18 @@ use serde_json::{json, Value};
 
 use super::{
     response_end_to_outbound, response_error_to_outbound, response_event_into_frame,
-    validate_response_end_frame, OrdinaryResponseErrorSource, OrdinaryResponseEvent,
-    ResponseEndPhase,
+    runtime_assembly_websocket_jsonrpc_response_into_frame, validate_response_end_frame,
+    OrdinaryResponseErrorSource, OrdinaryResponseEvent, ResponseEndPhase,
 };
 use crate::protocol::{
     decode_binary_frame, decode_response_error_frame, decode_typed_binary_frame,
     ResponseEndFrameHeader, ResponseEndFrameMetadata, ResponseErrorFrameHeader,
     ValidatedResponseErrorFrame, RUNTIME_FRAME_SCHEMA_VERSION,
+};
+use crate::runtime_assembly_request::{
+    decode_runtime_assembly_websocket_jsonrpc_response_end_frame,
+    RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader,
+    RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
 };
 use skiff_runtime_model::service_error::OpaqueServiceError;
 use skiff_runtime_request_contract::{
@@ -209,4 +214,55 @@ fn websocket_response_wire_raw_optional_bag_shapes_are_rejected() {
         }
     });
     assert!(serde_json::from_value::<ResponseEndFrameHeader>(legacy).is_err());
+}
+
+#[test]
+fn runtime_assembly_websocket_jsonrpc_mapper_round_trips_opaque_success_payload() {
+    let payload = b"null".to_vec();
+    let encoded = runtime_assembly_websocket_jsonrpc_response_into_frame(
+        "request-websocket-jsonrpc-mapper".to_string(),
+        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader {
+            outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success,
+        },
+        payload.clone(),
+    )
+    .expect("success must encode");
+    let (decoded, decoded_payload) =
+        decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&encoded)
+            .expect("mapped response must decode");
+
+    assert_eq!(decoded.request_id, "request-websocket-jsonrpc-mapper");
+    assert_eq!(
+        decoded.websocket_json_rpc.outcome,
+        RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success
+    );
+    assert_eq!(decoded_payload, payload);
+}
+
+#[test]
+fn runtime_assembly_websocket_jsonrpc_mapper_rejects_outcome_payload_mismatch() {
+    assert!(runtime_assembly_websocket_jsonrpc_response_into_frame(
+        "request-success-without-payload".to_string(),
+        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader {
+            outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success,
+        },
+        Vec::new(),
+    )
+    .is_err());
+    assert!(runtime_assembly_websocket_jsonrpc_response_into_frame(
+        "request-error-with-payload".to_string(),
+        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader {
+            outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome::InternalError,
+        },
+        b"null".to_vec(),
+    )
+    .is_err());
+    assert!(runtime_assembly_websocket_jsonrpc_response_into_frame(
+        " invalid-request-id ".to_string(),
+        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader {
+            outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome::InternalError,
+        },
+        Vec::new(),
+    )
+    .is_err());
 }

@@ -1,12 +1,19 @@
 import {
   BinaryFrameDecodeError,
   decodeBinaryFrameParts,
+  encodeBinaryFrame,
   isRecord,
   type BinaryFrame,
   type RuntimeAssemblyWebSocketConnectResponseEndFrameHeader,
+  type RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader,
 } from "./envelope.js";
 import { decodeRuntimeAssemblyWireJson } from "./runtimeAssemblyRequestJson.js";
-import { validateRuntimeAssemblyWebSocketConnectResponseEndFrameHeader } from "./runtimeProtocol.js";
+import {
+  validateRuntimeAssemblyWebSocketConnectResponseEndFrameHeader,
+  validateRuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader,
+} from "./runtimeProtocol.js";
+
+const RUNTIME_ASSEMBLY_WEBSOCKET_JSONRPC_MAX_PAYLOAD_BYTES = 1024 * 1024;
 
 export function decodeRuntimeAssemblyWebSocketConnectResponseEndFrame(
   input: Buffer | ArrayBuffer | Buffer[] | Uint8Array | string,
@@ -37,4 +44,77 @@ export function decodeRuntimeAssemblyWebSocketConnectResponseEndFrame(
       Record<string, unknown>,
     payloadBytes: frame.payloadBytes,
   };
+}
+
+export function encodeRuntimeAssemblyWebSocketJsonRpcResponseEndFrame(
+  header: RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader,
+  payloadBytes: Uint8Array = new Uint8Array(),
+): Buffer {
+  const result =
+    validateRuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader(header);
+  if (!result.ok) throw new BinaryFrameDecodeError(result.error);
+  validateRuntimeAssemblyWebSocketJsonRpcResponsePayload(
+    result.envelope,
+    payloadBytes,
+  );
+  return encodeBinaryFrame(
+    result.envelope as RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader &
+      Record<string, unknown>,
+    payloadBytes,
+  );
+}
+
+export function decodeRuntimeAssemblyWebSocketJsonRpcResponseEndFrame(
+  input: Buffer | ArrayBuffer | Buffer[] | Uint8Array | string,
+): BinaryFrame<
+  RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader &
+    Record<string, unknown>
+> {
+  const frame = decodeBinaryFrameParts(input);
+  const header = decodeRuntimeAssemblyWireJson(
+    frame.headerBytes,
+    "runtimeAssembly websocketJsonRpc response.end",
+  );
+  if (!isRecord(header)) {
+    throw new BinaryFrameDecodeError(
+      "invalid runtimeAssembly websocketJsonRpc response.end frame: header must be an object",
+    );
+  }
+  const result =
+    validateRuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader(header);
+  if (!result.ok) throw new BinaryFrameDecodeError(result.error);
+  validateRuntimeAssemblyWebSocketJsonRpcResponsePayload(
+    result.envelope,
+    frame.payloadBytes,
+  );
+  return {
+    header:
+      result.envelope as RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader &
+        Record<string, unknown>,
+    payloadBytes: frame.payloadBytes,
+  };
+}
+
+function validateRuntimeAssemblyWebSocketJsonRpcResponsePayload(
+  header: RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader,
+  payloadBytes: Uint8Array,
+): void {
+  if (
+    payloadBytes.byteLength >
+    RUNTIME_ASSEMBLY_WEBSOCKET_JSONRPC_MAX_PAYLOAD_BYTES
+  ) {
+    throw new BinaryFrameDecodeError(
+      "invalid runtimeAssembly websocketJsonRpc response.end frame: payload exceeds the payload limit",
+    );
+  }
+  const expectedPayloadPresent =
+    header.websocketJsonRpc.outcome === "success";
+  if (
+    header.payloadPresent !== expectedPayloadPresent ||
+    (payloadBytes.byteLength > 0) !== expectedPayloadPresent
+  ) {
+    throw new BinaryFrameDecodeError(
+      "invalid runtimeAssembly websocketJsonRpc response.end frame: payload presence must match outcome",
+    );
+  }
 }

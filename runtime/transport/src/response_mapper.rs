@@ -12,8 +12,11 @@ use crate::{
         RuntimeHttpResponseFrameHeader, ValidatedResponseErrorFrame, RUNTIME_FRAME_SCHEMA_VERSION,
     },
     runtime_assembly_request::{
+        encode_runtime_assembly_websocket_jsonrpc_response_end_frame,
         RuntimeAssemblyWebSocketConnectResponseEndFrameHeader,
         RuntimeAssemblyWebSocketConnectResponseFrameHeader,
+        RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader,
+        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader,
     },
 };
 
@@ -29,6 +32,22 @@ pub fn runtime_assembly_websocket_connect_response_into_frame(
             websocket_connect: response,
         },
         &[],
+    )
+}
+
+pub fn runtime_assembly_websocket_jsonrpc_response_into_frame(
+    request_id: String,
+    response: RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader,
+    payload: Vec<u8>,
+) -> TransportResult<Vec<u8>> {
+    encode_runtime_assembly_websocket_jsonrpc_response_end_frame(
+        &RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            frame_type: "response.end".to_string(),
+            request_id,
+            websocket_json_rpc: response,
+        },
+        &payload,
     )
 }
 

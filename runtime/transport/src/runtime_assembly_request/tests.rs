@@ -6,6 +6,7 @@ use serde_json::Value;
 use super::{
     decode_runtime_assembly_request_start_frame,
     decode_runtime_assembly_websocket_connect_response_end_frame,
+    decode_runtime_assembly_websocket_jsonrpc_response_end_frame,
     RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestStartFrameWireHeader,
 };
 use crate::protocol::{
@@ -332,6 +333,279 @@ fn runtime_assembly_request_current_http_and_websocket_json_match_shared_goldens
 }
 
 #[test]
+fn runtime_assembly_websocket_jsonrpc_decoder_accepts_method_bearing_request() {
+    let header = websocket_jsonrpc_request_header();
+    let payload = br#"{"query":"ready"}"#;
+    let frame = encode_binary_frame(&header, payload).expect("canonical JSON-RPC request frame");
+    let (decoded, decoded_payload) = decode_runtime_assembly_request_start_frame(&frame)
+        .expect("method-bearing WebSocket request must select the JSON-RPC sibling");
+
+    assert!(matches!(
+        decoded,
+        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(_)
+    ));
+    assert_eq!(decoded_payload, payload);
+    assert_eq!(serde_json::to_value(decoded).unwrap(), header);
+
+    let scalar_frame = encode_binary_frame(&header, b"42").unwrap();
+    assert_eq!(
+        decode_runtime_assembly_request_start_frame(&scalar_frame)
+            .expect("transport must not parse params business shape")
+            .1,
+        b"42"
+    );
+}
+
+#[test]
+fn runtime_assembly_websocket_jsonrpc_method_null_and_string_select_disjoint_siblings() {
+    let connect = websocket_connect_v2_header();
+    let connect_frame = encode_binary_frame(&connect, &[]).unwrap();
+    assert!(matches!(
+        decode_runtime_assembly_request_start_frame(&connect_frame)
+            .expect("method null must remain websocketConnect")
+            .0,
+        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(_)
+    ));
+
+    let jsonrpc = websocket_jsonrpc_request_header();
+    let jsonrpc_frame = encode_binary_frame(&jsonrpc, br#"{}"#).unwrap();
+    assert!(matches!(
+        decode_runtime_assembly_request_start_frame(&jsonrpc_frame)
+            .expect("method string must select websocketJsonRpc")
+            .0,
+        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(_)
+    ));
+}
+
+#[test]
+fn runtime_assembly_websocket_jsonrpc_request_mutations_fail_closed() {
+    let canonical = websocket_jsonrpc_request_header();
+    let canonical_payload = br#"{"query":"ready"}"#.to_vec();
+    let mut mutations = Vec::new();
+
+    let mut wrong_mode = canonical.clone();
+    wrong_mode["mode"] = Value::String("serverStream".to_string());
+    mutations.push(("wrong mode", wrong_mode, canonical_payload.clone()));
+
+    let mut noncanonical_request_id = canonical.clone();
+    noncanonical_request_id["requestId"] = Value::String(" request-id ".to_string());
+    mutations.push((
+        "non-canonical request id",
+        noncanonical_request_id,
+        canonical_payload.clone(),
+    ));
+
+    let mut wrong_profile = canonical.clone();
+    wrong_profile["websocketJsonRpc"]["profile"] = Value::String("jsonrpc-1.0".to_string());
+    mutations.push(("wrong profile", wrong_profile, canonical_payload.clone()));
+
+    let mut identity_mismatch = canonical.clone();
+    identity_mismatch["websocketJsonRpc"]["gatewayEntryIdentity"] = Value::String(
+        "skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            .to_string(),
+    );
+    mutations.push((
+        "identity mismatch",
+        identity_mismatch,
+        canonical_payload.clone(),
+    ));
+
+    let mut unknown_top_level = canonical.clone();
+    unknown_top_level["peerRequestId"] = Value::String("must-not-enter-wire".to_string());
+    mutations.push((
+        "unknown top-level field",
+        unknown_top_level,
+        canonical_payload.clone(),
+    ));
+
+    let mut unknown_nested = canonical.clone();
+    unknown_nested["websocketJsonRpc"]["rawSocketId"] =
+        Value::String("must-not-enter-wire".to_string());
+    mutations.push((
+        "unknown nested field",
+        unknown_nested,
+        canonical_payload.clone(),
+    ));
+
+    let mut method_null = canonical.clone();
+    method_null["routing"]["ingress"]["method"] = Value::Null;
+    mutations.push((
+        "method null cannot carry websocketJsonRpc",
+        method_null,
+        canonical_payload.clone(),
+    ));
+
+    let mut connect_with_method = websocket_connect_v2_header();
+    connect_with_method["routing"]["ingress"]["method"] = Value::String("status.get".to_string());
+    mutations.push((
+        "method string cannot carry websocketConnect",
+        connect_with_method,
+        canonical_payload.clone(),
+    ));
+
+    let mut empty_method = canonical.clone();
+    empty_method["routing"]["ingress"]["method"] = Value::String(String::new());
+    mutations.push(("empty method", empty_method, canonical_payload.clone()));
+
+    let mut oversized_method = canonical.clone();
+    oversized_method["routing"]["ingress"]["method"] = Value::String("m".repeat(257));
+    mutations.push((
+        "oversized method",
+        oversized_method,
+        canonical_payload.clone(),
+    ));
+
+    let mut invalid_connection_id = canonical.clone();
+    invalid_connection_id["websocketJsonRpc"]["connectionId"] =
+        Value::String("peer socket id".to_string());
+    mutations.push((
+        "non-canonical connection id",
+        invalid_connection_id,
+        canonical_payload.clone(),
+    ));
+
+    let mut explicit_null_business_identity = canonical.clone();
+    explicit_null_business_identity["websocketJsonRpc"]["businessIdentity"] = Value::Null;
+    mutations.push((
+        "explicit null business identity",
+        explicit_null_business_identity,
+        canonical_payload.clone(),
+    ));
+
+    let mut oversized_business_identity = canonical.clone();
+    oversized_business_identity["websocketJsonRpc"]["businessIdentity"] =
+        Value::String("b".repeat(1025));
+    mutations.push((
+        "oversized business identity",
+        oversized_business_identity,
+        canonical_payload.clone(),
+    ));
+
+    let mut controlled_business_identity = canonical.clone();
+    controlled_business_identity["websocketJsonRpc"]["businessIdentity"] =
+        Value::String("tenant\u{0085}one".to_string());
+    mutations.push((
+        "control-character business identity",
+        controlled_business_identity,
+        canonical_payload.clone(),
+    ));
+
+    mutations.push(("missing payload", canonical.clone(), Vec::new()));
+    mutations.push((
+        "payload above limit",
+        canonical.clone(),
+        vec![b'x'; 1024 * 1024 + 1],
+    ));
+
+    for (name, header, payload) in mutations {
+        let frame = encode_binary_frame(&header, &payload).unwrap();
+        assert!(
+            decode_runtime_assembly_request_start_frame(&frame).is_err(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn runtime_assembly_websocket_jsonrpc_response_outcomes_enforce_payload_presence() {
+    let success = websocket_jsonrpc_response_header("success", true);
+    let success_frame = encode_binary_frame(&success, b"null").unwrap();
+    let (decoded, payload) =
+        decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&success_frame)
+            .expect("success with JSON null payload must decode");
+    assert_eq!(payload, b"null");
+    assert_eq!(serde_json::to_value(decoded).unwrap(), success);
+
+    for outcome in ["invalidParams", "internalError", "deadlineExceeded"] {
+        let header = websocket_jsonrpc_response_header(outcome, false);
+        let frame = encode_binary_frame(&header, &[]).unwrap();
+        let (_, payload) = decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&frame)
+            .unwrap_or_else(|error| panic!("{outcome}: {error}"));
+        assert!(payload.is_empty(), "{outcome}");
+    }
+}
+
+#[test]
+fn runtime_assembly_websocket_jsonrpc_response_mutations_fail_closed() {
+    let success = websocket_jsonrpc_response_header("success", true);
+    let error = websocket_jsonrpc_response_header("invalidParams", false);
+    let mut cases = Vec::new();
+
+    cases.push(("success missing payload", success.clone(), Vec::new()));
+    cases.push((
+        "success payload above limit",
+        success.clone(),
+        vec![b'x'; 1024 * 1024 + 1],
+    ));
+    cases.push(("error carrying payload", error.clone(), b"null".to_vec()));
+
+    let mut wrong_success_presence = success.clone();
+    wrong_success_presence["payloadPresent"] = Value::Bool(false);
+    cases.push((
+        "success payloadPresent false",
+        wrong_success_presence,
+        b"null".to_vec(),
+    ));
+
+    let mut wrong_error_presence = error.clone();
+    wrong_error_presence["payloadPresent"] = Value::Bool(true);
+    cases.push((
+        "error payloadPresent true",
+        wrong_error_presence,
+        Vec::new(),
+    ));
+
+    for outcome in ["cancelled", "unknown"] {
+        cases.push((
+            outcome,
+            websocket_jsonrpc_response_header(outcome, false),
+            Vec::new(),
+        ));
+    }
+
+    let mut unknown_top_level = error.clone();
+    unknown_top_level["message"] = Value::String("must-not-enter-wire".to_string());
+    cases.push(("unknown top-level field", unknown_top_level, Vec::new()));
+
+    let mut noncanonical_request_id = error.clone();
+    noncanonical_request_id["requestId"] = Value::String(" request-id ".to_string());
+    cases.push((
+        "non-canonical request id",
+        noncanonical_request_id,
+        Vec::new(),
+    ));
+
+    let mut controlled_request_id = error.clone();
+    controlled_request_id["requestId"] = Value::String("request\u{0085}id".to_string());
+    cases.push((
+        "control-character request id",
+        controlled_request_id,
+        Vec::new(),
+    ));
+
+    let mut unknown_nested = error;
+    unknown_nested["websocketJsonRpc"]["stack"] = Value::String("must-not-enter-wire".to_string());
+    cases.push(("unknown nested field", unknown_nested, Vec::new()));
+
+    for (name, header, payload) in cases {
+        let frame = encode_binary_frame(&header, &payload).unwrap();
+        assert!(
+            decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&frame).is_err(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn runtime_assembly_websocket_jsonrpc_response_rejects_duplicate_json_keys() {
+    let frame = raw_json_frame_with_payload(
+        br#"{"schemaVersion":"skiff-runtime-frame-v1","type":"response.end","requestId":"one","requestId":"two","payloadPresent":true,"websocketJsonRpc":{"outcome":"success"}}"#,
+        b"null",
+    );
+    assert!(decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&frame).is_err());
+}
+
+#[test]
 fn runtime_assembly_request_current_mutations_fail_closed() {
     let corpus = connect_wire_corpus();
     for mutation in corpus.request_mutations {
@@ -420,6 +694,63 @@ fn connect_wire_corpus() -> ConnectWireCorpus {
     .expect("shared runtime websocketConnect wire corpus")
 }
 
+fn websocket_connect_v2_header() -> Value {
+    let mut header = connect_wire_corpus()
+        .request_cases
+        .into_iter()
+        .find(|case| case.kind == "websocketConnect")
+        .expect("websocketConnect baseline")
+        .header;
+    let identity = Value::String(
+        "skiff-gateway-entry-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            .to_string(),
+    );
+    header["requestId"] = Value::String("request-websocket-connect-v2".to_string());
+    header["routing"]["gatewayEntryIdentity"] = identity.clone();
+    header["websocketConnect"]["gatewayEntryIdentity"] = identity;
+    header
+}
+
+fn websocket_jsonrpc_request_header() -> Value {
+    let mut header = websocket_connect_v2_header();
+    header["requestId"] = Value::String("request-websocket-jsonrpc-1".to_string());
+    header["routing"]["ingress"]["method"] = Value::String("status.get".to_string());
+    let websocket_connect = header
+        .as_object_mut()
+        .expect("request object")
+        .remove("websocketConnect")
+        .expect("websocketConnect metadata");
+    let websocket_connect = websocket_connect
+        .as_object()
+        .expect("websocketConnect object");
+    let connection_id = websocket_connect["connectionId"].clone();
+    let websocket_entry_id = websocket_connect["websocketEntryId"].clone();
+    let gateway_entry_identity = header["routing"]["gatewayEntryIdentity"].clone();
+    header.as_object_mut().expect("request object").insert(
+        "websocketJsonRpc".to_string(),
+        serde_json::json!({
+            "profile": "jsonrpc-2.0-text",
+            "connectionId": connection_id,
+            "websocketEntryId": websocket_entry_id,
+            "gatewayEntryIdentity": gateway_entry_identity,
+            "businessIdentity": "tenant-1"
+        }),
+    );
+    header
+}
+
+fn websocket_jsonrpc_response_header(outcome: &str, payload_present: bool) -> Value {
+    serde_json::json!({
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "response.end",
+        "requestId": "request-websocket-jsonrpc-1",
+        "payloadPresent": payload_present,
+        "websocketJsonRpc": {
+            "outcome": outcome
+        }
+    })
+}
+
 fn raw_case_frame(raw_case: &RawCase) -> Vec<u8> {
     let sources = [
         raw_case.header_text.is_some(),
@@ -444,13 +775,18 @@ fn raw_case_frame(raw_case: &RawCase) -> Vec<u8> {
 }
 
 fn raw_json_frame(header: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(14 + header.len());
+    raw_json_frame_with_payload(header, &[])
+}
+
+fn raw_json_frame_with_payload(header: &[u8], payload: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(14 + header.len() + payload.len());
     frame.extend_from_slice(&BINARY_FRAME_MAGIC);
     frame.push(BINARY_FRAME_VERSION);
     frame.push(BINARY_FRAME_HEADER_ENCODING_JSON);
     frame.extend_from_slice(&(header.len() as u32).to_be_bytes());
-    frame.extend_from_slice(&0_u32.to_be_bytes());
+    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     frame.extend_from_slice(header);
+    frame.extend_from_slice(payload);
     frame
 }
 
