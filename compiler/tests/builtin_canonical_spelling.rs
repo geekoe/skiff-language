@@ -22,7 +22,7 @@ const CURRENT_STD_BUILD: &str =
 const CURRENT_STD_LOCAL_ABI: &str =
     "skiff-package-local-abi-v7:sha256:a3923f5b29d9f1ac7373c679e6bcac4b13a1687ae29db4a98a1c73013509cc9e";
 const CURRENT_STD_SCHEMA_INDEX: &str =
-    "skiff-package-schema-index-v1:sha256:9a92edc499c0e4f6e7b37a03418f87e923d09614fe029c7080735fa134959bf4";
+    "skiff-package-schema-index-v1:sha256:26b7640548d50a600c5e04e0b61851eb66d43b34bca65c26da99bacec2a7f577";
 const CURRENT_CONFLICT_ERROR_SCHEMA: &str =
     "skiff-package-schema-type-v2:sha256:55e0f59a69a2facc339d89ba12be27a0aaec3e1a60b3211b43259d153b480a4d";
 const CURRENT_DB_FILE_IR: &str =
