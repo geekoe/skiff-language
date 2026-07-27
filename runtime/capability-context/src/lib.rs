@@ -53,9 +53,11 @@ pub use db::{
     DbCapabilityFuture, DbCapabilityLeaseHandle, DbCapabilityLeaseHold,
     DbCapabilityLeaseHoldHandle, DbCapabilityResult, DbCapabilitySource, DbCapabilityStore,
     DbCapabilityStoreApi, DbDocument, DbKey, DbOneSelector, DbOrderDirection, DbOrderEntry,
-    DbPageResult, DbProviderBuildInput, DbProviderConfig, DbProviderFactory, DbProviderSource,
-    DbQuery, DbRecoverableRuntimeContext, DbRecoverableRuntimeExpectedPlans, DbRuntimeChange,
-    DbRuntimeSetOp, DbWriteResult, FieldPath, FileCapabilityRecord, ServiceDbChange,
+    DbPageResult, DbPreparedRuntimeWait, DbProviderBuildInput, DbProviderConfig, DbProviderFactory,
+    DbProviderSource, DbQuery, DbRecoverableRuntimeContext, DbRecoverableRuntimeExpectedPlans,
+    DbRuntimeChange, DbRuntimeFinalizer, DbRuntimeSetOp, DbWriteResult, FieldPath,
+    FileCapabilityRecord, PreparedDbManyRuntimeOperation, PreparedDbOptionalRuntimeOperation,
+    PreparedDbRuntimeOperation, PreparedDbValueRuntimeOperation, ServiceDbChange,
     ServiceDbChangeOp, ServiceDbFindOptions,
 };
 pub use execution_control::{
