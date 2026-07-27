@@ -3,8 +3,8 @@ use skiff_canonical_json::canonical_json_bytes;
 use skiff_runtime_boundary::{json::RuntimeBoundaryCodec, plan::BoundaryUse};
 use skiff_runtime_capability_context::{
     ActorInvocationCancellation, ActorInvocationDeadline, ActorInvocationDeclarationOwner,
-    ActorInvocationError, ActorInvocationIdentity, ActorInvocationOutcome,
-    ActorInvocationOwnerFile, ActorInvocationOwnerUnit, ActorInvocationRequest,
+    ActorInvocationError, ActorInvocationIdentity, ActorInvocationOwnerFile,
+    ActorInvocationOwnerUnit, ActorInvocationRequest,
 };
 use skiff_runtime_linked_program::{FileAddr, LinkedActorMethodDispatchPlan, UnitAddr};
 use skiff_runtime_linked_type_plan::{PlanContext, RuntimeTypePlan, RuntimeTypePlanLinkedExt};
@@ -15,14 +15,30 @@ use crate::{
     error::{Result, RuntimeError, RuntimeErrorPayload},
     eval_context::EvalContext,
     exceptions::annotate_runtime_type_plan,
-    runtime_ops::runtime_carrier_for_plan,
 };
+
+#[path = "actor_dispatch/prepared_operation.rs"]
+mod prepared_operation;
+pub(crate) use prepared_operation::PreparedActorMethodInvocation;
+
+#[cfg(test)]
+#[path = "actor_dispatch/prepared_operation_tests.rs"]
+mod prepared_operation_tests;
 
 pub(crate) async fn dispatch_actor_method(
     context: &mut EvalContext<'_>,
     plan: &LinkedActorMethodDispatchPlan,
     values: Vec<RuntimeValueCarrier>,
 ) -> Result<RuntimeValueCarrier> {
+    let prepared = prepare_actor_method(context, plan, values)?;
+    prepared.into_wait().await.finalize(context.heap)
+}
+
+pub(crate) fn prepare_actor_method(
+    context: &mut EvalContext<'_>,
+    plan: &LinkedActorMethodDispatchPlan,
+    values: Vec<RuntimeValueCarrier>,
+) -> Result<PreparedActorMethodInvocation> {
     let (receiver, arguments) = values.split_first().ok_or_else(|| {
         RuntimeError::InvalidArtifact("Actor method call is missing its receiver".to_string())
     })?;
@@ -78,6 +94,12 @@ pub(crate) async fn dispatch_actor_method(
         .collect::<Result<Vec<Value>>>()?;
     let arguments_payload = canonical_json_bytes(&Value::Array(wire_arguments))
         .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+    let mut return_plan = RuntimeTypePlan::from_linked(&method.return_type, &type_context)?;
+    annotate_runtime_type_plan(
+        &mut return_plan,
+        &method.return_type,
+        projection.type_view(),
+    )?;
     let timeout_ms = context
         .context
         .outbound_context()
@@ -104,39 +126,13 @@ pub(crate) async fn dispatch_actor_method(
         deadline: ActorInvocationDeadline { timeout_ms },
         arguments_payload,
     };
-    let outcome = context
-        .context
-        .actor_context()
-        .invoke_actor(request)
-        .await
-        .map_err(|error| RuntimeError::Opaque(Box::new(error)))?;
-    match outcome {
-        ActorInvocationOutcome::Returned(payload) => {
-            let wire: Value =
-                serde_json::from_slice(&payload).map_err(|error| RuntimeError::DecodeTarget {
-                    target: "actor.method.return".to_string(),
-                    message: error.to_string(),
-                })?;
-            let mut return_plan = RuntimeTypePlan::from_linked(&method.return_type, &type_context)?;
-            annotate_runtime_type_plan(
-                &mut return_plan,
-                &method.return_type,
-                projection.type_view(),
-            )?;
-            let value = RuntimeBoundaryCodec::new(
-                &return_plan,
-                BoundaryUse::NativeReturn,
-                format!("Actor method {} return", method.name),
-            )
-            .from_wire_json(&wire, context.heap)
-            .map_err(RuntimeError::from)?;
-            runtime_carrier_for_plan(value, &return_plan, "Actor method return", context.heap)
-        }
-        ActorInvocationOutcome::Cancelled(cancellation) => {
-            Err(actor_cancellation_error(cancellation, timeout_ms))
-        }
-        ActorInvocationOutcome::ActorError(error) => Err(actor_error(error)),
-    }
+    Ok(PreparedActorMethodInvocation::new(
+        context.context.actor_context().owned(),
+        request,
+        return_plan,
+        method.name.clone(),
+        timeout_ms,
+    ))
 }
 
 fn actor_cancellation_error(

@@ -34,6 +34,14 @@ use crate::error::{stream_runtime_error_from_eval, Result, RuntimeError};
 #[cfg(any(test, feature = "test-support"))]
 use skiff_runtime_capability_context::RequestStartControl;
 
+#[path = "service_dispatch/prepared_operation.rs"]
+mod prepared_operation;
+pub(crate) use prepared_operation::{PreparedOutboundServiceCall, PreparedOutboundUnaryOperation};
+
+#[cfg(test)]
+#[path = "service_dispatch/prepared_operation_tests.rs"]
+mod prepared_operation_tests;
+
 const GENERIC_RESPONSE_ERROR_PROTOCOL_MESSAGE: &str =
     "generic response.error is not a typed fixed service failure";
 
@@ -48,6 +56,31 @@ pub async fn call_outbound_service(
     symbol: &ServiceDependencySymbolRef,
     args: Vec<RuntimeValue>,
 ) -> Result<RuntimeValue> {
+    let prepared = prepare_outbound_service(
+        interpreter,
+        context,
+        stream_runtime,
+        heap,
+        env,
+        caller_addr,
+        call,
+        symbol,
+        args,
+    )?;
+    finish_prepared_outbound_service_call(prepared, heap, env).await
+}
+
+pub(crate) fn prepare_outbound_service(
+    interpreter: &Interpreter,
+    context: &OutboundServiceContext,
+    stream_runtime: &StreamRuntime,
+    heap: &mut RequestHeap,
+    env: &Env,
+    caller_addr: &ExecutableAddr,
+    call: &CallIr,
+    symbol: &ServiceDependencySymbolRef,
+    args: Vec<RuntimeValue>,
+) -> Result<PreparedOutboundServiceCall> {
     let _ = call;
     let dispatch = OutboundServiceDispatch::from_call(
         interpreter,
@@ -55,16 +88,8 @@ pub async fn call_outbound_service(
         symbol,
         context.service_dependencies(),
     )?;
-    send_outbound_service_request(
-        interpreter,
-        context,
-        stream_runtime,
-        heap,
-        env,
-        &dispatch,
-        args,
-    )
-    .await
+    let start = outbound_request_start(interpreter, context, &dispatch);
+    prepare_outbound_service_request(context, stream_runtime, heap, env, dispatch, args, start)
 }
 
 pub async fn call_outbound_service_operation(
@@ -78,6 +103,31 @@ pub async fn call_outbound_service_operation(
     operation_abi_id: &str,
     args: Vec<RuntimeValue>,
 ) -> Result<RuntimeValue> {
+    let prepared = prepare_outbound_service_operation(
+        interpreter,
+        context,
+        stream_runtime,
+        heap,
+        env,
+        caller_addr,
+        dependency_ref,
+        operation_abi_id,
+        args,
+    )?;
+    finish_prepared_outbound_service_call(prepared, heap, env).await
+}
+
+pub(crate) fn prepare_outbound_service_operation(
+    interpreter: &Interpreter,
+    context: &OutboundServiceContext,
+    stream_runtime: &StreamRuntime,
+    heap: &mut RequestHeap,
+    env: &Env,
+    caller_addr: &ExecutableAddr,
+    dependency_ref: &str,
+    operation_abi_id: &str,
+    args: Vec<RuntimeValue>,
+) -> Result<PreparedOutboundServiceCall> {
     let dispatch = OutboundServiceDispatch::from_dependency_operation_abi(
         interpreter,
         caller_addr,
@@ -85,27 +135,32 @@ pub async fn call_outbound_service_operation(
         operation_abi_id,
         context.service_dependencies(),
     )?;
-    send_outbound_service_request(
-        interpreter,
-        context,
-        stream_runtime,
-        heap,
-        env,
-        &dispatch,
-        args,
-    )
-    .await
+    let start = outbound_request_start(interpreter, context, &dispatch);
+    prepare_outbound_service_request(context, stream_runtime, heap, env, dispatch, args, start)
 }
 
-async fn send_outbound_service_request(
-    interpreter: &Interpreter,
+async fn finish_prepared_outbound_service_call(
+    prepared: PreparedOutboundServiceCall,
+    heap: &mut RequestHeap,
+    env: &Env,
+) -> Result<RuntimeValue> {
+    match prepared {
+        PreparedOutboundServiceCall::Ready(value) => Ok(value),
+        PreparedOutboundServiceCall::ExternalWait(operation) => {
+            operation.into_wait().await.finalize(heap, env)
+        }
+    }
+}
+
+fn prepare_outbound_service_request(
     context: &OutboundServiceContext,
     stream_runtime: &StreamRuntime,
     heap: &mut RequestHeap,
     env: &Env,
-    dispatch: &OutboundServiceDispatch,
+    dispatch: OutboundServiceDispatch,
     args: Vec<RuntimeValue>,
-) -> Result<RuntimeValue> {
+    start: OutboundServiceRequestStart,
+) -> Result<PreparedOutboundServiceCall> {
     if dispatch.mode != "unary" && dispatch.mode != "serverStream" {
         return Err(RuntimeError::Unsupported(format!(
             "outbound service call {} mode {} is not supported",
@@ -119,79 +174,38 @@ async fn send_outbound_service_request(
         return Err(context.outbound_deadline_error().into());
     }
 
-    let payload = encode_outbound_request_payload(dispatch, &args, heap)?;
-    let started = context.start_request(
-        outbound_request_start(interpreter, context, dispatch),
-        payload,
-    )?;
+    let payload = encode_outbound_request_payload(&dispatch, &args, heap)?;
+    let started = context.start_request(start, payload)?;
 
-    let value = if dispatch.mode == "serverStream" {
-        outbound_service_stream_value(
+    if dispatch.mode == "serverStream" {
+        let value = outbound_service_stream_value(
             stream_runtime,
             context,
-            dispatch,
+            &dispatch,
             started.lease,
             started.response_rx,
             heap,
-        )?
-    } else {
-        let response =
-            await_outbound_response(context, dispatch, started.lease, started.response_rx).await?;
-        let boundary = PayloadBoundary::cross_service(
-            PayloadBoundaryKind::InboundServiceCall,
-            dispatch.service_ref(),
-        );
-        let value =
-            decode_payload_plan(&response.payload, &dispatch.response_plan, &boundary, heap)?;
-        runtime_coerce_required_plan(
-            &value,
-            &dispatch.response_plan,
-            &format!("{} response", dispatch.target),
-            heap,
-        )?
-    };
-    if env
-        .stream_sink
-        .as_ref()
-        .is_some_and(|sink| sink.is_cancelled())
-    {
-        return Err(RuntimeError::Cancelled);
+        )?;
+        if stream_sink_is_cancelled(env) {
+            return Err(RuntimeError::Cancelled);
+        }
+        return Ok(PreparedOutboundServiceCall::Ready(value));
     }
-    Ok(value)
+
+    Ok(PreparedOutboundServiceCall::ExternalWait(
+        PreparedOutboundUnaryOperation::new(
+            context.clone(),
+            dispatch,
+            started.lease,
+            started.response_rx,
+        ),
+    ))
 }
 
-async fn await_outbound_response(
-    context: &OutboundServiceContext,
-    dispatch: &OutboundServiceDispatch,
-    lease: OutboundRequestLease,
-    mut receiver: OutboundResponseReceiver,
-) -> Result<OutboundServiceResponse> {
-    let timeout = context.effective_timeout_ms(dispatch.timeout_ms);
-    let response = match context
-        .receive_response(&lease, &dispatch.target, &mut receiver, timeout)
-        .await
-    {
-        Ok(response) => response,
-        Err(error) => {
-            lease.cancel("response_channel_closed");
-            return Err(error);
-        }
-    };
-    match response {
-        response @ (OutboundResponse::End { .. }
-        | OutboundResponse::FixedServiceFailure(_)
-        | OutboundResponse::Error(_)) => {
-            lease.complete();
-            outbound_router_response_into_result(response, &dispatch.target)
-        }
-        other => {
-            lease.cancel("unexpected_stream_response");
-            Err(RuntimeError::ProviderUnavailable {
-                target: dispatch.target.clone(),
-                reason: format!("unary outbound service call received {}", other.kind()),
-            })
-        }
-    }
+fn stream_sink_is_cancelled(env: &Env) -> bool {
+    env.stream_sink
+        .as_ref()
+        .is_some_and(|sink| sink.is_cancelled())
 }
 
 fn outbound_service_stream_value(
