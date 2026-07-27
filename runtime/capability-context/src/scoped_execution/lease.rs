@@ -104,6 +104,12 @@ impl ExecutionScopeLease {
         self.state.child_cancellation.token()
     }
 
+    pub fn child_execution_scope(&self) -> ExecutionScope {
+        self.state
+            .scope
+            .with_lease_child_cancellation(self.child_cancellation_token())
+    }
+
     pub async fn wait(self) -> ExecutionScopeLeaseTerminal {
         loop {
             if let Some(terminal) = self.state.current_terminal() {

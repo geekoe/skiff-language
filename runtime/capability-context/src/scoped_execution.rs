@@ -128,4 +128,16 @@ impl ExecutionScope {
     fn ancestor_cancellation_signals(&self) -> CancellationSignals<'static> {
         CancellationSignals::from_tokens(self.ancestor_cancellation.as_ref().clone())
     }
+
+    fn with_lease_child_cancellation(&self, child_cancellation: CancellationToken) -> Self {
+        let mut ancestor_cancellation = self.ancestor_cancellation.as_ref().clone();
+        ancestor_cancellation.push(child_cancellation);
+        Self {
+            ancestor_cancellation: Arc::new(ancestor_cancellation),
+            local_cancellation: self.local_cancellation.clone(),
+            effective_deadline: self.effective_deadline.clone(),
+            nesting: self.nesting,
+            lifecycle: self.lifecycle.clone(),
+        }
+    }
 }

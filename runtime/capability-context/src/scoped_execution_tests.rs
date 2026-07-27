@@ -326,3 +326,172 @@ async fn equal_nested_deadline_is_only_projectable_by_the_outer_scope() {
     assert!(!request_cancel.is_cancelled());
     assert_eq!(outer.lifecycle_snapshot(), Default::default());
 }
+
+#[tokio::test(start_paused = true)]
+async fn lease_child_scope_preserves_scope_identity_and_normal_completion() {
+    let deadline = (tokio::time::Instant::now() + Duration::from_millis(25)).into_std();
+    let request_cancel = CancellationSource::new();
+    let parent = ExecutionScope::request(request_cancel.token(), None)
+        .derive(
+            deadline,
+            site(SyntheticInstructionSiteReason::CompilerGeneratedWrapper),
+        )
+        .expect("parent scope");
+    let (lease, completion) = parent.acquire_lease();
+    let child = lease.child_execution_scope();
+
+    assert_eq!(child.effective_deadline(), parent.effective_deadline());
+    assert_eq!(child.nesting(), parent.nesting());
+    assert_eq!(child.lifecycle_snapshot(), parent.lifecycle_snapshot());
+    assert!(completion.complete());
+    assert_eq!(lease.wait().await, ExecutionScopeLeaseTerminal::Completed);
+    assert_eq!(
+        child.terminal_at(tokio::time::Instant::now().into_std()),
+        None
+    );
+    assert_eq!(
+        parent.terminal_at(tokio::time::Instant::now().into_std()),
+        None
+    );
+    assert!(!child.cancellation_signals().is_cancelled());
+    assert!(!parent.cancellation_signals().is_cancelled());
+    assert_eq!(parent.lifecycle_snapshot(), Default::default());
+}
+
+#[tokio::test(start_paused = true)]
+async fn lease_drop_cancels_only_its_child_scope() {
+    let parent = ExecutionScope::request(CancellationSource::new().token(), None);
+    let (lease, completion) = parent.acquire_lease();
+    let child = lease.child_execution_scope();
+
+    drop(lease);
+
+    assert_eq!(
+        child.terminal_at(tokio::time::Instant::now().into_std()),
+        Some(ExecutionScopeTerminal::AncestorCancelled)
+    );
+    assert_eq!(
+        parent.terminal_at(tokio::time::Instant::now().into_std()),
+        None
+    );
+    assert!(!parent.cancellation_signals().is_cancelled());
+    assert!(!completion.complete());
+    assert_eq!(parent.lifecycle_snapshot(), Default::default());
+}
+
+#[tokio::test(start_paused = true)]
+async fn lease_control_terminals_cancel_child_without_changing_parent_owner() {
+    let baseline = tokio::time::Instant::now();
+
+    let ancestor_cancel = CancellationSource::new();
+    let ancestor_scope = ExecutionScope::request(ancestor_cancel.token(), None);
+    let (ancestor_lease, _) = ancestor_scope.acquire_lease();
+    let ancestor_child = ancestor_lease.child_execution_scope();
+    ancestor_cancel.cancel();
+    assert_eq!(
+        ancestor_lease.wait().await,
+        ExecutionScopeLeaseTerminal::Control(ExecutionScopeTerminal::AncestorCancelled)
+    );
+    assert_eq!(
+        ancestor_child.terminal_at(baseline.into_std()),
+        Some(ExecutionScopeTerminal::AncestorCancelled)
+    );
+    assert_eq!(ancestor_scope.lifecycle_snapshot(), Default::default());
+
+    let local_deadline = (baseline + Duration::from_millis(10)).into_std();
+    let local_scope = ExecutionScope::request(CancellationSource::new().token(), None)
+        .derive(
+            local_deadline,
+            site(SyntheticInstructionSiteReason::RuntimeControlFlow),
+        )
+        .expect("local scope");
+    let (local_lease, local_completion) = local_scope.acquire_lease();
+    let local_child = local_lease.child_execution_scope();
+    tokio::time::advance(Duration::from_millis(10)).await;
+    assert!(!local_completion.complete());
+    assert!(matches!(
+        local_lease.wait().await,
+        ExecutionScopeLeaseTerminal::Control(ExecutionScopeTerminal::LocalDeadlineExceeded(_))
+    ));
+    assert_eq!(
+        local_child.terminal_at(tokio::time::Instant::now().into_std()),
+        Some(ExecutionScopeTerminal::AncestorCancelled)
+    );
+    assert!(matches!(
+        local_scope.terminal_at(tokio::time::Instant::now().into_std()),
+        Some(ExecutionScopeTerminal::LocalDeadlineExceeded(_))
+    ));
+    assert_eq!(local_scope.lifecycle_snapshot(), Default::default());
+
+    let outer_deadline = (tokio::time::Instant::now() + Duration::from_millis(10)).into_std();
+    let outer = ExecutionScope::request(CancellationSource::new().token(), None)
+        .derive(
+            outer_deadline,
+            site(SyntheticInstructionSiteReason::CompilerGeneratedWrapper),
+        )
+        .expect("outer scope");
+    let inherited = outer
+        .derive(
+            outer_deadline + Duration::from_millis(20),
+            site(SyntheticInstructionSiteReason::RuntimeControlFlow),
+        )
+        .expect("inherited scope");
+    let (inherited_lease, _) = inherited.acquire_lease();
+    let inherited_child = inherited_lease.child_execution_scope();
+    tokio::time::advance(Duration::from_millis(10)).await;
+    assert!(matches!(
+        inherited_lease.wait().await,
+        ExecutionScopeLeaseTerminal::Control(ExecutionScopeTerminal::InheritedDeadlineExceeded(_))
+    ));
+    assert_eq!(
+        inherited_child.terminal_at(tokio::time::Instant::now().into_std()),
+        Some(ExecutionScopeTerminal::AncestorCancelled)
+    );
+    assert!(matches!(
+        inherited.terminal_at(tokio::time::Instant::now().into_std()),
+        Some(ExecutionScopeTerminal::InheritedDeadlineExceeded(_))
+    ));
+    assert!(matches!(
+        outer.terminal_at(tokio::time::Instant::now().into_std()),
+        Some(ExecutionScopeTerminal::LocalDeadlineExceeded(_))
+    ));
+    assert_eq!(inherited.lifecycle_snapshot(), Default::default());
+}
+
+#[tokio::test(start_paused = true)]
+async fn lease_child_scope_keeps_cancel_first_and_sibling_isolation() {
+    let baseline = tokio::time::Instant::now();
+    let request_cancel = CancellationSource::new();
+    let parent = ExecutionScope::request(request_cancel.token(), None)
+        .derive(
+            (baseline + Duration::from_millis(10)).into_std(),
+            site(SyntheticInstructionSiteReason::RuntimeControlFlow),
+        )
+        .expect("parent scope");
+    let (first_lease, _) = parent.acquire_lease();
+    let first_child = first_lease.child_execution_scope();
+    let (second_lease, second_completion) = parent.acquire_lease();
+    let second_child = second_lease.child_execution_scope();
+
+    drop(first_lease);
+    assert_eq!(
+        first_child.terminal_at(baseline.into_std()),
+        Some(ExecutionScopeTerminal::AncestorCancelled)
+    );
+    assert_eq!(second_child.terminal_at(baseline.into_std()), None);
+    assert_eq!(parent.terminal_at(baseline.into_std()), None);
+
+    request_cancel.cancel();
+    tokio::time::advance(Duration::from_millis(10)).await;
+    assert_eq!(
+        second_lease.wait().await,
+        ExecutionScopeLeaseTerminal::Control(ExecutionScopeTerminal::AncestorCancelled),
+        "ancestor cancellation must beat a simultaneously ready local deadline"
+    );
+    assert_eq!(
+        second_child.terminal_at(tokio::time::Instant::now().into_std()),
+        Some(ExecutionScopeTerminal::AncestorCancelled)
+    );
+    assert!(!second_completion.complete());
+    assert_eq!(parent.lifecycle_snapshot(), Default::default());
+}
