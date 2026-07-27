@@ -73,7 +73,8 @@ stable/local config或其它workflow。若正确实现需要改调用方package 
 4. Workflow result/receipt必须记录三仓root、commit、tree及每个package/service
    coordinate → source root映射，使后续gate能判断实际使用的checkout。该metadata不改变Skiff artifact
    schema或public CLI。
-5. `--list --fixture-only`输出包含两个official roots、三仓provenance和完整确定性顺序；list也必须对缺失
+5. `--list --fixture-only`输出包含`http-session`与`track`两个官方包的包根目录、三仓provenance和完整
+   确定性顺序；list也必须对缺失
    env/wrong root fail closed，不能只在真实执行时校验。
 6. 保持单一temporary artifact root、std bootstrap owner、typed record/pointer resolution、receipt完整性、
    signal cleanup与linked-worktree mutation guard现有语义。

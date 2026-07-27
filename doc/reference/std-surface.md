@@ -48,7 +48,7 @@ HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.
 `std.db.ConflictError`、`std.file.FileError`、`std.number.DecodeError`、`std.time.DecodeError`、
 `config.DecodeError`、`std.service.ProviderUnavailableError`、`std.service.ProtocolError`、
 `std.service.InternalError`、`std.http.HttpError`、`std.websocket.WebSocketRequestError`、
-`CancelError` 和 `TimeoutError`。
+`TimeoutError`。
 
 decode 类错误按所属模块命名，用于用户代码发起的 JSON、bytes、DB、file、number、time 和 config 转换失败。runtime 内部 decode / artifact / transport 不变量失败不暴露为用户可 catch 的 decode 类型。错误消息必须脱敏，不能包含 secret 或原始敏感值。
 
@@ -58,8 +58,9 @@ provider unavailable 类错误表示目标服务、网络连接、DNS、TLS 或 
 
 protocol 类错误表示跨服务、HTTP/SSE 或 gateway/runtime 协议不匹配、无法恢复 identity 或 payload 与 lock / schema 不一致。
 
-`std.websocket.WebSocketRequestError`表示Skiff主动发起的WebSocket request因connection、deadline、
-cancel、platform protocol或peer显式error而失败；JSON编码和typed response decode失败仍使用
+`std.websocket.WebSocketRequestError`表示Skiff主动发起的WebSocket request因connection、transport、
+RPC配置协议、平台容量或peer显式error而失败。Deadline仍使用`TimeoutError`；结构化取消不生成用户可
+捕获错误。JSON编码、非法JSON-RPC params shape和typed response decode失败仍使用
 `std.json.DecodeError`。
 
 `std.service.InternalError`用于隐藏不能安全保留原始类型的跨服务错误。用户错误为私有类型、不可name、
@@ -285,11 +286,12 @@ send target 分两套：`...ToConnection` 按单个 connection id 发送，`...T
 WebSocket还提供一个通用的、由Skiff发起的request/response操作：
 
 ```skiff
-type WebSocketRequestError {
-  code: string,
-  message: string,
-  detail: Json?,
-}
+type WebSocketRequestError discriminator "kind" =
+  { kind: "connectionUnavailable", message: string }
+  | { kind: "transportUnavailable", message: string }
+  | { kind: "protocolError", message: string }
+  | { kind: "resourceLimit", message: string }
+  | { kind: "remote", code: integer, message: string, data: Json? }
 
 native function requestJsonToConnection<TRequest, TResponse>(
   connectionId: string,
@@ -298,38 +300,54 @@ native function requestJsonToConnection<TRequest, TResponse>(
 ) -> TResponse
 ```
 
-平台把`value`编码进固定text JSON request envelope，并生成opaque `requestId`。外部peer可以异步、乱序
-返回固定response envelope，但必须在原connection上原样回显该ID。Gateway/runtime只解析outer
-`type/requestId/ok`与固定error shape；`method`、request payload和success payload保持opaque。匹配成功后
-直接恢复等待中的调用，不创建service ingress request，也不调用用户handler。业务源码不接触transport
-`requestId`。`method`必须是非空string；平台对method、encoded payload和pending数量实施固定上限。
+WebSocket是通用双向transport；平台request broker与编码配置分离。Broker拥有request identity、pending、
+deadline/cancel、connection/generation归属和容量限制，不把JSON字段写死在核心状态机中。第一版
+`requestJsonToConnection`选择内置`jsonrpc-2.0-text`配置；未来binary RPC必须用新的显式API/配置定义
+版本、framing、codec与协商，不能把普通binary frame自动解释成RPC。现有raw text/binary send不受影响。
+
+平台把`value`编码为JSON-RPC 2.0 `params`并生成opaque string `id`。外部peer可以异步、乱序返回
+JSON-RPC response，但必须在原connection上原样回显该ID。配置adapter只解析`jsonrpc`、`id`、
+`method`、`params`、`result`与`error`控制外形；业务payload保持opaque。匹配成功后直接恢复等待中的
+调用，不创建service ingress request，也不调用用户handler。业务源码不接触transport `id`。`method`
+必须是非空string；平台对method、encoded payload和pending数量实施固定上限。
 
 Request payload按`std.json.encode<TRequest>`语义编码，success payload按
-`std.json.decode<TResponse>`语义解码。请求值不可编码或success payload与`TResponse`不匹配时抛
-`std.json.DecodeError`；这是调用点类型/peer application protocol错误，不会被伪装成transport
-`WebSocketRequestError`，也不使Router按业务schema解释payload。
+`std.json.decode<TResponse>`语义解码。编码结果顶层必须是JSON object或array，以符合JSON-RPC
+`params`约束；无参数方法传空object。请求值不可编码、params shape非法或success `result`与
+`TResponse`不匹配时抛`std.json.DecodeError`；这是调用点类型/peer application protocol错误，不会被
+伪装成transport `WebSocketRequestError`，也不使Router按业务schema解释payload。
 
 第一版wire精确为：
 
 ```json
-{"type":"request","requestId":"<opaque>","method":"<method>","payload":null}
-{"type":"response","requestId":"<opaque>","ok":true,"payload":null}
-{"type":"response","requestId":"<opaque>","ok":false,
- "error":{"code":"<code>","message":"<message>","detail":null}}
-{"type":"cancel","requestId":"<opaque>"}
+{"jsonrpc":"2.0","id":"<opaque>","method":"<method>","params":{}}
+{"jsonrpc":"2.0","id":"<opaque>","result":null}
+{"jsonrpc":"2.0","id":"<opaque>",
+ "error":{"code":-32603,"message":"<message>","data":null}}
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"<opaque>"}}
 ```
 
-JSON示例中的`payload`是任意JSON值，不限于`null`。Outer envelope字段严格；wrong-connection、
-wrong-generation或未知id的response不能命中pending调用，并以协议错误`1002`关闭。平台保留有界短期
-settled tombstone；与完成/取消竞态的晚到或重复response只命中tombstone并被丢弃，不能恢复调用。没有
-pending request的普通data frame以`1003`关闭。第一版不支持binary request/response。
+`result`与error `data`可以是任意受大小限制的JSON值。第一版每个text frame只接受一个JSON-RPC对象，
+不支持batch；request `params`必须是object或array，response `id`必须是string，error `code`必须是
+integer且`message`必须是string。Wrong-connection、wrong-generation或未知id的response不能命中pending
+调用，并以协议错误`1002`关闭。平台保留有界短期settled tombstone；与完成/取消竞态的晚到或重复response
+只命中tombstone并被丢弃，不能恢复调用。没有pending request的普通data frame以`1003`关闭。第一版不支持
+binary request/response。
 
 `requestJsonToConnection`只接受精确connection id，不提供business identity fan-out版本。多个socket不能
 共同拥有一个unary response。调用受当前execution deadline与cancel约束；等待response时是真实
-suspension point。connection关闭、deadline、cancel、协议错误或remote `ok:false`抛
-`WebSocketRequestError`。Cancel/deadline先原子删除pending state，再在socket仍可写时best-effort发送
-cancel envelope；晚到response不能恢复其它调用。Transport pairing不提供业务幂等、重试或exactly-once；
-pending数量、payload大小和tombstone生命周期均受平台limit约束，达到上限时新request fail closed。
+suspension point。有效deadline抛`TimeoutError`；ancestor cancellation终止当前request/lane且不可被用户
+`catch`。二者都先原子删除pending state，再在socket仍可写时best-effort发送
+`$/cancelRequest` notification；晚到response不能恢复其它调用。
+
+目标解析失败或发送前已关闭映射为`connectionUnavailable`；request已接纳后socket或runtime/router
+transport丢失映射为`transportUnavailable`，但不承诺peer未执行；畸形或伪造response映射为
+`protocolError`；pending或payload上限拒绝映射为`resourceLimit`；合法JSON-RPC error映射为`remote`。
+本地分支的message固定且脱敏；remote `code/message/data`被视为peer提供的不可信值，必须通过shape与
+大小校验，只返回发起调用的代码，不得自动写入公开日志。
+
+Transport pairing不提供业务幂等、自动重试或exactly-once。Pending数量和payload大小达到上限时新request
+fail closed；tombstone数量与生命周期也有界，但饱和时驱逐最旧项，不因settled记录拒绝新request。
 有持久副作用的协议仍保留自己的`toolCallId`、`attemptId`、`idempotencyKey`等业务identity。
 
 WebSocket send effect是external write，conflict-key以connection id为基础，cancel safety是

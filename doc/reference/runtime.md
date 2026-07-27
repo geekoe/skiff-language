@@ -22,7 +22,7 @@ Skiff runtime 是一组边界职责，不是用户源码可访问的全局对象
 
 Gateway adapter 负责外部协议适配：接收 HTTP、HTTP stream / SSE、WebSocket 等入口，维护外部连接，执行协议层 decode / encode，把外部入口转换成 router 可路由的 typed dispatch，并把 unary response、stream chunk、stream end 或 error 编码回外部协议。Gateway 不执行用户 Skiff 代码，不拥有 Skiff call stack 或 request heap。
 
-Hub / router 是独立于用户 service runtime 的平台基础设施。它负责 service runtime 注册、service revision 注册、可用实例选择、service protocol identity与gateway entry identity各自的匹配、client session / actor binding / WebSocket Connection 索引、in-flight request / stream 配对、cancel / drain 路由、负载和流量切换。Router core 不解释业务 host、path、cookie、session、应用 WebSocket eventName 或业务 requestId。专用WebSocket request broker可以解释固定平台outer envelope中的transport `requestId`，但不能把它投影成业务字段或据此选择用户handler。
+Hub / router 是独立于用户 service runtime 的平台基础设施。它负责 service runtime 注册、service revision 注册、可用实例选择、service protocol identity与gateway entry identity各自的匹配、client session / actor binding / WebSocket Connection 索引、in-flight request / stream 配对、cancel / drain 路由、负载和流量切换。Router core 不解释业务 host、path、cookie、session、应用 WebSocket eventName 或业务 requestId。专用WebSocket request broker拥有编码无关的transport request identity与pending state；第一版JSON-RPC 2.0 text adapter解释其控制字段，但不能把transport `id`投影成业务字段或据此选择用户handler。
 
 Service runtime 是执行用户 Skiff 代码的边界。它加载已发布 artifact，构造 service revision singleton，为每次 dispatch 创建 request frame，解码 payload，调用 implementation method 或 entry handler，执行表达式、函数、collection mutation、`concurrent`、`timeout(...)`、`emit` 和 cleanup，并编码 response / chunk / error。
 
@@ -182,7 +182,9 @@ Deadline 到达且 block / request 尚未结束时，对应语义结果立即固
 
 Runtime / compiler 必须让纯 Skiff CPU 代码可被有界取消。取消检查至少出现在函数入口、loop 条件求值前、loop backedge、每个 lane 开始前和完成后、`concurrent value` tail lane 开始前，以及可能长时间运行的生成代码片段中。
 
-结构化取消会把当前 request/lane 固定为 `CancelError`，可被显式 `catch<CancelError>` 捕获；当前没有用户可调用的 runtime cancel inspection API。
+结构化取消是request/lane生命周期控制，不生成用户可捕获的错误，也不存在`CancelError` public type。
+被取消work item后续产生的值、错误和Skiff可见写入被丢弃；当前没有用户可调用的runtime cancel inspection
+API。Deadline与取消不同：有效deadline到达产生可捕获的`TimeoutError`。
 
 Host operation 必须通过 metadata 声明 commit point、cancel-safety、idempotency、cleanup action 和是否支持底层取消。Commit point 之前取消且 API 声明 cancel-safe 时，runtime 可以保证无外部副作用。Commit point 之后取消时，外部副作用可能已经发生；语言层只丢弃返回值或错误。不支持底层取消的 host operation 必须由 runtime 托管到后台清理路径，并受 grace period / platform limit 约束。
 
@@ -257,15 +259,18 @@ Connect operation是一次request frame，用于连接验证和connection policy
 发送单向notification，或通过`std.websocket.requestJsonToConnection`向精确connection发起request并等待
 peer response。用户不声明一个接收所有raw frame的`receive`函数，也不存在client-initiated业务消息entry。
 
-Router中的专用WebSocket request broker只解释固定平台outer envelope：`type`、opaque `requestId`、
-response `ok`和固定error shape。业务`method`与payload保持opaque。Response只有在
-`(connectionId, socket/generation identity, requestId)`精确命中pending request时才转回原runtime
+Router中的专用WebSocket request broker拥有编码无关的request identity、pending生命周期和
+connection/generation归属；第一版`jsonrpc-2.0-text` adapter解释JSON-RPC 2.0控制字段。业务`method`、
+`params`、`result`与error `data`保持opaque。Response只有在
+`(connectionId, socket/generation identity, profile, id)`精确命中pending request时才转回原runtime
 execution；它不创建新的runtime ingress request，不进入service handler。Unsolicited data frame仍拒绝。
+Raw text/binary send不选择RPC配置；未来binary RPC必须是另一个显式配置。
 
 Service端主动推送必须显式调用`std.websocket.send*`；需要peer结果时显式调用
 `requestJsonToConnection`。后者是潜在suspension point，并继承当前execution deadline/cancel。取消会
-删除pending并best-effort向peer发送platform cancel envelope。平台transport correlation不取代业务
-幂等、durable run或tool attempt identity。
+删除pending并best-effort向peer发送JSON-RPC `$/cancelRequest` notification；取消本身不可被用户catch，
+deadline仍产生`TimeoutError`。平台transport correlation不取代业务幂等、durable run或tool attempt
+identity，也不提供自动retry。
 
 WebSocket连接按已冻结的connection protocol identity和deployment/activation generation路由；
 request response不能跨connection或generation恢复。既有socket继续绑定旧generation，直到drain或断开。
@@ -308,7 +313,8 @@ non-suspending；`std.websocket.requestJsonToConnection`必须标记`maySuspend`
 - `return` 穿过 `concurrent` 边界；`break` / `continue` 穿过不在同一 lane 内的 loop 边界。
 - Set surface、string indexing 和 heap cycle。
 - 自动 retry 非幂等 operation。
-- Router core 中的业务 host/path route bind、cookie/session/auth 解释或 WebSocket application protocol 解释。
+- Router core 中的业务 host/path route bind、cookie/session/auth 解释或业务WebSocket消息协议解释。
+  专用、版本化的WebSocket RPC编码adapter可以解释自己的framing和控制字段，但不能解释业务payload。
 
 这些限制是当前 runtime 合约的一部分，不应由 std wrapper、package wrapper 或 router 配置绕过。
 

@@ -265,7 +265,8 @@ HTTP/WebSocket等external ingress不属于本节的public service-call operation
 `service.yml`直接引用当前Package handler，并生成独立`GatewayEntryIdentity`与typed adapter plan。
 WebSocket connect仍由`service.yml`拥有；第一版没有client-initiated业务消息handler，raw `receive`
 不是目标业务entry。`std.websocket.requestJsonToConnection`是Skiff主动调用的平台host operation，其
-response由平台关联，不生成`service.yml` entry或ServiceContract operation：
+response由编码无关的平台broker关联；第一版使用内置JSON-RPC 2.0 text配置。它不生成`service.yml`
+entry或ServiceContract operation：
 
 - handler不要求出现在`api.yml`；
 - gateway entry不写入`ServiceContract.operations`，也不进入`ServiceProtocolIdentity`；
@@ -281,6 +282,9 @@ adapter source/sink派生wire shape；当前包括typed HTTP body、query/path/h
 runtime adapter与handler之间流动的值不进入external schema。即使某个跨external boundary的shape来自私有
 named type，外部只看到entry-local结构/协议名，不获得该type的Skiff public path或名义identity；compiler
 也不得因此把它补进`api.yml`、PackageLocalAbi、PackageSchema或ServiceContract。
+
+上述JSON配置不把WebSocket锁定为JSON-RPC-only transport。Raw text/binary send保持独立；未来binary RPC
+必须使用独立、显式版本化的配置和API，不能由`service.yml`或payload形状隐式推断。
 
 第一版external handler/pre/guard不能是generic function declaration；其concrete signature可以包含fully
 instantiated generic platform types。两者不能混为“只要出现generic就拒绝”。

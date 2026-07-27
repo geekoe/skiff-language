@@ -8,7 +8,7 @@
    不是当前 official package source defect。当前 exact `skiff-packages` 输入中的
    `http-session` 与 `track` 均可从 fresh isolated store 成功 publish，并生成
    `PackageArtifact` record/pointer。
-2. 把两个 official roots 按依赖顺序补入同一个 isolated store 后，Codex Relay、AIHub 与
+2. 把`http-session`与`track`两个官方包的包根目录按依赖顺序补入同一个isolated store后，Codex Relay、AIHub与
    Account 均成功生成 Package/Contract/Deployment receipts；AIHub 已完整越过 F434A–F436A
    的 generic return、interface receiver 与 official pointer 三层旧首错。
 3. 完整 service publish 继续在 Agine 暴露当前 production blocker：

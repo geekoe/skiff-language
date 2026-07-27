@@ -54,14 +54,16 @@ nominal public path和service dependency cycle已经在
 
    第一版明确不提供这一surface。Raw frame `receive`不作为用户service handler；外部peer主动发起的业务
    请求统一走HTTP。已经冻结的`std.websocket.requestJsonToConnection`方向相反：Skiff向精确connection
-   发request，peer只返回platform-owned response envelope；它不需要message route或用户receive。
+   发request，peer只返回由平台broker关联的JSON-RPC 2.0 response；它不需要message route或用户receive。
+   Broker与编码配置解耦，第一版只内置JSON text配置；binary RPC若出现真实需求，必须另行定义明确的版本、
+   framing、codec与协商，普通binary frame不会自动成为RPC。
    以后只有出现无法用HTTP表达的真实client-initiated需求时，才重新设计application-message routing、
    typed handler、binary与protocol identity，不能把response correlation反向扩张成通用raw receive。
 
 ## 建议处理顺序
 
-1. 保持client-initiated WebSocket业务消息入口关闭；先完成已冻结的outbound request/response平台协议，
-   避免迁移服务时继续扩散raw receive抽象。
+1. 保持client-initiated WebSocket业务消息入口关闭；先完成已冻结的编码无关broker与
+   `jsonrpc-2.0-text`配置，避免迁移服务时继续扩散raw receive抽象。
 2. 再细化宿主互操作 / FFI，避免所有第三方 SDK 都必须进入核心平台；普通用户插件开放前必须先完成 ABI、沙箱、权限和崩溃隔离设计。
 3. 然后设计用户级 async task、cron、startup 和 managed worker surface。
 4. 再补观测生产化扩展，支撑长期运行、告警和聚合。

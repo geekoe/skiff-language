@@ -113,12 +113,13 @@ chunks，也不得要求external caller理解Skiff的`Stream<T>`类型。
 
 `websocket`仍由`service.yml`拥有。第一版每个service最多一个WebSocket entry，拥有连接path与可选
 `connect`回调。外部peer主动发起的业务请求统一走HTTP；WebSocket支持服务端单向通知，以及
-`std.websocket.requestJsonToConnection`向精确connection发起的request。后一种request的response是
-平台协议帧，由gateway/runtime按平台生成的`requestId`关联并直接恢复等待中的Skiff调用，不分派给用户
-handler。不存在raw `receive`、client-initiated消息selector、typed message handler、消息级entry或
+`std.websocket.requestJsonToConnection`向精确connection发起的request。WebSocket本身只是通用双向
+transport；request/response correlation由与编码解耦的平台broker拥有，第一版内置
+`jsonrpc-2.0-text`编码配置。Peer response由gateway/runtime关联并直接恢复等待中的Skiff调用，不分派给
+用户handler。不存在raw `receive`、client-initiated消息selector、typed message handler、消息级entry或
 message identity；不得从HTTP route模型类推这些surface。没有匹配pending request的客户端text/binary
-data frame以close code `1003`拒绝；畸形、wrong-connection/generation或未知id的response envelope属于
-协议错误，使用`1002`；与完成/取消竞态的晚到或重复response只命中有界短期tombstone并被丢弃；
+data frame以close code `1003`拒绝；畸形、wrong-connection/generation或未知id的response属于协议错误，
+使用`1002`；与完成/取消竞态的晚到或重复response只命中有界短期tombstone并被丢弃；
 ping/pong/close由协议栈处理。
 
 PackageArtifact至少包含：
@@ -636,29 +637,46 @@ upgrade/connect。Agine、AIHub等service的浏览器或Host主动上行业务�
 
 WebSocket还提供一个平台拥有的反向request/response能力：Skiff代码向一个**精确connection id**发起
 request，外部peer接受该request并在同一socket上返回response。它不是外部peer向Skiff发起请求，也不改变
-`service.yml`：
+`service.yml`。
+
+WebSocket transport、request/response broker与编码配置分层：
 
 ```text
-Skiff -> peer
-{ "type": "request", "requestId": opaque, "method": string, "payload": Json }
-
-peer -> Skiff
-{ "type": "response", "requestId": opaque, "ok": true, "payload": Json }
-| { "type": "response", "requestId": opaque, "ok": false,
-    "error": { "code": string, "message": string, "detail": Json? } }
-
-Skiff -> peer, best effort on caller cancel/deadline
-{ "type": "cancel", "requestId": opaque }
+业务调用
+  -> request/response语义与pending生命周期
+  -> 编码配置
+  -> WebSocket text或binary frame
+  -> TCP
 ```
 
-`requestId`由平台生成，外部peer只能原样回显；Skiff业务源码不生成、解析或持久化它。Pending key至少包含
-connection id、socket/generation identity与request id；response必须来自原connection，unknown、
-duplicate、跨generation或已取消的response不能命中其它调用。Router只解析固定outer envelope，
-`method`和`payload`保持opaque；response不创建runtime ingress request，也不调用用户handler。
-第一版只冻结text JSON request/response，binary data response不在该协议内。`method`必须非空；request
-payload使用`std.json.encode<TRequest>`语义，success payload使用
-`std.json.decode<TResponse>`语义。编码或typed decode失败抛`std.json.DecodeError`，不改写成transport
-error，也不要求Router理解业务schema。
+Broker只拥有request identity、pending、deadline/cancel、connection/generation归属和容量限制，不把
+JSON字段写死在核心状态机中。第一版只内置`jsonrpc-2.0-text`配置；未来binary RPC必须以独立配置显式定义
+版本、framing、codec与协商规则，不能把任意binary frame自动当作RPC。现有`sendText*`/`sendBinary*`保持
+raw outbound send，不因为RPC配置而改变语义。
+
+JSON-RPC 2.0只定义message编码，不假设某一种连接生命周期；`jsonrpc-2.0-text`配置把每个message绑定为
+一个WebSocket text frame，并精确使用JSON-RPC 2.0单请求/单响应对象：
+
+```json
+{"jsonrpc":"2.0","id":"<opaque>","method":"<method>","params":{}}
+{"jsonrpc":"2.0","id":"<opaque>","result":null}
+{"jsonrpc":"2.0","id":"<opaque>",
+ "error":{"code":-32603,"message":"<message>","data":null}}
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"<opaque>"}}
+```
+
+第一版不支持JSON-RPC batch。平台只生成非空string `id`，外部peer只能原样回显；Skiff业务源码不生成、
+解析或持久化它。`$/cancelRequest`沿用Language Server Protocol的通用取消形状，是本配置在JSON-RPC核心
+之上的best-effort notification；它不要求peer返回response，也不把取消变成用户可捕获错误。Pending key
+至少包含connection id、socket/generation identity、配置id与request id；response必须来自原connection，
+unknown、duplicate、跨generation或已取消的response不能命中其它调用。配置adapter只解析JSON-RPC控制
+字段；`method`、`params`、`result`与error `data`保持opaque。Response不创建runtime ingress request，
+也不调用用户handler。
+
+`method`必须非空。`value`按`std.json.encode<TRequest>`语义编码，并且顶层结果必须是JSON object或array，
+以满足JSON-RPC `params`约束；无参数方法传空object。Success `result`按
+`std.json.decode<TResponse>`语义解码。编码、非法params shape或typed decode失败抛
+`std.json.DecodeError`，不改写成transport error，也不要求Router理解业务schema。
 
 标准库入口是：
 
@@ -672,18 +690,23 @@ native function requestJsonToConnection<TRequest, TResponse>(
 
 它只允许精确connection target，不提供business-identity fan-out版本，因为多个socket不能共同拥有一个
 unary response。调用受当前execution deadline与cancel约束；等待尚未完成时是真实suspension point。
-connection关闭、deadline、cancel、畸形response或peer返回`ok:false`时抛
-`std.websocket.WebSocketRequestError`。取消时平台删除pending state，并在socket仍可写时发送best-effort
-cancel envelope；平台保留有界短期settled tombstone以丢弃完成/取消竞态产生的晚到或重复response。
-Pending数量、payload大小与tombstone生命周期都有平台limit；达到上限时新request fail closed。
-外部副作用的幂等、去重和补偿仍由业务ID承担。
+当前有效deadline到达时抛`TimeoutError`；ancestor cancellation终止当前request/lane且不可被用户
+`catch`。二者都先删除pending state，再在socket仍可写时best-effort发送`$/cancelRequest`。目标不存在或
+已关闭、发送后transport丢失、response协议错误、平台容量拒绝和peer JSON-RPC error分别投影为
+`std.websocket.WebSocketRequestError`的封闭分支；本地分支只暴露固定、脱敏信息，remote分支保留经过
+大小和shape校验的JSON-RPC integer `code`、`message`与可选`data`。
+
+平台保留有界短期settled tombstone以丢弃完成/取消竞态产生的晚到或重复response。Pending数量和payload
+大小达到上限时新request fail closed；tombstone达到容量时按最旧到期顺序驱逐，不因已完成请求占满表而
+拒绝新request。驱逐后的晚到response按unknown id处理，仍不能恢复任何调用。Transport不自动retry；
+断线可能发生在peer收到request之前或之后，因此外部副作用的幂等、去重和补偿仍由业务ID承担。
 
 HTTP request与其unary response/server stream已经由transport精确关联。External payload、response
 envelope和stream item不得保留只为模拟旧WebSocket req/res而存在的`requestId`或同义correlation字段；
 平台内部request/trace id也不进入业务schema。若操作真正需要幂等键、异步任务句柄或业务run identity，
 必须分别建模为`idempotencyKey`、`jobId`或`runId`，不能继续借用`requestId`。这一规则同时适用于
-Agine普通HTTP RPC、Host主动发起的HTTP上行和AIHub HTTP event stream；它不删除上述平台拥有的
-WebSocket request/response envelope中的transport `requestId`。
+Agine普通HTTP RPC、Host主动发起的HTTP上行和AIHub HTTP event stream；它不删除上述平台拥有、并在
+`jsonrpc-2.0-text` wire中表示为`id`的transport request identity。
 
 ## 7. Linkable、Recoverable 与 Callback Capability
 

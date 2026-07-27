@@ -39,8 +39,8 @@ skiff-packages、Skiff production/test 或任何 stable/local config。
   skiff-packages http-session → track；service 顺序保持 Codex Relay → AIHub → Agine → Account，
   最后仍只构建一个四-root assembly。
 - workflow receipt 顶层 `provenance` 同时记录三仓 root/commit/tree 与 package/service mappings；
-  `--list --fixture-only` 输出同一 metadata、两个 official env roots、完整 6+4 顺序和确定性 command
-  plan。
+  `--list --fixture-only` 输出同一 metadata、通过环境变量显式传入的Skiff与skiff-packages两个仓库根目录、
+  完整 6+4 顺序和确定性 command plan。
 - 原有单一 temporary ecosystem store、std bootstrap owner、typed record/pointer authoring、
   partial receipt rejection、signal cleanup 与 linked-worktree mutation guard 保持不变。
 
