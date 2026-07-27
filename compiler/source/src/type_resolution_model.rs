@@ -1893,16 +1893,28 @@ impl TypeResolutionModel {
                     .map(|(name, field_ty)| (name.clone(), self.canonicalize_type_ref(field_ty)))
                     .collect(),
             },
-            TypeRefIr::AnyInterface { interface } => TypeRefIr::AnyInterface {
-                interface: InterfaceInstantiationRef {
-                    interface_abi_id: interface.interface_abi_id.clone(),
-                    canonical_type_args: interface
-                        .canonical_type_args
-                        .iter()
-                        .map(|arg| self.canonicalize_type_ref(arg))
-                        .collect(),
-                },
-            },
+            TypeRefIr::AnyInterface { interface } => {
+                let canonical_type_args = interface
+                    .canonical_type_args
+                    .iter()
+                    .map(|arg| self.canonicalize_type_ref(arg))
+                    .collect();
+                let Ok(identity) = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+                else {
+                    return TypeRefIr::AnyInterface {
+                        interface: InterfaceInstantiationRef {
+                            interface_abi_id: interface.interface_abi_id.clone(),
+                            canonical_type_args,
+                        },
+                    };
+                };
+                TypeRefIr::AnyInterface {
+                    interface: interface_instantiation_ref(
+                        self.canonicalize_type_ref(&identity),
+                        canonical_type_args,
+                    ),
+                }
+            }
             other => other.clone(),
         }
     }

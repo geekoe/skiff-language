@@ -39,6 +39,10 @@ name = "package_imports"
 path = "tests/package_imports.rs"
 
 [[test]]
+name = "package_interface_identity"
+path = "tests/package_interface_identity.rs"
+
+[[test]]
 name = "public_generic_schema_availability"
 path = "tests/public_generic_schema_availability.rs"
 
