@@ -552,8 +552,8 @@ mod websocket_admission_tests {
         ActivationPolicy, DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentPolicy,
         DeploymentRevision, GatewayAdapterPlan, GatewayAdapterSource, GatewayEntryProtocolSurface,
         GatewayExternalErrorProjection, GatewayWebSocketConnectProtocolSurface,
-        GatewayWebSocketDownlinkFrame, GatewayWebSocketShapeVersion, PackageArtifactRef,
-        PackageLocalAbiIdentity, ResourcePolicy, ServiceProtocolIdentity,
+        GatewayWebSocketDownlinkFrame, GatewayWebSocketRpcProfile, GatewayWebSocketShapeVersion,
+        PackageArtifactRef, PackageLocalAbiIdentity, ResourcePolicy, ServiceProtocolIdentity,
         SERVICE_DEPLOYMENT_SCHEMA_VERSION,
     };
 
@@ -590,6 +590,7 @@ mod websocket_admission_tests {
                         GatewayWebSocketDownlinkFrame::Binary,
                         GatewayWebSocketDownlinkFrame::Text,
                     ],
+                    rpc_profiles: vec![GatewayWebSocketRpcProfile::JsonRpc2_0Text],
                 },
             ),
             external_error_projection: GatewayExternalErrorProjection::FIXED_V1,

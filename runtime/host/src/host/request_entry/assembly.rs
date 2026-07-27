@@ -3,7 +3,7 @@ use std::{
     time::Instant,
 };
 
-use skiff_runtime_capability_context::ExecutionBudgetReason;
+use skiff_runtime_capability_context::{ConnectionRequestSession, ExecutionBudgetReason};
 use skiff_runtime_eval::RuntimeWebSocketConnectResult;
 use skiff_runtime_request::{
     self as request_runner, BoundaryResponse, RequestEnvelope, RequestError, ResponseEventSink,
@@ -63,6 +63,7 @@ impl RuntimeHost {
             &header,
             http_response_max_bytes,
             &sender,
+            &router_session_id,
         ) {
             Ok(handles) => handles,
             Err(error) => {
@@ -191,6 +192,7 @@ impl RuntimeHost {
 
     pub(super) async fn spawn_request_on_active_assembly_route(
         &self,
+        router_session_id: String,
         request: AdmittedHttpGatewayRequest,
         http_response_max_bytes: usize,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
@@ -217,6 +219,7 @@ impl RuntimeHost {
             http_response_max_bytes,
             &sender,
             Arc::clone(&response_sink),
+            &router_session_id,
         ) {
             Ok(handles) => handles,
             Err(error) => {
@@ -455,6 +458,7 @@ impl RuntimeHost {
         http_response_max_bytes: usize,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
         response_sink: Arc<HostHttpGatewayResponseSink>,
+        router_session_id: &str,
     ) -> Result<request_runner::RuntimeHttpGatewayExecutionHandles> {
         let telemetry = self.http_gateway_telemetry_context(header, route);
         let eval_adapter = crate::eval_capability_adapter::http_gateway_eval_adapter(
@@ -478,6 +482,9 @@ impl RuntimeHost {
                 spawn_workers: Arc::clone(&self.spawn_workers),
                 telemetry_context: Some(telemetry),
                 router_sender: Some(sender.clone()),
+                connection_requests: Arc::clone(&self.connection_requests),
+                router_session: ConnectionRequestSession::new(router_session_id.to_string())
+                    .map_err(RuntimeError::Decode)?,
                 http_response_max_bytes,
             },
         )
@@ -554,6 +561,7 @@ impl RuntimeHost {
         header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
         http_response_max_bytes: usize,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+        router_session_id: &str,
     ) -> Result<request_runner::RuntimeWebSocketConnectExecutionHandles> {
         let telemetry = self.websocket_connect_telemetry_context(header, route);
         let eval_adapter = crate::eval_capability_adapter::websocket_connect_eval_adapter(
@@ -577,6 +585,9 @@ impl RuntimeHost {
                 spawn_workers: Arc::clone(&self.spawn_workers),
                 telemetry_context: Some(telemetry),
                 router_sender: Some(sender.clone()),
+                connection_requests: Arc::clone(&self.connection_requests),
+                router_session: ConnectionRequestSession::new(router_session_id.to_string())
+                    .map_err(RuntimeError::Decode)?,
                 http_response_max_bytes,
             },
         )

@@ -1,6 +1,7 @@
 use crate::error::{Result, RuntimeError};
 use crate::{boundary::NativeBoundaryAdapter, runtime_value_facade::RuntimeTypePlan};
 use skiff_runtime_model::addr::UnitAddr;
+use skiff_runtime_model::service_error::NamedUnionOwnerIdentity;
 use skiff_runtime_native_contract::{NativeCallPlan, NativeRequiredContext};
 
 pub struct RuntimeNativeInvocation {
@@ -115,6 +116,17 @@ impl RuntimeNativeInvocation {
 
     pub fn return_plan(&self) -> Result<&RuntimeTypePlan> {
         Ok(&self.require_plan()?.return_plan)
+    }
+
+    pub fn named_union_error_owner(&self) -> Result<&NamedUnionOwnerIdentity> {
+        self.require_plan()?
+            .named_union_error_owner()
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(format!(
+                    "{} resolved native call is missing its linked named-union error owner",
+                    self.target_name
+                ))
+            })
     }
 
     pub(crate) fn native_boundary(&self) -> Result<NativeBoundaryAdapter<'_>> {

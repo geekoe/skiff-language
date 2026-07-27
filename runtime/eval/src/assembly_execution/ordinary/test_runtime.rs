@@ -20,11 +20,13 @@ use skiff_runtime_capability_context::{
     FileCapabilitySource, FileCapabilitySourceApi, FileChunkSource, FileSourceStreamApi,
     FileSourceStreamContext, HttpCapabilityFuture, HttpClientCapabilityApi,
     HttpClientCapabilityContext, OwnedActorCapabilityContext, OwnedConfigCapabilityContext,
-    OwnedExecutionControl, OwnedExecutionControlApi, OwnedWebsocketCapabilityContext,
+    OwnedExecutionControl, OwnedExecutionControlApi,
+    OwnedWebsocketCapabilityContext as SharedOwnedWebsocketCapabilityContext,
     SpawnSubmitControlRequest, StreamCancelSignal, StreamInternalItem, StreamLifetimeGuard,
     StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
     StreamRuntimeResult, StreamSink, StreamSinkApi, TelemetryCapabilityApi,
-    TelemetryCapabilityContext, WebsocketCapabilityApi, WebsocketCapabilityContext,
+    TelemetryCapabilityContext, WebsocketCapabilityApi,
+    WebsocketCapabilityContext as SharedWebsocketCapabilityContext,
 };
 use skiff_runtime_model::{
     addr::ExecutableAddr,
@@ -39,7 +41,8 @@ use crate::{
     capabilities::{
         EffectDispatchApi, EffectDispatchContext, EvalRuntimeFactory, EvalRuntimeFactoryApi,
         HttpRuntimeOptions, OutboundServiceApi, OutboundServiceContext, TestEffectDouble,
-        TestEffectDoubleContext, TestEffectDoubleContextApi, WebsocketCapabilityRebinder,
+        TestEffectDoubleContext, TestEffectDoubleContextApi, WebsocketCapabilityContext,
+        WebsocketCapabilityRebinder,
     },
     error::{Result, RuntimeError},
 };
@@ -843,12 +846,12 @@ struct TestWebsocket {
 }
 
 impl WebsocketCapabilityApi for TestWebsocket {
-    fn owned(&self) -> OwnedWebsocketCapabilityContext {
-        WebsocketCapabilityContext::new(self.clone())
+    fn owned(&self) -> SharedOwnedWebsocketCapabilityContext {
+        SharedWebsocketCapabilityContext::new(self.clone())
     }
 
-    fn borrow(&self) -> WebsocketCapabilityContext<'_> {
-        WebsocketCapabilityContext::new(self.clone())
+    fn borrow(&self) -> SharedWebsocketCapabilityContext<'_> {
+        SharedWebsocketCapabilityContext::new(self.clone())
     }
 
     fn service_id(&self) -> &str {

@@ -54,10 +54,18 @@ pub fn websocket<'a>(
     context: concrete::WebsocketCapabilityContext<'a>,
     owned: RuntimeOwnedWebsocketParts,
 ) -> eval_capabilities::WebsocketCapabilityContext<'a> {
-    eval_capabilities::WebsocketCapabilityContext::new(RuntimeWebsocketCapabilityContext {
+    let shared = RuntimeWebsocketCapabilityContext {
         context,
-        owned,
-    })
+        owned: owned.clone(),
+    };
+    if owned.request_transport.is_some() {
+        eval_capabilities::WebsocketCapabilityContext::with_request_api(
+            shared,
+            RuntimeWebsocketRequestCapabilityContext(owned),
+        )
+    } else {
+        eval_capabilities::WebsocketCapabilityContext::new(shared)
+    }
 }
 
 pub fn websocket_from_request<'a>(
@@ -75,6 +83,38 @@ pub fn websocket_from_request<'a>(
             service_id: service_id.to_string(),
             websocket_entry_id: websocket_entry_id.map(str::to_string),
             router_sender: router_sender.cloned(),
+            request_transport: None,
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn websocket_from_runtime_request<'a>(
+    service_id: &'a str,
+    websocket_entry_id: Option<&'a str>,
+    router_sender: Option<&'a mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
+    connection_requests: Arc<ConnectionRequestRegistry>,
+    router_session: ConnectionRequestSession,
+    cancellation: CancellationToken,
+    deadline: Option<Instant>,
+) -> eval_capabilities::WebsocketCapabilityContext<'a> {
+    let request_transport = RuntimeConnectionRequestParts {
+        registry: connection_requests,
+        session: router_session,
+        cancellation,
+        deadline,
+    };
+    websocket(
+        concrete::WebsocketCapabilityContext::with_entry_id(
+            service_id,
+            websocket_entry_id,
+            router_sender,
+        ),
+        RuntimeOwnedWebsocketParts {
+            service_id: service_id.to_string(),
+            websocket_entry_id: websocket_entry_id.map(str::to_string),
+            router_sender: router_sender.cloned(),
+            request_transport: Some(request_transport),
         },
     )
 }
@@ -85,6 +125,28 @@ pub fn websocket_rebinder(
     let router_sender = router_sender.cloned();
     eval_capabilities::WebsocketCapabilityRebinder::new(move |service_id, websocket_entry_id| {
         websocket_from_request(service_id, websocket_entry_id, router_sender.as_ref()).owned()
+    })
+}
+
+pub fn websocket_rebinder_for_runtime_request(
+    router_sender: Option<&mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
+    connection_requests: Arc<ConnectionRequestRegistry>,
+    router_session: ConnectionRequestSession,
+    cancellation: CancellationToken,
+    deadline: Option<Instant>,
+) -> eval_capabilities::WebsocketCapabilityRebinder {
+    let router_sender = router_sender.cloned();
+    eval_capabilities::WebsocketCapabilityRebinder::new(move |service_id, websocket_entry_id| {
+        websocket_from_runtime_request(
+            service_id,
+            websocket_entry_id,
+            router_sender.as_ref(),
+            Arc::clone(&connection_requests),
+            router_session.clone(),
+            cancellation.clone(),
+            deadline,
+        )
+        .owned()
     })
 }
 
@@ -227,8 +289,13 @@ impl eval_capabilities::EvalRuntimeFactoryApi for RuntimeEvalFactory {
 
 #[cfg(test)]
 mod websocket_rebinder_tests {
+    use std::time::Duration;
+
     use super::*;
-    use capability_contract::{OutboundControlMessage, RouterWriterMessage};
+    use capability_contract::{
+        CancellationSource, ConnectionRequestRegistry, ConnectionRequestSession,
+        ConnectionRequestTerminal, OutboundControlMessage, RouterWriterMessage,
+    };
 
     fn connection_send(
         receiver: &mut mpsc::UnboundedReceiver<RouterWriterMessage>,
@@ -243,6 +310,35 @@ mod websocket_rebinder_tests {
             }) => (request, payload),
             other => panic!("unexpected router message: {other:?}"),
         }
+    }
+
+    fn connection_request(
+        message: RouterWriterMessage,
+    ) -> (capability_contract::ConnectionRequestControl, Vec<u8>) {
+        match message {
+            RouterWriterMessage::Control(OutboundControlMessage::ConnectionRequest {
+                request,
+                payload,
+            }) => (request, payload),
+            other => panic!("unexpected router message: {other:?}"),
+        }
+    }
+
+    fn connection_request_cancel(
+        message: RouterWriterMessage,
+    ) -> capability_contract::ConnectionRequestCancelControl {
+        match message {
+            RouterWriterMessage::Control(OutboundControlMessage::ConnectionRequestCancel {
+                request,
+            }) => request,
+            other => panic!("unexpected router message: {other:?}"),
+        }
+    }
+
+    fn assert_connection_request_registry_empty(registry: &ConnectionRequestRegistry) {
+        assert_eq!(registry.pending_count(), 0);
+        assert_eq!(registry.active_lease_count(), 0);
+        assert_eq!(registry.active_timer_count(), 0);
     }
 
     #[test]
@@ -331,6 +427,238 @@ mod websocket_rebinder_tests {
         assert_eq!(request.connection_id, None);
         assert_eq!(request.payload_kind.as_deref(), Some("binary"));
         assert_eq!(payload, vec![4, 5, 6]);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn production_connection_request_uses_captured_session_registry_and_provider_route() {
+        let registry = Arc::new(ConnectionRequestRegistry::new(4));
+        let session =
+            ConnectionRequestSession::new("router-session-provider").expect("canonical session");
+        let cancellation = CancellationSource::new();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let rebinder = websocket_rebinder_for_runtime_request(
+            Some(&sender),
+            Arc::clone(&registry),
+            session.clone(),
+            cancellation.token(),
+            None,
+        );
+        let websocket_entry_id = format!("skiff-websocket-entry-v1:sha256:{}", "a".repeat(64));
+        let provider = rebinder.for_activation("service:provider", Some(&websocket_entry_id));
+
+        let request = provider.request_json_to_connection(
+            "connection-1".to_string(),
+            "status.get".to_string(),
+            br#"{"include":"summary"}"#.to_vec(),
+        );
+        tokio::pin!(request);
+        let queued = tokio::select! {
+            message = receiver.recv() => message.expect("connection request frame"),
+            result = &mut request => panic!("request settled before queue: {result:?}"),
+        };
+        let request_id = match queued {
+            RouterWriterMessage::Control(OutboundControlMessage::ConnectionRequest {
+                request,
+                payload,
+            }) => {
+                assert_eq!(request.service_id, "service:provider");
+                assert_eq!(request.websocket_entry_id, websocket_entry_id);
+                assert_eq!(request.connection_id, "connection-1");
+                assert_eq!(request.method, "status.get");
+                assert_eq!(payload, br#"{"include":"summary"}"#);
+                request.request_id
+            }
+            other => panic!("unexpected router message: {other:?}"),
+        };
+        assert_eq!(registry.pending_count(), 1);
+        assert!(registry.complete(
+            &session,
+            &request_id,
+            ConnectionRequestTerminal::Success(br#"{"ok":true}"#.to_vec()),
+        ));
+        assert_eq!(
+            request.await.expect("attached Host future"),
+            ConnectionRequestTerminal::Success(br#"{"ok":true}"#.to_vec())
+        );
+        assert_connection_request_registry_empty(&registry);
+    }
+
+    #[tokio::test]
+    async fn production_connection_request_preserves_remote_terminal_and_releases_state() {
+        let registry = Arc::new(ConnectionRequestRegistry::new(4));
+        let session = ConnectionRequestSession::new("router-session-remote").expect("session");
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let websocket_entry_id = format!("skiff-websocket-entry-v1:sha256:{}", "b".repeat(64));
+        let context = websocket_from_runtime_request(
+            "service:caller",
+            Some(&websocket_entry_id),
+            Some(&sender),
+            Arc::clone(&registry),
+            session.clone(),
+            CancellationSource::new().token(),
+            None,
+        );
+
+        let request = context.request_json_to_connection(
+            "connection-remote".to_string(),
+            "status.get".to_string(),
+            br#"{}"#.to_vec(),
+        );
+        tokio::pin!(request);
+        let queued = tokio::select! {
+            message = receiver.recv() => message.expect("connection request frame"),
+            result = &mut request => panic!("request settled before queue: {result:?}"),
+        };
+        let (control, _) = connection_request(queued);
+        let remote = ConnectionRequestTerminal::Remote {
+            code: -32_001,
+            message: "provider unavailable".to_string(),
+            data: Some(br#"{"retry":true}"#.to_vec()),
+        };
+        assert!(registry.complete(&session, &control.request_id, remote.clone()));
+        assert_eq!(request.await.expect("remote terminal"), remote);
+        assert_connection_request_registry_empty(&registry);
+    }
+
+    #[tokio::test]
+    async fn production_connection_request_ancestor_cancel_emits_cancel_and_releases_state() {
+        let registry = Arc::new(ConnectionRequestRegistry::new(4));
+        let session = ConnectionRequestSession::new("router-session-cancel").expect("session");
+        let cancellation = CancellationSource::new();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let websocket_entry_id = format!("skiff-websocket-entry-v1:sha256:{}", "c".repeat(64));
+        let context = websocket_from_runtime_request(
+            "service:caller",
+            Some(&websocket_entry_id),
+            Some(&sender),
+            Arc::clone(&registry),
+            session,
+            cancellation.token(),
+            None,
+        );
+
+        let request = context.request_json_to_connection(
+            "connection-cancel".to_string(),
+            "status.get".to_string(),
+            br#"{}"#.to_vec(),
+        );
+        tokio::pin!(request);
+        let queued = tokio::select! {
+            message = receiver.recv() => message.expect("connection request frame"),
+            result = &mut request => panic!("request settled before queue: {result:?}"),
+        };
+        let (control, _) = connection_request(queued);
+        cancellation.cancel();
+        assert_eq!(
+            request.await.expect("cancel terminal"),
+            ConnectionRequestTerminal::AncestorCancelled
+        );
+        let cancel =
+            connection_request_cancel(receiver.recv().await.expect("dedicated connection cancel"));
+        assert_eq!(cancel.request_id, control.request_id);
+        assert_eq!(cancel.reason, "caller_cancel");
+        assert_connection_request_registry_empty(&registry);
+    }
+
+    #[tokio::test]
+    async fn production_connection_request_deadline_emits_cancel_and_releases_state() {
+        let registry = Arc::new(ConnectionRequestRegistry::new(4));
+        let session = ConnectionRequestSession::new("router-session-deadline").expect("session");
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let websocket_entry_id = format!("skiff-websocket-entry-v1:sha256:{}", "d".repeat(64));
+        let context = websocket_from_runtime_request(
+            "service:caller",
+            Some(&websocket_entry_id),
+            Some(&sender),
+            Arc::clone(&registry),
+            session,
+            CancellationSource::new().token(),
+            Some(Instant::now() + Duration::from_millis(100)),
+        );
+
+        let request = context.request_json_to_connection(
+            "connection-deadline".to_string(),
+            "status.get".to_string(),
+            br#"{}"#.to_vec(),
+        );
+        tokio::pin!(request);
+        let queued = tokio::select! {
+            message = receiver.recv() => message.expect("connection request frame"),
+            result = &mut request => panic!("request settled before queue: {result:?}"),
+        };
+        let (control, _) = connection_request(queued);
+        assert!(control.deadline.is_some());
+        assert_eq!(
+            request.await.expect("deadline terminal"),
+            ConnectionRequestTerminal::DeadlineExceeded
+        );
+        let cancel =
+            connection_request_cancel(receiver.recv().await.expect("dedicated connection cancel"));
+        assert_eq!(cancel.request_id, control.request_id);
+        assert_eq!(cancel.reason, "deadline_exceeded");
+        assert_connection_request_registry_empty(&registry);
+    }
+
+    #[tokio::test]
+    async fn production_connection_request_disconnect_is_session_fenced_and_releases_state() {
+        let registry = Arc::new(ConnectionRequestRegistry::new(4));
+        let session = ConnectionRequestSession::new("router-session-disconnect").expect("session");
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let websocket_entry_id = format!("skiff-websocket-entry-v1:sha256:{}", "e".repeat(64));
+        let context = websocket_from_runtime_request(
+            "service:caller",
+            Some(&websocket_entry_id),
+            Some(&sender),
+            Arc::clone(&registry),
+            session.clone(),
+            CancellationSource::new().token(),
+            None,
+        );
+
+        let request = context.request_json_to_connection(
+            "connection-disconnect".to_string(),
+            "status.get".to_string(),
+            br#"{}"#.to_vec(),
+        );
+        tokio::pin!(request);
+        let queued = tokio::select! {
+            message = receiver.recv() => message.expect("connection request frame"),
+            result = &mut request => panic!("request settled before queue: {result:?}"),
+        };
+        let (control, _) = connection_request(queued);
+        assert_eq!(registry.disconnect_session(&session), 1);
+        assert_eq!(
+            request.await.expect("disconnect terminal"),
+            ConnectionRequestTerminal::TransportUnavailable
+        );
+        assert!(!registry.complete(
+            &session,
+            &control.request_id,
+            ConnectionRequestTerminal::Success(b"late".to_vec())
+        ));
+        assert!(receiver.try_recv().is_err());
+        assert_connection_request_registry_empty(&registry);
+    }
+
+    #[tokio::test]
+    async fn default_connection_request_capability_remains_unsupported() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let context = websocket_from_request(
+            "service:caller",
+            Some("websocket-entry:caller"),
+            Some(&sender),
+        );
+
+        let error = context
+            .request_json_to_connection(
+                "connection-1".to_string(),
+                "status.get".to_string(),
+                br#"{}"#.to_vec(),
+            )
+            .await
+            .expect_err("unattached request capability must fail closed");
+        assert!(error.to_string().contains("execution is not attached"));
         assert!(receiver.try_recv().is_err());
     }
 }

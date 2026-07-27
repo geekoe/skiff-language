@@ -10,7 +10,8 @@ use serde_json::Value;
 use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context::{
-    CancellationToken, OutboundRequestLease, RequestEffectDoubleControl,
+    CancellationToken, ConnectionRequestTerminal, OutboundRequestLease, RequestEffectDoubleControl,
+    WebsocketCapabilityContext as SharedWebsocketCapabilityContext,
 };
 use skiff_runtime_linked_program::ServiceDependencyConstraint;
 use skiff_runtime_model::{
@@ -35,6 +36,131 @@ use super::{error::RuntimeError, program_execution::ProgramExecutionInput};
 use crate::error::{eval_error_to_native, Result};
 
 pub type EvalCapabilityFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+
+pub trait WebsocketRequestCapabilityApi: Send + Sync {
+    fn request_json_to_connection<'a>(
+        &'a self,
+        connection_id: String,
+        method: String,
+        payload: Vec<u8>,
+    ) -> EvalCapabilityFuture<'a, ConnectionRequestTerminal>;
+}
+
+struct UnsupportedWebsocketRequestCapability;
+
+impl WebsocketRequestCapabilityApi for UnsupportedWebsocketRequestCapability {
+    fn request_json_to_connection<'a>(
+        &'a self,
+        _connection_id: String,
+        _method: String,
+        _payload: Vec<u8>,
+    ) -> EvalCapabilityFuture<'a, ConnectionRequestTerminal> {
+        Box::pin(async {
+            Err(RuntimeError::Unsupported(
+                "std.websocket.requestJsonToConnection execution is not attached".to_string(),
+            ))
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct WebsocketCapabilityContext<'a> {
+    shared: SharedWebsocketCapabilityContext<'a>,
+    request: Arc<dyn WebsocketRequestCapabilityApi>,
+}
+
+impl<'a> WebsocketCapabilityContext<'a> {
+    pub fn new<T>(inner: T) -> Self
+    where
+        T: skiff_runtime_capability_context::WebsocketCapabilityApi + 'a,
+    {
+        Self {
+            shared: SharedWebsocketCapabilityContext::new(inner),
+            request: Arc::new(UnsupportedWebsocketRequestCapability),
+        }
+    }
+
+    pub fn with_request_api<T, R>(inner: T, request: R) -> Self
+    where
+        T: skiff_runtime_capability_context::WebsocketCapabilityApi + 'a,
+        R: WebsocketRequestCapabilityApi + 'static,
+    {
+        Self {
+            shared: SharedWebsocketCapabilityContext::new(inner),
+            request: Arc::new(request),
+        }
+    }
+
+    pub fn owned(&self) -> OwnedWebsocketCapabilityContext {
+        WebsocketCapabilityContext {
+            shared: self.shared.owned(),
+            request: Arc::clone(&self.request),
+        }
+    }
+
+    pub fn borrow(&self) -> WebsocketCapabilityContext<'_> {
+        WebsocketCapabilityContext {
+            shared: self.shared.borrow(),
+            request: Arc::clone(&self.request),
+        }
+    }
+
+    pub fn service_id(&self) -> &str {
+        self.shared.service_id()
+    }
+
+    pub fn websocket_entry_id(&self) -> Option<&str> {
+        self.shared.websocket_entry_id()
+    }
+
+    pub fn request_json_to_connection<'b>(
+        &'b self,
+        connection_id: String,
+        method: String,
+        payload: Vec<u8>,
+    ) -> EvalCapabilityFuture<'b, ConnectionRequestTerminal> {
+        self.request
+            .request_json_to_connection(connection_id, method, payload)
+    }
+
+    pub fn send_connection_text_to_business_identity(
+        &self,
+        business_identity: String,
+        text: String,
+    ) -> skiff_runtime_capability_context::CapabilityResult<()> {
+        self.shared
+            .send_connection_text_to_business_identity(business_identity, text)
+    }
+
+    pub fn send_connection_binary_to_business_identity(
+        &self,
+        business_identity: String,
+        payload: Vec<u8>,
+    ) -> skiff_runtime_capability_context::CapabilityResult<()> {
+        self.shared
+            .send_connection_binary_to_business_identity(business_identity, payload)
+    }
+
+    pub fn send_connection_text_to_connection(
+        &self,
+        connection_id: String,
+        text: String,
+    ) -> skiff_runtime_capability_context::CapabilityResult<()> {
+        self.shared
+            .send_connection_text_to_connection(connection_id, text)
+    }
+
+    pub fn send_connection_binary_to_connection(
+        &self,
+        connection_id: String,
+        payload: Vec<u8>,
+    ) -> skiff_runtime_capability_context::CapabilityResult<()> {
+        self.shared
+            .send_connection_binary_to_connection(connection_id, payload)
+    }
+}
+
+pub type OwnedWebsocketCapabilityContext = WebsocketCapabilityContext<'static>;
 
 type WebsocketCapabilityRebind =
     dyn for<'a> Fn(&'a str, Option<&'a str>) -> OwnedWebsocketCapabilityContext + Send + Sync;
@@ -85,14 +211,13 @@ pub use skiff_runtime_capability_context::{
     HttpClientCapabilityContext, HttpResponseStreamCapabilityContext, HttpRuntimeOptions,
     OutboundServiceRequestStart, OutboundStartedRequest, OwnedActorCapabilityContext,
     OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
-    OwnedWebsocketCapabilityContext, RestrictedServiceDiagnostic,
-    RestrictedServiceDiagnosticCauseKind, RestrictedServiceDiagnosticOwner,
-    RestrictedServiceDiagnosticSink, SpawnSubmitControlRequest, StreamCancelSignal,
-    StreamCancelSignalApi, StreamCapabilityContext, StreamConsumerCleanup, StreamPoll,
-    StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError, StreamRuntimeOwner,
-    StreamSink, StreamSinkApi, SupervisedStreamConsumptionChild, TelemetryCapabilityApi,
-    TelemetryCapabilityContext, TimeCapabilityContext, TypedStreamSink, WebsocketCapabilityApi,
-    WebsocketCapabilityContext, HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
+    RestrictedServiceDiagnostic, RestrictedServiceDiagnosticCauseKind,
+    RestrictedServiceDiagnosticOwner, RestrictedServiceDiagnosticSink, SpawnSubmitControlRequest,
+    StreamCancelSignal, StreamCancelSignalApi, StreamCapabilityContext, StreamConsumerCleanup,
+    StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
+    StreamRuntimeOwner, StreamSink, StreamSinkApi, SupervisedStreamConsumptionChild,
+    TelemetryCapabilityApi, TelemetryCapabilityContext, TimeCapabilityContext, TypedStreamSink,
+    WebsocketCapabilityApi, HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
 };
 
 pub trait EvalRuntimeFactoryApi: Send + Sync {
@@ -965,6 +1090,21 @@ impl NativeHttpResponseStreamCapability for RuntimeNativeHttpResponseStreamCapab
 }
 
 impl NativeWebsocketCapability for RuntimeNativeWebsocketCapabilityContext<'_> {
+    fn request_json_to_connection<'a>(
+        &'a self,
+        connection_id: String,
+        method: String,
+        payload: Vec<u8>,
+    ) -> NativeCapabilityFuture<'a, skiff_runtime_capability_context::ConnectionRequestTerminal>
+    {
+        Box::pin(async move {
+            self.0
+                .request_json_to_connection(connection_id, method, payload)
+                .await
+                .map_err(eval_error_to_native)
+        })
+    }
+
     fn send_connection_text_to_business_identity(
         &self,
         business_identity: String,

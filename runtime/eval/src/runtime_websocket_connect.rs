@@ -168,29 +168,7 @@ fn handler_args(
                     ),
                 )
             })?;
-        let wire = match arg.source {
-            GatewayAdapterSource::WebSocketConnectRequest => json!({
-                "connectionId": request.connection_id,
-                "url": request.url,
-                "query": name_values_wire(&request.query),
-                "headers": name_values_wire(&request.headers),
-                "cookies": name_values_wire(&request.cookies),
-                "version": request.version,
-                "websocketEntryId": request.websocket_entry_id.as_str(),
-                "gatewayEntryIdentity": request.gateway_entry_identity.as_str(),
-            }),
-            GatewayAdapterSource::WebSocketConnectionId => {
-                Value::String(request.connection_id.clone())
-            }
-            GatewayAdapterSource::HttpRequest
-            | GatewayAdapterSource::HttpBody
-            | GatewayAdapterSource::HttpContext => {
-                return Err(protocol_error(
-                    target,
-                    "websocket connect execution refuses HTTP adapter sources",
-                ))
-            }
-        };
+        let wire = websocket_connect_source_wire(request, target, arg.source)?;
         let plan = RuntimeTypePlan::from_linked_nested_ref(
             &parameter.ty,
             &PlanContext::from_type_view(
@@ -206,6 +184,39 @@ fn handler_args(
         )?);
     }
     Ok(values)
+}
+
+fn websocket_connect_source_wire(
+    request: &RuntimeWebSocketConnectRequest,
+    target: &impl RuntimeWebSocketConnectExecutionTarget,
+    source: GatewayAdapterSource,
+) -> Result<Value> {
+    match source {
+        GatewayAdapterSource::WebSocketConnectRequest => Ok(json!({
+            "connectionId": request.connection_id,
+            "url": request.url,
+            "query": name_values_wire(&request.query),
+            "headers": name_values_wire(&request.headers),
+            "cookies": name_values_wire(&request.cookies),
+            "version": request.version,
+            "websocketEntryId": request.websocket_entry_id.as_str(),
+            "gatewayEntryIdentity": request.gateway_entry_identity.as_str(),
+        })),
+        GatewayAdapterSource::WebSocketConnectionId => {
+            Ok(Value::String(request.connection_id.clone()))
+        }
+        GatewayAdapterSource::HttpRequest
+        | GatewayAdapterSource::HttpBody
+        | GatewayAdapterSource::HttpContext => Err(protocol_error(
+            target,
+            "websocket connect execution refuses HTTP adapter sources",
+        )),
+        GatewayAdapterSource::WebSocketJsonRpcParams
+        | GatewayAdapterSource::WebSocketBusinessIdentity => Err(protocol_error(
+            target,
+            "websocket connect execution refuses WebSocket JSON-RPC-only adapter sources",
+        )),
+    }
 }
 
 fn name_values_wire(items: &[RuntimeWebSocketNameValue]) -> Value {
@@ -576,6 +587,43 @@ mod tests {
             json!({"tag": "reject", "code": 1008, "reason": "policy", "legacy": true}),
         ] {
             assert!(decode_connect_result(&target, invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn native_websocket_connect_refuses_jsonrpc_only_sources_before_value_projection() {
+        let target = DecodeTarget::new();
+        let request = RuntimeWebSocketConnectRequest {
+            connection_id: "connection-1".to_string(),
+            url: "ws://websocket.test/ws".to_string(),
+            query: Vec::new(),
+            headers: Vec::new(),
+            cookies: Vec::new(),
+            version: None,
+            websocket_entry_id: WebSocketEntryId::parse(format!(
+                "skiff-websocket-entry-v1:sha256:{}",
+                "a".repeat(64)
+            ))
+            .unwrap(),
+            gateway_entry_identity: GatewayEntryIdentity::parse(format!(
+                "skiff-gateway-entry-v2:sha256:{}",
+                "b".repeat(64)
+            ))
+            .unwrap(),
+        };
+
+        for source in [
+            GatewayAdapterSource::WebSocketJsonRpcParams,
+            GatewayAdapterSource::WebSocketBusinessIdentity,
+        ] {
+            let error = websocket_connect_source_wire(&request, &target, source)
+                .expect_err("connect evaluator must reject JSON-RPC-only sources");
+            assert!(
+                error
+                    .to_string()
+                    .contains("WebSocket JSON-RPC-only adapter sources"),
+                "{error}"
+            );
         }
     }
 }

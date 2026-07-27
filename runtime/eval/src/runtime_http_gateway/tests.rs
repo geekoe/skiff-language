@@ -13,9 +13,9 @@ use skiff_artifact_model::{
     GatewayAdapterKind, GatewayAdapterPlan, GatewayDispatchMode, GatewayEntryIdentity,
     GatewayEntryKey, GatewayEntryProtocolSurface, GatewayProtocolSurface,
     GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
-    GatewayWebSocketShapeVersion, OperationTargetRef, PackageArtifact, PackageCallableId,
-    PackageCallableSignature, PackageLocalAbiSymbol, PackageSchemaIndex, RuntimeAssembly,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    GatewayWebSocketRpcProfile, GatewayWebSocketShapeVersion, OperationTargetRef, PackageArtifact,
+    PackageCallableId, PackageCallableSignature, PackageLocalAbiSymbol, PackageSchemaIndex,
+    RuntimeAssembly, ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -278,6 +278,7 @@ async fn runtime_http_gateway_refuses_websocket_connect_surface_before_execution
                 GatewayWebSocketDownlinkFrame::Binary,
                 GatewayWebSocketDownlinkFrame::Text,
             ],
+            rpc_profiles: vec![GatewayWebSocketRpcProfile::JsonRpc2_0Text],
         });
 
     let error = interpreter
@@ -291,6 +292,34 @@ async fn runtime_http_gateway_refuses_websocket_connect_surface_before_execution
     assert!(error
         .to_string()
         .contains("requires an HTTP protocol surface"));
+}
+
+#[tokio::test]
+async fn native_http_gateway_refuses_websocket_jsonrpc_only_sources_before_execution() {
+    let fixture = fixture();
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+
+    for source in [
+        skiff_artifact_model::GatewayAdapterSource::WebSocketJsonRpcParams,
+        skiff_artifact_model::GatewayAdapterSource::WebSocketBusinessIdentity,
+    ] {
+        let mut target = fixture.target_for_path("/typed");
+        target.plan.args[0].source = source;
+        let error = interpreter
+            .execute_runtime_http_gateway_unary(
+                execution_context(&interpreter, target.eval.clone()),
+                request(&target.key, "POST", "/typed", br#""value""#),
+                &target,
+            )
+            .await
+            .expect_err("HTTP execution must reject WebSocket JSON-RPC-only sources");
+        assert!(
+            error
+                .to_string()
+                .contains("WebSocket JSON-RPC-only adapter sources"),
+            "{error}"
+        );
+    }
 }
 
 #[derive(Clone)]

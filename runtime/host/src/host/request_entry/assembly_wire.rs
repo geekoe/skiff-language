@@ -36,7 +36,7 @@ pub(super) struct AdmittedWebSocketConnectRequest {
 impl RuntimeHost {
     pub(crate) async fn spawn_runtime_assembly_request(
         &self,
-        _router_session_id: &str,
+        router_session_id: &str,
         header: RuntimeAssemblyRequestStartFrameWireHeader,
         body: Vec<u8>,
         http_response_max_bytes: usize,
@@ -59,6 +59,7 @@ impl RuntimeHost {
         match result {
             Ok(AdmittedRuntimeAssemblyRequest::Http(request)) => {
                 self.spawn_request_on_active_assembly_route(
+                    router_session_id.to_string(),
                     request,
                     http_response_max_bytes,
                     sender,
@@ -67,7 +68,7 @@ impl RuntimeHost {
             }
             Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnect(request)) => {
                 self.spawn_websocket_connect_on_active_assembly_route(
-                    _router_session_id.to_string(),
+                    router_session_id.to_string(),
                     request,
                     http_response_max_bytes,
                     sender,

@@ -5,6 +5,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{atomic::AtomicBool, Arc},
+    time::Instant,
 };
 
 use bytes::Bytes;
@@ -20,7 +21,8 @@ use skiff_runtime_capability_context as capability_contract;
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
     ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationToken,
-    ExecutionControlResult, FileCapabilityError, FileCapabilityFuture, RequestEffectDoubleControl,
+    ConnectionRequestRegistry, ConnectionRequestSession, ExecutionControlResult,
+    FileCapabilityError, FileCapabilityFuture, RequestEffectDoubleControl, RuntimeDeadlineControl,
     SpawnSubmitControlRequest, StreamPoll, StreamPullSource, StreamRuntimeError,
     StreamRuntimeResult,
 };
@@ -71,7 +73,10 @@ use file_stream::{
 };
 use http::{RuntimeHttpClientCapabilityContext, RuntimeTelemetryCapabilityContext};
 use outbound::{RetiredAssemblyOutboundServiceContext, RuntimeOutboundServiceContext};
-use websocket::RuntimeWebsocketCapabilityContext;
+use websocket::{
+    RuntimeConnectionRequestParts, RuntimeWebsocketCapabilityContext,
+    RuntimeWebsocketRequestCapabilityContext,
+};
 
 pub(crate) use assembly_request_adapter::{
     http_gateway_eval_adapter, websocket_connect_eval_adapter, RuntimeHttpGatewayEvalAdapterInput,
@@ -84,7 +89,8 @@ pub(crate) use factory::retired_assembly_outbound;
 pub use factory::TestActorCapabilityFactory;
 pub use factory::{
     config_context, db_context, effects, execution_control, file_source, outbound, runtime_factory,
-    websocket, websocket_from_request, websocket_rebinder,
+    websocket, websocket_from_request, websocket_from_runtime_request, websocket_rebinder,
+    websocket_rebinder_for_runtime_request,
 };
 pub use request_contexts::{
     effect_dispatch_context_from_request, outbound_service_context_from_request,

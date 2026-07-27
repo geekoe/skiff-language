@@ -28,6 +28,8 @@ pub(crate) struct RuntimeHttpGatewayEvalAdapterInput {
     pub(crate) spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     pub(crate) telemetry_context: Option<RequestTelemetryContext>,
     pub(crate) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
+    pub(crate) connection_requests: Arc<ConnectionRequestRegistry>,
+    pub(crate) router_session: ConnectionRequestSession,
     pub(crate) http_response_max_bytes: usize,
 }
 
@@ -126,6 +128,8 @@ pub(crate) fn http_gateway_eval_adapter(
         spawn_workers: input.spawn_workers,
         telemetry_context: input.telemetry_context,
         router_sender: input.router_sender,
+        connection_requests: input.connection_requests,
+        router_session: input.router_session,
         http_response_max_bytes: input.http_response_max_bytes,
         request,
         operation,
@@ -148,6 +152,8 @@ pub(crate) struct RuntimeWebSocketConnectEvalAdapterInput {
     pub(crate) spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     pub(crate) telemetry_context: Option<RequestTelemetryContext>,
     pub(crate) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
+    pub(crate) connection_requests: Arc<ConnectionRequestRegistry>,
+    pub(crate) router_session: ConnectionRequestSession,
     pub(crate) http_response_max_bytes: usize,
 }
 
@@ -246,6 +252,8 @@ pub(crate) fn websocket_connect_eval_adapter(
         spawn_workers: input.spawn_workers,
         telemetry_context: input.telemetry_context,
         router_sender: input.router_sender,
+        connection_requests: input.connection_requests,
+        router_session: input.router_session,
         http_response_max_bytes: input.http_response_max_bytes,
         request,
         operation,
@@ -267,6 +275,8 @@ struct RuntimeHttpGatewayEvalAdapterImpl {
     spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     telemetry_context: Option<RequestTelemetryContext>,
     router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
+    connection_requests: Arc<ConnectionRequestRegistry>,
+    router_session: ConnectionRequestSession,
     http_response_max_bytes: usize,
     request: RequestEnvelope,
     operation: RuntimeOperation,
@@ -305,8 +315,15 @@ impl RuntimeHttpGatewayEvalAdapterImpl {
             .activation
             .websocket_entry_id()
             .map(|entry| entry.as_str());
-        let websocket =
-            websocket_from_request(service_id, websocket_entry_id, self.router_sender.as_ref());
+        let websocket = websocket_from_runtime_request(
+            service_id,
+            websocket_entry_id,
+            self.router_sender.as_ref(),
+            Arc::clone(&self.connection_requests),
+            self.router_session.clone(),
+            execution.cancellation_token(),
+            execution.deadline(),
+        );
         let actor = actor_from_request(
             self.runtime_id.as_str(),
             service_id,
@@ -353,7 +370,13 @@ impl RuntimeHttpGatewayEvalAdapterImpl {
             outbound: retired_assembly_outbound(cancellation, request_heap_limits.clone()),
             request_heap_limits,
         })
-        .with_websocket_capability_rebinder(websocket_rebinder(self.router_sender.as_ref()))
+        .with_websocket_capability_rebinder(websocket_rebinder_for_runtime_request(
+            self.router_sender.as_ref(),
+            Arc::clone(&self.connection_requests),
+            self.router_session.clone(),
+            execution.cancellation_token(),
+            execution.deadline(),
+        ))
         .with_runtime_assembly_target(eval_target.clone())
     }
 }

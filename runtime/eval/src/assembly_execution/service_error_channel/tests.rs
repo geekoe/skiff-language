@@ -123,28 +123,9 @@ fn platform_registry_rejects_identity_fallback_and_noncanonical_bytes() {
 }
 
 #[test]
-fn legacy_cancel_platform_identity_is_rejected_on_encode_and_import() {
-    let legacy_identity = PlatformBuiltinErrorIdentity::Cancel;
-    let payload = json!({"message": "request was cancelled"});
-    assert!(
-        encode_platform_payload(legacy_identity, &payload).is_err(),
-        "legacy cancellation identity must not enter a service envelope"
-    );
-
-    let fixture = CoreFixture::new();
-    let projection = RuntimeAssemblyExecutionProjection::from_image(Arc::clone(&fixture.image));
-    let legacy = fixed_error(ServiceErrorEnvelope::PlatformError {
-        builtin_error_identity: legacy_identity,
-        encoded_payload: canonical_json_bytes(&payload).expect("canonical negative payload"),
-        trace_id: "trace-legacy-cancel".to_string(),
-        error_id: "error-legacy-cancel".to_string(),
-    })
-    .expect("runtime/model still admits the negative envelope until M0");
-    let mut heap = RequestHeap::default();
-    let error = fixture
-        .import(&projection, legacy, CALLER, &mut heap, &call_site())
-        .expect_err("legacy cancellation envelope must fail closed at import");
-    assert!(matches!(error, RuntimeError::Protocol { .. }));
+fn legacy_cancel_platform_identity_is_absent_from_registry() {
+    assert!(PlatformBuiltinErrorIdentity::from_symbol("CancelError").is_none());
+    assert!(PlatformBuiltinErrorIdentity::from_symbol("std.cancel.CancelError").is_none());
 }
 
 #[test]

@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{NativeSignatureDef, NativeSignatureTypeExpr};
 use skiff_runtime_linked_program::{
-    CallIr, ExecutableAddr, LinkedInterfaceInstantiationRef, LinkedTypeRef, NativeTarget,
-    ResolvedSymbol, TypeAddr,
+    CallIr, ExecutableAddr, LinkedInterfaceInstantiationRef, LinkedTypeDescriptor, LinkedTypeRef,
+    NativeTarget, ResolvedSymbol, TypeAddr,
 };
+use skiff_runtime_model::service_error::{LocalExecutionTypeIdentity, NamedUnionOwnerIdentity};
 use skiff_runtime_native_contract::{
     type_arg_key, validate_native_call_arg_count, validate_native_call_type_arg_refs,
     NativeCallPlan, NativeTypeArgRef,
@@ -66,9 +67,112 @@ pub fn resolve_call_plan_with_registry<'a>(
         program,
         current_addr,
     )?;
-    let plan = NativeCallPlan::new(spec.key, arg_plans, return_plan, spec.required_context);
+    let mut plan = NativeCallPlan::new(spec.key, arg_plans, return_plan, spec.required_context);
+    if let Some(owner) = native_named_union_error_owner(spec.key.as_str(), program)? {
+        plan = plan
+            .with_named_union_error_owner(owner)
+            .map_err(RuntimeError::InvalidArtifact)?;
+    }
 
     Ok(Some(plan))
+}
+
+const STD_PACKAGE_ID: &str = "skiff.run/std";
+const WEBSOCKET_REQUEST_BINDING: &str = "std.websocket.requestJsonToConnection";
+const WEBSOCKET_REQUEST_ERROR_TYPE: &str = "std.websocket.WebSocketRequestError";
+
+fn native_named_union_error_owner(
+    binding_key: &str,
+    program: ProgramTypeView<'_>,
+) -> Result<Option<NamedUnionOwnerIdentity>> {
+    if binding_key != WEBSOCKET_REQUEST_BINDING {
+        return Ok(None);
+    }
+    let package_slot = program
+        .link_overlay
+        .package_slot_for_id(STD_PACKAGE_ID)
+        .ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
+                "{WEBSOCKET_REQUEST_BINDING} requires linked package {STD_PACKAGE_ID}"
+            ))
+        })?;
+    let package = program.packages.get(package_slot).ok_or_else(|| {
+        RuntimeError::InvalidArtifact(format!(
+            "{WEBSOCKET_REQUEST_BINDING} std package slot {package_slot} is missing linked code"
+        ))
+    })?;
+    if package.package_id != STD_PACKAGE_ID {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{WEBSOCKET_REQUEST_BINDING} std package slot {package_slot} resolves to {}",
+            package.package_id
+        )));
+    }
+    let addr = program
+        .types
+        .exported_package_type(package_slot, WEBSOCKET_REQUEST_ERROR_TYPE)
+        .ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
+                "{WEBSOCKET_REQUEST_BINDING} requires public type \
+                 {STD_PACKAGE_ID}::{WEBSOCKET_REQUEST_ERROR_TYPE}"
+            ))
+        })?
+        .clone();
+    match program
+        .link_overlay
+        .resolved_package_symbol(package_slot, WEBSOCKET_REQUEST_ERROR_TYPE)
+    {
+        Some(ResolvedSymbol::Type { addr: resolved }) if resolved == &addr => {}
+        Some(ResolvedSymbol::Type { .. }) => {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "{WEBSOCKET_REQUEST_BINDING} linked owner \
+                 {STD_PACKAGE_ID}::{WEBSOCKET_REQUEST_ERROR_TYPE} is ambiguous across type addresses"
+            )))
+        }
+        Some(symbol) => {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "{WEBSOCKET_REQUEST_BINDING} linked owner \
+                 {STD_PACKAGE_ID}::{WEBSOCKET_REQUEST_ERROR_TYPE} has wrong symbol kind {}",
+                symbol.export_kind()
+            )))
+        }
+        None => {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "{WEBSOCKET_REQUEST_BINDING} linked owner \
+                 {STD_PACKAGE_ID}::{WEBSOCKET_REQUEST_ERROR_TYPE} is missing from the executable symbol overlay"
+            )))
+        }
+    }
+    let declaration = program.types.declaration(&addr).ok_or_else(|| {
+        RuntimeError::InvalidArtifact(format!(
+            "{WEBSOCKET_REQUEST_BINDING} linked owner \
+             {STD_PACKAGE_ID}::{WEBSOCKET_REQUEST_ERROR_TYPE} has no admitted type declaration"
+        ))
+    })?;
+    if !declaration.type_params.is_empty()
+        || !matches!(declaration.descriptor, LinkedTypeDescriptor::Union { .. })
+    {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{WEBSOCKET_REQUEST_BINDING} linked owner \
+             {STD_PACKAGE_ID}::{WEBSOCKET_REQUEST_ERROR_TYPE} must be an exact non-generic named union"
+        )));
+    }
+    let short_name = WEBSOCKET_REQUEST_ERROR_TYPE
+        .rsplit('.')
+        .next()
+        .expect("canonical type path has a final component");
+    if declaration.name != short_name && declaration.name != WEBSOCKET_REQUEST_ERROR_TYPE {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{WEBSOCKET_REQUEST_BINDING} linked owner declaration {} does not match \
+             {WEBSOCKET_REQUEST_ERROR_TYPE}",
+            declaration.name
+        )));
+    }
+    Ok(Some(NamedUnionOwnerIdentity::LocalExecution(
+        LocalExecutionTypeIdentity {
+            addr,
+            type_arguments: Vec::new(),
+        },
+    )))
 }
 
 #[allow(dead_code)]
@@ -256,11 +360,16 @@ mod tests {
     use std::sync::Arc;
 
     use skiff_runtime_linked_program::{
-        ExecutableAddr, FileAddr, LinkOverlay, LinkedFileUnit, PackageSymbolKey, PackageUnit,
-        ResolvedSymbol, RuntimeTypeContext, TypeAddr, UnitAddr,
+        anonymous_type_decl, ExecutableAddr, FileAddr, LinkOverlay, LinkedFileUnit,
+        LinkedTypeDescriptor, PackageSymbolKey, PackageUnit, ResolvedSymbol, RuntimeTypeContext,
+        TypeAddr, UnitAddr,
     };
+    use skiff_runtime_model::service_error::{LocalExecutionTypeIdentity, NamedUnionOwnerIdentity};
 
-    use super::{native_builtin_plan, native_package_type_addr, ProgramTypeView};
+    use super::{
+        native_builtin_plan, native_named_union_error_owner, native_package_type_addr,
+        ProgramTypeView, STD_PACKAGE_ID, WEBSOCKET_REQUEST_BINDING, WEBSOCKET_REQUEST_ERROR_TYPE,
+    };
 
     fn package_addr(slot: usize, index: usize) -> TypeAddr {
         TypeAddr {
@@ -365,6 +474,166 @@ mod tests {
                 .contains("unknown builtin type std.file.CreateOptions"),
             "{error}"
         );
+    }
+
+    fn std_owner_program(
+        addr: TypeAddr,
+        symbol: Option<ResolvedSymbol>,
+        descriptor: LinkedTypeDescriptor,
+    ) -> (LinkOverlay, RuntimeTypeContext, Vec<Arc<PackageUnit>>) {
+        let mut overlay = LinkOverlay {
+            package_slots_by_id: [(STD_PACKAGE_ID.to_string(), 0)].into_iter().collect(),
+            ..LinkOverlay::default()
+        };
+        if let Some(symbol) = symbol {
+            overlay.symbols.insert_package(
+                PackageSymbolKey::new(0, WEBSOCKET_REQUEST_ERROR_TYPE),
+                symbol,
+            );
+        }
+        let mut types = RuntimeTypeContext::default();
+        types.exported_types.insert_package(
+            PackageSymbolKey::new(0, WEBSOCKET_REQUEST_ERROR_TYPE),
+            addr.clone(),
+        );
+        types.descriptors.insert(
+            addr,
+            anonymous_type_decl("WebSocketRequestError", descriptor),
+        );
+        let packages = vec![Arc::new(PackageUnit::empty(
+            STD_PACKAGE_ID,
+            "1.0.0",
+            "build:std",
+            "abi:std",
+        ))];
+        (overlay, types, packages)
+    }
+
+    #[test]
+    fn websocket_request_owner_is_exact_current_linked_std_union() {
+        let addr = package_addr(0, 7);
+        let (overlay, types, packages) = std_owner_program(
+            addr.clone(),
+            Some(ResolvedSymbol::Type { addr: addr.clone() }),
+            LinkedTypeDescriptor::Union {
+                branches: Vec::new(),
+            },
+        );
+        let package_files = vec![Vec::new()];
+        let program = view(&overlay, &types, &package_files, &packages);
+
+        assert_eq!(
+            native_named_union_error_owner(WEBSOCKET_REQUEST_BINDING, program).unwrap(),
+            Some(NamedUnionOwnerIdentity::LocalExecution(
+                LocalExecutionTypeIdentity {
+                    addr,
+                    type_arguments: Vec::new(),
+                }
+            ))
+        );
+        assert_eq!(
+            native_named_union_error_owner("std.websocket.sendTextToConnection", program).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn websocket_request_owner_fails_closed_before_dispatch_for_bad_link_facts() {
+        let exact_addr = package_addr(0, 7);
+        let other_addr = package_addr(0, 8);
+        for (symbol, descriptor, expected) in [
+            (
+                None,
+                LinkedTypeDescriptor::Union {
+                    branches: Vec::new(),
+                },
+                "missing from the executable symbol overlay",
+            ),
+            (
+                Some(ResolvedSymbol::Executable {
+                    addr: ExecutableAddr::package(0, 0, 0),
+                }),
+                LinkedTypeDescriptor::Union {
+                    branches: Vec::new(),
+                },
+                "wrong symbol kind executable",
+            ),
+            (
+                Some(ResolvedSymbol::Type {
+                    addr: other_addr.clone(),
+                }),
+                LinkedTypeDescriptor::Union {
+                    branches: Vec::new(),
+                },
+                "ambiguous across type addresses",
+            ),
+            (
+                Some(ResolvedSymbol::Type {
+                    addr: exact_addr.clone(),
+                }),
+                LinkedTypeDescriptor::Record {
+                    fields: Default::default(),
+                },
+                "must be an exact non-generic named union",
+            ),
+        ] {
+            let (overlay, types, packages) =
+                std_owner_program(exact_addr.clone(), symbol, descriptor);
+            let package_files = vec![Vec::new()];
+            let program = view(&overlay, &types, &package_files, &packages);
+            let error =
+                native_named_union_error_owner(WEBSOCKET_REQUEST_BINDING, program).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn websocket_request_owner_is_never_reused_across_linked_programs() {
+        let left_addr = package_addr(0, 7);
+        let right_addr = package_addr(0, 9);
+        let (left_overlay, left_types, left_packages) = std_owner_program(
+            left_addr.clone(),
+            Some(ResolvedSymbol::Type {
+                addr: left_addr.clone(),
+            }),
+            LinkedTypeDescriptor::Union {
+                branches: Vec::new(),
+            },
+        );
+        let (right_overlay, right_types, right_packages) = std_owner_program(
+            right_addr.clone(),
+            Some(ResolvedSymbol::Type {
+                addr: right_addr.clone(),
+            }),
+            LinkedTypeDescriptor::Union {
+                branches: Vec::new(),
+            },
+        );
+        let left_package_files = vec![Vec::new()];
+        let right_package_files = vec![Vec::new()];
+
+        let left = native_named_union_error_owner(
+            WEBSOCKET_REQUEST_BINDING,
+            view(
+                &left_overlay,
+                &left_types,
+                &left_package_files,
+                &left_packages,
+            ),
+        )
+        .unwrap();
+        let right = native_named_union_error_owner(
+            WEBSOCKET_REQUEST_BINDING,
+            view(
+                &right_overlay,
+                &right_types,
+                &right_package_files,
+                &right_packages,
+            ),
+        )
+        .unwrap();
+
+        assert_ne!(left, right);
     }
 }
 

@@ -111,6 +111,10 @@ impl Interpreter {
                 target,
                 "HTTP gateway execution refuses websocketConnect adapter plans",
             )),
+            GatewayAdapterKind::WebSocketJsonRpc => Err(protocol_error(
+                target,
+                "HTTP gateway execution refuses websocketJsonRpc adapter plans",
+            )),
         }
     }
 
@@ -479,6 +483,13 @@ fn handler_args(
                 return Err(protocol_error(
                     target,
                     "HTTP gateway execution refuses WebSocket adapter sources",
+                ))
+            }
+            GatewayAdapterSource::WebSocketJsonRpcParams
+            | GatewayAdapterSource::WebSocketBusinessIdentity => {
+                return Err(protocol_error(
+                    target,
+                    "HTTP gateway execution refuses WebSocket JSON-RPC-only adapter sources",
                 ))
             }
         };

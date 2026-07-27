@@ -9,7 +9,6 @@ use skiff_runtime_capability_context::{
     FileCapabilityFuture, FileChunkFuture, FileChunkSource, StreamConsumerCleanup,
 };
 use skiff_runtime_model::addr::ExecutableAddr;
-use skiff_runtime_model::service_error::NamedUnionOwnerIdentity;
 use skiff_runtime_model::{PublicationResourceTable, RuntimeProgramResourceView};
 
 use crate::error::Result;
@@ -154,10 +153,6 @@ pub trait NativeHttpResponseStreamCapability {
 }
 
 pub trait NativeWebsocketCapability {
-    fn websocket_request_error_owner(&self) -> Option<NamedUnionOwnerIdentity> {
-        None
-    }
-
     fn request_json_to_connection<'a>(
         &'a self,
         connection_id: String,
