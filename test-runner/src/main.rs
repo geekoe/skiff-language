@@ -157,12 +157,12 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
     if let Some(value) = ingress_url.as_deref() {
         validate_ingress_url(value)?;
     }
-    let environment = if live {
+    let target_environment = if live {
         environment.expect("live environment was checked")
     } else {
         env::var("SKIFF_TEST_ENVIRONMENT").unwrap_or_else(|_| "skiff-test".to_string())
     };
-    validate_environment(&environment)?;
+    validate_environment(&target_environment)?;
     let expected_generation = if live {
         expected_generation.expect("live generation was checked")
     } else {
@@ -181,7 +181,7 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
             base_assembly,
             activation_url,
             ingress_url,
-            environment,
+            target_environment,
             expected_generation,
         },
         deny_skips,

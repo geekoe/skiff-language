@@ -5,6 +5,7 @@ use skiff_compiler_source::prelude_registry::prelude_registry;
 
 use super::{
     read_test_service_profile, run_after_platform_context_guard, CanonicalPackageProjectError,
+    PackageCompileWorkflow,
 };
 
 #[cfg(unix)]
@@ -53,7 +54,7 @@ fn split_external_manifests_require_and_preserve_the_service_role_marker() {
         .unwrap();
         fs::write(external_only.join("api.yml"), "{}\n").unwrap();
         fs::write(external_only.join(external_file), source).unwrap();
-        let error = read_test_service_profile(&external_only, Some("skiff-test"))
+        let error = read_test_service_profile(&external_only, PackageCompileWorkflow::Test)
             .expect_err("external files must not create a service role");
         assert!(matches!(
             error,
@@ -83,14 +84,14 @@ fn split_external_manifests_require_and_preserve_the_service_role_marker() {
     fs::write(split.join("websocket.yml"), "path: /socket\n").unwrap();
     fs::write(split.join("config.skiff-test.yml"), "timeout: 30000\n").unwrap();
 
-    let profile = read_test_service_profile(&split, Some("skiff-test"))
+    let profile = read_test_service_profile(&split, PackageCompileWorkflow::Test)
         .unwrap()
         .expect("service.yml kind: test should declare the test service role");
     assert_eq!(profile.service_id, "example.com/split-test");
     assert_eq!(profile.profile_name, "skiff-test");
 
     fs::write(split.join("http.yml"), "http: {}\n").unwrap();
-    let error = read_test_service_profile(&split, Some("skiff-test"))
+    let error = read_test_service_profile(&split, PackageCompileWorkflow::Test)
         .expect_err("role discovery must use the typed split root reader");
     assert!(matches!(
         error,

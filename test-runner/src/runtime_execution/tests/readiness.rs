@@ -237,6 +237,17 @@ fn activation_receipt_must_match_the_requested_tuple() {
     assert!(target_from_receipt(receipt(), ENVIRONMENT, 2, ASSEMBLY_A).is_err());
 }
 
+#[test]
+fn readiness_target_preserves_dev_target_environment() {
+    let mut receipt: Value = serde_json::from_str(&activation_receipt_body()).unwrap();
+    receipt["activeAssembly"]["environment"] = Value::String("dev".to_string());
+    let receipt = wire::decode_activation_receipt(&receipt.to_string()).unwrap();
+
+    let target = target_from_receipt(receipt, "dev", 2, ASSEMBLY_B).unwrap();
+
+    assert_eq!(target.environment, "dev");
+}
+
 fn target() -> ReadinessTarget {
     target_from_receipt(
         wire::decode_activation_receipt(&activation_receipt_body()).unwrap(),

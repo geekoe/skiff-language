@@ -3,6 +3,29 @@ use std::cell::Cell;
 use super::*;
 
 #[test]
+fn activation_request_preserves_dev_target_environment() {
+    let assembly = RuntimeAssemblyRef {
+        assembly_identity: skiff_artifact_model::AssemblyIdentity::new(test_support::ASSEMBLY_B),
+    };
+
+    let body = activation_request_body("dev", "activation-dev", 7, &assembly).unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "schemaVersion": "skiff-assembly-activation-request-v1",
+            "environment": "dev",
+            "activationId": "activation-dev",
+            "expectedGeneration": 7,
+            "assembly": {
+                "assemblyIdentity": test_support::ASSEMBLY_B,
+            },
+        })
+    );
+}
+
+#[test]
 fn package_test_control_body_is_the_exact_f385_http_request() {
     let entrypoint = package_test_entrypoint();
     let assembly = RuntimeAssemblyRef {
@@ -21,8 +44,8 @@ fn package_test_control_body_is_the_exact_f385_http_request() {
                 "assemblyIdentity": test_support::ASSEMBLY_B,
                 "assemblyGeneration": 7,
                 "gatewayEntryIdentity": concat!(
-                    "skiff-gateway-entry-v1:sha256:",
-                    "cfcfced94f984612809ce837f81e975016b09f206925389d95e925e087fc32d4"
+                    "skiff-gateway-entry-v2:sha256:",
+                    "b97af7d9ff0b9ddbfcb6ea8b19e6173722095c99f1566ccd6b1a6fd2ead3f305"
                 ),
                 "ingress": {
                     "protocol": "http",
@@ -157,8 +180,8 @@ fn package_test_entrypoint() -> CanonicalPackageTestEntrypoint {
         .unwrap(),
         gateway_entry_key: skiff_artifact_model::GatewayEntryKey::parse("run").unwrap(),
         gateway_entry_identity: skiff_artifact_model::GatewayEntryIdentity::parse(concat!(
-            "skiff-gateway-entry-v1:sha256:",
-            "cfcfced94f984612809ce837f81e975016b09f206925389d95e925e087fc32d4"
+            "skiff-gateway-entry-v2:sha256:",
+            "b97af7d9ff0b9ddbfcb6ea8b19e6173722095c99f1566ccd6b1a6fd2ead3f305"
         ))
         .unwrap(),
         mode: skiff_artifact_model::GatewayDispatchMode::Unary,

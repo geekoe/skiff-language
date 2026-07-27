@@ -29,6 +29,8 @@ use skiff_compiler_source::{
 use skiff_deployment::storage::{CanonicalArtifactStore, EcosystemStorageError};
 use thiserror::Error;
 
+const TEST_SERVICE_CONFIG_PROFILE: &str = "skiff-test";
+
 #[derive(Debug, Clone)]
 pub struct CanonicalPackageProject {
     pub package: PublishedPackageArtifact,
@@ -93,9 +95,7 @@ pub enum CanonicalPackageProjectError {
     },
     #[error("package manifest path {path} has no package root")]
     MissingPackageRoot { path: String },
-    #[error(
-        "test service {service_id} requires config.{profile}.yml for the selected test environment"
-    )]
+    #[error("test service {service_id} requires config.{profile}.yml")]
     MissingTestServiceProfile { service_id: String, profile: String },
 }
 
@@ -189,36 +189,51 @@ pub fn compile_package_project(
     root: &Path,
     artifact_root: &Path,
 ) -> Result<CanonicalPackageProject, CanonicalPackageProjectError> {
-    compile_package_project_for_workflow(platform_sources, root, artifact_root, None)
+    compile_package_project_for_workflow(
+        platform_sources,
+        root,
+        artifact_root,
+        PackageCompileWorkflow::Ordinary,
+    )
 }
 
 /// Compile the source root selected by a real `skiff test` invocation.
 ///
 /// An explicit `kind: test` service is compiler-authorized for top-level
-/// dependency access and must bind the profile selected by the runtime
-/// environment. Ordinary package/service roots retain the legacy overlay
-/// workflow until its dedicated removal task.
+/// dependency access and always binds the fixed `skiff-test` profile.
+/// Ordinary package/service roots retain the legacy overlay workflow until
+/// its dedicated removal task.
 pub fn compile_package_project_for_test(
     platform_sources: &CompilerPlatformSources,
     root: &Path,
     artifact_root: &Path,
-    environment: &str,
 ) -> Result<CanonicalPackageProject, CanonicalPackageProjectError> {
-    compile_package_project_for_workflow(platform_sources, root, artifact_root, Some(environment))
+    compile_package_project_for_workflow(
+        platform_sources,
+        root,
+        artifact_root,
+        PackageCompileWorkflow::Test,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageCompileWorkflow {
+    Ordinary,
+    Test,
 }
 
 fn compile_package_project_for_workflow(
     platform_sources: &CompilerPlatformSources,
     root: &Path,
     artifact_root: &Path,
-    test_environment: Option<&str>,
+    workflow: PackageCompileWorkflow,
 ) -> Result<CanonicalPackageProject, CanonicalPackageProjectError> {
     run_after_platform_context_guard(platform_sources, || {
         compile_package_project_after_platform_context_guard(
             platform_sources,
             root,
             artifact_root,
-            test_environment,
+            workflow,
         )
     })
 }
@@ -235,10 +250,10 @@ fn compile_package_project_after_platform_context_guard(
     platform_sources: &CompilerPlatformSources,
     root: &Path,
     artifact_root: &Path,
-    test_environment: Option<&str>,
+    workflow: PackageCompileWorkflow,
 ) -> Result<CanonicalPackageProject, CanonicalPackageProjectError> {
     let manifest = read_root_package_manifest(platform_sources, root)?;
-    let test_service_profile = read_test_service_profile(root, test_environment)?;
+    let test_service_profile = read_test_service_profile(root, workflow)?;
     let is_test_service = test_service_profile.is_some();
     let store = CanonicalArtifactStore::open(artifact_root)?;
     let manifest_dependencies = read_package_dependency_closure(&store, &manifest)?;
@@ -287,7 +302,7 @@ fn compile_package_project_after_platform_context_guard(
 
 fn read_test_service_profile(
     root: &Path,
-    test_environment: Option<&str>,
+    workflow: PackageCompileWorkflow,
 ) -> Result<Option<CanonicalTestServiceProfile>, CanonicalPackageProjectError> {
     if !root.join(SERVICE_CONFIG_FILE).is_file() {
         if has_external_service_control_file(root)? {
@@ -304,21 +319,22 @@ fn read_test_service_profile(
     if service.service.kind != ServiceAuthoringKind::Test {
         return Ok(None);
     }
-    let profile_name = test_environment.ok_or_else(|| {
-        CanonicalPackageProjectError::MissingTestServiceProfile {
+    if workflow != PackageCompileWorkflow::Test {
+        return Err(CanonicalPackageProjectError::MissingTestServiceProfile {
+            service_id: service.service.id,
+            profile: TEST_SERVICE_CONFIG_PROFILE.to_string(),
+        });
+    }
+    let profile = service
+        .config_profiles
+        .get(TEST_SERVICE_CONFIG_PROFILE)
+        .ok_or_else(|| CanonicalPackageProjectError::MissingTestServiceProfile {
             service_id: service.service.id.clone(),
-            profile: "<test-environment>".to_string(),
-        }
-    })?;
-    let profile = service.config_profiles.get(profile_name).ok_or_else(|| {
-        CanonicalPackageProjectError::MissingTestServiceProfile {
-            service_id: service.service.id.clone(),
-            profile: profile_name.to_string(),
-        }
-    })?;
+            profile: TEST_SERVICE_CONFIG_PROFILE.to_string(),
+        })?;
     Ok(Some(CanonicalTestServiceProfile {
         service_id: service.service.id,
-        profile_name: profile_name.to_string(),
+        profile_name: TEST_SERVICE_CONFIG_PROFILE.to_string(),
         authoring: profile.authoring.clone(),
     }))
 }

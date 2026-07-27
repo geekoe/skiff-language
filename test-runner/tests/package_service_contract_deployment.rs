@@ -133,6 +133,72 @@ fn platform_source_context_contract() {
     }
 }
 
+#[test]
+fn runtime_target_environment_cli_and_non_live_harness_rules_are_unchanged() {
+    let root = TestRoot::new("target-environment-cli");
+    let missing_input = root.child("missing-input");
+    let artifact_root = root.child("artifacts");
+    let runner = env!("CARGO_BIN_EXE_skiff-test-runner");
+    let platform_root = platform_source_root();
+    let common_args = [
+        missing_input.as_os_str(),
+        std::ffi::OsStr::new("--artifact-root"),
+        artifact_root.as_os_str(),
+        std::ffi::OsStr::new("--platform-source-root"),
+        platform_root.as_os_str(),
+    ];
+    let live_target_args = [
+        "--live",
+        "--activation-url",
+        "http://127.0.0.1:9/__skiff/activate-assembly",
+        "--ingress-url",
+        "http://127.0.0.1:9",
+        "--expected-generation",
+        "0",
+    ];
+
+    let missing_live_environment = Command::new(runner)
+        .args(common_args)
+        .args(live_target_args)
+        .output()
+        .unwrap();
+    assert!(!missing_live_environment.status.success());
+    assert!(String::from_utf8(missing_live_environment.stderr)
+        .unwrap()
+        .contains("--live requires --activation-url, --ingress-url, --environment"));
+
+    let explicit_live_target = Command::new(runner)
+        .args(common_args)
+        .args(live_target_args)
+        .args(["--environment", "dev"])
+        .output()
+        .unwrap();
+    assert!(!explicit_live_target.status.success());
+    assert!(String::from_utf8(explicit_live_target.stderr)
+        .unwrap()
+        .contains("failed to inspect input"));
+
+    let forbidden_non_live_cli_target = Command::new(runner)
+        .args(common_args)
+        .args(["--environment", "dev"])
+        .output()
+        .unwrap();
+    assert!(!forbidden_non_live_cli_target.status.success());
+    assert!(String::from_utf8(forbidden_non_live_cli_target.stderr)
+        .unwrap()
+        .contains("non-live targets are supplied only by the isolated runtime harness"));
+
+    let harness_target = Command::new(runner)
+        .args(common_args)
+        .env("SKIFF_TEST_ENVIRONMENT", "dev")
+        .output()
+        .unwrap();
+    assert!(!harness_target.status.success());
+    assert!(String::from_utf8(harness_target.stderr)
+        .unwrap()
+        .contains("failed to inspect input"));
+}
+
 fn assert_platform_context_rejections(runner: &str, fixture: &str, platform_root: &Path) {
     let cases = [
         (vec![], "missing --platform-source-root"),
@@ -454,13 +520,8 @@ fn std_test_service_overlay_uses_its_exact_compiler_owned_std_closure() {
     let platform_sources = platform_sources();
     let std = seed_canonical_std(&platform_sources, &artifacts).unwrap();
     let test_service = platform_source_root().join("test-services/std");
-    let project = compile_package_project_for_test(
-        &platform_sources,
-        &test_service,
-        &artifacts,
-        "skiff-test",
-    )
-    .unwrap();
+    let project =
+        compile_package_project_for_test(&platform_sources, &test_service, &artifacts).unwrap();
     assert!(
         project.dependency_packages.is_empty(),
         "the empty production test service must not gain a synthetic std dependency"
@@ -544,13 +605,8 @@ fn base_assembly_supplies_provider_selectors_and_real_owner_bindings() {
     } = create_base_assembly_scenario();
 
     let source_before_publish = read_tree(&artifacts);
-    let project = compile_package_project_for_test(
-        &platform_sources(),
-        &test_service,
-        &artifacts,
-        "skiff-test",
-    )
-    .unwrap();
+    let project =
+        compile_package_project_for_test(&platform_sources(), &test_service, &artifacts).unwrap();
     let subject = project
         .dependency_packages
         .iter()
@@ -889,7 +945,7 @@ test "duplicate service target through aliases" effects {
 }
 
 #[test]
-fn test_service_environment_profile_projects_over_the_exact_package_closure() {
+fn test_service_fixed_profile_projects_over_the_exact_package_closure() {
     let root = TestRoot::new("test-service-profile");
     let artifacts = root.child("artifacts");
     let dependency = root.child("dependency");
@@ -963,23 +1019,35 @@ lifecycle:
     )
     .unwrap();
     fs::write(
+        service.join("config.dev.yml"),
+        r#"config:
+  dependency.token: dev-dependency-value
+  test.token: dev-test-value
+secrets:
+  dependency.secret: dev/dependency-secret
+state:
+  dependency-db:
+    kind: database
+    namespace: dev-authored-name
+timeout: 5000
+quota:
+  cpuMillis: 50
+  memoryBytes: 67108864
+principal: service:example.com/dev-target
+lifecycle:
+  maxConcurrency: 1
+  idleTimeoutMs: 1000
+"#,
+    )
+    .unwrap();
+    fs::write(
         service.join("main.test.skiff"),
         "test \"profile is projected\" { assert root.main.ownConfig() == \"test-value\" }\n",
     )
     .unwrap();
 
-    let missing_profile =
-        compile_package_project_for_test(&platform_sources(), &service, &artifacts, "other")
-            .unwrap_err()
-            .to_string();
-    assert!(
-        missing_profile.contains("requires config.other.yml"),
-        "{missing_profile}"
-    );
-
-    let project =
-        compile_package_project_for_test(&platform_sources(), &service, &artifacts, "skiff-test")
-            .expect("kind:test must authorize topLevel and bind its environment profile");
+    let project = compile_package_project_for_test(&platform_sources(), &service, &artifacts)
+        .expect("kind:test must authorize topLevel and bind its fixed profile");
     let profile = project
         .test_service_profile
         .as_ref()
@@ -1093,6 +1161,34 @@ lifecycle:
     assert!(
         error.contains("missing state binding dependency-db"),
         "{error}"
+    );
+}
+
+#[test]
+fn test_service_only_target_environment_profile_fails_without_fixed_profile() {
+    let root = TestRoot::new("test-service-missing-fixed-profile");
+    let artifacts = root.child("artifacts");
+    let service = root.child("tests");
+    create_store(&artifacts);
+    write_package(
+        &service,
+        "id: example.com/missing-fixed-profile-tests\nversion: 1.0.0\n",
+        Some("{}\n"),
+        None,
+    );
+    fs::write(
+        service.join("service.yml"),
+        "id: example.com/missing-fixed-profile-tests\nkind: test\n",
+    )
+    .unwrap();
+    fs::write(service.join("config.dev.yml"), "timeout: 5000\n").unwrap();
+
+    let error = compile_package_project_for_test(&platform_sources(), &service, &artifacts)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        error,
+        "test service example.com/missing-fixed-profile-tests requires config.skiff-test.yml"
     );
 }
 
@@ -1583,7 +1679,7 @@ fn non_live_runtime_root_cannot_be_nested_under_the_external_store() {
             base_assembly: None,
             activation_url: Some("http://127.0.0.1:9/__skiff/activate-assembly".to_string()),
             ingress_url: Some("http://127.0.0.1:9".to_string()),
-            environment: "nested-runtime-root".to_string(),
+            target_environment: "nested-runtime-root".to_string(),
             expected_generation: 0,
         },
     )
@@ -1793,13 +1889,8 @@ fn fresh_helper_mutation_then_detached_service_call_projects_and_assembles() {
         "fresh helper mutation plus detached service call must project available, got {consumer_projection:?}"
     );
 
-    let test_project = compile_package_project_for_test(
-        &platform_sources(),
-        &test_service,
-        &artifacts,
-        "skiff-test",
-    )
-    .unwrap();
+    let test_project =
+        compile_package_project_for_test(&platform_sources(), &test_service, &artifacts).unwrap();
     let cases = discover_package_test_cases(&test_service, &test_service, false).unwrap();
     assert_eq!(cases.len(), 4);
     let overlay = compile_package_test_overlay(
@@ -1956,8 +2047,7 @@ fn i02_submit_probe_is_private_http_gateway_not_service_operation() {
         .contains("__skiffHttpProbe"));
     assert_current_websocket_test_service(&package, "test.skiff/package-service-i02-spawn-submit");
     let project =
-        compile_package_project_for_test(&platform_sources(), &package, &artifacts, "skiff-test")
-            .unwrap();
+        compile_package_project_for_test(&platform_sources(), &package, &artifacts).unwrap();
     let production =
         skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
 
@@ -2134,7 +2224,6 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
             &platform_sources(),
             &package,
             &artifacts,
-            "skiff-test",
         )
         .unwrap();
         let production =

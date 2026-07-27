@@ -53,7 +53,8 @@ pub struct SkiffTestOptions {
     pub base_assembly: Option<String>,
     pub activation_url: Option<String>,
     pub ingress_url: Option<String>,
-    pub environment: String,
+    /// Router/Runtime activation target; it never selects a test service config profile.
+    pub target_environment: String,
     pub expected_generation: u64,
 }
 
@@ -147,7 +148,6 @@ pub fn run_skiff_tests_with_options(
         &options.platform_sources,
         &package_root,
         artifact_root,
-        &options.environment,
     )?;
     let cases =
         canonical_fixture::discover_package_test_cases(input, &package_root, metadata.is_file())?;

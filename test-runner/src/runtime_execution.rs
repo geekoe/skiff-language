@@ -72,14 +72,12 @@ pub fn run_package_cases(
             .next()
             .unwrap_or("assembly")
     );
-    let activation_body = serde_json::to_vec(&serde_json::json!({
-        "schemaVersion": "skiff-assembly-activation-request-v1",
-        "environment": options.environment.as_str(),
-        "activationId": activation_id,
-        "expectedGeneration": options.expected_generation,
-        "assembly": assembly_ref,
-    }))
-    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    let activation_body = activation_request_body(
+        &options.target_environment,
+        &activation_id,
+        options.expected_generation,
+        &assembly_ref,
+    )?;
     let activation = http::request_url(
         activation_url,
         "POST",
@@ -99,7 +97,7 @@ pub fn run_package_cases(
     let active_generation = receipt.generation;
     let target = readiness::target_from_receipt(
         receipt,
-        &options.environment,
+        &options.target_environment,
         candidate_generation,
         &requested_assembly_identity,
     )?;
@@ -127,6 +125,22 @@ pub fn run_package_cases(
         &active_assembly,
         active_generation,
     ))
+}
+
+fn activation_request_body(
+    target_environment: &str,
+    activation_id: &str,
+    expected_generation: u64,
+    assembly: &RuntimeAssemblyRef,
+) -> Result<Vec<u8>, CanonicalFixtureError> {
+    serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": "skiff-assembly-activation-request-v1",
+        "environment": target_environment,
+        "activationId": activation_id,
+        "expectedGeneration": expected_generation,
+        "assembly": assembly,
+    }))
+    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))
 }
 
 fn package_test_run_scope() -> Result<String, CanonicalFixtureError> {
