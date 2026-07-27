@@ -431,3 +431,172 @@ fn compiler_test_effect_walkers_keep_probe_and_expectation_order() {
         ]
     );
 }
+
+#[test]
+fn walkers_and_contains_helpers_traverse_timeout_concurrent_serial_bodies_and_value_tails() {
+    #[derive(Default)]
+    struct Names(Vec<String>);
+
+    impl AstVisitor for Names {
+        fn visit_expr(&mut self, expr: &Expr) {
+            if let Expr::Identifier(name) = expr {
+                self.0.push(name.clone());
+            }
+            walk_expr(self, expr);
+        }
+    }
+
+    let source = crate::parser::parse_source(
+        r#"
+function run() -> void {
+  timeout(1ms) {
+    timeoutBody()
+  }
+  concurrent {
+    concurrentBody()
+    serial {
+      serialBody()
+    }
+  }
+  const plain = value {
+    plainBody()
+    plainTail
+  }
+  const joined = concurrent value {
+    concurrentValueBody()
+    concurrentValueTail
+  }
+  const timed = timeout(2s) value {
+    timedBody()
+    timedTail
+  }
+  const timedJoined = timeout(3m) concurrent value {
+    timedConcurrentBody()
+    timedConcurrentTail
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let mut names = Names::default();
+    names.visit_block(&source.functions[0].body);
+    assert_eq!(
+        names.0,
+        [
+            "timeoutBody",
+            "concurrentBody",
+            "serialBody",
+            "plainBody",
+            "plainTail",
+            "concurrentValueBody",
+            "concurrentValueTail",
+            "timedBody",
+            "timedTail",
+            "timedConcurrentBody",
+            "timedConcurrentTail",
+        ]
+    );
+
+    for expected in [
+        "timeoutBody",
+        "serialBody",
+        "plainBody",
+        "plainTail",
+        "concurrentValueBody",
+        "concurrentValueTail",
+        "timedBody",
+        "timedTail",
+        "timedConcurrentBody",
+        "timedConcurrentTail",
+    ] {
+        assert!(
+            block_contains_expr(&source.functions[0].body, &mut |expr| {
+                matches!(expr, Expr::Identifier(name) if name == expected)
+            }),
+            "contains helper missed {expected}"
+        );
+    }
+
+    struct Rename;
+
+    impl AstVisitorMut for Rename {
+        fn visit_expr(&mut self, expr: &mut Expr) {
+            if let Expr::Identifier(name) = expr {
+                name.push_str("_seen");
+            } else {
+                walk_expr_mut(self, expr);
+            }
+        }
+
+        fn visit_duration_literal(&mut self, duration: &mut crate::ast::DurationLiteral) {
+            duration.digits.insert(0, '0');
+        }
+    }
+
+    let mut renamed = source.functions[0].body.clone();
+    Rename.visit_block(&mut renamed);
+    let mut renamed_names = Names::default();
+    renamed_names.visit_block(&renamed);
+    assert!(
+        renamed_names.0.iter().all(|name| name.ends_with("_seen")),
+        "mutable walker missed a nested identifier: {:?}",
+        renamed_names.0
+    );
+
+    #[derive(Default)]
+    struct Durations(Vec<String>);
+
+    impl AstVisitor for Durations {
+        fn visit_duration_literal(&mut self, duration: &crate::ast::DurationLiteral) {
+            self.0.push(duration.digits.clone());
+        }
+    }
+
+    let mut durations = Durations::default();
+    durations.visit_block(&renamed);
+    assert_eq!(durations.0, ["01", "02", "03"]);
+}
+
+#[test]
+fn dotted_root_collection_traverses_new_statement_bodies_value_bodies_and_tails() {
+    let source = crate::parser::parse_source(
+        r#"
+function run() -> void {
+  timeout(1s) {
+    root.timeout_body.run()
+  }
+  concurrent {
+    root.concurrent_body.run()
+    serial {
+      root.serial_body.run()
+    }
+  }
+  const plain = value {
+    root.value_body.run()
+    root.value_tail.finish()
+  }
+  const joined = timeout(2s) concurrent value {
+    root.concurrent_value_body.run()
+    root.concurrent_value_tail.finish()
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        source_referenced_dotted_root_expression_imports(&source, "root"),
+        [
+            vec!["root".to_string(), "concurrent_body".to_string()],
+            vec!["root".to_string(), "concurrent_value_body".to_string()],
+            vec!["root".to_string(), "concurrent_value_tail".to_string()],
+            vec!["root".to_string(), "serial_body".to_string()],
+            vec!["root".to_string(), "timeout_body".to_string()],
+            vec!["root".to_string(), "value_body".to_string()],
+            vec!["root".to_string(), "value_tail".to_string()],
+        ]
+        .into_iter()
+        .collect()
+    );
+}

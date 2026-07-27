@@ -381,6 +381,103 @@ pub struct Block {
     pub statements: Vec<Stmt>,
 }
 
+pub const MAX_SAFE_DURATION_MILLISECONDS: u64 = 9_007_199_254_740_991;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DurationUnit {
+    #[serde(rename = "ms")]
+    Milliseconds,
+    #[serde(rename = "s")]
+    Seconds,
+    #[serde(rename = "m")]
+    Minutes,
+    #[serde(rename = "h")]
+    Hours,
+    #[serde(rename = "d")]
+    Days,
+}
+
+impl DurationUnit {
+    pub const fn suffix(self) -> &'static str {
+        match self {
+            Self::Milliseconds => "ms",
+            Self::Seconds => "s",
+            Self::Minutes => "m",
+            Self::Hours => "h",
+            Self::Days => "d",
+        }
+    }
+
+    pub const fn milliseconds_multiplier(self) -> u64 {
+        match self {
+            Self::Milliseconds => 1,
+            Self::Seconds => 1_000,
+            Self::Minutes => 60_000,
+            Self::Hours => 3_600_000,
+            Self::Days => 86_400_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DurationLiteral {
+    pub digits: String,
+    pub unit: DurationUnit,
+    pub span: SourceSpan,
+}
+
+impl DurationLiteral {
+    pub fn checked_milliseconds(&self) -> Result<u64, DurationLiteralError> {
+        if self.digits.is_empty() || !self.digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(DurationLiteralError::InvalidDigits);
+        }
+        let amount = self
+            .digits
+            .parse::<u64>()
+            .map_err(|_| DurationLiteralError::UnsafeMilliseconds)?;
+        if amount == 0 {
+            return Err(DurationLiteralError::NotPositive);
+        }
+        let milliseconds = amount
+            .checked_mul(self.unit.milliseconds_multiplier())
+            .ok_or(DurationLiteralError::UnsafeMilliseconds)?;
+        if milliseconds > MAX_SAFE_DURATION_MILLISECONDS {
+            return Err(DurationLiteralError::UnsafeMilliseconds);
+        }
+        Ok(milliseconds)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurationLiteralError {
+    InvalidDigits,
+    NotPositive,
+    UnsafeMilliseconds,
+}
+
+impl std::fmt::Display for DurationLiteralError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidDigits => {
+                formatter.write_str("duration literal has invalid positive integer digits")
+            }
+            Self::NotPositive => formatter.write_str("duration literal must be greater than zero"),
+            Self::UnsafeMilliseconds => {
+                formatter.write_str("duration literal must convert to safe integer milliseconds")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DurationLiteralError {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValueBlock {
+    pub body: Block,
+    pub tail: Box<Expr>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ForBinding {
@@ -413,6 +510,16 @@ pub enum Stmt {
     Assign {
         target: Expr,
         value: Expr,
+    },
+    Timeout {
+        duration: DurationLiteral,
+        body: Block,
+    },
+    Concurrent {
+        body: Block,
+    },
+    Serial {
+        body: Block,
     },
     If {
         condition: Expr,
@@ -828,6 +935,12 @@ pub enum Expr {
     Patch {
         target: TypeRef,
         operations: Vec<PatchOperation>,
+    },
+    ValueBlock(ValueBlock),
+    ConcurrentValue(ValueBlock),
+    Timeout {
+        duration: DurationLiteral,
+        value: Box<Expr>,
     },
     Throw {
         value: Box<Expr>,

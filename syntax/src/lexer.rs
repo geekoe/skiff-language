@@ -1,9 +1,13 @@
-use crate::error::{CompileError, Result, SourceLocation, SourceSpan};
+use crate::{
+    ast::{DurationLiteral, DurationUnit},
+    error::{CompileError, Result, SourceLocation, SourceSpan},
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     Ident(String),
     Number(f64),
+    Duration(DurationLiteral),
     String(String),
     Symbol(String),
     Eof,
@@ -110,15 +114,53 @@ impl Lexer<'_> {
 
     fn number(&mut self) -> Result<Token> {
         let start = self.location();
-        let mut text = String::new();
+        let mut digits = String::new();
         while matches!(self.peek().map(|(_, ch)| ch), Some(ch) if ch.is_ascii_digit()) {
-            text.push(self.bump().unwrap().1);
+            digits.push(self.bump().unwrap().1);
         }
+        let mut text = digits.clone();
+        let mut fractional = false;
         if self.peek().map(|(_, ch)| ch) == Some('.') {
+            fractional = true;
             text.push(self.bump().unwrap().1);
             while matches!(self.peek().map(|(_, ch)| ch), Some(ch) if ch.is_ascii_digit()) {
                 text.push(self.bump().unwrap().1);
             }
+        }
+        if matches!(self.peek().map(|(_, ch)| ch), Some(ch) if is_ident_start(ch)) {
+            let mut suffix = String::new();
+            while matches!(self.peek().map(|(_, ch)| ch), Some(ch) if is_ident_continue(ch)) {
+                suffix.push(self.bump().unwrap().1);
+            }
+            if fractional {
+                return Err(CompileError::syntax(
+                    "duration literal must use positive integer digits followed directly by a unit",
+                    start,
+                ));
+            }
+            let unit = match suffix.as_str() {
+                "ms" => DurationUnit::Milliseconds,
+                "s" => DurationUnit::Seconds,
+                "m" => DurationUnit::Minutes,
+                "h" => DurationUnit::Hours,
+                "d" => DurationUnit::Days,
+                _ => {
+                    return Err(CompileError::syntax(
+                        format!("invalid duration unit {suffix:?}; expected ms, s, m, h, or d"),
+                        start,
+                    ));
+                }
+            };
+            let end = self.location();
+            let span = SourceSpan { start, end };
+            let duration = DurationLiteral { digits, unit, span };
+            duration
+                .checked_milliseconds()
+                .map_err(|error| CompileError::syntax(error.to_string(), start))?;
+            return Ok(Token {
+                kind: TokenKind::Duration(duration),
+                span,
+            });
         }
         let value = text
             .parse::<f64>()

@@ -7,11 +7,11 @@ use crate::{
         DbIndexField, DbIndexWhereSourceSpans, DbLeaseClaim, DbLeaseDecl, DbLeaseRead,
         DbObjectFieldValue, DbObjectKey, DbOperation, DbOperationKind, DbOrderEntry, DbProjection,
         DbQuery, DbQueryBlock, DbRetention, DbRetentionUnit, DbSelector, DbStorageCodec,
-        DbStorageDecl, DbTransaction, DbWhereClause, DependencySourceAddress,
+        DbStorageDecl, DbTransaction, DbWhereClause, DependencySourceAddress, DurationLiteral,
         ExecutableSourceSpans, Expr, ExprSourceSpans, FieldDecl, FieldPath, ForBinding,
         FunctionDecl, ImplDecl, ImportDecl, InterfaceDecl, InterfaceOperation, Literal, MatchArm,
         PackageId, Param, Pattern, PatternField, RecordFieldSourceSpans, SourceFile,
-        SourceSpanTable, Stmt, StmtSourceSpans, TypeDecl, TypeRef, UnaryOp,
+        SourceSpanTable, Stmt, StmtSourceSpans, TypeDecl, TypeRef, UnaryOp, ValueBlock,
     },
     ast_utils::{expr_path, without_generic},
     error::{CompileError, Result, SourceLocation, SourceSpan},
@@ -139,6 +139,17 @@ fn parsed_leaf_expr(expr: Expr, span: SourceSpan) -> ParsedExpr {
     ParsedExpr {
         expr,
         spans: expr_source_spans(span, Vec::new()),
+    }
+}
+
+fn parsed_expression_statement(expression: ParsedExpr) -> ParsedStmt {
+    ParsedStmt {
+        stmt: Stmt::Expr(expression.expr),
+        spans: StmtSourceSpans {
+            span: expression.spans.span,
+            expressions: vec![expression.spans],
+            blocks: Vec::new(),
+        },
     }
 }
 
@@ -1894,6 +1905,15 @@ impl Parser {
         if self.match_ident("let") {
             return self.parse_let(true, self.previous().span.start);
         }
+        if self.match_ident("timeout") {
+            return self.parse_timeout_statement(in_test, self.previous().span.start);
+        }
+        if self.match_ident("concurrent") {
+            return self.parse_concurrent_statement(in_test, self.previous().span.start);
+        }
+        if self.match_ident("serial") {
+            return self.parse_serial_statement(in_test, self.previous().span.start);
+        }
         if self.match_ident("if") {
             return self.parse_if(in_test, self.previous().span.start);
         }
@@ -2052,6 +2072,94 @@ impl Parser {
                 span: expr.spans.span,
                 expressions: vec![expr.spans],
                 blocks: Vec::new(),
+            },
+        })
+    }
+
+    fn parse_timeout_statement(
+        &mut self,
+        in_test: bool,
+        start: SourceLocation,
+    ) -> Result<ParsedStmt> {
+        let duration = self.parse_timeout_duration()?;
+        if self.check_ident("value") || self.check_ident("concurrent") {
+            return self
+                .parse_timeout_value_after_duration(start, duration)
+                .map(parsed_expression_statement);
+        }
+        if !self.check_symbol("{") {
+            return Err(CompileError::syntax(
+                "expected timeout body",
+                self.peek().span.start,
+            ));
+        }
+        let body = self.parse_block(in_test)?;
+        let end = body.spans.span.end;
+        Ok(ParsedStmt {
+            stmt: Stmt::Timeout {
+                duration,
+                body: body.block,
+            },
+            spans: StmtSourceSpans {
+                span: SourceSpan { start, end },
+                expressions: Vec::new(),
+                blocks: vec![body.spans],
+            },
+        })
+    }
+
+    fn parse_concurrent_statement(
+        &mut self,
+        in_test: bool,
+        start: SourceLocation,
+    ) -> Result<ParsedStmt> {
+        if self.match_ident("value") {
+            return self
+                .parse_value_block_expression(start, true)
+                .map(parsed_expression_statement);
+        }
+        if !self.check_symbol("{") {
+            let message = if self.check_ident("timeout")
+                || self.check_ident("serial")
+                || self.check_ident("concurrent")
+            {
+                "noncanonical modifier order; use `timeout(...) concurrent value { ... }`"
+            } else {
+                "expected concurrent body"
+            };
+            return Err(CompileError::syntax(message, self.peek().span.start));
+        }
+        let body = self.parse_block(in_test)?;
+        let end = body.spans.span.end;
+        Ok(ParsedStmt {
+            stmt: Stmt::Concurrent { body: body.block },
+            spans: StmtSourceSpans {
+                span: SourceSpan { start, end },
+                expressions: Vec::new(),
+                blocks: vec![body.spans],
+            },
+        })
+    }
+
+    fn parse_serial_statement(
+        &mut self,
+        in_test: bool,
+        start: SourceLocation,
+    ) -> Result<ParsedStmt> {
+        if !self.check_symbol("{") {
+            return Err(CompileError::syntax(
+                "expected serial body",
+                self.peek().span.start,
+            ));
+        }
+        let body = self.parse_block(in_test)?;
+        let end = body.spans.span.end;
+        Ok(ParsedStmt {
+            stmt: Stmt::Serial { body: body.block },
+            spans: StmtSourceSpans {
+                span: SourceSpan { start, end },
+                expressions: Vec::new(),
+                blocks: vec![body.spans],
             },
         })
     }
@@ -2537,6 +2645,10 @@ impl Parser {
                 Expr::Literal(Literal::Number(value)),
                 token.span,
             )),
+            TokenKind::Duration(_) => Err(CompileError::syntax(
+                "duration literal is only allowed as a timeout duration",
+                token.span.start,
+            )),
             TokenKind::String(value) => Ok(parsed_leaf_expr(
                 Expr::Literal(Literal::String(value)),
                 token.span,
@@ -2551,6 +2663,75 @@ impl Parser {
             )),
             TokenKind::Ident(value) if value == "null" => {
                 Ok(parsed_leaf_expr(Expr::Literal(Literal::Null), token.span))
+            }
+            TokenKind::Ident(value) if value == "value" && self.check_symbol("{") => {
+                self.parse_value_block_expression(start, false)
+            }
+            TokenKind::Ident(value)
+                if value == "value"
+                    && (self.check_ident("timeout")
+                        || self.check_ident("concurrent")
+                        || self.check_ident("serial")
+                        || self.check_ident("value")) =>
+            {
+                Err(CompileError::syntax(
+                    "noncanonical modifier order; use `value`, `concurrent value`, `timeout(...) value`, or `timeout(...) concurrent value`",
+                    self.peek().span.start,
+                ))
+            }
+            TokenKind::Ident(value) if value == "concurrent" && self.check_ident("value") => {
+                self.advance();
+                self.parse_value_block_expression(start, true)
+            }
+            TokenKind::Ident(value)
+                if value == "concurrent"
+                    && (self.check_ident("timeout")
+                        || self.check_ident("serial")
+                        || self.check_ident("concurrent")) =>
+            {
+                Err(CompileError::syntax(
+                    "noncanonical modifier order; expression form is `concurrent value { ... }`",
+                    self.peek().span.start,
+                ))
+            }
+            TokenKind::Ident(value) if value == "timeout" && self.check_symbol("(") => {
+                self.parse_timeout_expression(start)
+            }
+            TokenKind::Ident(value)
+                if value == "timeout"
+                    && (self.check_ident("value")
+                        || self.check_ident("concurrent")
+                        || self.check_ident("serial")
+                        || self.check_ident("timeout")) =>
+            {
+                Err(CompileError::syntax(
+                    "noncanonical modifier order; timeout must be followed by `(duration)`",
+                    self.peek().span.start,
+                ))
+            }
+            TokenKind::Ident(value) if value == "serial" && self.check_symbol("{") => {
+                Err(CompileError::syntax(
+                    "serial is a statement and cannot be used as an expression",
+                    token.span.start,
+                ))
+            }
+            TokenKind::Ident(value)
+                if value == "serial"
+                    && (self.check_ident("value")
+                        || self.check_ident("concurrent")
+                        || self.check_ident("timeout")
+                        || self.check_ident("serial")) =>
+            {
+                Err(CompileError::syntax(
+                    "noncanonical modifier order; serial is only `serial { ... }`",
+                    self.peek().span.start,
+                ))
+            }
+            TokenKind::Ident(value) if value == "concurrent" && self.check_symbol("{") => {
+                Err(CompileError::syntax(
+                    "concurrent is a statement and cannot be used as an expression",
+                    token.span.start,
+                ))
             }
             TokenKind::Ident(value) if value == "throw" => {
                 let value = self.parse_expression()?;
@@ -2641,6 +2822,171 @@ impl Parser {
                 token.span.start,
             )),
         }
+    }
+
+    fn parse_timeout_duration(&mut self) -> Result<DurationLiteral> {
+        self.expect_symbol("(")?;
+        let token = self.advance().clone();
+        let TokenKind::Duration(duration) = token.kind else {
+            return Err(CompileError::syntax(
+                "expected a duration literal in timeout(...)",
+                token.span.start,
+            ));
+        };
+        duration
+            .checked_milliseconds()
+            .map_err(|error| CompileError::syntax(error.to_string(), duration.span.start))?;
+        self.expect_symbol(")")?;
+        Ok(duration)
+    }
+
+    fn parse_timeout_expression(&mut self, start: SourceLocation) -> Result<ParsedExpr> {
+        let duration = self.parse_timeout_duration()?;
+        self.parse_timeout_value_after_duration(start, duration)
+    }
+
+    fn parse_timeout_value_after_duration(
+        &mut self,
+        start: SourceLocation,
+        duration: DurationLiteral,
+    ) -> Result<ParsedExpr> {
+        let value = if self.match_ident("value") {
+            let value_start = self.previous().span.start;
+            self.parse_value_block_expression(value_start, false)?
+        } else if self.match_ident("concurrent") {
+            let concurrent_start = self.previous().span.start;
+            if !self.match_ident("value") {
+                return Err(CompileError::syntax(
+                    "noncanonical modifier order; use `timeout(...) concurrent value { ... }`",
+                    self.peek().span.start,
+                ));
+            }
+            self.parse_value_block_expression(concurrent_start, true)?
+        } else {
+            return Err(CompileError::syntax(
+                "noncanonical modifier order; timeout value form must be `timeout(...) value { ... }` or `timeout(...) concurrent value { ... }`",
+                self.peek().span.start,
+            ));
+        };
+        let end = value.spans.span.end;
+        Ok(ParsedExpr {
+            expr: Expr::Timeout {
+                duration,
+                value: Box::new(value.expr),
+            },
+            spans: expr_source_spans(SourceSpan { start, end }, vec![value.spans]),
+        })
+    }
+
+    fn parse_value_block_expression(
+        &mut self,
+        start: SourceLocation,
+        concurrent: bool,
+    ) -> Result<ParsedExpr> {
+        if self.check_ident("timeout")
+            || self.check_ident("concurrent")
+            || self.check_ident("serial")
+            || self.check_ident("value")
+        {
+            return Err(CompileError::syntax(
+                "noncanonical modifier order; use `value`, `concurrent value`, `timeout(...) value`, or `timeout(...) concurrent value`",
+                self.peek().span.start,
+            ));
+        }
+        self.expect_symbol("{")?;
+        let block_start = self.previous().span.start;
+        let mut statements = Vec::new();
+        let mut statement_spans = Vec::new();
+        let mut statement_terminated = Vec::new();
+        while !self.check_symbol("}") && !self.is_at_end() {
+            if self.match_symbol(";") {
+                continue;
+            }
+            if self.check_symbol("{") {
+                return Err(CompileError::syntax(
+                    "value block object literal tail must be parenthesized",
+                    self.peek().span.start,
+                ));
+            }
+            let mut statement = self.parse_statement(false)?;
+            let terminated = self.match_symbol(";");
+            if terminated {
+                statement.spans.span.end = self.previous().span.end;
+            }
+            statements.push(statement.stmt);
+            statement_spans.push(statement.spans);
+            statement_terminated.push(terminated);
+        }
+        self.expect_symbol("}")?;
+        let block_end = self.previous().span.end;
+        let missing_tail = || {
+            CompileError::syntax(
+                "value block requires a tail expression",
+                self.previous().span.start,
+            )
+        };
+        let Some(last_statement) = statements.pop() else {
+            return Err(missing_tail());
+        };
+        let Some(last_spans) = statement_spans.pop() else {
+            unreachable!("value block statement and span counts must match");
+        };
+        let Some(last_terminated) = statement_terminated.pop() else {
+            unreachable!("value block statement and terminator counts must match");
+        };
+        if last_terminated {
+            return Err(missing_tail());
+        }
+        let (tail, tail_spans) = match last_statement {
+            Stmt::Expr(tail) => {
+                let mut tail_expression_spans = last_spans.expressions.into_iter();
+                let tail_spans = tail_expression_spans
+                    .next()
+                    .expect("expression statement must carry expression spans");
+                debug_assert!(tail_expression_spans.next().is_none());
+                (tail, tail_spans)
+            }
+            Stmt::Throw { value } => (
+                Expr::Throw {
+                    value: Box::new(value),
+                },
+                expr_source_spans(last_spans.span, last_spans.expressions),
+            ),
+            Stmt::Rethrow { exception } => (
+                Expr::Rethrow {
+                    exception: Box::new(exception),
+                },
+                expr_source_spans(last_spans.span, last_spans.expressions),
+            ),
+            _ => return Err(missing_tail()),
+        };
+        let body_spans = BlockSourceSpans {
+            span: SourceSpan {
+                start: block_start,
+                end: block_end,
+            },
+            statements: statement_spans,
+        };
+        let value = ValueBlock {
+            body: Block { statements },
+            tail: Box::new(tail),
+        };
+        Ok(ParsedExpr {
+            expr: if concurrent {
+                Expr::ConcurrentValue(value)
+            } else {
+                Expr::ValueBlock(value)
+            },
+            spans: ExprSourceSpans {
+                span: SourceSpan {
+                    start,
+                    end: block_end,
+                },
+                children: vec![tail_spans],
+                blocks: vec![body_spans],
+                record_fields: Vec::new(),
+            },
+        })
     }
 
     fn check_dependency_source_address_suffix(&self, expr: &ParsedExpr) -> bool {

@@ -1,7 +1,8 @@
 use crate::ast::{
-    DbIndexDirection, DbRetentionUnit, DbStorageCodec, ForBinding, Stmt, TestEffectOutcome,
-    TestEffectStepOutcome,
+    DbIndexDirection, DbRetentionUnit, DbStorageCodec, DurationUnit, Expr, ForBinding, Stmt,
+    TestEffectOutcome, TestEffectStepOutcome,
 };
+use crate::lexer::{lex, TokenKind};
 
 use super::{
     parse_source, parse_source_metadata, parse_source_with_bodies_tolerant, BuiltinPackage,
@@ -2122,4 +2123,434 @@ fn export_modifier_is_rejected_in_metadata_mode() {
     assert!(error
         .to_string()
         .contains("the export modifier has been removed; declare public API in api.yml"));
+}
+
+#[test]
+fn duration_literals_are_single_tokens_with_exact_digits_units_and_spans() {
+    let source = "001ms 2s 3m 4h 5d";
+    let tokens = lex(source).unwrap();
+    let expected = [
+        ("001", DurationUnit::Milliseconds, 1, 0, 5),
+        ("2", DurationUnit::Seconds, 2_000, 6, 8),
+        ("3", DurationUnit::Minutes, 180_000, 9, 11),
+        ("4", DurationUnit::Hours, 14_400_000, 12, 14),
+        ("5", DurationUnit::Days, 432_000_000, 15, 17),
+    ];
+
+    assert_eq!(tokens.len(), expected.len() + 1);
+    for (token, (digits, unit, milliseconds, start, end)) in
+        tokens.iter().zip(expected).take(expected.len())
+    {
+        let TokenKind::Duration(duration) = &token.kind else {
+            panic!("expected duration token, got {token:?}");
+        };
+        assert_eq!(duration.digits, digits);
+        assert_eq!(duration.unit, unit);
+        assert_eq!(duration.checked_milliseconds().unwrap(), milliseconds);
+        assert_eq!(duration.span, token.span);
+        assert_eq!(duration.span.start.offset, start);
+        assert_eq!(duration.span.end.offset, end);
+        assert_eq!(&source[start..end], format!("{digits}{}", unit.suffix()));
+    }
+
+    let max_tokens = lex("9007199254740991ms").unwrap();
+    let TokenKind::Duration(maximum) = &max_tokens[0].kind else {
+        panic!("expected maximum duration token");
+    };
+    assert_eq!(
+        maximum.checked_milliseconds().unwrap(),
+        crate::ast::MAX_SAFE_DURATION_MILLISECONDS
+    );
+}
+
+#[test]
+fn parses_timeout_concurrent_serial_and_value_ast_shapes() {
+    let source = r#"
+function run() -> void {
+  timeout(200ms) {
+    statementWork()
+  }
+  concurrent {
+    concurrentWork()
+    serial {
+      serialFirst()
+      serialSecond()
+    }
+  }
+  serial {
+    standaloneSerialWork()
+  }
+  const plain = value {
+    const seed = prepare()
+    finish(seed)
+  }
+  const joined = concurrent value {
+    const left = leftWork()
+    serial {
+      serialValueWork()
+    }
+    join(left)
+  }
+  const timed = timeout(2s) value {
+    const item = timedWork()
+    item
+  }
+  const timedJoined = timeout(3m) concurrent value {
+    const item = concurrentTimedWork()
+    item
+  }
+}
+"#;
+    let ast = parse_source(source).unwrap();
+    let statements = &ast.functions[0].body.statements;
+
+    let Stmt::Timeout { duration, body } = &statements[0] else {
+        panic!("expected timeout statement, got {:?}", statements[0]);
+    };
+    assert_eq!(duration.digits, "200");
+    assert_eq!(duration.unit, DurationUnit::Milliseconds);
+    assert_eq!(duration.checked_milliseconds().unwrap(), 200);
+    assert_eq!(
+        &source[duration.span.start.offset..duration.span.end.offset],
+        "200ms"
+    );
+    assert!(matches!(&body.statements[0], Stmt::Expr(Expr::Call { .. })));
+
+    let Stmt::Concurrent { body } = &statements[1] else {
+        panic!("expected concurrent statement, got {:?}", statements[1]);
+    };
+    assert!(matches!(&body.statements[0], Stmt::Expr(Expr::Call { .. })));
+    let Stmt::Serial { body } = &body.statements[1] else {
+        panic!("expected serial lane, got {:?}", body.statements[1]);
+    };
+    assert_eq!(body.statements.len(), 2);
+
+    assert!(matches!(&statements[2], Stmt::Serial { .. }));
+
+    let Stmt::Let {
+        value: Expr::ValueBlock(value),
+        ..
+    } = &statements[3]
+    else {
+        panic!("expected value block, got {:?}", statements[3]);
+    };
+    assert_eq!(value.body.statements.len(), 1);
+    assert!(matches!(
+        value.tail.as_ref(),
+        Expr::Call { callee, .. }
+            if matches!(callee.as_ref(), Expr::Identifier(name) if name == "finish")
+    ));
+
+    let Stmt::Let {
+        value: Expr::ConcurrentValue(value),
+        ..
+    } = &statements[4]
+    else {
+        panic!("expected concurrent value block, got {:?}", statements[4]);
+    };
+    assert_eq!(value.body.statements.len(), 2);
+    assert!(matches!(&value.body.statements[1], Stmt::Serial { .. }));
+    assert!(matches!(
+        value.tail.as_ref(),
+        Expr::Call { callee, .. }
+            if matches!(callee.as_ref(), Expr::Identifier(name) if name == "join")
+    ));
+
+    let Stmt::Let {
+        value: Expr::Timeout {
+            duration,
+            value: timed,
+        },
+        ..
+    } = &statements[5]
+    else {
+        panic!("expected timeout value wrapper, got {:?}", statements[5]);
+    };
+    assert_eq!(duration.checked_milliseconds().unwrap(), 2_000);
+    assert!(matches!(timed.as_ref(), Expr::ValueBlock(_)));
+
+    let Stmt::Let {
+        value: Expr::Timeout {
+            duration,
+            value: timed,
+        },
+        ..
+    } = &statements[6]
+    else {
+        panic!(
+            "expected timeout concurrent value wrapper, got {:?}",
+            statements[6]
+        );
+    };
+    assert_eq!(duration.checked_milliseconds().unwrap(), 180_000);
+    assert!(matches!(timed.as_ref(), Expr::ConcurrentValue(_)));
+}
+
+#[test]
+fn timeout_value_spans_and_ast_round_trip_preserve_wrapper_body_tail_and_duration() {
+    let source = r#"
+function run() -> void {
+  const result = timeout(15s) concurrent value {
+    const first = root.alpha.first()
+    serial {
+      root.beta.second()
+    }
+    root.gamma.finish(first)
+  }
+}
+"#;
+    let mut ast = parse_source(source).unwrap();
+    let Stmt::Let {
+        value: Expr::Timeout {
+            duration,
+            value: wrapped,
+        },
+        ..
+    } = &ast.functions[0].body.statements[0]
+    else {
+        panic!("expected timeout wrapper");
+    };
+    assert_eq!(
+        &source[duration.span.start.offset..duration.span.end.offset],
+        "15s"
+    );
+    let Expr::ConcurrentValue(value) = wrapped.as_ref() else {
+        panic!("expected concurrent value");
+    };
+    assert_eq!(value.body.statements.len(), 2);
+    assert!(matches!(
+        value.tail.as_ref(),
+        Expr::Call { callee, .. }
+            if matches!(
+                callee.as_ref(),
+                Expr::Field { field, .. } if field == "finish"
+            )
+    ));
+
+    let expression_spans = &ast.source_spans.functions[0].body.statements[0].expressions[0];
+    assert_eq!(
+        &source[expression_spans.span.start.offset..expression_spans.span.end.offset],
+        "timeout(15s) concurrent value {\n    const first = root.alpha.first()\n    serial {\n      root.beta.second()\n    }\n    root.gamma.finish(first)\n  }"
+    );
+    assert_eq!(expression_spans.children.len(), 1);
+    let concurrent_spans = &expression_spans.children[0];
+    assert_eq!(concurrent_spans.blocks.len(), 1);
+    assert_eq!(concurrent_spans.children.len(), 1);
+    let tail_span = concurrent_spans.children[0].span;
+    assert_eq!(
+        &source[tail_span.start.offset..tail_span.end.offset],
+        "root.gamma.finish(first)"
+    );
+
+    ast.source_spans = Default::default();
+    let wire = serde_json::to_value(&ast).unwrap();
+    let decoded = serde_json::from_value::<crate::ast::SourceFile>(wire).unwrap();
+    assert_eq!(decoded, ast);
+}
+
+#[test]
+fn value_tail_accepts_canonical_value_modifiers_and_parenthesized_timeout_catch() {
+    let ast = parse_source(
+        r#"
+function run() -> void {
+  const nestedValue = value {
+    value {
+      plainTail
+    }
+  }
+  const nestedConcurrent = value {
+    concurrent value {
+      concurrentTail
+    }
+  }
+  const nestedTimeout = value {
+    timeout(4s) concurrent value {
+      timeoutTail
+    }
+  }
+  const caught = catch<TimeoutError>(
+    timeout(5s) value {
+      caughtTail
+    }
+  )
+  const thrown = value {
+    throw problem
+  }
+  const rethrown = value {
+    rethrow exception
+  }
+  const object = value {
+    ({ name: caughtTail })
+  }
+}
+"#,
+    )
+    .unwrap();
+    let statements = &ast.functions[0].body.statements;
+
+    let Stmt::Let {
+        value: Expr::ValueBlock(outer),
+        ..
+    } = &statements[0]
+    else {
+        panic!("expected outer value block");
+    };
+    assert!(matches!(outer.tail.as_ref(), Expr::ValueBlock(_)));
+
+    let Stmt::Let {
+        value: Expr::ValueBlock(outer),
+        ..
+    } = &statements[1]
+    else {
+        panic!("expected outer value block");
+    };
+    assert!(matches!(outer.tail.as_ref(), Expr::ConcurrentValue(_)));
+
+    let Stmt::Let {
+        value: Expr::ValueBlock(outer),
+        ..
+    } = &statements[2]
+    else {
+        panic!("expected outer value block");
+    };
+    assert!(matches!(
+        outer.tail.as_ref(),
+        Expr::Timeout { value, .. } if matches!(value.as_ref(), Expr::ConcurrentValue(_))
+    ));
+
+    let Stmt::Let {
+        value: Expr::Catch { try_expr, .. },
+        ..
+    } = &statements[3]
+    else {
+        panic!("expected catch expression");
+    };
+    assert!(matches!(
+        try_expr.as_ref(),
+        Expr::Timeout { value, .. } if matches!(value.as_ref(), Expr::ValueBlock(_))
+    ));
+
+    let Stmt::Let {
+        value: Expr::ValueBlock(value),
+        ..
+    } = &statements[4]
+    else {
+        panic!("expected throw value block");
+    };
+    assert!(matches!(value.tail.as_ref(), Expr::Throw { .. }));
+
+    let Stmt::Let {
+        value: Expr::ValueBlock(value),
+        ..
+    } = &statements[5]
+    else {
+        panic!("expected rethrow value block");
+    };
+    assert!(matches!(value.tail.as_ref(), Expr::Rethrow { .. }));
+
+    let Stmt::Let {
+        value: Expr::ValueBlock(value),
+        ..
+    } = &statements[6]
+    else {
+        panic!("expected object value block");
+    };
+    assert!(matches!(
+        value.tail.as_ref(),
+        Expr::ObjectLiteral { entries } if entries.len() == 1
+    ));
+}
+
+#[test]
+fn rejects_invalid_duration_literals_and_timeout_shapes() {
+    let cases = [
+        ("timeout(0s) { work() }", "greater than zero"),
+        ("timeout(-1s) { work() }", "expected a duration literal"),
+        (
+            "timeout(1.5s) { work() }",
+            "duration literal must use positive integer digits",
+        ),
+        ("timeout(15 s) { work() }", "expected a duration literal"),
+        ("timeout(1x) { work() }", "invalid duration unit"),
+        (
+            "timeout(9007199254740992ms) { work() }",
+            "safe integer milliseconds",
+        ),
+        (
+            "timeout(104249992d) { work() }",
+            "safe integer milliseconds",
+        ),
+        (
+            "timeout(999999999999999999999999999999d) { work() }",
+            "safe integer milliseconds",
+        ),
+        ("timeout() { work() }", "expected a duration literal"),
+        ("timeout(1s)", "expected timeout body"),
+        ("timeout { work() }", "expected symbol ("),
+    ];
+
+    for (body, expected) in cases {
+        let source = format!("function run() -> void {{ {body} }}");
+        let error = parse_source(&source).unwrap_err().to_string();
+        assert!(
+            error.contains(expected),
+            "expected {expected:?} for {body:?}, got {error:?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_duration_outside_timeout_missing_value_tails_and_noncanonical_modifiers() {
+    let cases = [
+        (
+            "const invalid = 15s",
+            "duration literal is only allowed as a timeout duration",
+        ),
+        ("const invalid = value {}", "requires a tail expression"),
+        (
+            "const invalid = value { const item = work() }",
+            "requires a tail expression",
+        ),
+        (
+            "const invalid = concurrent value { const item = work() }",
+            "requires a tail expression",
+        ),
+        (
+            "const invalid = timeout(1s) value { const item = work() }",
+            "requires a tail expression",
+        ),
+        (
+            "const invalid = value { { name: item } }",
+            "object literal tail must be parenthesized",
+        ),
+        (
+            "const invalid = concurrent timeout(1s) value { work() }",
+            "canonical modifier order",
+        ),
+        (
+            "const invalid = value concurrent { work() }",
+            "canonical modifier order",
+        ),
+        (
+            "const invalid = timeout(1s) value concurrent { work() }",
+            "canonical modifier order",
+        ),
+        (
+            "const invalid = timeout(1s) serial value { work() }",
+            "canonical modifier order",
+        ),
+        (
+            "const invalid = serial value { work() }",
+            "canonical modifier order",
+        ),
+    ];
+
+    for (body, expected) in cases {
+        let source = format!("function run() -> void {{ {body} }}");
+        let error = parse_source(&source).unwrap_err().to_string();
+        assert!(
+            error.contains(expected),
+            "expected {expected:?} for {body:?}, got {error:?}"
+        );
+    }
 }
