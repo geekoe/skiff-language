@@ -345,7 +345,8 @@ mod tests {
     use skiff_artifact_model::{
         GatewayAdapterArg, GatewayAdapterSource, GatewayExternalErrorProjection,
         GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
-        GatewayWebSocketShapeVersion, PackageCallableParameter, PackageTypeRef, TypeRefIr,
+        GatewayWebSocketRpcProfile, GatewayWebSocketShapeVersion, PackageCallableParameter,
+        PackageTypeRef, TypeRefIr,
     };
 
     fn surface() -> GatewayEntryProtocolSurface {
@@ -363,7 +364,7 @@ mod tests {
                         GatewayWebSocketDownlinkFrame::Binary,
                         GatewayWebSocketDownlinkFrame::Text,
                     ],
-                    rpc_profiles: Vec::new(),
+                    rpc_profiles: vec![GatewayWebSocketRpcProfile::JsonRpc2_0Text],
                 },
             ),
             external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
