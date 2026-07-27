@@ -5,6 +5,69 @@ import { fileURLToPath } from 'node:url';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const failures = [];
 
+const requiredStdSurface = {
+  http: {
+    types: [
+      'HttpHeader',
+      'HttpQueryParam',
+      'HttpRequest',
+      'HttpResponse',
+      'HttpResponseStreamEvent',
+      'HttpClientRequest',
+      'HttpClientResponse',
+      'HttpClientStreamHandle',
+      'HttpSseEvent',
+      'HttpError',
+    ],
+    nativeFunctions: [
+      'request',
+      'stream',
+      'sse',
+      'header',
+      'headers',
+      'query',
+      'cookie',
+      'json',
+      'jsonWithHeaders',
+      'errorResponse',
+      'noContent',
+      'methodNotAllowed',
+      'decodeJson',
+      'requireMethod',
+      'forwardableHeaders',
+      'sseHeaders',
+      'streamStart',
+      'streamChunk',
+      'streamEnd',
+      'emitResponseStream',
+    ],
+    sourceFunctions: [],
+  },
+  service: {
+    types: ['ProviderUnavailableError', 'ProtocolError', 'InternalError'],
+    nativeFunctions: [],
+    sourceFunctions: [],
+  },
+  websocket: {
+    types: [
+      'WebSocketConnectRequest',
+      'WebSocketConnectionPolicy',
+      'WebSocketConnectResult',
+      'WebSocketRequestError',
+    ],
+    nativeFunctions: [
+      'sendTextToConnection',
+      'sendBinaryToConnection',
+      'sendTextToBusinessIdentity',
+      'sendBinaryToBusinessIdentity',
+      'requestJsonToConnection',
+    ],
+    sourceFunctions: ['sendJsonToConnection', 'sendJsonToBusinessIdentity'],
+  },
+};
+
+const removedWebSocketFunctions = ['receive', 'sendText', 'sendBinary', 'sendJson'];
+
 await checkManifests();
 await checkSources();
 
@@ -52,7 +115,7 @@ async function checkManifests() {
     'StackTrace',
     'StackFrame',
     'TimeoutError',
-    'CancelError',
+    'Actor',
     'ClientSessionRef',
     'ClientCapability',
   ]) {
@@ -62,11 +125,13 @@ async function checkManifests() {
       `compiler builtin registry must own ${builtin}`,
     );
   }
-  expectNotMatches(
-    compilerBuiltinRegistry,
-    compilerBuiltinNamePattern('ActorRef'),
-    'compiler builtin registry must not expose legacy ActorRef',
-  );
+  for (const removed of ['ActorRef', 'CancelError']) {
+    expectNotMatches(
+      compilerBuiltinRegistry,
+      compilerBuiltinNamePattern(removed),
+      `compiler builtin registry must not expose ${removed}`,
+    );
+  }
 
   for (const required of ['collection', 'stream', 'actor', 'session', 'error', 'date', 'bytes', 'json', 'config']) {
     const skiffPath = join(preludeRoot, `${required}.skiff`);
@@ -102,6 +167,22 @@ async function checkManifests() {
   for (const oldManifest of ['json/package.yml', 'http/package.yml', 'llm/package.yml']) {
     const path = join(stdRoot, oldManifest);
     expect(!(await pathExists(path)), `old std module manifest must not remain: ${oldManifest}`);
+  }
+
+  const stdApiExports = parseStdApiExports(await readText(join(stdRoot, 'api.yml')));
+  for (const [moduleName, surface] of Object.entries(requiredStdSurface)) {
+    for (const name of [...surface.types, ...surface.nativeFunctions, ...surface.sourceFunctions]) {
+      expect(
+        stdApiExports.get(`${moduleName}.${name}`) === `${moduleName}.${name}`,
+        `std/api.yml must export ${moduleName}.${name}`,
+      );
+    }
+  }
+  for (const removed of removedWebSocketFunctions) {
+    expect(
+      !stdApiExports.has(`websocket.${removed}`),
+      `std/api.yml must not export obsolete websocket.${removed}`,
+    );
   }
 }
 
@@ -144,20 +225,13 @@ async function checkSources() {
 function checkKnownSource(relPath, source) {
   switch (relPath) {
     case 'std/http.skiff':
-      for (const typeName of [
-        'HttpRequest',
-        'HttpResponse',
-        'HttpClientRequest',
-        'HttpClientResponse',
-        'HttpClientStreamHandle',
-        'HttpSseEvent',
-      ]) {
+      for (const typeName of requiredStdSurface.http.types) {
         expectExportedType(source, typeName, relPath);
       }
       for (const removed of ['HttpBody', 'HttpClientHeader']) {
         expectNotMatches(source, exportedTypePattern(removed), `${relPath} must not export ${removed}`);
       }
-      for (const name of ['request', 'stream', 'sse', 'emitResponseStream']) {
+      for (const name of requiredStdSurface.http.nativeFunctions) {
         expectExportedNativeFunction(source, name, relPath);
       }
       return;
@@ -171,19 +245,21 @@ function checkKnownSource(relPath, source) {
       }
       return;
     case 'std/websocket.skiff':
-      for (const typeName of ['WebSocketConnectRequest']) {
+      for (const typeName of requiredStdSurface.websocket.types) {
         expectExportedType(source, typeName, relPath);
       }
-      for (const name of [
-        'sendTextToConnection',
-        'sendBinaryToConnection',
-        'sendTextToBusinessIdentity',
-        'sendBinaryToBusinessIdentity',
-      ]) {
+      for (const name of requiredStdSurface.websocket.nativeFunctions) {
         expectExportedNativeFunction(source, name, relPath);
       }
-      for (const name of ['sendJsonToConnection', 'sendJsonToBusinessIdentity']) {
+      for (const name of requiredStdSurface.websocket.sourceFunctions) {
         expectExportedSourceFunction(source, name, relPath);
+      }
+      for (const removed of removedWebSocketFunctions) {
+        expectNotMatches(
+          source,
+          exportedFunctionPattern(removed),
+          `${relPath} must not export obsolete function ${removed}`,
+        );
       }
       return;
     case 'std/json.skiff':
@@ -205,7 +281,7 @@ function checkKnownSource(relPath, source) {
       expectExportedType(source, 'DecodeError', relPath);
       return;
     case 'std/service.skiff':
-      for (const typeName of ['ProviderUnavailableError', 'ProtocolError']) {
+      for (const typeName of requiredStdSurface.service.types) {
         expectExportedType(source, typeName, relPath);
       }
       return;
@@ -333,6 +409,24 @@ function nativeFunctionPattern(name) {
 
 function compilerBuiltinNamePattern(name) {
   return new RegExp(`\\bname:\\s*"${escapeRegExp(name)}"\\s*,`);
+}
+
+function parseStdApiExports(source) {
+  const exports = new Map();
+  let moduleName;
+  for (const line of source.split(/\r?\n/)) {
+    const moduleMatch = /^([A-Za-z_][A-Za-z0-9_]*):\s*$/.exec(line);
+    if (moduleMatch) {
+      moduleName = moduleMatch[1];
+      continue;
+    }
+
+    const exportMatch = /^  ([A-Za-z_][A-Za-z0-9_]*):\s*(\S+)\s*$/.exec(line);
+    if (moduleName !== undefined && exportMatch) {
+      exports.set(`${moduleName}.${exportMatch[1]}`, exportMatch[2]);
+    }
+  }
+  return exports;
 }
 
 function staticNativeFunctionPattern(name) {
