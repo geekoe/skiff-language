@@ -129,7 +129,14 @@ test('merged compiler and test transports share one absolute platform root', asy
         label: 'encrypted-storage',
         args: encryptedStorageTestRunnerArgs({
           testFile: '/tmp/encrypted.live.test.skiff',
-          configPath: '/tmp/test-runner-live.json',
+          artifactRoot,
+          baseAssembly:
+            `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`,
+          activationUrl:
+            'http://router.test:4101/__skiff/activate-assembly',
+          ingressUrl: 'http://router.test:4100',
+          environment: 'dev',
+          expectedGeneration: 0,
         }),
       },
     ];
