@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import test from 'node:test';
 
+import * as harnessExports from '../lib/encrypted-storage-live-harness.mjs';
 import {
+  EncryptedStorageLiveHarness,
   encryptedStorageBuildArgs,
   encryptedStorageIngressRequest,
   encryptedStorageProductionAssembly,
@@ -14,6 +16,105 @@ import {
 
 const productionAssembly =
   `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+const ownerFiles = [
+  'encrypted-storage-live-contract.mjs',
+  'encrypted-storage-live-mongo-probe.mjs',
+  'encrypted-storage-live-instance-resources.mjs',
+];
+
+test('encrypted-storage harness delegates to acyclic responsibility owners', async () => {
+  const sources = await Promise.all(
+    ownerFiles.map(async (file) => [
+      file,
+      await readFile(join(repoRoot, 'scripts/lib', file), 'utf8'),
+    ]),
+  );
+  const harnessSource = await readFile(
+    join(repoRoot, 'scripts/lib/encrypted-storage-live-harness.mjs'),
+    'utf8',
+  );
+  for (const file of ownerFiles) {
+    assert.match(harnessSource, new RegExp(`['"]\\./${file}['"]`), file);
+  }
+  for (const [file, source] of sources) {
+    assert.doesNotMatch(
+      source,
+      /(?:from\s+|import\s*\()\s*['"]\.\/encrypted-storage-live-(?:harness|contract|mongo-probe|instance-resources)\.mjs['"]/,
+      file,
+    );
+  }
+});
+
+test('encrypted-storage harness keeps its exact public surface', () => {
+  assert.deepEqual(Object.keys(harnessExports).sort(), [
+    'EncryptedStorageLiveHarness',
+    'encryptedStorageBuildArgs',
+    'encryptedStorageIngressRequest',
+    'encryptedStorageProductionAssembly',
+    'encryptedStorageTestRunnerArgs',
+    'keyringFingerprint',
+    'makeKeyring',
+    'randomRootKey',
+    'repoRoot',
+    'runEncryptedStorageTestLifecycle',
+  ]);
+  assert.deepEqual(
+    Object.getOwnPropertyNames(EncryptedStorageLiveHarness.prototype).sort(),
+    [
+      'assertProductionAssemblyReady',
+      'assertRuntimeKeyringEvent',
+      'buildProductionAssembly',
+      'cleanup',
+      'collectionNames',
+      'constructor',
+      'countNotKeyId',
+      'databaseExists',
+      'databaseNames',
+      'dropDatabase',
+      'initialize',
+      'initializeReplicaSet',
+      'mongoJson',
+      'observeTransientEncryptedStorage',
+      'rawDocument',
+      'rawDocuments',
+      'readCommittedGeneration',
+      'readKeyring',
+      'readLogs',
+      'replaceRawDocument',
+      'request',
+      'requireRetirementGate',
+      'restartRuntime',
+      'restoreProductionAssembly',
+      'runLiveTestRunner',
+      'runSkiff',
+      'runtimeLogs',
+      'setRawFields',
+      'stopOwnedProcessGroups',
+      'writeKeyring',
+    ],
+  );
+  const instance = new EncryptedStorageLiveHarness(
+    { configPath: '/tmp/config.yml' },
+    { ports: { base: 45000, mongo: 45500 } },
+  );
+  assert.deepEqual(Object.keys(instance).sort(), [
+    'activationState',
+    'activationUrl',
+    'cleaned',
+    'cleanupFallbackGroups',
+    'cleanupFallbackUsed',
+    'controlHealthUrl',
+    'currentKeyring',
+    'instanceInitialized',
+    'instanceOperations',
+    'mongoUrl',
+    'paths',
+    'portLease',
+    'ports',
+    'retirementGateActive',
+    'routerHttpUrl',
+  ]);
+});
 
 test('encrypted-storage runner uses the canonical live interface exactly once', () => {
   const args = encryptedStorageTestRunnerArgs({
@@ -248,6 +349,8 @@ test('direct ingress request uses only the manifest path and business headers', 
 test('encrypted-storage production sources have no retired harness surface', async () => {
   const source = await Promise.all([
     readFile(join(repoRoot, 'scripts/lib/encrypted-storage-live-harness.mjs'), 'utf8'),
+    ...ownerFiles.map((file) =>
+      readFile(join(repoRoot, 'scripts/lib', file), 'utf8')),
     readFile(join(repoRoot, 'scripts/check-db-encrypted-storage-live.mjs'), 'utf8'),
   ]).then((parts) => parts.join('\n'));
   for (const legacy of [

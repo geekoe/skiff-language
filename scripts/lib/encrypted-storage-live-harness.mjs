@@ -1,295 +1,53 @@
-import { createHash, randomBytes, randomInt } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   chmod,
   mkdir,
-  mkdtemp,
-  readdir,
   readFile,
   rm,
   writeFile,
 } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
-import { assertPortsClosed, leaseLocalPorts } from './local-port-lease.mjs';
+import { assertPortsClosed } from './local-port-lease.mjs';
 import {
   captureCheckedCommand,
   runAttachedCommand,
 } from './command-execution.mjs';
+import {
+  ENCRYPTED_STORAGE_TARGET_ENVIRONMENT as TARGET_ENVIRONMENT,
+  encryptedStorageBuildArgs,
+  encryptedStorageIngressRequest,
+  encryptedStorageProductionAssembly,
+  encryptedStorageTestRunnerArgs,
+  repoRoot,
+  runEncryptedStorageTestLifecycle,
+} from './encrypted-storage-live-contract.mjs';
+import {
+  createEncryptedStorageLiveInstanceResources,
+  stopEncryptedStorageLiveOwnedProcessGroups,
+} from './encrypted-storage-live-instance-resources.mjs';
+import {
+  createEncryptedStorageLiveMongoProbe,
+} from './encrypted-storage-live-mongo-probe.mjs';
 import { isolatedInstanceOperations } from './isolated-test-runtime-instance.mjs';
-import { createMongoshCommand } from './mongosh-json-command.mjs';
 import { requestAssemblyActivation } from './package-service-authoring.mjs';
 import {
   validatePackageServiceActivationReceipt,
 } from './package-service-ecosystem-smoke-oracle.mjs';
 
-const scriptDir = dirname(fileURLToPath(import.meta.url));
-const mongoshCommand = createMongoshCommand();
-export const repoRoot = resolve(scriptDir, '..', '..');
-const TARGET_ENVIRONMENT = 'dev';
-const RUNTIME_ASSEMBLY_IDENTITY =
-  /^skiff-runtime-assembly-v2:sha256:[0-9a-f]{64}$/;
-const REQUIRED_PACKAGE_COORDINATES = new Set([
-  'example.com/encrypted-live-default@0.1.0',
-  'example.com/encrypted-live-mapped@0.1.0',
-  'example.com/encrypted-live-store@1.0.0',
-]);
-const REQUIRED_SERVICE_IDS = new Set([
-  'example.com/encrypted-live-default',
-  'example.com/encrypted-live-mapped',
-]);
+export {
+  encryptedStorageBuildArgs,
+  encryptedStorageIngressRequest,
+  encryptedStorageProductionAssembly,
+  encryptedStorageTestRunnerArgs,
+  repoRoot,
+  runEncryptedStorageTestLifecycle,
+};
 
-export function encryptedStorageTestRunnerArgs({
-  testFile,
-  artifactRoot,
-  baseAssembly,
-  activationUrl,
-  ingressUrl,
-  environment,
-  expectedGeneration,
-}) {
-  requiredAbsolutePath(testFile, 'encrypted-storage test file');
-  requiredAbsolutePath(artifactRoot, 'encrypted-storage artifact root');
-  if (!RUNTIME_ASSEMBLY_IDENTITY.test(baseAssembly ?? '')) {
-    throw new Error('encrypted-storage base assembly must be canonical');
-  }
-  requiredActivationUrl(activationUrl);
-  requiredIngressUrl(ingressUrl);
-  if (environment !== TARGET_ENVIRONMENT) {
-    throw new Error(`encrypted-storage target environment must be ${TARGET_ENVIRONMENT}`);
-  }
-  requiredGeneration(expectedGeneration, 'encrypted-storage expected generation');
-  return [
-    'run',
-    '--locked',
-    '--quiet',
-    '--manifest-path',
-    'test-runner/Cargo.toml',
-    '--bin',
-    'skiff-test-runner',
-    '--',
-    testFile,
-    '--artifact-root',
-    artifactRoot,
-    '--platform-source-root',
-    repoRoot,
-    '--base-assembly',
-    baseAssembly,
-    '--live',
-    '--activation-url',
-    activationUrl,
-    '--ingress-url',
-    ingressUrl,
-    '--environment',
-    environment,
-    '--expected-generation',
-    String(expectedGeneration),
-    '--deny-skips',
-    '--require-tests',
-  ];
-}
-
-export function encryptedStorageBuildArgs({
-  fixtureRoot,
-  artifactRoot,
-}) {
-  requiredAbsolutePath(fixtureRoot, 'encrypted-storage fixture root');
-  requiredAbsolutePath(artifactRoot, 'encrypted-storage artifact root');
-  return [
-    'scripts/skiff-dev-sync.mjs',
-    '--root',
-    join(
-      fixtureRoot,
-      'package-store',
-      'example~com~~encrypted-live-store',
-      '1.0.0',
-    ),
-    '--root',
-    join(fixtureRoot, 'default-service'),
-    '--root',
-    join(fixtureRoot, 'mapped-service'),
-    '--artifact-root',
-    artifactRoot,
-    '--environment',
-    TARGET_ENVIRONMENT,
-    '--build-only',
-    '--json',
-  ];
-}
-
-export function encryptedStorageProductionAssembly(receipt) {
-  if (!isPlainObject(receipt?.runtimeAssemblyReceipt)) {
-    throw new Error('runtime assembly receipt is missing');
-  }
-  const { runtimeAssemblyReceipt } = receipt;
-  if (runtimeAssemblyReceipt.environment !== TARGET_ENVIRONMENT) {
-    throw new Error(`runtime assembly receipt environment must be ${TARGET_ENVIRONMENT}`);
-  }
-  const assembly = runtimeAssemblyReceipt.assembly;
-  if (!isPlainObject(assembly) || assembly.assemblyIdentity === undefined) {
-    throw new Error('assembly identity is missing');
-  }
-  if (
-    Object.keys(assembly).length !== 1
-    || !RUNTIME_ASSEMBLY_IDENTITY.test(assembly.assemblyIdentity)
-  ) {
-    throw new Error('assembly identity is not canonical');
-  }
-  const packageCoordinates = exactStringSet(
-    receipt.packageArtifactReceipts,
-    (entry) => {
-      const artifact = entry?.artifact;
-      return typeof artifact?.packageId === 'string'
-        && typeof artifact?.packageVersion === 'string'
-        ? `${artifact.packageId}@${artifact.packageVersion}`
-        : undefined;
-    },
-  );
-  if (!setsEqual(packageCoordinates, REQUIRED_PACKAGE_COORDINATES)) {
-    throw new Error('required package roots are incomplete');
-  }
-  const serviceIds = exactStringSet(
-    receipt.serviceDeploymentReceipts,
-    (entry) => entry?.deployment?.serviceId,
-  );
-  if (!setsEqual(serviceIds, REQUIRED_SERVICE_IDS)) {
-    throw new Error('required service roots are incomplete');
-  }
-  return Object.freeze({ assemblyIdentity: assembly.assemblyIdentity });
-}
-
-export function encryptedStorageIngressRequest({
-  ingressUrl,
-  path,
-  body,
-  rotationToken,
-}) {
-  const ingress = requiredIngressUrl(ingressUrl);
-  if (
-    typeof path !== 'string'
-    || !path.startsWith('/')
-    || path.startsWith('//')
-    || path.includes('?')
-    || path.includes('#')
-  ) {
-    throw new Error('encrypted-storage ingress path must come from the manifest');
-  }
-  const url = new URL(path, ingress);
-  return {
-    url,
-    options: {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(rotationToken === undefined
-          ? {}
-          : { 'x-skiff-rotation-token': rotationToken }),
-      },
-      body: JSON.stringify(body),
-    },
-  };
-}
-
-export async function runEncryptedStorageTestLifecycle({
-  activationState,
-  runTest,
-  observeStorage,
-  cleanupStorage,
-  restoreProductionAssembly,
-  readCommittedGeneration,
-}) {
-  assertActivationState(activationState);
-  for (const [name, operation] of Object.entries({
-    runTest,
-    observeStorage,
-    cleanupStorage,
-    restoreProductionAssembly,
-  })) {
-    if (typeof operation !== 'function') {
-      throw new Error(`encrypted-storage lifecycle requires ${name}`);
-    }
-  }
-  const expectedGeneration = activationState.currentGeneration;
-  const baseAssembly = activationState.productionAssembly.assemblyIdentity;
-  const [testOutcome, observationOutcome] = await Promise.allSettled([
-    Promise.resolve().then(() => runTest({ baseAssembly, expectedGeneration })),
-    Promise.resolve().then(() => observeStorage()),
-  ]);
-  const failures = [];
-  let testActivationCommitted = false;
-  if (testOutcome.status === 'fulfilled') {
-    activationState.currentGeneration += 1;
-    testActivationCommitted = true;
-  } else {
-    failures.push(contextualError('test runner failed', testOutcome.reason));
-    if (typeof readCommittedGeneration === 'function') {
-      try {
-        const committedGeneration = await readCommittedGeneration();
-        requiredGeneration(
-          committedGeneration,
-          'encrypted-storage observed committed generation',
-        );
-        if (committedGeneration === expectedGeneration + 1) {
-          activationState.currentGeneration = committedGeneration;
-          testActivationCommitted = true;
-        } else if (committedGeneration !== expectedGeneration) {
-          failures.push(new Error(
-            `encrypted-storage test generation is indeterminate: expected ${expectedGeneration} or ${expectedGeneration + 1}, observed ${committedGeneration}`,
-          ));
-        }
-      } catch (error) {
-        failures.push(contextualError(
-          'failed to determine whether test activation committed',
-          error,
-        ));
-      }
-    }
-  }
-
-  let storage;
-  if (observationOutcome.status === 'fulfilled') {
-    try {
-      storage = await cleanupStorage(observationOutcome.value);
-    } catch (error) {
-      failures.push(contextualError('transient storage cleanup failed', error));
-    }
-  } else {
-    failures.push(contextualError(
-      'transient storage observation failed',
-      observationOutcome.reason,
-    ));
-  }
-
-  if (testActivationCommitted) {
-    try {
-      await restoreProductionAssembly({
-        assembly: activationState.productionAssembly,
-        expectedGeneration: activationState.currentGeneration,
-      });
-      activationState.currentGeneration += 1;
-    } catch (error) {
-      failures.push(contextualError('production restore failed', error));
-    }
-  }
-  if (failures.length > 0) {
-    throw new AggregateError(
-      failures,
-      `encrypted-storage live test lifecycle failed: ${failures.map((error) => error.message).join('; ')}`,
-    );
-  }
-  return { storage, currentGeneration: activationState.currentGeneration };
-}
-
-const PORT_MIN = 45000;
-const PORT_MAX = 45999;
-const FORBIDDEN_PORTS = new Set([
-  27017,
-  ...range(4000, 4007),
-  ...range(44000, 44999),
-]);
 const EVENT_NAME = 'service_db.encryption_keyring_loaded';
 const KEYRING_FORMAT = 'skiff-service-db-keyring-v1';
+const mongoProbes = new WeakMap();
+const cleanupFallbacks = new WeakSet();
 
 export function randomRootKey() {
   return randomBytes(32).toString('base64');
@@ -322,26 +80,11 @@ export function makeKeyring(activeKeyId, keys) {
 
 export class EncryptedStorageLiveHarness {
   static async create() {
-    const portLease = await leaseIsolatedPorts();
-    const tempRoot = await mkdtemp(join(tmpdir(), 'skiff-encrypted-storage-live-'));
-    const instanceRoot = join(tempRoot, 'instance');
-    const configPath = join(instanceRoot, 'config.yml');
-    const fixtureRoot = join(repoRoot, 'runtime', 'encrypted-storage-live');
-    const paths = {
-      tempRoot,
-      instanceRoot,
-      configPath,
-      devHome: join(instanceRoot, 'dev-home'),
-      artifactRoot: join(instanceRoot, 'dev-home', 'artifacts'),
-      keyring: join(instanceRoot, 'dev-home', 'secrets', 'service-db-keyring.json'),
-      runtimeLog: join(instanceRoot, 'logs', 'runtime.log'),
-      runtimeErrorLog: join(instanceRoot, 'logs', 'runtime.err.log'),
-      routerLog: join(instanceRoot, 'logs', 'router.log'),
-      routerErrorLog: join(instanceRoot, 'logs', 'router.err.log'),
-      fixtureRoot,
-    };
-    await mkdir(instanceRoot, { recursive: true });
-    await writeFile(configPath, instanceConfigText(portLease.ports), 'utf8');
+    const { paths, portLease } =
+      await createEncryptedStorageLiveInstanceResources({
+        repoRoot,
+        environment: TARGET_ENVIRONMENT,
+      });
     return new EncryptedStorageLiveHarness(paths, portLease);
   }
 
@@ -369,6 +112,10 @@ export class EncryptedStorageLiveHarness {
     this.cleaned = false;
     this.cleanupFallbackUsed = false;
     this.cleanupFallbackGroups = [];
+    mongoProbes.set(this, createEncryptedStorageLiveMongoProbe({
+      mongoPort: this.ports.mongo,
+      cwd: repoRoot,
+    }));
   }
 
   async initialize(keyring) {
@@ -607,67 +354,58 @@ export class EncryptedStorageLiveHarness {
   }
 
   async rawDocument(database, collection, id) {
-    return this.mongoJson(
-      database,
-      `db.getCollection(${JSON.stringify(collection)}).findOne({_id:${JSON.stringify(id)}})`,
-    );
+    return mongoProbes.get(this).rawDocument(database, collection, id);
   }
 
   async rawDocuments(database, collection) {
-    return this.mongoJson(
-      database,
-      `db.getCollection(${JSON.stringify(collection)}).find({}).sort({_id:1}).toArray()`,
-    );
+    return mongoProbes.get(this).rawDocuments(database, collection);
   }
 
   async collectionNames(database) {
-    return this.mongoJson(database, 'db.getCollectionNames().sort()');
+    return mongoProbes.get(this).collectionNames(database);
   }
 
   async databaseNames() {
-    return this.mongoJson(
-      'admin',
-      'db.adminCommand({listDatabases:1,nameOnly:true}).databases.map((entry)=>entry.name).sort()',
-    );
+    return mongoProbes.get(this).databaseNames();
   }
 
   async databaseExists(database) {
-    return (await this.databaseNames()).includes(database);
+    return mongoProbes.get(this).databaseExists(database);
   }
 
   async dropDatabase(database) {
-    return this.mongoJson(database, 'db.dropDatabase()');
+    return mongoProbes.get(this).dropDatabase(database);
   }
 
   async replaceRawDocument(database, collection, id, document) {
-    const serialized = JSON.stringify(document);
-    return this.mongoJson(
+    return mongoProbes.get(this).replaceRawDocument(
       database,
-      `db.getCollection(${JSON.stringify(collection)}).replaceOne({_id:${JSON.stringify(id)}}, EJSON.parse(${JSON.stringify(serialized)}))`,
+      collection,
+      id,
+      document,
     );
   }
 
   async setRawFields(database, collection, id, fields) {
-    const serialized = JSON.stringify(fields);
-    return this.mongoJson(
+    return mongoProbes.get(this).setRawFields(
       database,
-      `db.getCollection(${JSON.stringify(collection)}).updateOne({_id:${JSON.stringify(id)}}, {$set:EJSON.parse(${JSON.stringify(serialized)})})`,
+      collection,
+      id,
+      fields,
     );
   }
 
   async countNotKeyId(database, collection, field, keyId) {
-    return this.mongoJson(
+    return mongoProbes.get(this).countNotKeyId(
       database,
-      `db.getCollection(${JSON.stringify(collection)}).countDocuments({${JSON.stringify(`${field}._skiff_encrypted.keyId`)}:{$ne:${JSON.stringify(keyId)}}})`,
+      collection,
+      field,
+      keyId,
     );
   }
 
   async mongoJson(database, expression) {
-    return mongoshCommand.json({
-      url: `mongodb://127.0.0.1:${this.ports.mongo}/${database}?directConnection=true`,
-      expression,
-      cwd: repoRoot,
-    });
+    return mongoProbes.get(this).mongoJson(database, expression);
   }
 
   async assertRuntimeKeyringEvent(keyring) {
@@ -688,31 +426,7 @@ export class EncryptedStorageLiveHarness {
   }
 
   async observeTransientEncryptedStorage(databasesBefore) {
-    for (let attempt = 0; attempt < 3000; attempt += 1) {
-      const databases = await this.databaseNames();
-      for (const database of databases) {
-        if (databasesBefore.has(database) || ['admin', 'config', 'local'].includes(database)) {
-          continue;
-        }
-        const collections = await this.collectionNames(database);
-        for (const collection of collections) {
-          const documents = await this.rawDocuments(database, collection);
-          const fields = encryptedEnvelopeFields(documents);
-          if (fields.length > 0) {
-            return {
-              storageServiceId: storageServiceIdFromDatabase(database),
-              database,
-              collection,
-              fields,
-              keyIds: encryptedEnvelopeKeyIds(documents, fields),
-              rawSnapshot: JSON.stringify(documents),
-            };
-          }
-        }
-      }
-      await delay(50);
-    }
-    throw new Error('did not observe transient test-runner encrypted storage');
+    return mongoProbes.get(this).observeTransientEncryptedStorage(databasesBefore);
   }
 
   async cleanup({ forceFallbackForTest = false } = {}) {
@@ -730,14 +444,16 @@ export class EncryptedStorageLiveHarness {
         downError = error;
       }
       if (downError !== undefined) {
+        cleanupFallbacks.add(this);
         try {
           await this.stopOwnedProcessGroups();
-          this.cleanupFallbackUsed = true;
         } catch (fallbackError) {
           throw new Error(
             `instance cleanup failed; preserving ${this.paths.tempRoot}: ${downError.message}; fallback: ${fallbackError.message}`,
             { cause: fallbackError },
           );
+        } finally {
+          cleanupFallbacks.delete(this);
         }
       }
       try {
@@ -760,44 +476,25 @@ export class EncryptedStorageLiveHarness {
   }
 
   async stopOwnedProcessGroups() {
-    let entries;
+    const recordsFallbackUsage = cleanupFallbacks.has(this);
     try {
-      entries = await readdir(join(this.paths.instanceRoot, 'pids'));
+      await stopEncryptedStorageLiveOwnedProcessGroups({
+        instanceRoot: this.paths.instanceRoot,
+        configPath: this.paths.configPath,
+        onValidated: (groups) => {
+          if (groups !== undefined) {
+            this.cleanupFallbackGroups = [...groups];
+          }
+          if (recordsFallbackUsage) {
+            this.cleanupFallbackUsed = true;
+          }
+        },
+      });
     } catch (error) {
-      if (error.code === 'ENOENT') {
-        return;
+      if (recordsFallbackUsage) {
+        this.cleanupFallbackUsed = false;
       }
       throw error;
-    }
-    const groups = [];
-    for (const entry of entries) {
-      if (!entry.endsWith('.pid')) {
-        continue;
-      }
-      const raw = await readFile(join(this.paths.instanceRoot, 'pids', entry), 'utf8');
-      const metadata = JSON.parse(raw);
-      if (
-        metadata.configPath !== this.paths.configPath
-        || metadata.instanceRoot !== this.paths.instanceRoot
-        || !Number.isInteger(metadata.pgid)
-        || metadata.pgid <= 1
-      ) {
-        throw new Error(`refusing to stop unowned process metadata ${entry}`);
-      }
-      groups.push(metadata.pgid);
-    }
-    this.cleanupFallbackGroups = [...groups];
-    for (const pgid of groups) {
-      signalProcessGroup(pgid, 'SIGTERM');
-    }
-    await waitForProcessGroups(groups, 40);
-    for (const pgid of groups.filter(processGroupAlive)) {
-      signalProcessGroup(pgid, 'SIGKILL');
-    }
-    await waitForProcessGroups(groups, 20);
-    const survivors = groups.filter(processGroupAlive);
-    if (survivors.length > 0) {
-      throw new Error(`owned process groups did not stop: ${survivors.join(', ')}`);
     }
   }
 
@@ -806,23 +503,7 @@ export class EncryptedStorageLiveHarness {
   }
 
   async initializeReplicaSet() {
-    const initiate = `try { rs.status(); } catch (error) { rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:${this.ports.mongo}'}]}); }`;
-    await mongoshCommand.run(
-      [`mongodb://127.0.0.1:${this.ports.mongo}/admin?directConnection=true`, '--quiet', '--eval', initiate],
-      { cwd: repoRoot },
-    );
-    for (let attempt = 0; attempt < 60; attempt += 1) {
-      try {
-        const writable = await this.mongoJson('admin', 'db.hello().isWritablePrimary === true');
-        if (writable) {
-          return;
-        }
-      } catch {
-        // Replica initialization briefly closes connections.
-      }
-      await delay(250);
-    }
-    throw new Error('managed Mongo replica set did not become PRIMARY');
+    return mongoProbes.get(this).initializeReplicaSet();
   }
 
   async runtimeLogs() {
@@ -844,233 +525,10 @@ export class EncryptedStorageLiveHarness {
   }
 }
 
-async function leaseIsolatedPorts() {
-  for (let attempt = 0; attempt < 500; attempt += 1) {
-    const base = 45000 + randomInt(0, 400);
-    const mongo = 45500 + randomInt(0, 500);
-    const candidates = [base, base + 1, base + 2, mongo];
-    if (new Set(candidates).size !== candidates.length || candidates.some(isForbiddenPort)) {
-      continue;
-    }
-    try {
-      const lease = await leaseLocalPorts(candidates);
-      return {
-        ports: { base, mongo },
-        release: () => lease.release(),
-      };
-    } catch {
-      // Try another disjoint port set.
-    }
-  }
-  throw new Error(`no isolated ports available in ${PORT_MIN}-${PORT_MAX}`);
-}
-
-function isForbiddenPort(port) {
-  return port < PORT_MIN || port > PORT_MAX || FORBIDDEN_PORTS.has(port);
-}
-
-function instanceConfigText(ports) {
-  return [
-    `environment: ${TARGET_ENVIRONMENT}`,
-    'devHome: dev-home',
-    `cargoTargetDir: ${JSON.stringify(join(repoRoot, 'build', 'cargo-target'))}`,
-    'ports:',
-    `  base: ${ports.base}`,
-    `  mongo: ${ports.mongo}`,
-    'http:',
-    '  maxRequestBytes: 67108864',
-    '  maxResponseBytes: 8388608',
-    'components:',
-    '  telemetry: disabled',
-    '  mongo: managed',
-    '  watch: disabled',
-    'telemetry:',
-    '  memory: true',
-    'mongo:',
-    '  binary: mongod',
-    '  dbPath: service-db',
-    'watch:',
-    '  config: watch.json',
-    '',
-  ].join('\n');
-}
-
 function runCommand(command, args, options) {
   return runAttachedCommand(command, args, options);
 }
 
-function requiredAbsolutePath(value, label) {
-  if (typeof value !== 'string' || !isAbsolute(value)) {
-    throw new Error(`${label} must be an absolute path`);
-  }
-}
-
-function requiredUrl(value, label) {
-  let parsed;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error(`${label} must be an absolute URL`);
-  }
-  if (parsed.protocol !== 'http:' || parsed.username || parsed.password) {
-    throw new Error(`${label} must be an unauthenticated http URL`);
-  }
-  return parsed;
-}
-
-function requiredActivationUrl(value) {
-  const parsed = requiredUrl(value, 'encrypted-storage activation URL');
-  if (
-    parsed.pathname !== '/__skiff/activate-assembly'
-    || parsed.search
-    || parsed.hash
-  ) {
-    throw new Error(
-      'encrypted-storage activation URL must point exactly to /__skiff/activate-assembly',
-    );
-  }
-  return parsed;
-}
-
-function requiredIngressUrl(value) {
-  const parsed = requiredUrl(value, 'encrypted-storage ingress URL');
-  if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
-    throw new Error('encrypted-storage ingress URL must be an origin');
-  }
-  return parsed;
-}
-
-function requiredGeneration(value, label) {
-  if (
-    !Number.isSafeInteger(value)
-    || Object.is(value, -0)
-    || value < 0
-    || value > Number.MAX_SAFE_INTEGER - 2
-  ) {
-    throw new Error(`${label} must be a non-negative safe generation`);
-  }
-}
-
-function exactStringSet(values, select) {
-  if (!Array.isArray(values)) {
-    return undefined;
-  }
-  const result = new Set();
-  for (const value of values) {
-    const selected = select(value);
-    if (
-      typeof selected !== 'string'
-      || selected.length === 0
-      || result.has(selected)
-    ) {
-      return undefined;
-    }
-    result.add(selected);
-  }
-  return result;
-}
-
-function setsEqual(left, right) {
-  return left instanceof Set
-    && left.size === right.size
-    && [...left].every((value) => right.has(value));
-}
-
-function assertActivationState(state) {
-  if (!isPlainObject(state)) {
-    throw new Error('encrypted-storage lifecycle requires caller-owned activation state');
-  }
-  requiredGeneration(
-    state.currentGeneration,
-    'encrypted-storage current generation',
-  );
-  const assembly = state.productionAssembly;
-  if (
-    !isPlainObject(assembly)
-    || Object.keys(assembly).length !== 1
-    || !RUNTIME_ASSEMBLY_IDENTITY.test(assembly.assemblyIdentity ?? '')
-  ) {
-    throw new Error(
-      'encrypted-storage lifecycle requires a canonical production assembly',
-    );
-  }
-}
-
-function contextualError(label, error) {
-  const cause = error instanceof Error ? error : new Error(String(error));
-  return new Error(`${label}: ${cause.message}`, { cause });
-}
-
-function isPlainObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function range(start, end) {
-  return Array.from({ length: end - start + 1 }, (_, index) => start + index);
-}
-
 function removesExistingKey(currentKeyring, nextKeyring) {
   return Object.keys(currentKeyring.keys).some((keyId) => nextKeyring.keys[keyId] === undefined);
-}
-
-function encryptedEnvelopeFields(documents) {
-  const fields = new Set();
-  for (const document of documents) {
-    for (const [field, value] of Object.entries(document)) {
-      if (
-        field !== '_id'
-        && value !== null
-        && typeof value === 'object'
-        && value._skiff_encrypted !== undefined
-      ) {
-        fields.add(field);
-      }
-    }
-  }
-  return [...fields].sort();
-}
-
-function encryptedEnvelopeKeyIds(documents, fields) {
-  const keyIds = new Set();
-  for (const document of documents) {
-    for (const field of fields) {
-      const keyId = document[field]?._skiff_encrypted?.keyId;
-      if (keyId !== undefined) {
-        keyIds.add(keyId);
-      }
-    }
-  }
-  return [...keyIds].sort();
-}
-
-function storageServiceIdFromDatabase(database) {
-  return database.replaceAll('~~', '/').replaceAll('~', '.');
-}
-
-function signalProcessGroup(pgid, signal) {
-  try {
-    process.kill(-pgid, signal);
-  } catch (error) {
-    if (error.code !== 'ESRCH') {
-      throw error;
-    }
-  }
-}
-
-function processGroupAlive(pgid) {
-  try {
-    process.kill(-pgid, 0);
-    return true;
-  } catch (error) {
-    return error.code !== 'ESRCH';
-  }
-}
-
-async function waitForProcessGroups(groups, attempts) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (!groups.some(processGroupAlive)) {
-      return;
-    }
-    await delay(100);
-  }
 }
