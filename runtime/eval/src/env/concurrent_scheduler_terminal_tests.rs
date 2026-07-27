@@ -12,14 +12,23 @@ use std::{
 use skiff_runtime_capability_context::{
     CancellationToken, ExecutionDeadlineSource, ExecutionScopeTerminal, OwnedExecutionControl,
 };
-use skiff_runtime_model::{request_heap::RequestHeap, runtime_value::RuntimeValue};
+use skiff_runtime_model::{
+    request_heap::{RequestHeap, RequestHeapLimits},
+    runtime_value::{RuntimeValue, RuntimeValueCarrier},
+    service_error::{
+        ErrorCorrelation, ExceptionStackFrame, PlatformBuiltinErrorIdentity, RequestException,
+    },
+};
 
 use super::{
     concurrent_scheduler::{run_concurrent_scheduler, ConcurrentSchedulerResult},
     concurrent_scheduler_test_support::*,
     ConcurrentPlan, ConcurrentPlanKind, LaneCompletion, LaneEvaluation, LaneExecutionState,
 };
-use crate::{error::RuntimeError, program_execution::ExecutionCheckpointKind};
+use crate::{
+    error::{RuntimeError, UserException},
+    program_execution::ExecutionCheckpointKind,
+};
 
 #[tokio::test]
 async fn concurrent_scheduler_outer_terminal_beats_ready_lane_error() {
@@ -142,6 +151,77 @@ async fn concurrent_scheduler_winner_cancels_running_and_blocks_new_lane() {
     assert_eq!(drop_probe.cancelled_drops.load(Ordering::Acquire), 1);
     assert!(parent_heap.is_empty());
     assert!(parent_env.get_slot(0).is_err());
+    assert_clean_scope(&outer);
+}
+
+#[tokio::test]
+async fn concurrent_scheduler_winner_error_materialization_rolls_back_parent_heap() {
+    let executor = TestExecutor::new(|_lane, mut state| {
+        boxed_lane(async move {
+            let shallow = state.heap_mut().alloc_bytes(vec![1]).unwrap();
+            let deep_leaf = state.heap_mut().alloc_bytes(vec![2]).unwrap();
+            let deep_inner = state
+                .heap_mut()
+                .alloc_array(vec![RuntimeValue::Heap(deep_leaf)])
+                .unwrap();
+            let deep_outer = state
+                .heap_mut()
+                .alloc_array(vec![RuntimeValue::Heap(deep_inner)])
+                .unwrap();
+            let payload = state
+                .heap_mut()
+                .alloc_array(vec![
+                    RuntimeValue::Heap(shallow),
+                    RuntimeValue::Heap(deep_outer),
+                ])
+                .unwrap();
+            let source = site();
+            let request = RequestException::local(
+                RuntimeValueCarrier::identified(
+                    RuntimeValue::Heap(payload),
+                    PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
+                ),
+                source.clone(),
+                vec![ExceptionStackFrame::Local { site: source }],
+                ErrorCorrelation {
+                    trace_id: "trace-concurrent".to_string(),
+                    error_id: "trace-concurrent:local-error:1".to_string(),
+                },
+            )
+            .unwrap();
+            LaneCompletion::error(
+                state,
+                RuntimeError::UserException(UserException::new(request)),
+            )
+        })
+    });
+    let plan = statement_plan(vec![statement_lane(0, vec![], None)]);
+    let outer = TestOuter::new();
+    let mut parent_heap = RequestHeap::new(RequestHeapLimits {
+        max_clone_depth: 2,
+        ..RequestHeapLimits::default()
+    });
+    let sentinel = parent_heap.alloc_bytes(vec![9]).unwrap();
+    let before_checkpoint = parent_heap.checkpoint();
+    let before_stats = parent_heap.stats();
+
+    let error = run_concurrent_scheduler(
+        &plan,
+        &env_with_slots(0),
+        &mut parent_heap,
+        &outer,
+        &executor,
+    )
+    .await
+    .expect_err("winner local carrier exceeds the parent clone-depth limit");
+
+    assert!(matches!(error, RuntimeError::InvalidArtifact(_)));
+    assert!(error
+        .to_string()
+        .contains("winner error materialization failed"));
+    assert_eq!(parent_heap.checkpoint(), before_checkpoint);
+    assert_eq!(parent_heap.stats(), before_stats);
+    assert!(parent_heap.get(sentinel).is_ok());
     assert_clean_scope(&outer);
 }
 

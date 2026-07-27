@@ -199,8 +199,13 @@ impl EvaluatedLane {
             Ok(error) => RuntimeError::Opaque(Box::new(error)),
             Err(error) => error,
         };
-        materialize_request_heap_owned_runtime_error(owned, parent_heap).unwrap_or_else(|error| {
-            invalid_scheduler(format!("winner error materialization failed: {error}"))
-        })
+        let checkpoint = parent_heap.checkpoint();
+        match materialize_request_heap_owned_runtime_error(owned, parent_heap) {
+            Ok(error) => error,
+            Err(error) => {
+                parent_heap.rollback_to_checkpoint(checkpoint);
+                invalid_scheduler(format!("winner error materialization failed: {error}"))
+            }
+        }
     }
 }
