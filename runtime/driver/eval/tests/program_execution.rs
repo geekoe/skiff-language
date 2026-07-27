@@ -18,7 +18,6 @@ use skiff_runtime_boundary::{
 };
 use skiff_runtime_host::eval_capability_adapter;
 use skiff_runtime_model::{
-    error::WirePayload,
     request_heap::{RequestHeap, RequestHeapLimits},
     runtime_value::{
         HeapHandle, HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue, RuntimeValueCarrier,
@@ -565,7 +564,9 @@ async fn runtime_program_time_sleep_observes_cancellation() {
         .await
         .expect("cancellation task should complete");
 
-    assert!(matches!(error, RuntimeError::Cancelled));
+    assert!(error.is_cancellation_terminal());
+    assert_eq!(error.ordinary_payload(), None);
+    assert_eq!(error.ordinary_catch_projection(), None);
 }
 
 #[tokio::test]
@@ -589,12 +590,28 @@ async fn runtime_program_time_sleep_observes_deadline() {
     .expect_err("expired std.time.sleep should fail");
 
     assert!(matches!(
-        error,
+        &error,
         RuntimeError::ExecutionBudgetExceeded {
             reason: BudgetReason::DeadlineExceeded,
             ..
         }
     ));
+    assert_eq!(
+        error
+            .ordinary_payload()
+            .expect("deadline remains ordinary")
+            .code,
+        "TimeoutError"
+    );
+    assert_eq!(
+        error
+            .ordinary_catch_projection()
+            .map(|(identity, _)| identity),
+        Some(
+            skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity::Timeout
+                .catch_identity()
+        )
+    );
 }
 
 #[tokio::test]
@@ -837,7 +854,9 @@ async fn runtime_program_json_decode_native_missing_type_args_fails_invalid_arti
         .await
         .expect_err("std.json.decode without direct typeArgs should fail closed");
 
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("invalid artifact remains ordinary");
     assert_eq!(payload.code, "InvalidArtifact");
     let message = payload.message;
     assert!(message.contains("std.json.decode"));
@@ -877,7 +896,9 @@ async fn runtime_program_json_encode_native_missing_type_args_fails_invalid_arti
         .await
         .expect_err("std.json.encode without direct typeArgs should fail closed");
 
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("invalid artifact remains ordinary");
     assert_eq!(payload.code, "InvalidArtifact");
     let message = payload.message;
     assert!(message.contains("std.json.encode"));
@@ -896,7 +917,9 @@ async fn runtime_program_json_native_missing_t0_type_arg_fails_invalid_artifact(
         .await
         .expect_err("std.json.decode without T0 typeArg should fail closed");
 
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("invalid artifact remains ordinary");
     assert_eq!(payload.code, "InvalidArtifact");
     let message = payload.message;
     assert!(message.contains("std.json.decode"));
@@ -915,7 +938,9 @@ async fn runtime_program_json_native_unresolved_type_arg_fails_invalid_artifact(
         .await
         .expect_err("std.json.decode with unresolved direct typeArgs should fail closed");
 
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("invalid artifact remains ordinary");
     assert_eq!(payload.code, "InvalidArtifact");
     let message = payload.message;
     assert!(message.contains("std.json.decode"));
@@ -2106,7 +2131,9 @@ async fn runtime_program_create_from_stream_items_use_request_heap_budget() {
         )
         .await
         .expect_err("stream item conversion should enforce request heap budget");
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("resource limit remains ordinary");
     assert_eq!(payload.code, "ResourceLimitExceeded");
     assert_eq!(
         payload
@@ -2223,8 +2250,12 @@ async fn runtime_program_emit_response_stream_uses_response_sink_not_inner_sink(
         )
         .await
         .expect_err("archive sink cancellation should stop nested forwarding");
-    let payload = error.payload();
-    assert_eq!(payload.code, "CancelError", "unexpected error: {error}");
+    assert!(
+        error.is_cancellation_terminal(),
+        "unexpected error: {error}"
+    );
+    assert_eq!(error.ordinary_payload(), None);
+    assert_eq!(error.ordinary_catch_projection(), None);
 }
 
 #[tokio::test]
@@ -3039,7 +3070,9 @@ async fn runtime_program_service_dependency_server_stream_chunks_use_request_hea
         .await
         .expect_err("chunk decode should enforce request heap budget");
     let error = crate::error::RuntimeError::from(error);
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("resource limit remains ordinary");
     assert_eq!(payload.code, "ResourceLimitExceeded");
     assert_eq!(
         payload
@@ -3174,7 +3207,7 @@ async fn runtime_program_service_dependency_expired_deadline_fails_before_send()
     .await
     .expect_err("expired caller deadline should fail before outbound send");
 
-    let payload = error.payload();
+    let payload = error.ordinary_payload().expect("deadline remains ordinary");
     assert_eq!(payload.code, "TimeoutError");
     assert_eq!(
         payload
@@ -5874,10 +5907,12 @@ fn builtin_type(name: &str) -> LinkedTypeRef {
 }
 
 fn assert_resource_error(error: &RuntimeError, path: &str) {
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("resource error remains ordinary");
     assert_eq!(payload.code, "std.resource.ResourceError");
     assert_eq!(
-        WirePayload::catch_projection(error),
+        error.ordinary_catch_projection(),
         None,
         "ResourceError must stay package-owned even through eval diagnostic wrappers",
     );
@@ -5892,7 +5927,9 @@ fn assert_resource_error(error: &RuntimeError, path: &str) {
 }
 
 fn assert_resource_json_decode_error(error: &RuntimeError, path: &str) {
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("resource JSON decode remains ordinary");
     assert_eq!(payload.code, "std.json.DecodeError");
     assert_eq!(
         payload

@@ -7,7 +7,7 @@ use skiff_runtime_boundary::{contract::RuntimeBoundaryContract, plan::BoundaryUs
 use skiff_runtime_capability_context::{FileCapabilityError, StreamConsumerCleanup};
 
 use super::{unsupported_native_target, RuntimeNativeInvocation};
-use crate::error::{Result, RuntimeError};
+use crate::error::{OrdinaryRuntimeError, Result, RuntimeError};
 use crate::{
     call_helpers::runtime_string_arg,
     capability::{NativeFileCapability, NativeFileChunkFuture, NativeFileSourceStreamCapability},
@@ -255,16 +255,18 @@ fn file_capability_error_from_native(error: RuntimeError) -> FileCapabilityError
         | RuntimeError::Unsupported(message) => FileCapabilityError::Decode(message),
         RuntimeError::Recoverable(error) => FileCapabilityError::Stream(
             skiff_runtime_capability_context::StreamRuntimeError::producer(
-                RuntimeError::Recoverable(error),
+                OrdinaryRuntimeError::try_new(RuntimeError::Recoverable(error))
+                    .expect("recoverable errors are ordinary"),
             ),
         ),
         RuntimeError::Opaque(error) => FileCapabilityError::Stream(
             skiff_runtime_capability_context::StreamRuntimeError::producer_boxed(error),
         ),
         RuntimeError::Json(error) => FileCapabilityError::Stream(
-            skiff_runtime_capability_context::StreamRuntimeError::producer(RuntimeError::Json(
-                error,
-            )),
+            skiff_runtime_capability_context::StreamRuntimeError::producer(
+                OrdinaryRuntimeError::try_new(RuntimeError::Json(error))
+                    .expect("JSON errors are ordinary"),
+            ),
         ),
     }
 }

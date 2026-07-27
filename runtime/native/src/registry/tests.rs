@@ -3,7 +3,7 @@ use skiff_artifact_model::{
     BuiltinReceiverCallableSemantics, NativeCallableSemantics, NativeSignatureTypeExpr,
     BUILTIN_RECEIVER_CALLABLE_SEMANTICS, STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
 };
-use skiff_runtime_model::{error::WirePayload, service_error::PlatformBuiltinErrorIdentity};
+use skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity;
 use skiff_runtime_native_contract::NativeRequiredContext;
 
 use crate::{
@@ -37,7 +37,9 @@ fn assert_decode_target_projection(
     expected_identity: PlatformBuiltinErrorIdentity,
     message_fragment: &str,
 ) {
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("decode target error remains ordinary");
     assert_eq!(payload.code, code, "unexpected error: {error}");
     assert_eq!(
         payload
@@ -52,7 +54,9 @@ fn assert_decode_target_projection(
         "unexpected error: {error}"
     );
     assert_eq!(
-        error.catch_projection().map(|(identity, _)| identity),
+        error
+            .ordinary_catch_projection()
+            .map(|(identity, _)| identity),
         Some(expected_identity.catch_identity())
     );
 }

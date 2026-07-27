@@ -6,9 +6,7 @@ use skiff_runtime_boundary::{
     binary::decode_payload_plan,
     payload::{PayloadBoundary, PayloadBoundaryKind},
 };
-use skiff_runtime_capability_context::{
-    RequestPayloadContext, RequestPayloadEncoding, StreamRuntimeError,
-};
+use skiff_runtime_capability_context::{RequestPayloadContext, RequestPayloadEncoding};
 #[cfg(any(test, feature = "test-support"))]
 use skiff_runtime_linked_program::ConstAddr;
 use skiff_runtime_linked_program::{ExecutableAddr, LinkedExecutable};
@@ -51,7 +49,7 @@ use super::{
 };
 use crate::{
     capabilities::StreamConsumerCleanup,
-    error::{Result, RuntimeError},
+    error::{stream_runtime_error_from_eval, Result, RuntimeError},
 };
 
 pub struct ProgramInvocationInput<'a> {
@@ -480,7 +478,7 @@ impl Interpreter {
                 {
                     Ok(_) => sink.end().await,
                     Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
-                    Err(error) => sink.fail(StreamRuntimeError::producer(error)).await,
+                    Err(error) => sink.fail(stream_runtime_error_from_eval(error)).await,
                 }
             };
             let consumer_future = self.consume_binary_http_response_stream(
@@ -666,7 +664,7 @@ impl Interpreter {
                 {
                     Ok(_) => sink.end().await,
                     Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
-                    Err(error) => sink.fail(StreamRuntimeError::producer(error)).await,
+                    Err(error) => sink.fail(stream_runtime_error_from_eval(error)).await,
                 }
             };
             let consumer_future = self.consume_binary_http_response_stream(
@@ -912,7 +910,7 @@ impl Interpreter {
                 {
                     Ok(_) => sink.end().await,
                     Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
-                    Err(error) => sink.fail(StreamRuntimeError::producer(error)).await,
+                    Err(error) => sink.fail(stream_runtime_error_from_eval(error)).await,
                 }
             };
             let consumer_future = self.consume_runtime_response_stream(

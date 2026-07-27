@@ -37,7 +37,7 @@ use skiff_runtime_model::{
 };
 
 use crate::{
-    error::{Result, RuntimeError, UserException, WirePayload},
+    error::{Result, RuntimeError, UserException},
     exceptions::{
         exact_named_union_branch_index, materialize_service_error_local_value,
         user_exception_for_catch,
@@ -170,6 +170,9 @@ impl CanonicalServiceErrorChannel {
         context: ServiceErrorExportContext<'_>,
         next_correlation: impl FnOnce() -> Result<ErrorCorrelation>,
     ) -> Result<OpaqueServiceError> {
+        if actual_error.is_cancellation_terminal() {
+            return Err(RuntimeError::Cancelled);
+        }
         if let Some(error) = actual_error.fixed_service_failure() {
             return Ok(error.clone());
         }
@@ -188,7 +191,7 @@ impl CanonicalServiceErrorChannel {
             return Err(RuntimeError::InvalidArtifact(message.clone()));
         }
 
-        if let Some((identity, payload)) = actual_error.catch_projection() {
+        if let Some((identity, payload)) = actual_error.ordinary_catch_projection() {
             if let Some(identity) = platform_identity(&identity) {
                 let correlation = next_correlation()?;
                 return match encode_platform_payload(identity, &payload) {
@@ -338,6 +341,15 @@ fn export_local_exception(
             "local service exception is missing its exact catch identity".to_string(),
         )
     })?;
+    if matches!(
+        identity,
+        CatchIdentity::Nominal(NominalTypeIdentity::PlatformBuiltin(identity))
+            if !admitted_platform_identity(*identity)
+    ) {
+        return Err(RuntimeError::InvalidArtifact(
+            "local service exception uses an unadmitted platform identity".to_string(),
+        ));
+    }
 
     if let Some(identity) = platform_identity(identity) {
         let payload = match runtime_to_wire(carrier.value(), context.provider_heap)
@@ -1110,9 +1122,31 @@ fn is_internal_error_identity(identity: &ServiceErrorPublicIdentity) -> bool {
 
 fn platform_identity(identity: &CatchIdentity) -> Option<PlatformBuiltinErrorIdentity> {
     match identity {
-        CatchIdentity::Nominal(NominalTypeIdentity::PlatformBuiltin(identity)) => Some(*identity),
+        CatchIdentity::Nominal(NominalTypeIdentity::PlatformBuiltin(identity))
+            if admitted_platform_identity(*identity) =>
+        {
+            Some(*identity)
+        }
         _ => None,
     }
+}
+
+fn admitted_platform_identity(identity: PlatformBuiltinErrorIdentity) -> bool {
+    matches!(
+        identity,
+        PlatformBuiltinErrorIdentity::Timeout
+            | PlatformBuiltinErrorIdentity::ConfigDecode
+            | PlatformBuiltinErrorIdentity::BytesDecode
+            | PlatformBuiltinErrorIdentity::NumberDecode
+            | PlatformBuiltinErrorIdentity::JsonDecode
+            | PlatformBuiltinErrorIdentity::DbConflict
+            | PlatformBuiltinErrorIdentity::DbDecode
+            | PlatformBuiltinErrorIdentity::File
+            | PlatformBuiltinErrorIdentity::TimeDecode
+            | PlatformBuiltinErrorIdentity::ServiceProviderUnavailable
+            | PlatformBuiltinErrorIdentity::ServiceProtocol
+            | PlatformBuiltinErrorIdentity::Http
+    )
 }
 
 fn assembly_contains_package(image: &AssemblyExecutionImage, package_id: &str) -> bool {
@@ -1345,7 +1379,7 @@ fn validate_platform_payload(
         .as_object()
         .ok_or_else(|| "platform payload must be an object".to_string())?;
     match identity {
-        PlatformBuiltinErrorIdentity::Cancel | PlatformBuiltinErrorIdentity::File => {
+        PlatformBuiltinErrorIdentity::File => {
             exact_fields(object, &["message"])?;
             string_field(object, "message")?;
         }
@@ -1355,10 +1389,7 @@ fn validate_platform_payload(
                 &["elapsedMs", "instructionCount", "limit", "reason"],
             )?;
             let reason = string_field(object, "reason")?;
-            if !matches!(
-                reason,
-                "cancelled" | "deadlineExceeded" | "instructionLimitExceeded"
-            ) {
+            if !matches!(reason, "deadlineExceeded" | "instructionLimitExceeded") {
                 return Err("timeout reason is not canonical".to_string());
             }
             u64_field(object, "instructionCount")?;
@@ -1398,6 +1429,12 @@ fn validate_platform_payload(
         PlatformBuiltinErrorIdentity::Http => {
             exact_fields(object, &["detail", "message"])?;
             string_field(object, "message")?;
+        }
+        identity => {
+            return Err(format!(
+                "platform identity {} is not admitted by the service error channel",
+                identity.symbol()
+            ));
         }
     }
     Ok(())

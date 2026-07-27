@@ -683,7 +683,7 @@ mod tests {
     fn builtin_only_registered_errors_remain_native_without_package_guessing() {
         let (image, _) = projection_image();
         let projection = RuntimeAssemblyExecutionProjection::from_image(image);
-        for symbol in ["CancelError", "TimeoutError", "config.DecodeError"] {
+        for symbol in ["TimeoutError", "config.DecodeError"] {
             let catch_type = skiff_runtime_linked_program::LinkedTypeRef::Native {
                 name: symbol.to_string(),
                 args: Vec::new(),
@@ -694,6 +694,15 @@ mod tests {
                 vec![platform_identity(symbol)]
             );
         }
+
+        let legacy_cancel = skiff_runtime_linked_program::LinkedTypeRef::Native {
+            name: "CancelError".to_string(),
+            args: Vec::new(),
+        };
+        assert!(
+            catch_type_leaves(&legacy_cancel, projection.type_view()).is_err(),
+            "legacy CancelError linked spelling must fail closed"
+        );
     }
 
     fn std_error_projection_image(

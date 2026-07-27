@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use super::*;
-use crate::error::{unwrap_diagnostic_source_context, WirePayload};
+use crate::error::unwrap_diagnostic_source_context;
 use skiff_artifact_model::InstructionSourceSite;
 use skiff_runtime_linked_program::{
     FileAddr, LinkedFileUnit, LinkedNamedUnionBranch, LinkedNominalTypeRefBase,
@@ -35,6 +35,9 @@ pub fn request_exception_for_catch(
     correlation: ErrorCorrelation,
     heap: &mut RequestHeap,
 ) -> Result<Option<RequestException>> {
+    if error.is_cancellation_terminal() {
+        return Ok(None);
+    }
     if let Some(exception) = user_exception_for_catch(error) {
         if exception
             .actual_payload_type()
@@ -44,7 +47,7 @@ pub fn request_exception_for_catch(
         }
         return Ok(None);
     }
-    let Some((identity, payload)) = error.catch_projection() else {
+    let Some((identity, payload)) = error.ordinary_catch_projection() else {
         return Ok(None);
     };
     if !catch_identity_matches(&identity, leaves) {
@@ -247,7 +250,9 @@ fn collect_catch_type_leaves(
             }
         }
         LinkedTypeRef::Native { name, args } if args.is_empty() => {
-            if let Some(identity) = PlatformBuiltinErrorIdentity::from_symbol(name) {
+            if let Some(identity) = PlatformBuiltinErrorIdentity::from_symbol(name)
+                .filter(|identity| admitted_platform_builtin(*identity))
+            {
                 push_catch_leaf(identity.catch_identity(), leaves);
             }
         }
@@ -785,6 +790,25 @@ fn platform_builtin_for_addr(
 ) -> Option<PlatformBuiltinErrorIdentity> {
     let symbol = standard_type_symbol_for_addr(addr, program)?;
     PlatformBuiltinErrorIdentity::from_symbol(&symbol)
+        .filter(|identity| admitted_platform_builtin(*identity))
+}
+
+fn admitted_platform_builtin(identity: PlatformBuiltinErrorIdentity) -> bool {
+    matches!(
+        identity,
+        PlatformBuiltinErrorIdentity::Timeout
+            | PlatformBuiltinErrorIdentity::ConfigDecode
+            | PlatformBuiltinErrorIdentity::BytesDecode
+            | PlatformBuiltinErrorIdentity::NumberDecode
+            | PlatformBuiltinErrorIdentity::JsonDecode
+            | PlatformBuiltinErrorIdentity::DbConflict
+            | PlatformBuiltinErrorIdentity::DbDecode
+            | PlatformBuiltinErrorIdentity::File
+            | PlatformBuiltinErrorIdentity::TimeDecode
+            | PlatformBuiltinErrorIdentity::ServiceProviderUnavailable
+            | PlatformBuiltinErrorIdentity::ServiceProtocol
+            | PlatformBuiltinErrorIdentity::Http
+    )
 }
 
 fn standard_type_symbol_for_addr(addr: &TypeAddr, program: ProgramTypeView<'_>) -> Option<String> {
@@ -1119,5 +1143,29 @@ mod tests {
         assert_eq!(exception.local_catch_identity(), Some(&identity));
         assert_eq!(exception.source(), &source_site());
         assert!(exception.local_value().is_some());
+    }
+
+    #[test]
+    fn cancellation_terminal_cannot_materialize_a_request_exception() {
+        let mut heap = RequestHeap::default();
+        let leaves = [PlatformBuiltinErrorIdentity::Timeout.catch_identity()];
+        let exception = request_exception_for_catch(
+            &RuntimeError::Cancelled.with_diagnostic_frame(serde_json::json!({
+                "sourceId": 7,
+            })),
+            &leaves,
+            source_site(),
+            vec![ExceptionStackFrame::Local {
+                site: source_site(),
+            }],
+            ErrorCorrelation {
+                trace_id: "trace-cancel".to_string(),
+                error_id: "trace-cancel:local-error:1".to_string(),
+            },
+            &mut heap,
+        )
+        .expect("cancellation classification must not fail");
+
+        assert_eq!(exception, None);
     }
 }

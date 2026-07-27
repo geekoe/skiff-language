@@ -1022,12 +1022,13 @@ async fn run_stream_producer_task(
     match result {
         Ok(_) => sink.end().await,
         Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
-        Err(error) => {
-            sink.fail(StreamRuntimeError::producer(
-                RequestHeapOwnedStreamError::new(error, producer_heap),
-            ))
-            .await
-        }
+        Err(error) => match RequestHeapOwnedStreamError::try_new(error, producer_heap) {
+            Ok(error) => sink.fail(StreamRuntimeError::producer(error)).await,
+            Err(error) => {
+                debug_assert!(error.is_cancellation_terminal());
+                sink.fail(StreamRuntimeError::Cancelled).await;
+            }
+        },
     }
     for (stream_runtime, stream_value) in arg_streams {
         stream_runtime.cancel(&stream_value);

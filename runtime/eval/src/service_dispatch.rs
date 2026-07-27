@@ -30,7 +30,7 @@ use super::{
     },
     Interpreter,
 };
-use crate::error::{Result, RuntimeError};
+use crate::error::{stream_runtime_error_from_eval, Result, RuntimeError};
 #[cfg(any(test, feature = "test-support"))]
 use skiff_runtime_capability_context::RequestStartControl;
 
@@ -247,7 +247,7 @@ impl OutboundServiceStreamSource {
         loop {
             let Some(response) = self.receiver.recv().await else {
                 self.abort_pending("response_channel_closed");
-                return Err(StreamRuntimeError::producer(
+                return Err(stream_runtime_error_from_eval(
                     RuntimeError::ProviderUnavailable {
                         target: self.target.clone(),
                         reason: "outbound response channel closed".to_string(),
@@ -259,7 +259,7 @@ impl OutboundServiceStreamSource {
                     let _ = http_response;
                     if self.started {
                         self.abort_pending("duplicate_response_start");
-                        return Err(StreamRuntimeError::producer(
+                        return Err(stream_runtime_error_from_eval(
                             RuntimeError::ProviderUnavailable {
                                 target: self.target.clone(),
                                 reason: "outbound response.start received more than once"
@@ -272,7 +272,7 @@ impl OutboundServiceStreamSource {
                 OutboundResponse::Chunk { seq, payload } => {
                     if !self.started {
                         self.abort_pending("chunk_before_start");
-                        return Err(StreamRuntimeError::producer(
+                        return Err(stream_runtime_error_from_eval(
                             RuntimeError::ProviderUnavailable {
                                 target: self.target.clone(),
                                 reason: "outbound response.chunk received before response.start"
@@ -282,7 +282,7 @@ impl OutboundServiceStreamSource {
                     }
                     if seq != self.next_seq {
                         self.abort_pending("chunk_seq_mismatch");
-                        return Err(StreamRuntimeError::producer(
+                        return Err(stream_runtime_error_from_eval(
                             RuntimeError::ProviderUnavailable {
                                 target: self.target.clone(),
                                 reason: format!(
@@ -297,14 +297,14 @@ impl OutboundServiceStreamSource {
                         Ok(value) => Ok(Some(value)),
                         Err(error) => {
                             self.abort_pending("chunk_decode_error");
-                            Err(StreamRuntimeError::producer(error))
+                            Err(stream_runtime_error_from_eval(error))
                         }
                     };
                 }
                 OutboundResponse::End { payload } => {
                     if !payload.is_empty() {
                         self.abort_pending("stream_end_payload");
-                        return Err(StreamRuntimeError::producer(
+                        return Err(stream_runtime_error_from_eval(
                             RuntimeError::ProviderUnavailable {
                                 target: self.target.clone(),
                                 reason: "outbound serverStream response.end must not carry payload"
@@ -323,7 +323,7 @@ impl OutboundServiceStreamSource {
                 }
                 OutboundResponse::Error(_) => {
                     self.lease.complete();
-                    return Err(StreamRuntimeError::producer(RuntimeError::Protocol {
+                    return Err(stream_runtime_error_from_eval(RuntimeError::Protocol {
                         target: self.target.clone(),
                         message: GENERIC_RESPONSE_ERROR_PROTOCOL_MESSAGE.to_string(),
                     }));

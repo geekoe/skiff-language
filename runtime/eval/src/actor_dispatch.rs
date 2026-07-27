@@ -132,18 +132,25 @@ pub(crate) async fn dispatch_actor_method(
             .map_err(RuntimeError::from)?;
             runtime_carrier_for_plan(value, &return_plan, "Actor method return", context.heap)
         }
-        ActorInvocationOutcome::Cancelled(ActorInvocationCancellation::Cancelled) => {
-            Err(RuntimeError::Cancelled)
-        }
-        ActorInvocationOutcome::Cancelled(ActorInvocationCancellation::DeadlineExceeded) => {
-            Err(RuntimeError::RootRuntimePayload(RuntimeErrorPayload {
-                code: "DeadlineExceeded".to_string(),
-                message: "Actor method deadline exceeded".to_string(),
-                status: None,
-                details: None,
-            }))
+        ActorInvocationOutcome::Cancelled(cancellation) => {
+            Err(actor_cancellation_error(cancellation, timeout_ms))
         }
         ActorInvocationOutcome::ActorError(error) => Err(actor_error(error)),
+    }
+}
+
+fn actor_cancellation_error(
+    cancellation: ActorInvocationCancellation,
+    timeout_ms: u64,
+) -> RuntimeError {
+    match cancellation {
+        ActorInvocationCancellation::Cancelled => RuntimeError::Cancelled,
+        ActorInvocationCancellation::DeadlineExceeded => RuntimeError::ExecutionBudgetExceeded {
+            reason: crate::error::BudgetReason::DeadlineExceeded,
+            instruction_count: 0,
+            limit: None,
+            elapsed_ms: timeout_ms as f64,
+        },
     }
 }
 
@@ -203,4 +210,31 @@ fn actor_error(error: ActorInvocationError) -> RuntimeError {
         status: None,
         details: Some(details),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity;
+
+    #[test]
+    fn actor_cancel_is_terminal_while_actor_deadline_is_timeout() {
+        let cancelled = actor_cancellation_error(ActorInvocationCancellation::Cancelled, 30_000);
+        assert!(cancelled.is_cancellation_terminal());
+        assert_eq!(cancelled.ordinary_payload(), None);
+        assert_eq!(cancelled.ordinary_catch_projection(), None);
+
+        let deadline =
+            actor_cancellation_error(ActorInvocationCancellation::DeadlineExceeded, 30_000);
+        let payload = deadline
+            .ordinary_payload()
+            .expect("actor deadline remains an ordinary TimeoutError");
+        assert_eq!(payload.code, "TimeoutError");
+        assert_eq!(
+            deadline
+                .ordinary_catch_projection()
+                .map(|(identity, _)| identity),
+            Some(PlatformBuiltinErrorIdentity::Timeout.catch_identity())
+        );
+    }
 }

@@ -1074,7 +1074,9 @@ mod recoverable_spawn_payload_tests {
         let error = encode_spawn_args_payload(&value, &expected, &boundary, &heap, &hooks)
             .expect_err("unsupported local interface must fail before submit bytes are returned");
 
-        let payload = error.payload();
+        let payload = error
+            .ordinary_payload()
+            .expect("recoverable error remains ordinary");
         assert_eq!(payload.code, "recoverable_code_identity_missing");
         let RuntimeError::Recoverable(error) = error else {
             panic!("expected carried boundary recoverable diagnostic, got {error}");

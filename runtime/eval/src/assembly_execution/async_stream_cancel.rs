@@ -47,7 +47,7 @@ use super::{
 use crate::{
     capabilities::{StreamRuntimeOwner, StreamSink, StreamSinkApi},
     env::Env,
-    error::{Result, RuntimeError},
+    error::{stream_runtime_error_from_eval, Result, RuntimeError},
     eval_context::EvalContext,
     program_execution::{OwnedProgramExecutionContext, ProgramExecutionContext},
     program_stream::{executable_body_contains_emit, linked_stream_item_type},
@@ -453,7 +453,7 @@ async fn finish_provider_stream(producer: ProviderStreamTask, terminal: Provider
                     producer.provider_service_id.clone(),
                     producer.operation_id.clone(),
                 ),
-                Err(error) => StreamRuntimeError::producer(error),
+                Err(error) => stream_runtime_error_from_eval(error),
             };
             publish_provider_terminal(&producer, ProviderStreamPublication::Error(terminal)).await;
         }
@@ -514,7 +514,7 @@ async fn publish_provider_deadline_terminal(producer: &ProviderStreamTask, error
     // work, but do not race publication against the now-cancelled request or the same expired
     // deadline: either would downgrade the consumer-visible timeout to cancellation.
     producer.request.cancel();
-    let publication = producer.sink.fail(StreamRuntimeError::producer(error));
+    let publication = producer.sink.fail(stream_runtime_error_from_eval(error));
     tokio::pin!(publication);
     tokio::select! {
         biased;
@@ -675,7 +675,9 @@ where
         }
         _ = &mut deadline => {
             provider_request.cancel();
-            Err(StreamRuntimeError::producer(deadline_error(&execution.borrow())))
+            Err(stream_runtime_error_from_eval(deadline_error(
+                &execution.borrow(),
+            )))
         }
         result = &mut provider_future => result,
     }
@@ -830,7 +832,7 @@ impl BoundaryStreamSink {
             "provider stream emit item",
             &mut source_heap,
         )
-        .map_err(StreamRuntimeError::producer)?;
+        .map_err(stream_runtime_error_from_eval)?;
         let mut receiver_heap = RequestHeap::default();
         let provider_context = self.provider_context.borrow();
         let hooks = CallbackNativeCapabilityHooks::new(&provider_context);
@@ -847,11 +849,11 @@ impl BoundaryStreamSink {
                 BoundaryValueOwner::Provider,
                 BoundaryValueLifetime::Stream,
             )
-            .map_err(StreamRuntimeError::producer)?,
+            .map_err(stream_runtime_error_from_eval)?,
             &hooks,
         )
-        .map_err(StreamRuntimeError::producer)?;
-        runtime_to_wire(&materialized, &receiver_heap).map_err(StreamRuntimeError::producer)
+        .map_err(stream_runtime_error_from_eval)?;
+        runtime_to_wire(&materialized, &receiver_heap).map_err(stream_runtime_error_from_eval)
     }
 
     fn project_internal_item(
@@ -884,10 +886,10 @@ impl BoundaryStreamSink {
                 BoundaryValueOwner::Provider,
                 BoundaryValueLifetime::Stream,
             )
-            .map_err(StreamRuntimeError::producer)?,
+            .map_err(stream_runtime_error_from_eval)?,
             &hooks,
         )
-        .map_err(StreamRuntimeError::producer)?;
+        .map_err(stream_runtime_error_from_eval)?;
         Ok(Some(StreamInternalItem::new(materialized, receiver_heap)))
     }
 }

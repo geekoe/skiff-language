@@ -1,6 +1,9 @@
 use serde_json::Value;
 use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
-use skiff_runtime_eval::{error::RuntimeError, exceptions::request_exception_for_rethrow};
+use skiff_runtime_eval::{
+    error::{BudgetReason, RuntimeError},
+    exceptions::{request_exception_for_catch, request_exception_for_rethrow},
+};
 use skiff_runtime_model::{
     addr::{FileAddr, TypeAddr, UnitAddr},
     error::{RuntimeErrorPayload, WirePayload},
@@ -40,7 +43,7 @@ fn finite_platform_projection_is_exact_and_resource_error_fails_closed() {
     let db_error = RuntimeError::db_decode("std.db", "missing id")
         .with_diagnostic_frame(serde_json::json!({ "operation": "fixture.db" }));
     assert_eq!(
-        WirePayload::catch_projection(&db_error),
+        db_error.ordinary_catch_projection(),
         Some((
             PlatformBuiltinErrorIdentity::DbDecode.catch_identity(),
             serde_json::json!({
@@ -52,7 +55,9 @@ fn finite_platform_projection_is_exact_and_resource_error_fails_closed() {
 
     let resource_error = RuntimeError::resource_error("prompts/system.md", "missing")
         .with_diagnostic_frame(serde_json::json!({ "operation": "fixture.resource" }));
-    let payload = WirePayload::payload(&resource_error);
+    let payload = resource_error
+        .ordinary_payload()
+        .expect("resource error remains ordinary");
     assert_eq!(payload.code, "std.resource.ResourceError");
     assert_eq!(
         payload.details,
@@ -62,7 +67,54 @@ fn finite_platform_projection_is_exact_and_resource_error_fails_closed() {
             "frames": [{ "operation": "fixture.resource" }],
         })),
     );
-    assert_eq!(WirePayload::catch_projection(&resource_error), None);
+    assert_eq!(resource_error.ordinary_catch_projection(), None);
+}
+
+#[test]
+fn cancellation_terminal_is_not_materialized_for_source_catch_but_timeout_is() {
+    let timeout_identity = PlatformBuiltinErrorIdentity::Timeout.catch_identity();
+    let source = test_site();
+    let stack = vec![ExceptionStackFrame::Local {
+        site: source.clone(),
+    }];
+    let mut heap = RequestHeap::default();
+
+    let cancellation = RuntimeError::Cancelled
+        .with_diagnostic_frame(serde_json::json!({ "operation": "fixture.cancel" }));
+    let caught = request_exception_for_catch(
+        &cancellation,
+        std::slice::from_ref(&timeout_identity),
+        source.clone(),
+        stack.clone(),
+        ErrorCorrelation {
+            trace_id: "trace-cancel".to_string(),
+            error_id: "trace-cancel:local-error:1".to_string(),
+        },
+        &mut heap,
+    )
+    .expect("cancellation classification must not fail");
+    assert_eq!(caught, None);
+
+    let timeout = RuntimeError::ExecutionBudgetExceeded {
+        reason: BudgetReason::DeadlineExceeded,
+        instruction_count: 42,
+        limit: Some(100),
+        elapsed_ms: 12.5,
+    };
+    let caught = request_exception_for_catch(
+        &timeout,
+        std::slice::from_ref(&timeout_identity),
+        source,
+        stack,
+        ErrorCorrelation {
+            trace_id: "trace-timeout".to_string(),
+            error_id: "trace-timeout:local-error:1".to_string(),
+        },
+        &mut heap,
+    )
+    .expect("timeout catch projection")
+    .expect("timeout remains source-catchable");
+    assert_eq!(caught.local_catch_identity(), Some(&timeout_identity));
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -106,11 +158,8 @@ fn opaque_projection_forwards_identity_and_payload_without_reconstruction() {
         value: value.clone(),
     }));
 
-    assert_eq!(WirePayload::payload(&error), payload);
-    assert_eq!(
-        WirePayload::catch_projection(&error),
-        Some((identity, value)),
-    );
+    assert_eq!(error.ordinary_payload(), Some(payload));
+    assert_eq!(error.ordinary_catch_projection(), Some((identity, value)),);
 }
 
 #[test]

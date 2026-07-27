@@ -66,9 +66,7 @@ use super::{
     type_projection::EvalTypeProjection,
     *,
 };
-use crate::error::{
-    materialize_request_heap_owned_runtime_error, RuntimeError, UserException, WirePayload,
-};
+use crate::error::{materialize_request_heap_owned_runtime_error, RuntimeError, UserException};
 use promoted_runtime::dispatch::NativeDispatch;
 use skiff_artifact_model::{
     InstructionSourceSite, SyntheticInstructionSiteReason, STD_NATIVE_CALLABLE_SEMANTICS,
@@ -1609,10 +1607,13 @@ impl<'a> EvalContext<'a> {
             return result;
         };
         let error = materialize_request_heap_owned_runtime_error(error, self.heap)?;
+        if error.is_cancellation_terminal() {
+            return Err(error);
+        }
         if user_exception_for_catch(&error).is_some() {
             return Err(error);
         }
-        let Some((identity, _)) = error.catch_projection() else {
+        let Some((identity, _)) = error.ordinary_catch_projection() else {
             return Err(error);
         };
         let exception = request_exception_for_catch(
