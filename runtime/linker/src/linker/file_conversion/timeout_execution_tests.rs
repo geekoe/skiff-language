@@ -3,6 +3,7 @@ use skiff_artifact_model::{
     BlockIr, ConcurrentLaneIr, ConcurrentPlanIr, ExecutableBody, ExprIr,
     ExprRefIr as ArtifactExprRefIr, InstructionSourceSite, SourceMapSource, SourcePosition,
     SourceSpanRef, StmtIr, StmtRefIr, SyntheticInstructionSiteReason,
+    MAX_SAFE_EXECUTION_DURATION_MILLISECONDS,
 };
 
 fn source_site(start: u32, end: u32) -> InstructionSourceSite {
@@ -116,6 +117,22 @@ fn execution_file() -> artifact::FileIrUnit {
 
 fn link(unit: &artifact::FileIrUnit) -> anyhow::Result<LinkedFileUnit> {
     linked_file_unit_from_assembly_artifact(unit, &|_| unreachable!())
+}
+
+fn set_source_id(site: &mut InstructionSourceSite, source_id: u64) {
+    let InstructionSourceSite::Source { span } = site else {
+        unreachable!("fixture source site must be authored");
+    };
+    span.source_id = source_id;
+}
+
+fn set_lane_source_id(lane: &mut ConcurrentLaneIr, source_id: u64) {
+    let site = match lane {
+        ConcurrentLaneIr::Statement { site, .. }
+        | ConcurrentLaneIr::Serial { site, .. }
+        | ConcurrentLaneIr::Tail { site, .. } => site,
+    };
+    set_source_id(site, source_id);
 }
 
 #[test]
@@ -262,16 +279,126 @@ fn linker_rejects_corrupt_timeout_duration_and_source_site() {
 }
 
 #[test]
+fn linker_accepts_the_maximum_safe_statement_and_value_timeout_duration() {
+    let mut unit = execution_file();
+    let StmtIr::Timeout { duration_ms, .. } = &mut unit.constants[0].body.statements[0] else {
+        unreachable!()
+    };
+    *duration_ms = MAX_SAFE_EXECUTION_DURATION_MILLISECONDS;
+    let ExprIr::Timeout { duration_ms, .. } = &mut unit.constants[0].body.expressions[1] else {
+        unreachable!()
+    };
+    *duration_ms = MAX_SAFE_EXECUTION_DURATION_MILLISECONDS;
+
+    link(&unit).expect("the maximum safe statement and value timeout durations must link");
+}
+
+#[test]
+fn linker_rejects_unsafe_statement_and_value_timeout_durations_precisely() {
+    for invalid in [MAX_SAFE_EXECUTION_DURATION_MILLISECONDS + 1, u64::MAX] {
+        let expected = format!(
+            "duration must be within 1..={MAX_SAFE_EXECUTION_DURATION_MILLISECONDS} checked milliseconds, received {invalid}"
+        );
+
+        let mut statement = execution_file();
+        let StmtIr::Timeout { duration_ms, .. } = &mut statement.constants[0].body.statements[0]
+        else {
+            unreachable!()
+        };
+        *duration_ms = invalid;
+        let statement_error = link(&statement)
+            .expect_err("an unsafe statement timeout duration must fail closed")
+            .to_string();
+        assert!(
+            statement_error.contains(&expected),
+            "expected precise statement duration diagnostic `{expected}`, got `{statement_error}`"
+        );
+
+        let mut value = execution_file();
+        let ExprIr::Timeout { duration_ms, .. } = &mut value.constants[0].body.expressions[1]
+        else {
+            unreachable!()
+        };
+        *duration_ms = invalid;
+        let value_error = link(&value)
+            .expect_err("an unsafe value timeout duration must fail closed")
+            .to_string();
+        assert!(
+            value_error.contains(&expected),
+            "expected precise value duration diagnostic `{expected}`, got `{value_error}`"
+        );
+    }
+}
+
+#[test]
+fn linker_rejects_ambiguous_and_foreign_execution_source_owners() {
+    let mut duplicate = execution_file();
+    duplicate.source_map.sources.push(SourceMapSource {
+        id: 0,
+        path: "timeout/duplicate.skiff".to_string(),
+        module_path: duplicate.module_path.clone(),
+        source_ast_hash: Some("duplicate".to_string()),
+    });
+    let duplicate_error = link(&duplicate)
+        .expect_err("duplicate source ids must fail closed")
+        .to_string();
+    assert!(
+        duplicate_error.contains("references ambiguous source 0"),
+        "expected ambiguous source diagnostic, got `{duplicate_error}`"
+    );
+
+    let mut foreign_timeout = execution_file();
+    foreign_timeout.source_map.sources[0].module_path = "foreign.module".to_string();
+    let foreign_timeout_error = link(&foreign_timeout)
+        .expect_err("a timeout source owned by another module must fail closed")
+        .to_string();
+    assert!(
+        foreign_timeout_error.contains(
+            "source 0 belongs to module `foreign.module`, not File IR module `timeout.fixture`"
+        ),
+        "expected foreign module diagnostic, got `{foreign_timeout_error}`"
+    );
+
+    let mut foreign_plan = execution_file();
+    foreign_plan.source_map.sources.push(SourceMapSource {
+        id: 1,
+        path: "foreign/plan.skiff".to_string(),
+        module_path: "foreign.module".to_string(),
+        source_ast_hash: Some("foreign".to_string()),
+    });
+    let StmtIr::Concurrent { plan } = &mut foreign_plan.constants[0].body.statements[1] else {
+        unreachable!()
+    };
+    set_source_id(&mut plan.site, 1);
+    set_lane_source_id(&mut plan.lanes[0], 1);
+    let foreign_plan_error = link(&foreign_plan)
+        .expect_err("a plan and lane sharing a foreign source id must fail closed")
+        .to_string();
+    assert!(
+        foreign_plan_error.contains(
+            "source 1 belongs to module `foreign.module`, not File IR module `timeout.fixture`"
+        ),
+        "expected foreign plan module diagnostic, got `{foreign_plan_error}`"
+    );
+}
+
+#[test]
 fn linker_rejects_corrupt_lane_order_dependency_tail_and_body() {
     let corruptions = [
-        "order",
-        "forward_dependency",
-        "duplicate_dependency",
-        "tail_shape",
-        "tail_closure",
-        "missing_body",
+        ("order", "lane order is not contiguous"),
+        ("forward_dependency", "has a forward dependency"),
+        (
+            "duplicate_dependency",
+            "dependencies must be strictly ordered and unique",
+        ),
+        ("tail_shape", "concurrent plan has invalid tail shape"),
+        (
+            "tail_closure",
+            "tail dependencies do not close over all prior lanes",
+        ),
+        ("missing_body", "references missing block `missing`"),
     ];
-    for corruption in corruptions {
+    for (corruption, expected) in corruptions {
         let mut unit = execution_file();
         if corruption == "duplicate_dependency" {
             unit.constants[0].body.blocks.push(BlockIr {
@@ -344,6 +471,9 @@ fn linker_rejects_corrupt_lane_order_dependency_tail_and_body() {
                     },
                 };
                 let statement = unit.constants[0].body.statements.remove(1);
+                unit.constants[0].body.blocks[0]
+                    .statements
+                    .retain(|statement| statement.statement != 1);
                 unit.constants[0]
                     .body
                     .expressions
@@ -364,9 +494,12 @@ fn linker_rejects_corrupt_lane_order_dependency_tail_and_body() {
             }
             _ => unreachable!(),
         }
+        let error = link(&unit)
+            .expect_err("corrupt concurrent execution plan must fail closed")
+            .to_string();
         assert!(
-            link(&unit).is_err(),
-            "{corruption} must be rejected by strict link validation"
+            error.contains(expected),
+            "{corruption} must report `{expected}`, got `{error}`"
         );
     }
 }

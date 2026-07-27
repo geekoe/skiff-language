@@ -23,6 +23,10 @@ pub use concurrent_plan::{ConcurrentLaneIr, ConcurrentPlanIr};
 #[cfg(test)]
 mod timeout_execution_tests;
 
+/// Largest persisted duration that runtime execution may admit without losing
+/// integer precision in JavaScript consumers.
+pub const MAX_SAFE_EXECUTION_DURATION_MILLISECONDS: u64 = 9_007_199_254_740_991;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecutableSignatureIr {

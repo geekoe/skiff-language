@@ -3,6 +3,14 @@ use serde_json::json;
 use super::{ConcurrentLaneIr, ConcurrentPlanIr, ExprIr, ExprRefIr, InstructionSourceSite, StmtIr};
 use crate::{SourcePosition, SourceSpanRef};
 
+#[test]
+fn execution_duration_limit_matches_the_language_duration_limit() {
+    assert_eq!(
+        super::MAX_SAFE_EXECUTION_DURATION_MILLISECONDS,
+        skiff_syntax::ast::MAX_SAFE_DURATION_MILLISECONDS
+    );
+}
+
 fn source_site(start: u32, end: u32) -> InstructionSourceSite {
     InstructionSourceSite::Source {
         span: SourceSpanRef {

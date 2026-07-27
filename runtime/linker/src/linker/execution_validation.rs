@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use skiff_artifact_model::{
     ConcurrentLaneIr, ConcurrentPlanIr, ExecutableBody, ExprIr, ExprRefIr, FileIrUnit,
     InstructionSourceSite, StmtIr, FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION,
-    FILE_IR_SCHEMA_VERSION,
+    FILE_IR_SCHEMA_VERSION, MAX_SAFE_EXECUTION_DURATION_MILLISECONDS,
 };
 
 pub(super) fn validate_file_ir_execution(unit: &FileIrUnit) -> anyhow::Result<()> {
@@ -99,8 +99,10 @@ fn validate_body(unit: &FileIrUnit, body: &ExecutableBody, owner: &str) -> anyho
 }
 
 fn validate_duration(duration_ms: u64, owner: &str, subject: &str) -> anyhow::Result<()> {
-    if duration_ms == 0 {
-        anyhow::bail!("{owner} {subject} duration must be non-zero checked milliseconds");
+    if !(1..=MAX_SAFE_EXECUTION_DURATION_MILLISECONDS).contains(&duration_ms) {
+        anyhow::bail!(
+            "{owner} {subject} duration must be within 1..={MAX_SAFE_EXECUTION_DURATION_MILLISECONDS} checked milliseconds, received {duration_ms}"
+        );
     }
     Ok(())
 }
@@ -212,15 +214,29 @@ fn validate_source_site(
     let InstructionSourceSite::Source { span } = site else {
         anyhow::bail!("{owner} {subject} must be an authored source site");
     };
-    if !unit
+    let mut matching_sources = unit
         .source_map
         .sources
         .iter()
-        .any(|source| source.id == span.source_id)
-    {
+        .filter(|source| source.id == span.source_id);
+    let Some(source) = matching_sources.next() else {
         anyhow::bail!(
             "{owner} {subject} references unknown source {}",
             span.source_id
+        );
+    };
+    if matching_sources.next().is_some() {
+        anyhow::bail!(
+            "{owner} {subject} references ambiguous source {}",
+            span.source_id
+        );
+    }
+    if source.module_path != unit.module_path {
+        anyhow::bail!(
+            "{owner} {subject} source {} belongs to module `{}`, not File IR module `{}`",
+            span.source_id,
+            source.module_path,
+            unit.module_path
         );
     }
     let (Some(start), Some(end)) = (span.start.offset, span.end.offset) else {
