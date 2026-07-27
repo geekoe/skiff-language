@@ -334,8 +334,18 @@ impl InProcessCallbackAdapter {
         self.projection.operations()
     }
 
-    pub fn owner_heap(&self) -> &tokio::sync::Mutex<RequestHeap> {
-        &self.owner_heap
+    /// Acquires the callback owner's heap without borrowing the adapter.
+    ///
+    /// Callback execution uses the owned guard as its one invocation-scoped
+    /// authority. The adapter deliberately exposes no independent heap
+    /// mutation methods, and reentrant invocation fails immediately instead
+    /// of waiting on its own owner lock.
+    pub fn try_lock_owner_heap_owned(
+        &self,
+    ) -> Result<tokio::sync::OwnedMutexGuard<RequestHeap>, CallbackAdapterError> {
+        Arc::clone(&self.owner_heap)
+            .try_lock_owned()
+            .map_err(|_| CallbackAdapterError::OwnerStateUnavailable)
     }
 
     pub fn operation(
@@ -384,6 +394,8 @@ pub enum CallbackAdapterError {
     AdapterRegistryUnavailable,
     #[error("callback adapter owner state cannot be materialized: {message}")]
     OwnerStateMaterialization { message: String },
+    #[error("callback adapter owner state is already executing")]
+    OwnerStateUnavailable,
     #[error("callback adapter package schema is invalid: {message}")]
     InvalidPackageSchema { message: String },
     #[error("callback operation {method_abi_id} at slot {slot} is unavailable")]
@@ -686,6 +698,42 @@ mod tests {
                 .expect("adapter should retain the callback record"),
             &admitted,
         ));
+    }
+
+    #[test]
+    fn callback_adapter_owned_owner_heap_guard_is_exclusive_and_released_once() {
+        let adapter = InProcessCallbackAdapter::from_local_interface(
+            package_schema_type(),
+            &interface("local:owned-owner-heap".to_string()),
+            &operations(),
+            &schema(),
+            &RequestHeap::default(),
+        )
+        .expect("callback adapter should construct");
+
+        let first = adapter
+            .try_lock_owner_heap_owned()
+            .expect("first owned owner-heap guard should be available");
+        assert!(matches!(
+            adapter.try_lock_owner_heap_owned(),
+            Err(CallbackAdapterError::OwnerStateUnavailable)
+        ));
+        drop(first);
+
+        let mut second = adapter
+            .try_lock_owner_heap_owned()
+            .expect("dropping the first guard should release the owner heap exactly once");
+        second
+            .alloc_array(vec![RuntimeValue::String(
+                "visible-owner-state".to_string(),
+            )])
+            .expect("owner heap should remain usable through the owned guard");
+        drop(second);
+
+        let third = adapter
+            .try_lock_owner_heap_owned()
+            .expect("the owner heap should remain reacquirable");
+        assert_eq!(third.len(), 1);
     }
 
     #[test]

@@ -22,9 +22,7 @@ use skiff_runtime_boundary::service_linkable::{
 use skiff_runtime_linked_program::CallIr;
 use skiff_runtime_model::{
     request_heap::RequestHeap,
-    runtime_value::{
-        CallbackCapabilityCarrier, HeapNode, InterfaceReceiverCallAbi, InterfaceValue, RuntimeValue,
-    },
+    runtime_value::{CallbackCapabilityCarrier, HeapNode, InterfaceValue, RuntimeValue},
 };
 use skiff_runtime_native::callback_adapter::InProcessCallbackAdapter;
 
@@ -157,6 +155,12 @@ impl ServiceLinkableCapabilityHooks for CallbackNativeCapabilityHooks<'_, '_> {
     }
 }
 
+mod prepared;
+#[allow(unused_imports)]
+pub(crate) use prepared::{
+    prepare_interface_call, CompletedCallbackInvocation, PreparedCallbackInvocation,
+};
+
 pub(crate) async fn execute_interface_call(
     context: &mut EvalContext<'_>,
     call: &CallIr,
@@ -165,101 +169,11 @@ pub(crate) async fn execute_interface_call(
     slot: u32,
     args: Vec<RuntimeValue>,
 ) -> Result<RuntimeValue> {
-    let receiver_target = context.context.runtime_assembly_target()?;
-    if receiver_target.request_activation().generation() != carrier.request_generation() {
-        return Err(callback_capability_error(
-            CallbackCapabilityError::CapabilityUnavailable,
-        ));
-    }
-    let owner = receiver_target
-        .activation_by_opaque_id(carrier.owner_activation_id())
-        .ok_or_else(|| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    let payload = owner
-        .callback_capabilities()
-        .lookup(carrier)
-        .map_err(callback_capability_error)?;
-    let adapter = Arc::downcast::<InProcessCallbackAdapter>(payload)
-        .map_err(|_| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    let canonical_identity = serde_json::to_string(adapter.canonical_package_schema_type())
-        .map_err(|_| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    if canonical_identity != carrier.interface_or_adapter_contract() || !call.type_args.is_empty() {
-        return Err(callback_capability_error(
-            CallbackCapabilityError::CapabilityUnavailable,
-        ));
-    }
-    let operation = adapter
-        .operation(slot, method_abi_id)
-        .map_err(|_| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    if args.len() != operation.parameters().len() {
-        return Err(callback_capability_error(
-            CallbackCapabilityError::CapabilityUnavailable,
-        ));
-    }
-
-    let owner_request = receiver_target
-        .request_activation()
-        .switch_to(owner)
-        .map_err(|_| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    let owner_target = receiver_target
-        .with_request_activation(owner_request)
-        .map_err(|_| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    let owner_context = context
-        .context
-        .clone()
-        .with_runtime_assembly_target(owner_target);
-
-    let mut owner_heap = adapter
-        .owner_heap()
-        .try_lock()
-        .map_err(|_| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    let owner_checkpoint = owner_heap.checkpoint();
-    let owner_args = operation
-        .parameters()
-        .iter()
-        .zip(args.iter())
-        .map(|(ty, value)| {
-            materialize_callback_value(
-                ty,
-                adapter.package_schema_records(),
-                value,
-                context.heap,
-                &mut owner_heap,
-                BoundaryValueOwner::Caller,
-            )
-        })
-        .collect::<Result<Vec<_>>>();
-    let owner_args = match owner_args {
-        Ok(args) => args,
-        Err(error) => {
-            owner_heap.rollback_to_checkpoint(owner_checkpoint);
-            return Err(error);
-        }
-    };
-    let owner_result = match operation.receiver_call_abi() {
-        InterfaceReceiverCallAbi::ExplicitSelfFirst => {
-            context
-                .interpreter
-                .call_program_executable_with_self(
-                    owner_context,
-                    &mut owner_heap,
-                    context.env,
-                    context.addr,
-                    operation.executable(),
-                    &call.type_args,
-                    adapter.receiver().clone(),
-                    owner_args,
-                )
-                .await?
-        }
-    };
-    materialize_callback_value(
-        operation.return_type(),
-        adapter.package_schema_records(),
-        &owner_result,
-        &owner_heap,
-        context.heap,
-        BoundaryValueOwner::Provider,
-    )
+    let prepared = prepare_interface_call(context, call, carrier, method_abi_id, slot, args)?;
+    prepared
+        .wait(context.interpreter)
+        .await
+        .finalize(context.heap)
 }
 
 fn interface_value(
