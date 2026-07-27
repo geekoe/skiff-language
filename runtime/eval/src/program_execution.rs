@@ -48,6 +48,13 @@ use super::{
 use crate::assembly_execution::{RuntimeAssemblyExecutionProjection, RuntimeExecutionProjection};
 use crate::{RuntimeAssemblyEvalSeamError, RuntimeAssemblyEvalTarget};
 
+mod execution_scope;
+#[cfg(test)]
+mod execution_scope_tests;
+
+#[allow(unused_imports)]
+pub(crate) use execution_scope::{ExecutionCheckpoint, ExecutionCheckpointKind};
+
 pub struct ProgramExecutionInput<'a> {
     pub execution: ExecutionControl<'a>,
     pub config: ConfigCapabilityContext<'a>,
@@ -67,7 +74,8 @@ pub struct ProgramExecutionInput<'a> {
 }
 
 pub struct ProgramExecutionContext<'a> {
-    execution: ExecutionControl<'a>,
+    execution: OwnedExecutionControl,
+    execution_clock: execution_scope::ExecutionClock,
     config: ConfigCapabilityContext<'a>,
     db: DbCapabilityContext,
     file: FileCapabilityContext,
@@ -95,6 +103,7 @@ impl<'a> Clone for ProgramExecutionContext<'a> {
     fn clone(&self) -> Self {
         Self {
             execution: self.execution.clone(),
+            execution_clock: self.execution_clock.clone(),
             config: self.config.clone(),
             db: self.db.clone(),
             file: self.file.clone(),
@@ -128,7 +137,8 @@ impl<'a> ProgramExecutionContext<'a> {
             .filter(|trace_id| !trace_id.trim().is_empty())
             .map(str::to_string);
         Self {
-            execution: input.execution,
+            execution: input.execution.owned(),
+            execution_clock: execution_scope::ExecutionClock::production(),
             config: input.config,
             db: input.db,
             file: input.file,
@@ -160,7 +170,7 @@ impl<'a> ProgramExecutionContext<'a> {
         if stream_runtime.request_scope_generation() != Some(request_generation) {
             let (stream_runtime, owner) = stream_runtime.request_scope(request_generation);
             self.file_source_stream =
-                FileSourceStreamContext::new(stream_runtime.clone(), self.execution.clone());
+                FileSourceStreamContext::new(stream_runtime.clone(), self.execution());
             self.http_client = self.http_client.with_stream_runtime(stream_runtime);
             self._stream_runtime_owner = Some(owner);
         }
@@ -250,8 +260,8 @@ impl<'a> ProgramExecutionContext<'a> {
         self.actor_execution_frame.as_ref()
     }
 
-    pub fn execution(&self) -> ExecutionControl<'a> {
-        self.execution.clone()
+    pub fn execution(&self) -> ExecutionControl<'static> {
+        execution_scope::borrow_owned_execution_control(&self.execution)
     }
 
     pub fn config_context(&self) -> ConfigCapabilityContext<'a> {
@@ -405,7 +415,7 @@ impl OwnedProgramExecutionContext {
         let execution = context.execution.clone();
         let actor = context.actor.clone();
         Self {
-            execution: execution.owned(),
+            execution,
             config: ConfigCapabilityContext::owned(&context.config),
             db: context.db.clone(),
             file_source: context.file.source(),
@@ -429,7 +439,7 @@ impl OwnedProgramExecutionContext {
 
     /// Reconstructs a borrowed execution context that views this owned data.
     pub fn borrow(&self) -> ProgramExecutionContext<'_> {
-        let execution = self.execution.borrow();
+        let execution = execution_scope::borrow_owned_execution_control(&self.execution);
         let config = self.config.borrow();
         let file = self.file_source.context_for_request(self.db.clone());
         let file_source_stream =

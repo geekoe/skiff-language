@@ -292,6 +292,12 @@ impl<'a> EvalContext<'a> {
         self.execution.add_instruction_units(1)?;
         check_cancelled(&self.execution, self.env)?;
         match statement {
+            LinkedStmtIr::Timeout { .. } => Err(pending_f445h_eval_error(
+                PendingF445HEvalKind::StatementTimeout,
+            )),
+            LinkedStmtIr::Concurrent { .. } => Err(pending_f445h_eval_error(
+                PendingF445HEvalKind::StatementConcurrent,
+            )),
             LinkedStmtIr::Let { slot, value } => {
                 let value = self.eval_program_expr_ref(*value).await?;
                 self.env.declare_binding(
@@ -591,6 +597,12 @@ impl<'a> EvalContext<'a> {
         self.execution.add_instruction_units(1)?;
         check_cancelled(&self.execution, self.env)?;
         match expr {
+            LinkedExprIr::Timeout { .. } => Err(pending_f445h_eval_error(
+                PendingF445HEvalKind::ExpressionTimeout,
+            )),
+            LinkedExprIr::ConcurrentValue { .. } => Err(pending_f445h_eval_error(
+                PendingF445HEvalKind::ExpressionConcurrent,
+            )),
             LinkedExprIr::Literal { value } => program_literal(value).map(Into::into),
             LinkedExprIr::LoadSlot { slot } => self
                 .env
@@ -2099,5 +2111,59 @@ fn runtime_map_entry_snapshot(
 fn runtime_value_from_map_key(key: &RuntimeValueKey) -> RuntimeValue {
     match key {
         RuntimeValueKey::String(value) => RuntimeValue::String(value.clone()),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PendingF445HEvalKind {
+    StatementTimeout,
+    StatementConcurrent,
+    ExpressionTimeout,
+    ExpressionConcurrent,
+}
+
+fn pending_f445h_eval_error(kind: PendingF445HEvalKind) -> RuntimeError {
+    let kind = match kind {
+        PendingF445HEvalKind::StatementTimeout => "statement timeout",
+        PendingF445HEvalKind::StatementConcurrent => "statement concurrent",
+        PendingF445HEvalKind::ExpressionTimeout => "expression timeout",
+        PendingF445HEvalKind::ExpressionConcurrent => "expression concurrent",
+    };
+    RuntimeError::InvalidArtifact(format!(
+        "F445H-E4 evaluator integration is required for {kind}"
+    ))
+}
+
+#[cfg(test)]
+mod f445h_compile_bridge_tests {
+    use super::{pending_f445h_eval_error, PendingF445HEvalKind};
+    use crate::error::RuntimeError;
+
+    #[test]
+    fn four_pending_eval_kinds_fail_closed_with_stable_diagnostics() {
+        let cases = [
+            (
+                PendingF445HEvalKind::StatementTimeout,
+                "F445H-E4 evaluator integration is required for statement timeout",
+            ),
+            (
+                PendingF445HEvalKind::StatementConcurrent,
+                "F445H-E4 evaluator integration is required for statement concurrent",
+            ),
+            (
+                PendingF445HEvalKind::ExpressionTimeout,
+                "F445H-E4 evaluator integration is required for expression timeout",
+            ),
+            (
+                PendingF445HEvalKind::ExpressionConcurrent,
+                "F445H-E4 evaluator integration is required for expression concurrent",
+            ),
+        ];
+        for (kind, expected) in cases {
+            assert!(matches!(
+                pending_f445h_eval_error(kind),
+                RuntimeError::InvalidArtifact(message) if message == expected
+            ));
+        }
     }
 }

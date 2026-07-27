@@ -13,6 +13,9 @@ pub use skiff_runtime_model::{
     },
 };
 
+mod scope_terminal;
+pub(crate) use scope_terminal::ScopeTerminalCarrier;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiagnosticSource {
     pub assembly_id: Option<u32>,
@@ -74,6 +77,8 @@ pub enum RuntimeError {
     LeaseLost(String),
     #[error("request was cancelled")]
     Cancelled,
+    #[error(transparent)]
+    ScopeTerminal(ScopeTerminalCarrier),
     #[error("execution budget exceeded: {reason:?}")]
     ExecutionBudgetExceeded {
         reason: BudgetReason,
@@ -121,6 +126,9 @@ pub enum RuntimeError {
 }
 
 pub type Result<T> = std::result::Result<T, RuntimeError>;
+
+#[cfg(test)]
+mod scope_terminal_tests;
 
 impl From<skiff_runtime_model::error::RuntimeModelError> for RuntimeError {
     fn from(error: skiff_runtime_model::error::RuntimeModelError) -> Self {
@@ -410,6 +418,7 @@ fn runtime_error_from_eval_ref(error: &RuntimeError) -> RuntimeError {
         RuntimeError::Recoverable(error) => RuntimeError::Recoverable(error.clone()),
         RuntimeError::LeaseLost(message) => RuntimeError::LeaseLost(message.clone()),
         RuntimeError::Cancelled => RuntimeError::Cancelled,
+        RuntimeError::ScopeTerminal(terminal) => RuntimeError::ScopeTerminal(terminal.clone()),
         RuntimeError::ExecutionBudgetExceeded {
             reason,
             instruction_count,
@@ -783,6 +792,7 @@ pub fn eval_error_to_native(error: RuntimeError) -> skiff_runtime_native::error:
             skiff_runtime_native::error::RuntimeError::Recoverable(error)
         }
         RuntimeError::Cancelled => skiff_runtime_native::error::RuntimeError::Cancelled,
+        RuntimeError::ScopeTerminal(_) => skiff_runtime_native::error::RuntimeError::Cancelled,
         RuntimeError::ExecutionBudgetExceeded {
             reason,
             instruction_count,
@@ -1018,7 +1028,7 @@ impl RequestHeapOwnedStreamError {
         error: RuntimeError,
         heap: RequestHeap,
     ) -> std::result::Result<Self, RuntimeError> {
-        if error.is_cancellation_terminal() {
+        if error.is_internal_execution_terminal() {
             return Err(error);
         }
         Ok(Self {
@@ -1155,6 +1165,27 @@ impl RuntimeError {
             RuntimeError::WithSource { error, .. }
             | RuntimeError::WithDiagnosticFrame { error, .. } => error.is_cancellation_terminal(),
             _ => false,
+        }
+    }
+
+    /// Whether this error is (or carries) an eval-only execution terminal.
+    pub(crate) fn is_internal_execution_terminal(&self) -> bool {
+        match self {
+            RuntimeError::ScopeTerminal(_) => true,
+            RuntimeError::WithSource { error, .. }
+            | RuntimeError::WithDiagnosticFrame { error, .. } => {
+                error.is_internal_execution_terminal()
+            }
+            _ => self.is_cancellation_terminal(),
+        }
+    }
+
+    pub(crate) fn scope_terminal(&self) -> Option<&ScopeTerminalCarrier> {
+        match self {
+            RuntimeError::ScopeTerminal(terminal) => Some(terminal),
+            RuntimeError::WithSource { error, .. }
+            | RuntimeError::WithDiagnosticFrame { error, .. } => error.scope_terminal(),
+            _ => None,
         }
     }
 
@@ -1335,6 +1366,7 @@ impl RuntimeError {
                 details: None,
             },
             RuntimeError::Cancelled => return None,
+            RuntimeError::ScopeTerminal(_) => return None,
             RuntimeError::ExecutionBudgetExceeded {
                 reason: BudgetReason::Cancelled,
                 ..
@@ -1489,6 +1521,7 @@ impl RuntimeError {
                 }),
             )),
             RuntimeError::Cancelled => None,
+            RuntimeError::ScopeTerminal(_) => None,
             RuntimeError::ExecutionBudgetExceeded {
                 reason,
                 instruction_count,
@@ -1546,7 +1579,7 @@ pub struct OrdinaryRuntimeError(RuntimeError);
 
 impl OrdinaryRuntimeError {
     pub fn try_new(error: RuntimeError) -> std::result::Result<Self, RuntimeError> {
-        if error.is_cancellation_terminal() {
+        if error.is_internal_execution_terminal() {
             return Err(error);
         }
         Ok(Self(error))
@@ -1587,7 +1620,7 @@ pub(crate) fn stream_runtime_error_from_eval(
     match OrdinaryRuntimeError::try_new(error) {
         Ok(error) => skiff_runtime_capability_context::StreamRuntimeError::producer(error),
         Err(error) => {
-            debug_assert!(error.is_cancellation_terminal());
+            debug_assert!(error.is_internal_execution_terminal());
             skiff_runtime_capability_context::StreamRuntimeError::Cancelled
         }
     }
