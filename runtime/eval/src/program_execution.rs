@@ -388,6 +388,7 @@ mod provider_service_stack_scope_tests {
 /// they are identical at the construction site (`runner.rs`).
 pub struct OwnedProgramExecutionContext {
     execution: OwnedExecutionControl,
+    execution_clock: execution_scope::ExecutionClock,
     config: OwnedConfigCapabilityContext,
     db: DbCapabilityContext,
     file_source: FileCapabilitySource,
@@ -416,6 +417,7 @@ impl OwnedProgramExecutionContext {
         let actor = context.actor.clone();
         Self {
             execution,
+            execution_clock: context.execution_clock.clone(),
             config: ConfigCapabilityContext::owned(&context.config),
             db: context.db.clone(),
             file_source: context.file.source(),
@@ -465,6 +467,7 @@ impl OwnedProgramExecutionContext {
             outbound: self.outbound.clone(),
             request_heap_limits: self.request_heap_limits.clone(),
         });
+        context.execution_clock = self.execution_clock.clone();
         context.exception_trace_id = self.exception_trace_id.clone();
         context.websocket_rebinder = self.websocket_rebinder.clone();
         context.exception_error_sequence = self.exception_error_sequence.clone();

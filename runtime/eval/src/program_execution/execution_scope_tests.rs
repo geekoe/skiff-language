@@ -307,6 +307,38 @@ fn program_execution_scope_child_capture_and_owned_round_trip_preserve_current_s
 }
 
 #[test]
+fn program_execution_scope_owned_round_trip_preserves_current_scripted_clock_sequence() {
+    let base = Instant::now();
+    let (cancellation, root) = root_scope(None);
+    let scope = root
+        .derive(base + Duration::from_millis(3), site())
+        .expect("local scope");
+    let calls = Arc::new(AtomicU64::new(0));
+    let context = context(ScopeAwareControl::available(scope, cancellation.token()))
+        .with_execution_clock(ExecutionClock::new(ScriptedClock::new(
+            vec![base, base + Duration::from_millis(3)],
+            Arc::clone(&calls),
+        )));
+    let checkpoint = ExecutionCheckpoint::new(ExecutionCheckpointKind::GeneratedChunk, 1);
+
+    context
+        .checkpoint(checkpoint)
+        .expect("first scripted checkpoint remains before the deadline");
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+    let owned = OwnedProgramExecutionContext::capture(&context);
+    let borrowed = owned.borrow();
+    let error = borrowed
+        .checkpoint(checkpoint)
+        .expect_err("owned round-trip must continue the same scripted clock");
+    assert!(matches!(
+        error.scope_terminal().map(|carrier| carrier.terminal()),
+        Some(ExecutionScopeTerminal::LocalDeadlineExceeded(_))
+    ));
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
+#[test]
 fn program_execution_scope_unavailable_and_derive_failure_fail_closed() {
     let unavailable = context(ScopeAwareControl::unavailable());
     assert!(matches!(
