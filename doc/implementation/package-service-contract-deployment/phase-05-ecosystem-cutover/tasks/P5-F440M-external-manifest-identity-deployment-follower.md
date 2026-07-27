@@ -36,6 +36,9 @@ M1 production/test owner：
 - `artifact-identity/src/deployment/**`
 - `artifact-identity/src/tests/**`
 - `artifact-identity/src/constants.rs`
+- `artifact-identity/src/error.rs`：只允许修改
+  `InvalidGatewayEntryIdentity` 的诊断与直接测试；诊断必须复用 canonical prefix
+  constant，不得继续硬编码版本；
 - `artifact-identity/src/lib.rs`
 - `artifact-identity/tests/**`
 - `deployment/**`
