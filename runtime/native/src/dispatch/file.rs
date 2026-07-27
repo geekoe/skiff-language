@@ -6,7 +6,10 @@ use skiff_runtime_boundary::file::{
 use skiff_runtime_boundary::{contract::RuntimeBoundaryContract, plan::BoundaryUse};
 use skiff_runtime_capability_context::{FileCapabilityError, StreamConsumerCleanup};
 
-use super::{unsupported_native_target, RuntimeNativeInvocation};
+use super::{
+    prepared::run_prepared_native_call, unsupported_native_target, PreparedExternalNativeOperation,
+    PreparedNativeCall, RuntimeNativeInvocation,
+};
 use crate::error::{OrdinaryRuntimeError, Result, RuntimeError};
 use crate::{
     call_helpers::runtime_string_arg,
@@ -33,98 +36,148 @@ impl FileNativeDispatch {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn dispatch<FileContext>(
-        file_context: &FileContext,
-        file_source_stream_context: &impl NativeFileSourceStreamCapability,
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub(super) fn prepare<'a, FileContext, SourceContext>(
+        file_context: FileContext,
+        file_source_stream_context: SourceContext,
         request_heap_limits: RequestHeapLimits,
-        invocation: &RuntimeNativeInvocation,
-        diagnostic_target: &str,
+        invocation: RuntimeNativeInvocation,
+        diagnostic_target: String,
         args: Vec<RuntimeValue>,
         heap: &mut RequestHeap,
-    ) -> Result<RuntimeValue>
+    ) -> Result<PreparedNativeCall<'a>>
     where
-        FileContext: NativeFileCapability,
+        FileContext: NativeFileCapability + 'a,
+        SourceContext: NativeFileSourceStreamCapability + 'a,
     {
-        let binding_key = invocation.binding_key();
-        let output = match binding_key {
+        let binding_key = invocation.binding_key().to_string();
+        let operation = match binding_key.as_str() {
             "std.file.create" => {
-                let content = bytes_arg_from_plan(diagnostic_target, invocation, &args, 0, heap)?;
+                let content = bytes_arg_from_plan(&diagnostic_target, &invocation, &args, 0, heap)?;
                 let options =
-                    file_options_arg(diagnostic_target, invocation, &args, 1, None, heap)?;
-                file_context
-                    .create_file(diagnostic_target, Bytes::from(content), options)
-                    .await?
+                    file_options_arg(&diagnostic_target, &invocation, &args, 1, None, heap)?;
+                let wait_target = diagnostic_target.clone();
+                external_file_wire_operation(invocation, diagnostic_target, async move {
+                    file_context
+                        .create_file(&wait_target, Bytes::from(content), options)
+                        .await
+                })
             }
             "std.file.createText" => {
-                let content = string_arg_from_plan(diagnostic_target, invocation, &args, 0, heap)?;
+                let content =
+                    string_arg_from_plan(&diagnostic_target, &invocation, &args, 0, heap)?;
                 let options = file_options_arg(
-                    diagnostic_target,
-                    invocation,
+                    &diagnostic_target,
+                    &invocation,
                     &args,
                     1,
                     Some("text/plain; charset=utf-8"),
                     heap,
                 )?;
-                file_context
-                    .create_file(
-                        diagnostic_target,
-                        Bytes::from(content.into_bytes()),
-                        options,
-                    )
-                    .await?
+                let wait_target = diagnostic_target.clone();
+                external_file_wire_operation(invocation, diagnostic_target, async move {
+                    file_context
+                        .create_file(&wait_target, Bytes::from(content.into_bytes()), options)
+                        .await
+                })
             }
             "std.file.read" => {
-                let file = file_arg_from_plan(diagnostic_target, invocation, &args, 0, heap)?;
-                file_context
-                    .read_file_wire(diagnostic_target, &file)
-                    .await?
+                let file = file_arg_from_plan(&diagnostic_target, &invocation, &args, 0, heap)?;
+                let wait_target = diagnostic_target.clone();
+                external_file_wire_operation(invocation, diagnostic_target, async move {
+                    file_context.read_file_wire(&wait_target, &file).await
+                })
             }
             "std.file.readText" => {
-                let file = file_arg_from_plan(diagnostic_target, invocation, &args, 0, heap)?;
-                file_context
-                    .read_text_file(diagnostic_target, &file)
-                    .await?
+                let file = file_arg_from_plan(&diagnostic_target, &invocation, &args, 0, heap)?;
+                let wait_target = diagnostic_target.clone();
+                external_file_wire_operation(invocation, diagnostic_target, async move {
+                    file_context.read_text_file(&wait_target, &file).await
+                })
             }
             "std.file.info" => {
-                let file = file_arg_from_plan(diagnostic_target, invocation, &args, 0, heap)?;
-                file_context.file_info(diagnostic_target, &file).await?
+                let file = file_arg_from_plan(&diagnostic_target, &invocation, &args, 0, heap)?;
+                let wait_target = diagnostic_target.clone();
+                external_file_wire_operation(invocation, diagnostic_target, async move {
+                    file_context.file_info(&wait_target, &file).await
+                })
             }
             "std.file.delete" => {
-                let file = file_arg_from_plan(diagnostic_target, invocation, &args, 0, heap)?;
-                file_context.delete_file(diagnostic_target, &file).await?;
-                Value::Null
+                let file = file_arg_from_plan(&diagnostic_target, &invocation, &args, 0, heap)?;
+                let wait_target = diagnostic_target.clone();
+                external_file_wire_operation(invocation, diagnostic_target, async move {
+                    file_context.delete_file(&wait_target, &file).await?;
+                    Ok(Value::Null)
+                })
             }
             "std.file.createFromStream" => {
-                let stream = stream_arg_from_plan(diagnostic_target, invocation, &args, 0, heap)?;
+                let stream = stream_arg_from_plan(&diagnostic_target, &invocation, &args, 0, heap)?;
                 let cleanup = file_source_stream_context.stream_consumer_cleanup(&stream);
                 let options =
-                    file_options_arg(diagnostic_target, invocation, &args, 1, None, heap)?;
+                    file_options_arg(&diagnostic_target, &invocation, &args, 1, None, heap)?;
                 let item_plan =
-                    file_stream_item_plan(diagnostic_target, invocation.arg_plan(0)?)?.clone();
-                create_file_from_stream(
-                    file_context,
-                    file_source_stream_context,
-                    diagnostic_target,
-                    CreateFileFromStreamInput {
-                        stream,
-                        options,
-                        item_plan,
-                        request_heap_limits,
-                        cleanup,
-                    },
-                )
-                .await?
+                    file_stream_item_plan(&diagnostic_target, invocation.arg_plan(0)?)?.clone();
+                let wait_target = diagnostic_target.clone();
+                external_file_wire_operation(invocation, diagnostic_target, async move {
+                    create_file_from_stream(
+                        file_context,
+                        file_source_stream_context,
+                        wait_target,
+                        CreateFileFromStreamInput {
+                            stream,
+                            options,
+                            item_plan,
+                            request_heap_limits,
+                            cleanup,
+                        },
+                    )
+                    .await
+                })
             }
-            _ => return Err(unsupported_native_target(binding_key)),
+            _ => return Err(unsupported_native_target(&binding_key)),
         };
+        Ok(PreparedNativeCall::ExternalWait(operation))
+    }
 
+    #[allow(dead_code, clippy::too_many_arguments)]
+    pub(super) async fn dispatch<FileContext, SourceContext>(
+        file_context: FileContext,
+        file_source_stream_context: SourceContext,
+        request_heap_limits: RequestHeapLimits,
+        invocation: RuntimeNativeInvocation,
+        diagnostic_target: String,
+        args: Vec<RuntimeValue>,
+        heap: &mut RequestHeap,
+    ) -> Result<RuntimeValue>
+    where
+        FileContext: NativeFileCapability,
+        SourceContext: NativeFileSourceStreamCapability,
+    {
+        let prepared = Self::prepare(
+            file_context,
+            file_source_stream_context,
+            request_heap_limits,
+            invocation,
+            diagnostic_target,
+            args,
+            heap,
+        )?;
+        run_prepared_native_call(prepared, heap).await
+    }
+}
+
+fn external_file_wire_operation<'a>(
+    invocation: RuntimeNativeInvocation,
+    diagnostic_target: String,
+    wait: impl std::future::Future<Output = Result<Value>> + Send + 'a,
+) -> PreparedExternalNativeOperation<'a> {
+    PreparedExternalNativeOperation::new(wait, move |output, heap| {
         invocation.native_boundary()?.from_wire_return(
             &output,
             &format!("{diagnostic_target} response"),
             heap,
         )
-    }
+    })
 }
 
 struct CreateFileFromStreamInput {
@@ -136,9 +189,9 @@ struct CreateFileFromStreamInput {
 }
 
 async fn create_file_from_stream<FileContext, SourceContext>(
-    file_context: &FileContext,
-    file_source_stream_context: &SourceContext,
-    diagnostic_target: &str,
+    file_context: FileContext,
+    file_source_stream_context: SourceContext,
+    diagnostic_target: String,
     input: CreateFileFromStreamInput,
 ) -> Result<Value>
 where
@@ -157,7 +210,7 @@ where
     let chunk_end_marker = end_marker.clone();
     let output = file_context
         .create_file_from_chunks(
-            diagnostic_target,
+            &diagnostic_target,
             options,
             Box::new(move || {
                 let source_context = source_context.clone();

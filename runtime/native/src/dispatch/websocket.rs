@@ -1,8 +1,13 @@
 use serde_json::Value;
 use skiff_runtime_capability_context::ConnectionRequestTerminal;
-use skiff_runtime_model::service_error::{WebSocketRequestError, WebSocketRequestErrorKind};
+use skiff_runtime_model::service_error::{
+    NamedUnionOwnerIdentity, WebSocketRequestError, WebSocketRequestErrorKind,
+};
 
-use super::RuntimeNativeInvocation;
+use super::{
+    prepared::run_prepared_native_call, PreparedExternalNativeOperation, PreparedNativeCall,
+    RuntimeNativeInvocation,
+};
 use crate::call_helpers::runtime_string_arg;
 use crate::capability::NativeWebsocketCapability;
 use crate::error::{Result, RuntimeError};
@@ -23,35 +28,34 @@ impl WebsocketNativeDispatch {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) async fn dispatch<WebsocketContext>(
-        websocket_context: &WebsocketContext,
-        invocation: &RuntimeNativeInvocation,
-        diagnostic_target: &str,
+    pub(super) fn prepare<'a, WebsocketContext>(
+        websocket_context: WebsocketContext,
+        invocation: RuntimeNativeInvocation,
+        diagnostic_target: String,
         args: Vec<RuntimeValue>,
         heap: &mut RequestHeap,
-    ) -> Result<RuntimeValue>
+    ) -> Result<PreparedNativeCall<'a>>
     where
-        WebsocketContext: NativeWebsocketCapability,
+        WebsocketContext: NativeWebsocketCapability + Send + 'a,
     {
-        let binding_key = invocation.binding_key();
-        let connection_target = Self::string_arg(diagnostic_target, &args, invocation, 0, heap)?;
+        let binding_key = invocation.binding_key().to_string();
+        let connection_target = Self::string_arg(&diagnostic_target, &args, &invocation, 0, heap)?;
         if binding_key == "std.websocket.requestJsonToConnection" {
-            return Self::dispatch_request(
+            return Self::prepare_request(
                 websocket_context,
                 invocation,
                 diagnostic_target,
                 connection_target,
                 &args,
                 heap,
-            )
-            .await;
+            );
         }
-        match binding_key {
+        match binding_key.as_str() {
             "std.websocket.sendTextToBusinessIdentity" => {
                 let text = Self::string_arg(
                     &format!("{diagnostic_target} text"),
                     &args,
-                    invocation,
+                    &invocation,
                     1,
                     heap,
                 )?;
@@ -62,7 +66,7 @@ impl WebsocketNativeDispatch {
                 let bytes = Self::bytes_arg(
                     &format!("{diagnostic_target} value"),
                     &args,
-                    invocation,
+                    &invocation,
                     1,
                     heap,
                 )?;
@@ -73,7 +77,7 @@ impl WebsocketNativeDispatch {
                 let text = Self::string_arg(
                     &format!("{diagnostic_target} text"),
                     &args,
-                    invocation,
+                    &invocation,
                     1,
                     heap,
                 )?;
@@ -83,7 +87,7 @@ impl WebsocketNativeDispatch {
                 let bytes = Self::bytes_arg(
                     &format!("{diagnostic_target} value"),
                     &args,
-                    invocation,
+                    &invocation,
                     1,
                     heap,
                 )?;
@@ -91,31 +95,32 @@ impl WebsocketNativeDispatch {
             }
             _ => unreachable!("websocket native target checked by caller"),
         }
-        invocation.native_boundary()?.from_wire_return(
+        let value = invocation.native_boundary()?.from_wire_return(
             &Value::Null,
             &format!("{diagnostic_target} response"),
             heap,
-        )
+        )?;
+        Ok(PreparedNativeCall::Ready(value))
     }
 
-    async fn dispatch_request<WebsocketContext>(
-        websocket_context: &WebsocketContext,
-        invocation: &RuntimeNativeInvocation,
-        diagnostic_target: &str,
+    fn prepare_request<'a, WebsocketContext>(
+        websocket_context: WebsocketContext,
+        invocation: RuntimeNativeInvocation,
+        diagnostic_target: String,
         connection_id: String,
         args: &[RuntimeValue],
         heap: &mut RequestHeap,
-    ) -> Result<RuntimeValue>
+    ) -> Result<PreparedNativeCall<'a>>
     where
-        WebsocketContext: NativeWebsocketCapability,
+        WebsocketContext: NativeWebsocketCapability + Send + 'a,
     {
         // The ordinary error owner is an artifact fact, not a capability fact.
         // Validate it before local encoding or any Host/peer side effect.
-        invocation.named_union_error_owner()?;
+        let error_owner = invocation.named_union_error_owner()?.clone();
         let method = Self::string_arg(
             &format!("{diagnostic_target} method"),
             args,
-            invocation,
+            &invocation,
             1,
             heap,
         )?;
@@ -137,82 +142,39 @@ impl WebsocketNativeDispatch {
         }
         let payload = serde_json::to_vec(&params)
             .map_err(|error| RuntimeError::decode_target("std.json.encode", error.to_string()))?;
-        let terminal = websocket_context
-            .request_json_to_connection(connection_id, method, payload)
-            .await?;
-        match terminal {
-            ConnectionRequestTerminal::Success(payload) => {
-                let value = serde_json::from_slice::<Value>(&payload).map_err(|error| {
-                    RuntimeError::decode_target("std.json.decode", error.to_string())
-                })?;
-                invocation
-                    .native_boundary()?
-                    .from_wire_return(&value, &format!("{diagnostic_target} response"), heap)
-                    .map_err(|error| {
-                        RuntimeError::decode_target("std.json.decode", error.to_string())
-                    })
-            }
-            ConnectionRequestTerminal::DeadlineExceeded => {
-                Err(RuntimeError::ExecutionBudgetExceeded {
-                    reason: crate::error::BudgetReason::DeadlineExceeded,
-                    instruction_count: 0,
-                    limit: None,
-                    elapsed_ms: 0.0,
-                })
-            }
-            ConnectionRequestTerminal::AncestorCancelled => Err(RuntimeError::Cancelled),
-            ConnectionRequestTerminal::ConnectionUnavailable => Self::request_error(
-                invocation,
-                WebSocketRequestErrorKind::ConnectionUnavailable,
-                "WebSocket connection is unavailable",
-                None,
-                None,
-            ),
-            ConnectionRequestTerminal::TransportUnavailable => Self::request_error(
-                invocation,
-                WebSocketRequestErrorKind::TransportUnavailable,
-                "WebSocket transport is unavailable",
-                None,
-                None,
-            ),
-            ConnectionRequestTerminal::ProtocolError => Self::request_error(
-                invocation,
-                WebSocketRequestErrorKind::ProtocolError,
-                "WebSocket request protocol error",
-                None,
-                None,
-            ),
-            ConnectionRequestTerminal::ResourceLimit => Self::request_error(
-                invocation,
-                WebSocketRequestErrorKind::ResourceLimit,
-                "WebSocket request resource limit exceeded",
-                None,
-                None,
-            ),
-            ConnectionRequestTerminal::Remote {
-                code,
-                message,
-                data,
-            } => {
-                let data = data
-                    .map(|payload| {
-                        serde_json::from_slice(&payload).map_err(|_| {
-                            RuntimeError::InvalidArtifact(
-                                "strict remote WebSocket error data became invalid JSON"
-                                    .to_string(),
-                            )
+        Ok(PreparedNativeCall::ExternalWait(
+            PreparedExternalNativeOperation::new(
+                async move {
+                    let terminal = websocket_context
+                        .request_json_to_connection(connection_id, method, payload)
+                        .await?;
+                    websocket_terminal_value(&error_owner, terminal)
+                },
+                move |value, heap| {
+                    invocation
+                        .native_boundary()?
+                        .from_wire_return(&value, &format!("{diagnostic_target} response"), heap)
+                        .map_err(|error| {
+                            RuntimeError::decode_target("std.json.decode", error.to_string())
                         })
-                    })
-                    .transpose()?;
-                Self::request_error(
-                    invocation,
-                    WebSocketRequestErrorKind::Remote,
-                    &message,
-                    Some(code),
-                    data,
-                )
-            }
-        }
+                },
+            ),
+        ))
+    }
+
+    #[allow(dead_code)]
+    pub(super) async fn dispatch<WebsocketContext>(
+        websocket_context: WebsocketContext,
+        invocation: RuntimeNativeInvocation,
+        diagnostic_target: String,
+        args: Vec<RuntimeValue>,
+        heap: &mut RequestHeap,
+    ) -> Result<RuntimeValue>
+    where
+        WebsocketContext: NativeWebsocketCapability + Send,
+    {
+        let prepared = Self::prepare(websocket_context, invocation, diagnostic_target, args, heap)?;
+        run_prepared_native_call(prepared, heap).await
     }
 
     fn request_error(
@@ -222,14 +184,24 @@ impl WebsocketNativeDispatch {
         code: Option<i64>,
         data: Option<Value>,
     ) -> Result<RuntimeValue> {
-        let error = WebSocketRequestError::new(
+        Self::request_error_for_owner(
             invocation.named_union_error_owner()?.clone(),
             kind,
             message,
             code,
             data,
         )
-        .map_err(RuntimeError::InvalidArtifact)?;
+    }
+
+    fn request_error_for_owner<T>(
+        owner: NamedUnionOwnerIdentity,
+        kind: WebSocketRequestErrorKind,
+        message: &str,
+        code: Option<i64>,
+        data: Option<Value>,
+    ) -> Result<T> {
+        let error = WebSocketRequestError::new(owner, kind, message, code, data)
+            .map_err(RuntimeError::InvalidArtifact)?;
         Err(RuntimeError::Opaque(Box::new(error)))
     }
 
@@ -265,6 +237,81 @@ impl WebsocketNativeDispatch {
         bytes_payload(&payload)
             .map(|bytes| bytes.to_vec())
             .ok_or_else(|| RuntimeError::Decode(format!("{label} must be bytes")))
+    }
+}
+
+fn websocket_terminal_value(
+    error_owner: &NamedUnionOwnerIdentity,
+    terminal: ConnectionRequestTerminal,
+) -> Result<Value> {
+    match terminal {
+        ConnectionRequestTerminal::Success(payload) => serde_json::from_slice::<Value>(&payload)
+            .map_err(|error| RuntimeError::decode_target("std.json.decode", error.to_string())),
+        ConnectionRequestTerminal::DeadlineExceeded => Err(RuntimeError::ExecutionBudgetExceeded {
+            reason: crate::error::BudgetReason::DeadlineExceeded,
+            instruction_count: 0,
+            limit: None,
+            elapsed_ms: 0.0,
+        }),
+        ConnectionRequestTerminal::AncestorCancelled => Err(RuntimeError::Cancelled),
+        ConnectionRequestTerminal::ConnectionUnavailable => {
+            WebsocketNativeDispatch::request_error_for_owner(
+                error_owner.clone(),
+                WebSocketRequestErrorKind::ConnectionUnavailable,
+                "WebSocket connection is unavailable",
+                None,
+                None,
+            )
+        }
+        ConnectionRequestTerminal::TransportUnavailable => {
+            WebsocketNativeDispatch::request_error_for_owner(
+                error_owner.clone(),
+                WebSocketRequestErrorKind::TransportUnavailable,
+                "WebSocket transport is unavailable",
+                None,
+                None,
+            )
+        }
+        ConnectionRequestTerminal::ProtocolError => {
+            WebsocketNativeDispatch::request_error_for_owner(
+                error_owner.clone(),
+                WebSocketRequestErrorKind::ProtocolError,
+                "WebSocket request protocol error",
+                None,
+                None,
+            )
+        }
+        ConnectionRequestTerminal::ResourceLimit => {
+            WebsocketNativeDispatch::request_error_for_owner(
+                error_owner.clone(),
+                WebSocketRequestErrorKind::ResourceLimit,
+                "WebSocket request resource limit exceeded",
+                None,
+                None,
+            )
+        }
+        ConnectionRequestTerminal::Remote {
+            code,
+            message,
+            data,
+        } => {
+            let data = data
+                .map(|payload| {
+                    serde_json::from_slice(&payload).map_err(|_| {
+                        RuntimeError::InvalidArtifact(
+                            "strict remote WebSocket error data became invalid JSON".to_string(),
+                        )
+                    })
+                })
+                .transpose()?;
+            WebsocketNativeDispatch::request_error_for_owner(
+                error_owner.clone(),
+                WebSocketRequestErrorKind::Remote,
+                &message,
+                Some(code),
+                data,
+            )
+        }
     }
 }
 
@@ -435,9 +482,9 @@ mod tests {
         let mut heap = RequestHeap::default();
         let payload = empty_object(&mut heap);
         let error = WebsocketNativeDispatch::dispatch(
-            &context,
-            &invocation(None),
-            "std.websocket.requestJsonToConnection",
+            context,
+            invocation(None),
+            "std.websocket.requestJsonToConnection".to_string(),
             request_args(payload),
             &mut heap,
         )
@@ -457,9 +504,9 @@ mod tests {
         };
         let mut heap = RequestHeap::default();
         let error = WebsocketNativeDispatch::dispatch(
-            &context,
-            &invocation(Some(local_owner())),
-            "std.websocket.requestJsonToConnection",
+            context,
+            invocation(Some(local_owner())),
+            "std.websocket.requestJsonToConnection".to_string(),
             request_args(RuntimeValue::String("not-a-record".to_string())),
             &mut heap,
         )
@@ -493,9 +540,9 @@ mod tests {
             let mut heap = RequestHeap::default();
             let payload = empty_object(&mut heap);
             let error = WebsocketNativeDispatch::dispatch(
-                &context,
-                &invocation(Some(local_owner())),
-                "std.websocket.requestJsonToConnection",
+                context,
+                invocation(Some(local_owner())),
+                "std.websocket.requestJsonToConnection".to_string(),
                 request_args(payload),
                 &mut heap,
             )

@@ -14,6 +14,7 @@ mod http;
 mod http_helpers;
 mod invocation;
 mod json;
+mod prepared;
 mod resource;
 mod telemetry;
 mod time;
@@ -26,6 +27,12 @@ use core::{
 };
 pub use core::{runtime_shared_native_route, RuntimeNativeRoute};
 pub use invocation::{RuntimeActorNativeMetadata, RuntimeNativeInvocation};
+pub use prepared::{
+    NativeExternalFinalize, NativeExternalOutcome, NativeExternalWait,
+    PreparedExternalNativeOperation, PreparedNativeCall,
+};
 
+#[cfg(test)]
+mod prepared_tests;
 #[cfg(test)]
 mod tests;

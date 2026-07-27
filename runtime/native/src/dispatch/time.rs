@@ -1,4 +1,7 @@
-use super::{unsupported_native_target, RuntimeNativeInvocation};
+use super::{
+    prepared::run_prepared_native_call, unsupported_native_target, PreparedExternalNativeOperation,
+    PreparedNativeCall, RuntimeNativeInvocation,
+};
 use crate::capability::NativeTimeCapability;
 use crate::error::{Result, RuntimeError};
 use crate::runtime_value_facade::{RequestHeap, RuntimeValue};
@@ -14,39 +17,62 @@ impl TimeNativeDispatch {
         target == TIME_SLEEP_KEY
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn dispatch<TimeContext>(
-        time_context: &TimeContext,
-        invocation: &RuntimeNativeInvocation,
-        diagnostic_target: &str,
+    pub(super) fn prepare<'a, TimeContext>(
+        time_context: TimeContext,
+        invocation: RuntimeNativeInvocation,
+        diagnostic_target: String,
         args: Vec<RuntimeValue>,
         heap: &mut RequestHeap,
-    ) -> Result<RuntimeValue>
+    ) -> Result<PreparedNativeCall<'a>>
     where
-        TimeContext: NativeTimeCapability,
+        TimeContext: NativeTimeCapability + Send + 'a,
     {
         let binding_key = invocation.binding_key();
-        let native_boundary = invocation.native_boundary()?;
         match binding_key {
             TIME_SLEEP_KEY => {
                 let value = args.first().ok_or_else(|| {
                     RuntimeError::Decode(format!("{diagnostic_target} requires duration"))
                 })?;
-                let value = native_boundary.coerce_arg(
+                let value = invocation.native_boundary()?.coerce_arg(
                     0,
                     value,
                     &format!("{diagnostic_target} duration"),
                     heap,
                 )?;
-                sleep_for_millis(time_context, sleep_millis_from_runtime_value(&value)?).await?;
-                native_boundary.coerce_return(
-                    &RuntimeValue::Null,
-                    &format!("{diagnostic_target} response"),
-                    heap,
-                )
+                let millis = sleep_millis_from_runtime_value(&value)?;
+                Ok(PreparedNativeCall::ExternalWait(
+                    PreparedExternalNativeOperation::new(
+                        async move {
+                            sleep_for_millis(time_context, millis).await?;
+                            Ok(())
+                        },
+                        move |(), heap| {
+                            invocation.native_boundary()?.coerce_return(
+                                &RuntimeValue::Null,
+                                &format!("{diagnostic_target} response"),
+                                heap,
+                            )
+                        },
+                    ),
+                ))
             }
             _ => Err(unsupported_native_target(binding_key)),
         }
+    }
+
+    #[allow(dead_code)]
+    pub(super) async fn dispatch<TimeContext>(
+        time_context: TimeContext,
+        invocation: RuntimeNativeInvocation,
+        diagnostic_target: String,
+        args: Vec<RuntimeValue>,
+        heap: &mut RequestHeap,
+    ) -> Result<RuntimeValue>
+    where
+        TimeContext: NativeTimeCapability + Send,
+    {
+        let prepared = Self::prepare(time_context, invocation, diagnostic_target, args, heap)?;
+        run_prepared_native_call(prepared, heap).await
     }
 }
 
@@ -79,10 +105,7 @@ pub(super) fn clamp_sleep_millis(value: f64) -> u64 {
     value as u64
 }
 
-async fn sleep_for_millis(
-    time_context: &(impl NativeTimeCapability + ?Sized),
-    millis: u64,
-) -> Result<()> {
+async fn sleep_for_millis(time_context: impl NativeTimeCapability, millis: u64) -> Result<()> {
     time_context.poll_execution_budget()?;
     if millis == 0 {
         return Ok(());

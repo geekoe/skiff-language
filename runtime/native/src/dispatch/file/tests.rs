@@ -256,16 +256,59 @@ async fn dispatch_create_from_stream(
     let source = TestFileSourceStream::new(items);
     let file = TestFileCapability::new(file_behavior);
     let result = FileNativeDispatch::dispatch(
-        &file,
-        &source,
+        file.clone(),
+        source.clone(),
         RequestHeapLimits::default(),
-        &invocation,
-        "std.file.createFromStream",
+        invocation,
+        "std.file.createFromStream".to_string(),
         vec![stream_arg],
         &mut heap,
     )
     .await;
     (result, source, file)
+}
+
+fn prepare_create_from_stream(
+    items: impl IntoIterator<Item = Value>,
+    file_behavior: TestFileBehavior,
+) -> (
+    PreparedNativeCall<'static>,
+    TestFileSourceStream,
+    TestFileCapability,
+) {
+    let bytes_plan = RuntimeTypePlan::new("bytes", None, RuntimeTypeNode::Bytes);
+    let stream_plan = RuntimeTypePlan::synthetic_stream(bytes_plan);
+    let invocation = RuntimeNativeInvocation::new(
+        "std.file.createFromStream".to_string(),
+        "std.file.createFromStream",
+        Some(NativeCallPlan::new(
+            NativeBindingKey::from_static("std.file.createFromStream"),
+            vec![stream_plan.clone()],
+            RuntimeTypePlan::new("null", None, RuntimeTypeNode::Null),
+            NativeRequiredContext::File,
+        )),
+        None,
+        None,
+    );
+    let mut heap = RequestHeap::default();
+    let stream = stream_value("create-from-stream-drop-test");
+    let stream_arg = RuntimeBoundaryContract::default()
+        .codec_for_expected(&stream_plan, BoundaryUse::NativeArg, "test stream")
+        .from_wire_json(&stream, &mut heap)
+        .expect("stream argument should decode");
+    let source = TestFileSourceStream::new(items);
+    let file = TestFileCapability::new(file_behavior);
+    let prepared = FileNativeDispatch::prepare(
+        file.clone(),
+        source.clone(),
+        RequestHeapLimits::default(),
+        invocation,
+        "std.file.createFromStream".to_string(),
+        vec![stream_arg],
+        &mut heap,
+    )
+    .expect("createFromStream should prepare");
+    (prepared, source, file)
 }
 
 #[tokio::test]
@@ -332,4 +375,22 @@ async fn create_from_stream_natural_end_disarms_without_extra_cancel() {
     assert_eq!(source.registry_entry_count(), 0);
     assert_eq!(source.poll_count(), 3);
     assert_eq!(file.chunks(), vec![b"first".to_vec(), b"second".to_vec()]);
+}
+
+#[test]
+fn create_from_stream_unpolled_wait_drop_cleans_source_exactly_once() {
+    let (prepared, source, file) = prepare_create_from_stream(
+        [crate::runtime_value_facade::bytes_value(b"never-read")],
+        TestFileBehavior::ConsumeToEnd,
+    );
+    let PreparedNativeCall::ExternalWait(operation) = prepared else {
+        panic!("createFromStream must expose an external wait");
+    };
+
+    drop(operation);
+
+    assert_eq!(source.cancellation_count(), 1);
+    assert_eq!(source.registry_entry_count(), 0);
+    assert_eq!(source.poll_count(), 0);
+    assert!(file.chunks().is_empty());
 }
