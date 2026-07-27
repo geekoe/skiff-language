@@ -103,7 +103,6 @@ function runSelfTest() {
   const zeroRouter = {
     dispatcher: { pendingUnary: 0, pendingStream: 0 },
     httpStream: { backpressureWaiters: 0, backpressureCancels: 0 },
-    websocketReceive: { inFlight: 0, queued: 0, abortOnClose: 0 },
   };
   const healthy = {
     router: zeroRouter,
@@ -112,16 +111,6 @@ function runSelfTest() {
   assert.equal(
     evaluateLoopRiskHealth(healthy, { touchedRuntimeIds: ['runtime-a'] }).ok,
     true,
-  );
-  assert.equal(
-    evaluateLoopRiskHealth({
-      ...healthy,
-      router: {
-        ...zeroRouter,
-        websocketReceive: { inFlight: 0, queued: 0, abortOnClose: 1 },
-      },
-    }, { touchedRuntimeIds: ['runtime-a'] }).ok,
-    false,
   );
   assert.equal(
     evaluateLoopRiskHealth(healthy, { touchedRuntimeIds: ['runtime-missing'] }).ok,

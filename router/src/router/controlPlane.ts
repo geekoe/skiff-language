@@ -24,7 +24,6 @@ import type {
 } from './runtimeRegistry.js';
 import type { RuntimeDispatcher } from './runtimeDispatcher.js';
 import type { HttpStreamLifecycleCounters } from './httpGateway.js';
-import type { WebSocketReceiveLifecycleCounters } from '../gateway/webSocketGateway.js';
 
 export interface RuntimeControlBroadcaster {
   broadcastControl(control: Omit<RouterControlEnvelope, 'type'>): void;
@@ -42,7 +41,6 @@ export interface ControlPlaneOptions {
 
 export interface RouterLoopRiskCounterSources {
   httpStream?: () => HttpStreamLifecycleCounters;
-  websocketReceive?: () => WebSocketReceiveLifecycleCounters;
 }
 
 export interface ReloadArtifactsOverrides {
@@ -179,13 +177,11 @@ export class RouterControlPlane {
         backpressureWaiters: number;
         backpressureCancels: number;
       };
-      websocketReceive: WebSocketReceiveLifecycleCounters;
     };
     runtimes: ReturnType<RuntimeRegistry['loopRiskRuntimeHealthSnapshot']>;
   } {
     const observedAt = new Date();
     const httpStream = this.options.loopRiskCounters?.httpStream?.();
-    const websocketReceive = this.options.loopRiskCounters?.websocketReceive?.();
     return {
       observedAt: observedAt.toISOString(),
       router: {
@@ -193,11 +189,6 @@ export class RouterControlPlane {
         httpStream: {
           backpressureWaiters: httpStream?.backpressureWaiters ?? 0,
           backpressureCancels: httpStream?.backpressureCancels ?? 0
-        },
-        websocketReceive: websocketReceive ?? {
-          inFlight: 0,
-          queued: 0,
-          abortOnClose: 0
         }
       },
       runtimes: this.options.registry.loopRiskRuntimeHealthSnapshot(observedAt.getTime())

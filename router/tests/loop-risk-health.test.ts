@@ -60,11 +60,6 @@ describe('loop-risk health detail', () => {
       httpStream: {
         backpressureWaiters: 0,
         backpressureCancels: 0
-      },
-      websocketReceive: {
-        inFlight: 0,
-        queued: 0,
-        abortOnClose: 0
       }
     });
     expect(health.runtimes).toHaveLength(1);
@@ -299,11 +294,6 @@ describe('loop-risk health detail', () => {
       httpStream: {
         backpressureWaiters: 0,
         backpressureCancels: 0
-      },
-      websocketReceive: {
-        inFlight: 0,
-        queued: 0,
-        abortOnClose: 0
       }
     });
   });
@@ -343,11 +333,6 @@ interface LoopRiskHealthPayload {
     httpStream: {
       backpressureWaiters: number;
       backpressureCancels: number;
-    };
-    websocketReceive: {
-      inFlight: number;
-      queued: number;
-      abortOnClose: number;
     };
   };
   runtimes: Array<{
@@ -443,10 +428,7 @@ function routerLoopRiskCountersAreZero(health: LoopRiskHealthPayload): boolean {
     health.router.dispatcher.pendingUnary === 0 &&
     health.router.dispatcher.pendingStream === 0 &&
     health.router.httpStream.backpressureWaiters === 0 &&
-    health.router.httpStream.backpressureCancels === 0 &&
-    health.router.websocketReceive.inFlight === 0 &&
-    health.router.websocketReceive.queued === 0 &&
-    health.router.websocketReceive.abortOnClose === 0
+    health.router.httpStream.backpressureCancels === 0
   );
 }
 
