@@ -27,6 +27,8 @@ wire节点；Router/runtime consumer仍被wire节点阻塞。
 - `deployment/**` projection/assembly validation及tests；
 - 因closed enum/optional handler产生的编译错误而必须机械更新的
   `runtime/{loader,linker,host}` exhaustive matches，但不得在本leaf实现connect执行。
+- `runtime/eval/src/runtime_http_gateway.rs`中因新增closed adapter kind必须更新的穷尽match及其直接
+  聚焦test；这里只能让HTTP owner对`websocketConnect`显式fail closed，不得实现connect执行。
 
 禁止修改Router protocol/gateway、runtime request/eval/native业务执行、test-runner fixtures、
 Internals或skiff-packages。
@@ -80,4 +82,3 @@ git diff --check
 提交implementation，再新增并提交
 `P5-F425A-skiff-websocket-authoring-compiler-checkpoint-result.md`。返回commit/tree、自验收矩阵和clean
 worktree。不得merge/rebase/push/stable/live。
-

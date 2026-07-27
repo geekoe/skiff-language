@@ -24,6 +24,8 @@ host-file、legacy receive cleanup和N5仍阻塞。
 - `agine/service/internal/agine_http_{routes,dispatch,chat}.skiff`
 - 新的`agine_http_agent_provider.skiff`、`agine_http_tool_providers.skiff`、
   `agine_http_user_tools.skiff`、`agine_agent_commands.skiff`
+- `agine/service/internal/agine_ws_agent_provider.skiff`，仅允许把现有agent delete三步编排机械替换为
+  对`agine_agent_commands`同一函数的调用；不得改变WS envelope、响应、其它event或receive结构
 - 上述owner直接对应的`.test.skiff`
 - `agine/protocol/**`
 - `agine/service/service-api-receipt*`
@@ -31,7 +33,7 @@ host-file、legacy receive cleanup和N5仍阻塞。
 - Skiff任务repo中的本leaf result
 
 禁止修改`agine/client/**`、`agine/host/**`、Host auth/connection owner、`host_file_rpc.skiff`、
-legacy `agine_ws_*`、WebSocket block或其它service。
+除上述唯一机械例外外的legacy `agine_ws_*`、WebSocket block或其它service。
 
 ## 必须实现
 
@@ -68,7 +70,8 @@ legacy `agine_ws_*`、WebSocket block或其它service。
    `eventName`或caller提供的user identity。
 2. 每项调用F424B矩阵确认的唯一业务owner；不能通过decode旧WebSocket envelope复用dispatcher。
 3. `chat/regenerate`保持现有owner/not_found/not_implemented语义。
-4. `agents/delete`把三步编排提取为唯一共享business function，再由HTTP调用；不在adapter复制事务顺序。
+4. `agents/delete`把三步编排提取为唯一共享business function；HTTP和现有WS入口都调用该函数，不在任一
+   adapter复制事务顺序。WS改动必须保持原有响应与错误行为逐项等价。
 5. `/tool_call/result`只接受browser/user session与`executor=client`语义；Host credential、Host executor
    或冲突身份fail closed。Host以后使用独立`/host/tool_call/result`。
 6. 不新增`tools/list`、`/thread/toolproviders/add`或`/thread/toolproviders/remove`，因为没有production
@@ -99,4 +102,3 @@ git diff --check
 在Internals提交implementation；在Skiff任务worktree新增并提交
 `P5-F425D-agine-user-http-service-checkpoint-result.md`。返回两个commit/tree、自验收矩阵与clean
 状态。不得merge/rebase/push/stable/live。
-
