@@ -183,6 +183,15 @@ impl ActorExecutionFrame {
         heap: &mut RequestHeap,
         execution: &crate::capabilities::ExecutionControl<'_>,
     ) -> Result<(), RuntimeError> {
+        if self
+            .suspension
+            .lease
+            .lock()
+            .expect("actor suspension lease lock poisoned")
+            .is_some()
+        {
+            return Err(resume_with_installed_lease_error());
+        }
         self.ensure_outer_children_released()?;
         let mut child_resume = self
             .suspension
@@ -251,9 +260,7 @@ impl ActorExecutionFrame {
             .lock()
             .expect("actor suspension lease lock poisoned");
         if current.is_some() {
-            return Err(RuntimeError::InvalidArtifact(
-                "Actor continuation resumed with an execution token already installed".to_string(),
-            ));
+            return Err(resume_with_installed_lease_error());
         }
         *current = Some(lease);
         if let Some(child_resume) = child_resume.as_mut() {
@@ -389,4 +396,10 @@ where
 
 fn continuation_error(message: impl Into<String>) -> RuntimeError {
     RuntimeError::InvalidArtifact(message.into())
+}
+
+fn resume_with_installed_lease_error() -> RuntimeError {
+    continuation_error(
+        "Actor continuation attempted to resume while an execution token is already installed",
+    )
 }

@@ -26,12 +26,6 @@ impl ActorConcurrentContinuationBridge {
                 "Actor concurrent continuation requires at least one lane",
             ));
         }
-        if parent.suspension.child.is_some() {
-            return Err(continuation_error(
-                "Actor child continuation cannot create a nested outer bridge",
-            ));
-        }
-
         let gate = Arc::new(ActorConcurrentContinuationGate::new(lane_count));
         {
             let mut current = parent

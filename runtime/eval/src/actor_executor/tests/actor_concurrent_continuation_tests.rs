@@ -121,6 +121,124 @@ async fn actor_concurrent_continuation_parent_suspends_once_and_children_are_ind
 }
 
 #[tokio::test]
+async fn actor_concurrent_continuation_nested_bridge_composes_both_gates_and_commits() {
+    let fixture = fixture(integer(), true);
+    let (parent, mut parent_heap) = execution_frame(&fixture).await;
+    let execution = context(&fixture.interpreter).execution();
+    let outer_bridge = parent.begin_concurrent(&parent_heap, 1).unwrap();
+    let outer_lane = outer_bridge.lane(0).unwrap();
+    let mut outer_lane_heap = parent_heap.clone();
+    outer_lane
+        .resume(&mut outer_lane_heap, &execution)
+        .await
+        .unwrap();
+    write_count(&fixture, outer_lane.frame(), &mut outer_lane_heap, 2.0);
+
+    let nested_bridge = outer_lane
+        .frame()
+        .begin_concurrent(&outer_lane_heap, 2)
+        .unwrap();
+    assert!(!outer_lane.frame().has_execution_lease());
+    let nested_first = nested_bridge.lane(0).unwrap();
+    let nested_second = nested_bridge.lane(1).unwrap();
+
+    let mut nested_first_heap = outer_lane_heap.clone();
+    nested_first
+        .resume(&mut nested_first_heap, &execution)
+        .await
+        .unwrap();
+    assert_eq!(
+        nested_first.frame().read_field("count").unwrap(),
+        RuntimeValue::Number(2.0)
+    );
+    write_count(&fixture, nested_first.frame(), &mut nested_first_heap, 3.0);
+    nested_first.complete(nested_first_heap).unwrap();
+
+    let mut nested_second_heap = outer_lane_heap.clone();
+    nested_second
+        .resume(&mut nested_second_heap, &execution)
+        .await
+        .unwrap();
+    assert_eq!(
+        nested_second.frame().read_field("count").unwrap(),
+        RuntimeValue::Number(3.0)
+    );
+    write_count(
+        &fixture,
+        nested_second.frame(),
+        &mut nested_second_heap,
+        4.0,
+    );
+    nested_second.complete(nested_second_heap).unwrap();
+
+    let error = outer_bridge
+        .resume_parent(&mut parent_heap, &execution)
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("(0 synchronous segment(s) held)"));
+
+    nested_bridge
+        .resume_parent(&mut outer_lane_heap, &execution)
+        .await
+        .unwrap();
+    assert_eq!(
+        outer_lane.frame().read_field("count").unwrap(),
+        RuntimeValue::Number(4.0)
+    );
+    let error = outer_bridge
+        .resume_parent(&mut parent_heap, &execution)
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("(1 synchronous segment(s) held)"));
+    write_count(&fixture, outer_lane.frame(), &mut outer_lane_heap, 5.0);
+    outer_lane.complete(outer_lane_heap).unwrap();
+
+    outer_bridge
+        .resume_parent(&mut parent_heap, &execution)
+        .await
+        .unwrap();
+    assert_eq!(
+        parent.read_field("count").unwrap(),
+        RuntimeValue::Number(5.0)
+    );
+    parent.finish(parent_heap).unwrap();
+    assert_eq!(
+        execute(&fixture, &fixture.method, b"[6]").await.unwrap(),
+        b"6",
+        "nested completion must leave no scheduler guard behind"
+    );
+}
+
+#[tokio::test]
+async fn actor_concurrent_continuation_resume_with_installed_lease_fails_on_first_poll() {
+    let fixture = fixture(integer(), true);
+    let (frame, heap) = execution_frame(&fixture).await;
+    let execution = context(&fixture.interpreter).execution();
+    let mut resume_heap = heap.clone();
+
+    let first_poll = {
+        let resume = frame.resume(&mut resume_heap, &execution);
+        tokio::pin!(resume);
+        std::future::poll_fn(|context| Poll::Ready(resume.as_mut().poll(context))).await
+    };
+    let Poll::Ready(Err(error)) = first_poll else {
+        panic!("resume with an installed lease must fail before scheduler acquisition");
+    };
+    assert!(matches!(
+        error,
+        RuntimeError::InvalidArtifact(message)
+            if message
+                == "Actor continuation attempted to resume while an execution token is already installed"
+    ));
+    assert!(frame.has_execution_lease());
+    frame.finish(heap).unwrap();
+}
+
+#[tokio::test]
 async fn actor_concurrent_continuation_serializes_segments_but_overlaps_pending_futures() {
     let fixture = fixture(integer(), true);
     let (parent, parent_heap) = execution_frame(&fixture).await;
