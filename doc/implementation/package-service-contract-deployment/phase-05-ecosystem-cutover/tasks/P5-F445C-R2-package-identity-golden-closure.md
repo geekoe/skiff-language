@@ -77,7 +77,15 @@ branch：
 
 `codex/p5-f445c-r2-package-goldens`
 
-base：`e646265b`。
+执行 base 必须是可独立编译的 F445C 后 production 点 `e48e7e11`，再依次 cherry-pick：
+
+1. R1 task 文档；
+2. R1 test-only schema golden implementation；
+3. R1 result；
+4. 本任务文档及后续 task-doc 修订。
+
+不得以包含 F445D syntax、但尚未包含 F445G lowering 的 integration 中间点作为正式执行 base；
+该中间点会按预期产生 timeout AST 到 lowering 的非穷尽匹配，无法验证本 test-only leaf。
 
 提交 test-only implementation，再只新增并提交：
 
