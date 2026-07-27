@@ -136,6 +136,10 @@ interface CapturedConnectionState {
 
 export class WebSocketRpcBridge {
   private readonly broker: WebSocketRequestBroker;
+  private readonly profilesById: ReadonlyMap<
+    ProfileId,
+    WebSocketRpcProfileAdapter
+  >;
   private readonly connectionsById = new Map<string, CapturedConnectionState>();
   private readonly connectionsByGeneration =
     new Map<string, CapturedConnectionState>();
@@ -154,6 +158,12 @@ export class WebSocketRpcBridge {
           DEFAULT_WEB_SOCKET_REQUEST_BROKER_LIMITS.profileLimits
         )
       ];
+    this.profilesById = new Map(
+      profiles.map((profile) => [profile.profile, profile])
+    );
+    if (this.profilesById.size !== profiles.length) {
+      throw new Error('WebSocket RPC bridge profiles must be unique');
+    }
     this.broker = new WebSocketRequestBroker({
       ...DEFAULT_WEB_SOCKET_REQUEST_BROKER_LIMITS,
       profiles,
@@ -230,6 +240,14 @@ export class WebSocketRpcBridge {
       finalize: () => this.finalizeConnection(state),
       debugSnapshot: () => this.debugSnapshot()
     });
+  }
+
+  captureProfileAdapter(profile: ProfileId): WebSocketRpcProfileAdapter {
+    const adapter = this.profilesById.get(profile);
+    if (adapter === undefined) {
+      throw new Error(`WebSocket RPC profile is not configured: ${profile}`);
+    }
+    return adapter;
   }
 
   debugSnapshot(): WebSocketRpcBridgeDebugSnapshot {

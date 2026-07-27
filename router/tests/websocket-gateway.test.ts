@@ -9,6 +9,11 @@ import {
   type ConnectionSendDisposition,
   type WebSocketRuntimeOwner
 } from '../src/gateway/webSocketGateway.js';
+import type {
+  CapturedWebSocketRpcConnection,
+  WebSocketRpcBridgeConnectionHandle
+} from '../src/gateway/webSocketRpcBridge.js';
+import { JsonRpc20TextProfile } from '../src/protocol/jsonRpc20TextProfile.js';
 import {
   RUNTIME_FRAME_SCHEMA_VERSION,
   type ConnectionSendEnvelope,
@@ -28,6 +33,9 @@ import {
   type RouterActiveAssemblySnapshot,
   type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
+import {
+  RuntimeAssemblyWebSocketMethodTable
+} from '../src/router/runtimeAssemblyWebSocketSnapshot.js';
 import type {
   WebSocketGenerationLifecycleRouter
 } from '../src/router/webSocketGenerationLifecycleRouter.js';
@@ -52,7 +60,21 @@ afterEach(async () => {
   }
 });
 
-describe('current RuntimeAssembly downlink-only WebSocket gateway', () => {
+describe('current RuntimeAssembly WebSocket gateway', () => {
+  it('eagerly pins a handlerless method-bearing WebSocket connection', async () => {
+    const fixture = await createFixture({ rpcMethod: 'chat.send' });
+
+    const client = await fixture.connect();
+
+    expect(fixture.dispatcher.requests).toHaveLength(1);
+    expect(fixture.generation.expectCount).toBe(1);
+    expect(fixture.generation.requireCount).toBe(1);
+
+    client.close();
+    await waitForClose(client);
+    await until(() => fixture.generation.releaseCount === 1);
+  });
+
   it('dispatches one exact connect, admits accept, and releases the pin once', async () => {
     const fixture = await createFixture({ handler: 'package-callable-connect' });
     fixture.dispatcher.respond = (header) => ({
@@ -105,39 +127,69 @@ describe('current RuntimeAssembly downlink-only WebSocket gateway', () => {
     expect(fixture.dispatcher.requests).toHaveLength(1);
     await until(() => fixture.generation.releaseCount === 1);
     expect(fixture.gateway.connectionCount()).toBe(0);
+    expect(fixture.rpcBridge.connections).toHaveLength(0);
     expect(fixture.generation.releaseCount).toBe(1);
   });
 
-  it.each([
-    { label: 'text', data: 'uplink', binary: false },
-    { label: 'binary', data: Buffer.from([1, 2, 3]), binary: true }
-  ])(
-    'synthesizes no-handler accept with zero dispatch/acquire and closes $label data with 1003',
-    async ({ data, binary }) => {
-      const fixture = await createFixture({});
-      const client = await fixture.connect();
-      expect(fixture.dispatcher.requests).toHaveLength(0);
-      expect(fixture.generation.expectCount).toBe(0);
-      expect(fixture.generation.requireCount).toBe(0);
+  it('closes and releases an acquired generation when bridge attach fails', async () => {
+    const fixture = await createFixture({
+      rpcMethod: 'chat.send',
+      bridgeAttachError: true
+    });
+    const client = await fixture.connect();
 
-      client.send(data, { binary });
-      const [code, reason] = await waitForClose(client);
-      expect(code).toBe(1003);
-      expect(reason).toBe('client data frames are not supported');
-      expect(fixture.dispatcher.requests).toHaveLength(0);
-      expect(fixture.generation.releaseCount).toBe(0);
-    }
-  );
+    expect(await waitForClose(client)).toEqual([
+      1011,
+      'websocket RPC bridge attach failed'
+    ]);
+    await until(() => fixture.generation.releaseCount === 1);
+    expect(fixture.gateway.connectionCount()).toBe(0);
+    expect(fixture.rpcBridge.connections).toHaveLength(0);
+    expect(fixture.generation.releaseCount).toBe(1);
+  });
 
-  it('does not schedule receive work after a handler-backed connect', async () => {
+  it('attaches a no-handler path-only connection with zero dispatch/acquire', async () => {
+    const fixture = await createFixture({});
+    const client = await fixture.connect();
+    expect(fixture.dispatcher.requests).toHaveLength(0);
+    expect(fixture.generation.expectCount).toBe(0);
+    expect(fixture.generation.requireCount).toBe(0);
+
+    client.send('uplink');
+    await until(() => fixture.rpcBridge.textFrames.length === 1);
+    expect(fixture.rpcBridge.textFrames).toEqual(['uplink']);
+    expect(client.readyState).toBe(WebSocket.OPEN);
+
+    client.close();
+    await waitForClose(client);
+    expect(fixture.generation.releaseCount).toBe(0);
+  });
+
+  it('routes binary peer data through the bridge protocol close', async () => {
+    const fixture = await createFixture({});
+    const client = await fixture.connect();
+
+    client.send(Buffer.from([1, 2, 3]), { binary: true });
+    const [code, reason] = await waitForClose(client);
+
+    expect(code).toBe(1003);
+    expect(reason).toBe('binary websocket RPC frames are not supported');
+    expect(fixture.rpcBridge.binaryFrameCount).toBe(1);
+    expect(fixture.generation.releaseCount).toBe(0);
+  });
+
+  it('routes peer text through the bridge after a handler-backed connect', async () => {
     const fixture = await createFixture({ handler: 'package-callable-connect' });
     const client = await fixture.connect();
     expect(fixture.dispatcher.requests).toHaveLength(1);
 
-    client.send('must-not-reach-runtime');
-    const [code] = await waitForClose(client);
-    expect(code).toBe(1003);
+    client.send('must-reach-bridge');
+    await until(() => fixture.rpcBridge.textFrames.length === 1);
+    expect(fixture.rpcBridge.textFrames).toEqual(['must-reach-bridge']);
     expect(fixture.dispatcher.requests).toHaveLength(1);
+
+    client.close();
+    await waitForClose(client);
     await until(() => fixture.generation.releaseCount === 1);
   });
 
@@ -180,6 +232,7 @@ describe('current RuntimeAssembly downlink-only WebSocket gateway', () => {
       reason: 'runtime-sender-mismatch'
     });
     fixture.setCurrentOwner({
+      serviceId: SERVICE_ID,
       assemblyIdentity: ASSEMBLY_ONE,
       assemblyGeneration: 1,
       replicaId: 'runtime-other'
@@ -192,6 +245,7 @@ describe('current RuntimeAssembly downlink-only WebSocket gateway', () => {
       reason: 'runtime-sender-mismatch'
     });
     fixture.setCurrentOwner({
+      serviceId: SERVICE_ID,
       assemblyIdentity: ASSEMBLY_ONE,
       assemblyGeneration: 2,
       replicaId: 'runtime-one'
@@ -204,6 +258,7 @@ describe('current RuntimeAssembly downlink-only WebSocket gateway', () => {
       reason: 'runtime-sender-mismatch'
     });
     fixture.setCurrentOwner({
+      serviceId: SERVICE_ID,
       assemblyIdentity: ASSEMBLY_ONE,
       assemblyGeneration: 1,
       replicaId: 'runtime-one'
@@ -240,6 +295,7 @@ describe('current RuntimeAssembly downlink-only WebSocket gateway', () => {
       snapshot(2, ASSEMBLY_TWO, 'revision-two', 'package-callable-connect')
     );
     fixture.setCurrentOwner({
+      serviceId: SERVICE_ID,
       assemblyIdentity: ASSEMBLY_TWO,
       assemblyGeneration: 2,
       replicaId: 'runtime-two'
@@ -269,6 +325,7 @@ interface GatewayFixture {
   gateway: AssemblyWebSocketGateway;
   snapshots: RouterActiveAssemblySnapshotStore;
   dispatcher: FakeDispatcher;
+  rpcBridge: FakeRpcBridge;
   generation: FakeGenerationLifecycle;
   send: FakeConnectionSendSource;
   runtime: WebSocket;
@@ -281,6 +338,8 @@ interface GatewayFixture {
 
 async function createFixture(input: {
   handler?: string;
+  rpcMethod?: string;
+  bridgeAttachError?: boolean;
 }): Promise<GatewayFixture> {
   const server = createServer((_request, response) => {
     response.statusCode = 404;
@@ -293,19 +352,30 @@ async function createFixture(input: {
   }
 
   const snapshots = new RouterActiveAssemblySnapshotStore();
-  snapshots.replace(snapshot(1, ASSEMBLY_ONE, 'revision-one', input.handler));
+  snapshots.replace(
+    snapshot(
+      1,
+      ASSEMBLY_ONE,
+      'revision-one',
+      input.handler,
+      input.rpcMethod
+    )
+  );
   const generation = new FakeGenerationLifecycle();
   const runtime = {} as WebSocket;
   const otherRuntime = {} as WebSocket;
   const dispatcher = new FakeDispatcher(generation, runtime);
+  const rpcBridge = new FakeRpcBridge(input.bridgeAttachError);
   const send = new FakeConnectionSendSource();
   const owners = new WeakMap<WebSocket, WebSocketRuntimeOwner>();
   owners.set(runtime, {
+    serviceId: SERVICE_ID,
     assemblyIdentity: ASSEMBLY_ONE,
     assemblyGeneration: 1,
     replicaId: 'runtime-one'
   });
   owners.set(otherRuntime, {
+    serviceId: SERVICE_ID,
     assemblyIdentity: ASSEMBLY_ONE,
     assemblyGeneration: 1,
     replicaId: 'runtime-other'
@@ -314,6 +384,7 @@ async function createFixture(input: {
     server,
     snapshots,
     dispatcher,
+    rpcBridge,
     generationLifecycle:
       generation as unknown as WebSocketGenerationLifecycleRouter,
     runtimeConnectionSend: send,
@@ -336,6 +407,7 @@ async function createFixture(input: {
     gateway,
     snapshots,
     dispatcher,
+    rpcBridge,
     generation,
     send,
     runtime,
@@ -435,6 +507,49 @@ class FakeDispatcher implements AssemblyWebSocketRuntimeDispatcher {
   }
 }
 
+class FakeRpcBridge {
+  readonly adapter = new JsonRpc20TextProfile();
+  readonly connections: CapturedWebSocketRpcConnection[] = [];
+  readonly textFrames: string[] = [];
+  binaryFrameCount = 0;
+  finalizeCount = 0;
+
+  constructor(private readonly failAttach = false) {}
+
+  captureProfileAdapter(): JsonRpc20TextProfile {
+    return this.adapter;
+  }
+
+  attach(
+    connection: CapturedWebSocketRpcConnection
+  ): WebSocketRpcBridgeConnectionHandle {
+    if (this.failAttach) {
+      throw new Error('injected bridge attach failure');
+    }
+    this.connections.push(connection);
+    let finalized = false;
+    const finalize = (): Promise<void> => {
+      if (!finalized) {
+        finalized = true;
+        this.finalizeCount += 1;
+      }
+      return Promise.resolve();
+    };
+    return {
+      handlePeerText: (frame) => {
+        this.textFrames.push(frame);
+      },
+      handlePeerBinary: () => {
+        this.binaryFrameCount += 1;
+        connection.writer.close(1003, 'binary websocket RPC frames are not supported');
+      },
+      handlePeerDisconnect: () => finalize(),
+      finalize: () => finalize(),
+      debugSnapshot: () => ({}) as never
+    };
+  }
+}
+
 class FakeGenerationLifecycle {
   expectCount = 0;
   requireCount = 0;
@@ -521,9 +636,10 @@ function snapshot(
   generation: number,
   assemblyIdentity: string,
   deploymentRevision: string,
-  handler?: string
+  handler?: string,
+  rpcMethod?: string
 ): RouterActiveAssemblySnapshot {
-  const binding = websocketBinding(deploymentRevision, handler);
+  const binding = websocketBinding(deploymentRevision, handler, rpcMethod);
   return {
     environment: 'test',
     generation,
@@ -535,8 +651,15 @@ function snapshot(
 
 function websocketBinding(
   deploymentRevision: string,
-  handler?: string
+  handler?: string,
+  rpcMethod?: string
 ): RuntimeAssemblyIngressBinding {
+  const deployment = {
+    serviceId: SERVICE_ID,
+    contractVersion: '1.0.0',
+    deploymentRevision,
+    deploymentArtifactIdentity: DEPLOYMENT_ID
+  };
   return {
     selector: {
       protocol: 'webSocket',
@@ -544,18 +667,30 @@ function websocketBinding(
       method: null,
       path: '/chat'
     },
-    deployment: {
-      serviceId: SERVICE_ID,
-      contractVersion: '1.0.0',
-      deploymentRevision,
-      deploymentArtifactIdentity: DEPLOYMENT_ID
-    },
+    deployment,
     gatewayEntryKey: 'websocket',
     gatewayEntryIdentity: GATEWAY_ID,
     adapterKind: 'websocketConnect',
     operationMode: 'unary',
     websocketEntryId: ENTRY_ID,
-    ...(handler === undefined ? {} : { handler })
+    websocketRpcProfiles: ['jsonrpc-2.0-text'] as const,
+    ...(handler === undefined ? {} : { handler }),
+    ...(rpcMethod === undefined
+      ? {}
+      : {
+          websocketMethods: new RuntimeAssemblyWebSocketMethodTable([
+            {
+              method: rpcMethod,
+              profile: 'jsonrpc-2.0-text',
+              deployment,
+              gatewayEntryKey: `websocket.${rpcMethod}`,
+              gatewayEntryIdentity:
+                `skiff-gateway-entry-v2:sha256:${'f'.repeat(64)}`,
+              handler: 'package-callable-jsonrpc',
+              websocketEntryId: ENTRY_ID
+            }
+          ])
+        })
   };
 }
 

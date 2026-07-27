@@ -21,6 +21,7 @@ import { ProductionActorMethodRouter } from './productionActorMethodRouter.js';
 import { RuntimeAssemblyActorMethodCatalog } from './runtimeAssemblyActorMethodCatalog.js';
 import { ActorOwnerLeaseIdleController } from './actorOwnerLeaseIdleController.js';
 import { AssemblyWebSocketGateway } from '../gateway/webSocketGateway.js';
+import { WebSocketRpcBridge } from '../gateway/webSocketRpcBridge.js';
 
 const args = parseArgs({
   options: {
@@ -146,6 +147,10 @@ await coordinator.initialize();
 
 const dispatcher = new RuntimeDispatcher({ registry, frameSender: runtimeEndpoint });
 runtimeEndpoint.setDispatcher(dispatcher);
+const webSocketRpcBridge = new WebSocketRpcBridge({
+  endpoint: runtimeEndpoint,
+  dispatcher
+});
 const generationLifecycle = new WebSocketGenerationLifecycleRouter({
   dispatcher,
   sender: runtimeEndpoint,
@@ -180,19 +185,12 @@ const webSocketGateway = new AssemblyWebSocketGateway({
   server: httpServer.server,
   snapshots,
   dispatcher,
+  rpcBridge: webSocketRpcBridge,
   generationLifecycle,
   runtimeConnectionSend: runtimeEndpoint,
   selectRuntime: (binding) =>
     registry.actorRuntimeCandidates(binding.deployment.serviceId)[0],
   runtimeOwner: (sender, serviceId) => {
-    if (
-      serviceId !== undefined &&
-      !registry
-        .actorRuntimeCandidates(serviceId)
-        .some((candidate) => candidate.ws === sender)
-    ) {
-      return undefined;
-    }
     const replicaId = registry.replicaIdForConnection(sender);
     const replica =
       replicaId === undefined
@@ -203,6 +201,7 @@ const webSocketGateway = new AssemblyWebSocketGateway({
     return replica === undefined
       ? undefined
       : {
+          serviceId,
           assemblyIdentity: replica.assemblyIdentity,
           assemblyGeneration: replica.generation,
           replicaId: replica.replicaId
@@ -235,6 +234,7 @@ async function shutdown(): Promise<void> {
   const failures: unknown[] = [];
   for (const close of [
     () => webSocketGateway.close(),
+    () => webSocketRpcBridge.cleanup(),
     () => httpGateway.close(),
     () => runtimeEndpoint.close(),
     () => activation.client.close()

@@ -78,10 +78,15 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
   >();
   private shutdownPromise: Promise<void> | undefined;
   private shuttingDown = false;
+  private readonly pendingFinalizations = new Set<Promise<void>>();
+  private readonly finalizationFailures: unknown[] = [];
 
   constructor(
     options: WebSocketConnectionLifecycleOptions = {},
-    private readonly onFinish?: (value: TConnection, runtime: TRuntime | undefined) => void
+    private readonly onFinish?: (
+      value: TConnection,
+      runtime: TRuntime | undefined
+    ) => void | Promise<void>
   ) {
     this.connectionLimit = positiveInteger(
       options.connectionLimit ?? DEFAULT_CONNECTION_LIMIT,
@@ -328,6 +333,13 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
         socket.terminate();
       }
     }
+    await Promise.all(Array.from(this.pendingFinalizations));
+    if (this.finalizationFailures.length > 0) {
+      throw new AggregateError(
+        this.finalizationFailures,
+        'websocket connection finalization failed'
+      );
+    }
   }
 
   private requireConnection(id: string): LifecycleConnection<TConnection, TRuntime> {
@@ -413,8 +425,8 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
       connection.observedWrites.add(write);
       connection.observedWriteBytes += messageBytes;
       try {
-        socket.send(frame, { binary: false }, (error?: Error) => {
-          if (error === undefined) {
+        socket.send(frame, { binary: false }, (error?: Error | null) => {
+          if (error == null) {
             if (
               connection.state === 'admitted' &&
               connection.socket === socket &&
@@ -497,11 +509,7 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
         new Error('websocket connection closed before send completed')
       );
     }
-    try {
-      this.onFinish?.(connection.value, connection.runtime);
-    } catch {
-      // The lifecycle is already deindexed; external cleanup cannot restore it.
-    }
+    this.trackFinalization(connection);
 
     if (closeTransport && close !== undefined) {
       if (connection.socket !== undefined) {
@@ -514,6 +522,32 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
         }
       }
     }
+  }
+
+  private trackFinalization(
+    connection: LifecycleConnection<TConnection, TRuntime>
+  ): void {
+    let result: void | Promise<void>;
+    try {
+      result = this.onFinish?.(connection.value, connection.runtime);
+    } catch (error) {
+      this.finalizationFailures.push(error);
+      return;
+    }
+    if (result === undefined) {
+      return;
+    }
+    const completion = Promise.resolve(result)
+      .then(
+        () => undefined,
+        (error: unknown) => {
+          this.finalizationFailures.push(error);
+        }
+      )
+      .finally(() => {
+        this.pendingFinalizations.delete(completion);
+      });
+    this.pendingFinalizations.add(completion);
   }
 }
 

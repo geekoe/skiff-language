@@ -8,12 +8,14 @@ import {
   WebSocketConnectionLimitExceededError
 } from '../src/gateway/webSocketConnectionLifecycle.js';
 
-describe('downlink-only WebSocketConnectionLifecycle', () => {
+describe('WebSocketConnectionLifecycle', () => {
   it('applies close-oldest before indexing the new business connection', () => {
     const finished: string[] = [];
     const lifecycle = new WebSocketConnectionLifecycle<string, string>(
       {},
-      (value) => finished.push(value)
+      (value) => {
+        finished.push(value);
+      }
     );
     const first = admitted(lifecycle, 'first', 'business');
     const second = socket();
@@ -96,6 +98,27 @@ describe('downlink-only WebSocketConnectionLifecycle', () => {
     ]);
     expect(finish).toHaveBeenCalledTimes(1);
     expect(finish).toHaveBeenCalledWith('value', 'runtime');
+  });
+
+  it('waits for an asynchronous connection finalizer during shutdown', async () => {
+    const finalization = deferred<void>();
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>(
+      {},
+      () => finalization.promise
+    );
+    const transport = admitted(lifecycle, 'connection');
+    transport.emit('close');
+
+    let shutdownSettled = false;
+    const shutdown = lifecycle.shutdown().then(() => {
+      shutdownSettled = true;
+    });
+    await Promise.resolve();
+    expect(shutdownSettled).toBe(false);
+
+    finalization.resolve(undefined);
+    await shutdown;
+    expect(shutdownSettled).toBe(true);
   });
 
   it('fan-outs downlink only to open matching sockets', () => {
@@ -183,6 +206,23 @@ describe('downlink-only WebSocketConnectionLifecycle', () => {
     expect(lifecycle.observedWriteCount()).toBe(0);
     expect(lifecycle.connection('connection')).toBe('value');
     expect(transport.sends).toEqual([{ data: 'hello', binary: false }]);
+  });
+
+  it('accepts the ws null callback sentinel as a successful observed write', async () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>();
+    const transport = observedSocket();
+    lifecycle.reserve('connection', 'value');
+    lifecycle.admit('connection', {});
+    lifecycle.attach('connection', transport.webSocket);
+
+    const write = lifecycle
+      .capturePeerWriter('connection')!
+      .writeText('hello');
+    transport.completeSend(null);
+
+    await expect(write).resolves.toBeUndefined();
+    expect(lifecycle.connection('connection')).toBe('value');
+    expect(lifecycle.observedWriteCount()).toBe(0);
   });
 
   it('rejects an observed peer write when send throws synchronously', async () => {
@@ -370,19 +410,19 @@ function socket(): TestSocket {
 }
 
 function observedSocket(): TestSocket & {
-  completeSend(error?: Error): void;
+  completeSend(error?: Error | null): void;
   setReadyState(state: number): void;
   throwOnSend(error: Error): void;
 } {
   const transport = socket();
-  const callbacks: Array<(error?: Error) => void> = [];
+  const callbacks: Array<(error?: Error | null) => void> = [];
   let sendError: Error | undefined;
   (
     transport.webSocket as unknown as {
       send(
         data: string,
         options: { binary: boolean },
-        done: (error?: Error) => void
+        done: (error?: Error | null) => void
       ): void;
     }
   ).send = (data, options, done) => {
@@ -394,7 +434,7 @@ function observedSocket(): TestSocket & {
   };
   return {
     ...transport,
-    completeSend(error?: Error) {
+    completeSend(error?: Error | null) {
       const done = callbacks.shift();
       if (done === undefined) {
         throw new Error('no observed send callback');
@@ -410,4 +450,15 @@ function observedSocket(): TestSocket & {
       sendError = error;
     }
   };
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
 }

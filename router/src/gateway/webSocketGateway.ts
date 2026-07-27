@@ -44,16 +44,23 @@ import {
   WebSocketConnectionLimitExceededError,
   type WebSocketConnectionPolicy
 } from './webSocketConnectionLifecycle.js';
+import {
+  attachWebSocketRpcConnection,
+  captureWebSocketRpcIngress,
+  type WebSocketRpcIngressCapture,
+  type WebSocketRpcConnectionAttachment
+} from './webSocketRpcConnectionAttachment.js';
+import type { WebSocketRpcBridge } from './webSocketRpcBridge.js';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
-const UNSUPPORTED_CLIENT_DATA_REASON = 'client data frames are not supported';
 const CONNECTION_DOWNLINK_TEXT_DECODER = new TextDecoder('utf-8', {
   fatal: true
 });
 
 /**
  * Retained only as the shape of the pre-cutover loop-risk health response.
- * The current gateway has no receive work, queue, or mutable receive counters.
+ * RPC receive work is owned by the bridge/broker and does not revive these
+ * legacy mutable counters.
  */
 export interface WebSocketReceiveLifecycleCounters {
   inFlight: 0;
@@ -78,6 +85,7 @@ export interface AssemblyWebSocketRuntimeDispatcher {
 }
 
 export interface WebSocketRuntimeOwner {
+  serviceId: string;
   assemblyIdentity: string;
   assemblyGeneration: number;
   replicaId: string;
@@ -114,6 +122,10 @@ export interface AssemblyWebSocketGatewayOptions {
   server: HttpServer;
   snapshots: RouterActiveAssemblySnapshotStore;
   dispatcher: AssemblyWebSocketRuntimeDispatcher;
+  rpcBridge: Pick<
+    WebSocketRpcBridge,
+    'attach' | 'captureProfileAdapter'
+  >;
   generationLifecycle: WebSocketGenerationLifecycleRouter;
   runtimeConnectionSend: RuntimeConnectionSendSource;
   selectRuntime(
@@ -121,7 +133,7 @@ export interface AssemblyWebSocketGatewayOptions {
   ): RuntimeDispatchConnection | undefined;
   runtimeOwner(
     sender: WebSocket,
-    serviceId?: string
+    serviceId: string
   ): WebSocketRuntimeOwner | undefined;
   connectionLimit?: number;
   slowClientBudgetBytes?: number;
@@ -129,20 +141,14 @@ export interface AssemblyWebSocketGatewayOptions {
   requestTimeoutMs?: number;
 }
 
-interface Connection {
+interface Connection extends WebSocketRpcIngressCapture {
   id: string;
-  serviceId: string;
-  websocketEntryId: string;
-  gatewayEntryIdentity: string;
-  gatewayEntryKey: string;
-  deploymentRevision: string;
-  deploymentArtifactIdentity: string;
-  assemblyIdentity: string;
-  assemblyGeneration: number;
-  hasHandler: boolean;
   runtimeReceipt?: RuntimeDispatchConnectionReceipt;
   runtimeReplicaId?: string;
   businessIdentity?: string;
+  rpcAttachment?: WebSocketRpcConnectionAttachment;
+  releasePromise?: Promise<void>;
+  finalizePromise?: Promise<void>;
 }
 
 interface PreparedUpgrade {
@@ -172,6 +178,7 @@ export class AssemblyWebSocketGateway {
   private readonly webSocketServer = new WebSocketServer({ noServer: true });
   private readonly unsubscribeConnectionSend: () => void;
   private readonly unsubscribeGenerationLost: () => void;
+  private closePromise?: Promise<void>;
   private listening = false;
 
   constructor(private readonly options: AssemblyWebSocketGatewayOptions) {
@@ -188,11 +195,7 @@ export class AssemblyWebSocketGateway {
           ? {}
           : { shutdownTimeoutMs: options.shutdownTimeoutMs })
       },
-      (connection) => {
-        if (connection.hasHandler) {
-          void this.options.generationLifecycle.releaseConnection(connection.id);
-        }
-      }
+      (connection) => this.finalizeConnection(connection)
     );
     this.unsubscribeConnectionSend =
       options.runtimeConnectionSend.onConnectionSend((message, sender) =>
@@ -216,20 +219,52 @@ export class AssemblyWebSocketGateway {
   }
 
   async close(): Promise<void> {
-    this.unsubscribeConnectionSend();
-    this.unsubscribeGenerationLost();
+    if (this.closePromise === undefined) {
+      this.closePromise = this.performClose();
+    }
+    return this.closePromise;
+  }
+
+  private async performClose(): Promise<void> {
     if (this.listening) {
       this.options.server.off('upgrade', this.handleUpgrade);
       this.listening = false;
     }
-    await this.lifecycle.shutdown();
-    await this.options.generationLifecycle.flush();
-    await new Promise<void>((resolve) => {
-      this.webSocketServer.close(() => resolve());
-      if (this.webSocketServer.clients.size === 0) {
-        resolve();
-      }
-    });
+    this.unsubscribeConnectionSend();
+    this.unsubscribeGenerationLost();
+    const failures: unknown[] = [];
+    try {
+      await this.lifecycle.shutdown();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await this.options.generationLifecycle.flush();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        this.webSocketServer.close((error) => {
+          if (error === undefined) {
+            resolve();
+          } else {
+            reject(error);
+          }
+        });
+        if (this.webSocketServer.clients.size === 0) {
+          resolve();
+        }
+      });
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        'assembly WebSocket gateway shutdown failed'
+      );
+    }
   }
 
   connectionCount(): number {
@@ -296,16 +331,16 @@ export class AssemblyWebSocketGateway {
       closeBeforeAttach
     );
     try {
-      const accepted = binding.handler === undefined
-        ? {}
-        : await this.dispatchConnect(
+      const accepted = connection.requiresRuntimePin
+        ? await this.dispatchConnect(
             snapshot,
             binding,
             connection,
             request,
             url,
             signal
-          );
+          )
+        : {};
       if (accepted.businessIdentity !== undefined) {
         connection.businessIdentity = accepted.businessIdentity;
       }
@@ -338,30 +373,9 @@ export class AssemblyWebSocketGateway {
     binding: RuntimeAssemblyIngressBinding,
     closeBeforeAttach: () => void
   ): Connection {
-    if (
-      binding.selector.protocol !== 'webSocket' ||
-      binding.adapterKind !== 'websocketConnect' ||
-      binding.operationMode !== 'unary' ||
-      binding.websocketEntryId === undefined
-    ) {
-      throw new GatewayError(
-        500,
-        'InvalidAssemblyIngress',
-        'committed WebSocket ingress is not an exact connect-only binding'
-      );
-    }
     const connection: Connection = {
       id: randomUUID(),
-      serviceId: binding.deployment.serviceId,
-      websocketEntryId: binding.websocketEntryId,
-      gatewayEntryIdentity: binding.gatewayEntryIdentity,
-      gatewayEntryKey: binding.gatewayEntryKey,
-      deploymentRevision: binding.deployment.deploymentRevision,
-      deploymentArtifactIdentity:
-        binding.deployment.deploymentArtifactIdentity,
-      assemblyIdentity: snapshot.assembly.assemblyIdentity,
-      assemblyGeneration: snapshot.generation,
-      hasHandler: binding.handler !== undefined
+      ...captureWebSocketRpcIngress({ snapshot, binding })
     };
     try {
       this.lifecycle.reserve(
@@ -445,13 +459,40 @@ export class AssemblyWebSocketGateway {
   }
 
   private attachSocket(connection: Connection, socket: WebSocket): void {
-    this.lifecycle.attach(connection.id, socket);
-    socket.on('message', () => {
-      this.lifecycle.close(connection.id, {
-        code: 1003,
-        reason: UNSUPPORTED_CLIENT_DATA_REASON
+    try {
+      this.lifecycle.attach(connection.id, socket);
+      const writer = this.lifecycle.capturePeerWriter(connection.id);
+      if (writer === undefined) {
+        throw new Error(
+          'admitted WebSocket connection has no observable peer writer'
+        );
+      }
+      connection.rpcAttachment = attachWebSocketRpcConnection({
+        socket,
+        bridge: this.options.rpcBridge,
+        capture: connection,
+        connectionId: connection.id,
+        writer,
+        ...(connection.businessIdentity === undefined
+          ? {}
+          : { businessIdentity: connection.businessIdentity }),
+        routerRequestTimeoutMs: this.requestTimeoutMs,
+        ...(connection.runtimeReceipt === undefined
+          ? {}
+          : { runtimeReceipt: connection.runtimeReceipt }),
+        ...(connection.runtimeReplicaId === undefined
+          ? {}
+          : { runtimeReplicaId: connection.runtimeReplicaId }),
+        runtimeOwner: (source) =>
+          this.options.runtimeOwner(source.sender, connection.serviceId),
+        releaseGeneration: () => this.releaseRuntimePin(connection)
       });
-    });
+    } catch {
+      this.lifecycle.close(connection.id, {
+        code: 1011,
+        reason: 'websocket RPC bridge attach failed'
+      });
+    }
   }
 
   private handleConnectionSend(
@@ -495,10 +536,10 @@ export class AssemblyWebSocketGateway {
     }
     const owner = this.options.runtimeOwner(
       sender,
-      connection.hasHandler ? undefined : connection.serviceId
+      connection.serviceId
     );
-    const exactHandlerOwner =
-      !connection.hasHandler ||
+    const exactPinnedOwner =
+      !connection.requiresRuntimePin ||
       (connection.runtimeReplicaId !== undefined &&
         owner?.replicaId === connection.runtimeReplicaId &&
         connection.runtimeReceipt !== undefined &&
@@ -508,9 +549,10 @@ export class AssemblyWebSocketGateway {
         ));
     const exactOwner =
       owner !== undefined &&
+      owner.serviceId === connection.serviceId &&
       owner.assemblyIdentity === connection.assemblyIdentity &&
       owner.assemblyGeneration === connection.assemblyGeneration &&
-      exactHandlerOwner;
+      exactPinnedOwner;
     if (!exactOwner) {
       return protocolViolation(
         'runtime-sender-mismatch',
@@ -546,6 +588,7 @@ export class AssemblyWebSocketGateway {
     );
     if (
       owner === undefined ||
+      owner.serviceId !== message.serviceId ||
       owner.assemblyIdentity !== snapshot.assembly.assemblyIdentity ||
       owner.assemblyGeneration !== snapshot.generation
     ) {
@@ -603,6 +646,27 @@ export class AssemblyWebSocketGateway {
         connectionDownlinkMessage(message)
       )
     };
+  }
+
+  private finalizeConnection(connection: Connection): Promise<void> {
+    if (connection.finalizePromise !== undefined) {
+      return connection.finalizePromise;
+    }
+    connection.finalizePromise = (
+      connection.rpcAttachment?.finalize() ?? Promise.resolve()
+    ).then(() => this.releaseRuntimePin(connection));
+    return connection.finalizePromise;
+  }
+
+  private releaseRuntimePin(connection: Connection): Promise<void> {
+    if (!connection.requiresRuntimePin) {
+      return Promise.resolve();
+    }
+    if (connection.releasePromise === undefined) {
+      connection.releasePromise =
+        this.options.generationLifecycle.releaseConnection(connection.id);
+    }
+    return connection.releasePromise;
   }
 }
 
@@ -950,6 +1014,7 @@ function ownerRecord(
   return owner === undefined
     ? {}
     : {
+        serviceId: owner.serviceId,
         assemblyIdentity: owner.assemblyIdentity,
         assemblyGeneration: String(owner.assemblyGeneration),
         replicaId: owner.replicaId
