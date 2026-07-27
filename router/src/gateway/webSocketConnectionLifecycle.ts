@@ -22,6 +22,11 @@ export interface WebSocketLifecycleOutboundMessage {
   binary: boolean;
 }
 
+export interface WebSocketLifecyclePeerWriter {
+  writeText(frame: string): Promise<void>;
+  close(code: number, reason: string): void;
+}
+
 export interface WebSocketConnectionLifecycleOptions {
   connectionLimit?: number;
   slowClientBudgetBytes?: number;
@@ -38,10 +43,18 @@ interface LifecycleConnection<TConnection, TRuntime> {
   businessKey?: string;
   closeBeforeAttach?: (close: WebSocketLifecycleClose) => void;
   id: string;
+  observedWriteBytes: number;
+  observedWrites: Set<ObservedWrite>;
   runtime?: TRuntime;
   socket?: WebSocket;
   state: LifecycleState;
   value: TConnection;
+}
+
+interface ObservedWrite {
+  bytes: number;
+  reject(error: Error): void;
+  resolve(): void;
 }
 
 export class WebSocketConnectionLimitExceededError extends Error {
@@ -101,6 +114,8 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     }
     const connection: LifecycleConnection<TConnection, TRuntime> = {
       id,
+      observedWriteBytes: 0,
+      observedWrites: new Set(),
       state: 'reserved',
       value,
       ...(runtime !== undefined ? { runtime } : {}),
@@ -230,6 +245,23 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     return connection === undefined ? false : this.send(connection, message);
   }
 
+  capturePeerWriter(id: string): WebSocketLifecyclePeerWriter | undefined {
+    const connection = this.connectionsById.get(id);
+    if (
+      connection === undefined ||
+      connection.state !== 'admitted' ||
+      connection.socket === undefined
+    ) {
+      return undefined;
+    }
+    return Object.freeze({
+      writeText: (frame: string) => this.writeObservedText(connection, frame),
+      close: (code: number, reason: string) => {
+        this.finishConnection(connection, { code, reason }, true);
+      }
+    });
+  }
+
   sendToBusinessKey(
     businessKey: string,
     message: WebSocketLifecycleOutboundMessage
@@ -257,6 +289,14 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
 
   connectionCount(): number {
     return this.connectionsById.size;
+  }
+
+  observedWriteCount(): number {
+    let count = 0;
+    for (const connection of this.connectionsById.values()) {
+      count += connection.observedWrites.size;
+    }
+    return count;
   }
 
   shutdown(
@@ -331,6 +371,109 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     }
   }
 
+  private writeObservedText(
+    connection: LifecycleConnection<TConnection, TRuntime>,
+    frame: string
+  ): Promise<void> {
+    const socket = connection.socket;
+    if (
+      connection.state !== 'admitted' ||
+      socket === undefined ||
+      socket.readyState !== WebSocket.OPEN
+    ) {
+      if (connection.state === 'admitted') {
+        this.finishConnection(connection, undefined, false);
+      }
+      return Promise.reject(
+        new Error('websocket connection is not open')
+      );
+    }
+    const messageBytes = Buffer.byteLength(frame, 'utf8');
+    if (
+      socket.bufferedAmount +
+        connection.observedWriteBytes +
+        messageBytes >
+      this.slowClientBudgetBytes
+    ) {
+      const error = new Error('websocket client is too slow');
+      this.finishConnection(
+        connection,
+        { code: 1011, reason: error.message },
+        true
+      );
+      return Promise.reject(error);
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const write: ObservedWrite = {
+        bytes: messageBytes,
+        reject,
+        resolve
+      };
+      connection.observedWrites.add(write);
+      connection.observedWriteBytes += messageBytes;
+      try {
+        socket.send(frame, { binary: false }, (error?: Error) => {
+          if (error === undefined) {
+            if (
+              connection.state === 'admitted' &&
+              connection.socket === socket &&
+              socket.readyState === WebSocket.OPEN
+            ) {
+              this.settleObservedWrite(connection, write);
+              return;
+            }
+            if (
+              this.settleObservedWrite(
+                connection,
+                write,
+                new Error(
+                  'websocket connection closed before send completed'
+                )
+              )
+            ) {
+              this.finishConnection(connection, undefined, false);
+            }
+            return;
+          }
+          if (this.settleObservedWrite(connection, write, error)) {
+            this.finishConnection(
+              connection,
+              { code: 1011, reason: 'websocket client send failed' },
+              true
+            );
+          }
+        });
+      } catch (error) {
+        const sendError = asError(error, 'websocket client send failed');
+        if (this.settleObservedWrite(connection, write, sendError)) {
+          this.finishConnection(
+            connection,
+            { code: 1011, reason: 'websocket client send failed' },
+            true
+          );
+        }
+      }
+    });
+  }
+
+  private settleObservedWrite(
+    connection: LifecycleConnection<TConnection, TRuntime>,
+    write: ObservedWrite,
+    error?: Error
+  ): boolean {
+    if (!connection.observedWrites.delete(write)) {
+      return false;
+    }
+    connection.observedWriteBytes -= write.bytes;
+    if (error === undefined) {
+      write.resolve();
+    } else {
+      write.reject(error);
+    }
+    return true;
+  }
+
   private finishConnection(
     connection: LifecycleConnection<TConnection, TRuntime>,
     close: WebSocketLifecycleClose | undefined,
@@ -346,6 +489,13 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     }
     if (connection.runtime !== undefined) {
       removeFromIndex(this.connectionsByRuntime, connection.runtime, connection);
+    }
+    for (const write of Array.from(connection.observedWrites)) {
+      this.settleObservedWrite(
+        connection,
+        write,
+        new Error('websocket connection closed before send completed')
+      );
     }
     try {
       this.onFinish?.(connection.value, connection.runtime);
@@ -458,6 +608,10 @@ function nonNegativeInteger(value: number, name: string): number {
     throw new Error(`${name} must be a non-negative integer`);
   }
   return value;
+}
+
+function asError(error: unknown, fallback: string): Error {
+  return error instanceof Error ? error : new Error(fallback);
 }
 
 function waitForSocketsOrTimeout(sockets: WebSocket[], timeoutMs: number): Promise<void> {

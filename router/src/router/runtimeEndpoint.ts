@@ -165,8 +165,19 @@ export type ConnectionRequestHandler = (
   source: RuntimeConnectionRequestSource
 ) => void | Promise<void>;
 
+export type RuntimeConnectionRequestSourceDisconnectHandler = (
+  source: RuntimeConnectionRequestSource
+) => void;
+
 export interface RuntimeConnectionRequestSourceApi {
   onConnectionRequest(handler: ConnectionRequestHandler): () => void;
+  onConnectionRequestSourceDisconnect(
+    handler: RuntimeConnectionRequestSourceDisconnectHandler
+  ): () => void;
+  isolateConnectionRequestSource(
+    source: RuntimeConnectionRequestSource,
+    reason: string
+  ): void;
   sendConnectionResponse(
     source: RuntimeConnectionRequestSource,
     header: ConnectionResponseFrameHeader,
@@ -226,7 +237,14 @@ export class RuntimeEndpoint
     WebSocketGenerationLifecycleControlSender
 {
   private readonly connectionRequestHandlers = new Set<ConnectionRequestHandler>();
+  private readonly connectionRequestSourceDisconnectHandlers =
+    new Set<RuntimeConnectionRequestSourceDisconnectHandler>();
+  private readonly connectionRequestSources = new WeakMap<
+    WebSocket,
+    RuntimeConnectionRequestSource
+  >();
   private readonly connectionSendHandlers = new Set<ConnectionSendHandler>();
+  private readonly disconnectedRuntimeConnections = new WeakSet<WebSocket>();
   private readonly runtimeSessionTokens = new WeakMap<WebSocket, string>();
   private nextRuntimeSessionToken = 1;
   private coordinator: AssemblyActivationCoordinator | undefined;
@@ -327,28 +345,25 @@ export class RuntimeEndpoint
         });
       });
 
-      ws.on('close', () => {
-        this.runtimeSessionTokens.delete(ws);
-        const actorDisconnect = (this.actorMethodsInstance ?? this.options.actorMethods)
-          ?.handleRuntimeDisconnect?.(ws);
-        void actorDisconnect?.catch((error: unknown) => {
-          console.error({
-            event: 'actor.method_disconnect_cleanup_error',
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-        const actorRuntimeConnection =
-          this.options.registry.runtimeConnectionFenceForConnection(ws);
-        this.dispatcherInstance?.handleRuntimeDisconnect(ws);
-        this.generationLifecycle?.handleRuntimeDisconnect(ws);
-        const participantId =
-          this.options.registry.runtimeCapabilityIdentityForConnection(ws);
-        const replicaId = this.options.assemblyRegistry?.removeRuntimeConnection(ws);
-        this.options.registry.removeRuntimeConnection(ws);
-        if (actorRuntimeConnection !== undefined) {
-          this.handleActorRuntimeDisconnect(actorRuntimeConnection);
+      ws.on('error', () => {
+        this.disconnectRuntimeConnection(ws);
+        try {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.close(1011, 'runtime transport failed');
+          } else if (ws.readyState === WebSocket.CONNECTING) {
+            ws.terminate();
+          }
+        } catch {
+          try {
+            ws.terminate();
+          } catch {
+            // The runtime source is already disconnected and deindexed.
+          }
         }
-        this.coordinator?.handleReplicaDisconnected(participantId ?? replicaId);
+      });
+
+      ws.on('close', () => {
+        this.disconnectRuntimeConnection(ws);
       });
     });
 
@@ -372,8 +387,12 @@ export class RuntimeEndpoint
   }
 
   async close(): Promise<void> {
+    const clients = Array.from(this.webSocketServer?.clients ?? []);
+    for (const client of clients) {
+      this.disconnectRuntimeConnection(client);
+    }
     this.dispatcherInstance?.close();
-    for (const client of this.webSocketServer?.clients ?? []) {
+    for (const client of clients) {
       client.close();
     }
     this.options.registry.closeRuntimeConnections();
@@ -452,12 +471,60 @@ export class RuntimeEndpoint
     };
   }
 
+  onConnectionRequestSourceDisconnect(
+    handler: RuntimeConnectionRequestSourceDisconnectHandler
+  ): () => void {
+    this.connectionRequestSourceDisconnectHandlers.add(handler);
+    let subscribed = true;
+    return () => {
+      if (!subscribed) {
+        return;
+      }
+      subscribed = false;
+      this.connectionRequestSourceDisconnectHandlers.delete(handler);
+    };
+  }
+
+  isolateConnectionRequestSource(
+    source: RuntimeConnectionRequestSource,
+    reason: string
+  ): void {
+    if (
+      this.disconnectedRuntimeConnections.has(source.sender) ||
+      this.runtimeSessionTokens.get(source.sender) !== source.sessionToken ||
+      source.sender.readyState !== WebSocket.OPEN ||
+      this.options.registry.runtimeCapabilityIdentityForConnection(source.sender) ===
+        undefined
+    ) {
+      return;
+    }
+    console.error({
+      event: 'runtime.connection_request_source_isolated',
+      runtimeId:
+        this.options.registry.runtimeCapabilityIdentityForConnection(
+          source.sender
+        ),
+      reason: boundedRuntimeSourceIsolationReason(reason)
+    });
+    this.disconnectRuntimeConnection(source.sender);
+    try {
+      source.sender.close(1008, 'runtime request source isolated');
+    } catch {
+      try {
+        source.sender.terminate();
+      } catch {
+        // The exact runtime source is already disconnected and deindexed.
+      }
+    }
+  }
+
   sendConnectionResponse(
     source: RuntimeConnectionRequestSource,
     header: ConnectionResponseFrameHeader,
     payloadBytes: Uint8Array = new Uint8Array()
   ): void {
     if (
+      this.disconnectedRuntimeConnections.has(source.sender) ||
       this.runtimeSessionTokens.get(source.sender) !== source.sessionToken ||
       source.sender.readyState !== WebSocket.OPEN
     ) {
@@ -854,13 +921,65 @@ export class RuntimeEndpoint
     if (sessionToken === undefined) {
       throw new Error('connection request requires a captured runtime session');
     }
-    const source = Object.freeze({
-      sender: ws,
-      sessionToken
-    }) satisfies RuntimeConnectionRequestSource;
+    const source =
+      this.connectionRequestSources.get(ws) ??
+      Object.freeze({
+        sender: ws,
+        sessionToken
+      } satisfies RuntimeConnectionRequestSource);
+    this.connectionRequestSources.set(ws, source);
     for (const handler of this.connectionRequestHandlers) {
       await handler(message, source);
     }
+  }
+
+  private disconnectRuntimeConnection(ws: WebSocket): void {
+    if (this.disconnectedRuntimeConnections.has(ws)) {
+      return;
+    }
+    this.disconnectedRuntimeConnections.add(ws);
+
+    const source = this.connectionRequestSources.get(ws);
+    if (source !== undefined) {
+      for (const handler of Array.from(
+        this.connectionRequestSourceDisconnectHandlers
+      )) {
+        try {
+          handler(source);
+        } catch (error) {
+          console.error({
+            event:
+              'runtime.connection_request_source_disconnect_handler_error',
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+    }
+
+    this.connectionRequestSources.delete(ws);
+    this.runtimeSessionTokens.delete(ws);
+    const actorDisconnect = (
+      this.actorMethodsInstance ?? this.options.actorMethods
+    )?.handleRuntimeDisconnect?.(ws);
+    void actorDisconnect?.catch((error: unknown) => {
+      console.error({
+        event: 'actor.method_disconnect_cleanup_error',
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+    const actorRuntimeConnection =
+      this.options.registry.runtimeConnectionFenceForConnection(ws);
+    this.dispatcherInstance?.handleRuntimeDisconnect(ws);
+    this.generationLifecycle?.handleRuntimeDisconnect(ws);
+    const participantId =
+      this.options.registry.runtimeCapabilityIdentityForConnection(ws);
+    const replicaId =
+      this.options.assemblyRegistry?.removeRuntimeConnection(ws);
+    this.options.registry.removeRuntimeConnection(ws);
+    if (actorRuntimeConnection !== undefined) {
+      this.handleActorRuntimeDisconnect(actorRuntimeConnection);
+    }
+    this.coordinator?.handleReplicaDisconnected(participantId ?? replicaId);
   }
 
   private dispatcher(): RuntimeDispatcher {
@@ -1002,4 +1121,20 @@ function validateConnectionResponseJson(payloadBytes: Uint8Array): void {
 function websocketCloseReason(error: unknown): string {
   const message = error instanceof Error ? error.message : 'runtime endpoint error';
   return message.slice(0, 120);
+}
+
+function boundedRuntimeSourceIsolationReason(reason: string): string {
+  const normalized =
+    typeof reason === 'string' && reason.length > 0
+      ? reason
+      : 'runtime source isolation requested';
+  const bytes = Buffer.from(normalized, 'utf8');
+  if (bytes.byteLength <= 512) {
+    return normalized;
+  }
+  let end = 512;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) {
+    end -= 1;
+  }
+  return bytes.subarray(0, end).toString('utf8');
 }

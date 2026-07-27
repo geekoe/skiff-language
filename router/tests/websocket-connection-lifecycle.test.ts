@@ -147,6 +147,170 @@ describe('downlink-only WebSocketConnectionLifecycle', () => {
       { code: 1011, reason: 'websocket client is too slow' }
     ]);
   });
+
+  it('rejects an observed peer write when the socket send callback fails', async () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>();
+    const transport = observedSocket();
+    lifecycle.reserve('connection', 'value');
+    lifecycle.admit('connection', {});
+    lifecycle.attach('connection', transport.webSocket);
+
+    const writer = lifecycle.capturePeerWriter('connection');
+    const write = writer!.writeText('hello');
+    transport.completeSend(new Error('callback failed'));
+
+    await expect(write).rejects.toThrow('callback failed');
+    expect(lifecycle.observedWriteCount()).toBe(0);
+    expect(lifecycle.connection('connection')).toBeUndefined();
+    expect(transport.closes).toEqual([
+      { code: 1011, reason: 'websocket client send failed' }
+    ]);
+  });
+
+  it('counts an observed peer write until its send callback succeeds', async () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>();
+    const transport = observedSocket();
+    lifecycle.reserve('connection', 'value');
+    lifecycle.admit('connection', {});
+    lifecycle.attach('connection', transport.webSocket);
+
+    const writer = lifecycle.capturePeerWriter('connection')!;
+    const write = writer.writeText('hello');
+    expect(lifecycle.observedWriteCount()).toBe(1);
+    transport.completeSend();
+
+    await expect(write).resolves.toBeUndefined();
+    expect(lifecycle.observedWriteCount()).toBe(0);
+    expect(lifecycle.connection('connection')).toBe('value');
+    expect(transport.sends).toEqual([{ data: 'hello', binary: false }]);
+  });
+
+  it('rejects an observed peer write when send throws synchronously', async () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>();
+    const transport = observedSocket();
+    lifecycle.reserve('connection', 'value');
+    lifecycle.admit('connection', {});
+    lifecycle.attach('connection', transport.webSocket);
+    const writer = lifecycle.capturePeerWriter('connection')!;
+    transport.throwOnSend(new Error('send threw'));
+
+    await expect(writer.writeText('hello')).rejects.toThrow('send threw');
+    expect(lifecycle.observedWriteCount()).toBe(0);
+    expect(lifecycle.connection('connection')).toBeUndefined();
+    expect(transport.closes).toEqual([
+      { code: 1011, reason: 'websocket client send failed' }
+    ]);
+  });
+
+  it('rejects a captured peer writer after the socket stops being open', async () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>();
+    const transport = observedSocket();
+    lifecycle.reserve('connection', 'value');
+    lifecycle.admit('connection', {});
+    lifecycle.attach('connection', transport.webSocket);
+    const writer = lifecycle.capturePeerWriter('connection')!;
+    transport.setReadyState(WebSocket.CLOSING);
+
+    await expect(writer.writeText('hello')).rejects.toThrow(
+      'websocket connection is not open'
+    );
+    expect(lifecycle.observedWriteCount()).toBe(0);
+    expect(lifecycle.connection('connection')).toBeUndefined();
+  });
+
+  it('settles a close-vs-send race once and ignores the late callback', async () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>();
+    const transport = observedSocket();
+    lifecycle.reserve('connection', 'value');
+    lifecycle.admit('connection', {});
+    lifecycle.attach('connection', transport.webSocket);
+    const terminal = vi.fn();
+    const write = lifecycle
+      .capturePeerWriter('connection')!
+      .writeText('hello')
+      .then(
+        () => terminal('success'),
+        (error: Error) => terminal(error.message)
+      );
+
+    transport.emit('close');
+    await write;
+    transport.completeSend(new Error('late callback'));
+
+    expect(terminal).toHaveBeenCalledTimes(1);
+    expect(terminal).toHaveBeenCalledWith(
+      'websocket connection closed before send completed'
+    );
+    expect(lifecycle.observedWriteCount()).toBe(0);
+  });
+
+  it('rejects callback success that races with a closing socket', async () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>();
+    const transport = observedSocket();
+    lifecycle.reserve('connection', 'value');
+    lifecycle.admit('connection', {});
+    lifecycle.attach('connection', transport.webSocket);
+    const write = lifecycle
+      .capturePeerWriter('connection')!
+      .writeText('hello');
+
+    transport.setReadyState(WebSocket.CLOSING);
+    transport.completeSend();
+
+    await expect(write).rejects.toThrow(
+      'websocket connection closed before send completed'
+    );
+    expect(lifecycle.observedWriteCount()).toBe(0);
+    expect(lifecycle.connection('connection')).toBeUndefined();
+  });
+
+  it('includes outstanding observed bytes in the slow-client budget', async () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>({
+      slowClientBudgetBytes: 5
+    });
+    const transport = observedSocket();
+    lifecycle.reserve('connection', 'value');
+    lifecycle.admit('connection', {});
+    lifecycle.attach('connection', transport.webSocket);
+    const writer = lifecycle.capturePeerWriter('connection')!;
+    const firstResult = writer.writeText('12345').catch((error: Error) => error);
+
+    await expect(writer.writeText('x')).rejects.toThrow(
+      'websocket client is too slow'
+    );
+    await expect(firstResult).resolves.toMatchObject({
+      message: 'websocket connection closed before send completed'
+    });
+    transport.completeSend();
+
+    expect(lifecycle.observedWriteCount()).toBe(0);
+    expect(transport.closes).toEqual([
+      { code: 1011, reason: 'websocket client is too slow' }
+    ]);
+  });
+
+  it('keeps a captured writer fenced from a replacement connection id', async () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>();
+    const oldTransport = observedSocket();
+    lifecycle.reserve('connection', 'old');
+    lifecycle.admit('connection', {});
+    lifecycle.attach('connection', oldTransport.webSocket);
+    const oldWriter = lifecycle.capturePeerWriter('connection')!;
+    lifecycle.close('connection');
+
+    const replacement = observedSocket();
+    lifecycle.reserve('connection', 'new');
+    lifecycle.admit('connection', {});
+    lifecycle.attach('connection', replacement.webSocket);
+    oldWriter.close(1011, 'stale writer');
+
+    await expect(oldWriter.writeText('stale')).rejects.toThrow(
+      'websocket connection is not open'
+    );
+    expect(lifecycle.connection('connection')).toBe('new');
+    expect(replacement.closes).toEqual([]);
+    expect(replacement.sends).toEqual([]);
+  });
 });
 
 function admitted(
@@ -202,5 +366,48 @@ function socket(): TestSocket {
     sends,
     closes,
     emit: (event) => emitter.emit(event)
+  };
+}
+
+function observedSocket(): TestSocket & {
+  completeSend(error?: Error): void;
+  setReadyState(state: number): void;
+  throwOnSend(error: Error): void;
+} {
+  const transport = socket();
+  const callbacks: Array<(error?: Error) => void> = [];
+  let sendError: Error | undefined;
+  (
+    transport.webSocket as unknown as {
+      send(
+        data: string,
+        options: { binary: boolean },
+        done: (error?: Error) => void
+      ): void;
+    }
+  ).send = (data, options, done) => {
+    if (sendError !== undefined) {
+      throw sendError;
+    }
+    transport.sends.push({ data, binary: options.binary });
+    callbacks.push(done);
+  };
+  return {
+    ...transport,
+    completeSend(error?: Error) {
+      const done = callbacks.shift();
+      if (done === undefined) {
+        throw new Error('no observed send callback');
+      }
+      done(error);
+    },
+    setReadyState(state: number) {
+      (
+        transport.webSocket as unknown as { readyState: number }
+      ).readyState = state;
+    },
+    throwOnSend(error: Error) {
+      sendError = error;
+    }
   };
 }
