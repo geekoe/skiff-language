@@ -27,6 +27,7 @@ struct ActiveRequest {
     execution_budget: Arc<ExecutionBudget>,
     telemetry: RequestTelemetryContext,
     started_at: Instant,
+    cancel_requested: Arc<AtomicBool>,
     cancel_event_emitted: Arc<AtomicBool>,
 }
 
@@ -48,6 +49,12 @@ enum CancelTracePriority {
     None,
     RequestCancelOnly,
     AnyError,
+}
+
+enum CompletionClaim {
+    Missing,
+    Cancelled,
+    Ordinary,
 }
 
 impl CompletionTrace {
@@ -131,6 +138,7 @@ impl RequestSupervisor {
             execution_budget,
             telemetry,
             started_at: Instant::now(),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
             cancel_event_emitted: Arc::new(AtomicBool::new(false)),
         };
 
@@ -148,9 +156,16 @@ impl RequestSupervisor {
         request: &SupervisedRequest,
         event_name: &'static str,
         trace: CompletionTrace,
-    ) {
+    ) -> bool {
+        match self.claim_completion(request).await {
+            CompletionClaim::Missing => return false,
+            CompletionClaim::Cancelled => {
+                finish_cancelled_request(request, trace);
+                return false;
+            }
+            CompletionClaim::Ordinary => {}
+        }
         request.active.execution_budget.finish(Instant::now());
-        self.active.lock().await.remove(&request.request_id);
         let duration_ms = request.duration_ms();
         request.active.telemetry.emit_trace(
             event_name,
@@ -158,6 +173,7 @@ impl RequestSupervisor {
             None,
             request.budget_attrs(duration_ms, trace),
         );
+        true
     }
 
     pub(crate) async fn complete_error(
@@ -166,9 +182,16 @@ impl RequestSupervisor {
         event_name: &'static str,
         error: &ResponseError,
         trace: CompletionTrace,
-    ) {
+    ) -> bool {
+        match self.claim_completion(request).await {
+            CompletionClaim::Missing => return false,
+            CompletionClaim::Cancelled => {
+                finish_cancelled_request(request, trace);
+                return false;
+            }
+            CompletionClaim::Ordinary => {}
+        }
         request.active.execution_budget.finish(Instant::now());
-        self.active.lock().await.remove(&request.request_id);
         match trace.cancel_priority {
             CancelTracePriority::None => {}
             CancelTracePriority::RequestCancelOnly if event_name == "request.cancel" => {
@@ -177,7 +200,7 @@ impl RequestSupervisor {
                     .cancel_event_emitted
                     .swap(true, Ordering::SeqCst)
                 {
-                    return;
+                    return false;
                 }
             }
             CancelTracePriority::RequestCancelOnly => {}
@@ -187,7 +210,7 @@ impl RequestSupervisor {
                     .cancel_event_emitted
                     .swap(true, Ordering::SeqCst)
                 {
-                    return;
+                    return false;
                 }
             }
         }
@@ -199,6 +222,7 @@ impl RequestSupervisor {
             Some(response_error_to_telemetry_map(error)),
             request.budget_attrs(duration_ms, trace),
         );
+        true
     }
 
     pub(crate) async fn complete_fixed_service_failure(
@@ -207,9 +231,16 @@ impl RequestSupervisor {
         event_name: &'static str,
         error: &OpaqueServiceError,
         trace: CompletionTrace,
-    ) {
+    ) -> bool {
+        match self.claim_completion(request).await {
+            CompletionClaim::Missing => return false,
+            CompletionClaim::Cancelled => {
+                finish_cancelled_request(request, trace);
+                return false;
+            }
+            CompletionClaim::Ordinary => {}
+        }
         request.active.execution_budget.finish(Instant::now());
-        self.active.lock().await.remove(&request.request_id);
 
         let duration_ms = request.duration_ms();
         let correlation = ErrorCorrelation {
@@ -223,13 +254,29 @@ impl RequestSupervisor {
             request.budget_attrs(duration_ms, trace),
             &correlation,
         );
+        true
+    }
+
+    pub(crate) async fn complete_cancelled(
+        &self,
+        request: &SupervisedRequest,
+        trace: CompletionTrace,
+    ) -> bool {
+        let claim = self.claim_completion(request).await;
+        if matches!(claim, CompletionClaim::Missing) {
+            return false;
+        }
+        finish_cancelled_request(request, trace);
+        true
     }
 
     pub(crate) async fn cancel(&self, cancel: &RequestCancel) -> bool {
-        let Some(active) = self.active.lock().await.get(&cancel.request_id).cloned() else {
+        let active_requests = self.active.lock().await;
+        let Some(active) = active_requests.get(&cancel.request_id) else {
             return false;
         };
 
+        active.cancel_requested.store(true, Ordering::SeqCst);
         active.cancellation.cancel();
         active.execution_budget.record_cancelled();
         let duration_ms = elapsed_ms(active.started_at);
@@ -245,9 +292,56 @@ impl RequestSupervisor {
         true
     }
 
+    async fn claim_completion(&self, request: &SupervisedRequest) -> CompletionClaim {
+        let mut active = self.active.lock().await;
+        let Some(current) = active.get(&request.request_id) else {
+            return CompletionClaim::Missing;
+        };
+        if !Arc::ptr_eq(
+            &current.cancel_event_emitted,
+            &request.active.cancel_event_emitted,
+        ) {
+            return CompletionClaim::Missing;
+        }
+        // The work token is also used to stop losing child lanes after an
+        // ordinary deadline has won. Only an explicit root cancellation may
+        // change the observable terminal from success/error to cancellation.
+        let cancelled = current.cancel_requested.load(Ordering::SeqCst);
+        active.remove(&request.request_id);
+        if cancelled {
+            CompletionClaim::Cancelled
+        } else {
+            CompletionClaim::Ordinary
+        }
+    }
+
     pub(crate) async fn active_count(&self) -> usize {
         self.active.lock().await.len()
     }
+}
+
+fn finish_cancelled_request(request: &SupervisedRequest, trace: CompletionTrace) {
+    request
+        .active
+        .cancel_requested
+        .store(true, Ordering::SeqCst);
+    request.active.cancellation.cancel();
+    request.active.execution_budget.record_cancelled();
+    request.active.execution_budget.finish(Instant::now());
+    if request
+        .active
+        .cancel_event_emitted
+        .swap(true, Ordering::SeqCst)
+    {
+        return;
+    }
+    let duration_ms = request.duration_ms();
+    request.active.telemetry.emit_trace(
+        "request.cancel",
+        trace.include_duration.then_some(duration_ms),
+        None,
+        request.budget_attrs(duration_ms, trace),
+    );
 }
 
 impl SupervisedRequest {

@@ -1,7 +1,6 @@
 use skiff_artifact_model::IngressSelector;
-use skiff_runtime_request::{
-    BoundaryResponse, RequestCancel, RequestError, ResponseEvent, RouterWriterMessage,
-};
+use skiff_runtime_request::{BoundaryResponse, RequestCancel, RequestError, RouterWriterMessage};
+use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use skiff_runtime_transport::{response_mapper, TransportError};
 use tracing::info;
 
@@ -48,7 +47,14 @@ impl RuntimeHost {
 }
 
 fn request_error_into_runtime_error(error: RequestError) -> RuntimeError {
-    RuntimeError::Opaque(Box::new(error))
+    if error.is_cancellation_terminal() {
+        RuntimeError::Cancelled
+    } else {
+        RuntimeError::Opaque(Box::new(
+            skiff_runtime_request::OrdinaryRequestError::try_new(error)
+                .expect("request cancellation was split before Host trait erasure"),
+        ))
+    }
 }
 
 pub(crate) fn transport_error_into_runtime_error(error: TransportError) -> RuntimeError {
@@ -60,16 +66,19 @@ fn response_into_transport_message(
     response: BoundaryResponse,
 ) -> Result<Option<RouterWriterMessage>> {
     match response {
-        BoundaryResponse::Event(event) => {
-            response_event_into_transport_message(request_id, event).map(Some)
-        }
+        BoundaryResponse::Event(event) => response_event_into_transport_message(
+            request_id,
+            OrdinaryResponseEvent::try_from_non_error(event)
+                .map_err(transport_error_into_runtime_error)?,
+        )
+        .map(Some),
         BoundaryResponse::StreamSent => Ok(None),
     }
 }
 
 fn response_event_into_transport_message(
     request_id: String,
-    event: ResponseEvent,
+    event: OrdinaryResponseEvent,
 ) -> Result<RouterWriterMessage> {
     response_mapper::response_event_into_frame(request_id, event)
         .map(RouterWriterMessage::Binary)
@@ -81,26 +90,28 @@ mod tests {
     use skiff_runtime_capability_context::ExecutionBudgetReason;
     use skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity;
 
-    use crate::error::{RuntimeError, WirePayload};
+    use crate::error::RuntimeError;
 
     use super::*;
 
     #[test]
     fn request_error_bridge_boxes_and_delegates_payload_and_catch_projection() {
         let request_error = RequestError::protocol("svc.account", "bad frame");
-        let expected_payload = request_error.payload();
-        let expected_catch_projection = request_error.catch_projection();
+        let expected_payload = request_error
+            .ordinary_payload()
+            .expect("protocol failure is ordinary");
+        let expected_catch_projection = request_error.ordinary_catch_projection();
 
         let error = request_error_into_runtime_error(request_error);
 
         assert!(matches!(error, RuntimeError::Opaque(_)));
-        assert_eq!(error.payload(), expected_payload);
         assert_eq!(
-            WirePayload::catch_projection(&error),
-            expected_catch_projection
+            error.ordinary_payload().expect("bridged error is ordinary"),
+            expected_payload
         );
+        assert_eq!(error.ordinary_catch_projection(), expected_catch_projection);
         assert_eq!(
-            WirePayload::catch_projection(&error),
+            error.ordinary_catch_projection(),
             Some((
                 PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 serde_json::json!({
@@ -114,8 +125,10 @@ mod tests {
     #[test]
     fn request_error_bridge_preserves_carried_cancellation_detection() {
         let error = request_error_into_runtime_error(RequestError::Cancelled);
-        assert!(matches!(error, RuntimeError::Opaque(_)));
-        assert!(error.is_request_cancelled());
+        assert!(matches!(error, RuntimeError::Cancelled));
+        assert!(error.is_cancellation_terminal());
+        assert_eq!(error.ordinary_payload(), None);
+        assert_eq!(error.ordinary_catch_projection(), None);
 
         let error = request_error_into_runtime_error(RequestError::ExecutionBudgetExceeded {
             reason: ExecutionBudgetReason::Cancelled,
@@ -123,7 +136,9 @@ mod tests {
             limit: None,
             elapsed_ms: 0.0,
         });
-        assert!(matches!(error, RuntimeError::Opaque(_)));
-        assert!(error.is_request_cancelled());
+        assert!(matches!(error, RuntimeError::Cancelled));
+        assert!(error.is_cancellation_terminal());
+        assert_eq!(error.ordinary_payload(), None);
+        assert_eq!(error.ordinary_catch_projection(), None);
     }
 }

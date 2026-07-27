@@ -1,16 +1,21 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use skiff_runtime_capability_context::ExecutionBudgetReason;
 use skiff_runtime_eval::RuntimeWebSocketConnectResult;
 use skiff_runtime_request::{
-    self as request_runner, BoundaryResponse, RequestEnvelope, RequestError, ResponseEvent,
-    ResponseEventSink, ResponseStreamEvent, RouterWriterMessage,
+    self as request_runner, BoundaryResponse, RequestEnvelope, RequestError, ResponseEventSink,
+    ResponseStreamEvent, RouterWriterMessage,
 };
 use skiff_runtime_transport::websocket_generation_lifecycle::{
     encode_websocket_generation_lifecycle_frame, WebSocketGenerationLifecycleDirection,
 };
 use skiff_runtime_transport::{
-    response_mapper::runtime_assembly_websocket_connect_response_into_frame,
+    response_mapper::{
+        runtime_assembly_websocket_connect_response_into_frame, OrdinaryResponseEvent,
+    },
     runtime_assembly_request::{
         RuntimeAssemblyWebSocketConnectResponseFrameHeader,
         RuntimeAssemblyWebSocketConnectionPolicyFrameHeader,
@@ -81,6 +86,7 @@ impl RuntimeHost {
             .into_iter()
             .chain(route.deployment_policy().timeout_ms)
             .min();
+        let deadline = runtime_deadline(&execution_budget, timeout_ms);
         let host = self.clone();
         tokio::spawn(async move {
             let connection_id = header.websocket_connect.connection_id.clone();
@@ -101,22 +107,31 @@ impl RuntimeHost {
             );
             tokio::pin!(execution);
             let cancel_wait = cancellation.clone();
-            let result = match timeout_ms {
-                Some(timeout_ms) => {
+            let result = match deadline {
+                Some(deadline) => {
                     tokio::select! {
-                        result = &mut execution => result,
+                        biased;
                         _ = cancel_wait.wait_cancelled() => Err(RequestError::Cancelled),
-                        _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
+                        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
                             cancellation.cancel();
                             execution_budget.record_deadline_exceeded();
                             Err(deadline_exceeded_error())
-                        }
+                        },
+                        result = &mut execution => {
+                            prefer_cancel_then_deadline(
+                                result,
+                                deadline,
+                                &cancellation,
+                                &execution_budget,
+                            )
+                        },
                     }
                 }
                 None => {
                     tokio::select! {
-                        result = &mut execution => result,
+                        biased;
                         _ = cancel_wait.wait_cancelled() => Err(RequestError::Cancelled),
+                        result = &mut execution => result,
                     }
                 }
             };
@@ -140,13 +155,17 @@ impl RuntimeHost {
                             return;
                         }
                     }
-                    host.request_supervisor
+                    if !host
+                        .request_supervisor
                         .complete_success(
                             &supervised_request,
                             "request.end",
                             CompletionTrace::RUNTIME,
                         )
-                        .await;
+                        .await
+                    {
+                        return;
+                    }
                     match websocket_connect_result_into_message(request_id, result) {
                         Ok(message) => {
                             let _ = sender.send(message);
@@ -214,6 +233,7 @@ impl RuntimeHost {
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
         let timeout_ms = header.deadline.as_ref().map(|deadline| deadline.timeout_ms);
+        let deadline = runtime_deadline(&execution_budget, timeout_ms);
         let host = self.clone();
         tokio::spawn(async move {
             let request_id = header.request_id.clone();
@@ -230,22 +250,31 @@ impl RuntimeHost {
             );
             tokio::pin!(execution);
             let cancel_wait = cancellation.clone();
-            let result = match timeout_ms {
-                Some(timeout_ms) => {
+            let result = match deadline {
+                Some(deadline) => {
                     tokio::select! {
-                        result = &mut execution => result,
+                        biased;
                         _ = cancel_wait.wait_cancelled() => Err(RequestError::Cancelled),
-                        _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
+                        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
                             cancellation.cancel();
                             execution_budget.record_deadline_exceeded();
                             Err(deadline_exceeded_error())
-                        }
+                        },
+                        result = &mut execution => {
+                            prefer_cancel_then_deadline(
+                                result,
+                                deadline,
+                                &cancellation,
+                                &execution_budget,
+                            )
+                        },
                     }
                 }
                 None => {
                     tokio::select! {
-                        result = &mut execution => result,
+                        biased;
                         _ = cancel_wait.wait_cancelled() => Err(RequestError::Cancelled),
+                        result = &mut execution => result,
                     }
                 }
             };
@@ -282,23 +311,65 @@ impl RuntimeHost {
                         true,
                     )
                 {
-                    self.request_supervisor
+                    let response_event = OrdinaryResponseEvent::try_error(&response_error)
+                        .expect("response ceiling failure is ordinary");
+                    let ordinary_owner = self
+                        .request_supervisor
                         .complete_error(
                             supervised_request,
                             "request.error",
-                            &response_error,
+                            response_event
+                                .response_error()
+                                .expect("ordinary error event carries response error"),
                             CompletionTrace::RUNTIME,
                         )
                         .await;
-                    return response_sink
-                        .send_terminal_response(request_id, ResponseEvent::Error(response_error));
+                    if !ordinary_owner {
+                        response_sink.cancel_without_response();
+                        return;
+                    }
+                    return response_sink.send_terminal_response(request_id, response_event);
                 }
-                self.request_supervisor
+                if !self
+                    .request_supervisor
                     .complete_success(supervised_request, "request.end", CompletionTrace::RUNTIME)
-                    .await;
+                    .await
+                {
+                    response_sink.cancel_without_response();
+                    return;
+                }
+                if matches!(response, BoundaryResponse::StreamSent) {
+                    response_sink.send_pending_stream_terminal();
+                    return;
+                }
                 response_into_transport_message(request_id.to_string(), response)
             }
             Err(request_error) => {
+                if request_error.is_cancellation_terminal() {
+                    self.request_supervisor
+                        .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
+                        .await;
+                    response_sink.cancel_without_response();
+                    return;
+                }
+                if let Some(response_event) = response_sink.pending_ordinary_error() {
+                    let ordinary_owner = self
+                        .request_supervisor
+                        .complete_error(
+                            supervised_request,
+                            "request.error",
+                            response_event
+                                .response_error()
+                                .expect("pending ordinary event carries response error"),
+                            CompletionTrace::RUNTIME,
+                        )
+                        .await;
+                    if !ordinary_owner {
+                        response_sink.cancel_without_response();
+                        return;
+                    }
+                    return response_sink.send_terminal_response(request_id, response_event);
+                }
                 if let Some(failure) = request_error.fixed_service_response_failure() {
                     error!(
                         event = "runtime.assembly_fixed_service_failure",
@@ -306,7 +377,8 @@ impl RuntimeHost {
                         trace_id = %failure.error().envelope().trace_id(),
                         error_id = %failure.error().envelope().error_id(),
                     );
-                    self.request_supervisor
+                    let ordinary_owner = self
+                        .request_supervisor
                         .complete_fixed_service_failure(
                             supervised_request,
                             "request.error",
@@ -314,33 +386,40 @@ impl RuntimeHost {
                             CompletionTrace::RUNTIME,
                         )
                         .await;
+                    if !ordinary_owner {
+                        response_sink.cancel_without_response();
+                        return;
+                    }
                     return response_sink.send_terminal_response(
                         request_id,
-                        ResponseEvent::FixedServiceFailure(failure),
+                        OrdinaryResponseEvent::FixedServiceFailure(failure),
                     );
                 }
-                let response_error = request_error.response_error();
+                let response_event = OrdinaryResponseEvent::try_error(&request_error)
+                    .expect("cancellation was split before ordinary response mapping");
+                let response_error = request_error
+                    .ordinary_response_error()
+                    .expect("cancellation was split before ordinary response mapping");
                 let runtime_error = request_error_into_runtime_error(request_error);
                 error!(
                     event = "runtime.assembly_request_error",
                     request_id,
                     error = %runtime_error
                 );
-                let event_name = if runtime_error.is_request_cancelled() {
-                    "request.cancel"
-                } else {
-                    "request.error"
-                };
-                self.request_supervisor
+                let ordinary_owner = self
+                    .request_supervisor
                     .complete_error(
                         supervised_request,
-                        event_name,
+                        "request.error",
                         &response_error,
                         CompletionTrace::RUNTIME,
                     )
                     .await;
-                return response_sink
-                    .send_terminal_response(request_id, ResponseEvent::Error(response_error));
+                if !ordinary_owner {
+                    response_sink.cancel_without_response();
+                    return;
+                }
+                return response_sink.send_terminal_response(request_id, response_event);
             }
         };
         match message {
@@ -359,11 +438,9 @@ impl RuntimeHost {
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
         let error = RuntimeError::Decode(error.to_string());
-        let response_error = crate::capability_context::response_error_from_runtime_error(&error);
-        match response_event_into_transport_message(
-            request_id.to_string(),
-            ResponseEvent::Error(response_error),
-        ) {
+        let response_event =
+            OrdinaryResponseEvent::try_error(&error).expect("admission failure is ordinary");
+        match response_event_into_transport_message(request_id.to_string(), response_event) {
             Ok(message) => {
                 let _ = sender.send(message);
             }
@@ -443,24 +520,30 @@ impl RuntimeHost {
         request_error: RequestError,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
-        let response_error = request_error.response_error();
-        let runtime_error = request_error_into_runtime_error(request_error);
-        let event_name = if runtime_error.is_request_cancelled() {
-            "request.cancel"
-        } else {
-            "request.error"
-        };
-        self.request_supervisor
+        if request_error.is_cancellation_terminal() {
+            self.request_supervisor
+                .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
+                .await;
+            return;
+        }
+        let response_event = OrdinaryResponseEvent::try_error(&request_error)
+            .expect("cancellation was split before ordinary response mapping");
+        let response_error = request_error
+            .ordinary_response_error()
+            .expect("cancellation was split before ordinary response mapping");
+        let ordinary_owner = self
+            .request_supervisor
             .complete_error(
                 supervised_request,
-                event_name,
+                "request.error",
                 &response_error,
                 CompletionTrace::RUNTIME,
             )
             .await;
-        if let Ok(message) =
-            response_event_into_transport_message(request_id, ResponseEvent::Error(response_error))
-        {
+        if !ordinary_owner {
+            return;
+        }
+        if let Ok(message) = response_event_into_transport_message(request_id, response_event) {
             let _ = sender.send(message);
         }
     }
@@ -659,7 +742,10 @@ struct HostHttpGatewayResponseSink {
 
 struct HostHttpGatewayResponseState {
     ceiling: HttpResponseCeiling,
-    terminal: bool,
+    accepting_stream_events: bool,
+    terminal_settled: bool,
+    pending_stream_terminal: Option<RouterWriterMessage>,
+    pending_ordinary_error: Option<OrdinaryResponseEvent>,
 }
 
 impl HostHttpGatewayResponseSink {
@@ -671,21 +757,54 @@ impl HostHttpGatewayResponseSink {
             sender,
             state: Mutex::new(HostHttpGatewayResponseState {
                 ceiling: HttpResponseCeiling::new(http_response_max_bytes),
-                terminal: false,
+                accepting_stream_events: true,
+                terminal_settled: false,
+                pending_stream_terminal: None,
+                pending_ordinary_error: None,
             }),
         }
     }
 
-    fn send_terminal_response(&self, request_id: &str, event: ResponseEvent) {
+    fn send_terminal_response(&self, request_id: &str, event: OrdinaryResponseEvent) {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
-        if state.terminal {
+        if state.terminal_settled {
             return;
         }
-        state.terminal = true;
+        state.accepting_stream_events = false;
+        state.terminal_settled = true;
+        state.pending_stream_terminal = None;
+        state.pending_ordinary_error = None;
         if let Ok(message) = response_event_into_transport_message(request_id.to_string(), event) {
             let _ = self.sender.send(message);
+        }
+    }
+
+    fn pending_ordinary_error(&self) -> Option<OrdinaryResponseEvent> {
+        self.state.lock().ok()?.pending_ordinary_error.clone()
+    }
+
+    fn send_pending_stream_terminal(&self) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state.terminal_settled {
+            return;
+        }
+        let Some(message) = state.pending_stream_terminal.take() else {
+            return;
+        };
+        state.terminal_settled = true;
+        let _ = self.sender.send(message);
+    }
+
+    fn cancel_without_response(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.accepting_stream_events = false;
+            state.terminal_settled = true;
+            state.pending_stream_terminal = None;
+            state.pending_ordinary_error = None;
         }
     }
 }
@@ -699,26 +818,27 @@ impl ResponseEventSink for HostHttpGatewayResponseSink {
         let mut state = self.state.lock().map_err(|_| {
             RequestError::Decode("HTTP gateway response sink lock is poisoned".to_string())
         })?;
-        if state.terminal {
+        if !state.accepting_stream_events {
             return Err(RequestError::protocol(
                 request_id,
                 "HTTP gateway response emitted after its terminal frame",
             ));
         }
         if let Err(error) = state.ceiling.account_stream_event(&event) {
-            let request_error = RequestError::external_error_payload(
-                error.code.clone(),
-                error.message.clone(),
-                error.status,
-                error.details.clone(),
+            state.pending_ordinary_error = Some(
+                OrdinaryResponseEvent::try_error(&error)
+                    .expect("response ceiling failure is ordinary"),
             );
-            state.terminal = true;
-            if let Ok(message) = response_event_into_transport_message(
-                request_id.to_string(),
-                ResponseEvent::Error(error),
-            ) {
-                let _ = self.sender.send(message);
-            }
+            let payload = error
+                .ordinary_payload()
+                .expect("response ceiling failure is ordinary");
+            let request_error = RequestError::external_error_payload(
+                payload.code,
+                payload.message,
+                payload.status,
+                payload.details,
+            );
+            state.accepting_stream_events = false;
             return Err(request_error);
         }
         let is_terminal = matches!(event, ResponseStreamEvent::End);
@@ -726,16 +846,19 @@ impl ResponseEventSink for HostHttpGatewayResponseSink {
             request_id, event,
         )
         .map_err(|error| RequestError::Decode(error.to_string()))?;
-        if self
-            .sender
-            .send(RouterWriterMessage::Binary(frame))
-            .is_err()
-        {
-            state.terminal = true;
-            return Err(RequestError::Cancelled);
-        }
+        let message = RouterWriterMessage::Binary(frame);
         if is_terminal {
-            state.terminal = true;
+            // The stream operation has selected its semantic terminal, but root
+            // cancellation can still be racing it. Keep the wire terminal
+            // private until RequestSupervisor grants success ownership.
+            state.accepting_stream_events = false;
+            state.pending_stream_terminal = Some(message);
+            return Ok(());
+        }
+        if self.sender.send(message).is_err() {
+            state.accepting_stream_events = false;
+            state.terminal_settled = true;
+            return Err(RequestError::Cancelled);
         }
         Ok(())
     }
@@ -747,5 +870,89 @@ fn deadline_exceeded_error() -> RequestError {
         instruction_count: 0,
         limit: None,
         elapsed_ms: 0.0,
+    }
+}
+
+fn runtime_deadline(
+    execution_budget: &skiff_runtime_request::ExecutionBudget,
+    timeout_ms: Option<u64>,
+) -> Option<Instant> {
+    let timeout_deadline = timeout_ms
+        .and_then(|timeout_ms| Instant::now().checked_add(Duration::from_millis(timeout_ms)));
+    execution_budget
+        .deadline()
+        .into_iter()
+        .chain(timeout_deadline)
+        .min()
+}
+
+fn prefer_cancel_then_deadline<T>(
+    result: request_runner::RequestResult<T>,
+    deadline: Instant,
+    cancellation: &skiff_runtime_request::cancellation::CancellationToken,
+    execution_budget: &skiff_runtime_request::ExecutionBudget,
+) -> request_runner::RequestResult<T> {
+    // A ready execution lane can wake the task before Tokio's timer driver has
+    // marked an equally-expired Sleep ready. Recheck the two semantic owners
+    // here so scheduler timing cannot bypass the biased cancel/deadline order.
+    if cancellation.is_cancelled() {
+        execution_budget.record_cancelled();
+        return Err(RequestError::Cancelled);
+    }
+    if Instant::now() >= deadline {
+        cancellation.cancel();
+        execution_budget.record_deadline_exceeded();
+        return Err(deadline_exceeded_error());
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_terminal_waits_for_root_owner_and_cancel_discards_it() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let sink = HostHttpGatewayResponseSink::new(sender, 1024);
+
+        sink.send_stream_event("request-stream-race", ResponseStreamEvent::End)
+            .expect("stream producer may select its end");
+        assert!(
+            receiver.try_recv().is_err(),
+            "stream end must remain private until root grants success ownership"
+        );
+
+        sink.cancel_without_response();
+        sink.send_pending_stream_terminal();
+        assert!(
+            receiver.try_recv().is_err(),
+            "root cancellation must discard the losing stream terminal"
+        );
+    }
+
+    #[test]
+    fn stream_terminal_flushes_after_root_success_owner() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let sink = HostHttpGatewayResponseSink::new(sender, 1024);
+
+        sink.send_stream_event("request-stream-success", ResponseStreamEvent::End)
+            .expect("stream producer may select its end");
+        sink.send_pending_stream_terminal();
+
+        let message = receiver
+            .try_recv()
+            .expect("root success owner must flush the pending stream terminal");
+        let RouterWriterMessage::Binary(frame) = message else {
+            panic!("stream terminal must use the binary transport")
+        };
+        let (header, payload): (
+            skiff_runtime_transport::protocol::ResponseEndFrameHeader,
+            Vec<u8>,
+        ) = skiff_runtime_transport::protocol::decode_typed_binary_frame(&frame)
+            .expect("pending stream terminal must remain canonical");
+        assert_eq!(header.request_id, "request-stream-success");
+        assert!(payload.is_empty());
+        assert!(receiver.try_recv().is_err());
     }
 }

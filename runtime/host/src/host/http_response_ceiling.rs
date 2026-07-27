@@ -1,6 +1,6 @@
-use skiff_runtime_request::{
-    BoundaryResponse, ResponseEnd, ResponseError, ResponseEvent, ResponseStreamEvent,
-};
+use skiff_runtime_request::{BoundaryResponse, ResponseEnd, ResponseEvent, ResponseStreamEvent};
+
+use crate::error::RuntimeError;
 
 const RESPONSE_LIMIT_CODE: &str = "ResourceLimitExceeded";
 
@@ -8,7 +8,7 @@ pub(super) fn validate_unary_response(
     response: &BoundaryResponse,
     max_bytes: usize,
     is_http_ingress: bool,
-) -> Result<(), ResponseError> {
+) -> Result<(), RuntimeError> {
     if !is_http_ingress {
         return Ok(());
     }
@@ -41,14 +41,14 @@ impl HttpResponseCeiling {
     pub(super) fn account_stream_event(
         &mut self,
         event: &ResponseStreamEvent,
-    ) -> Result<(), ResponseError> {
+    ) -> Result<(), RuntimeError> {
         match event {
             ResponseStreamEvent::Chunk { payload, .. } => self.account(payload.len()),
             ResponseStreamEvent::Start { .. } | ResponseStreamEvent::End => Ok(()),
         }
     }
 
-    fn account(&mut self, bytes: usize) -> Result<(), ResponseError> {
+    fn account(&mut self, bytes: usize) -> Result<(), RuntimeError> {
         let Some(next) = self.emitted_bytes.checked_add(bytes) else {
             return Err(response_limit_error(self.max_bytes));
         };
@@ -60,8 +60,8 @@ impl HttpResponseCeiling {
     }
 }
 
-fn response_limit_error(max_bytes: usize) -> ResponseError {
-    ResponseError {
+fn response_limit_error(max_bytes: usize) -> RuntimeError {
+    RuntimeError::ExternalErrorPayload {
         code: RESPONSE_LIMIT_CODE.to_string(),
         message: format!("HTTP response exceeds max size of {max_bytes} bytes"),
         status: None,
@@ -92,7 +92,13 @@ mod tests {
     fn unary_http_first_byte_over_boundary_is_canonical_error() {
         let response = BoundaryResponse::http(vec![0; 5], HttpResponseMetadata::new(200, vec![]));
         let error = validate_unary_response(&response, 4, true).expect_err("oversize must fail");
-        assert_eq!(error.code, RESPONSE_LIMIT_CODE);
+        assert_eq!(
+            error
+                .ordinary_payload()
+                .expect("response limit is ordinary")
+                .code,
+            RESPONSE_LIMIT_CODE
+        );
     }
 
     #[test]
@@ -120,7 +126,13 @@ mod tests {
                 payload: b"cde".to_vec(),
             })
             .expect_err("cumulative oversize must fail");
-        assert_eq!(error.code, RESPONSE_LIMIT_CODE);
+        assert_eq!(
+            error
+                .ordinary_payload()
+                .expect("response limit is ordinary")
+                .code,
+            RESPONSE_LIMIT_CODE
+        );
     }
 
     #[test]

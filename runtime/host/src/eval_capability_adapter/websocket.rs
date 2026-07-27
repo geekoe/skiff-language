@@ -46,7 +46,7 @@ impl capability_contract::WebsocketCapabilityApi for RuntimeWebsocketCapabilityC
     ) -> capability_contract::CapabilityResult<()> {
         self.context
             .send_connection_text_to_business_identity(business_identity, text)
-            .map_err(capability_contract::CapabilityError::opaque)
+            .map_err(ordinary_root_error_into_capability)
     }
 
     fn send_connection_binary_to_business_identity(
@@ -56,7 +56,7 @@ impl capability_contract::WebsocketCapabilityApi for RuntimeWebsocketCapabilityC
     ) -> capability_contract::CapabilityResult<()> {
         self.context
             .send_connection_binary_to_business_identity(business_identity, payload)
-            .map_err(capability_contract::CapabilityError::opaque)
+            .map_err(ordinary_root_error_into_capability)
     }
 
     fn send_connection_text_to_connection(
@@ -66,7 +66,7 @@ impl capability_contract::WebsocketCapabilityApi for RuntimeWebsocketCapabilityC
     ) -> capability_contract::CapabilityResult<()> {
         self.context
             .send_connection_text_to_connection(connection_id, text)
-            .map_err(capability_contract::CapabilityError::opaque)
+            .map_err(ordinary_root_error_into_capability)
     }
 
     fn send_connection_binary_to_connection(
@@ -76,7 +76,7 @@ impl capability_contract::WebsocketCapabilityApi for RuntimeWebsocketCapabilityC
     ) -> capability_contract::CapabilityResult<()> {
         self.context
             .send_connection_binary_to_connection(connection_id, payload)
-            .map_err(capability_contract::CapabilityError::opaque)
+            .map_err(ordinary_root_error_into_capability)
     }
 }
 

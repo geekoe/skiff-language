@@ -2,7 +2,8 @@ use serde_json::{json, Value};
 
 use super::{
     response_end_to_outbound, response_error_to_outbound, response_event_into_frame,
-    validate_response_end_frame, ResponseEndPhase,
+    validate_response_end_frame, OrdinaryResponseErrorSource, OrdinaryResponseEvent,
+    ResponseEndPhase,
 };
 use crate::protocol::{
     decode_binary_frame, decode_response_error_frame, decode_typed_binary_frame,
@@ -15,11 +16,32 @@ use skiff_runtime_request_contract::{
     ResponseError, ResponseEvent,
 };
 
+struct TestOrdinaryError(ResponseError);
+
+impl OrdinaryResponseErrorSource for TestOrdinaryError {
+    fn ordinary_response_error(&self) -> Option<ResponseError> {
+        Some(self.0.clone())
+    }
+}
+
+struct TestCancellationTerminal;
+
+impl OrdinaryResponseErrorSource for TestCancellationTerminal {
+    fn ordinary_response_error(&self) -> Option<ResponseError> {
+        None
+    }
+}
+
+fn ordinary_error(error: ResponseError) -> OrdinaryResponseEvent {
+    OrdinaryResponseEvent::try_error(&TestOrdinaryError(error))
+        .expect("test source is an ordinary failure")
+}
+
 #[test]
 fn response_boundary_rejects_http_and_payload_phase_confusion() {
     let http = response_event_into_frame(
         "request-http".to_string(),
-        ResponseEvent::End(ResponseEnd::Http {
+        OrdinaryResponseEvent::End(ResponseEnd::Http {
             payload: Vec::new(),
             metadata: HttpResponseMetadata::new(204, Vec::new()),
         }),
@@ -70,7 +92,7 @@ fn service_error_response_v2_mapper_round_trip_preserves_fixed_payload_bytes() {
 
         let encoded = response_event_into_frame(
             request_id.to_string(),
-            ResponseEvent::FixedServiceFailure(FixedServiceResponseFailure::new(error)),
+            OrdinaryResponseEvent::FixedServiceFailure(FixedServiceResponseFailure::new(error)),
         )
         .expect("fixed service response must encode");
         let (header, decoded_body) =
@@ -102,7 +124,7 @@ fn service_error_response_v2_mapper_round_trip_preserves_fixed_payload_bytes() {
 fn service_error_response_v2_mapper_keeps_matching_generic_control_untyped() {
     let encoded = response_event_into_frame(
         "request-control-1".to_string(),
-        ResponseEvent::Error(ResponseError {
+        ordinary_error(ResponseError {
             code: "InternalError".to_string(),
             message: "The service could not complete the request.".to_string(),
             status: Some(500),
@@ -125,6 +147,51 @@ fn service_error_response_v2_mapper_keeps_matching_generic_control_untyped() {
             if error.code == "InternalError"
                 && error.message == "The service could not complete the request."
     ));
+}
+
+#[test]
+fn cancellation_terminal_cannot_be_encoded_as_response_error_but_ordinary_failures_can() {
+    let cancelled = OrdinaryResponseEvent::try_error(&TestCancellationTerminal);
+    assert!(
+        cancelled.is_none(),
+        "internal cancellation must fail closed before response.error encoding"
+    );
+    let unproven = OrdinaryResponseEvent::try_from_non_error(ResponseEvent::Error(ResponseError {
+        code: "UnprovenError".to_string(),
+        message: "unproven raw error".to_string(),
+        status: None,
+        details: None,
+    }));
+    assert!(
+        unproven.is_err(),
+        "raw response.error must also fail closed"
+    );
+
+    for (request_id, code) in [
+        ("request-timeout", "TimeoutError"),
+        (
+            "request-provider-unavailable",
+            "std.service.ProviderUnavailableError",
+        ),
+    ] {
+        let encoded = response_event_into_frame(
+            request_id.to_string(),
+            ordinary_error(ResponseError {
+                code: code.to_string(),
+                message: format!("{code} message"),
+                status: None,
+                details: None,
+            }),
+        )
+        .expect("ordinary failure must encode");
+        let (header, decoded_body) =
+            decode_response_error_frame(&encoded).expect("ordinary response.error must decode");
+        assert!(matches!(
+            decoded_body,
+            ValidatedResponseErrorFrame::Control(ref error) if error.code == code
+        ));
+        assert_eq!(header.request_id(), request_id);
+    }
 }
 
 #[test]

@@ -189,6 +189,18 @@ async fn host_http_gateway_deadline_clamps_wire_expiry_and_deployment_policy() {
     assert_eq!(control_error(&response, &payload).code, "TimeoutError");
     assert_eq!(host.request_supervisor.active_count().await, 0);
     assert_no_second_frame(&mut receiver).await;
+
+    let mut running = canonical_header(&routes["/slow"], "host-http-running-deadline");
+    running.deadline = Some(deadline(5, 5_000));
+    let frame = encode_binary_frame(&running, br#""slow""#).unwrap();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    dispatch(&host, &frame, &sender).await.unwrap();
+    let Terminal::Error(response, payload) = recv_terminal(&mut receiver).await else {
+        panic!("running request deadline must remain an ordinary timeout")
+    };
+    assert_eq!(control_error(&response, &payload).code, "TimeoutError");
+    assert_eq!(host.request_supervisor.active_count().await, 0);
+    assert_no_second_frame(&mut receiver).await;
 }
 
 #[tokio::test]
@@ -231,12 +243,27 @@ async fn host_http_gateway_response_ceiling_cancel_and_stream_terminal_are_singl
         tokio::task::yield_now().await;
     }
     dispatch(&host, &cancel, &sender).await.unwrap();
-    let Terminal::Error(response, payload) = recv_terminal(&mut receiver).await else {
-        panic!("cancelled request must fail")
-    };
-    assert_eq!(control_error(&response, &payload).code, "CancelError");
+    for _ in 0..100 {
+        if host.request_supervisor.active_count().await == 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
     assert_eq!(host.request_supervisor.active_count().await, 0);
+    assert_eq!(host.outbound_requests.pending_count(), 0);
+    assert_eq!(host.outbound_requests.active_lease_count(), 0);
     assert_no_second_frame(&mut receiver).await;
+    let cancel_events = host
+        .telemetry
+        .drain_batches()
+        .into_iter()
+        .flat_map(|batch| batch.events)
+        .filter(|event| {
+            event.request_id.as_deref() == Some("host-http-cancel")
+                && event.name.as_deref() == Some("request.cancel")
+        })
+        .count();
+    assert_eq!(cancel_events, 1);
 
     let stream = canonical_header(&routes["/stream"], "host-http-stream-over-limit");
     let frame = encode_binary_frame(&stream, b"stream-too-large").unwrap();
@@ -255,6 +282,63 @@ async fn host_http_gateway_response_ceiling_cancel_and_stream_terminal_are_singl
         "ResourceLimitExceeded"
     );
     assert_no_second_frame(&mut receiver).await;
+}
+
+#[tokio::test]
+async fn host_cancel_races_success_error_and_deadline_with_one_terminal_owner() {
+    let (host, routes) = fixture::admitted_gateway_host().await;
+
+    let success = canonical_header(&routes["/typed"], "host-http-race-success");
+    let success_frame = encode_binary_frame(&success, br#""success""#).unwrap();
+    let (success_sender, mut success_receiver) = mpsc::unbounded_channel();
+    dispatch(&host, &success_frame, &success_sender)
+        .await
+        .unwrap();
+    dispatch_cancel(&host, &success, &success_sender, "race_success").await;
+    assert_race_settled(
+        &host,
+        &success.request_id,
+        &mut success_receiver,
+        Some(("response.end", None)),
+    )
+    .await;
+
+    let ordinary_error = canonical_header(&routes["/raw"], "host-http-race-error");
+    let ordinary_error_frame = encode_binary_frame(&ordinary_error, b"too-large").unwrap();
+    let (error_sender, mut error_receiver) = mpsc::unbounded_channel();
+    super::super::dispatch_router_binary_frame_with_http_response_max(
+        &host,
+        &ordinary_error_frame,
+        &error_sender,
+        1,
+    )
+    .await
+    .unwrap();
+    dispatch_cancel(&host, &ordinary_error, &error_sender, "race_ordinary_error").await;
+    assert_race_settled(
+        &host,
+        &ordinary_error.request_id,
+        &mut error_receiver,
+        Some(("response.error", Some("ResourceLimitExceeded"))),
+    )
+    .await;
+
+    let mut deadline = canonical_header(&routes["/slow"], "host-http-race-deadline");
+    deadline.deadline = Some(self::deadline(1, 5_000));
+    let deadline_frame = encode_binary_frame(&deadline, br#""slow""#).unwrap();
+    let (deadline_sender, mut deadline_receiver) = mpsc::unbounded_channel();
+    dispatch(&host, &deadline_frame, &deadline_sender)
+        .await
+        .unwrap();
+    tokio::task::yield_now().await;
+    dispatch_cancel(&host, &deadline, &deadline_sender, "race_deadline").await;
+    assert_race_settled(
+        &host,
+        &deadline.request_id,
+        &mut deadline_receiver,
+        Some(("response.error", Some("TimeoutError"))),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -417,6 +501,78 @@ async fn dispatch(
         &mut artifact_fingerprint,
     )
     .await
+}
+
+async fn dispatch_cancel(
+    host: &RuntimeHost,
+    request: &RuntimeAssemblyRequestStartFrameHeader,
+    sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+    reason: &str,
+) {
+    let cancel = encode_binary_frame(
+        &RequestCancelFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "request.cancel".to_string(),
+            request_id: request.request_id.clone(),
+            reason: reason.to_string(),
+        },
+        &[],
+    )
+    .unwrap();
+    dispatch(host, &cancel, sender).await.unwrap();
+}
+
+async fn assert_race_settled(
+    host: &RuntimeHost,
+    request_id: &str,
+    receiver: &mut mpsc::UnboundedReceiver<RouterWriterMessage>,
+    ordinary_terminal: Option<(&str, Option<&str>)>,
+) {
+    for _ in 0..100 {
+        if host.request_supervisor.active_count().await == 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(host.request_supervisor.active_count().await, 0);
+
+    if let Ok(Some(RouterWriterMessage::Binary(frame))) =
+        timeout(Duration::from_millis(50), receiver.recv()).await
+    {
+        let (typed, _): (TypedEnvelope, Vec<u8>) =
+            decode_typed_binary_frame(&frame).expect("race terminal envelope");
+        let (expected_type, expected_code) =
+            ordinary_terminal.expect("only an ordinary winner emits a frame");
+        assert_eq!(typed.envelope_type, expected_type);
+        if let Some(expected_code) = expected_code {
+            let (header, payload): (ResponseErrorFrameHeader, Vec<u8>) =
+                decode_typed_binary_frame(&frame).expect("ordinary race error");
+            let error = control_error(&header, &payload);
+            assert_eq!(
+                error.code, expected_code,
+                "unexpected race error: {error:?}"
+            );
+        }
+    }
+    assert_no_second_frame(receiver).await;
+
+    let terminal_events = host
+        .telemetry
+        .drain_batches()
+        .into_iter()
+        .flat_map(|batch| batch.events)
+        .filter(|event| {
+            event.request_id.as_deref() == Some(request_id)
+                && matches!(
+                    event.name.as_deref(),
+                    Some("request.end" | "request.error" | "request.cancel")
+                )
+        })
+        .count();
+    assert_eq!(
+        terminal_events, 1,
+        "success, ordinary error, deadline and cancellation share one terminal owner"
+    );
 }
 
 #[derive(Debug)]

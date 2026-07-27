@@ -25,6 +25,6 @@ impl capability_contract::ConfigCapabilityApi for RuntimeConfigCapabilityContext
     ) -> capability_contract::CapabilityResult<Value> {
         self.0
             .read_config_target(current_addr, target, args, type_arg)
-            .map_err(capability_contract::CapabilityError::opaque)
+            .map_err(ordinary_root_error_into_capability)
     }
 }

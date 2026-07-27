@@ -21,13 +21,15 @@ use skiff_runtime_host::{
 use skiff_runtime_model::service_error::{
     ErrorCorrelation, ExceptionStackFrame, OpaqueServiceError, ServiceErrorEnvelope,
 };
-use skiff_runtime_request::{OutboundResponse, RequestError, ResponseEvent};
+use skiff_runtime_request::{OutboundResponse, RequestError};
 use skiff_runtime_transport::{
     protocol::{
         decode_response_error_frame, ResponseErrorFrameHeader, RuntimeErrorFramePayload,
         TelemetryEvent, TelemetryVisibility, ValidatedResponseErrorFrame,
     },
-    response_mapper::{response_error_to_outbound, response_event_into_frame},
+    response_mapper::{
+        response_error_to_outbound, response_event_into_frame, OrdinaryResponseEvent,
+    },
 };
 
 const SCENARIO_JSON: &str = include_str!(
@@ -227,7 +229,7 @@ fn c0_internal_bytes_cross_three_typed_host_wire_hops_and_control_stays_generic(
             .expect("typed request extraction must precede generic payload mapping");
         let frame = response_event_into_frame(
             format!("request-internal-{}", hop.name),
-            ResponseEvent::FixedServiceFailure(carrier),
+            OrdinaryResponseEvent::FixedServiceFailure(carrier),
         )
         .expect("Rust v2 fixed frame");
         let (header, validated) =
@@ -277,7 +279,8 @@ fn c0_internal_bytes_cross_three_typed_host_wire_hops_and_control_stays_generic(
     assert!(request_error.fixed_service_failure().is_none());
     let control_frame = response_event_into_frame(
         control.header.request_id().to_string(),
-        ResponseEvent::Error(request_error.response_error()),
+        OrdinaryResponseEvent::try_error(&request_error)
+            .expect("generic control failure is ordinary"),
     )
     .expect("generic control frame");
     let (control_header, control_validated) =

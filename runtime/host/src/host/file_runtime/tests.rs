@@ -48,7 +48,7 @@ async fn file_runtime_create_from_chunks_rejects_over_limit_before_persist() {
         })
         .await
         .expect_err("over-limit stream should fail");
-    let payload = error.payload();
+    let payload = error.ordinary_payload().expect("file failure is ordinary");
     assert_eq!(payload.code, "ResourceLimitExceeded");
     assert_eq!(
         payload

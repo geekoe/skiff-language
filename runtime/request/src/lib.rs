@@ -38,7 +38,7 @@ pub use envelope::{
     HttpAdapter, HttpAdapterCallable, HttpAdapterKind, HttpNameValue, RequestCancel,
     RequestEffectDouble, RequestEnvelope,
 };
-pub use error::{RequestError, RequestResult};
+pub use error::{OrdinaryRequestError, RequestError, RequestResult};
 pub use eval_adapter::{
     AssemblyRequestEvalAdapter, RequestEvalAdapter, RequestEvalExecutionInputParts,
 };

@@ -63,7 +63,7 @@ use downcast::{
     concrete_test_double, concrete_test_effect_double_context, eval_test_double,
 };
 use effects::{RuntimeEffectDispatchContext, RuntimeTestEffectDoubleContext};
-use error::IntoEvalResult;
+use error::{ordinary_root_error_into_capability, root_result_into_capability, IntoEvalResult};
 use execution::RuntimeExecutionControl;
 use file_stream::{
     RuntimeFileCapabilitySource, RuntimeOwnedFileSourceStreamContext, RuntimeStreamCancelSignal,

@@ -1,7 +1,5 @@
 use super::*;
 use skiff_runtime_eval::error::RuntimeErrorPayload;
-#[cfg(test)]
-use skiff_runtime_eval::error::WirePayload;
 
 pub(super) trait IntoEvalResult<T> {
     fn into_eval_result(self) -> Result<T>;
@@ -26,9 +24,59 @@ pub(crate) fn root_error_into_eval(error: root_error::RuntimeError) -> RuntimeEr
             status,
             details,
         }),
+        root_error::RuntimeError::Cancelled => RuntimeError::Cancelled,
+        root_error::RuntimeError::ExecutionBudgetExceeded {
+            reason,
+            instruction_count,
+            limit,
+            elapsed_ms,
+        } => RuntimeError::ExecutionBudgetExceeded {
+            reason: match reason {
+                skiff_runtime_capability_context::ExecutionBudgetReason::Cancelled => {
+                    skiff_runtime_eval::error::BudgetReason::Cancelled
+                }
+                skiff_runtime_capability_context::ExecutionBudgetReason::DeadlineExceeded => {
+                    skiff_runtime_eval::error::BudgetReason::DeadlineExceeded
+                }
+                skiff_runtime_capability_context::ExecutionBudgetReason::InstructionLimitExceeded => {
+                    skiff_runtime_eval::error::BudgetReason::InstructionLimitExceeded
+                }
+            },
+            instruction_count,
+            limit,
+            elapsed_ms,
+        },
         root_error::RuntimeError::Diagnosed(diagnosed) => root_diagnosed_into_eval(diagnosed),
         root_error::RuntimeError::Opaque(error) => RuntimeError::from_wire_payload(error),
-        error => RuntimeError::Opaque(Box::new(error)),
+        error => RuntimeError::from_wire_payload(Box::new(
+            root_error::OrdinaryRuntimeError::try_new(error)
+                .expect("Host cancellation was split before eval trait erasure"),
+        )),
+    }
+}
+
+pub(super) fn ordinary_root_error_into_capability(
+    error: root_error::RuntimeError,
+) -> capability_contract::CapabilityError {
+    capability_contract::CapabilityError::opaque(
+        root_error::OrdinaryRuntimeError::try_new(error)
+            .expect("synchronous capability adapter cannot carry cancellation"),
+    )
+}
+
+pub(super) async fn root_result_into_capability<T>(
+    result: root_error::Result<T>,
+) -> capability_contract::CapabilityResult<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) if error.is_cancellation_terminal() => {
+            // Root execution owns the terminal and polls its cancellation lane
+            // before the operation lane. Keeping this erased capability future
+            // pending prevents the ordinary-only CapabilityError channel from
+            // materializing cancellation; the root owner immediately drops it.
+            std::future::pending().await
+        }
+        Err(error) => Err(ordinary_root_error_into_capability(error)),
     }
 }
 
@@ -48,7 +96,12 @@ fn root_diagnosed_into_eval(diagnosed: root_error::Diagnosed) -> RuntimeError {
             }
             error
         }
-        Err(diagnosed) => RuntimeError::Opaque(Box::new(diagnosed)),
+        Err(diagnosed) => RuntimeError::from_wire_payload(Box::new(
+            root_error::OrdinaryRuntimeError::try_new(root_error::RuntimeError::Diagnosed(
+                diagnosed,
+            ))
+            .expect("wire-backed diagnosis is ordinary"),
+        )),
     }
 }
 
@@ -57,6 +110,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use skiff_runtime_eval::error::PlatformBuiltinErrorIdentity;
+    use skiff_runtime_model::error::WirePayload;
 
     fn mongo_write_conflict() -> mongodb::error::Error {
         let command_error: mongodb::error::CommandError = serde_json::from_value(json!({
@@ -102,11 +156,13 @@ mod tests {
                         assert_eq!(*source_id, 7);
                         assert_eq!(**frame, source_frame);
                         assert!(matches!(error.as_ref(), RuntimeError::Opaque(_)));
-                        let payload = error.payload();
+                        let payload = error
+                            .ordinary_payload()
+                            .expect("database decode failure is ordinary");
                         assert_eq!(payload.code, "std.db.DecodeError");
                         assert_eq!(payload.message, "db value missing key field id");
                         assert_eq!(
-                            WirePayload::catch_projection(error.as_ref()),
+                            error.ordinary_catch_projection(),
                             Some((
                                 PlatformBuiltinErrorIdentity::DbDecode.catch_identity(),
                                 json!({
@@ -128,7 +184,9 @@ mod tests {
         assert_eq!(source.assembly_id, Some(1));
         assert_eq!(source.source_id, 7);
 
-        let payload = eval_error.payload();
+        let payload = eval_error
+            .ordinary_payload()
+            .expect("diagnosed database failure is ordinary");
         let details = payload.details.expect("diagnostic details should exist");
         assert_eq!(details["frames"][0], diagnostic_frame);
         assert_eq!(details["frames"][1], source_frame);
@@ -148,9 +206,14 @@ mod tests {
         let eval_error = root_error_into_eval(root_error);
 
         assert!(matches!(eval_error, RuntimeError::Opaque(_)));
-        assert_eq!(eval_error.payload(), expected_payload);
         assert_eq!(
-            WirePayload::catch_projection(&eval_error),
+            eval_error
+                .ordinary_payload()
+                .expect("request payload failure is ordinary"),
+            expected_payload
+        );
+        assert_eq!(
+            eval_error.ordinary_catch_projection(),
             expected_catch_projection
         );
     }
@@ -163,7 +226,7 @@ mod tests {
 
         assert!(matches!(eval_error, RuntimeError::Opaque(_)));
         assert_eq!(
-            WirePayload::catch_projection(&eval_error),
+            eval_error.ordinary_catch_projection(),
             Some((
                 PlatformBuiltinErrorIdentity::File.catch_identity(),
                 json!({ "message": "std.file not found" }),
@@ -180,7 +243,9 @@ mod tests {
         let eval_error = root_error_into_eval(root_error);
 
         assert!(matches!(eval_error, RuntimeError::Opaque(_)));
-        let payload = eval_error.payload();
+        let payload = eval_error
+            .ordinary_payload()
+            .expect("database conflict is ordinary");
         assert_eq!(payload.code, "std.db.ConflictError");
         assert_eq!(
             payload.message,
@@ -188,7 +253,7 @@ mod tests {
         );
         assert!(!payload.message.contains("raw Mongo"));
         assert_eq!(
-            WirePayload::catch_projection(&eval_error),
+            eval_error.ordinary_catch_projection(),
             Some((
                 PlatformBuiltinErrorIdentity::DbConflict.catch_identity(),
                 json!({

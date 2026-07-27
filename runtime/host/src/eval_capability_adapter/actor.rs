@@ -83,10 +83,12 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         bootstrap_payload: Vec<u8>,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
-            concrete::ActorClient::new(self.context.clone())
-                .get_or_create(request, bootstrap_payload)
-                .await
-                .map_err(capability_contract::CapabilityError::opaque)
+            root_result_into_capability(
+                concrete::ActorClient::new(self.context.clone())
+                    .get_or_create(request, bootstrap_payload)
+                    .await,
+            )
+            .await
         })
     }
 
@@ -96,10 +98,12 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         bootstrap_payload: Vec<u8>,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
-            concrete::ActorClient::new(self.context.clone())
-                .replace(request, bootstrap_payload)
-                .await
-                .map_err(capability_contract::CapabilityError::opaque)
+            root_result_into_capability(
+                concrete::ActorClient::new(self.context.clone())
+                    .replace(request, bootstrap_payload)
+                    .await,
+            )
+            .await
         })
     }
 
@@ -108,10 +112,12 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         request: ActorFindControlRequest,
     ) -> capability_contract::CapabilityFuture<'a, Option<ActorRef>> {
         Box::pin(async move {
-            concrete::ActorClient::new(self.context.clone())
-                .find(request)
-                .await
-                .map_err(capability_contract::CapabilityError::opaque)
+            root_result_into_capability(
+                concrete::ActorClient::new(self.context.clone())
+                    .find(request)
+                    .await,
+            )
+            .await
         })
     }
 
@@ -120,10 +126,12 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         request: ActorRemoveControlRequest,
     ) -> capability_contract::CapabilityFuture<'a, bool> {
         Box::pin(async move {
-            concrete::ActorClient::new(self.context.clone())
-                .remove(request)
-                .await
-                .map_err(capability_contract::CapabilityError::opaque)
+            root_result_into_capability(
+                concrete::ActorClient::new(self.context.clone())
+                    .remove(request)
+                    .await,
+            )
+            .await
         })
     }
 
@@ -220,10 +228,12 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         bootstrap_payload: Vec<u8>,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
-            concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
-                .get_or_create(request, bootstrap_payload)
-                .await
-                .map_err(capability_contract::CapabilityError::opaque)
+            root_result_into_capability(
+                concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
+                    .get_or_create(request, bootstrap_payload)
+                    .await,
+            )
+            .await
         })
     }
 
@@ -233,10 +243,12 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         bootstrap_payload: Vec<u8>,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
-            concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
-                .replace(request, bootstrap_payload)
-                .await
-                .map_err(capability_contract::CapabilityError::opaque)
+            root_result_into_capability(
+                concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
+                    .replace(request, bootstrap_payload)
+                    .await,
+            )
+            .await
         })
     }
 
@@ -245,10 +257,12 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         request: ActorFindControlRequest,
     ) -> capability_contract::CapabilityFuture<'a, Option<ActorRef>> {
         Box::pin(async move {
-            concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
-                .find(request)
-                .await
-                .map_err(capability_contract::CapabilityError::opaque)
+            root_result_into_capability(
+                concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
+                    .find(request)
+                    .await,
+            )
+            .await
         })
     }
 
@@ -257,10 +271,12 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         request: ActorRemoveControlRequest,
     ) -> capability_contract::CapabilityFuture<'a, bool> {
         Box::pin(async move {
-            concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
-                .remove(request)
-                .await
-                .map_err(capability_contract::CapabilityError::opaque)
+            root_result_into_capability(
+                concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
+                    .remove(request)
+                    .await,
+            )
+            .await
         })
     }
 
@@ -412,17 +428,7 @@ async fn invoke_actor_method(
         })?;
 
     tokio::select! {
-        outcome = lease.receive() => match outcome {
-            Ok(Ok(outcome)) => Ok(outcome),
-            Ok(Err(error)) => Err(capability_contract::CapabilityError::protocol(
-                "actor.method.invoke",
-                format!("Actor owner transport failure {}: {}", error.code, error.message),
-            )),
-            Err(_) => Err(capability_contract::CapabilityError::provider_unavailable(
-                "actor.method.invoke",
-                "Actor invocation response channel closed",
-            )),
-        },
+        biased;
         _ = parts.cancellation.wait_cancelled() => {
             let cancel = ActorMethodFrame::Cancel(ActorMethodCancelFrameHeader {
                 schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -438,6 +444,17 @@ async fn invoke_actor_method(
                 capability_contract::ActorInvocationCancellation::Cancelled,
             ))
         }
+        outcome = lease.receive() => match outcome {
+            Ok(Ok(outcome)) => Ok(outcome),
+            Ok(Err(error)) => Err(capability_contract::CapabilityError::protocol(
+                "actor.method.invoke",
+                format!("Actor owner transport failure {}: {}", error.code, error.message),
+            )),
+            Err(_) => Err(capability_contract::CapabilityError::provider_unavailable(
+                "actor.method.invoke",
+                "Actor invocation response channel closed",
+            )),
+        },
         _ = tokio::time::sleep(tokio::time::Duration::from_millis(deadline_timeout_ms)) => {
             let cancel = ActorMethodFrame::Cancel(ActorMethodCancelFrameHeader {
                 schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -463,10 +480,12 @@ async fn submit_spawn_and_wake(
     args_payload: Vec<u8>,
 ) -> capability_contract::CapabilityResult<()> {
     let build_id = request.build_id.clone();
-    concrete::ActorClient::new(context)
-        .submit_spawn(request, args_payload)
-        .await
-        .map_err(capability_contract::CapabilityError::opaque)?;
+    root_result_into_capability(
+        concrete::ActorClient::new(context)
+            .submit_spawn(request, args_payload)
+            .await,
+    )
+    .await?;
     if let Some(build_id) = build_id {
         spawn_workers.wake_build(&build_id);
     }
@@ -476,7 +495,18 @@ async fn submit_spawn_and_wake(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
+    use skiff_artifact_model::{
+        ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, AssemblyIdentity,
+        DeploymentRevision,
+    };
+    use skiff_runtime_capability_context::{
+        ActorInvocationCancellation, ActorInvocationDeadline, ActorInvocationDeclarationOwner,
+        ActorInvocationIdentity, ActorInvocationOutcome, ActorInvocationOwnerFile,
+        ActorInvocationOwnerUnit, ActorInvocationRequest,
+    };
+    use skiff_runtime_transport::actor_method::{
+        decode_actor_method_frame, ActorMethodCancelReason, ActorMethodFrame,
+    };
     use skiff_runtime_transport::protocol::{
         SpawnSubmitResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     };
@@ -484,6 +514,91 @@ mod tests {
 
     const BUILD_ID: &str =
         "skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[tokio::test]
+    async fn actor_method_cancel_wakes_pending_invocation_and_releases_lease() {
+        let cancellation = CancellationToken::new();
+        let (parts, request, mut router_receiver, outbound) =
+            actor_invocation_fixture(30_000, cancellation.clone(), "actor-invoke-cancel");
+        let invocation = invoke_actor_method(parts, request);
+        tokio::pin!(invocation);
+
+        assert_actor_invoke_frame(&mut router_receiver, &mut invocation).await;
+        cancellation.cancel();
+        let outcome = timeout(Duration::from_secs(1), &mut invocation)
+            .await
+            .expect("actor cancellation must wake the pending invocation")
+            .expect("actor cancellation is an internal outcome");
+        assert_eq!(
+            outcome,
+            ActorInvocationOutcome::Cancelled(ActorInvocationCancellation::Cancelled)
+        );
+        assert_actor_cancel_frame(&mut router_receiver, ActorMethodCancelReason::Cancelled).await;
+        assert_eq!(
+            outbound.cancellation_correlation("actor-invoke-cancel"),
+            None,
+            "terminal owner must release the actor invocation lease"
+        );
+    }
+
+    #[tokio::test]
+    async fn actor_method_deadline_remains_distinct_and_releases_lease() {
+        let (parts, request, mut router_receiver, outbound) =
+            actor_invocation_fixture(1, CancellationToken::new(), "actor-invoke-deadline");
+        let invocation = invoke_actor_method(parts, request);
+        tokio::pin!(invocation);
+
+        assert_actor_invoke_frame(&mut router_receiver, &mut invocation).await;
+        let outcome = timeout(Duration::from_secs(1), &mut invocation)
+            .await
+            .expect("actor deadline must wake the pending invocation")
+            .expect("actor deadline is a typed outcome");
+        assert_eq!(
+            outcome,
+            ActorInvocationOutcome::Cancelled(ActorInvocationCancellation::DeadlineExceeded)
+        );
+        assert_actor_cancel_frame(
+            &mut router_receiver,
+            ActorMethodCancelReason::DeadlineExceeded,
+        )
+        .await;
+        assert_eq!(
+            outbound.cancellation_correlation("actor-invoke-deadline"),
+            None,
+            "deadline owner must release the actor invocation lease"
+        );
+    }
+
+    #[tokio::test]
+    async fn actor_method_cancel_beats_simultaneously_ready_deadline() {
+        let cancellation = CancellationToken::new();
+        let (parts, request, mut router_receiver, outbound) =
+            actor_invocation_fixture(1, cancellation.clone(), "actor-invoke-biased");
+        let invocation = invoke_actor_method(parts, request);
+        tokio::pin!(invocation);
+
+        assert_actor_invoke_frame(&mut router_receiver, &mut invocation).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        cancellation.cancel();
+        let outcome = invocation
+            .await
+            .expect("ancestor cancellation is a typed internal outcome");
+        assert_eq!(
+            outcome,
+            ActorInvocationOutcome::Cancelled(ActorInvocationCancellation::Cancelled)
+        );
+        assert_actor_cancel_message(
+            router_receiver
+                .recv()
+                .await
+                .expect("cancel frame must settle the invocation"),
+            ActorMethodCancelReason::Cancelled,
+        );
+        assert_eq!(
+            outbound.cancellation_correlation("actor-invoke-biased"),
+            None
+        );
+    }
 
     #[tokio::test]
     async fn successful_spawn_submit_wakes_the_target_build() {
@@ -608,6 +723,132 @@ mod tests {
                 .is_err(),
             "failed submit receipt must not wake a spawn worker"
         );
+    }
+
+    fn actor_invocation_fixture(
+        timeout_ms: u64,
+        cancellation: CancellationToken,
+        invocation_id: &str,
+    ) -> (
+        RuntimeOwnedActorParts,
+        ActorInvocationRequest,
+        mpsc::UnboundedReceiver<concrete::RouterWriterMessage>,
+        Arc<ActorMethodOutboundRegistry>,
+    ) {
+        let (router_sender, router_receiver) = mpsc::unbounded_channel();
+        let actor_method_outbound = Arc::new(ActorMethodOutboundRegistry::default());
+        let implementation_identity = ActorImplementationIdentity::new(format!(
+            "skiff-actor-implementation-v1:sha256:{}",
+            "b".repeat(64)
+        ));
+        let parts = RuntimeOwnedActorParts {
+            runtime_id: "runtime-test".to_string(),
+            service_id: "service-test".to_string(),
+            service_version: "v1".to_string(),
+            request_id: "request-test".to_string(),
+            request_target: "program.test".to_string(),
+            request_build_id: BUILD_ID.to_string(),
+            request_service_protocol_identity: "protocol-test".to_string(),
+            operation_service_protocol_identity: Some("protocol-test".to_string()),
+            activation_identity: None,
+            trace_id: None,
+            router_sender: Some(router_sender),
+            outbound_requests: Arc::new(OutboundRequestRegistry::default()),
+            actor_method_outbound: actor_method_outbound.clone(),
+            spawn_workers: Arc::new(crate::host::spawn_worker::SpawnWorkerRegistry::default()),
+            cancellation,
+        };
+        let request = ActorInvocationRequest {
+            actor_ref: ActorRef::new(
+                "service-test",
+                "actor-type-test",
+                "actor-id-type-test",
+                "skiff-actor-id-v1",
+                vec![1],
+                format!("sha256:{}", "d".repeat(64)),
+                Some(7),
+            ),
+            declaration_owner: ActorInvocationDeclarationOwner {
+                unit: ActorInvocationOwnerUnit::Service,
+                file: ActorInvocationOwnerFile::LoadedFileIndex(0),
+                actor_symbol: "TestActor".to_string(),
+            },
+            identity: ActorInvocationIdentity {
+                invocation_id: invocation_id.to_string(),
+                expected_epoch: 7,
+                actor_abi_identity: ActorAbiIdentity::new(format!(
+                    "skiff-actor-abi-v1:sha256:{}",
+                    "a".repeat(64)
+                )),
+                requested_implementation_identity: implementation_identity,
+                method_identity: ActorMethodIdentity::new(format!(
+                    "skiff-actor-method-v1:sha256:{}",
+                    "c".repeat(64)
+                )),
+                cancellation_correlation: format!("{invocation_id}:cancel"),
+            },
+            deadline: ActorInvocationDeadline { timeout_ms },
+            arguments_payload: b"[]".to_vec(),
+        };
+        (parts, request, router_receiver, actor_method_outbound)
+    }
+
+    async fn assert_actor_invoke_frame<F>(
+        router_receiver: &mut mpsc::UnboundedReceiver<concrete::RouterWriterMessage>,
+        invocation: &mut Pin<&mut F>,
+    ) where
+        F: Future<
+            Output = capability_contract::CapabilityResult<
+                capability_contract::ActorInvocationOutcome,
+            >,
+        >,
+    {
+        tokio::select! {
+            result = invocation.as_mut() => {
+                panic!("actor invocation completed before its invoke frame: {result:?}")
+            }
+            message = router_receiver.recv() => {
+                assert_actor_invoke_message(
+                    message.expect("actor method invoke frame must be sent")
+                );
+            }
+        }
+    }
+
+    async fn assert_actor_cancel_frame(
+        router_receiver: &mut mpsc::UnboundedReceiver<concrete::RouterWriterMessage>,
+        expected_reason: ActorMethodCancelReason,
+    ) {
+        let message = timeout(Duration::from_secs(1), router_receiver.recv())
+            .await
+            .expect("actor cancel frame must be emitted")
+            .expect("router writer must remain open");
+        assert_actor_cancel_message(message, expected_reason);
+    }
+
+    fn assert_actor_invoke_message(message: concrete::RouterWriterMessage) {
+        let concrete::RouterWriterMessage::Binary(frame) = message else {
+            panic!("actor invocation must use a binary frame")
+        };
+        assert!(matches!(
+            decode_actor_method_frame(&frame).expect("actor invoke frame must decode"),
+            ActorMethodFrame::Invoke(_, _)
+        ));
+    }
+
+    fn assert_actor_cancel_message(
+        message: concrete::RouterWriterMessage,
+        expected_reason: ActorMethodCancelReason,
+    ) {
+        let concrete::RouterWriterMessage::Binary(frame) = message else {
+            panic!("actor cancellation must use a binary frame")
+        };
+        let ActorMethodFrame::Cancel(cancel) =
+            decode_actor_method_frame(&frame).expect("actor cancel frame must decode")
+        else {
+            panic!("expected actor method cancel frame")
+        };
+        assert_eq!(cancel.reason, expected_reason);
     }
 
     fn spawn_submit_request() -> SpawnSubmitControlRequest {

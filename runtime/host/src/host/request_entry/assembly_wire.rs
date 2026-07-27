@@ -3,7 +3,8 @@ use skiff_artifact_model::{
     IngressSelector,
 };
 use skiff_runtime_capability_context::ExecutionBudgetReason;
-use skiff_runtime_request::{RequestError, ResponseEvent, RouterWriterMessage};
+use skiff_runtime_request::{RequestError, RouterWriterMessage};
+use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressProtocol,
     RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestStartFrameWireHeader,
@@ -16,7 +17,6 @@ use url::{Position, Url};
 
 use super::{request_error_into_runtime_error, response_event_into_transport_message};
 use crate::{
-    capability_context::response_error_from_runtime_error,
     error::{Result, RuntimeError},
     host::RuntimeHost,
     loader::assembly_admission::ActiveAssemblyRoute,
@@ -80,10 +80,9 @@ impl RuntimeHost {
                     request_id,
                     error = %runtime_error
                 );
-                match response_event_into_transport_message(
-                    request_id,
-                    ResponseEvent::Error(response_error_from_runtime_error(&runtime_error)),
-                ) {
+                let response_event = OrdinaryResponseEvent::try_error(&runtime_error)
+                    .expect("wire admission rejection is ordinary");
+                match response_event_into_transport_message(request_id, response_event) {
                     Ok(message) => {
                         let _ = sender.send(message);
                     }

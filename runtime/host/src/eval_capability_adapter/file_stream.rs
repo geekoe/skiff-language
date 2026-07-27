@@ -119,8 +119,29 @@ fn root_error_into_file(error: root_error::RuntimeError) -> FileCapabilityError 
             details,
             ..
         } if code == "ResourceLimitExceeded" => file_resource_limit_from_details(message, details),
+        root_error::RuntimeError::Cancelled => FileCapabilityError::Execution(
+            skiff_runtime_capability_context::ExecutionControlError::Cancelled,
+        ),
+        root_error::RuntimeError::ExecutionBudgetExceeded {
+            reason,
+            instruction_count,
+            limit,
+            elapsed_ms,
+        } => FileCapabilityError::Execution(
+            skiff_runtime_capability_context::ExecutionControlError::BudgetExceeded(
+                skiff_runtime_capability_context::ExecutionBudgetFailure {
+                    reason,
+                    instruction_count,
+                    limit,
+                    elapsed_ms,
+                },
+            ),
+        ),
         root_error::RuntimeError::Opaque(error) => file_capability_error_from_wire_payload(error),
-        error => FileCapabilityError::opaque(error),
+        error => FileCapabilityError::opaque(
+            root_error::OrdinaryRuntimeError::try_new(error)
+                .expect("file cancellation was split before ordinary trait erasure"),
+        ),
     }
 }
 

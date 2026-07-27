@@ -29,7 +29,6 @@ use skiff_runtime_capability_context::{
 };
 use skiff_runtime_model::{
     addr::ExecutableAddr,
-    error::WirePayload,
     request_heap::{RequestHeap, RequestHeapLimits},
     runtime_value::{ActorRef, RuntimeValue},
     type_plan::RuntimeTypePlan,
@@ -160,158 +159,23 @@ fn native_capability_budget_reason(
 
 fn runtime_error_to_native(error: runtime_error::RuntimeError) -> RuntimeError {
     match error {
-        runtime_error::RuntimeError::Opaque(error) => {
-            if let Some(control) = wire_payload_to_native_control(error.as_ref()) {
-                control
-            } else {
-                RuntimeError::Opaque(error)
-            }
-        }
-        runtime_error::RuntimeError::Diagnosed(diagnosed) => {
-            RuntimeError::Opaque(Box::new(diagnosed))
-        }
-        error => RuntimeError::Opaque(Box::new(error)),
-    }
-}
-
-fn wire_payload_to_native_control(error: &dyn WirePayload) -> Option<RuntimeError> {
-    if let Some(error) = error
-        .as_any()
-        .downcast_ref::<skiff_runtime_capability_context::ExecutionControlError>()
-    {
-        return Some(execution_control_error_to_native(*error));
-    }
-    if let Some(error) = error
-        .as_any()
-        .downcast_ref::<skiff_runtime_capability_context::StreamRuntimeError>()
-    {
-        return stream_error_to_native_control(error);
-    }
-    if let Some(error) = error
-        .as_any()
-        .downcast_ref::<skiff_runtime_request::RequestError>()
-    {
-        return request_error_to_native_control(error);
-    }
-    if let Some(error) = error
-        .as_any()
-        .downcast_ref::<skiff_runtime_eval::error::RuntimeError>()
-    {
-        return eval_error_to_native_control(error);
-    }
-    if let Some(error) = error
-        .as_any()
-        .downcast_ref::<skiff_runtime_native::error::RuntimeError>()
-    {
-        return native_error_to_native_control(error);
-    }
-    None
-}
-
-fn stream_error_to_native_control(
-    error: &skiff_runtime_capability_context::StreamRuntimeError,
-) -> Option<RuntimeError> {
-    match error {
-        skiff_runtime_capability_context::StreamRuntimeError::Cancelled => {
-            Some(RuntimeError::Cancelled)
-        }
-        skiff_runtime_capability_context::StreamRuntimeError::Producer(error) => {
-            wire_payload_to_native_control(error.as_ref())
-        }
-        skiff_runtime_capability_context::StreamRuntimeError::Decode(_) => None,
-    }
-}
-
-fn request_error_to_native_control(
-    error: &skiff_runtime_request::RequestError,
-) -> Option<RuntimeError> {
-    match error {
-        skiff_runtime_request::RequestError::Cancelled => Some(RuntimeError::Cancelled),
-        skiff_runtime_request::RequestError::ExecutionBudgetExceeded {
+        runtime_error::RuntimeError::Cancelled => RuntimeError::Cancelled,
+        runtime_error::RuntimeError::ExecutionBudgetExceeded {
             reason,
             instruction_count,
             limit,
             elapsed_ms,
-        } => {
-            if *reason == skiff_runtime_capability_context::ExecutionBudgetReason::Cancelled {
-                Some(RuntimeError::Cancelled)
-            } else {
-                Some(RuntimeError::ExecutionBudgetExceeded {
-                    reason: native_capability_budget_reason(*reason),
-                    instruction_count: *instruction_count,
-                    limit: *limit,
-                    elapsed_ms: *elapsed_ms,
-                })
-            }
-        }
-        skiff_runtime_request::RequestError::Eval(error) => eval_error_to_native_control(error),
-        _ => None,
-    }
-}
-
-fn eval_error_to_native_control(
-    error: &skiff_runtime_eval::error::RuntimeError,
-) -> Option<RuntimeError> {
-    match error {
-        skiff_runtime_eval::error::RuntimeError::Cancelled => Some(RuntimeError::Cancelled),
-        skiff_runtime_eval::error::RuntimeError::ExecutionBudgetExceeded {
-            reason,
+        } => RuntimeError::ExecutionBudgetExceeded {
+            reason: native_capability_budget_reason(reason),
             instruction_count,
             limit,
             elapsed_ms,
-        } => {
-            if *reason == skiff_runtime_eval::error::BudgetReason::Cancelled {
-                Some(RuntimeError::Cancelled)
-            } else {
-                Some(RuntimeError::ExecutionBudgetExceeded {
-                    reason: eval_budget_reason_to_native(*reason),
-                    instruction_count: *instruction_count,
-                    limit: *limit,
-                    elapsed_ms: *elapsed_ms,
-                })
-            }
-        }
-        skiff_runtime_eval::error::RuntimeError::Opaque(error) => {
-            wire_payload_to_native_control(error.as_ref())
-        }
-        _ => None,
-    }
-}
-
-fn native_error_to_native_control(
-    error: &skiff_runtime_native::error::RuntimeError,
-) -> Option<RuntimeError> {
-    match error {
-        skiff_runtime_native::error::RuntimeError::Cancelled => Some(RuntimeError::Cancelled),
-        skiff_runtime_native::error::RuntimeError::ExecutionBudgetExceeded {
-            reason,
-            instruction_count,
-            limit,
-            elapsed_ms,
-        } => Some(RuntimeError::ExecutionBudgetExceeded {
-            reason: *reason,
-            instruction_count: *instruction_count,
-            limit: *limit,
-            elapsed_ms: *elapsed_ms,
-        }),
-        skiff_runtime_native::error::RuntimeError::Opaque(error) => {
-            wire_payload_to_native_control(error.as_ref())
-        }
-        _ => None,
-    }
-}
-
-fn eval_budget_reason_to_native(
-    reason: skiff_runtime_eval::error::BudgetReason,
-) -> NativeBudgetReason {
-    match reason {
-        skiff_runtime_eval::error::BudgetReason::Cancelled => NativeBudgetReason::Cancelled,
-        skiff_runtime_eval::error::BudgetReason::DeadlineExceeded => {
-            NativeBudgetReason::DeadlineExceeded
-        }
-        skiff_runtime_eval::error::BudgetReason::InstructionLimitExceeded => {
-            NativeBudgetReason::InstructionLimitExceeded
-        }
+        },
+        runtime_error::RuntimeError::Opaque(error) => RuntimeError::Opaque(error),
+        error => RuntimeError::Opaque(Box::new(
+            runtime_error::OrdinaryRuntimeError::try_new(error)
+                .expect("Host cancellation was split before native trait erasure"),
+        )),
     }
 }
 

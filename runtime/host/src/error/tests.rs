@@ -17,8 +17,8 @@ use skiff_runtime_model::{
 };
 
 use super::{
-    add_diagnostic_frame, add_source_frame, CatchIdentity, Diagnosed, PlatformBuiltinErrorIdentity,
-    RuntimeError, RuntimeErrorPayload, WirePayload,
+    add_diagnostic_frame, add_source_frame, CatchIdentity, OrdinaryRuntimeError,
+    PlatformBuiltinErrorIdentity, RuntimeError, RuntimeErrorPayload, WirePayload,
 };
 use skiff_runtime_linked_program::{FileAddr, TypeAddr, UnitAddr};
 
@@ -102,6 +102,41 @@ fn assert_wire_case(
     }
 }
 
+fn ordinary_host_payload(error: &RuntimeError) -> RuntimeErrorPayload {
+    error
+        .ordinary_payload()
+        .expect("test case must be an ordinary Host failure")
+}
+
+fn assert_host_case(
+    name: &str,
+    error: &RuntimeError,
+    expected_code: &str,
+    expected_catch: Option<&str>,
+) {
+    let payload = ordinary_host_payload(error);
+    assert_eq!(payload.code, expected_code, "{name} payload code");
+    match (error.ordinary_catch_projection(), expected_catch) {
+        (Some((identity, _)), Some(expected)) => {
+            assert_eq!(
+                identity,
+                PlatformBuiltinErrorIdentity::from_symbol(expected)
+                    .unwrap_or_else(|| panic!("{name} expected a registered platform catch"))
+                    .catch_identity(),
+                "{name} catch"
+            )
+        }
+        (None, None) => {}
+        (actual, expected) => {
+            panic!("{name} catch mismatch: expected {expected:?}, got {actual:?}")
+        }
+    }
+}
+
+fn boxed_host_ordinary(error: RuntimeError) -> Box<dyn WirePayload> {
+    Box::new(OrdinaryRuntimeError::try_new(error).expect("matrix case must be ordinary"))
+}
+
 fn json_error() -> serde_json::Error {
     serde_json::from_str::<serde_json::Value>("{").expect_err("json should fail")
 }
@@ -162,7 +197,8 @@ fn source_frame_uses_outermost_frame_as_primary_location() {
 
 #[test]
 fn internal_decode_payload_uses_internal_error_code() {
-    let payload = RuntimeError::Decode("expected runtime string".to_string()).payload();
+    let payload =
+        ordinary_host_payload(&RuntimeError::Decode("expected runtime string".to_string()));
 
     assert_eq!(payload.code, "InternalError");
     assert_eq!(payload.message, "expected runtime string");
@@ -170,32 +206,30 @@ fn internal_decode_payload_uses_internal_error_code() {
 }
 
 #[test]
-fn wire_payload_delegates_to_inherent_payload_with_default_catch_projection() {
+fn ordinary_wrapper_delegates_payload_with_default_catch_projection() {
     let error = RuntimeError::Decode("expected runtime string".to_string()).with_source(
         12,
         json!({ "sourceId": 12, "span": { "kind": "CallExpression" } }),
     );
+    let expected_payload = ordinary_host_payload(&error);
+    let ordinary = OrdinaryRuntimeError::try_new(error).expect("decode failure is ordinary");
 
-    assert_eq!(WirePayload::payload(&error), error.payload());
-    assert_eq!(WirePayload::catch_projection(&error), None);
-    assert!(WirePayload::as_any(&error).is::<RuntimeError>());
+    assert_eq!(ordinary.payload(), expected_payload);
+    assert_eq!(ordinary.catch_projection(), None);
 }
 
 #[test]
 fn opaque_payload_delegates_to_boxed_wire_payload() {
     let error = RuntimeError::Opaque(Box::new(DummyWirePayload));
 
-    assert_eq!(error.payload(), dummy_wire_payload());
+    assert_eq!(ordinary_host_payload(&error), dummy_wire_payload());
 }
 
 #[test]
 fn opaque_catch_projection_delegates_to_boxed_wire_payload() {
     let error = RuntimeError::Opaque(Box::new(DummyWirePayload));
 
-    assert_eq!(
-        WirePayload::catch_projection(&error),
-        dummy_catch_projection()
-    );
+    assert_eq!(error.ordinary_catch_projection(), dummy_catch_projection());
 }
 
 #[test]
@@ -204,7 +238,7 @@ fn service_db_conflict_survives_host_opaque_boundary_with_sanitized_projection()
         mongo_command_error(112, "WriteConflict-secret-server-detail"),
     )));
 
-    let payload = error.payload();
+    let payload = ordinary_host_payload(&error);
     assert_eq!(payload.code, "std.db.ConflictError");
     assert_eq!(
         payload.message,
@@ -220,7 +254,7 @@ fn service_db_conflict_survives_host_opaque_boundary_with_sanitized_projection()
     );
     assert!(!payload.message.contains("secret-server-detail"));
     assert_eq!(
-        WirePayload::catch_projection(&error),
+        error.ordinary_catch_projection(),
         Some((
             PlatformBuiltinErrorIdentity::DbConflict.catch_identity(),
             json!({
@@ -241,7 +275,7 @@ fn service_db_fold_boxes_lease_lost_and_delegates_payload() {
     let error = RuntimeError::Opaque(Box::new(service_error));
 
     assert!(matches!(error, RuntimeError::Opaque(_)));
-    assert_eq!(error.payload(), expected_payload);
+    assert_eq!(ordinary_host_payload(&error), expected_payload);
 }
 
 #[test]
@@ -255,7 +289,7 @@ fn service_db_fold_boxes_bson_decode_and_delegates_platform_payload() {
 
     assert!(matches!(error, RuntimeError::Opaque(_)));
     assert_eq!(expected_payload.code, "PlatformBsonDecodeError");
-    assert_eq!(error.payload(), expected_payload);
+    assert_eq!(ordinary_host_payload(&error), expected_payload);
     let RuntimeError::Opaque(boxed) = &error else {
         unreachable!("service-db fold should box the local error");
     };
@@ -278,8 +312,8 @@ fn model_fold_boxes_and_delegates_payload() {
     let error = RuntimeError::from(model_error);
 
     assert!(matches!(error, RuntimeError::Opaque(_)));
-    assert_eq!(error.payload(), expected_payload);
-    assert_eq!(WirePayload::catch_projection(&error), None);
+    assert_eq!(ordinary_host_payload(&error), expected_payload);
+    assert_eq!(error.ordinary_catch_projection(), None);
     let RuntimeError::Opaque(boxed) = &error else {
         unreachable!("model fold should box the domain error");
     };
@@ -298,11 +332,8 @@ fn boundary_fold_boxes_and_delegates_payload_and_catch_projection() {
     let error = RuntimeError::from(boundary_error);
 
     assert!(matches!(error, RuntimeError::Opaque(_)));
-    assert_eq!(error.payload(), expected_payload);
-    assert_eq!(
-        WirePayload::catch_projection(&error),
-        expected_catch_projection
-    );
+    assert_eq!(ordinary_host_payload(&error), expected_payload);
+    assert_eq!(error.ordinary_catch_projection(), expected_catch_projection);
     let RuntimeError::Opaque(boxed) = &error else {
         unreachable!("boundary fold should box the domain error");
     };
@@ -323,11 +354,8 @@ fn linked_type_plan_fold_boxes_and_delegates_protocol_projection() {
     let error = RuntimeError::from(linked_error);
 
     assert!(matches!(error, RuntimeError::Opaque(_)));
-    assert_eq!(error.payload(), expected_payload);
-    assert_eq!(
-        WirePayload::catch_projection(&error),
-        expected_catch_projection
-    );
+    assert_eq!(ordinary_host_payload(&error), expected_payload);
+    assert_eq!(error.ordinary_catch_projection(), expected_catch_projection);
     let RuntimeError::Opaque(boxed) = &error else {
         unreachable!("linked-type-plan fold should box the domain error");
     };
@@ -342,47 +370,39 @@ fn native_fold_boxes_and_delegates_timeout_projection() {
         limit: Some(100),
         elapsed_ms: 12.5,
     };
-    let expected_payload = native_error.payload();
-    let expected_catch_projection = native_error.catch_projection();
+    let expected_payload = native_error
+        .ordinary_payload()
+        .expect("deadline is ordinary");
+    let expected_catch_projection = native_error.ordinary_catch_projection();
 
     let error = RuntimeError::from(native_error);
 
     assert!(matches!(error, RuntimeError::Opaque(_)));
-    assert_eq!(error.payload(), expected_payload);
-    assert_eq!(error.payload().code, "TimeoutError");
-    assert_eq!(
-        WirePayload::catch_projection(&error),
-        expected_catch_projection
-    );
+    assert_eq!(ordinary_host_payload(&error), expected_payload);
+    assert_eq!(ordinary_host_payload(&error).code, "TimeoutError");
+    assert_eq!(error.ordinary_catch_projection(), expected_catch_projection);
     let RuntimeError::Opaque(boxed) = &error else {
         unreachable!("native fold should box the domain error");
     };
     assert!(boxed
         .as_any()
-        .is::<skiff_runtime_native::error::RuntimeError>());
+        .is::<skiff_runtime_native::error::OrdinaryRuntimeError>());
 }
 
 #[test]
 fn capability_context_file_fold_boxes_and_delegates_payload_and_catch_projection() {
     let capability_error =
         skiff_runtime_capability_context::FileCapabilityError::file("std.file not found: test");
-    let expected_payload = capability_error.payload();
-    let expected_catch_projection = capability_error.catch_projection();
+    let expected_payload = capability_error
+        .ordinary_payload()
+        .expect("file failure is ordinary");
+    let expected_catch_projection = capability_error.ordinary_catch_projection();
 
     let error = RuntimeError::from(capability_error);
 
     assert!(matches!(error, RuntimeError::Opaque(_)));
-    assert_eq!(error.payload(), expected_payload);
-    assert_eq!(
-        WirePayload::catch_projection(&error),
-        expected_catch_projection
-    );
-    let RuntimeError::Opaque(boxed) = &error else {
-        unreachable!("capability-context fold should box the local error");
-    };
-    assert!(boxed
-        .as_any()
-        .is::<skiff_runtime_capability_context::FileCapabilityError>());
+    assert_eq!(ordinary_host_payload(&error), expected_payload);
+    assert_eq!(error.ordinary_catch_projection(), expected_catch_projection);
 }
 
 #[test]
@@ -395,60 +415,47 @@ fn capability_context_budget_fold_boxes_and_delegates_timeout_projection() {
             elapsed_ms: 12.5,
         },
     );
-    let expected_payload = capability_error.payload();
-    let expected_catch_projection = capability_error.catch_projection();
+    let expected_payload = capability_error
+        .ordinary_payload()
+        .expect("deadline is ordinary");
+    let expected_catch_projection = capability_error.ordinary_catch_projection();
 
     let error = RuntimeError::from(capability_error);
 
-    assert!(matches!(error, RuntimeError::Opaque(_)));
-    assert_eq!(error.payload(), expected_payload);
-    assert_eq!(error.payload().code, "TimeoutError");
-    assert_eq!(
-        WirePayload::catch_projection(&error),
-        expected_catch_projection
-    );
+    assert!(matches!(
+        error,
+        RuntimeError::ExecutionBudgetExceeded { .. }
+    ));
+    assert_eq!(ordinary_host_payload(&error), expected_payload);
+    assert_eq!(ordinary_host_payload(&error).code, "TimeoutError");
+    assert_eq!(error.ordinary_catch_projection(), expected_catch_projection);
 }
 
 #[test]
-fn capability_context_stream_producer_fold_boxes_and_preserves_eval_payload() {
-    let stream_error = skiff_runtime_capability_context::StreamRuntimeError::producer(
-        skiff_runtime_eval::error::RuntimeError::Cancelled,
-    );
-    let expected_payload = stream_error.payload();
+fn capability_context_stream_cancel_fold_preserves_terminal_without_projection() {
+    let error = RuntimeError::from(skiff_runtime_capability_context::StreamRuntimeError::Cancelled);
 
-    let error = RuntimeError::from(stream_error);
-
-    assert!(matches!(error, RuntimeError::Opaque(_)));
-    assert_eq!(expected_payload.code, "CancelError");
-    assert_eq!(error.payload(), expected_payload);
-    let RuntimeError::Opaque(boxed) = &error else {
-        unreachable!("stream producer fold should box the local stream error");
-    };
-    assert!(boxed
-        .as_any()
-        .is::<skiff_runtime_capability_context::StreamRuntimeError>());
+    assert!(matches!(error, RuntimeError::Cancelled));
+    assert!(error.is_cancellation_terminal());
+    assert_eq!(error.ordinary_payload(), None);
+    assert_eq!(error.ordinary_catch_projection(), None);
 }
 
 #[test]
 fn capability_context_stream_producer_fold_preserves_host_wire_catch_projection() {
-    let stream_error = skiff_runtime_capability_context::StreamRuntimeError::producer(
-        RuntimeError::Opaque(Box::new(DummyWirePayload)),
-    );
-    let expected_payload = stream_error.payload();
-    let expected_catch_projection = stream_error.catch_projection();
+    let stream_error =
+        skiff_runtime_capability_context::StreamRuntimeError::producer(DummyWirePayload);
+    let expected_payload = stream_error
+        .ordinary_payload()
+        .expect("dummy producer failure is ordinary");
+    let expected_catch_projection = stream_error.ordinary_catch_projection();
 
     let error = RuntimeError::from(stream_error);
 
     assert!(matches!(error, RuntimeError::Opaque(_)));
-    assert_eq!(error.payload(), expected_payload);
-    assert_eq!(
-        WirePayload::catch_projection(&error),
-        expected_catch_projection
-    );
-    assert_eq!(
-        WirePayload::catch_projection(&error),
-        dummy_catch_projection()
-    );
+    assert_eq!(ordinary_host_payload(&error), expected_payload);
+    assert_eq!(error.ordinary_catch_projection(), expected_catch_projection);
+    assert_eq!(error.ordinary_catch_projection(), dummy_catch_projection());
 }
 
 #[test]
@@ -463,12 +470,12 @@ fn capability_context_request_payload_fold_boxes_and_delegates_protocol_projecti
     let error = RuntimeError::from(capability_error);
 
     assert!(matches!(error, RuntimeError::Opaque(_)));
-    assert_eq!(error.payload(), expected_payload);
-    assert_eq!(error.payload().code, "std.service.ProtocolError");
+    assert_eq!(ordinary_host_payload(&error), expected_payload);
     assert_eq!(
-        WirePayload::catch_projection(&error),
-        expected_catch_projection
+        ordinary_host_payload(&error).code,
+        "std.service.ProtocolError"
     );
+    assert_eq!(error.ordinary_catch_projection(), expected_catch_projection);
 }
 
 #[test]
@@ -477,17 +484,16 @@ fn eval_leaf_fold_boxes_and_delegates_payload_and_catch_projection() {
         target: "svc.account".to_string(),
         reason: "no runtime".to_string(),
     };
-    let expected_payload = eval_error.payload();
-    let expected_catch_projection = WirePayload::catch_projection(&eval_error);
+    let expected_payload = eval_error
+        .ordinary_payload()
+        .expect("provider loss is ordinary");
+    let expected_catch_projection = eval_error.ordinary_catch_projection();
 
     let error = RuntimeError::from(eval_error);
 
     assert!(matches!(error, RuntimeError::Opaque(_)));
-    assert_eq!(error.payload(), expected_payload);
-    assert_eq!(
-        WirePayload::catch_projection(&error),
-        expected_catch_projection
-    );
+    assert_eq!(ordinary_host_payload(&error), expected_payload);
+    assert_eq!(error.ordinary_catch_projection(), expected_catch_projection);
 }
 
 #[test]
@@ -513,7 +519,7 @@ fn eval_root_runtime_payload_fold_becomes_external_error_payload() {
             && message == "downstream failed"
             && details == &Some(json!({ "service": "account" }))
     ));
-    assert_eq!(WirePayload::catch_projection(&error), None);
+    assert_eq!(error.ordinary_catch_projection(), None);
 }
 
 #[test]
@@ -530,13 +536,13 @@ fn eval_diagnostic_fold_keeps_host_wrappers_and_delegates_catch_projection() {
 
     assert!(matches!(error, RuntimeError::Diagnosed(_)));
     assert_eq!(
-        WirePayload::catch_projection(&error),
+        error.ordinary_catch_projection(),
         Some((
             PlatformBuiltinErrorIdentity::File.catch_identity(),
             json!({ "message": "std.file not found" }),
         ))
     );
-    let payload = error.payload();
+    let payload = ordinary_host_payload(&error);
     assert_eq!(payload.code, "std.file.FileError");
     let details = payload.details.expect("diagnostic details should exist");
     assert_eq!(details["sourceId"].as_u64(), Some(12));
@@ -546,22 +552,20 @@ fn eval_diagnostic_fold_keeps_host_wrappers_and_delegates_catch_projection() {
 
 #[test]
 fn request_cancel_detection_preserves_carried_capability_cancellation() {
-    assert!(RuntimeError::cancelled().is_request_cancelled());
+    assert!(RuntimeError::cancelled().is_cancellation_terminal());
 
     let eval_error = skiff_runtime_eval::error::RuntimeError::from(
         skiff_runtime_capability_context::ExecutionControlError::Cancelled,
     );
     let error = RuntimeError::from(eval_error);
-    assert!(matches!(error, RuntimeError::Opaque(_)));
-    assert!(error.is_request_cancelled());
+    assert!(matches!(error, RuntimeError::Cancelled));
+    assert!(error.is_cancellation_terminal());
 
     let eval_error = skiff_runtime_eval::error::RuntimeError::from(
-        skiff_runtime_capability_context::StreamRuntimeError::producer(
-            skiff_runtime_capability_context::ExecutionControlError::Cancelled,
-        ),
+        skiff_runtime_capability_context::StreamRuntimeError::Cancelled,
     );
     let error = RuntimeError::from(eval_error);
-    assert!(error.is_request_cancelled());
+    assert!(error.is_cancellation_terminal());
 
     let non_cancel_timeout = RuntimeError::execution_budget_exceeded(
         skiff_runtime_capability_context::ExecutionBudgetFailure {
@@ -571,7 +575,7 @@ fn request_cancel_detection_preserves_carried_capability_cancellation() {
             elapsed_ms: 0.0,
         },
     );
-    assert!(!non_cancel_timeout.is_request_cancelled());
+    assert!(!non_cancel_timeout.is_cancellation_terminal());
 
     let cancel_budget = RuntimeError::execution_budget_exceeded(
         skiff_runtime_capability_context::ExecutionBudgetFailure {
@@ -581,29 +585,19 @@ fn request_cancel_detection_preserves_carried_capability_cancellation() {
             elapsed_ms: 0.0,
         },
     );
-    assert!(cancel_budget.is_request_cancelled());
-    assert!(!RuntimeError::Decode("request was cancelled".to_string()).is_request_cancelled());
+    assert!(cancel_budget.is_cancellation_terminal());
+    assert!(!RuntimeError::Decode("request was cancelled".to_string()).is_cancellation_terminal());
 }
 
 #[test]
 fn request_cancel_detection_preserves_carried_request_and_native_cancellation() {
-    let request_error =
-        RuntimeError::Opaque(Box::new(skiff_runtime_request::RequestError::Cancelled));
-    assert!(request_error.is_request_cancelled());
-
-    let request_timeout = RuntimeError::Opaque(Box::new(
-        skiff_runtime_request::RequestError::ExecutionBudgetExceeded {
-            reason: skiff_runtime_capability_context::ExecutionBudgetReason::Cancelled,
-            instruction_count: 0,
-            limit: None,
-            elapsed_ms: 0.0,
-        },
-    ));
-    assert!(request_timeout.is_request_cancelled());
+    let request_error = skiff_runtime_request::RequestError::Cancelled;
+    assert!(request_error.is_cancellation_terminal());
+    assert_eq!(request_error.ordinary_payload(), None);
 
     let native_error = RuntimeError::from(skiff_runtime_native::error::RuntimeError::Cancelled);
-    assert!(matches!(native_error, RuntimeError::Opaque(_)));
-    assert!(native_error.is_request_cancelled());
+    assert!(matches!(native_error, RuntimeError::Cancelled));
+    assert!(native_error.is_cancellation_terminal());
 
     let native_timeout = RuntimeError::from(
         skiff_runtime_native::error::RuntimeError::ExecutionBudgetExceeded {
@@ -613,41 +607,33 @@ fn request_cancel_detection_preserves_carried_request_and_native_cancellation() 
             elapsed_ms: 0.0,
         },
     );
-    assert!(native_timeout.is_request_cancelled());
+    assert!(native_timeout.is_cancellation_terminal());
 
-    let native_opaque_control =
-        RuntimeError::from(skiff_runtime_native::error::RuntimeError::Opaque(Box::new(
-            skiff_runtime_capability_context::ExecutionControlError::Cancelled,
-        )));
-    assert!(native_opaque_control.is_request_cancelled());
+    let native_opaque_ordinary = RuntimeError::from(
+        skiff_runtime_native::error::RuntimeError::Opaque(Box::new(DummyWirePayload)),
+    );
+    assert!(!native_opaque_ordinary.is_cancellation_terminal());
 }
 
 #[test]
 fn request_cancel_detection_recurses_through_diagnosed_carriers() {
     let request_error =
-        RuntimeError::Opaque(Box::new(skiff_runtime_request::RequestError::Cancelled))
-            .with_diagnostic_frame(json!({ "operation": "request.cancel" }));
+        RuntimeError::Cancelled.with_diagnostic_frame(json!({ "operation": "request.cancel" }));
     assert!(matches!(request_error, RuntimeError::Diagnosed(_)));
-    assert!(request_error.is_request_cancelled());
+    assert!(request_error.is_cancellation_terminal());
 
     let eval_error = skiff_runtime_eval::error::RuntimeError::from(
         skiff_runtime_capability_context::ExecutionControlError::Cancelled,
     );
-    assert!(matches!(
-        eval_error,
-        skiff_runtime_eval::error::RuntimeError::Opaque(_)
-    ));
-    let request_eval_error = RuntimeError::Opaque(Box::new(
-        skiff_runtime_request::RequestError::Eval(eval_error),
-    ))
-    .with_diagnostic_frame(json!({ "operation": "request.eval" }));
+    let request_eval_error = RuntimeError::from(eval_error)
+        .with_diagnostic_frame(json!({ "operation": "request.eval" }));
     assert!(matches!(request_eval_error, RuntimeError::Diagnosed(_)));
-    assert!(request_eval_error.is_request_cancelled());
+    assert!(request_eval_error.is_cancellation_terminal());
 
     let native_error = RuntimeError::from(skiff_runtime_native::error::RuntimeError::Cancelled)
         .with_diagnostic_frame(json!({ "operation": "native.cancel" }));
     assert!(matches!(native_error, RuntimeError::Diagnosed(_)));
-    assert!(native_error.is_request_cancelled());
+    assert!(native_error.is_cancellation_terminal());
 }
 
 #[test]
@@ -659,17 +645,9 @@ fn diagnosed_payload_merges_frames_and_delegates_catch_projection() {
         .with_diagnostic_frame(diagnostic_frame.clone());
 
     assert!(matches!(error, RuntimeError::Diagnosed(_)));
-    assert!(WirePayload::as_any(match &error {
-        RuntimeError::Diagnosed(diagnosed) => diagnosed,
-        _ => unreachable!("diagnosed wrapper should be present"),
-    })
-    .is::<Diagnosed>());
-    assert_eq!(
-        WirePayload::catch_projection(&error),
-        dummy_catch_projection()
-    );
+    assert_eq!(error.ordinary_catch_projection(), dummy_catch_projection());
 
-    let payload = error.payload();
+    let payload = ordinary_host_payload(&error);
     let details = payload.details.expect("diagnostic details should exist");
     assert_eq!(details["delegated"], true);
     assert_eq!(details["sourceId"].as_u64(), Some(12));
@@ -687,7 +665,7 @@ fn source_frame_is_threaded_under_existing_diagnostic_frame() {
         .with_diagnostic_frame(diagnostic_frame.clone())
         .with_source(12, source_frame.clone());
 
-    let payload = error.payload();
+    let payload = ordinary_host_payload(&error);
     let details = payload.details.expect("diagnostic details should exist");
     assert_eq!(details["frames"][0], diagnostic_frame);
     assert_eq!(details["frames"][1], source_frame);
@@ -706,14 +684,15 @@ fn non_opaque_runtime_errors_keep_default_catch_projection() {
     ];
 
     for error in errors {
-        assert_eq!(WirePayload::catch_projection(&error), None);
+        assert_eq!(error.ordinary_catch_projection(), None);
     }
 }
 
 #[test]
 fn std_json_decode_target_payload_uses_fully_qualified_code() {
-    let payload =
-        RuntimeError::decode_target("std.json.decode", "std.json.decode decode failed").payload();
+    let payload = RuntimeError::decode_target("std.json.decode", "std.json.decode decode failed")
+        .ordinary_payload()
+        .expect("decode failure is ordinary");
 
     assert_eq!(payload.code, "std.json.DecodeError");
     assert_eq!(payload.message, "std.json.decode decode failed");
@@ -732,7 +711,8 @@ fn std_json_encode_target_payload_uses_fully_qualified_code() {
         "std.json.encode",
         "std.json.encode input: actor ref is not a JSON value",
     )
-    .payload();
+    .ordinary_payload()
+    .expect("decode failure is ordinary");
 
     assert_eq!(payload.code, "std.json.DecodeError");
     assert_eq!(
@@ -743,8 +723,9 @@ fn std_json_encode_target_payload_uses_fully_qualified_code() {
 
 #[test]
 fn config_decode_target_payload_uses_config_code() {
-    let payload =
-        RuntimeError::decode_target("config.require", "path apiKey must be a string").payload();
+    let payload = RuntimeError::decode_target("config.require", "path apiKey must be a string")
+        .ordinary_payload()
+        .expect("decode failure is ordinary");
 
     assert_eq!(payload.code, "config.DecodeError");
     assert_eq!(payload.message, "path apiKey must be a string");
@@ -756,7 +737,8 @@ fn number_decode_target_payload_uses_std_number_code() {
         "number.assertSafeInteger",
         "number.assertSafeInteger requires a safe integer",
     )
-    .payload();
+    .ordinary_payload()
+    .expect("decode failure is ordinary");
 
     assert_eq!(payload.code, "std.number.DecodeError");
     assert_eq!(
@@ -771,7 +753,8 @@ fn time_decode_target_payload_uses_std_time_code() {
         "Date.requireParse",
         "Date.requireParse requires RFC3339 Date",
     )
-    .payload();
+    .ordinary_payload()
+    .expect("decode failure is ordinary");
 
     assert_eq!(payload.code, "std.time.DecodeError");
     assert_eq!(payload.message, "Date.requireParse requires RFC3339 Date");
@@ -779,8 +762,9 @@ fn time_decode_target_payload_uses_std_time_code() {
 
 #[test]
 fn unknown_decode_target_payload_uses_internal_error_code() {
-    let payload =
-        RuntimeError::decode_target("runtime.config", "path apiKey must be a string").payload();
+    let payload = RuntimeError::decode_target("runtime.config", "path apiKey must be a string")
+        .ordinary_payload()
+        .expect("decode failure is ordinary");
 
     assert_eq!(payload.code, "InternalError");
     assert_eq!(payload.message, "path apiKey must be a string");
@@ -794,7 +778,8 @@ fn std_db_decode_payload_uses_fully_qualified_code() {
             "db value missing key field id",
         ),
     ))
-    .payload();
+    .ordinary_payload()
+    .expect("database decode failure is ordinary");
 
     assert_eq!(payload.code, "std.db.DecodeError");
     assert_eq!(payload.message, "db value missing key field id");
@@ -815,7 +800,8 @@ fn std_bytes_decode_payload_uses_fully_qualified_code() {
             "bytes.toUtf8String decode failed",
         ),
     ))
-    .payload();
+    .ordinary_payload()
+    .expect("bytes decode failure is ordinary");
 
     assert_eq!(payload.code, "std.bytes.DecodeError");
     assert_eq!(payload.message, "bytes.toUtf8String decode failed");
@@ -830,7 +816,9 @@ fn std_bytes_decode_payload_uses_fully_qualified_code() {
 
 #[test]
 fn file_error_payload_uses_fully_qualified_code() {
-    let payload = RuntimeError::file_error("std.file not found: test").payload();
+    let payload = RuntimeError::file_error("std.file not found: test")
+        .ordinary_payload()
+        .expect("file failure is ordinary");
 
     assert_eq!(payload.code, "std.file.FileError");
     assert_eq!(payload.message, "std.file not found: test");
@@ -843,7 +831,8 @@ fn std_http_error_payload_uses_fully_qualified_code() {
         "std.http.request missing url",
         Some(json!({ "field": "url" })),
     )
-    .payload();
+    .ordinary_payload()
+    .expect("HTTP failure is ordinary");
 
     assert_eq!(payload.code, "std.http.HttpError");
     assert_eq!(payload.message, "std.http.request missing url");
@@ -851,10 +840,11 @@ fn std_http_error_payload_uses_fully_qualified_code() {
 }
 
 #[test]
-fn cancel_and_timeout_payload_codes_match_catchable_names() {
-    let cancel = RuntimeError::cancelled().payload();
-    assert_eq!(cancel.code, "CancelError");
-    assert_eq!(cancel.message, "request was cancelled");
+fn cancellation_has_no_projection_but_timeout_remains_ordinary() {
+    let cancel = RuntimeError::cancelled();
+    assert!(cancel.is_cancellation_terminal());
+    assert_eq!(cancel.ordinary_payload(), None);
+    assert_eq!(cancel.ordinary_catch_projection(), None);
 
     let timeout = RuntimeError::execution_budget_exceeded(
         skiff_runtime_capability_context::ExecutionBudgetFailure {
@@ -864,7 +854,8 @@ fn cancel_and_timeout_payload_codes_match_catchable_names() {
             elapsed_ms: 12.5,
         },
     )
-    .payload();
+    .ordinary_payload()
+    .expect("deadline is ordinary");
     assert_eq!(timeout.code, "TimeoutError");
     assert_eq!(timeout.message, "execution deadline exceeded");
 }
@@ -875,14 +866,16 @@ fn service_error_payload_codes_are_fully_qualified() {
         target: "svc.account".to_string(),
         reason: "no runtime".to_string(),
     }
-    .payload();
+    .ordinary_payload()
+    .expect("provider loss is ordinary");
     assert_eq!(provider.code, "std.service.ProviderUnavailableError");
 
     let protocol = RuntimeError::Protocol {
         target: "svc.account".to_string(),
         message: "bad frame".to_string(),
     }
-    .payload();
+    .ordinary_payload()
+    .expect("protocol failure is ordinary");
     assert_eq!(protocol.code, "std.service.ProtocolError");
 }
 
@@ -901,7 +894,8 @@ fn phase6_host_small_root_golden_matrix() {
             status: external_payload.status,
             details: external_payload.details.clone(),
         }
-        .payload(),
+        .ordinary_payload()
+        .expect("external payload is ordinary"),
         external_payload
     );
 
@@ -969,7 +963,7 @@ fn phase6_host_small_root_golden_matrix() {
     ];
 
     for (name, error, expected_code, expected_catch) in cases {
-        assert_wire_case(name, &error, expected_code, expected_catch);
+        assert_host_case(name, &error, expected_code, expected_catch);
     }
 }
 
@@ -982,15 +976,6 @@ fn phase6_cross_crate_error_code_and_catch_golden_matrix() {
                 instruction_count: 42,
                 limit: Some(100),
                 elapsed_ms: 12.5,
-            },
-        );
-    let capability_cancelled_budget =
-        skiff_runtime_capability_context::ExecutionControlError::BudgetExceeded(
-            skiff_runtime_capability_context::ExecutionBudgetFailure {
-                reason: skiff_runtime_capability_context::ExecutionBudgetReason::Cancelled,
-                instruction_count: 0,
-                limit: None,
-                elapsed_ms: 0.0,
             },
         );
     let request_timeout = skiff_runtime_request::RequestError::ExecutionBudgetExceeded {
@@ -1028,30 +1013,52 @@ fn phase6_cross_crate_error_code_and_catch_golden_matrix() {
         ),
     );
 
-    let cases: Vec<(&str, Box<dyn WirePayload>, &str, Option<&str>)> =
-        vec![
+    for terminal in [
+        RuntimeError::from(skiff_runtime_capability_context::ExecutionControlError::Cancelled),
+        RuntimeError::from(
+            skiff_runtime_capability_context::ExecutionControlError::BudgetExceeded(
+                skiff_runtime_capability_context::ExecutionBudgetFailure {
+                    reason: skiff_runtime_capability_context::ExecutionBudgetReason::Cancelled,
+                    instruction_count: 0,
+                    limit: None,
+                    elapsed_ms: 0.0,
+                },
+            ),
+        ),
+        RuntimeError::from(skiff_runtime_capability_context::StreamRuntimeError::Cancelled),
+    ] {
+        assert!(terminal.is_cancellation_terminal());
+        assert_eq!(terminal.ordinary_payload(), None);
+        assert_eq!(terminal.ordinary_catch_projection(), None);
+    }
+    let request_cancelled = skiff_runtime_request::RequestError::Cancelled;
+    assert!(request_cancelled.is_cancellation_terminal());
+    assert_eq!(request_cancelled.ordinary_payload(), None);
+    assert_eq!(request_cancelled.ordinary_catch_projection(), None);
+
+    let cases: Vec<(&str, Box<dyn WirePayload>, &str, Option<&str>)> = vec![
         (
             "capability FileCapabilityError::File",
-            Box::new(skiff_runtime_capability_context::FileCapabilityError::file(
-                "std.file denied",
+            boxed_host_ordinary(RuntimeError::from(
+                skiff_runtime_capability_context::FileCapabilityError::file("std.file denied"),
             )),
             "std.file.FileError",
             Some("std.file.FileError"),
         ),
         (
             "capability FileCapabilityError::ProviderUnavailable",
-            Box::new(
+            boxed_host_ordinary(RuntimeError::from(
                 skiff_runtime_capability_context::FileCapabilityError::provider_unavailable(
                     "svc.account",
                     "no runtime",
                 ),
-            ),
+            )),
             "std.service.ProviderUnavailableError",
             Some("std.service.ProviderUnavailableError"),
         ),
         (
             "capability FileCapabilityError::ResourceLimitExceeded",
-            Box::new(
+            boxed_host_ordinary(RuntimeError::from(
                 skiff_runtime_capability_context::FileCapabilityError::resource_limit_exceeded(
                     "std.file",
                     "too large",
@@ -1059,46 +1066,30 @@ fn phase6_cross_crate_error_code_and_catch_golden_matrix() {
                     8,
                     4,
                 ),
-            ),
+            )),
             "ResourceLimitExceeded",
             None,
         ),
         (
             "capability FileCapabilityError::Decode",
-            Box::new(skiff_runtime_capability_context::FileCapabilityError::decode(
-                "invalid file payload",
+            boxed_host_ordinary(RuntimeError::from(
+                skiff_runtime_capability_context::FileCapabilityError::decode(
+                    "invalid file payload",
+                ),
             )),
             "InternalError",
             None,
         ),
         (
-            "capability ExecutionControlError::Cancelled",
-            Box::new(skiff_runtime_capability_context::ExecutionControlError::Cancelled),
-            "CancelError",
-            Some("CancelError"),
-        ),
-        (
             "capability ExecutionControlError::BudgetExceeded(deadline)",
-            Box::new(capability_deadline),
+            boxed_host_ordinary(RuntimeError::from(capability_deadline)),
             "TimeoutError",
             Some("TimeoutError"),
         ),
         (
-            "capability ExecutionControlError::BudgetExceeded(cancelled)",
-            Box::new(capability_cancelled_budget),
-            "CancelError",
-            Some("CancelError"),
-        ),
-        (
-            "capability StreamRuntimeError::Cancelled",
-            Box::new(skiff_runtime_capability_context::StreamRuntimeError::cancelled()),
-            "CancelError",
-            Some("CancelError"),
-        ),
-        (
             "capability StreamRuntimeError::Producer",
-            Box::new(skiff_runtime_capability_context::StreamRuntimeError::producer(
-                DummyWirePayload,
+            boxed_host_ordinary(RuntimeError::from(
+                skiff_runtime_capability_context::StreamRuntimeError::producer(DummyWirePayload),
             )),
             "test.OpaqueWireError",
             Some("std.service.ProtocolError"),
@@ -1254,69 +1245,79 @@ fn phase6_cross_crate_error_code_and_catch_golden_matrix() {
         ),
         (
             "native DecodeTarget",
-            Box::new(skiff_runtime_native::error::RuntimeError::decode_target(
-                "std.json.decode",
-                "bad json",
+            boxed_host_ordinary(RuntimeError::from(
+                skiff_runtime_native::error::RuntimeError::decode_target(
+                    "std.json.decode",
+                    "bad json",
+                ),
             )),
             "std.json.DecodeError",
             Some("std.json.DecodeError"),
         ),
         (
             "native Opaque",
-            Box::new(skiff_runtime_native::error::RuntimeError::Opaque(Box::new(
-                DummyWirePayload,
-            ))),
+            boxed_host_ordinary(RuntimeError::from(
+                skiff_runtime_native::error::RuntimeError::Opaque(Box::new(DummyWirePayload)),
+            )),
             "test.OpaqueWireError",
             Some("std.service.ProtocolError"),
         ),
         (
             "eval UserException",
-            Box::new(eval_user_exception),
+            boxed_host_ordinary(RuntimeError::from(eval_user_exception)),
             "UnhandledServiceError",
             None,
         ),
         (
             "eval RootRuntimePayload",
-            Box::new(eval_root_payload),
+            boxed_host_ordinary(RuntimeError::from(eval_root_payload)),
             "DownstreamError",
             None,
         ),
         (
             "request Protocol",
-            Box::new(skiff_runtime_request::RequestError::protocol(
-                "svc.account",
-                "bad frame",
-            )),
+            Box::new(
+                skiff_runtime_request::OrdinaryRequestError::try_new(
+                    skiff_runtime_request::RequestError::protocol("svc.account", "bad frame"),
+                )
+                .expect("protocol failure is ordinary"),
+            ),
             "std.service.ProtocolError",
             Some("std.service.ProtocolError"),
         ),
         (
-            "request Cancelled",
-            Box::new(skiff_runtime_request::RequestError::Cancelled),
-            "CancelError",
-            Some("CancelError"),
-        ),
-        (
             "request ExecutionBudgetExceeded",
-            Box::new(request_timeout),
+            Box::new(
+                skiff_runtime_request::OrdinaryRequestError::try_new(request_timeout)
+                    .expect("deadline is ordinary"),
+            ),
             "TimeoutError",
             Some("TimeoutError"),
         ),
         (
             "request ExternalErrorPayload",
-            Box::new(request_external),
+            Box::new(
+                skiff_runtime_request::OrdinaryRequestError::try_new(request_external)
+                    .expect("external failure is ordinary"),
+            ),
             "DownstreamError",
             None,
         ),
         (
             "request Eval delegation",
-            Box::new(request_eval),
+            Box::new(
+                skiff_runtime_request::OrdinaryRequestError::try_new(request_eval)
+                    .expect("file failure is ordinary"),
+            ),
             "std.file.FileError",
             Some("std.file.FileError"),
         ),
         (
             "request Boundary delegation",
-            Box::new(request_boundary),
+            Box::new(
+                skiff_runtime_request::OrdinaryRequestError::try_new(request_boundary)
+                    .expect("HTTP failure is ordinary"),
+            ),
             "std.http.HttpError",
             Some("std.http.HttpError"),
         ),
@@ -1350,7 +1351,8 @@ fn recoverable_payload_uses_boundary_details_contract() {
     let payload = RuntimeError::from(skiff_runtime_boundary::error::RuntimeError::Recoverable(
         error,
     ))
-    .payload();
+    .ordinary_payload()
+    .expect("recoverable boundary failure is ordinary");
 
     assert_eq!(payload.code, "recoverableUnsupportedDecode");
     assert_eq!(payload.status, None);
@@ -1435,7 +1437,7 @@ fn user_exception_payload_redacts_local_value_and_exposes_only_correlation() {
     let eval_error = skiff_runtime_eval::error::RuntimeError::UserException(exception);
     let error = RuntimeError::from(eval_error);
 
-    let payload = error.payload();
+    let payload = ordinary_host_payload(&error);
 
     assert_eq!(payload.code, "UnhandledServiceError");
     assert_eq!(payload.message, "unhandled request-local user exception");
@@ -1448,7 +1450,7 @@ fn user_exception_payload_redacts_local_value_and_exposes_only_correlation() {
     );
     assert!(!payload.message.contains("private assertion detail"));
     assert!(!payload.message.contains("service:file"));
-    assert_eq!(WirePayload::catch_projection(&error), None);
+    assert_eq!(error.ordinary_catch_projection(), None);
 }
 
 #[test]

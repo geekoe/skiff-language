@@ -281,7 +281,7 @@ async fn request_canceled_before_call_returns_cancelled() {
     )
     .await
     .expect_err("cancelled request should fail");
-    assert!(error.is_request_cancelled());
+    assert!(error.is_cancellation_terminal());
 }
 
 #[tokio::test]
@@ -299,7 +299,7 @@ async fn request_cancellation_token_before_call_returns_cancelled() {
     )
     .await
     .expect_err("cancelled request should fail");
-    assert!(error.is_request_cancelled());
+    assert!(error.is_cancellation_terminal());
 }
 
 #[tokio::test]
@@ -326,7 +326,7 @@ async fn request_canceled_while_waiting_for_send_returns_cancelled() {
         .await
         .expect_err("send-cancelled request should fail");
     cancel_task.await.expect("cancel timer should finish");
-    assert!(error.is_request_cancelled());
+    assert!(error.is_cancellation_terminal());
 
     handle.await.expect("server should complete");
 }
@@ -355,7 +355,7 @@ async fn request_canceled_while_waiting_for_body_returns_cancelled() {
         .await
         .expect("request task should resolve")
         .expect_err("body-cancelled request should fail");
-    assert!(error.is_request_cancelled());
+    assert!(error.is_cancellation_terminal());
 
     handle.await.expect("server should complete");
 }

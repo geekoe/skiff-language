@@ -202,7 +202,9 @@ impl RuntimeHost {
     }
 
     pub(crate) fn emit_request_route_error(&self, request: &RequestEnvelope, error: &RuntimeError) {
-        let response_error = response_error_from_runtime_error(error);
+        let Some(response_error) = response_error_from_runtime_error(error) else {
+            return;
+        };
         let mut event = telemetry_event(
             TelemetryTopic::Trace,
             telemetry_timestamp_now(),

@@ -20,14 +20,16 @@ use skiff_runtime_host::{
 use skiff_runtime_model::service_error::{
     ErrorCorrelation, ExceptionStackFrame, OpaqueServiceError,
 };
-use skiff_runtime_request::{OutboundResponse, RequestError, ResponseEvent};
+use skiff_runtime_request::{OutboundResponse, RequestError};
 use skiff_runtime_transport::{
     protocol::{
         decode_response_error_frame, encode_binary_frame, ResponseErrorFrameHeader,
         RuntimeErrorFramePayload, TelemetryEvent, TelemetrySource, TelemetryTopic,
         TelemetryVisibility, ValidatedResponseErrorFrame,
     },
-    response_mapper::{response_error_to_outbound, response_event_into_frame},
+    response_mapper::{
+        response_error_to_outbound, response_event_into_frame, OrdinaryResponseEvent,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -323,7 +325,7 @@ fn request_to_wire_and_reverse_session_seam_preserve_three_fixed_payloads() {
         let encoded = encoded.to_vec();
         let fixed = OpaqueServiceError::decode(encoded.clone()).expect("fixed fixture");
         let request_error = RequestError::Eval(EvalRuntimeError::FixedServiceFailure(fixed));
-        let event = ResponseEvent::FixedServiceFailure(
+        let event = OrdinaryResponseEvent::FixedServiceFailure(
             request_error
                 .fixed_service_response_failure()
                 .expect("request typed extraction"),
@@ -357,7 +359,8 @@ fn matching_generic_control_stays_generic_and_payload_rules_fail_closed() {
     assert!(request_error.fixed_service_failure().is_none());
     let frame = response_event_into_frame(
         "request-control".to_string(),
-        ResponseEvent::Error(request_error.response_error()),
+        OrdinaryResponseEvent::try_error(&request_error)
+            .expect("generic control failure is ordinary"),
     )
     .expect("generic control frame");
     let (header, validated) = decode_response_error_frame(&frame).expect("control decode");

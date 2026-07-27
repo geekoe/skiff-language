@@ -14,7 +14,7 @@ use crate::{
         TARGET_STD_HTTP_REQUEST, TARGET_STD_HTTP_SSE, TARGET_STD_HTTP_STREAM,
     },
     config_view::{from_wire_json_plan, materialize_internal_json, materialize_json},
-    error::{Result, RuntimeError},
+    error::{OrdinaryRuntimeError, Result, RuntimeError},
     host::http_runtime::{
         open_body_stream_with_cancellation_and_options, open_sse_with_cancellation_and_options,
         request_with_cancellation_and_options, HttpBodyStream, HttpEventStream,
@@ -210,13 +210,13 @@ impl StreamPullSource for HttpBodyPullSource {
                 .stream
                 .next_body_chunk()
                 .await
-                .map_err(StreamRuntimeError::producer)?
+                .map_err(runtime_error_into_stream)?
             else {
                 return Ok(None);
             };
             from_wire_json_plan(chunk, Some(&self.expected_item_type))
                 .and_then(materialize_internal_json)
-                .map_err(StreamRuntimeError::producer)
+                .map_err(runtime_error_into_stream)
                 .map(Some)
         })
     }
@@ -240,14 +240,25 @@ impl StreamPullSource for HttpEventPullSource {
                 .stream
                 .next_event()
                 .await
-                .map_err(StreamRuntimeError::producer)?
+                .map_err(runtime_error_into_stream)?
             else {
                 return Ok(None);
             };
             from_wire_json_plan(event, Some(&self.expected_item_type))
                 .and_then(materialize_internal_json)
-                .map_err(StreamRuntimeError::producer)
+                .map_err(runtime_error_into_stream)
                 .map(Some)
         })
+    }
+}
+
+fn runtime_error_into_stream(error: RuntimeError) -> StreamRuntimeError {
+    if error.is_cancellation_terminal() {
+        StreamRuntimeError::Cancelled
+    } else {
+        StreamRuntimeError::producer(
+            OrdinaryRuntimeError::try_new(error)
+                .expect("HTTP stream cancellation was split before producer trait erasure"),
+        )
     }
 }

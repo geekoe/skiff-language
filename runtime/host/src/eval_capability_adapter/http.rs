@@ -20,10 +20,7 @@ impl capability_contract::HttpClientCapabilityApi for RuntimeHttpClientCapabilit
         input: &'a Value,
     ) -> capability_contract::HttpCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            self.0
-                .dispatch_http_request(input)
-                .await
-                .map_err(capability_contract::CapabilityError::opaque)
+            root_result_into_capability(self.0.dispatch_http_request(input).await).await
         })
     }
 
@@ -33,10 +30,12 @@ impl capability_contract::HttpClientCapabilityApi for RuntimeHttpClientCapabilit
         expected_body_item_type: Option<&'a RuntimeTypePlan>,
     ) -> capability_contract::HttpCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            self.0
-                .dispatch_http_stream(input, expected_body_item_type)
-                .await
-                .map_err(capability_contract::CapabilityError::opaque)
+            root_result_into_capability(
+                self.0
+                    .dispatch_http_stream(input, expected_body_item_type)
+                    .await,
+            )
+            .await
         })
     }
 
@@ -46,10 +45,8 @@ impl capability_contract::HttpClientCapabilityApi for RuntimeHttpClientCapabilit
         expected_item_type: Option<&'a RuntimeTypePlan>,
     ) -> capability_contract::HttpCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            self.0
-                .dispatch_http_sse(input, expected_item_type)
+            root_result_into_capability(self.0.dispatch_http_sse(input, expected_item_type).await)
                 .await
-                .map_err(capability_contract::CapabilityError::opaque)
         })
     }
 }
@@ -67,7 +64,7 @@ impl capability_contract::TelemetryCapabilityApi for RuntimeTelemetryCapabilityC
     ) -> capability_contract::CapabilityResult<Value> {
         self.0
             .emit_native(target, args)
-            .map_err(capability_contract::CapabilityError::opaque)
+            .map_err(ordinary_root_error_into_capability)
     }
 }
 

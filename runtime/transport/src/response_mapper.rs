@@ -1,6 +1,6 @@
 use skiff_runtime_request_contract::{
-    HttpNameValue, HttpResponseMetadata, OutboundResponse, ResponseEnd, ResponseError,
-    ResponseEvent, ResponseStreamEvent,
+    FixedServiceResponseFailure, HttpNameValue, HttpResponseMetadata, OutboundResponse,
+    ResponseEnd, ResponseError, ResponseEvent, ResponseStreamEvent,
 };
 
 use crate::{
@@ -32,12 +32,51 @@ pub fn runtime_assembly_websocket_connect_response_into_frame(
     )
 }
 
+/// Source contract for an error that has already excluded cancellation.
+///
+/// The transport mapper accepts ordinary failures only through this projection;
+/// a cancellation terminal returns `None` and therefore cannot be represented by
+/// [`OrdinaryResponseEvent`].
+pub trait OrdinaryResponseErrorSource {
+    fn ordinary_response_error(&self) -> Option<ResponseError>;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OrdinaryResponseEvent {
+    End(ResponseEnd),
+    FixedServiceFailure(FixedServiceResponseFailure),
+    Error(ResponseError),
+}
+
+impl OrdinaryResponseEvent {
+    pub fn try_from_non_error(event: ResponseEvent) -> TransportResult<Self> {
+        match event {
+            ResponseEvent::End(end) => Ok(Self::End(end)),
+            ResponseEvent::FixedServiceFailure(failure) => Ok(Self::FixedServiceFailure(failure)),
+            ResponseEvent::Error(_) => Err(crate::TransportError::decode(
+                "response.error requires an ordinary error source",
+            )),
+        }
+    }
+
+    pub fn try_error(source: &(impl OrdinaryResponseErrorSource + ?Sized)) -> Option<Self> {
+        source.ordinary_response_error().map(Self::Error)
+    }
+
+    pub fn response_error(&self) -> Option<&ResponseError> {
+        match self {
+            Self::Error(error) => Some(error),
+            Self::End(_) | Self::FixedServiceFailure(_) => None,
+        }
+    }
+}
+
 pub fn response_event_into_frame(
     request_id: String,
-    event: ResponseEvent,
+    event: OrdinaryResponseEvent,
 ) -> TransportResult<Vec<u8>> {
     match event {
-        ResponseEvent::End(end) => {
+        OrdinaryResponseEvent::End(end) => {
             let (payload, payload_present, metadata, phase) = response_end_frame_parts(end);
             let header = ResponseEndFrameHeader {
                 schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -49,13 +88,13 @@ pub fn response_event_into_frame(
             validate_response_end_frame(&header, &payload, phase)?;
             encode_response_frame(&header, &payload)
         }
-        ResponseEvent::FixedServiceFailure(failure) => {
+        OrdinaryResponseEvent::FixedServiceFailure(failure) => {
             let payload = failure.into_error().into_encoded_bytes();
             let header = ResponseErrorFrameHeader::fixed_service(request_id);
             validate_response_error_frame(&header, payload.clone())?;
             encode_response_frame(&header, &payload)
         }
-        ResponseEvent::Error(error) => {
+        OrdinaryResponseEvent::Error(error) => {
             let header = ResponseErrorFrameHeader::control(
                 request_id,
                 RuntimeErrorFramePayload {
