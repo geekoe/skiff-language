@@ -42,6 +42,7 @@ use skiff_runtime_request::{
 
 mod actor;
 mod actor_method_adapter;
+mod assembly_execution_context;
 mod assembly_request_adapter;
 mod config;
 mod downcast;
@@ -78,9 +79,11 @@ use websocket::{
     RuntimeWebsocketRequestCapabilityContext,
 };
 
+pub(crate) use assembly_execution_context::RuntimeAssemblyEvalAdapterContextInput;
 pub(crate) use assembly_request_adapter::{
-    http_gateway_eval_adapter, websocket_connect_eval_adapter, RuntimeHttpGatewayEvalAdapterInput,
-    RuntimeWebSocketConnectEvalAdapterInput,
+    http_gateway_eval_adapter, websocket_connect_eval_adapter, websocket_jsonrpc_eval_adapter,
+    RuntimeHttpGatewayEvalAdapterInput, RuntimeWebSocketConnectEvalAdapterInput,
+    RuntimeWebSocketJsonRpcEvalAdapterInput,
 };
 pub(crate) use error::root_error_into_eval;
 pub(crate) use factory::actor_from_request;

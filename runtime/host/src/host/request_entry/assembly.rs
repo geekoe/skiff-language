@@ -491,7 +491,7 @@ impl RuntimeHost {
         }
     }
 
-    fn send_http_gateway_admission_error(
+    pub(super) fn send_http_gateway_admission_error(
         &self,
         request_id: &str,
         error: impl std::fmt::Display,
@@ -520,29 +520,14 @@ impl RuntimeHost {
         let telemetry = self.http_gateway_telemetry_context(header, route);
         let eval_adapter = crate::eval_capability_adapter::http_gateway_eval_adapter(
             crate::eval_capability_adapter::RuntimeHttpGatewayEvalAdapterInput {
-                runtime_id: self.base_runtime_id.clone(),
-                activation: Arc::clone(route.activation()),
-                execution_image: Arc::clone(route.execution_image()),
+                context: self.runtime_assembly_eval_adapter_context(
+                    route,
+                    telemetry,
+                    sender,
+                    router_session_id,
+                    http_response_max_bytes,
+                )?,
                 header: header.clone(),
-                gateway_entry_key: route.gateway_entry_key().as_str().to_string(),
-                service_protocol_identity: route.service_protocol_identity().as_str().to_string(),
-                ingress_selector: route.selector().clone(),
-                db_source: route
-                    .db_source()
-                    .map_err(|error| RuntimeError::Decode(error.to_string()))?,
-                file_source: crate::capability_context::FileCapabilitySource::new(
-                    self.file_runtime(),
-                ),
-                http_options: self.http_runtime_options.clone(),
-                outbound_requests: Arc::clone(&self.outbound_requests),
-                actor_method_outbound: Arc::clone(&self.actor_method_outbound),
-                spawn_workers: Arc::clone(&self.spawn_workers),
-                telemetry_context: Some(telemetry),
-                router_sender: Some(sender.clone()),
-                connection_requests: Arc::clone(&self.connection_requests),
-                router_session: ConnectionRequestSession::new(router_session_id.to_string())
-                    .map_err(RuntimeError::Decode)?,
-                http_response_max_bytes,
             },
         )
         .map_err(|error| RuntimeError::Decode(error.to_string()))?;
@@ -623,10 +608,36 @@ impl RuntimeHost {
         let telemetry = self.websocket_connect_telemetry_context(header, route);
         let eval_adapter = crate::eval_capability_adapter::websocket_connect_eval_adapter(
             crate::eval_capability_adapter::RuntimeWebSocketConnectEvalAdapterInput {
+                context: self.runtime_assembly_eval_adapter_context(
+                    route,
+                    telemetry,
+                    sender,
+                    router_session_id,
+                    http_response_max_bytes,
+                )?,
+                header: header.clone(),
+            },
+        )
+        .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+        Ok(request_runner::RuntimeWebSocketConnectExecutionHandles {
+            request_heap_limits: self.request_heap_limits(),
+            eval_adapter,
+        })
+    }
+
+    pub(super) fn runtime_assembly_eval_adapter_context(
+        &self,
+        route: &ActiveAssemblyRoute,
+        telemetry: RequestTelemetryContext,
+        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+        router_session_id: &str,
+        http_response_max_bytes: usize,
+    ) -> Result<crate::eval_capability_adapter::RuntimeAssemblyEvalAdapterContextInput> {
+        Ok(
+            crate::eval_capability_adapter::RuntimeAssemblyEvalAdapterContextInput {
                 runtime_id: self.base_runtime_id.clone(),
                 activation: Arc::clone(route.activation()),
                 execution_image: Arc::clone(route.execution_image()),
-                header: header.clone(),
                 gateway_entry_key: route.gateway_entry_key().as_str().to_string(),
                 service_protocol_identity: route.service_protocol_identity().as_str().to_string(),
                 ingress_selector: route.selector().clone(),
@@ -648,11 +659,6 @@ impl RuntimeHost {
                 http_response_max_bytes,
             },
         )
-        .map_err(|error| RuntimeError::Decode(error.to_string()))?;
-        Ok(request_runner::RuntimeWebSocketConnectExecutionHandles {
-            request_heap_limits: self.request_heap_limits(),
-            eval_adapter,
-        })
     }
 
     fn websocket_connect_telemetry_context(

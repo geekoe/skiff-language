@@ -72,6 +72,7 @@ async fn connection_request_response_demux_uses_exact_router_session() {
 
 mod runtime_assembly_request;
 mod websocket_generation_lifecycle;
+mod websocket_jsonrpc_dispatch;
 
 #[derive(Clone)]
 struct TestDbCapabilityFactory;

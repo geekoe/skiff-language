@@ -2,8 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use serde_json::json;
 use skiff_artifact_model::{
-    AssemblyIdentity, GatewayDispatchMode, GatewayEntryIdentity, GatewayProtocolSurface,
-    IngressProtocol,
+    AssemblyIdentity, GatewayDispatchMode, GatewayProtocolSurface, IngressProtocol,
 };
 use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::{
@@ -88,8 +87,7 @@ async fn host_http_gateway_exact_route_identity_generation_mode_and_http_metadat
 
     let mut wrong_gateway_identity = exact.clone();
     wrong_gateway_identity.routing.gateway_entry_identity =
-        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v1:sha256:{}", "f".repeat(64)))
-            .unwrap();
+        routes["/raw"].gateway_entry_identity().clone();
     cases.push(("gateway-identity", wrong_gateway_identity));
 
     let mut wrong_mode = exact.clone();

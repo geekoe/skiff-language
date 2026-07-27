@@ -134,13 +134,16 @@ pub(crate) async fn admitted_path_only_websocket_gateway_host() -> (RuntimeHost,
     (host, physical)
 }
 
-pub(crate) async fn reloaded_websocket_gateway_host() -> (
-    RuntimeHost,
-    ActiveAssemblyRoute,
-    ActiveAssemblyRoute,
-    ActiveAssemblyRoute,
-    ActiveAssemblyRoute,
-) {
+pub(crate) struct ReloadedWebSocketGatewayHost {
+    pub(crate) host: RuntimeHost,
+    pub(crate) physical_a: ActiveAssemblyRoute,
+    pub(crate) method_a: ActiveAssemblyRoute,
+    pub(crate) methods_a: HashMap<String, ActiveAssemblyRoute>,
+    pub(crate) physical_b: ActiveAssemblyRoute,
+    pub(crate) method_b: ActiveAssemblyRoute,
+}
+
+pub(crate) async fn reloaded_websocket_gateway_host() -> ReloadedWebSocketGatewayHost {
     let fixture_a = pinned_route_fixture(false);
     let fixture_b = pinned_route_fixture(true);
     let resolver_a = fixture_a.resolver();
@@ -171,6 +174,7 @@ pub(crate) async fn reloaded_websocket_gateway_host() -> (
     let method_a = host
         .lookup_active_assembly_request_route(&method_selector_a)
         .expect("generation one WebSocket method route");
+    let methods_a = websocket_method_routes(&host, &fixture_a.assembly);
     host.assembly_admission
         .recover_committed(
             "pinned-route",
@@ -187,7 +191,14 @@ pub(crate) async fn reloaded_websocket_gateway_host() -> (
     let method_b = host
         .lookup_active_assembly_request_route(&method_selector_b)
         .expect("generation two WebSocket method route");
-    (host, physical_a, method_a, physical_b, method_b)
+    ReloadedWebSocketGatewayHost {
+        host,
+        physical_a,
+        method_a,
+        methods_a,
+        physical_b,
+        method_b,
+    }
 }
 
 #[derive(Clone, Default)]
@@ -285,6 +296,23 @@ fn websocket_selectors(
         .selector
         .clone();
     (physical, method)
+}
+
+fn websocket_method_routes(
+    host: &RuntimeHost,
+    assembly: &RuntimeAssembly,
+) -> HashMap<String, ActiveAssemblyRoute> {
+    assembly
+        .gateway_ingress
+        .iter()
+        .filter_map(|binding| {
+            let method = binding.selector.method.clone()?;
+            let route = host
+                .lookup_active_assembly_request_route(&binding.selector)
+                .expect("compiled WebSocket JSON-RPC route");
+            Some((method, route))
+        })
+        .collect()
 }
 
 struct CompiledGatewayFixture {
@@ -792,6 +820,52 @@ jsonRpc:
     adapterArgs:
       - param: params
         source: { kind: websocket.jsonRpcParams }
+  record:
+    method: result.record
+    handler: main.websocketRecord
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+  array:
+    method: params.array
+    handler: main.websocketArray
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+  void:
+    method: result.void
+    handler: main.websocketVoid
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+  expectedFailure:
+    method: result.expectedFailure
+    handler: main.websocketExpectedFailure
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+  throws:
+    method: result.throw
+    handler: main.websocketThrow
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+  rpcSlow:
+    method: result.slow
+    handler: main.websocketSlow
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+  identity:
+    method: identity.read
+    handler: main.websocketIdentity
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+      - param: connectionId
+        source: { kind: websocket.connectionId }
+      - param: businessIdentity
+        source: { kind: websocket.businessIdentity }
 "#
     } else {
         "path: /socket\n"
@@ -819,10 +893,15 @@ jsonRpc:
     } else {
         ""
     };
+    let websocket_generation_source = if replacement {
+        "\nfunction websocketGenerationResult() -> string {\n  return \"new\"\n}\n"
+    } else {
+        "\nfunction websocketGenerationResult() -> string {\n  return \"old\"\n}\n"
+    };
     fs::write(
         root.join("main.skiff"),
         format!(
-            "{}{}{}",
+            "{}{}{}{}",
             r#"import std
 
 function health() -> string {
@@ -830,10 +909,57 @@ function health() -> string {
 }
 
 type WebSocketStatusParams { value: string }
-type WebSocketStatusResult { accepted: boolean }
+type WebSocketRecordResult { value: string, accepted: boolean }
+type WebSocketIdentityParams { connectionId: string, businessIdentity: string }
+type WebSocketIdentityResult {
+  connectionId: string,
+  businessIdentity: string?,
+  peerConnectionId: string,
+  peerBusinessIdentity: string,
+}
+type WebSocketResultUnion discriminator "tag" =
+  { tag: "ok", value: string }
+  | { tag: "expectedFailure", reason: string }
+type WebSocketPrivateFailure { message: string }
 
-function websocketStatus(params: WebSocketStatusParams) -> WebSocketStatusResult {
-  return { accepted: true }
+function websocketStatus(params: WebSocketStatusParams) -> string {
+  return websocketGenerationResult()
+}
+
+function websocketRecord(params: WebSocketStatusParams) -> WebSocketRecordResult {
+  return { value: params.value, accepted: true }
+}
+
+function websocketArray(params: Array<string>) -> Array<string> {
+  return params
+}
+
+function websocketVoid(params: WebSocketStatusParams) -> void {}
+
+function websocketExpectedFailure(params: WebSocketStatusParams) -> WebSocketResultUnion {
+  return { tag: "expectedFailure", reason: params.value }
+}
+
+function websocketThrow(params: WebSocketStatusParams) -> string {
+  throw WebSocketPrivateFailure { message: "private-websocket-jsonrpc-secret" }
+}
+
+function websocketSlow(params: WebSocketStatusParams) -> string {
+  std.time.sleep(Duration.milliseconds(200))
+  return params.value
+}
+
+function websocketIdentity(
+  params: WebSocketIdentityParams,
+  connectionId: string,
+  businessIdentity: string?
+) -> WebSocketIdentityResult {
+  return {
+    connectionId: connectionId,
+    businessIdentity: businessIdentity,
+    peerConnectionId: params.connectionId,
+    peerBusinessIdentity: params.businessIdentity,
+  }
 }
 
 function typed(body: string) -> string {
@@ -860,6 +986,7 @@ function slow(body: string) -> string {
   return body
 }
 "#,
+            websocket_generation_source,
             database_source,
             replacement_source,
         ),

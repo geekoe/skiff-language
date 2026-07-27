@@ -13,6 +13,7 @@ use super::RuntimeHost;
 
 mod assembly;
 mod assembly_wire;
+mod websocket_jsonrpc;
 
 impl RuntimeHost {
     /// Resolves a canonical ingress only from one immutable active assembly generation.

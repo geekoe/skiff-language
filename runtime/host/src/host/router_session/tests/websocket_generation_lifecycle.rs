@@ -3,6 +3,7 @@ use skiff_runtime_transport::{
     protocol::{encode_binary_frame, RUNTIME_FRAME_SCHEMA_VERSION},
     runtime_assembly_request::{
         decode_runtime_assembly_websocket_connect_response_end_frame,
+        decode_runtime_assembly_websocket_jsonrpc_response_end_frame,
         RuntimeAssemblyRequestCallerFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
         RuntimeAssemblyWebSocketConnectIngressFrameHeader,
         RuntimeAssemblyWebSocketConnectIngressProtocol,
@@ -10,6 +11,11 @@ use skiff_runtime_transport::{
         RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
         RuntimeAssemblyWebSocketConnectResponseFrameHeader,
         RuntimeAssemblyWebSocketConnectRoutingFrameHeader,
+        RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader, RuntimeAssemblyWebSocketJsonRpcProfile,
+        RuntimeAssemblyWebSocketJsonRpcRequestFrameHeader,
+        RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+        RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
+        RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader,
     },
     websocket_generation_lifecycle::{
         decode_websocket_generation_lifecycle_frame, encode_websocket_generation_lifecycle_frame,
@@ -316,6 +322,102 @@ mod websocket_jsonrpc_target {
         ));
         assert_eq!(host.websocket_generations.pin_count().unwrap(), 0);
     }
+
+    #[tokio::test]
+    async fn websocket_jsonrpc_host_dispatches_pinned_method_instead_of_unsupported() {
+        let fixture::ReloadedWebSocketGatewayHost {
+            host,
+            physical_a,
+            method_a,
+            physical_b,
+            method_b,
+            ..
+        } = fixture::reloaded_websocket_gateway_host().await;
+        host.websocket_generations.connect(ROUTER_SESSION).unwrap();
+        let websocket_entry_id = websocket_entry_id(&physical_a);
+        acquire_generation(
+            &host,
+            &physical_a,
+            &websocket_entry_id,
+            "host-dispatch-old-connection",
+        );
+
+        assert_eq!(physical_b.generation(), 2);
+        assert!(!Arc::ptr_eq(
+            method_a.execution_image(),
+            method_b.execution_image()
+        ));
+
+        let selector = method_a.selector();
+        let header = RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            frame_type: "request.start".to_string(),
+            request_id: "host-websocket-jsonrpc-pinned-dispatch".to_string(),
+            mode: "unary".to_string(),
+            caller: RuntimeAssemblyRequestCallerFrameHeader {
+                kind: "gateway".to_string(),
+            },
+            routing: RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader {
+                kind: "runtimeAssembly".to_string(),
+                assembly_identity: physical_a.assembly_identity().clone(),
+                assembly_generation: physical_a.generation(),
+                gateway_entry_identity: method_a.gateway_entry_identity().clone(),
+                ingress: RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
+                    protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
+                    host: selector.host.clone(),
+                    method: selector.method.clone().expect("JSON-RPC method"),
+                    path: selector.path.clone(),
+                },
+            },
+            client_session: None,
+            deadline: None,
+            trace: RuntimeAssemblyRequestTraceFrameHeader {
+                trace_id: "trace-host-websocket-jsonrpc-pinned-dispatch".to_string(),
+                span_id: "span-host-websocket-jsonrpc".to_string(),
+                parent_span_id: None,
+                sampled: None,
+            },
+            websocket_json_rpc: RuntimeAssemblyWebSocketJsonRpcRequestFrameHeader {
+                profile: RuntimeAssemblyWebSocketJsonRpcProfile::JsonRpc2_0Text,
+                connection_id: "host-dispatch-old-connection".to_string(),
+                websocket_entry_id,
+                gateway_entry_identity: method_a.gateway_entry_identity().clone(),
+                business_identity: Some("trusted-business".to_string()),
+            },
+            test_effects_enabled: false,
+        };
+        let frame = encode_binary_frame(&header, br#"{"value":"old"}"#).unwrap();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let mut control = None;
+        let mut fingerprint = None;
+        super::super::super::dispatch_router_binary_frame(
+            &host,
+            &frame,
+            &sender,
+            &mut control,
+            &mut fingerprint,
+        )
+        .await
+        .expect("strict JSON-RPC request should enter Host dispatch");
+
+        let RouterWriterMessage::Binary(response) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), receiver.recv())
+                .await
+                .expect("Host dispatch response timeout")
+                .expect("Host response channel")
+        else {
+            panic!("Host JSON-RPC response must use the binary wire")
+        };
+        let (response, payload) =
+            decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&response)
+                .expect("Host must emit typed websocketJsonRpc response.end");
+        assert_eq!(
+            response.websocket_json_rpc.outcome,
+            RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success
+        );
+        assert_eq!(payload, br#""old""#);
+        assert!(receiver.try_recv().is_err());
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -549,8 +651,14 @@ fn assert_websocket_jsonrpc_targets_equivalent(
 
 #[tokio::test]
 async fn websocket_jsonrpc_target_matches_websocket_jsonrpc_execution_route_for_old_context() {
-    let (host, physical_a, method_a, physical_b, method_b) =
-        fixture::reloaded_websocket_gateway_host().await;
+    let fixture::ReloadedWebSocketGatewayHost {
+        host,
+        physical_a,
+        method_a,
+        physical_b,
+        method_b,
+        ..
+    } = fixture::reloaded_websocket_gateway_host().await;
     host.websocket_generations.connect(ROUTER_SESSION).unwrap();
     let websocket_entry_id_a = websocket_entry_id(&physical_a);
     let websocket_entry_id_b = websocket_entry_id(&physical_b);
@@ -719,8 +827,14 @@ async fn websocket_jsonrpc_target_matches_websocket_jsonrpc_execution_route_for_
 
 #[tokio::test]
 async fn websocket_jsonrpc_execution_route_rejects_tentative_and_released_pin_and_reclaims_old() {
-    let (host, physical_a, method_a, physical_b, method_b) =
-        fixture::reloaded_websocket_gateway_host().await;
+    let fixture::ReloadedWebSocketGatewayHost {
+        host,
+        physical_a,
+        method_a,
+        physical_b,
+        method_b,
+        ..
+    } = fixture::reloaded_websocket_gateway_host().await;
     drop((physical_b, method_b));
     host.websocket_generations.connect(ROUTER_SESSION).unwrap();
     let websocket_entry_id_a = websocket_entry_id(&physical_a);
@@ -775,8 +889,14 @@ async fn websocket_jsonrpc_execution_route_rejects_tentative_and_released_pin_an
 
 #[tokio::test]
 async fn websocket_jsonrpc_execution_route_rejects_disconnected_pin_and_reclaims_old() {
-    let (host, physical_a, method_a, physical_b, method_b) =
-        fixture::reloaded_websocket_gateway_host().await;
+    let fixture::ReloadedWebSocketGatewayHost {
+        host,
+        physical_a,
+        method_a,
+        physical_b,
+        method_b,
+        ..
+    } = fixture::reloaded_websocket_gateway_host().await;
     drop((physical_b, method_b));
     host.websocket_generations.connect(ROUTER_SESSION).unwrap();
     let websocket_entry_id_a = websocket_entry_id(&physical_a);

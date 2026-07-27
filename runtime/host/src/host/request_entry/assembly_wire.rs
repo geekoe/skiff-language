@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
-    GatewayAdapterKind, GatewayDispatchMode, GatewayProtocolSurface, IngressProtocol,
-    IngressSelector,
+    GatewayAdapterKind, GatewayDispatchMode, GatewayProtocolSurface, GatewayWebSocketRpcProfile,
+    IngressProtocol, IngressSelector,
 };
 use skiff_runtime_capability_context::ExecutionBudgetReason;
 use skiff_runtime_request::{RequestError, RouterWriterMessage};
@@ -8,7 +8,8 @@ use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressProtocol,
     RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestStartFrameWireHeader,
-    RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    RuntimeAssemblyWebSocketConnectRequestStartFrameHeader, RuntimeAssemblyWebSocketJsonRpcProfile,
+    RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::mpsc;
@@ -31,6 +32,12 @@ pub(super) struct AdmittedHttpGatewayRequest {
 pub(super) struct AdmittedWebSocketConnectRequest {
     pub(super) route: ActiveAssemblyRoute,
     pub(super) header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+}
+
+pub(super) struct AdmittedWebSocketJsonRpcRequest {
+    pub(super) resolved: crate::host::websocket_generation::ResolvedWebSocketJsonRpcExecution,
+    pub(super) header: RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+    pub(super) params: Vec<u8>,
 }
 
 impl RuntimeHost {
@@ -58,11 +65,9 @@ impl RuntimeHost {
             RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => self
                 .websocket_connect_request_from_wire(header, body)
                 .map(AdmittedRuntimeAssemblyRequest::WebSocketConnect),
-            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(_) => {
-                Err(RuntimeError::Unsupported(
-                    "RuntimeAssembly WebSocket JSON-RPC execution is not attached".to_string(),
-                ))
-            }
+            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => self
+                .websocket_jsonrpc_request_from_wire(router_session_id, header, body)
+                .map(AdmittedRuntimeAssemblyRequest::WebSocketJsonRpc),
         };
         match result {
             Ok(AdmittedRuntimeAssemblyRequest::Http(request)) => {
@@ -76,6 +81,15 @@ impl RuntimeHost {
             }
             Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnect(request)) => {
                 self.spawn_websocket_connect_on_active_assembly_route(
+                    router_session_id.to_string(),
+                    request,
+                    http_response_max_bytes,
+                    sender,
+                )
+                .await
+            }
+            Ok(AdmittedRuntimeAssemblyRequest::WebSocketJsonRpc(request)) => {
+                self.spawn_websocket_jsonrpc_on_pinned_route(
                     router_session_id.to_string(),
                     request,
                     http_response_max_bytes,
@@ -150,6 +164,48 @@ impl RuntimeHost {
         })
     }
 
+    fn websocket_jsonrpc_request_from_wire(
+        &self,
+        router_session_id: &str,
+        mut header: RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+        params: Vec<u8>,
+    ) -> Result<AdmittedWebSocketJsonRpcRequest> {
+        validate_websocket_jsonrpc_header(&header, &params)?;
+        let routing = &header.routing;
+        let ingress = &routing.ingress;
+        let request = &header.websocket_json_rpc;
+        let profile = match request.profile {
+            RuntimeAssemblyWebSocketJsonRpcProfile::JsonRpc2_0Text => {
+                GatewayWebSocketRpcProfile::JsonRpc2_0Text
+            }
+        };
+        let resolved = self
+            .websocket_generations
+            .websocket_jsonrpc_execution_route(
+                router_session_id,
+                &request.connection_id,
+                &routing.assembly_identity,
+                routing.assembly_generation,
+                &request.websocket_entry_id,
+                &ingress.host,
+                &ingress.path,
+                &ingress.method,
+                &routing.gateway_entry_identity,
+                profile,
+            )?;
+        validate_websocket_jsonrpc_execution_route(&header, &resolved)?;
+        header.deadline = effective_request_deadline(
+            header.deadline.as_ref(),
+            &resolved.method_route,
+            "WebSocket JSON-RPC",
+        )?;
+        Ok(AdmittedWebSocketJsonRpcRequest {
+            resolved,
+            header,
+            params,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn runtime_assembly_request_deadline_from_wire_for_test(
         &self,
@@ -166,6 +222,7 @@ impl RuntimeHost {
 enum AdmittedRuntimeAssemblyRequest {
     Http(AdmittedHttpGatewayRequest),
     WebSocketConnect(AdmittedWebSocketConnectRequest),
+    WebSocketJsonRpc(AdmittedWebSocketJsonRpcRequest),
 }
 
 fn validate_http_header(header: &RuntimeAssemblyRequestStartFrameHeader) -> Result<()> {
@@ -258,6 +315,63 @@ fn validate_websocket_connect_header(
         return Err(RuntimeError::Decode(
             "websocketConnect URL host/path does not match canonical routing ingress".to_string(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_websocket_jsonrpc_header(
+    header: &RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+    params: &[u8],
+) -> Result<()> {
+    if header.request_id.is_empty() || header.caller.kind != "gateway" || header.mode != "unary" {
+        return Err(RuntimeError::Decode(
+            "canonical WebSocket JSON-RPC requires a non-empty requestId, gateway caller and unary mode"
+                .to_string(),
+        ));
+    }
+    if params.is_empty() {
+        return Err(RuntimeError::Decode(
+            "canonical WebSocket JSON-RPC params payload must be present".to_string(),
+        ));
+    }
+    if header.websocket_json_rpc.gateway_entry_identity != header.routing.gateway_entry_identity {
+        return Err(RuntimeError::Decode(
+            "websocketJsonRpc gateway identity does not match routing".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_websocket_jsonrpc_execution_route(
+    header: &RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+    resolved: &crate::host::websocket_generation::ResolvedWebSocketJsonRpcExecution,
+) -> Result<()> {
+    let route = &resolved.method_route;
+    let target = &resolved.target;
+    let routing = &header.routing;
+    let ingress = &routing.ingress;
+    if route.assembly_identity() != &routing.assembly_identity
+        || route.generation() != routing.assembly_generation
+        || route.selector().host != ingress.host
+        || route.selector().path != ingress.path
+        || route.selector().method.as_deref() != Some(ingress.method.as_str())
+        || route.gateway_entry_identity() != &routing.gateway_entry_identity
+        || target.assembly_identity() != route.assembly_identity()
+        || target.assembly_generation() != route.generation()
+        || target.selector() != route.selector()
+        || target.gateway_entry_identity() != route.gateway_entry_identity()
+        || target.owner() != route.entry().owner()
+        || target.implementation_package_build_id()
+            != route.activation().implementation_package_build_id()
+        || !std::sync::Arc::ptr_eq(target.eval().activation_context(), route.activation())
+        || !std::sync::Arc::ptr_eq(target.eval().execution_image(), route.execution_image())
+    {
+        return Err(RuntimeError::Protocol {
+            target: header.websocket_json_rpc.connection_id.clone(),
+            message:
+                "resolved WebSocket JSON-RPC target and method capability route have different generation owners"
+                    .to_string(),
+        });
     }
     Ok(())
 }
@@ -358,14 +472,22 @@ fn effective_deadline(
     header: &RuntimeAssemblyRequestStartFrameHeader,
     route: &ActiveAssemblyRoute,
 ) -> Result<Option<RuntimeAssemblyRequestDeadlineFrameHeader>> {
+    effective_request_deadline(header.deadline.as_ref(), route, "HTTP gateway")
+}
+
+fn effective_request_deadline(
+    deadline: Option<&RuntimeAssemblyRequestDeadlineFrameHeader>,
+    route: &ActiveAssemblyRoute,
+    request_kind: &str,
+) -> Result<Option<RuntimeAssemblyRequestDeadlineFrameHeader>> {
     let wall_now = OffsetDateTime::now_utc();
     let mut candidates = Vec::new();
-    if let Some(deadline) = &header.deadline {
+    if let Some(deadline) = deadline {
         candidates.push(deadline.timeout_ms);
         let expires_at = OffsetDateTime::parse(&deadline.expires_at, &Rfc3339).map_err(|_| {
-            RuntimeError::Decode(
-                "canonical HTTP gateway deadline expiresAt must be valid RFC3339".to_string(),
-            )
+            RuntimeError::Decode(format!(
+                "canonical {request_kind} deadline expiresAt must be valid RFC3339"
+            ))
         })?;
         let remaining_ms = if expires_at <= wall_now {
             0
@@ -381,16 +503,16 @@ fn effective_deadline(
         return Ok(None);
     };
     let timeout_i64 = i64::try_from(timeout_ms).map_err(|_| {
-        RuntimeError::Decode(
-            "HTTP gateway deployment deadline is not representable by the Host".to_string(),
-        )
+        RuntimeError::Decode(format!(
+            "{request_kind} deployment deadline is not representable by the Host"
+        ))
     })?;
     let expires_at = wall_now
         .checked_add(time::Duration::milliseconds(timeout_i64))
         .ok_or_else(|| {
-            RuntimeError::Decode(
-                "HTTP gateway deployment deadline is not representable by the Host".to_string(),
-            )
+            RuntimeError::Decode(format!(
+                "{request_kind} deployment deadline is not representable by the Host"
+            ))
         })?
         .format(&Rfc3339)
         .map_err(|error| RuntimeError::Decode(error.to_string()))?;
