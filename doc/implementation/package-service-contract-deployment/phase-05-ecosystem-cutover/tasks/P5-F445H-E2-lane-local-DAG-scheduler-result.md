@@ -14,6 +14,7 @@ stream、host、request、artifact、compiler、linker 或 Router。
 | production prerequisite | `648627fe` |
 | task document | `141653da` |
 | implementation | `bbb42e30` |
+| acceptance correction | `97559c73` |
 
 implementation 写集精确为：
 
@@ -36,6 +37,20 @@ CARGO_TARGET_DIR=/Users/geek/workspace/skiff-p5-f445h-e2-lane-scheduler/build/ca
 实现前该命令按预期 RED，exit `101`：测试无法解析尚不存在的
 `super::concurrent_scheduler`。RED 来自缺失的 E2 production seam，不是既有 exhaustive match、
 环境或写集外失败。随后才加入 production modules。
+
+独立验收发现 winner `UserException` local carrier 向 parent heap materialize 时，资源失败会保留
+已经克隆的前缀节点。先加入 focused regression：
+
+```text
+cargo test -p skiff-runtime-eval \
+  concurrent_scheduler_winner_error_materialization_rolls_back_parent_heap -- --nocapture
+```
+
+correction 前该测试按预期 RED，exit `101`：多节点 carrier 的第一个 shallow child 已进入
+parent heap，随后 deep child 越过 `max_clone_depth`；parent checkpoint 从 `len: 1` 变为
+`len: 2`，`estimated_bytes` 从 `33` 变为 `66`。`97559c73` 在 winner error materialize 前建立
+parent checkpoint，失败时同时回滚 nodes 与 stats，再返回原有稳定 `InvalidArtifact`；成功结果
+仍保留已导入 carrier。focused test 修正后 PASS，且 scope lifecycle clean。
 
 ## 3. 实现结果
 
@@ -71,7 +86,8 @@ direct-let export、错误 owner 与 stale cross-heap handle 全部 fail closed 
 
 statement normal completion不写 parent env/heap。value tail carrier 只在所有 lane normal后深拷贝
 回 parent heap；clone 失败回滚 parent heap checkpoint。winner 后同 poll turn 的 late value/error
-与 pending lane heap write 均被丢弃。
+与 pending lane heap write 均被丢弃。winner error 的 heap-backed local carrier handoff 同样以
+parent checkpoint 为事务边界；中途资源失败不会保留部分节点或 stats。
 
 ### 3.3 Linked plan projection
 
@@ -121,6 +137,7 @@ E4 可直接消费以下 crate-private seam，无需复制 ready queue、winner�
 | pending wake | outer cancellation 唤醒永远 Pending 的 lane scope waiter |
 | cancel/drop order | winner 与 scheduler drop 均让 running future先观察 child cancel，drop exactly once |
 | late result isolation | loser error、same-turn late heap value与 pending heap write不进入 parent |
+| winner error atomicity | 多节点 local carrier 中途 clone-depth 失败后 parent checkpoint/stats 精确恢复 |
 | tail fence | tail最后启动，结果深拷贝到 parent heap，checkpoint 顺序固定 |
 | current control | lane scope/cancel flag各自独立，parent budget共享 |
 | nested scope | lane内 derive 的 scope继承 lane cancellation与 deadline owner |
@@ -136,7 +153,7 @@ E4 可直接消费以下 crate-private seam，无需复制 ready queue、winner�
 
 | 命令 | 结果 |
 | --- | --- |
-| `cargo test -p skiff-runtime-eval concurrent_scheduler -- --nocapture` | PASS：20/20 |
+| `cargo test -p skiff-runtime-eval concurrent_scheduler -- --nocapture` | PASS：21/21 |
 | `cargo test -p skiff-runtime-eval program_execution_scope -- --nocapture` | PASS：9/9 |
 | `cargo check -p skiff-runtime-eval --locked` | PASS |
 | `cargo fmt --check` | PASS |
@@ -150,8 +167,9 @@ E4 可直接消费以下 crate-private seam，无需复制 ready queue、winner�
 ## 6. 边界与反向检查
 
 `141653da..bbb42e30` 的 production/test diff 只包含 `runtime/eval/src/env.rs` 与
-`runtime/eval/src/env/**`。对 `runtime/eval/src/eval_context.rs` 的 diff 为空；以下四个 E1
-fail-closed arm 原样保留：
+`runtime/eval/src/env/**`；`86c003b5..97559c73` 的 acceptance correction diff 只包含
+`runtime/eval/src/env/concurrent_scheduler/batch.rs` 与对应 terminal regression test。对
+`runtime/eval/src/eval_context.rs` 的 diff 为空；以下四个 E1 fail-closed arm 原样保留：
 
 - `LinkedStmtIr::Timeout`
 - `LinkedStmtIr::Concurrent`
