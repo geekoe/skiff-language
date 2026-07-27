@@ -148,7 +148,8 @@ Inbound JSON-RPC固定使用以下platform codes：
 union。Peer `$/cancelRequest`触发不可捕获的结构化取消；disconnect取消该connection/generation上的全部
 inbound request。每个有id的已接纳request最多写一个result/error。Parse、batch或无法识别合法id的Invalid
 Request用`id: null`；其余request错误回显原string/safe-integer id。同方向重复active id以`1002`关闭连接；
-settled后允许复用，两个方向的同值id始终互不冲突。
+仍在bounded settled tombstone中的id也不得复用；tombstone到期/驱逐后才可复用。两个方向的同值id始终
+互不冲突。
 
 ## 6. Fail-closed
 

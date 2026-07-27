@@ -340,8 +340,8 @@ Peer发起request时，id可以是非空string或safe integer，业务handler看
 `websocket.connectionId`和`websocket.businessIdentity`。Platform parse/invalid/method/params/internal
 错误固定为`-32700/-32600/-32601/-32602/-32603`，容量、timeout与cancel固定为
 `-32000/-32001/-32800`。无法识别合法request id的错误使用`id: null`，其余错误原样回显typed id；
-同方向重复active id以`1002`关闭，settled后可复用。未捕获业务throw只返回脱敏Internal error；预期失败
-应由result union表达。
+同方向重复active或仍在bounded settled tombstone中的id以`1002`关闭；tombstone到期/驱逐后才可复用。
+未捕获业务throw只返回脱敏Internal error；预期失败应由result union表达。
 
 `requestJsonToConnection`只接受精确connection id，不提供business identity fan-out版本。多个socket不能
 共同拥有一个unary response。调用受当前execution deadline与cancel约束；等待response时是真实

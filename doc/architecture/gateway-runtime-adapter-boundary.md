@@ -490,9 +490,9 @@ Broker pending规则：
 - 同一connection上两个方向的request/response可以乱序完成；每个pending或inbound execution最多完成一次。
 - disconnect或原runtime断开会原子移除相关pending/inbound mapping，并尽可能通知另一端取消/失败。
 - deadline/cancel先移除pending，再best-effort通过当前配置发送取消；`jsonrpc-2.0-text`使用
-  `$/cancelRequest` notification。Broker保留有界、短期
-  settled tombstone，以静默丢弃与完成/取消竞态的晚到或重复response；未知且不在tombstone中的
-  response id属于协议错误。
+  `$/cancelRequest` notification。Outbound方向保留有界短期response tombstone，以静默丢弃与
+  完成/取消竞态的晚到或重复response；inbound方向保留有界短期settled-id tombstone，避免晚到cancel或
+  重复request作用于新execution。Unknown且不在outbound tombstone中的response id属于协议错误。
 - Outbound pending、inbound active request、单payload大小以及tombstone数量和生命周期必须分别受平台limit
   约束；outbound达到上限时本地调用fail closed，inbound达到上限时返回`-32000 Server busy`。Tombstone达到
   容量时驱逐最旧项，不因settled记录拒绝新request，也不能无界缓存。
@@ -506,8 +506,8 @@ Inbound JSON-RPC lifecycle规则：
 - Platform parse/invalid/method/params/internal error分别使用JSON-RPC `-32700`、`-32600`、`-32601`、
   `-32602`、`-32603`；容量、timeout与cancel使用`-32000`、`-32001`、`-32800`。
 - Parse、batch或尚未识别出合法request id的Invalid Request使用`id: null`；识别出合法id后的错误回显原
-  string/safe-integer值。同方向重复active id以`1002`关闭并取消该connection的inbound executions；
-  settled后允许复用，旧dispatcher correlation不能完成新request。
+  string/safe-integer值。同方向重复active或仍在settled tombstone中的id以`1002`关闭并取消该connection的
+  inbound executions；tombstone到期/驱逐后才可复用，旧dispatcher correlation不能完成新request。
 - Peer cancel固定当前inbound request为不可捕获结构化取消，并best-effort写回`-32800`；unknown或已settled
   id静默忽略。Peer disconnect取消全部inbound request，不再尝试写response。
 - 除`$/cancelRequest`外的notification不dispatch、不response，即使method与已声明request method同名；

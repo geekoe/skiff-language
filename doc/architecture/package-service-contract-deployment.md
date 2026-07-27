@@ -732,10 +732,10 @@ Skiff业务源码不生成、解析或持久化任一方向的transport id。
 Inbound response id规则同样固定：parse失败、batch或无法识别出合法request id的Invalid Request使用
 `"id": null`；已经识别出合法typed id后的method/params/capacity/timeout/cancel/internal error必须回显
 原string或safe-integer值。缺少`id`的合法object是notification，除`$/cancelRequest`外一律不dispatch也不
-response。相同connection/generation/direction上仍active的id不得再次发起request；重复active id是
-`1002`协议错误并关闭socket，不能先返回一个同id错误再让旧execution产生第二个response。前一request已经
-settled后可以复用同一id，因为runtime completion还由独立dispatcher correlation约束，旧completion不能
-命中新execution。
+response。相同connection/generation/direction上仍active或仍在bounded settled tombstone中的id不得再次
+发起request；重复id是`1002`协议错误并关闭socket，不能先返回一个同id错误再让旧execution或晚到cancel
+作用于新request。Tombstone到期或按容量驱逐后可以复用该id；peer应优先生成connection-lifetime唯一id。
+平台生成的outbound string id在同一connection generation内不得复用。
 
 `$/cancelRequest`沿用Language Server Protocol的通用取消形状，是本配置在JSON-RPC核心之上的
 best-effort notification。它只取消**发送该notification的一方此前发起**、且仍在执行的request；同值但
