@@ -44,6 +44,25 @@ host.current-directory
 Nested breadcrumb/file/result字段以F439C inventory为准。Transport `id`只存在outer JSON-RPC wire type，
 不能进入任一params/result/nested business type。
 
+同一protocol checkpoint还拥有browser到Agine service的三条普通HTTP contract：
+
+```text
+POST /thread/host-files/list
+  payload  { chatId, mountId, toolProviderId, path? }
+  success  HostBrowseDirectoryResult
+
+POST /thread/host-files/search
+  payload  { chatId, mountId, toolProviderId, path?, query }
+  success  HostBrowseSearchResult
+
+POST /toolproviders/current-directory
+  payload  { toolProviderId }
+  success  { toolProviderId, currentDirectory }
+```
+
+前两条必须加入canonical HTTP path/ordinary-user path registry；第三条保留现有path。HTTP payload/response
+不含`eventName`、`requestId`、transport `id`、connection id或旧`refreshRequested`。
+
 ## Wire checkpoint
 
 - 一条WebSocket text frame一个JSON-RPC 2.0 object；Host作为Skiff outbound request的peer，只接受平台生成
@@ -65,7 +84,7 @@ Nested breadcrumb/file/result字段以F439C inventory为准。Transport `id`只�
 ## 实现与证据
 
 1. 在`agine/protocol`新增唯一exported module，拥有method常量、params/result/nested types、有限platform
-   error code/message registry和outer JSON-RPC types。
+   error code/message registry、outer JSON-RPC types，以及上述三条HTTP path/payload/success types。
 2. 新增一个canonical JSON fixture，至少覆盖：
    - 三个request与success/result-union response；
    - parse/invalid/batch/unknown/params/internal/capacity/timeout/cancel；
@@ -73,7 +92,8 @@ Nested breadcrumb/file/result字段以F439C inventory为准。Transport `id`只�
    - legacy字段、empty/non-string id、scalar/array params；
    - 反序完成的两个并发string id；
    - active/tombstoned duplicate与tombstone后复用的期望分类。
-3. 测试必须直接读取该唯一fixture，验证method/type/error registry和package export，不复制第二份golden。
+3. 测试必须直接读取该唯一fixture，验证method/type/error registry、HTTP path/type registry和package
+   export，不复制第二份golden。
 4. 反向搜索证明params/result无`id`/`requestId`，没有`platform.*`或Host私有`-32001..-32004`错误表。
 5. 运行protocol package的focused tests、typecheck/syntax、diff check；不运行Host/client/full workflow。
 
