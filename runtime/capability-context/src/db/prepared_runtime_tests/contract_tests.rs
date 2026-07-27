@@ -123,6 +123,30 @@ async fn prepared_db_typed_results_cover_all_runtime_paths_without_confusion() {
     assert_eq!(state.finalize_calls(), 6);
 }
 
+#[tokio::test]
+async fn prepared_db_legacy_create_wrapper_reuses_mutable_heap_for_finalization() {
+    let (store, state) = prepared_store(None);
+    let mut heap = RequestHeap::default();
+    let input_handle = heap
+        .alloc_array(vec![RuntimeValue::String("input".to_string())])
+        .expect("input allocation");
+    let input = RuntimeValue::Heap(input_handle);
+    let len_before_create = heap.len();
+
+    let created = store
+        .create_runtime("Item", &input, &mut heap, runtime_context())
+        .await
+        .expect("legacy wrapper uses prepared create");
+
+    assert!(matches!(created, RuntimeValue::Heap(_)));
+    heap.get(input_handle)
+        .expect("input remains in caller heap");
+    assert_eq!(heap.len(), len_before_create + 1);
+    assert_eq!(state.legacy_runtime_calls(), 1);
+    assert_eq!(state.wait_starts(), 1);
+    assert_eq!(state.finalize_calls(), 1);
+}
+
 #[test]
 fn prepared_db_default_implementation_fails_closed_without_legacy_fallback() {
     let (store, state) = default_prepared_store();

@@ -93,13 +93,19 @@ macro_rules! impl_raw_read_api {
 
         fn create_runtime<'a>(
             &'a self,
-            _type_name: &'a str,
-            _value: &'a RuntimeValue,
-            _heap: &'a RequestHeap,
-            _context: DbRecoverableRuntimeContext,
+            type_name: &'a str,
+            value: &'a RuntimeValue,
+            heap: &'a mut RequestHeap,
+            context: DbRecoverableRuntimeContext,
         ) -> DbCapabilityFuture<'a, RuntimeValue> {
             self.state.record_legacy_runtime_call();
-            Box::pin(async { Err(DbCapabilityError::decode("legacy runtime path called")) })
+            let prepared = self.prepare_create_runtime(type_name, value, heap, context);
+            Box::pin(async move {
+                prepared?
+                    .into_wait()
+                    .await?
+                    .finalize(heap)
+            })
         }
 
         fn count<'a>(

@@ -744,7 +744,7 @@ pub trait DbCapabilityStoreApi: Send + Sync {
         &'a self,
         type_name: &'a str,
         value: &'a RuntimeValue,
-        heap: &'a RequestHeap,
+        heap: &'a mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityFuture<'a, RuntimeValue>;
 
@@ -1047,7 +1047,7 @@ impl DbCapabilityStore {
         &self,
         type_name: &str,
         value: &RuntimeValue,
-        heap: &RequestHeap,
+        heap: &mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityResult<RuntimeValue> {
         self.inner

@@ -269,7 +269,7 @@ impl DbCapabilityStoreApi for ServiceDbCapabilityStore {
         &'a self,
         type_name: &'a str,
         value: &'a RuntimeValue,
-        heap: &'a RequestHeap,
+        heap: &'a mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityFuture<'a, RuntimeValue> {
         Box::pin(async move {
