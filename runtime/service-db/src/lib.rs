@@ -38,6 +38,7 @@ mod lease;
 mod mapping;
 mod metadata;
 mod mongo;
+mod prepared_runtime;
 mod provider;
 mod store;
 
@@ -258,17 +259,10 @@ impl ServiceDbRuntime {
         context: DbRecoverableRuntimeContext,
         session: Option<&mut ClientSession>,
     ) -> Result<Option<RuntimeValue>> {
-        let binding = self.metadata.collection_for_type(type_name)?;
-        let filter = binding.key_filter(&key)?;
-        let document = self
-            .find_one_document(binding, filter, None, projection.as_deref(), session)
-            .await?;
-        let read_context = recoverable_read_context(&context);
-        document
-            .map(|document| {
-                binding.runtime_business_value_from_document(document, heap, Some(&read_context))
-            })
-            .transpose()
+        self.prepare_find_one_by_key_runtime_command(type_name, key, projection, context)?
+            .execute(self, session)
+            .await?
+            .finalize(self, heap)
     }
 
     pub async fn find_one_by_query(
@@ -300,18 +294,12 @@ impl ServiceDbRuntime {
         context: DbRecoverableRuntimeContext,
         session: Option<&mut ClientSession>,
     ) -> Result<Option<RuntimeValue>> {
-        let binding = self.metadata.collection_for_type(type_name)?;
-        let filter = binding.query_filter(query)?;
-        let sort = binding.order_document(&order)?;
-        let document = self
-            .find_one_document(binding, filter, sort, projection.as_deref(), session)
-            .await?;
-        let read_context = recoverable_read_context(&context);
-        document
-            .map(|document| {
-                binding.runtime_business_value_from_document(document, heap, Some(&read_context))
-            })
-            .transpose()
+        self.prepare_find_one_by_query_runtime_command(
+            type_name, query, order, projection, context,
+        )?
+        .execute(self, session)
+        .await?
+        .finalize(self, heap)
     }
 
     pub async fn find_many_page(
@@ -358,31 +346,10 @@ impl ServiceDbRuntime {
         context: DbRecoverableRuntimeContext,
         session: Option<&mut ClientSession>,
     ) -> Result<Vec<RuntimeValue>> {
-        let binding = self.metadata.collection_for_type(type_name)?;
-        let filter = binding.query_filter(query)?;
-        let sort = binding.page_sort_document(&options)?;
-        if options.limit == Some(0) {
-            return Ok(Vec::new());
-        }
-        let projection_doc = binding.projection_document(projection.as_deref())?;
-        let documents = self
-            .mongo_executor(&binding.collection_name, session)
+        self.prepare_find_many_page_runtime_command(type_name, query, options, projection, context)?
+            .execute(self, session)
             .await?
-            .find_many(MongoFindManyPlan {
-                filter,
-                sort,
-                projection: projection_doc,
-                limit: options.limit,
-                offset: options.offset,
-            })
-            .await?;
-        let read_context = recoverable_read_context(&context);
-        documents
-            .into_iter()
-            .map(|document| {
-                binding.runtime_business_value_from_document(document, heap, Some(&read_context))
-            })
-            .collect::<Result<Vec<_>>>()
+            .finalize(self, heap)
     }
 
     pub async fn exists_by_key(
@@ -527,118 +494,10 @@ impl ServiceDbRuntime {
         lease_guards: &[DbLeaseHold],
         session: Option<&mut ClientSession>,
     ) -> Result<Option<RuntimeValue>> {
-        let binding = self.metadata.collection_for_type(type_name)?;
-        if session.is_none() {
-            let mut session = self.start_transaction().await?;
-            let result = self
-                .update_one_runtime_inner(
-                    binding,
-                    type_name,
-                    selector,
-                    change,
-                    heap,
-                    context,
-                    lease_guards,
-                    Some(&mut session),
-                )
-                .await;
-            return self.finish_transaction(session, result, lease_guards).await;
-        }
-        self.update_one_runtime_inner(
-            binding,
-            type_name,
-            selector,
-            change,
-            heap,
-            context,
-            lease_guards,
-            session,
-        )
-        .await
-    }
-
-    async fn update_one_runtime_inner(
-        &self,
-        binding: &DbCollectionMetadata,
-        type_name: &str,
-        selector: DbOneSelector,
-        change: DbRuntimeChange,
-        heap: &mut RequestHeap,
-        context: DbRecoverableRuntimeContext,
-        lease_guards: &[DbLeaseHold],
-        mut session: Option<&mut ClientSession>,
-    ) -> Result<Option<RuntimeValue>> {
-        let cascade_paths = binding.immutable_file_paths_for_change(&change.wire_change);
-        let normalized = binding.normalize_one_selector(selector.clone())?;
-        let artifact_store = CurrentRequestRecoverableArtifactStore::new(&context);
-        let mut root_store = CollectedRecoverableRootStore::default();
-        let update = {
-            let mut write_context =
-                recoverable_write_context(&context, &artifact_store, &mut root_store);
-            binding.runtime_change_update_document(
-                type_name,
-                change.clone(),
-                heap,
-                Some(&mut write_context),
-                normalized.encrypted_context(),
-            )?
-        };
-        if update.is_empty() {
-            return self
-                .find_one_for_selector_runtime(binding, selector, None, heap, &context, session)
-                .await;
-        }
-        let filter = normalized.filter;
-        let sort = normalized.sort;
-        self.persist_recoverable_artifact_retention_roots(
-            &root_store.roots,
-            session.as_deref_mut(),
-        )
-        .await?;
-        let guarded_filter =
-            guarded_filter(binding, filter.clone(), lease_guards, service_db_now_ms())?;
-        let mut executor = self
-            .mongo_executor(&binding.collection_name, session)
-            .await?;
-        self.assert_lease_guards_live(binding, &filter, lease_guards, &mut executor)
-            .await?;
-        let old_document = if cascade_paths.is_empty() {
-            None
-        } else {
-            executor
-                .find_one(MongoFindOnePlan {
-                    filter: filter.clone(),
-                    sort: sort.clone(),
-                    ..Default::default()
-                })
-                .await?
-        };
-        let document = executor
-            .find_one_and_update(
-                MongoOneWritePlan {
-                    filter: guarded_filter,
-                    sort,
-                },
-                update,
-            )
-            .await?;
-        if document.is_none() {
-            self.assert_lease_guards_live(binding, &filter, lease_guards, &mut executor)
-                .await?;
-        }
-        if let Some(old_document) = &old_document {
-            self.delete_skiff_files_by_plan(
-                cascade_plan_for_change(old_document, &change.wire_change, &cascade_paths),
-                executor.session_mut(),
-            )
-            .await?;
-        }
-        let read_context = recoverable_read_context(&context);
-        document
-            .map(|document| {
-                binding.runtime_business_value_from_document(document, heap, Some(&read_context))
-            })
-            .transpose()
+        self.prepare_update_one_runtime_command(type_name, selector, change, heap, context)?
+            .execute(self, lease_guards, session)
+            .await?
+            .finalize(self, heap)
     }
 
     pub async fn update_many(
@@ -927,121 +786,10 @@ impl ServiceDbRuntime {
         lease_guards: &[DbLeaseHold],
         session: Option<&mut ClientSession>,
     ) -> Result<Option<RuntimeValue>> {
-        let binding = self.metadata.collection_for_type(type_name)?;
-        if session.is_none() {
-            let mut session = self.start_transaction().await?;
-            let result = self
-                .replace_one_runtime_inner(
-                    binding,
-                    selector,
-                    value,
-                    heap,
-                    context,
-                    lease_guards,
-                    Some(&mut session),
-                )
-                .await;
-            return self.finish_transaction(session, result, lease_guards).await;
-        }
-        self.replace_one_runtime_inner(
-            binding,
-            selector,
-            value,
-            heap,
-            context,
-            lease_guards,
-            session,
-        )
-        .await
-    }
-
-    async fn replace_one_runtime_inner(
-        &self,
-        binding: &DbCollectionMetadata,
-        selector: DbOneSelector,
-        value: &RuntimeValue,
-        heap: &mut RequestHeap,
-        context: DbRecoverableRuntimeContext,
-        lease_guards: &[DbLeaseHold],
-        mut session: Option<&mut ClientSession>,
-    ) -> Result<Option<RuntimeValue>> {
-        let normalized = binding.normalize_one_selector(selector)?;
-        let artifact_store = CurrentRequestRecoverableArtifactStore::new(&context);
-        let mut root_store = CollectedRecoverableRootStore::default();
-        let mut replacement = {
-            let mut write_context =
-                recoverable_write_context(&context, &artifact_store, &mut root_store);
-            binding.replacement_document_from_runtime_business_value(
-                value,
-                heap,
-                Some(&mut write_context),
-                normalized.normalized_key(),
-                normalized.encrypted_context(),
-            )?
-        };
-        self.persist_recoverable_artifact_retention_roots(
-            &root_store.roots,
-            session.as_deref_mut(),
-        )
-        .await?;
-        let filter = normalized.filter;
-        let sort = normalized.sort;
-        let guarded_filter =
-            guarded_filter(binding, filter.clone(), lease_guards, service_db_now_ms())?;
-        let mut executor = self
-            .mongo_executor(&binding.collection_name, session)
-            .await?;
-        self.assert_lease_guards_live(binding, &filter, lease_guards, &mut executor)
-            .await?;
-        let old_document = if binding.has_immutable_file_cascade()
-            || has_matching_lease_guards(binding, lease_guards)
-        {
-            executor
-                .find_one(MongoFindOnePlan {
-                    filter: filter.clone(),
-                    sort: sort.clone(),
-                    ..Default::default()
-                })
-                .await?
-        } else {
-            None
-        };
-        if let Some(Bson::Document(leases)) = old_document
-            .as_ref()
-            .and_then(|document| document.get(SKIFF_LEASES_FIELD))
-        {
-            replacement.insert(SKIFF_LEASES_FIELD, Bson::Document(leases.clone()));
-        }
-        let document = executor
-            .find_one_and_replace(
-                MongoOneWritePlan {
-                    filter: guarded_filter,
-                    sort,
-                },
-                replacement.clone(),
-            )
-            .await?;
-        if document.is_none() {
-            self.assert_lease_guards_live(binding, &filter, lease_guards, &mut executor)
-                .await?;
-        }
-        if let Some(old_document) = &old_document {
-            self.delete_skiff_files_by_plan(
-                cascade_plan_for_replacement(
-                    old_document,
-                    &replacement,
-                    &binding.immutable_file_paths,
-                ),
-                executor.session_mut(),
-            )
-            .await?;
-        }
-        let read_context = recoverable_read_context(&context);
-        document
-            .map(|document| {
-                binding.runtime_business_value_from_document(document, heap, Some(&read_context))
-            })
-            .transpose()
+        self.prepare_replace_one_runtime_command(type_name, selector, value, heap, context)?
+            .execute(self, lease_guards, session)
+            .await?
+            .finalize(self, heap)
     }
 
     pub async fn delete_one(
@@ -1218,47 +966,14 @@ impl ServiceDbRuntime {
         &self,
         type_name: &str,
         value: &RuntimeValue,
-        heap: &RequestHeap,
+        heap: &mut RequestHeap,
         context: DbRecoverableRuntimeContext,
         session: Option<&mut ClientSession>,
     ) -> Result<RuntimeValue> {
-        let binding = self.metadata.collection_for_type(type_name)?;
-        if session.is_none() {
-            let mut transaction = self.start_transaction().await?;
-            let result = self
-                .create_runtime_inner(binding, value, heap, context, Some(&mut transaction))
-                .await;
-            return self.finish_transaction(transaction, result, &[]).await;
-        }
-        self.create_runtime_inner(binding, value, heap, context, session)
-            .await
-    }
-
-    async fn create_runtime_inner(
-        &self,
-        binding: &DbCollectionMetadata,
-        value: &RuntimeValue,
-        heap: &RequestHeap,
-        context: DbRecoverableRuntimeContext,
-        mut session: Option<&mut ClientSession>,
-    ) -> Result<RuntimeValue> {
-        let artifact_store = CurrentRequestRecoverableArtifactStore::new(&context);
-        let mut root_store = CollectedRecoverableRootStore::default();
-        let document = {
-            let mut write_context =
-                recoverable_write_context(&context, &artifact_store, &mut root_store);
-            binding.document_from_runtime_business_value(value, heap, Some(&mut write_context))?
-        };
-        self.persist_recoverable_artifact_retention_roots(
-            &root_store.roots,
-            session.as_deref_mut(),
-        )
-        .await?;
-        self.mongo_executor(&binding.collection_name, session)
+        self.prepare_create_runtime_command(type_name, value, heap, context)?
+            .execute(self, session)
             .await?
-            .insert_one(document)
-            .await?;
-        Ok(value.clone())
+            .finalize(self, heap)
     }
 
     pub async fn count(
@@ -1651,27 +1366,6 @@ impl ServiceDbRuntime {
             .await?;
         document
             .map(|document| binding.business_value_from_document(document))
-            .transpose()
-    }
-
-    async fn find_one_for_selector_runtime(
-        &self,
-        binding: &DbCollectionMetadata,
-        selector: DbOneSelector,
-        projection: Option<&[FieldPath]>,
-        heap: &mut RequestHeap,
-        context: &DbRecoverableRuntimeContext,
-        session: Option<&mut ClientSession>,
-    ) -> Result<Option<RuntimeValue>> {
-        let (filter, sort) = binding.selector_filter_sort(selector)?;
-        let document = self
-            .find_one_document(binding, filter, sort, projection, session)
-            .await?;
-        let read_context = recoverable_read_context(context);
-        document
-            .map(|document| {
-                binding.runtime_business_value_from_document(document, heap, Some(&read_context))
-            })
             .transpose()
     }
 

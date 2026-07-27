@@ -60,6 +60,8 @@ use std::{
 };
 use tokio::sync::Mutex as TokioMutex;
 
+mod prepared_runtime;
+
 fn db_key(value: serde_json::Value) -> DbKey {
     DbKey::new(value)
 }
@@ -2022,7 +2024,7 @@ async fn service_db_runtime_create_and_find_runtime_roundtrips_local_interface()
     let context = production_runtime_context(hooks.clone());
 
     runtime
-        .create_runtime("ProviderBinding", &value, &heap, context.clone(), None)
+        .create_runtime("ProviderBinding", &value, &mut heap, context.clone(), None)
         .await
         .expect("production service DB runtime create should encode local interface");
 
