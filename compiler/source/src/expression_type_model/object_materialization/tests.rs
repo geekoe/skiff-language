@@ -304,6 +304,83 @@ fn map_and_json_targets_keep_map_materialization_facts() {
 }
 
 #[test]
+fn generic_callable_concrete_return_types_plain_bindings_and_object_fields() {
+    let built = build(
+        r#"
+          function encodeJson<T>(value: T) -> Json {
+            return std.json.decode<Json>(std.json.encode<T>(value))
+          }
+
+          function plainBinding(value: string) -> Json {
+            const encoded = encodeJson(value)
+            return encoded
+          }
+
+          function jsonEnvelope(value: string) -> JsonObject {
+            return { event: encodeJson("object-field") }
+          }
+        "#,
+    )
+    .expect("generic call with a concrete declared return should retain its expression type");
+
+    for snippet in [
+        "encodeJson(value)",
+        "encoded",
+        r#"encodeJson("object-field")"#,
+    ] {
+        let key = built.key(snippet);
+        let ty = built
+            .model
+            .fact(&key)
+            .and_then(|fact| fact.ty.as_ref())
+            .expect("generic call should publish its concrete return type");
+        assert!(
+            matches!(&ty.ir, TypeRefIr::Builtin { name, args } if name == "Json" && args.is_empty()),
+            "expected Json call type, found {:?}",
+            ty.ir
+        );
+    }
+}
+
+#[test]
+fn generic_callable_type_param_dependent_returns_remain_unresolved() {
+    for (source, field) in [
+        (
+            r#"
+              function identity<T>(value: T) -> T { return value }
+              function invalid(value: string) -> JsonObject {
+                return { direct: identity(value) }
+              }
+            "#,
+            "direct",
+        ),
+        (
+            r#"
+              function singleton<T>(value: T) -> Array<T> {
+                const items = Array.empty<T>()
+                items.push(value)
+                return items
+              }
+              function invalid(value: string) -> JsonObject {
+                return { nested: singleton(value) }
+              }
+            "#,
+            "nested",
+        ),
+    ] {
+        let error = build(source)
+            .expect_err("type-param-dependent call return must remain unresolved")
+            .message();
+        assert!(
+            error.contains(&format!(
+                "object literal field `{field}` has no resolved expression type"
+            )),
+            "unexpected dependent-return diagnostic:\n{error}"
+        );
+    }
+}
+
+#[test]
 fn nested_object_targets_reject_missing_extra_and_incompatible_fields() {
     for (source, expected) in [
         (

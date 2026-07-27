@@ -3217,10 +3217,12 @@ impl<'a> OwnerChecker<'a> {
         self.exact_type_arg_substitution(raw, type_params, type_args)
             .or_else(|| self.structured_type_arg_substitution(raw, context, type_params, type_args))
             .or_else(|| {
-                type_params
-                    .is_empty()
+                // Omitted generic arguments can still leave a declaration type
+                // concrete when the type does not depend on any type parameter.
+                (type_params.is_empty() || type_args.is_empty())
                     .then(|| self.type_resolution.resolve_type_text(raw, context).ok())
                     .flatten()
+                    .filter(|resolved| !type_contains_type_param(&resolved.ir))
             })
     }
 
