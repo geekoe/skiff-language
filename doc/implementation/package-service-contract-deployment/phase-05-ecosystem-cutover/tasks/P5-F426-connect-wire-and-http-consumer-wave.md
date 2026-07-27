@@ -1,6 +1,7 @@
 # P5-F426 Connect wire and HTTP consumer wave
 
-状态：Ready。F425第一波已合流；当前仍是实现检查点。
+状态：Partially superseded。F426A wire继续有效；F426B/C因2026-07-27用户删除HTTP `requestId`语义而
+停止，必须在correlation清理后重新建立。
 
 ## 直接父节点
 
@@ -45,4 +46,3 @@ classification并由新repair节点处理。F426C只解除ordinary browser分支
 阻塞。
 
 本wave不运行stable/live/instance、完整N5或最终gate，不merge/rebase/push。
-

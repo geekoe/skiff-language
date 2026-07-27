@@ -1,6 +1,7 @@
 # P5-F426B AIHub HTTP stream merged-state combined probe
 
-状态：Ready。只读批次集成探针。
+状态：Superseded。2026-07-27用户删除HTTP `requestId`语义后，本候选与probe合同失效；不得继续执行。
+后继由HTTP correlation清理节点重新建立。
 
 ## 直接父节点
 
@@ -42,4 +43,3 @@ test、fixture或tooling。该probe不是最终验收。
 `P5-F426B-aihub-http-stream-combined-probe-result.md`
 
 不得merge/rebase/push/stable/live，不访问真实provider。
-

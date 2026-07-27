@@ -1,6 +1,7 @@
 # P5-F426C Agine ordinary browser HTTP cutover
 
-状态：Ready。中风险consumer迁移。
+状态：Superseded。2026-07-27用户删除HTTP `requestId`语义后，F425D contract必须先修正；不得按本文旧
+payload继续迁移browser。后继由HTTP correlation清理节点重新签发。
 
 ## 直接父节点
 
@@ -66,4 +67,3 @@ linked worktree不运行browser live、stable chat smoke或真实Host。记录�
 在Internals提交implementation；在Skiff任务worktree新增并提交
 `P5-F426C-agine-ordinary-browser-http-cutover-result.md`。返回两个commit/tree、自验收矩阵与clean
 状态。不得merge/rebase/push/stable/live。
-

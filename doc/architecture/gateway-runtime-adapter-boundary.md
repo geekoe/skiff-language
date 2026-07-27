@@ -495,6 +495,23 @@ type GatewayEntryProtocolManifest = {
 
 目标态 router production code 不解析业务类型，也不引用 Skiff business payload codec。任何业务 payload 的 encode/decode 都在 runtime adapter 内完成。
 
+### HTTP关联与业务ID
+
+一次HTTP request天然只对应自己的unary response或server stream，transport已经拥有精确关联、取消和
+trace metadata。业务payload、HTTP response envelope和stream item不得再声明只用于模拟WebSocket
+req/res correlation的`requestId`、`correlationId`或同义字段。Router/runtime内部request id只用于
+dispatch、cancel、telemetry和diagnostics，不投影为用户业务字段。
+
+真正拥有独立业务生命周期的ID仍然合法，但必须按语义命名和验证，例如：
+
+- 可重试mutation使用`idempotencyKey`；
+- 异步任务/轮询使用`jobId`；
+- 业务run使用`runId`；
+- 已持久化资源使用其资源ID。
+
+不能为了兼容旧WebSocket envelope把这些ID统一命名为`requestId`。第一版HTTP server stream不复用一条
+response multiplex多个独立业务请求，因此stream event也不需要transport correlation id。
+
 ## HTTP flow
 
 ```text

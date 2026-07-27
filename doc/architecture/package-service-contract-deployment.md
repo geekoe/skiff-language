@@ -624,6 +624,12 @@ service的浏览器或host业务上行必须声明HTTP entry；流式业务响�
 使用WebSocket下行。`std.websocket`下行发送从当前`ActivationContext`解析当前service deployment中唯一的
 WebSocket entry，不能按path、display name或任意字符串猜entry；零entry或损坏的多entry状态fail closed。
 
+HTTP request与其unary response/server stream已经由transport精确关联。External payload、response
+envelope和stream item不得保留只为模拟旧WebSocket req/res而存在的`requestId`或同义correlation字段；
+平台内部request/trace id也不进入业务schema。若操作真正需要幂等键、异步任务句柄或业务run identity，
+必须分别建模为`idempotencyKey`、`jobId`或`runId`，不能继续借用`requestId`。这一规则同时适用于
+Agine普通HTTP RPC、Host HTTP上行和AIHub HTTP event stream。
+
 ## 7. Linkable、Recoverable 与 Callback Capability
 
 即时service call使用lane-scoped linkable plan：
