@@ -5,22 +5,22 @@ use skiff_artifact_model::{
 use skiff_compiler_input::SourceSymbolSelector;
 
 #[derive(Debug)]
-pub(super) struct ResolvedCallable {
+pub(crate) struct ResolvedCallable {
     pub selector: String,
     pub callable_id: PackageCallableId,
     pub signature: PackageCallableSignature,
 }
 
-pub(super) struct ExactCallableResolver<'a> {
+pub(crate) struct ExactCallableResolver<'a> {
     implementation: &'a PackageArtifact,
 }
 
 impl<'a> ExactCallableResolver<'a> {
-    pub fn new(implementation: &'a PackageArtifact) -> Self {
+    pub(crate) fn new(implementation: &'a PackageArtifact) -> Self {
         Self { implementation }
     }
 
-    pub fn resolve(&self, raw: &str) -> Result<ResolvedCallable, String> {
+    pub(crate) fn resolve(&self, raw: &str) -> Result<ResolvedCallable, String> {
         let selector = SourceSymbolSelector::parse(raw)
             .map_err(|message| format!("invalid current-package source selector: {message}"))?;
         let source_path = format!("{}.{}", selector.module_path, selector.symbol);

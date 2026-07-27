@@ -25,9 +25,9 @@ use super::*;
 use crate::authoring::{build_authoring_object, AuthoringObject};
 
 const EXPECTED_STD_BUILD_ID: &str =
-    "skiff-package-build-v10:sha256:0dec996a2d6388245539fb000a0284a1561dc21ac3cc6e88ed3fbe0eadfe3d43";
+    "skiff-package-build-v10:sha256:3604e31ffac0e1a12432e213fb895a51fef18355b365e1d897147a6c43924695";
 const EXPECTED_PRELUDE_ID: &str =
-    "skiff-prelude-v1:sha256:2ebbd0569d4baf3d7dccf07c4326ec62deb5707c11a8d0eb0ac0722d1ee9d3bd";
+    "skiff-prelude-v1:sha256:754c676620527a48006935d3b325b69c6114ed2c5c2fa93bd74edb7e70ef819e";
 
 #[test]
 fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
@@ -43,7 +43,35 @@ fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
         .artifact
         .package_local_abi
         .public_symbols
-        .contains_key("std.websocket.WebSocketIngressEvent"));
+        .contains_key("std.websocket.WebSocketConnectRequest"));
+    assert!(published
+        .artifact
+        .package_local_abi
+        .public_symbols
+        .contains_key("std.websocket.WebSocketConnectionPolicy"));
+    assert!(published
+        .artifact
+        .package_local_abi
+        .public_symbols
+        .contains_key("std.websocket.WebSocketConnectResult"));
+    for removed in [
+        "std.websocket.TextConnectionMessage",
+        "std.websocket.BinaryConnectionMessage",
+        "std.websocket.ConnectionMessage",
+        "std.websocket.WebSocketConnection",
+        "std.websocket.WebSocketReceiveEvent",
+        "std.websocket.WebSocketIngressEvent",
+        "std.websocket.WebSocketCloseEvent",
+    ] {
+        assert!(
+            !published
+                .artifact
+                .package_local_abi
+                .public_symbols
+                .contains_key(removed),
+            "{removed}"
+        );
+    }
     assert!(published
         .artifact
         .package_local_abi
@@ -86,7 +114,7 @@ fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
         .unit
         .declarations
         .types
-        .contains_key("WebSocketIngressEvent"));
+        .contains_key("WebSocketConnectResult"));
 
     let first_root = TestDir::new("official-std-records-a");
     let second_root = TestDir::new("official-std-records-b");

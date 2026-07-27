@@ -11,9 +11,11 @@ use std::{
 
 use skiff_artifact_model::{
     GatewayAdapterKind, GatewayAdapterPlan, GatewayDispatchMode, GatewayEntryIdentity,
-    GatewayEntryKey, GatewayEntryProtocolSurface, OperationTargetRef, PackageArtifact,
-    PackageCallableId, PackageCallableSignature, PackageLocalAbiSymbol, PackageSchemaIndex,
-    RuntimeAssembly, ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    GatewayEntryKey, GatewayEntryProtocolSurface, GatewayProtocolSurface,
+    GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
+    GatewayWebSocketShapeVersion, OperationTargetRef, PackageArtifact, PackageCallableId,
+    PackageCallableSignature, PackageLocalAbiSymbol, PackageSchemaIndex, RuntimeAssembly,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -230,7 +232,10 @@ async fn runtime_http_gateway_wrong_target_signature_mode_and_adapter_fail_close
     assert!(error.to_string().contains("exact linked signature"));
 
     let mut wrong_mode = fixture.target_for_path("/typed");
-    let skiff_artifact_model::GatewayProtocolSurface::Http(http) = &mut wrong_mode.surface.protocol;
+    let skiff_artifact_model::GatewayProtocolSurface::Http(http) = &mut wrong_mode.surface.protocol
+    else {
+        panic!("typed fixture must use an HTTP surface");
+    };
     http.dispatch_mode = GatewayDispatchMode::ServerStream;
     let error = interpreter
         .execute_runtime_http_gateway_unary(
@@ -253,6 +258,39 @@ async fn runtime_http_gateway_wrong_target_signature_mode_and_adapter_fail_close
         .await
         .expect_err("adapter plan/surface mutation must fail closed");
     assert!(error.to_string().contains("adapter kind"));
+}
+
+#[tokio::test]
+async fn runtime_http_gateway_refuses_websocket_connect_surface_before_execution() {
+    let fixture = fixture();
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let mut target = fixture.target_for_path("/typed");
+    target.surface.protocol =
+        GatewayProtocolSurface::WebSocketConnect(GatewayWebSocketConnectProtocolSurface {
+            connect_request_shape: GatewayWebSocketShapeVersion::V1,
+            connect_result_shape: GatewayWebSocketShapeVersion::V1,
+            connection_policy_shape: GatewayWebSocketShapeVersion::V1,
+            external_sources: vec![
+                skiff_artifact_model::GatewayAdapterSource::WebSocketConnectRequest,
+                skiff_artifact_model::GatewayAdapterSource::WebSocketConnectionId,
+            ],
+            downlink_frames: vec![
+                GatewayWebSocketDownlinkFrame::Binary,
+                GatewayWebSocketDownlinkFrame::Text,
+            ],
+        });
+
+    let error = interpreter
+        .execute_runtime_http_gateway_unary(
+            execution_context(&interpreter, target.eval.clone()),
+            request(&target.key, "POST", "/typed", br#""value""#),
+            &target,
+        )
+        .await
+        .expect_err("HTTP execution must refuse a websocketConnect surface");
+    assert!(error
+        .to_string()
+        .contains("requires an HTTP protocol surface"));
 }
 
 #[derive(Clone)]

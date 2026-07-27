@@ -5743,9 +5743,6 @@ fn prelude_symbol_type_ref(symbol: String, args: Vec<TypeRefIr>) -> TypeRefIr {
     if symbol == "config.DecodeError" {
         return TypeRefIr::Builtin { name: symbol, args };
     }
-    if is_std_abi_generic_type_symbol(&symbol) {
-        return TypeRefIr::Builtin { name: symbol, args };
-    }
     let base = TypeRefIr::PackageSymbol {
         symbol: PackageSymbolRef {
             package: PackageRefIr::PackageId {
@@ -5829,16 +5826,6 @@ fn nominal_base_type_ref(base: &NominalTypeRefBaseIr) -> TypeRefIr {
             package_schema_type_id: package_schema_type_id.clone(),
         },
     }
-}
-
-fn is_std_abi_generic_type_symbol(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "std.websocket.WebSocketConnectResult"
-            | "std.websocket.WebSocketIngressEvent"
-            | "std.websocket.WebSocketConnection"
-            | "std.websocket.WebSocketReceiveEvent"
-    )
 }
 
 fn service_symbol_ref(path: &str) -> ServiceSymbolRef {

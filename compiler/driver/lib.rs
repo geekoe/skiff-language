@@ -5,6 +5,7 @@ pub(crate) mod input;
 pub(crate) mod pipeline;
 pub(crate) mod shared;
 pub(crate) mod source_compile;
+mod websocket_gateway_projection;
 
 pub use generated_deployment::{
     generate_service_deployment, GeneratedServiceDeploymentError, GeneratedServiceDeploymentInput,

@@ -163,7 +163,12 @@ fn validate_route(
 ) -> Result<()> {
     let routing = &header.routing;
     let activation_identity = route.activation().identity();
-    let GatewayProtocolSurface::Http(http) = &route.protocol_surface().protocol;
+    let GatewayProtocolSurface::Http(http) = &route.protocol_surface().protocol else {
+        return Err(RuntimeError::Protocol {
+            target: route.gateway_entry_key().as_str().to_string(),
+            message: "HTTP request bridge cannot admit a non-HTTP gateway route".to_string(),
+        });
+    };
     let expected_mode = match http.dispatch_mode {
         GatewayDispatchMode::Unary => "unary",
         GatewayDispatchMode::ServerStream => "serverStream",

@@ -1,19 +1,5 @@
 import std
 
-type TextConnectionMessage {
-  tag: "text",
-  text: string,
-}
-
-type BinaryConnectionMessage {
-  tag: "binary",
-  base64: string,
-}
-
-type ConnectionMessage discriminator "tag" =
-  { tag: "text", text: string }
-  | { tag: "binary", base64: string }
-
 type WebSocketConnectRequest {
   connectionId: string,
   url: string,
@@ -21,27 +7,8 @@ type WebSocketConnectRequest {
   headers: Array<std.http.HttpHeader>,
   cookies: Array<std.http.HttpHeader>,
   version: string?,
-}
-
-type WebSocketConnection<Context> {
-  id: string,
-  businessIdentity: string?,
-  context: Context,
-}
-
-type WebSocketReceiveEvent<Context> {
-  connection: WebSocketConnection<Context>,
-  message: ConnectionMessage,
-}
-
-type WebSocketIngressEvent<Context> discriminator "tag" =
-  { tag: "connect", connectRequest: WebSocketConnectRequest }
-  | { tag: "receive", receiveEvent: WebSocketReceiveEvent<Context> }
-
-type WebSocketCloseEvent {
-  connectionId: string,
-  code: integer,
-  reason: string,
+  websocketEntryId: string,
+  gatewayEntryIdentity: string,
 }
 
 type WebSocketConnectionPolicy {
@@ -51,8 +18,8 @@ type WebSocketConnectionPolicy {
   closeReason: string?,
 }
 
-type WebSocketConnectResult<Context> discriminator "tag" =
-  { tag: "accept", context: Context, businessIdentity: string?, connectionPolicy: WebSocketConnectionPolicy? }
+type WebSocketConnectResult discriminator "tag" =
+  { tag: "accept", businessIdentity: string?, connectionPolicy: WebSocketConnectionPolicy? }
   | { tag: "reject", code: integer, reason: string }
 
 native function sendTextToConnection(connectionId: string, text: string) -> void

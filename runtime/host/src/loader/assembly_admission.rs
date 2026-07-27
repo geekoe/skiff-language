@@ -898,7 +898,12 @@ fn validate_candidate(candidate: &AssemblyLinkedCandidate) -> anyhow::Result<()>
         if source.selector.protocol != IngressProtocol::Http {
             anyhow::bail!("linked ingress {:?} is not HTTP", source.selector);
         }
-        let GatewayProtocolSurface::Http(http) = &entry.protocol_surface().protocol;
+        let GatewayProtocolSurface::Http(http) = &entry.protocol_surface().protocol else {
+            anyhow::bail!(
+                "linked ingress {:?} does not have an HTTP protocol surface",
+                source.selector
+            );
+        };
         let mode_is_valid = matches!(
             (http.adapter_kind, http.dispatch_mode),
             (GatewayAdapterKind::TypedJson, GatewayDispatchMode::Unary)

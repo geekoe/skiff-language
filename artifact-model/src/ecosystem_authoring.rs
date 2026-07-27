@@ -105,6 +105,36 @@ pub struct HttpGatewayEntryAuthoring {
     pub adapter_args: Vec<GatewayAdapterArg>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebSocketConnectAuthoring {
+    pub handler: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adapter_args: Vec<GatewayAdapterArg>,
+}
+
+fn deserialize_present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebSocketGatewayEntryAuthoring {
+    #[serde(default = "default_http_host")]
+    pub host: String,
+    pub path: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
+    pub connect: Option<WebSocketConnectAuthoring>,
+}
+
 struct HttpGatewayEntriesVisitor;
 
 impl<'de> Visitor<'de> for HttpGatewayEntriesVisitor {
@@ -195,8 +225,12 @@ pub struct ServiceManifestAuthoring {
         deserialize_with = "deserialize_http_gateway_entries"
     )]
     pub http: Option<BTreeMap<GatewayEntryKey, HttpGatewayEntryAuthoring>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub websocket: Option<serde_json::Value>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
+    pub websocket: Option<WebSocketGatewayEntryAuthoring>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<serde_json::Value>,
 }
@@ -589,6 +623,89 @@ http:
         source: { kind: http.body, field: nested }
 "#;
         assert!(serde_yaml::from_str::<ServiceManifestAuthoring>(unknown_source_field).is_err());
+    }
+
+    #[test]
+    fn service_manifest_websocket_is_one_strict_optional_entry() {
+        let path_only = serde_yaml::from_str::<ServiceManifestAuthoring>(
+            r#"
+id: example.com/chat
+websocket:
+  path: /chat
+"#,
+        )
+        .unwrap();
+        let websocket = path_only.websocket.as_ref().unwrap();
+        assert_eq!(websocket.host, "*");
+        assert_eq!(websocket.path, "/chat");
+        assert!(websocket.connect.is_none());
+
+        let with_connect = serde_yaml::from_str::<ServiceManifestAuthoring>(
+            r#"
+id: example.com/chat
+websocket:
+  host: CHAT.EXAMPLE.COM
+  path: /chat
+  connect:
+    handler: handlers.connect
+    adapterArgs:
+      - param: request
+        source: { kind: websocket.connectRequest }
+      - param: connectionId
+        source: { kind: websocket.connectionId }
+"#,
+        )
+        .unwrap();
+        let websocket = with_connect.websocket.as_ref().unwrap();
+        assert_eq!(websocket.host, "CHAT.EXAMPLE.COM");
+        assert_eq!(websocket.connect.as_ref().unwrap().adapter_args.len(), 2);
+        assert_eq!(
+            serde_json::from_value::<ServiceManifestAuthoring>(
+                serde_json::to_value(&with_connect).unwrap()
+            )
+            .unwrap(),
+            with_connect
+        );
+    }
+
+    #[test]
+    fn service_manifest_websocket_rejects_null_collection_legacy_and_duplicate_shapes() {
+        for (label, websocket) in [
+            ("null", "null"),
+            ("scalar", "chat"),
+            ("list", "[]"),
+            (
+                "named multi-entry map",
+                "{ first: { path: /one }, second: { path: /two } }",
+            ),
+            ("missing path", "{}"),
+            ("null connect", "{ path: /chat, connect: null }"),
+            ("missing handler", "{ path: /chat, connect: {} }"),
+            ("author id", "{ id: author, path: /chat }"),
+            ("routes", "{ path: /chat, routes: [] }"),
+            ("operation", "{ path: /chat, operation: receive }"),
+            ("receive", "{ path: /chat, receive: handlers.receive }"),
+            ("message", "{ path: /chat, message: handlers.message }"),
+            ("context", "{ path: /chat, context: Context }"),
+            ("unknown", "{ path: /chat, unknown: true }"),
+        ] {
+            let source = format!("id: example.com/chat\nwebsocket: {websocket}\n");
+            assert!(
+                serde_yaml::from_str::<ServiceManifestAuthoring>(&source).is_err(),
+                "{label} unexpectedly decoded"
+            );
+        }
+
+        for duplicate in [
+            "id: example.com/chat\nwebsocket:\n  path: /one\n  path: /two\n",
+            "id: example.com/chat\nwebsocket:\n  path: /chat\n  connect:\n    handler: one.connect\n    handler: two.connect\n",
+            "id: example.com/chat\nwebsocket:\n  path: /one\nwebsocket:\n  path: /two\n",
+        ] {
+            assert!(
+                serde_yaml::from_str::<ServiceManifestAuthoring>(duplicate).is_err(),
+                "duplicate field unexpectedly decoded"
+            );
+        }
     }
 
     #[test]

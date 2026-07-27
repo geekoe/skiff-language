@@ -87,10 +87,11 @@ pub use file_ir::{
 };
 pub use framing::framed_identity;
 pub use gateway::{
-    canonical_gateway_entry_identity_bytes, gateway_entry_identity, gateway_entry_identity_hash,
-    gateway_entry_identity_projection, normalize_gateway_entry_protocol_surface,
-    normalize_gateway_external_schema, validate_gateway_entry_protocol_surface,
-    GatewayEntryIdentityProjection,
+    canonical_gateway_entry_identity_bytes, canonical_websocket_entry_id_bytes,
+    gateway_entry_identity, gateway_entry_identity_hash, gateway_entry_identity_projection,
+    normalize_gateway_entry_protocol_surface, normalize_gateway_external_schema,
+    validate_gateway_entry_protocol_surface, websocket_entry_id, websocket_entry_id_projection,
+    GatewayEntryIdentityProjection, WebSocketEntryIdProjection, WEBSOCKET_ENTRY_ID_SCHEMA_MARKER,
 };
 pub use legacy_service::{
     service_unit_hash, service_unit_identity, service_unit_identity_bytes,

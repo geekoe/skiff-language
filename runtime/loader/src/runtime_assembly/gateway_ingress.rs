@@ -2,9 +2,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
     GatewayAdapterPlan, GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
-    GatewayIngressBinding, IngressProtocol, IngressSelector, OperationCallableKind,
-    OperationTargetRef, PackageArtifact, PackageCallableId, PackageCallableSignature,
-    PackageLocalAbiSymbol, ServiceDeployment, ServiceDeploymentRef,
+    GatewayIngressBinding, IngressSelector, OperationCallableKind, OperationTargetRef,
+    PackageArtifact, PackageCallableId, PackageCallableSignature, PackageLocalAbiSymbol,
+    ServiceDeployment, ServiceDeploymentRef,
 };
 
 use super::HydratedPackageCodeSlot;
@@ -37,7 +37,7 @@ pub struct HydratedGatewayEntry {
     gateway_entry_identity: GatewayEntryIdentity,
     protocol_surface: GatewayEntryProtocolSurface,
     adapter_plan: GatewayAdapterPlan,
-    handler: HydratedGatewayCallable,
+    handler: Option<HydratedGatewayCallable>,
     pre: Option<HydratedGatewayCallable>,
     guard: Option<HydratedGatewayCallable>,
 }
@@ -63,8 +63,8 @@ impl HydratedGatewayEntry {
         &self.adapter_plan
     }
 
-    pub fn handler(&self) -> &HydratedGatewayCallable {
-        &self.handler
+    pub fn handler(&self) -> Option<&HydratedGatewayCallable> {
+        self.handler.as_ref()
     }
 
     pub fn pre(&self) -> Option<&HydratedGatewayCallable> {
@@ -116,13 +116,13 @@ pub(super) fn hydrate_gateway_ingress(
                 gateway_entry_identity: source.gateway_entry_identity.clone(),
                 protocol_surface: source.protocol_surface.clone(),
                 adapter_plan: source.adapter_plan.clone(),
-                handler: hydrate_callable(
-                    owner,
-                    key,
-                    "handler",
-                    implementation.artifact(),
-                    &source.handler,
-                )?,
+                handler: source
+                    .handler
+                    .as_ref()
+                    .map(|callable| {
+                        hydrate_callable(owner, key, "handler", implementation.artifact(), callable)
+                    })
+                    .transpose()?,
                 pre: source
                     .pre
                     .as_ref()
@@ -147,12 +147,6 @@ pub(super) fn hydrate_gateway_ingress(
         }
 
         for binding in &deployment.ingress {
-            if binding.selector.protocol != IngressProtocol::Http {
-                anyhow::bail!(
-                    "gateway selector {:?} uses unsupported WebSocket protocol",
-                    binding.selector
-                );
-            }
             let entry = deployment
                 .gateway_entries
                 .get(&binding.gateway_entry_key)

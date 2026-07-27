@@ -53,7 +53,7 @@ pub struct LinkedGatewayEntry {
     gateway_entry_identity: GatewayEntryIdentity,
     protocol_surface: GatewayEntryProtocolSurface,
     adapter_plan: GatewayAdapterPlan,
-    handler: LinkedGatewayCallable,
+    handler: Option<LinkedGatewayCallable>,
     pre: Option<LinkedGatewayCallable>,
     guard: Option<LinkedGatewayCallable>,
 }
@@ -66,7 +66,7 @@ impl LinkedGatewayEntry {
             gateway_entry_identity: source.gateway_entry_identity().clone(),
             protocol_surface: source.protocol_surface().clone(),
             adapter_plan: source.adapter_plan().clone(),
-            handler: source.handler().into(),
+            handler: source.handler().map(Into::into),
             pre: source.pre().map(Into::into),
             guard: source.guard().map(Into::into),
         }
@@ -97,7 +97,13 @@ impl LinkedGatewayEntry {
     }
 
     pub fn handler(&self) -> &LinkedGatewayCallable {
-        &self.handler
+        self.handler
+            .as_ref()
+            .expect("validated HTTP gateway entries always have a handler")
+    }
+
+    pub fn optional_handler(&self) -> Option<&LinkedGatewayCallable> {
+        self.handler.as_ref()
     }
 
     pub fn pre(&self) -> Option<&LinkedGatewayCallable> {
@@ -133,7 +139,9 @@ pub(super) fn link_gateway_ingress(
             .ok_or_else(|| {
                 anyhow::anyhow!("gateway entry {owner:?}/{key} implementation is not linked")
             })?;
-        validate_gateway_callable(owner, key, "handler", implementation, source.handler())?;
+        if let Some(callable) = source.handler() {
+            validate_gateway_callable(owner, key, "handler", implementation, callable)?;
+        }
         if let Some(callable) = source.pre() {
             validate_gateway_callable(owner, key, "pre", implementation, callable)?;
         }

@@ -6,10 +6,12 @@ use skiff_artifact_model::{
     GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
     GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
     GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
-    GatewayProtocolSurface, IngressProtocol, IngressSelector, PackageArtifactRef, PackageBuildId,
-    PackageCallableId, PackageLocalAbiIdentity, ResourcePolicy, ServiceContractRef,
+    GatewayProtocolSurface, GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
+    GatewayWebSocketShapeVersion, IngressProtocol, IngressSelector, PackageArtifactRef,
+    PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, ResourcePolicy, ServiceContractRef,
     ServiceDeployment, ServiceDeploymentInput, ServiceProtocolIdentity,
     SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    WEBSOCKET_GATEWAY_ENTRY_KEY,
 };
 
 use super::{
@@ -36,6 +38,9 @@ fn protocol_surface(kind: GatewayAdapterKind) -> GatewayEntryProtocolSurface {
             response_schema: None,
             stream_item_schema: None,
         },
+        GatewayAdapterKind::WebSocketConnect => {
+            panic!("HTTP deployment fixture does not accept websocketConnect")
+        }
     };
     GatewayEntryProtocolSurface {
         protocol: GatewayProtocolSurface::Http(http),
@@ -48,11 +53,16 @@ fn gateway_entry(kind: GatewayAdapterKind) -> DeploymentGatewayEntry {
     let source = match kind {
         GatewayAdapterKind::TypedJson => GatewayAdapterSource::HttpBody,
         GatewayAdapterKind::RawHttp => GatewayAdapterSource::HttpRequest,
+        GatewayAdapterKind::WebSocketConnect => {
+            panic!("HTTP deployment fixture does not accept websocketConnect")
+        }
     };
     DeploymentGatewayEntry {
         gateway_entry_identity: gateway_entry_identity(&protocol_surface).unwrap(),
         protocol_surface,
-        handler: PackageCallableId::new("pkg-callable:example.provider:gateway"),
+        handler: Some(PackageCallableId::new(
+            "pkg-callable:example.provider:gateway",
+        )),
         pre: None,
         guard: None,
         adapter_plan: GatewayAdapterPlan {
@@ -61,6 +71,41 @@ fn gateway_entry(kind: GatewayAdapterKind) -> DeploymentGatewayEntry {
                 param: "input".to_string(),
                 source,
             }],
+        },
+    }
+}
+
+fn websocket_gateway_entry(
+    handler: Option<PackageCallableId>,
+    args: Vec<GatewayAdapterArg>,
+) -> DeploymentGatewayEntry {
+    let protocol_surface = GatewayEntryProtocolSurface {
+        protocol: GatewayProtocolSurface::WebSocketConnect(
+            GatewayWebSocketConnectProtocolSurface {
+                connect_request_shape: GatewayWebSocketShapeVersion::V1,
+                connect_result_shape: GatewayWebSocketShapeVersion::V1,
+                connection_policy_shape: GatewayWebSocketShapeVersion::V1,
+                external_sources: vec![
+                    GatewayAdapterSource::WebSocketConnectRequest,
+                    GatewayAdapterSource::WebSocketConnectionId,
+                ],
+                downlink_frames: vec![
+                    GatewayWebSocketDownlinkFrame::Binary,
+                    GatewayWebSocketDownlinkFrame::Text,
+                ],
+            },
+        ),
+        external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+    };
+    DeploymentGatewayEntry {
+        gateway_entry_identity: gateway_entry_identity(&protocol_surface).unwrap(),
+        protocol_surface,
+        handler,
+        pre: None,
+        guard: None,
+        adapter_plan: GatewayAdapterPlan {
+            kind: GatewayAdapterKind::WebSocketConnect,
+            args,
         },
     }
 }
@@ -125,6 +170,30 @@ fn deployment_with(kind: GatewayAdapterKind) -> ServiceDeployment {
     deployment
 }
 
+fn websocket_deployment(
+    handler: Option<PackageCallableId>,
+    args: Vec<GatewayAdapterArg>,
+) -> ServiceDeployment {
+    let mut deployment = deployment_with(GatewayAdapterKind::TypedJson);
+    deployment.gateway_entries.clear();
+    deployment.ingress.clear();
+    let key = GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap();
+    deployment
+        .gateway_entries
+        .insert(key.clone(), websocket_gateway_entry(handler, args));
+    deployment.ingress.push(DeploymentIngressBinding {
+        selector: IngressSelector {
+            protocol: IngressProtocol::WebSocket,
+            host: "*".to_string(),
+            method: None,
+            path: "/chat".to_string(),
+        },
+        gateway_entry_key: key,
+    });
+    assign_service_deployment_identity(&mut deployment).unwrap();
+    deployment
+}
+
 fn input_from(deployment: &ServiceDeployment) -> ServiceDeploymentInput {
     ServiceDeploymentInput {
         schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
@@ -162,6 +231,111 @@ fn deployment_gateway_validation_accepts_typed_raw_multiple_selectors_and_zero()
     assign_service_deployment_identity(&mut empty).unwrap();
     validate_service_deployment_surface(&empty).unwrap();
     validate_service_deployment_input(&input_from(&empty)).unwrap();
+}
+
+#[test]
+fn deployment_gateway_validation_accepts_websocket_with_or_without_connect_handler() {
+    let no_handler = websocket_deployment(None, Vec::new());
+    validate_service_deployment_surface(&no_handler).unwrap();
+    validate_service_deployment_input(&input_from(&no_handler)).unwrap();
+
+    let with_handler = websocket_deployment(
+        Some(PackageCallableId::new(
+            "pkg-callable:example.provider:connect",
+        )),
+        vec![
+            GatewayAdapterArg {
+                param: "request".to_string(),
+                source: GatewayAdapterSource::WebSocketConnectRequest,
+            },
+            GatewayAdapterArg {
+                param: "connectionId".to_string(),
+                source: GatewayAdapterSource::WebSocketConnectionId,
+            },
+        ],
+    );
+    validate_service_deployment_surface(&with_handler).unwrap();
+
+    let mut aliased = no_handler;
+    aliased.ingress.push(DeploymentIngressBinding {
+        selector: IngressSelector {
+            protocol: IngressProtocol::WebSocket,
+            host: "chat.example.test".to_string(),
+            method: None,
+            path: "/chat".to_string(),
+        },
+        gateway_entry_key: GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap(),
+    });
+    validate_service_deployment_surface(&aliased).unwrap();
+}
+
+#[test]
+fn deployment_gateway_validation_rejects_invalid_websocket_cross_fields() {
+    let assert_invalid = |deployment: &ServiceDeployment| {
+        assert!(validate_service_deployment_surface(deployment).is_err());
+    };
+
+    let mut no_handler_args = websocket_deployment(None, Vec::new());
+    no_handler_args
+        .gateway_entries
+        .values_mut()
+        .next()
+        .unwrap()
+        .adapter_plan
+        .args
+        .push(GatewayAdapterArg {
+            param: "request".to_string(),
+            source: GatewayAdapterSource::WebSocketConnectRequest,
+        });
+    assert_invalid(&no_handler_args);
+
+    let mut pre = websocket_deployment(None, Vec::new());
+    pre.gateway_entries.values_mut().next().unwrap().pre =
+        Some(PackageCallableId::new("pkg-callable:pre"));
+    assert_invalid(&pre);
+
+    let mut guard = websocket_deployment(None, Vec::new());
+    guard.gateway_entries.values_mut().next().unwrap().guard =
+        Some(PackageCallableId::new("pkg-callable:guard"));
+    assert_invalid(&guard);
+
+    let mut wrong_kind = websocket_deployment(None, Vec::new());
+    wrong_kind
+        .gateway_entries
+        .values_mut()
+        .next()
+        .unwrap()
+        .adapter_plan
+        .kind = GatewayAdapterKind::RawHttp;
+    assert_invalid(&wrong_kind);
+
+    let mut wrong_key = websocket_deployment(None, Vec::new());
+    let entry = wrong_key
+        .gateway_entries
+        .remove(&GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap())
+        .unwrap();
+    let other = GatewayEntryKey::parse("other").unwrap();
+    wrong_key.gateway_entries.insert(other.clone(), entry);
+    wrong_key.ingress[0].gateway_entry_key = other;
+    assert_invalid(&wrong_key);
+
+    let mut method = websocket_deployment(None, Vec::new());
+    method.ingress[0].selector.method = Some("GET".to_string());
+    assert_invalid(&method);
+
+    let mut selector_mismatch = websocket_deployment(None, Vec::new());
+    selector_mismatch.ingress[0].selector.protocol = IngressProtocol::Http;
+    selector_mismatch.ingress[0].selector.method = Some("GET".to_string());
+    assert_invalid(&selector_mismatch);
+
+    let mut http_without_handler = deployment_with(GatewayAdapterKind::TypedJson);
+    http_without_handler
+        .gateway_entries
+        .values_mut()
+        .next()
+        .unwrap()
+        .handler = None;
+    assert_invalid(&http_without_handler);
 }
 
 #[test]
@@ -236,7 +410,7 @@ fn deployment_gateway_validation_rejects_cross_field_mismatches() {
         .values_mut()
         .next()
         .unwrap()
-        .handler = PackageCallableId::new("");
+        .handler = Some(PackageCallableId::new(""));
     assert!(validate_service_deployment_surface(&empty_handler).is_err());
 
     let mut empty_pre = baseline.clone();

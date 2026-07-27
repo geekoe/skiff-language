@@ -149,18 +149,17 @@ function roundTrip(value: GenericRecord<string>) -> GenericRecord<string> {
         .dependency("skiff.run/std", "1.0.0")
         .expect("canonical std artifact");
     for path in [
-        "std.websocket.WebSocketConnection",
-        "std.websocket.WebSocketReceiveEvent",
-        "std.websocket.WebSocketIngressEvent",
+        "std.websocket.WebSocketConnectRequest",
+        "std.websocket.WebSocketConnectionPolicy",
         "std.websocket.WebSocketConnectResult",
     ] {
         assert!(matches!(
             std.artifact.package_local_abi.public_symbols.get(path),
             Some(PackageLocalAbiSymbol::Type { type_params, .. })
-                if type_params == &["Context".to_string()]
+                if type_params.is_empty()
         ));
         assert!(std.artifact.implementation_links.types.contains_key(path));
-        assert!(!std.package_schema_index.types.contains_key(path));
+        assert!(std.package_schema_index.types.contains_key(path));
     }
     assert!(
         std.package_schema_index

@@ -264,7 +264,7 @@ type Marker { request: std.http.HttpRequest }
         CallableEffectSummary::Analyzed { .. }
     ));
 
-    assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 97);
+    assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 91);
     for public_path in [
         "std.bytes.DecodeError",
         "std.crypto.sha256",
@@ -278,8 +278,9 @@ type Marker { request: std.http.HttpRequest }
         "std.service.ProtocolError",
         "std.telemetry.emit",
         "std.time.sleep",
-        "std.websocket.ConnectionMessage",
-        "std.websocket.WebSocketIngressEvent",
+        "std.websocket.WebSocketConnectRequest",
+        "std.websocket.WebSocketConnectionPolicy",
+        "std.websocket.WebSocketConnectResult",
     ] {
         assert!(
             std.artifact
@@ -287,6 +288,23 @@ type Marker { request: std.http.HttpRequest }
                 .public_symbols
                 .contains_key(public_path),
             "std local ABI should contain {public_path}"
+        );
+    }
+    for removed in [
+        "std.websocket.TextConnectionMessage",
+        "std.websocket.BinaryConnectionMessage",
+        "std.websocket.ConnectionMessage",
+        "std.websocket.WebSocketConnection",
+        "std.websocket.WebSocketReceiveEvent",
+        "std.websocket.WebSocketIngressEvent",
+        "std.websocket.WebSocketCloseEvent",
+    ] {
+        assert!(
+            !std.artifact
+                .package_local_abi
+                .public_symbols
+                .contains_key(removed),
+            "std local ABI must not contain removed {removed}"
         );
     }
     assert!(std.artifact.callable_links.contains_key(&log_callable_id));
@@ -371,8 +389,9 @@ type Envelope {
   request: std.http.HttpRequest,
   event: std.http.HttpResponseStreamEvent,
   file: std.file.ImmutableFile,
-  gateway: std.websocket.WebSocketConnectResult<string>,
-  connect: std.websocket.ConnectionMessage,
+  gateway: std.websocket.WebSocketConnectResult,
+  connect: std.websocket.WebSocketConnectRequest,
+  policy: std.websocket.WebSocketConnectionPolicy,
   raw: Json,
   bytesValue: bytes,
 }
@@ -385,17 +404,12 @@ type Envelope {
         "std.http.HttpRequest",
         "std.http.HttpResponseStreamEvent",
         "std.file.ImmutableFile",
-        "std.websocket.ConnectionMessage",
+        "std.websocket.WebSocketConnectResult",
+        "std.websocket.WebSocketConnectRequest",
+        "std.websocket.WebSocketConnectionPolicy",
     ] {
         assert!(file_contains_std_package_type(consumer, symbol_path));
     }
-    assert!(file_contains_type_ref(consumer, &|ty| {
-        matches!(
-            ty,
-            TypeRefIr::Builtin { name, .. }
-                if name == "std.websocket.WebSocketConnectResult"
-        )
-    }));
 
     let std = project
         .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")

@@ -89,7 +89,7 @@ function invoke(actor: UserActor) -> string {
         },
         service_binding_templates: Vec::new(),
         activation_templates: Vec::new(),
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     };
     let image = skiff_runtime_linker::link_package_fixture_from_runtime_assembly(
         &assembly,

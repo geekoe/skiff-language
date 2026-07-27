@@ -326,11 +326,11 @@ mod tests {
         let resolver = PackageExportResolver::new(&aliases);
 
         let symbol = resolver
-            .resolve_package_symbol_path("std.websocket.TextConnectionMessage")
+            .resolve_package_symbol_path("std.websocket.WebSocketConnectRequest")
             .expect("std symbol should resolve through default root");
 
         assert_eq!(symbol.dependency_ref, "std");
-        assert_eq!(symbol.symbol_path, "std.websocket.TextConnectionMessage");
+        assert_eq!(symbol.symbol_path, "std.websocket.WebSocketConnectRequest");
     }
 
     #[test]

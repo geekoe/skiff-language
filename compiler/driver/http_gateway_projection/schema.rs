@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::normalize_gateway_external_schema;
 use skiff_artifact_model::{
+    canonical_websocket_connect_schema,
     http_boundary::{
         canonical_http_boundary_symbol, canonical_http_boundary_type, HTTP_BOUNDARY_PACKAGE_ID,
     },
@@ -13,19 +14,19 @@ use skiff_artifact_model::{
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref;
 
 #[derive(Clone, Copy)]
-pub(super) enum ExactTypeRef<'a> {
+pub(crate) enum ExactTypeRef<'a> {
     Package(&'a PackageTypeRef),
     Local(&'a TypeRefIr),
 }
 
-pub(super) struct ExactTypeClassifier<'a> {
+pub(crate) struct ExactTypeClassifier<'a> {
     implementation: &'a PackageArtifact,
     package_closure: &'a [PackageArtifact],
     package_schema_records: &'a BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 }
 
 impl<'a> ExactTypeClassifier<'a> {
-    pub fn new(
+    pub(crate) fn new(
         implementation: &'a PackageArtifact,
         package_closure: &'a [PackageArtifact],
         package_schema_records: &'a BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
@@ -37,11 +38,14 @@ impl<'a> ExactTypeClassifier<'a> {
         }
     }
 
-    pub fn project(&self, ty: &PackageTypeRef) -> Result<GatewayExternalSchema, String> {
+    pub(crate) fn project(&self, ty: &PackageTypeRef) -> Result<GatewayExternalSchema, String> {
         self.project_exact(ExactTypeRef::Package(ty))
     }
 
-    pub fn project_exact(&self, ty: ExactTypeRef<'_>) -> Result<GatewayExternalSchema, String> {
+    pub(crate) fn project_exact(
+        &self,
+        ty: ExactTypeRef<'_>,
+    ) -> Result<GatewayExternalSchema, String> {
         let mut context = ProjectionContext::default();
         let schema = match ty {
             ExactTypeRef::Package(ty) => self.project_package_type(ty, &mut context)?,
@@ -52,7 +56,7 @@ impl<'a> ExactTypeClassifier<'a> {
         normalize_gateway_external_schema(schema).map_err(|error| error.to_string())
     }
 
-    pub fn require_std_http_type(
+    pub(crate) fn require_std_http_type(
         &self,
         ty: &PackageTypeRef,
         public_path: &str,
@@ -60,7 +64,7 @@ impl<'a> ExactTypeClassifier<'a> {
         self.require_std_http_exact(ExactTypeRef::Package(ty), public_path)
     }
 
-    pub fn require_std_http_exact(
+    pub(crate) fn require_std_http_exact(
         &self,
         ty: ExactTypeRef<'_>,
         public_path: &str,
@@ -104,7 +108,7 @@ impl<'a> ExactTypeClassifier<'a> {
         Ok(())
     }
 
-    pub fn canonical_std_http_schema(
+    pub(crate) fn canonical_std_http_schema(
         &self,
         public_path: &str,
     ) -> Result<GatewayExternalSchema, String> {
@@ -113,6 +117,71 @@ impl<'a> ExactTypeClassifier<'a> {
         let mut context = ProjectionContext::default();
         let schema = self.project_contract_type(&ty, &BTreeMap::new(), &mut context)?;
         normalize_gateway_external_schema(schema).map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn require_std_websocket_type(
+        &self,
+        ty: &PackageTypeRef,
+        public_path: &str,
+    ) -> Result<(), String> {
+        let PackageTypeRef::Local {
+            local_type: TypeRefIr::PackageSymbol { symbol },
+        } = ty
+        else {
+            return Err(format!(
+                "expected exact compiler-owned {public_path}, got a different type form"
+            ));
+        };
+        let artifact = self.resolve_dependency_artifact(&symbol.package)?;
+        if artifact.package_id != HTTP_BOUNDARY_PACKAGE_ID || symbol.symbol_path != public_path {
+            return Err(format!(
+                "expected exact compiler-owned {public_path}, got {} from {}",
+                symbol.symbol_path, artifact.package_id
+            ));
+        }
+        self.validate_symbol_abi_expectation(symbol, artifact)?;
+        let Some(PackageLocalAbiSymbol::Type {
+            is_interface: false,
+            type_params,
+            ..
+        }) = artifact.package_local_abi.public_symbols.get(public_path)
+        else {
+            return Err(format!(
+                "compiler-owned std artifact does not expose exact type {public_path}"
+            ));
+        };
+        if !type_params.is_empty() {
+            return Err(format!(
+                "compiler-owned {public_path} unexpectedly declares generic parameters"
+            ));
+        }
+        let expected = canonical_websocket_connect_schema(public_path)
+            .ok_or_else(|| format!("{public_path} is not a canonical WebSocket connect type"))
+            .and_then(|schema| {
+                normalize_gateway_external_schema(schema).map_err(|error| error.to_string())
+            })?;
+        let actual = self.project(ty)?;
+        if actual != expected {
+            return Err(format!(
+                "compiler-owned {public_path} does not match the canonical WebSocket connect v1 shape"
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn require_builtin_type(
+        &self,
+        ty: &PackageTypeRef,
+        expected: &str,
+    ) -> Result<(), String> {
+        match ty {
+            PackageTypeRef::Local {
+                local_type: TypeRefIr::Builtin { name, args },
+            } if name == expected && args.is_empty() => Ok(()),
+            _ => Err(format!(
+                "expected exact non-generic builtin {expected}, got a different type"
+            )),
+        }
     }
 
     fn project_package_type(

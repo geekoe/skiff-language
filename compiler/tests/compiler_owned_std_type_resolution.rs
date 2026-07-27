@@ -68,17 +68,13 @@ function run(connectionId: string) -> void {
 }
 
 #[test]
-fn compiler_owned_std_generic_applied_source_type_owner_rehydrates_and_lowers() {
+fn compiler_owned_std_websocket_connect_type_owner_rehydrates_and_lowers() {
     let project = compile_with_contract(
-        "generic-applied-owner",
+        "websocket-connect-owner",
         r#"import std
 
-type Context {
-  userId: string,
-}
-
-function run(input: string) -> std.websocket.WebSocketIngressEvent<Context> {
-  return std.json.decode<std.websocket.WebSocketIngressEvent<Context>>(input)
+function run(input: string) -> std.websocket.WebSocketConnectResult {
+  return std.json.decode<std.websocket.WebSocketConnectResult>(input)
 }
 "#,
     );
@@ -94,11 +90,16 @@ function run(input: string) -> std.websocket.WebSocketIngressEvent<Context> {
             call.type_args
         )
     });
-    let TypeRefIr::Builtin { name, args } = ty else {
-        panic!("std generic type argument must retain its structured shape: {ty:?}");
+    let TypeRefIr::PackageSymbol { symbol } = ty else {
+        panic!("std WebSocket type argument must retain its exact package owner: {ty:?}");
     };
-    assert_eq!(name, "std.websocket.WebSocketIngressEvent");
-    assert_eq!(args, &[TypeRefIr::LocalType { type_index: 0 }]);
+    assert_eq!(
+        symbol.package,
+        PackageRefIr::PackageId {
+            package_id: SKIFF_STD_PUBLICATION_ID.to_string()
+        }
+    );
+    assert_eq!(symbol.symbol_path, "std.websocket.WebSocketConnectResult");
     assert_eq!(
         project.package.artifact.package_requirements[0].expected_local_abi,
         std.artifact.package_local_abi.local_abi_identity

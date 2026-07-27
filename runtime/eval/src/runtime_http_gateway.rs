@@ -107,6 +107,10 @@ impl Interpreter {
                 handler.addr,
                 &mut heap,
             ),
+            GatewayAdapterKind::WebSocketConnect => Err(protocol_error(
+                target,
+                "HTTP gateway execution refuses websocketConnect adapter plans",
+            )),
         }
     }
 
@@ -301,7 +305,12 @@ fn validate_execution_pin(
 fn require_http_surface(
     target: &impl RuntimeHttpGatewayExecutionTarget,
 ) -> Result<&skiff_artifact_model::GatewayHttpProtocolSurface> {
-    let GatewayProtocolSurface::Http(http) = &target.protocol_surface().protocol;
+    let GatewayProtocolSurface::Http(http) = &target.protocol_surface().protocol else {
+        return Err(protocol_error(
+            target,
+            "HTTP gateway execution requires an HTTP protocol surface",
+        ));
+    };
     if http.adapter_kind != target.adapter_plan().kind {
         return Err(protocol_error(
             target,
@@ -465,6 +474,13 @@ fn handler_args(
                     "http.context requires the exact linked pre callable result",
                 )
             })?,
+            GatewayAdapterSource::WebSocketConnectRequest
+            | GatewayAdapterSource::WebSocketConnectionId => {
+                return Err(protocol_error(
+                    target,
+                    "HTTP gateway execution refuses WebSocket adapter sources",
+                ))
+            }
         };
         values.push(value);
     }

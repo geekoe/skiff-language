@@ -125,8 +125,9 @@ pub use ecosystem_authoring::{
     parse_service_deployment_yml, EcosystemAuthoringError, HttpGatewayEntryAuthoring,
     RuntimeAssemblyAuthoring, ServiceAuthoringKind, ServiceConfigProfileAuthoring,
     ServiceContractDefinition, ServiceContractDefinitionDiagnosticText, ServiceDeploymentAuthoring,
-    ServiceManifestAuthoring, DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS,
-    DEPENDENCY_ALIAS_POSITIVE_VECTORS, DEPENDENCY_ALIAS_RESERVED_VECTORS,
+    ServiceManifestAuthoring, WebSocketConnectAuthoring, WebSocketGatewayEntryAuthoring,
+    DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS, DEPENDENCY_ALIAS_POSITIVE_VECTORS,
+    DEPENDENCY_ALIAS_RESERVED_VECTORS,
 };
 pub use effects::{
     CallableEffectFacts, CallableEffectSummary, CallableEffectUnknownReason, CallableMayEffects,
@@ -139,11 +140,15 @@ pub use executable_target::{
 };
 pub use file_ir::*;
 pub use gateway::{
-    validate_gateway_adapter_args, GatewayAdapterArg, GatewayAdapterArgValidationError,
-    GatewayAdapterKind, GatewayAdapterSource, GatewayDispatchMode, GatewayEntryProtocolSurface,
-    GatewayExternalErrorProjection, GatewayExternalErrorProjectionKind,
-    GatewayExternalErrorProjectionVersion, GatewayExternalSchema, GatewayHttpProtocolSurface,
-    GatewayProtocolSurface,
+    canonical_websocket_connect_schema, validate_gateway_adapter_args, GatewayAdapterArg,
+    GatewayAdapterArgValidationError, GatewayAdapterKind, GatewayAdapterSource,
+    GatewayDispatchMode, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
+    GatewayExternalErrorProjectionKind, GatewayExternalErrorProjectionVersion,
+    GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface,
+    GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
+    GatewayWebSocketShapeVersion, WebSocketEntryId, WebSocketEntryIdParseError,
+    WEBSOCKET_CONNECTION_POLICY_V1_TYPE, WEBSOCKET_CONNECT_REQUEST_V1_TYPE,
+    WEBSOCKET_CONNECT_RESULT_V1_TYPE, WEBSOCKET_ENTRY_ID_PREFIX, WEBSOCKET_GATEWAY_ENTRY_KEY,
 };
 pub use metadata::MetadataValue;
 pub use native_signature::{
@@ -209,11 +214,10 @@ pub use schema::{
 pub use service_contract::{ContractDiagnosticText, ServiceContract};
 pub use service_unit::{
     ActorMetadataIr, ActorMethodMetadataIr, DbMetadataIndexIr, DbMetadataIr, GatewayConfig,
-    GatewayRoute, GatewayWebSocket, GatewayWebSocketRoute, OperationIngressKind, OperationMode,
-    OperationParam, OperationRouteBinding, ServiceConfigMetadata, ServiceDependencyConstraint,
-    ServiceDependencyOperationRef, ServiceMeta, ServiceOperation, ServiceOperationTarget,
-    ServiceReceiverOperationTarget, ServiceTimeoutConfig, ServiceUnit, SpawnTargetIr,
-    SpawnTargetKindIr,
+    GatewayRoute, OperationIngressKind, OperationMode, OperationParam, OperationRouteBinding,
+    ServiceConfigMetadata, ServiceDependencyConstraint, ServiceDependencyOperationRef, ServiceMeta,
+    ServiceOperation, ServiceOperationTarget, ServiceReceiverOperationTarget, ServiceTimeoutConfig,
+    ServiceUnit, SpawnTargetIr, SpawnTargetKindIr,
 };
 pub use symbols::{
     PackageCallableRef, PackageRefIr, PackageSymbolRef, ServiceDependencySymbolRef,

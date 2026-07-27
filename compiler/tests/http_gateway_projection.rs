@@ -301,13 +301,14 @@ function dual(body: string) -> string { return "ok" }
     let operation = fixture.api.contract.operations.keys().next().unwrap();
     assert_ne!(operation.as_str(), gateway.gateway_entry_identity.as_str());
     let service_operation_callable_id = &deployment.operation_bindings[0].package_callable_id;
+    let gateway_handler = gateway.handler.as_ref().expect("HTTP gateway handler");
     assert_ne!(
-        service_operation_callable_id, &gateway.handler,
+        service_operation_callable_id, gateway_handler,
         "public service-call and private implementation callable IDs are distinct identity domains"
     );
     let service_operation_target =
         &fixture.project.package.artifact.callable_links[service_operation_callable_id].target;
-    let gateway_target = &fixture.project.package.artifact.callable_links[&gateway.handler].target;
+    let gateway_target = &fixture.project.package.artifact.callable_links[gateway_handler].target;
     assert_eq!(service_operation_target.file_ref, gateway_target.file_ref);
     assert_eq!(
         service_operation_target.executable_index, gateway_target.executable_index,
@@ -959,6 +960,9 @@ fn http_surface<'a>(
         .protocol
     {
         GatewayProtocolSurface::Http(surface) => surface,
+        GatewayProtocolSurface::WebSocketConnect(_) => {
+            panic!("HTTP fixture unexpectedly contains websocketConnect")
+        }
     }
 }
 

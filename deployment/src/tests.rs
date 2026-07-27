@@ -372,7 +372,10 @@ fn deployment_identity_mutation_matrix_covers_every_semantic_category() {
                     .gateway_entries
                     .get_mut(&GatewayEntryKey::parse("echo").unwrap())
                     .unwrap();
-                let GatewayProtocolSurface::Http(http) = &mut entry.protocol_surface.protocol;
+                let GatewayProtocolSurface::Http(http) = &mut entry.protocol_surface.protocol
+                else {
+                    panic!("HTTP fixture unexpectedly contains websocketConnect");
+                };
                 http.response_schema = Some(GatewayExternalSchema::Integer);
                 entry.gateway_entry_identity =
                     gateway_entry_identity(&entry.protocol_surface).unwrap();
@@ -382,7 +385,7 @@ fn deployment_identity_mutation_matrix_covers_every_semantic_category() {
             "gateway handler",
             Box::new(|value| {
                 value.gateway_entries.values_mut().next().unwrap().handler =
-                    PackageCallableId::new("callable.changed-handler");
+                    Some(PackageCallableId::new("callable.changed-handler"));
             }),
         ),
         (
@@ -420,7 +423,10 @@ fn deployment_identity_mutation_matrix_covers_every_semantic_category() {
                     param: "request".to_string(),
                     source: GatewayAdapterSource::HttpRequest,
                 });
-                let GatewayProtocolSurface::Http(http) = &mut entry.protocol_surface.protocol;
+                let GatewayProtocolSurface::Http(http) = &mut entry.protocol_surface.protocol
+                else {
+                    panic!("HTTP fixture unexpectedly contains websocketConnect");
+                };
                 http.external_sources = vec![
                     GatewayAdapterSource::HttpBody,
                     GatewayAdapterSource::HttpRequest,

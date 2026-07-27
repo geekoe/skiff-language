@@ -6,6 +6,8 @@ use skiff_artifact_model::{
     GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterSource, GatewayDispatchMode,
     GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
     GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface,
+    GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
+    GatewayWebSocketShapeVersion, WEBSOCKET_GATEWAY_ENTRY_KEY,
 };
 
 use super::*;
@@ -71,15 +73,43 @@ fn raw_http_surface(mode: GatewayDispatchMode) -> GatewayEntryProtocolSurface {
     .expect("canonical raw HTTP surface")
 }
 
+fn websocket_surface() -> GatewayEntryProtocolSurface {
+    normalize_gateway_entry_protocol_surface(GatewayEntryProtocolSurface {
+        protocol: GatewayProtocolSurface::WebSocketConnect(
+            GatewayWebSocketConnectProtocolSurface {
+                connect_request_shape: GatewayWebSocketShapeVersion::V1,
+                connect_result_shape: GatewayWebSocketShapeVersion::V1,
+                connection_policy_shape: GatewayWebSocketShapeVersion::V1,
+                external_sources: vec![
+                    GatewayAdapterSource::WebSocketConnectionId,
+                    GatewayAdapterSource::WebSocketConnectRequest,
+                ],
+                downlink_frames: vec![
+                    GatewayWebSocketDownlinkFrame::Text,
+                    GatewayWebSocketDownlinkFrame::Binary,
+                ],
+            },
+        ),
+        external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+    })
+    .expect("canonical WebSocket connect surface")
+}
+
 fn http_surface(surface: &GatewayEntryProtocolSurface) -> &GatewayHttpProtocolSurface {
     match &surface.protocol {
         GatewayProtocolSurface::Http(http) => http,
+        GatewayProtocolSurface::WebSocketConnect(_) => {
+            panic!("HTTP surface helper received websocketConnect")
+        }
     }
 }
 
 fn http_surface_mut(surface: &mut GatewayEntryProtocolSurface) -> &mut GatewayHttpProtocolSurface {
     match &mut surface.protocol {
         GatewayProtocolSurface::Http(http) => http,
+        GatewayProtocolSurface::WebSocketConnect(_) => {
+            panic!("HTTP surface helper received websocketConnect")
+        }
     }
 }
 
@@ -124,6 +154,47 @@ fn gateway_identity_marker_parser_and_preimage_match_exact_golden() {
             gateway_entry_identity_hash(&invalid).is_err(),
             "{invalid} must be rejected"
         );
+    }
+}
+
+#[test]
+fn websocket_gateway_and_internal_entry_id_match_language_neutral_goldens() {
+    let surface = websocket_surface();
+    let bytes =
+        canonical_gateway_entry_identity_bytes(&surface).expect("canonical gateway preimage");
+    assert_eq!(
+        String::from_utf8(bytes).unwrap(),
+        r#"{"schema":"skiff-gateway-entry-identity-v1","surface":{"externalErrorProjection":{"kind":"fixed","version":"v1"},"protocol":{"kind":"websocketConnect","surface":{"connectRequestShape":"v1","connectResultShape":"v1","connectionPolicyShape":"v1","downlinkFrames":["binary","text"],"externalSources":[{"kind":"websocket.connectRequest"},{"kind":"websocket.connectionId"}]}}}}"#
+    );
+    assert_eq!(
+        gateway_entry_identity(&surface).unwrap().as_str(),
+        "skiff-gateway-entry-v1:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936"
+    );
+
+    let key = GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap();
+    let bytes = canonical_websocket_entry_id_bytes("example.com/chat", &key).unwrap();
+    assert_eq!(
+        String::from_utf8(bytes).unwrap(),
+        r#"{"gatewayEntryKey":"websocket","schema":"skiff-websocket-entry-identity-v1","serviceId":"example.com/chat"}"#
+    );
+    assert_eq!(
+        websocket_entry_id("example.com/chat", &key).unwrap().as_str(),
+        "skiff-websocket-entry-v1:sha256:3a0f9b39b684e0c324ff3f729395273987f86ed648e6c0ddd0cb35b67b1aa616"
+    );
+    assert_ne!(
+        websocket_entry_id("example.com/chat", &key).unwrap(),
+        websocket_entry_id("example.com/other-chat", &key).unwrap()
+    );
+    assert_ne!(
+        websocket_entry_id("example.com/chat", &key).unwrap(),
+        websocket_entry_id(
+            "example.com/chat",
+            &GatewayEntryKey::parse("other").unwrap()
+        )
+        .unwrap()
+    );
+    for service_id in ["", " ", "\n"] {
+        assert!(websocket_entry_id(service_id, &key).is_err());
     }
 }
 

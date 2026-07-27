@@ -106,7 +106,12 @@ pub async fn execute_runtime_http_gateway_request(
         &interpreter,
         target.eval(),
     );
-    let GatewayProtocolSurface::Http(http) = &target.protocol_surface().protocol;
+    let GatewayProtocolSurface::Http(http) = &target.protocol_surface().protocol else {
+        return Err(RequestError::protocol(
+            target.gateway_entry_key().as_str(),
+            "HTTP gateway execution requires an HTTP protocol surface",
+        ));
+    };
     let body_result = match http.dispatch_mode {
         GatewayDispatchMode::Unary => interpreter
             .execute_runtime_http_gateway_unary(context, request_context, target)
@@ -165,7 +170,12 @@ fn validate_request(
     target: &RuntimeAssemblyHttpGatewayTarget,
     header: &RuntimeAssemblyRequestStartFrameHeader,
 ) -> RequestResult<()> {
-    let GatewayProtocolSurface::Http(http) = &target.protocol_surface().protocol;
+    let GatewayProtocolSurface::Http(http) = &target.protocol_surface().protocol else {
+        return Err(RequestError::protocol(
+            target.gateway_entry_key().as_str(),
+            "HTTP gateway request validation requires an HTTP protocol surface",
+        ));
+    };
     validate_request_facts(
         HttpGatewayRequestValidationFacts {
             gateway_entry_key: target.gateway_entry_key().as_str(),

@@ -311,7 +311,9 @@ fn canonical_header(
     let selector = route.selector();
     assert_eq!(selector.protocol, IngressProtocol::Http);
     let method = selector.method.clone().expect("HTTP method");
-    let GatewayProtocolSurface::Http(http) = &route.protocol_surface().protocol;
+    let GatewayProtocolSurface::Http(http) = &route.protocol_surface().protocol else {
+        panic!("HTTP request fixture must use an HTTP surface");
+    };
     RuntimeAssemblyRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),

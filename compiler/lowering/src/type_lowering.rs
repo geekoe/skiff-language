@@ -529,7 +529,7 @@ pub(super) fn lower_type_text(
 
     if let Some(parts) = generic_parts(ty) {
         if let Some(name) = canonical_builtin_std_type_name(parts.root) {
-            if is_file_ir_native_builtin_type(&name) || is_std_abi_generic_type_name(&name) {
+            if is_file_ir_native_builtin_type(&name) {
                 return Ok(source_builtin_type_ref(
                     &name,
                     parts
@@ -983,16 +983,6 @@ fn source_builtin_type_ref(name: &str, args: Vec<TypeRefIr>) -> TypeRefIr {
             .to_string(),
         args,
     }
-}
-
-fn is_std_abi_generic_type_name(name: &str) -> bool {
-    matches!(
-        name,
-        "std.websocket.WebSocketConnectResult"
-            | "std.websocket.WebSocketIngressEvent"
-            | "std.websocket.WebSocketConnection"
-            | "std.websocket.WebSocketReceiveEvent"
-    )
 }
 
 fn unsupported_file_ir_generic_root(root: &str) -> CompileError {

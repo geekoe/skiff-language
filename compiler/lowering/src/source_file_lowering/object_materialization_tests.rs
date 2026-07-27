@@ -158,16 +158,30 @@ fn assert_null(executable: &ExecutableIr, expression: &skiff_artifact_model::Exp
     ));
 }
 
-fn branch_tag(type_ref: &TypeRefIr) -> Option<&str> {
-    let TypeRefIr::Record { fields } = type_ref else {
-        return None;
+fn assert_connect_result_type(type_ref: &TypeRefIr) {
+    let TypeRefIr::PackageSymbol { symbol } = type_ref else {
+        panic!("expected exact std WebSocketConnectResult, found {type_ref:?}");
     };
-    match fields.get("tag") {
-        Some(TypeRefIr::Literal {
-            value: LiteralIr::String { value },
-        }) => Some(value),
-        _ => None,
-    }
+    assert_eq!(
+        symbol.package,
+        skiff_artifact_model::PackageRefIr::PackageId {
+            package_id: "skiff.run/std".to_string()
+        }
+    );
+    assert_eq!(symbol.symbol_path, "std.websocket.WebSocketConnectResult");
+}
+
+fn assert_string(
+    executable: &ExecutableIr,
+    expression: &skiff_artifact_model::ExprRefIr,
+    expected: &str,
+) {
+    assert!(matches!(
+        referenced_expression(executable, expression),
+        ExprIr::Literal {
+            value: LiteralIr::String { value }
+        } if value == expected
+    ));
 }
 
 #[test]
@@ -176,20 +190,15 @@ fn object_materialization_lowers_accept_reject_nullable_and_nested_nominals_to_c
         r#"
           import std
 
-          type Context {
-            roomId: string,
-            cursor: string?,
+          function acceptFull() -> std.websocket.WebSocketConnectResult {
+            return { tag: "accept", businessIdentity: "biz", connectionPolicy: { maxConnections: 8, overflow: "close-oldest" } }
           }
 
-          function acceptFull() -> std.websocket.WebSocketConnectResult<Context> {
-            return { tag: "accept", context: { roomId: "room", cursor: null }, businessIdentity: "biz", connectionPolicy: { maxConnections: 8, overflow: "close-oldest" } }
+          function acceptDefaults() -> std.websocket.WebSocketConnectResult {
+            return { tag: "accept" }
           }
 
-          function acceptDefaults() -> std.websocket.WebSocketConnectResult<Context> {
-            return { tag: "accept", context: { roomId: "room" } }
-          }
-
-          function reject() -> std.websocket.WebSocketConnectResult<Context> {
+          function reject() -> std.websocket.WebSocketConnectResult {
             return { tag: "reject", code: 403, reason: "denied" }
           }
         "#,
@@ -203,26 +212,12 @@ fn object_materialization_lowers_accept_reject_nullable_and_nested_nominals_to_c
     else {
         panic!("accept object literal should lower to Construct")
     };
-    assert_eq!(branch_tag(type_ref), Some("accept"));
+    assert_connect_result_type(type_ref);
     assert_eq!(
         accept_fields.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["businessIdentity", "connectionPolicy", "context", "tag"]
+        ["businessIdentity", "connectionPolicy", "tag"]
     );
-    let context = referenced_expression(accept_full, &accept_fields["context"]);
-    let ExprIr::Construct {
-        type_ref: TypeRefIr::LocalType { .. },
-        fields: context_fields,
-    } = context
-    else {
-        panic!("nested nominal Context should lower to Construct")
-    };
-    assert_eq!(
-        context_fields
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        ["cursor", "roomId"]
-    );
+    assert_string(accept_full, &accept_fields["tag"], "accept");
     let policy = referenced_expression(accept_full, &accept_fields["connectionPolicy"]);
     let policy_fields = construct_fields(policy);
     assert_eq!(
@@ -236,9 +231,7 @@ fn object_materialization_lowers_accept_reject_nullable_and_nested_nominals_to_c
     let defaults = construct_fields(return_expression(accept_defaults));
     assert_null(accept_defaults, &defaults["businessIdentity"]);
     assert_null(accept_defaults, &defaults["connectionPolicy"]);
-    let default_context =
-        construct_fields(referenced_expression(accept_defaults, &defaults["context"]));
-    assert_null(accept_defaults, &default_context["cursor"]);
+    assert_string(accept_defaults, &defaults["tag"], "accept");
 
     let reject = executable(&unit, "reject");
     let ExprIr::Construct {
@@ -248,11 +241,12 @@ fn object_materialization_lowers_accept_reject_nullable_and_nested_nominals_to_c
     else {
         panic!("reject object literal should lower to Construct")
     };
-    assert_eq!(branch_tag(type_ref), Some("reject"));
+    assert_connect_result_type(type_ref);
     assert_eq!(
         reject_fields.keys().map(String::as_str).collect::<Vec<_>>(),
         ["code", "reason", "tag"]
     );
+    assert_string(reject, &reject_fields["tag"], "reject");
 }
 
 #[test]

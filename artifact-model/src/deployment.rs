@@ -128,7 +128,7 @@ pub struct GatewayAdapterPlan {
 pub struct DeploymentGatewayEntry {
     pub gateway_entry_identity: GatewayEntryIdentity,
     pub protocol_surface: GatewayEntryProtocolSurface,
-    pub handler: PackageCallableId,
+    pub handler: Option<PackageCallableId>,
     pub pre: Option<PackageCallableId>,
     pub guard: Option<PackageCallableId>,
     pub adapter_plan: GatewayAdapterPlan,

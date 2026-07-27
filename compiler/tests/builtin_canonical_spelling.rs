@@ -16,11 +16,11 @@ use common::{
 };
 
 const CURRENT_STD_BUILD: &str =
-    "skiff-package-build-v10:sha256:0dec996a2d6388245539fb000a0284a1561dc21ac3cc6e88ed3fbe0eadfe3d43";
+    "skiff-package-build-v10:sha256:3604e31ffac0e1a12432e213fb895a51fef18355b365e1d897147a6c43924695";
 const CURRENT_STD_LOCAL_ABI: &str =
-    "skiff-package-local-abi-v7:sha256:ce09dc5902ce992d7b362f48ce1ea5466e12fc0e950d4fa90ec99ba46b86db9e";
+    "skiff-package-local-abi-v7:sha256:a3923f5b29d9f1ac7373c679e6bcac4b13a1687ae29db4a98a1c73013509cc9e";
 const CURRENT_STD_SCHEMA_INDEX: &str =
-    "skiff-package-schema-index-v1:sha256:593fb4150c7cffbfb1285bc00083abd9b059f2a7a0866e365e37bd9db1cba4bf";
+    "skiff-package-schema-index-v1:sha256:9a92edc499c0e4f6e7b37a03418f87e923d09614fe029c7080735fa134959bf4";
 const CURRENT_CONFLICT_ERROR_SCHEMA: &str =
     "skiff-package-schema-type-v2:sha256:55e0f59a69a2facc339d89ba12be27a0aaec3e1a60b3211b43259d153b480a4d";
 const CURRENT_DB_FILE_IR: &str =

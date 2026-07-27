@@ -3,8 +3,10 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 use skiff_artifact_model::{
     GatewayAdapterKind, GatewayAdapterSource, GatewayDispatchMode, GatewayEntryIdentity,
-    GatewayEntryProtocolSurface, GatewayExternalErrorProjection, GatewayExternalSchema,
-    GatewayHttpProtocolSurface, GatewayProtocolSurface,
+    GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
+    GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface,
+    GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
+    GatewayWebSocketShapeVersion, WebSocketEntryId, WEBSOCKET_ENTRY_ID_PREFIX,
 };
 
 use crate::{
@@ -25,6 +27,16 @@ pub struct GatewayEntryIdentityProjection {
     surface: GatewayEntryProtocolSurface,
 }
 
+pub const WEBSOCKET_ENTRY_ID_SCHEMA_MARKER: &str = "skiff-websocket-entry-identity-v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSocketEntryIdProjection<'a> {
+    schema: &'static str,
+    service_id: &'a str,
+    gateway_entry_key: &'a GatewayEntryKey,
+}
+
 impl GatewayEntryIdentityProjection {
     pub fn surface(&self) -> &GatewayEntryProtocolSurface {
         &self.surface
@@ -42,6 +54,14 @@ pub fn normalize_gateway_entry_protocol_surface(
     surface.protocol = match surface.protocol {
         GatewayProtocolSurface::Http(http) => {
             GatewayProtocolSurface::Http(normalize_http_surface(http)?)
+        }
+        GatewayProtocolSurface::WebSocketConnect(mut websocket) => {
+            normalize_sources(&mut websocket.external_sources);
+            websocket
+                .downlink_frames
+                .sort_by_key(|frame| frame.wire_name());
+            websocket.downlink_frames.dedup();
+            GatewayProtocolSurface::WebSocketConnect(websocket)
         }
     };
     validate_surface_semantics(&surface)?;
@@ -97,6 +117,42 @@ pub fn gateway_entry_identity(
             identity: identity.clone(),
         }
     })
+}
+
+pub fn websocket_entry_id_projection<'a>(
+    service_id: &'a str,
+    gateway_entry_key: &'a GatewayEntryKey,
+) -> WebSocketEntryIdProjection<'a> {
+    WebSocketEntryIdProjection {
+        schema: WEBSOCKET_ENTRY_ID_SCHEMA_MARKER,
+        service_id,
+        gateway_entry_key,
+    }
+}
+
+pub fn canonical_websocket_entry_id_bytes(
+    service_id: &str,
+    gateway_entry_key: &GatewayEntryKey,
+) -> Result<Vec<u8>> {
+    if service_id.trim().is_empty() {
+        return Err(ArtifactIdentityError::InvalidGatewayEntryProtocolSurface {
+            message: "WebSocket entry serviceId must be non-empty".to_string(),
+        });
+    }
+    canonical_ir_bytes(
+        &websocket_entry_id_projection(service_id, gateway_entry_key),
+        ArtifactIdentityError::SerializeGatewayEntryIdentity,
+    )
+}
+
+pub fn websocket_entry_id(
+    service_id: &str,
+    gateway_entry_key: &GatewayEntryKey,
+) -> Result<WebSocketEntryId> {
+    let bytes = canonical_websocket_entry_id_bytes(service_id, gateway_entry_key)?;
+    let identity = framed_identity(WEBSOCKET_ENTRY_ID_PREFIX, &sha256_hex(&bytes));
+    Ok(WebSocketEntryId::parse(identity)
+        .expect("canonical WebSocket entry framing always produces a valid identity"))
 }
 
 pub fn gateway_entry_identity_hash(identity: &str) -> Result<&str> {
@@ -290,7 +346,42 @@ fn validate_surface_semantics(surface: &GatewayEntryProtocolSurface) -> Result<(
     }
     match &surface.protocol {
         GatewayProtocolSurface::Http(http) => validate_http_surface(http),
+        GatewayProtocolSurface::WebSocketConnect(websocket) => {
+            validate_websocket_connect_surface(websocket)
+        }
     }
+}
+
+fn validate_websocket_connect_surface(
+    surface: &GatewayWebSocketConnectProtocolSurface,
+) -> Result<()> {
+    if surface.connect_request_shape != GatewayWebSocketShapeVersion::V1
+        || surface.connect_result_shape != GatewayWebSocketShapeVersion::V1
+        || surface.connection_policy_shape != GatewayWebSocketShapeVersion::V1
+    {
+        return invalid_surface("WebSocket connect protocol shapes must use v1");
+    }
+    if surface.external_sources
+        != [
+            GatewayAdapterSource::WebSocketConnectRequest,
+            GatewayAdapterSource::WebSocketConnectionId,
+        ]
+    {
+        return invalid_surface(
+            "WebSocket connect surface must expose the fixed connectRequest and connectionId sources",
+        );
+    }
+    if surface.downlink_frames
+        != [
+            GatewayWebSocketDownlinkFrame::Binary,
+            GatewayWebSocketDownlinkFrame::Text,
+        ]
+    {
+        return invalid_surface(
+            "WebSocket connect surface must expose the fixed binary and text downlink frame classes",
+        );
+    }
+    Ok(())
 }
 
 fn validate_http_surface(surface: &GatewayHttpProtocolSurface) -> Result<()> {
@@ -368,6 +459,9 @@ fn validate_http_surface(surface: &GatewayHttpProtocolSurface) -> Result<()> {
                 }
                 GatewayDispatchMode::Unary | GatewayDispatchMode::ServerStream => {}
             }
+        }
+        GatewayAdapterKind::WebSocketConnect => {
+            return invalid_surface("HTTP protocol surface cannot use websocketConnect")
         }
     }
     Ok(())

@@ -21,7 +21,7 @@ mod p5_f18a;
 
 #[test]
 fn compiler_owned_schema_stable_types_have_canonical_symbols() {
-    let registry = PreludeRegistry::empty();
+    let registry = prelude_registry();
 
     for name in [
         "Array",
@@ -30,15 +30,25 @@ fn compiler_owned_schema_stable_types_have_canonical_symbols() {
         "bytes",
         "Json",
         "JsonObject",
+        "WebSocketConnectRequest",
+        "WebSocketConnectionPolicy",
         "WebSocketConnectResult",
-        "ConnectionMessage",
-        "TextConnectionMessage",
-        "BinaryConnectionMessage",
     ] {
         assert_ne!(registry.type_symbol(name), "std.unknown");
     }
 
-    let registry = prelude_registry();
+    for removed in [
+        "std.websocket.TextConnectionMessage",
+        "std.websocket.BinaryConnectionMessage",
+        "std.websocket.ConnectionMessage",
+        "std.websocket.WebSocketConnection",
+        "std.websocket.WebSocketReceiveEvent",
+        "std.websocket.WebSocketIngressEvent",
+        "std.websocket.WebSocketCloseEvent",
+    ] {
+        assert!(registry.type_decl(removed).is_none(), "{removed}");
+    }
+
     for name in [
         "LlmRole",
         "LlmMessage",
@@ -99,13 +109,13 @@ fn platform_source_context_pins_current_prelude_identity() {
         registry.schema_identity(),
         // The schema identity includes the ordinary public
         // std.service.InternalError record.
-        "skiff-prelude-schema-v1:sha256:60a69e98e44a7dd3012937dcf54518e9fd5109d900eeeb944697338cb7fb4f83"
+        "skiff-prelude-schema-v1:sha256:e367ab2f539d012a9b44f08c96c233afc80bc1e402b94bd1c237815f1a5a5bec"
     );
     assert_eq!(
         registry.native_identity(),
         // Native identity also commits to the validated marker-free source and
         // manifest fingerprints.
-        "skiff-prelude-native-v1:sha256:0c070485c653e1a3113a170ac417caa960779bf85857168cbff4e389979169b3"
+        "skiff-prelude-native-v1:sha256:0f968fa5e1228f34e0756196a531995eecefc60117ca42d74a81924e08c0375c"
     );
     assert_eq!(registry.schema_identity(), prelude_schema_identity());
     assert_eq!(
@@ -116,7 +126,7 @@ fn platform_source_context_pins_current_prelude_identity() {
         prelude_identity(),
         // The full identity includes the marker-free std/prelude sources and
         // ordinary std.service.InternalError public surface.
-        "skiff-prelude-v1:sha256:2ebbd0569d4baf3d7dccf07c4326ec62deb5707c11a8d0eb0ac0722d1ee9d3bd"
+        "skiff-prelude-v1:sha256:754c676620527a48006935d3b325b69c6114ed2c5c2fa93bd74edb7e70ef819e"
     );
 }
 

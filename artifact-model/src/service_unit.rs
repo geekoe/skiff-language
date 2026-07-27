@@ -256,7 +256,6 @@ pub struct OperationRouteBinding {
 pub enum OperationIngressKind {
     ServiceCall,
     HttpGateway,
-    WebSocketGateway,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -287,8 +286,6 @@ pub struct GatewayConfig {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub routes: BTreeMap<String, GatewayRoute>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub web_sockets: BTreeMap<String, GatewayWebSocket>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, MetadataValue>,
 }
 
@@ -308,29 +305,6 @@ impl GatewayRoute {
     pub fn route_identity(&self) -> String {
         format!("{} {}", self.method.to_ascii_uppercase(), self.path)
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GatewayWebSocket {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    pub operation: String,
-    pub operation_abi_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connect_operation: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connect_operation_abi_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub routes: Vec<GatewayWebSocketRoute>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GatewayWebSocketRoute {
-    pub path: String,
-    pub operation: String,
-    pub operation_abi_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

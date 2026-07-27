@@ -42,7 +42,7 @@ fn p5_f18a_prelude_loader_snapshot() {
         registry.identity(),
         // The copied snapshot includes the marker-free std/prelude sources and
         // ordinary std.service.InternalError public surface.
-        "skiff-prelude-v1:sha256:2ebbd0569d4baf3d7dccf07c4326ec62deb5707c11a8d0eb0ac0722d1ee9d3bd"
+        "skiff-prelude-v1:sha256:754c676620527a48006935d3b325b69c6114ed2c5c2fa93bd74edb7e70ef819e"
     );
 }
 

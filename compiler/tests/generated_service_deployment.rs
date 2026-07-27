@@ -390,27 +390,20 @@ http:
 
 #[test]
 fn generated_service_deployment_refuses_legacy_websocket_operation_ingress() {
-    let (project, service_api) = compile_fixture("generated-websocket-fail-closed", "\"ok\"");
-    let mut service = manifest();
-    service.websocket = Some(json!({
-        "routes": [{
-            "path": "/events",
-            "operation": "read"
-        }]
-    }));
-    let error = generate_service_deployment(GeneratedServiceDeploymentInput {
-        service: &service,
-        profile_name: "prod",
-        profile: &profile(),
-        service_api: &service_api,
-        implementation: &project.package.artifact,
-        package_closure: &[],
-        package_schema_records: &project.package.resolved_package_schema_type_records,
-    })
+    let error = serde_yaml::from_str::<ServiceManifestAuthoring>(
+        r#"
+id: example.com/registry
+websocket:
+  routes:
+    - path: /events
+      operation: read
+"#,
+    )
     .unwrap_err();
-    let message = error.to_string();
-    assert!(message.contains("WebSocket business gateway entries are not defined"));
-    assert!(message.contains("refusing legacy operation ingress"));
+    assert!(
+        error.to_string().contains("unknown field `routes`"),
+        "{error}"
+    );
 }
 
 #[test]

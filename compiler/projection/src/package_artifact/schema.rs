@@ -1035,9 +1035,9 @@ mod tests {
     }
 
     #[test]
-    fn package_schema_websocket_generic_builtins_have_no_name_based_admission() {
+    fn package_schema_websocket_types_have_no_builtin_name_based_admission() {
         for name in [
-            "std.websocket.WebSocketIngressEvent",
+            "std.websocket.WebSocketConnectRequest",
             "std.websocket.WebSocketConnectResult",
         ] {
             let projected = project_package_schema(

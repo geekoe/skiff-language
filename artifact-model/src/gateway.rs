@@ -4,11 +4,86 @@ use std::fmt;
 use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
+pub const WEBSOCKET_ENTRY_ID_PREFIX: &str = "skiff-websocket-entry-v1:sha256";
+pub const WEBSOCKET_GATEWAY_ENTRY_KEY: &str = "websocket";
+pub const WEBSOCKET_CONNECT_REQUEST_V1_TYPE: &str = "std.websocket.WebSocketConnectRequest";
+pub const WEBSOCKET_CONNECTION_POLICY_V1_TYPE: &str = "std.websocket.WebSocketConnectionPolicy";
+pub const WEBSOCKET_CONNECT_RESULT_V1_TYPE: &str = "std.websocket.WebSocketConnectResult";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSocketEntryIdParseError {
+    value: String,
+}
+
+impl fmt::Display for WebSocketEntryIdParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "WebSocket entry id {:?} must use {WEBSOCKET_ENTRY_ID_PREFIX}:<64 lowercase hex>",
+            self.value
+        )
+    }
+}
+
+impl std::error::Error for WebSocketEntryIdParseError {}
+
+/// Stable internal identity for the single compiler-owned WebSocket entry.
+///
+/// Authors never provide this value. The canonical producer derives it from
+/// the exact service id and compiler-owned gateway entry key.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct WebSocketEntryId(String);
+
+impl WebSocketEntryId {
+    pub fn parse(value: impl Into<String>) -> Result<Self, WebSocketEntryIdParseError> {
+        let value = value.into();
+        let valid = value
+            .strip_prefix(WEBSOCKET_ENTRY_ID_PREFIX)
+            .and_then(|suffix| suffix.strip_prefix(':'))
+            .is_some_and(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+            });
+        if !valid {
+            return Err(WebSocketEntryIdParseError { value });
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for WebSocketEntryId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::parse(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl fmt::Display for WebSocketEntryId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GatewayAdapterKind {
     TypedJson,
     RawHttp,
+    #[serde(rename = "websocketConnect")]
+    WebSocketConnect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -20,6 +95,10 @@ pub enum GatewayAdapterSource {
     HttpBody,
     #[serde(rename = "http.context")]
     HttpContext,
+    #[serde(rename = "websocket.connectRequest")]
+    WebSocketConnectRequest,
+    #[serde(rename = "websocket.connectionId")]
+    WebSocketConnectionId,
 }
 
 impl<'de> Deserialize<'de> for GatewayAdapterSource {
@@ -36,12 +115,18 @@ impl<'de> Deserialize<'de> for GatewayAdapterSource {
             HttpBody {},
             #[serde(rename = "http.context")]
             HttpContext {},
+            #[serde(rename = "websocket.connectRequest")]
+            WebSocketConnectRequest {},
+            #[serde(rename = "websocket.connectionId")]
+            WebSocketConnectionId {},
         }
 
         Ok(match Wire::deserialize(deserializer)? {
             Wire::HttpRequest {} => Self::HttpRequest,
             Wire::HttpBody {} => Self::HttpBody,
             Wire::HttpContext {} => Self::HttpContext,
+            Wire::WebSocketConnectRequest {} => Self::WebSocketConnectRequest,
+            Wire::WebSocketConnectionId {} => Self::WebSocketConnectionId,
         })
     }
 }
@@ -52,6 +137,8 @@ impl GatewayAdapterSource {
             Self::HttpRequest => "http.request",
             Self::HttpBody => "http.body",
             Self::HttpContext => "http.context",
+            Self::WebSocketConnectRequest => "websocket.connectRequest",
+            Self::WebSocketConnectionId => "websocket.connectionId",
         }
     }
 
@@ -61,7 +148,13 @@ impl GatewayAdapterSource {
     /// remain in the deployment execution plan and cannot enter the gateway
     /// protocol identity.
     pub fn is_external_protocol_source(self) -> bool {
-        matches!(self, Self::HttpRequest | Self::HttpBody)
+        matches!(
+            self,
+            Self::HttpRequest
+                | Self::HttpBody
+                | Self::WebSocketConnectRequest
+                | Self::WebSocketConnectionId
+        )
     }
 }
 
@@ -158,6 +251,11 @@ fn adapter_source_is_allowed(kind: GatewayAdapterKind, source: GatewayAdapterSou
             source,
             GatewayAdapterSource::HttpRequest | GatewayAdapterSource::HttpContext
         ),
+        GatewayAdapterKind::WebSocketConnect => matches!(
+            source,
+            GatewayAdapterSource::WebSocketConnectRequest
+                | GatewayAdapterSource::WebSocketConnectionId
+        ),
     }
 }
 
@@ -190,6 +288,101 @@ pub enum GatewayExternalSchema {
     StringLiteral {
         value: String,
     },
+}
+
+/// Compiler-owned structural definition of the WebSocket connect v1 types.
+///
+/// A package symbol name alone is not sufficient to claim the v1 protocol
+/// surface: the linked std schema must project to this exact closed shape.
+pub fn canonical_websocket_connect_schema(name: &str) -> Option<GatewayExternalSchema> {
+    let string = || GatewayExternalSchema::String;
+    let integer = || GatewayExternalSchema::Integer;
+    let nullable = |inner| GatewayExternalSchema::Nullable {
+        inner: Box::new(inner),
+    };
+    let array = |items| GatewayExternalSchema::Array {
+        items: Box::new(items),
+    };
+    let literal = |value: &str| GatewayExternalSchema::StringLiteral {
+        value: value.to_string(),
+    };
+    let record = |fields: BTreeMap<String, GatewayExternalSchema>, required: &[&str]| {
+        GatewayExternalSchema::Record {
+            fields,
+            required: required.iter().map(|field| (*field).to_string()).collect(),
+        }
+    };
+    let name_value = || {
+        record(
+            BTreeMap::from([
+                ("name".to_string(), string()),
+                ("value".to_string(), string()),
+            ]),
+            &["name", "value"],
+        )
+    };
+    let policy = || {
+        record(
+            BTreeMap::from([
+                ("closeCode".to_string(), nullable(integer())),
+                ("closeReason".to_string(), nullable(string())),
+                ("maxConnections".to_string(), integer()),
+                (
+                    "overflow".to_string(),
+                    GatewayExternalSchema::ClosedUnion {
+                        branches: vec![literal("close-oldest"), literal("reject-new")],
+                    },
+                ),
+            ]),
+            &["maxConnections", "overflow"],
+        )
+    };
+
+    match name {
+        WEBSOCKET_CONNECT_REQUEST_V1_TYPE => Some(record(
+            BTreeMap::from([
+                ("connectionId".to_string(), string()),
+                ("cookies".to_string(), array(name_value())),
+                ("gatewayEntryIdentity".to_string(), string()),
+                ("headers".to_string(), array(name_value())),
+                ("query".to_string(), array(name_value())),
+                ("url".to_string(), string()),
+                ("version".to_string(), nullable(string())),
+                ("websocketEntryId".to_string(), string()),
+            ]),
+            &[
+                "connectionId",
+                "cookies",
+                "gatewayEntryIdentity",
+                "headers",
+                "query",
+                "url",
+                "websocketEntryId",
+            ],
+        )),
+        WEBSOCKET_CONNECTION_POLICY_V1_TYPE => Some(policy()),
+        WEBSOCKET_CONNECT_RESULT_V1_TYPE => Some(GatewayExternalSchema::ClosedUnion {
+            branches: vec![
+                record(
+                    BTreeMap::from([
+                        ("businessIdentity".to_string(), nullable(string())),
+                        ("connectionPolicy".to_string(), nullable(policy())),
+                        ("tag".to_string(), literal("accept")),
+                    ]),
+                    &["tag"],
+                ),
+                record(
+                    BTreeMap::from([
+                        ("code".to_string(), integer()),
+                        ("reason".to_string(), string()),
+                        ("tag".to_string(), literal("reject")),
+                    ]),
+                    &["code", "reason", "tag"],
+                ),
+            ],
+        }),
+        _ => None,
+    }
 }
 
 impl<'de> Deserialize<'de> for GatewayExternalSchema {
@@ -300,6 +493,38 @@ pub struct GatewayHttpProtocolSurface {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GatewayWebSocketConnectProtocolSurface {
+    pub connect_request_shape: GatewayWebSocketShapeVersion,
+    pub connect_result_shape: GatewayWebSocketShapeVersion,
+    pub connection_policy_shape: GatewayWebSocketShapeVersion,
+    pub external_sources: Vec<GatewayAdapterSource>,
+    pub downlink_frames: Vec<GatewayWebSocketDownlinkFrame>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GatewayWebSocketShapeVersion {
+    V1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GatewayWebSocketDownlinkFrame {
+    Text,
+    Binary,
+}
+
+impl GatewayWebSocketDownlinkFrame {
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Binary => "binary",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "surface",
@@ -308,6 +533,8 @@ pub struct GatewayHttpProtocolSurface {
 )]
 pub enum GatewayProtocolSurface {
     Http(GatewayHttpProtocolSurface),
+    #[serde(rename = "websocketConnect")]
+    WebSocketConnect(GatewayWebSocketConnectProtocolSurface),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -386,11 +613,49 @@ mod tests {
     }
 
     #[test]
+    fn websocket_entry_id_has_an_exact_independent_lexical_frame() {
+        let digest = "b".repeat(64);
+        let valid = format!("{WEBSOCKET_ENTRY_ID_PREFIX}:{digest}");
+        let parsed = WebSocketEntryId::parse(&valid).expect("valid WebSocket entry id");
+        assert_eq!(parsed.as_str(), valid);
+        assert_eq!(
+            serde_json::from_value::<WebSocketEntryId>(json!(valid))
+                .unwrap()
+                .as_str(),
+            parsed.as_str()
+        );
+
+        for invalid in [
+            String::new(),
+            format!("skiff-websocket-v1:sha256:{digest}"),
+            format!("{WEBSOCKET_ENTRY_ID_PREFIX}:{}", "b".repeat(63)),
+            format!("{WEBSOCKET_ENTRY_ID_PREFIX}:{}", "b".repeat(65)),
+            format!("{WEBSOCKET_ENTRY_ID_PREFIX}:{}", "B".repeat(64)),
+            format!("{WEBSOCKET_ENTRY_ID_PREFIX}:{}", "g".repeat(64)),
+            format!("{WEBSOCKET_ENTRY_ID_PREFIX}:{digest}:extra"),
+        ] {
+            assert!(WebSocketEntryId::parse(&invalid).is_err(), "{invalid}");
+            assert!(
+                serde_json::from_value::<WebSocketEntryId>(json!(invalid)).is_err(),
+                "serde accepted {invalid}"
+            );
+        }
+    }
+
+    #[test]
     fn gateway_adapter_source_vocabulary_and_args_are_strict() {
         let all_sources = [
             ("http.request", GatewayAdapterSource::HttpRequest),
             ("http.body", GatewayAdapterSource::HttpBody),
             ("http.context", GatewayAdapterSource::HttpContext),
+            (
+                "websocket.connectRequest",
+                GatewayAdapterSource::WebSocketConnectRequest,
+            ),
+            (
+                "websocket.connectionId",
+                GatewayAdapterSource::WebSocketConnectionId,
+            ),
         ];
         for (wire, source) in all_sources {
             let value = serde_json::to_value(source).expect("source serialization");
@@ -408,7 +673,16 @@ mod tests {
             json!({ "kind": "http.body", "path": "payload" })
         )
         .is_err());
-        assert!(serde_json::from_value::<GatewayAdapterKind>(json!("websocketConnect")).is_err());
+        assert_eq!(
+            serde_json::from_value::<GatewayAdapterKind>(json!("websocketConnect")).unwrap(),
+            GatewayAdapterKind::WebSocketConnect
+        );
+        for invalid in ["webSocketConnect", "websocket", "websocketReceive"] {
+            assert!(
+                serde_json::from_value::<GatewayAdapterKind>(json!(invalid)).is_err(),
+                "{invalid}"
+            );
+        }
         assert!(serde_json::from_value::<GatewayAdapterSource>(
             json!({ "kind": "websocket.message" })
         )
@@ -427,6 +701,30 @@ mod tests {
             &[GatewayAdapterArg {
                 param: "context".to_string(),
                 source: GatewayAdapterSource::HttpContext,
+            }]
+        )
+        .is_err());
+        validate_gateway_adapter_args(
+            GatewayAdapterKind::WebSocketConnect,
+            false,
+            &[
+                GatewayAdapterArg {
+                    param: "request".to_string(),
+                    source: GatewayAdapterSource::WebSocketConnectRequest,
+                },
+                GatewayAdapterArg {
+                    param: "connectionId".to_string(),
+                    source: GatewayAdapterSource::WebSocketConnectionId,
+                },
+            ],
+        )
+        .expect("WebSocket connect sources");
+        assert!(validate_gateway_adapter_args(
+            GatewayAdapterKind::WebSocketConnect,
+            false,
+            &[GatewayAdapterArg {
+                param: "request".to_string(),
+                source: GatewayAdapterSource::HttpRequest,
             }]
         )
         .is_err());
@@ -560,5 +858,92 @@ mod tests {
         let mut wire = serde_json::to_value(&surface).expect("surface serialization");
         wire["protocol"]["surface"]["adapterKind"] = json!("graphql");
         assert!(serde_json::from_value::<GatewayEntryProtocolSurface>(wire).is_err());
+
+        let websocket = GatewayEntryProtocolSurface {
+            protocol: GatewayProtocolSurface::WebSocketConnect(
+                GatewayWebSocketConnectProtocolSurface {
+                    connect_request_shape: GatewayWebSocketShapeVersion::V1,
+                    connect_result_shape: GatewayWebSocketShapeVersion::V1,
+                    connection_policy_shape: GatewayWebSocketShapeVersion::V1,
+                    external_sources: vec![
+                        GatewayAdapterSource::WebSocketConnectRequest,
+                        GatewayAdapterSource::WebSocketConnectionId,
+                    ],
+                    downlink_frames: vec![
+                        GatewayWebSocketDownlinkFrame::Binary,
+                        GatewayWebSocketDownlinkFrame::Text,
+                    ],
+                },
+            ),
+            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+        };
+        assert_eq!(
+            serde_json::to_value(&websocket).unwrap(),
+            json!({
+                "protocol": {
+                    "kind": "websocketConnect",
+                    "surface": {
+                        "connectRequestShape": "v1",
+                        "connectResultShape": "v1",
+                        "connectionPolicyShape": "v1",
+                        "externalSources": [
+                            { "kind": "websocket.connectRequest" },
+                            { "kind": "websocket.connectionId" }
+                        ],
+                        "downlinkFrames": ["binary", "text"]
+                    }
+                },
+                "externalErrorProjection": {
+                    "kind": "fixed",
+                    "version": "v1"
+                }
+            })
+        );
+        let mut unknown = serde_json::to_value(websocket).unwrap();
+        unknown["protocol"]["surface"]["receive"] = json!(true);
+        assert!(serde_json::from_value::<GatewayEntryProtocolSurface>(unknown).is_err());
+
+        for invalid in ["webSocketConnect", "websocket", "websocketReceive"] {
+            let mut wrong_kind = serde_json::to_value(&surface).unwrap();
+            wrong_kind["protocol"]["kind"] = json!(invalid);
+            assert!(
+                serde_json::from_value::<GatewayEntryProtocolSurface>(wrong_kind).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_websocket_v1_shapes_are_closed_and_exact() {
+        let request =
+            canonical_websocket_connect_schema(WEBSOCKET_CONNECT_REQUEST_V1_TYPE).unwrap();
+        let GatewayExternalSchema::Record { fields, required } = request else {
+            panic!("connect request must be a record");
+        };
+        assert_eq!(
+            fields.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec![
+                "connectionId",
+                "cookies",
+                "gatewayEntryIdentity",
+                "headers",
+                "query",
+                "url",
+                "version",
+                "websocketEntryId"
+            ]
+        );
+        assert!(!required.contains(&"version".to_string()));
+        assert!(required.contains(&"websocketEntryId".to_string()));
+        assert!(required.contains(&"gatewayEntryIdentity".to_string()));
+
+        let result = canonical_websocket_connect_schema(WEBSOCKET_CONNECT_RESULT_V1_TYPE).unwrap();
+        let GatewayExternalSchema::ClosedUnion { branches } = result else {
+            panic!("connect result must be a closed union");
+        };
+        assert_eq!(branches.len(), 2);
+        assert!(
+            canonical_websocket_connect_schema("std.websocket.WebSocketIngressEvent").is_none()
+        );
     }
 }

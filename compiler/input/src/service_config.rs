@@ -8,6 +8,7 @@ use serde_yaml::Value as YamlValue;
 use skiff_artifact_model::{
     validate_gateway_adapter_args, GatewayEntryKey, HttpGatewayEntryAuthoring,
     ServiceAuthoringKind, ServiceConfigProfileAuthoring, ServiceManifestAuthoring,
+    WebSocketGatewayEntryAuthoring,
 };
 use thiserror::Error;
 
@@ -119,6 +120,7 @@ fn read_service_manifest(
     let mut manifest = serde_yaml::from_str::<ServiceManifestAuthoring>(&text)
         .map_err(|source| parse_error(path, source))?;
     validate_http_authoring(path, manifest.http.as_mut())?;
+    validate_websocket_authoring(path, manifest.websocket.as_mut())?;
     validate_service_calls(path, &mut manifest.service_calls)?;
     let mut violations = Vec::new();
     let id =
@@ -215,6 +217,11 @@ fn validate_http_authoring(
         validate_http_host(key, &mut entry.host, &mut violations);
         validate_http_path(key, &entry.path, &mut violations);
         validate_http_method(key, &mut entry.method, &mut violations);
+        if entry.kind == skiff_artifact_model::GatewayAdapterKind::WebSocketConnect {
+            violations.push(format!(
+                "http.{key}.kind must be typedJson or rawHttp, not websocketConnect"
+            ));
+        }
         if let Err(error) =
             validate_gateway_adapter_args(entry.kind, entry.pre.is_some(), &entry.adapter_args)
         {
@@ -289,6 +296,68 @@ fn validate_http_method(key: &GatewayEntryKey, method: &mut String, violations: 
         return;
     }
     *method = canonical;
+}
+
+fn validate_websocket_authoring(
+    path: &Path,
+    websocket: Option<&mut WebSocketGatewayEntryAuthoring>,
+) -> Result<(), ServiceSourceConfigError> {
+    let Some(entry) = websocket else {
+        return Ok(());
+    };
+    let mut violations = Vec::new();
+    if let Some(connect) = &entry.connect {
+        if let Err(message) = SourceSymbolSelector::parse(&connect.handler) {
+            violations.push(format!(
+                "websocket.connect.handler must be a current-package source selector: {message}"
+            ));
+        }
+        if let Err(error) = validate_gateway_adapter_args(
+            skiff_artifact_model::GatewayAdapterKind::WebSocketConnect,
+            false,
+            &connect.adapter_args,
+        ) {
+            violations.push(format!("websocket.connect.adapterArgs is invalid: {error}"));
+        }
+    }
+    validate_ingress_host("websocket.host", &mut entry.host, &mut violations);
+    validate_ingress_path("websocket.path", &entry.path, &mut violations);
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(validation_error(path, violations))
+    }
+}
+
+fn validate_ingress_host(label: &str, host: &mut String, violations: &mut Vec<String>) {
+    if host.is_empty()
+        || host.trim() != host
+        || host
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+        || host
+            .chars()
+            .any(|character| matches!(character, '/' | '@' | '?' | '#'))
+    {
+        violations.push(format!(
+            "{label} must be a non-empty ingress host without whitespace, user info, path, query, or fragment"
+        ));
+        return;
+    }
+    host.make_ascii_lowercase();
+}
+
+fn validate_ingress_path(label: &str, path: &str, violations: &mut Vec<String>) {
+    if !path.starts_with('/')
+        || path.chars().any(|character| matches!(character, '?' | '#'))
+        || path
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+    {
+        violations.push(format!(
+            "{label} must be an absolute URL path without query, fragment, whitespace, or control characters"
+        ));
+    }
 }
 
 fn read_config_profiles(
@@ -797,6 +866,95 @@ http:
                 read_service_yml(name, &source).is_err(),
                 "{name} must fail closed"
             );
+        }
+    }
+
+    #[test]
+    fn service_manifest_validates_strict_websocket_singleton() {
+        let path_only = read_service_yml(
+            "websocket-path-only",
+            "id: example.com/chat\nwebsocket:\n  path: /chat\n",
+        )
+        .unwrap();
+        let websocket = path_only.service.websocket.unwrap();
+        assert_eq!(websocket.host, "*");
+        assert_eq!(websocket.path, "/chat");
+        assert!(websocket.connect.is_none());
+
+        let connected = read_service_yml(
+            "websocket-connect",
+            r#"
+id: example.com/chat
+websocket:
+  host: CHAT.EXAMPLE.COM
+  path: /chat
+  connect:
+    handler: handlers.connect
+    adapterArgs:
+      - param: request
+        source: { kind: websocket.connectRequest }
+      - param: connectionId
+        source: { kind: websocket.connectionId }
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            connected.service.websocket.as_ref().unwrap().host,
+            "chat.example.com"
+        );
+
+        for (name, websocket) in [
+            ("websocket-invalid-host", "{ host: \"bad host\", path: /chat }"),
+            ("websocket-invalid-path", "{ path: chat }"),
+            (
+                "websocket-invalid-handler",
+                "{ path: /chat, connect: { handler: connect } }",
+            ),
+            (
+                "websocket-http-source",
+                "{ path: /chat, connect: { handler: handlers.connect, adapterArgs: [{ param: request, source: { kind: http.request } }] } }",
+            ),
+            (
+                "websocket-duplicate-param",
+                "{ path: /chat, connect: { handler: handlers.connect, adapterArgs: [{ param: request, source: { kind: websocket.connectRequest } }, { param: request, source: { kind: websocket.connectionId } }] } }",
+            ),
+            (
+                "websocket-blank-param",
+                "{ path: /chat, connect: { handler: handlers.connect, adapterArgs: [{ param: \"\", source: { kind: websocket.connectRequest } }] } }",
+            ),
+        ] {
+            let source = format!("id: example.com/chat\nwebsocket: {websocket}\n");
+            assert!(read_service_yml(name, &source).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn service_manifest_rejects_websocket_legacy_and_collection_shapes() {
+        for (name, websocket) in [
+            ("websocket-null", "null"),
+            ("websocket-list", "[]"),
+            ("websocket-scalar", "chat"),
+            (
+                "websocket-multi-map",
+                "{ one: { path: /one }, two: { path: /two } }",
+            ),
+            ("websocket-missing-path", "{}"),
+            ("websocket-null-connect", "{ path: /chat, connect: null }"),
+            ("websocket-routes", "{ path: /chat, routes: [] }"),
+            ("websocket-operation", "{ path: /chat, operation: receive }"),
+            (
+                "websocket-receive",
+                "{ path: /chat, receive: handlers.receive }",
+            ),
+            (
+                "websocket-message",
+                "{ path: /chat, message: handlers.message }",
+            ),
+            ("websocket-context", "{ path: /chat, context: Context }"),
+            ("websocket-author-id", "{ id: chat, path: /chat }"),
+        ] {
+            let source = format!("id: example.com/chat\nwebsocket: {websocket}\n");
+            assert!(read_service_yml(name, &source).is_err(), "{name}");
         }
     }
 

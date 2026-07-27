@@ -28,6 +28,15 @@ impl RuntimeAssemblyHttpGatewayTarget {
         eval: RuntimeAssemblyEvalTarget,
         entry: Arc<LinkedGatewayEntry>,
     ) -> Result<Self, RuntimeAssemblyHttpGatewayTargetError> {
+        if !matches!(
+            entry.protocol_surface().protocol,
+            GatewayProtocolSurface::Http(_)
+        ) {
+            return Err(RuntimeAssemblyHttpGatewayTargetError::PlanSurfaceMismatch);
+        }
+        let handler = entry
+            .optional_handler()
+            .ok_or(RuntimeAssemblyHttpGatewayTargetError::HandlerPlanMismatch)?;
         if !gateway_owner_matches(
             entry.owner(),
             &eval.activation_context().identity().deployment,
@@ -55,9 +64,9 @@ impl RuntimeAssemblyHttpGatewayTarget {
             &eval,
             implementation,
             "handler",
-            entry.handler().callable_id(),
-            entry.handler().target(),
-            entry.handler().signature(),
+            handler.callable_id(),
+            handler.target(),
+            handler.signature(),
         )?;
         let pre_addr = entry
             .pre()
@@ -164,12 +173,15 @@ pub enum RuntimeAssemblyHttpGatewayTargetError {
 fn validate_entry_facts(
     entry: &LinkedGatewayEntry,
 ) -> Result<(), RuntimeAssemblyHttpGatewayTargetError> {
+    let handler = entry
+        .optional_handler()
+        .ok_or(RuntimeAssemblyHttpGatewayTargetError::HandlerPlanMismatch)?;
     validate_entry_fact_view(GatewayEntryValidationFacts {
         key: entry.gateway_entry_key(),
         identity: entry.gateway_entry_identity(),
         surface: entry.protocol_surface(),
         plan: entry.adapter_plan(),
-        handler_signature: entry.handler().signature(),
+        handler_signature: handler.signature(),
         pre_signature: entry.pre().map(|callable| callable.signature()),
         guard_signature: entry.guard().map(|callable| callable.signature()),
     })
@@ -220,7 +232,9 @@ fn validate_entry_fact_view(
         },
     )?;
 
-    let GatewayProtocolSurface::Http(http) = &facts.surface.protocol;
+    let GatewayProtocolSurface::Http(http) = &facts.surface.protocol else {
+        return Err(RuntimeAssemblyHttpGatewayTargetError::PlanSurfaceMismatch);
+    };
     if http.adapter_kind != facts.plan.kind
         || !adapter_mode_is_supported(http.adapter_kind, http.dispatch_mode)
     {
@@ -438,7 +452,8 @@ impl RuntimeHttpGatewayExecutionTarget for RuntimeAssemblyHttpGatewayTarget {
 mod tests {
     use skiff_artifact_model::{
         DeploymentRevision, GatewayAdapterArg, GatewayExternalErrorProjection,
-        GatewayExternalSchema, GatewayHttpProtocolSurface, PackageCallableParameter,
+        GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayWebSocketConnectProtocolSurface,
+        GatewayWebSocketDownlinkFrame, GatewayWebSocketShapeVersion, PackageCallableParameter,
         PackageTypeRef, TypeRefIr,
     };
 
@@ -492,7 +507,9 @@ mod tests {
         ));
 
         let mut wrong_mode = surface.clone();
-        let GatewayProtocolSurface::Http(http) = &mut wrong_mode.protocol;
+        let GatewayProtocolSurface::Http(http) = &mut wrong_mode.protocol else {
+            panic!("typed fixture must use an HTTP surface");
+        };
         http.dispatch_mode = GatewayDispatchMode::ServerStream;
         assert!(matches!(
             validate_entry_fact_view(GatewayEntryValidationFacts {
@@ -550,6 +567,32 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn runtime_http_gateway_target_refuses_websocket_connect_surface() {
+        let key = GatewayEntryKey::parse("websocket").unwrap();
+        let surface = websocket_surface();
+        let identity = gateway_entry_identity(&surface).unwrap();
+        let plan = GatewayAdapterPlan {
+            kind: GatewayAdapterKind::WebSocketConnect,
+            args: vec![GatewayAdapterArg {
+                param: "request".to_string(),
+                source: GatewayAdapterSource::WebSocketConnectRequest,
+            }],
+        };
+        assert!(matches!(
+            validate_entry_fact_view(GatewayEntryValidationFacts {
+                key: &key,
+                identity: &identity,
+                surface: &surface,
+                plan: &plan,
+                handler_signature: &unary_signature("request"),
+                pre_signature: None,
+                guard_signature: None,
+            }),
+            Err(RuntimeAssemblyHttpGatewayTargetError::PlanSurfaceMismatch)
+        ));
+    }
+
     fn typed_surface() -> GatewayEntryProtocolSurface {
         GatewayEntryProtocolSurface {
             protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
@@ -560,6 +603,27 @@ mod tests {
                 response_schema: Some(GatewayExternalSchema::String),
                 stream_item_schema: None,
             }),
+            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+        }
+    }
+
+    fn websocket_surface() -> GatewayEntryProtocolSurface {
+        GatewayEntryProtocolSurface {
+            protocol: GatewayProtocolSurface::WebSocketConnect(
+                GatewayWebSocketConnectProtocolSurface {
+                    connect_request_shape: GatewayWebSocketShapeVersion::V1,
+                    connect_result_shape: GatewayWebSocketShapeVersion::V1,
+                    connection_policy_shape: GatewayWebSocketShapeVersion::V1,
+                    external_sources: vec![
+                        GatewayAdapterSource::WebSocketConnectRequest,
+                        GatewayAdapterSource::WebSocketConnectionId,
+                    ],
+                    downlink_frames: vec![
+                        GatewayWebSocketDownlinkFrame::Binary,
+                        GatewayWebSocketDownlinkFrame::Text,
+                    ],
+                },
+            ),
             external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
         }
     }

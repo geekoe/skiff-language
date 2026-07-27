@@ -88,14 +88,7 @@ service:
   ProtocolError: service.ProtocolError
   InternalError: service.InternalError
 websocket:
-  TextConnectionMessage: websocket.TextConnectionMessage
-  BinaryConnectionMessage: websocket.BinaryConnectionMessage
-  ConnectionMessage: websocket.ConnectionMessage
   WebSocketConnectRequest: websocket.WebSocketConnectRequest
-  WebSocketConnection: websocket.WebSocketConnection
-  WebSocketReceiveEvent: websocket.WebSocketReceiveEvent
-  WebSocketIngressEvent: websocket.WebSocketIngressEvent
-  WebSocketCloseEvent: websocket.WebSocketCloseEvent
   WebSocketConnectionPolicy: websocket.WebSocketConnectionPolicy
   WebSocketConnectResult: websocket.WebSocketConnectResult
   sendTextToConnection: websocket.sendTextToConnection

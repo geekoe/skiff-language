@@ -162,20 +162,15 @@ fn websocket_accept_reject_and_recursive_nominal_facts_snapshot() {
         r#"
           import std
 
-          type Context {
-            roomId: string,
-            cursor: string?,
+          function acceptFull() -> std.websocket.WebSocketConnectResult {
+            return { tag: "accept", businessIdentity: "biz", connectionPolicy: { maxConnections: 8, overflow: "close-oldest" } }
           }
 
-          function acceptFull() -> std.websocket.WebSocketConnectResult<Context> {
-            return { tag: "accept", context: { roomId: "room", cursor: null }, businessIdentity: "biz", connectionPolicy: { maxConnections: 8, overflow: "close-oldest" } }
+          function acceptDefaults() -> std.websocket.WebSocketConnectResult {
+            return { tag: "accept" }
           }
 
-          function acceptDefaults() -> std.websocket.WebSocketConnectResult<Context> {
-            return { tag: "accept", context: { roomId: "room" } }
-          }
-
-          function reject() -> std.websocket.WebSocketConnectResult<Context> {
+          function reject() -> std.websocket.WebSocketConnectResult {
             return { tag: "reject", code: 403, reason: "denied" }
           }
         "#,
@@ -183,21 +178,14 @@ fn websocket_accept_reject_and_recursive_nominal_facts_snapshot() {
     .expect("accept and reject object literals should type-check");
 
     let full = built.materialization(
-        r#"{ tag: "accept", context: { roomId: "room", cursor: null }, businessIdentity: "biz", connectionPolicy: { maxConnections: 8, overflow: "close-oldest" } }"#,
+        r#"{ tag: "accept", businessIdentity: "biz", connectionPolicy: { maxConnections: 8, overflow: "close-oldest" } }"#,
     );
     assert_eq!(union_tag(full), Some("accept"));
     assert_eq!(
         field_names(full),
-        ["businessIdentity", "connectionPolicy", "context", "tag"]
+        ["businessIdentity", "connectionPolicy", "tag"]
     );
     assert!(synthetic_fields(full).is_empty());
-
-    let context = built.materialization(r#"{ roomId: "room", cursor: null }"#);
-    assert!(matches!(
-        context.kind,
-        ObjectMaterializationKind::Record { .. }
-    ));
-    assert_eq!(field_names(context), ["cursor", "roomId"]);
 
     let policy = built.materialization(r#"{ maxConnections: 8, overflow: "close-oldest" }"#);
     assert!(matches!(
@@ -210,7 +198,7 @@ fn websocket_accept_reject_and_recursive_nominal_facts_snapshot() {
     );
     assert_eq!(synthetic_fields(policy), ["closeCode", "closeReason"]);
 
-    let defaults = built.materialization(r#"{ tag: "accept", context: { roomId: "room" } }"#);
+    let defaults = built.materialization(r#"{ tag: "accept" }"#);
     assert_eq!(union_tag(defaults), Some("accept"));
     assert_eq!(
         synthetic_fields(defaults),
@@ -218,10 +206,8 @@ fn websocket_accept_reject_and_recursive_nominal_facts_snapshot() {
     );
     assert_eq!(
         fact_snapshot(defaults),
-        "target=std.websocket.WebSocketConnectResult<Context>;kind=union(accept);fields=[businessIdentity:string?=synthetic-null,connectionPolicy:std.websocket.WebSocketConnectionPolicy?=synthetic-null,context:#0=provided,tag:\"accept\"=provided]"
+        "target=std.websocket.WebSocketConnectResult;kind=union(accept);fields=[businessIdentity:string?=synthetic-null,connectionPolicy:std.websocket.WebSocketConnectionPolicy?=synthetic-null,tag:\"accept\"=provided]"
     );
-    let default_context = built.materialization(r#"{ roomId: "room" }"#);
-    assert_eq!(synthetic_fields(default_context), ["cursor"]);
     assert_eq!(
         fact_snapshot(policy),
         "target=std.websocket.WebSocketConnectionPolicy?;kind=record(std.websocket.WebSocketConnectionPolicy);fields=[closeCode:integer?=synthetic-null,closeReason:string?=synthetic-null,maxConnections:integer=provided,overflow:\"close-oldest\" | \"reject-new\"=provided]"

@@ -19,6 +19,9 @@ use thiserror::Error;
 use crate::http_gateway_projection::{
     project_http_gateway, HttpGatewayProjectionError, ProjectedHttpGateway,
 };
+use crate::websocket_gateway_projection::{
+    project_websocket_gateway, ProjectedWebSocketGateway, WebSocketGatewayProjectionError,
+};
 
 /// Exact typed inputs used to generate one deployment. There is deliberately no
 /// `deployment.yml` or manually-authored operation map in this seam.
@@ -52,22 +55,43 @@ pub enum GeneratedServiceDeploymentError {
     Projection(#[from] ProjectionError),
     #[error(transparent)]
     HttpGateway(#[from] HttpGatewayProjectionError),
+    #[error(transparent)]
+    WebSocketGateway(#[from] WebSocketGatewayProjectionError),
 }
 
 pub fn generate_service_deployment(
     input: GeneratedServiceDeploymentInput<'_>,
 ) -> Result<ServiceDeployment, GeneratedServiceDeploymentError> {
-    reject_unwired_websocket_authoring(input.service)?;
     validate_exact_api(&input)?;
     let ProjectedHttpGateway {
-        gateway_entries,
-        ingress,
+        mut gateway_entries,
+        mut ingress,
     } = project_http_gateway(
         input.service,
         input.implementation,
         input.package_closure,
         input.package_schema_records,
     )?;
+    let ProjectedWebSocketGateway {
+        gateway_entries: websocket_entries,
+        ingress: websocket_ingress,
+    } = project_websocket_gateway(
+        input.service,
+        input.implementation,
+        input.package_closure,
+        input.package_schema_records,
+    )?;
+    for (key, entry) in websocket_entries {
+        if gateway_entries.insert(key.clone(), entry).is_some() {
+            return Err(GeneratedServiceDeploymentError::InvalidManifest {
+                field: "websocket",
+                message: format!(
+                    "compiler-owned WebSocket gateway key {key} collides with an HTTP entry"
+                ),
+            });
+        }
+    }
+    ingress.extend(websocket_ingress);
     let typed = ServiceDeploymentInput {
         schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
         contract: service_contract_ref(&input.service_api.contract)?,
@@ -116,18 +140,6 @@ pub fn generate_service_deployment(
         &artifacts,
         &contract_schema_records,
     )?)
-}
-
-fn reject_unwired_websocket_authoring(
-    service: &ServiceManifestAuthoring,
-) -> Result<(), GeneratedServiceDeploymentError> {
-    if service.websocket.is_some() {
-        return Err(GeneratedServiceDeploymentError::InvalidManifest {
-            field: "websocket",
-            message: "WebSocket business gateway entries are not defined for this deployment generation; refusing legacy operation ingress".to_string(),
-        });
-    }
-    Ok(())
 }
 
 fn contract_package_schema_records(
@@ -503,20 +515,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_service_deployment_accepts_empty_named_http_mapping() {
+    fn generated_service_deployment_authoring_accepts_path_only_websocket() {
         let service = serde_yaml::from_str::<ServiceManifestAuthoring>(
             r#"
-id: example.com/users
-http: {}
+id: example.com/chat
+websocket:
+  path: /chat
 "#,
         )
         .unwrap();
-        reject_unwired_websocket_authoring(&service).unwrap();
+        let websocket = service.websocket.expect("typed WebSocket authoring");
+        assert_eq!(websocket.host, "*");
+        assert_eq!(websocket.path, "/chat");
+        assert!(websocket.connect.is_none());
     }
 
     #[test]
     fn generated_service_deployment_rejects_legacy_websocket_operation_ingress() {
-        let service = serde_yaml::from_str::<ServiceManifestAuthoring>(
+        let error = serde_yaml::from_str::<ServiceManifestAuthoring>(
             r#"
 id: example.com/chat
 websocket:
@@ -525,10 +541,8 @@ websocket:
       operation: receive
 "#,
         )
-        .unwrap();
-        let error = reject_unwired_websocket_authoring(&service).unwrap_err();
+        .unwrap_err();
         let message = error.to_string();
-        assert!(message.contains("WebSocket business gateway entries are not defined"));
-        assert!(message.contains("refusing legacy operation ingress"));
+        assert!(message.contains("unknown field `routes`"), "{message}");
     }
 }

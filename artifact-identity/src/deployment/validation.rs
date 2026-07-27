@@ -190,13 +190,33 @@ fn validate_ingress_bindings(
 ) -> Result<()> {
     let mut selectors = BTreeSet::new();
     let mut referenced_entries = BTreeSet::new();
+    let mut websocket_entry_keys = BTreeSet::new();
     for binding in ingress {
         validate_ingress(binding)?;
-        if !gateway_entries.contains_key(&binding.gateway_entry_key) {
+        let Some(entry) = gateway_entries.get(&binding.gateway_entry_key) else {
             return invalid_deployment(format!(
                 "ingress selector references missing gateway entry {}",
                 binding.gateway_entry_key
             ));
+        };
+        let protocol_matches = matches!(
+            (binding.selector.protocol, &entry.protocol_surface.protocol),
+            (
+                skiff_artifact_model::IngressProtocol::Http,
+                GatewayProtocolSurface::Http(_)
+            ) | (
+                skiff_artifact_model::IngressProtocol::WebSocket,
+                GatewayProtocolSurface::WebSocketConnect(_)
+            )
+        );
+        if !protocol_matches {
+            return invalid_deployment(format!(
+                "ingress selector {:?} protocol does not match gateway entry {} surface",
+                binding.selector, binding.gateway_entry_key
+            ));
+        }
+        if binding.selector.protocol == skiff_artifact_model::IngressProtocol::WebSocket {
+            websocket_entry_keys.insert(&binding.gateway_entry_key);
         }
         referenced_entries.insert(&binding.gateway_entry_key);
         if !selectors.insert(binding.selector.clone()) {
@@ -214,6 +234,11 @@ fn validate_ingress_bindings(
             "gateway entry {orphan} is not referenced by any ingress selector"
         ));
     }
+    if websocket_entry_keys.len() > 1 {
+        return invalid_deployment(
+            "a service deployment may contain at most one WebSocket gateway entry",
+        );
+    }
     Ok(())
 }
 
@@ -222,7 +247,9 @@ fn validate_gateway_entries(
 ) -> Result<()> {
     for (key, entry) in entries {
         require_non_empty("gateway entry key", key.as_str())?;
-        require_non_empty("gateway handler callable id", entry.handler.as_str())?;
+        if let Some(handler) = &entry.handler {
+            require_non_empty("gateway handler callable id", handler.as_str())?;
+        }
         if let Some(pre) = &entry.pre {
             require_non_empty("gateway pre callable id", pre.as_str())?;
         }
@@ -238,13 +265,6 @@ fn validate_gateway_entries(
             ));
         }
 
-        let GatewayProtocolSurface::Http(http) = &entry.protocol_surface.protocol;
-        if entry.adapter_plan.kind != http.adapter_kind {
-            return invalid_deployment(format!(
-                "gateway entry {key} adapter plan kind {:?} does not match HTTP protocol kind {:?}",
-                entry.adapter_plan.kind, http.adapter_kind
-            ));
-        }
         validate_gateway_adapter_args(
             entry.adapter_plan.kind,
             entry.pre.is_some(),
@@ -254,19 +274,59 @@ fn validate_gateway_entries(
             message: format!("gateway entry {key} adapter plan is invalid: {error}"),
         })?;
 
-        let mut external_sources = entry
-            .adapter_plan
-            .args
-            .iter()
-            .map(|arg| arg.source)
-            .filter(|source| source.is_external_protocol_source())
-            .collect::<Vec<GatewayAdapterSource>>();
-        external_sources.sort_by_key(|source| source.wire_name());
-        external_sources.dedup();
-        if external_sources != http.external_sources {
-            return invalid_deployment(format!(
-                "gateway entry {key} external protocol sources do not match adapter plan"
-            ));
+        match &entry.protocol_surface.protocol {
+            GatewayProtocolSurface::Http(http) => {
+                if entry.handler.is_none() {
+                    return invalid_deployment(format!(
+                        "HTTP gateway entry {key} requires a handler"
+                    ));
+                }
+                if entry.adapter_plan.kind != http.adapter_kind {
+                    return invalid_deployment(format!(
+                        "gateway entry {key} adapter plan kind {:?} does not match HTTP protocol kind {:?}",
+                        entry.adapter_plan.kind, http.adapter_kind
+                    ));
+                }
+                let mut external_sources = entry
+                    .adapter_plan
+                    .args
+                    .iter()
+                    .map(|arg| arg.source)
+                    .filter(|source| source.is_external_protocol_source())
+                    .collect::<Vec<GatewayAdapterSource>>();
+                external_sources.sort_by_key(|source| source.wire_name());
+                external_sources.dedup();
+                if external_sources != http.external_sources {
+                    return invalid_deployment(format!(
+                        "gateway entry {key} external protocol sources do not match adapter plan"
+                    ));
+                }
+            }
+            GatewayProtocolSurface::WebSocketConnect(_) => {
+                if key.as_str() != skiff_artifact_model::WEBSOCKET_GATEWAY_ENTRY_KEY {
+                    return invalid_deployment(format!(
+                        "WebSocket gateway entry key must be {}, got {key}",
+                        skiff_artifact_model::WEBSOCKET_GATEWAY_ENTRY_KEY
+                    ));
+                }
+                if entry.adapter_plan.kind
+                    != skiff_artifact_model::GatewayAdapterKind::WebSocketConnect
+                {
+                    return invalid_deployment(format!(
+                        "WebSocket gateway entry {key} requires a websocketConnect adapter plan"
+                    ));
+                }
+                if entry.pre.is_some() || entry.guard.is_some() {
+                    return invalid_deployment(format!(
+                        "WebSocket gateway entry {key} cannot declare pre or guard callables"
+                    ));
+                }
+                if entry.handler.is_none() && !entry.adapter_plan.args.is_empty() {
+                    return invalid_deployment(format!(
+                        "WebSocket gateway entry {key} without a handler must have empty adapter args"
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -411,9 +471,9 @@ fn validate_ingress(binding: &DeploymentIngressBinding) -> Result<()> {
             require_non_empty("HTTP ingress method", method)?;
         }
         skiff_artifact_model::IngressProtocol::WebSocket => {
-            return invalid_deployment(
-                "current deployment generation accepts only HTTP gateway ingress",
-            );
+            if binding.selector.method.is_some() {
+                return invalid_deployment("WebSocket ingress must not declare method");
+            }
         }
     }
     Ok(())

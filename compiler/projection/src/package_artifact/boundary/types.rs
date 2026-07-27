@@ -509,13 +509,7 @@ fn classify_native(name: &str, argument_count: usize) -> Result<(), BoundaryUnav
         | ("Array", 1)
         | ("Map", 2) => Ok(()),
         ("Stream", _) => Err(BoundaryUnavailableReason::UnsupportedStream),
-        (
-            "Array"
-            | "Map"
-            | "std.websocket.WebSocketIngressEvent"
-            | "std.websocket.WebSocketConnectResult",
-            _,
-        ) => Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
+        ("Array" | "Map", _) => Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
         _ => Err(BoundaryUnavailableReason::NativeAdapterUnavailable),
     }
 }
@@ -958,9 +952,9 @@ mod tests {
     }
 
     #[test]
-    fn package_schema_websocket_generic_builtins_are_not_service_boundary_types() {
+    fn websocket_package_types_have_no_builtin_name_based_boundary_admission() {
         for name in [
-            "std.websocket.WebSocketIngressEvent",
+            "std.websocket.WebSocketConnectRequest",
             "std.websocket.WebSocketConnectResult",
         ] {
             assert_eq!(
@@ -974,7 +968,7 @@ mod tests {
                     &BTreeMap::new(),
                     &[],
                 ),
-                Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
+                Err(BoundaryUnavailableReason::NativeAdapterUnavailable),
                 "{name}"
             );
         }

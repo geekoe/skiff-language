@@ -3,8 +3,8 @@
 //! This leaf deliberately consumes the exact implementation ABI rather than
 //! widening private ingress callables into the package public surface.
 
-mod resolver;
-mod schema;
+pub(crate) mod resolver;
+pub(crate) mod schema;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -140,7 +140,7 @@ fn project_entry(
     Ok(DeploymentGatewayEntry {
         gateway_entry_identity,
         protocol_surface: surface,
-        handler: handler.callable_id,
+        handler: Some(handler.callable_id),
         pre: pre.map(|callable| callable.callable_id),
         guard: guard.map(|callable| callable.callable_id),
         adapter_plan: GatewayAdapterPlan {
@@ -298,6 +298,17 @@ fn validate_handler_args(
                 }
                 None
             }
+            GatewayAdapterSource::WebSocketConnectRequest
+            | GatewayAdapterSource::WebSocketConnectionId => {
+                return Err(invalid(
+                    key,
+                    "adapterArgs",
+                    format!(
+                        "source {} is not allowed for an HTTP gateway entry",
+                        arg.source.wire_name()
+                    ),
+                ))
+            }
         };
         if let Some((existing_type, existing_schema)) = source_types.get(&arg.source) {
             if *existing_type != ty || *existing_schema != schema {
@@ -344,6 +355,11 @@ fn body_schema(
             "rawHttp cannot consume http.body",
         )),
         GatewayAdapterKind::RawHttp => Ok(None),
+        GatewayAdapterKind::WebSocketConnect => Err(invalid(
+            key,
+            "kind",
+            "websocketConnect is not an HTTP adapter kind",
+        )),
         GatewayAdapterKind::TypedJson => {
             let by_name = signature
                 .parameters
@@ -407,6 +423,11 @@ fn project_handler_return(
                     ),
                 ))
             }
+            GatewayAdapterKind::WebSocketConnect => Err(invalid(
+                key,
+                "kind",
+                "websocketConnect is not an HTTP adapter kind",
+            )),
         };
     }
     match kind {
@@ -425,6 +446,11 @@ fn project_handler_return(
                 .map_err(|message| invalid(key, "handler", message))?;
             Ok((GatewayDispatchMode::Unary, None, None))
         }
+        GatewayAdapterKind::WebSocketConnect => Err(invalid(
+            key,
+            "kind",
+            "websocketConnect is not an HTTP adapter kind",
+        )),
     }
 }
 
