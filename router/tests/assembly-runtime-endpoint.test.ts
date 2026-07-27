@@ -49,7 +49,7 @@ const SERVICE_PROTOCOL =
 const BUILD_ID = `skiff-service-build-v1:sha256:${'d'.repeat(64)}`;
 const TARGET = 'function:service.example~actors.ActorApi.spawn';
 const SPAWN_COMPATIBILITY = `${SERVICE_VERSION}:${SERVICE_PROTOCOL}:${TARGET}`;
-const TEST_GATEWAY_ENTRY_IDENTITY =
+const LEGACY_TEST_WIRE_GATEWAY_ENTRY_IDENTITY =
   `skiff-gateway-entry-v1:sha256:${'9'.repeat(64)}`;
 const TEST_HOST = 'case-0.package-test.skiff.localhost';
 const TEST_PATH = '/__skiff/package-test/0';
@@ -986,7 +986,7 @@ function assembly(
             },
             deployment,
             gatewayEntryKey: 'run',
-            gatewayEntryIdentity: TEST_GATEWAY_ENTRY_IDENTITY,
+            gatewayEntryIdentity: LEGACY_TEST_WIRE_GATEWAY_ENTRY_IDENTITY,
             adapterKind: 'typedJson',
             operationMode: 'unary'
           }]
@@ -999,7 +999,7 @@ function deploymentRef(deploymentRevision: string) {
     contractVersion: SERVICE_VERSION,
     deploymentRevision,
     deploymentArtifactIdentity:
-      `skiff-deployment-artifact-v2:sha256:${'e'.repeat(64)}`
+      `skiff-deployment-artifact-v3:sha256:${'e'.repeat(64)}`
   };
 }
 
@@ -1041,7 +1041,7 @@ function testDispatchBody() {
       kind: 'runtimeAssembly',
       assemblyIdentity: ASSEMBLY_A,
       assemblyGeneration: 1,
-      gatewayEntryIdentity: TEST_GATEWAY_ENTRY_IDENTITY,
+      gatewayEntryIdentity: LEGACY_TEST_WIRE_GATEWAY_ENTRY_IDENTITY,
       ingress: {
         protocol: 'http',
         host: TEST_HOST,

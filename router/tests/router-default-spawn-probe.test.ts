@@ -128,7 +128,7 @@ async function openRuntime(
       contractVersion: serviceVersion,
       deploymentRevision,
       deploymentArtifactIdentity:
-        `skiff-deployment-artifact-v2:sha256:${'e'.repeat(64)}`,
+        `skiff-deployment-artifact-v3:sha256:${'e'.repeat(64)}`,
     }],
     resolvedContracts: [{
       serviceId,

@@ -75,7 +75,12 @@ describe('compiler generated HTTP gateway compatibility', () => {
         expect(generated.serviceContract.contract.serviceProtocolIdentity).toMatch(
           /^skiff-service-protocol-v5:sha256:[0-9a-f]{64}$/
         );
-        expect(generated.deploymentValue.schemaVersion).toBe('skiff-service-deployment-v2');
+        expect(generated.deploymentValue.schemaVersion).toBe('skiff-service-deployment-v3');
+        expect(
+          generated.serviceDeployment.deployment.deploymentArtifactIdentity
+        ).toMatch(
+          /^skiff-deployment-artifact-v3:sha256:[0-9a-f]{64}$/
+        );
         expect(generated.deploymentValue.operationBindings).toEqual([]);
 
         const gatewayEntries = recordField(
@@ -89,7 +94,7 @@ describe('compiler generated HTTP gateway compatibility', () => {
           'gatewayEntryIdentity'
         );
         expect(gatewayEntryIdentity).toBe(
-          'skiff-gateway-entry-v1:sha256:adfaa17c077af0388f2b5751bbe4b9ba392ec647f5ce33022c8e8ec83eaf6653'
+          'skiff-gateway-entry-v2:sha256:94d4fb9ed499a8e4717ac6a46eb716a4595445573808f2543b7ea5aeefe83705'
         );
         expect(pingGateway).toEqual({
           gatewayEntryIdentity,

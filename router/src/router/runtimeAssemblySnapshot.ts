@@ -2,11 +2,15 @@ import type {
   EnvironmentActivationState,
   RuntimeAssemblyRef
 } from '../protocol/assemblyActivationProtocol.js';
+import type {
+  RuntimeAssemblyWebSocketMethodTable,
+  RuntimeAssemblyWebSocketRpcProfile
+} from './runtimeAssemblyWebSocketSnapshot.js';
 
 const DEPLOYMENT_ARTIFACT_IDENTITY_PATTERN =
-  /^skiff-deployment-artifact-v2:sha256:[0-9a-f]{64}$/;
+  /^skiff-deployment-artifact-v3:sha256:[0-9a-f]{64}$/;
 const GATEWAY_ENTRY_IDENTITY_PATTERN =
-  /^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$/;
+  /^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$/;
 const RUNTIME_ASSEMBLY_IDENTITY_PATTERN =
   /^skiff-runtime-assembly-v2:sha256:[0-9a-f]{64}$/;
 const SERVICE_PROTOCOL_IDENTITY_PATTERN =
@@ -22,13 +26,22 @@ export interface RuntimeAssemblyHttpIngressSelector {
 export interface RuntimeAssemblyWebSocketIngressSelector {
   protocol: 'webSocket';
   host: string;
-  method: null;
+  method: string | null;
   path: string;
 }
 
 export type RuntimeAssemblyIngressSelector =
   | RuntimeAssemblyHttpIngressSelector
   | RuntimeAssemblyWebSocketIngressSelector;
+
+export interface RuntimeAssemblyWebSocketPhysicalIngressSelector
+extends RuntimeAssemblyWebSocketIngressSelector {
+  method: null;
+}
+
+export type RuntimeAssemblyAttachIngressSelector =
+  | RuntimeAssemblyHttpIngressSelector
+  | RuntimeAssemblyWebSocketPhysicalIngressSelector;
 
 export interface RuntimeAssemblyDeploymentRef {
   serviceId: string;
@@ -44,7 +57,7 @@ export interface RuntimeAssemblyContractRef {
 }
 
 export interface RuntimeAssemblyIngressBinding {
-  selector: RuntimeAssemblyIngressSelector;
+  selector: RuntimeAssemblyAttachIngressSelector;
   deployment: RuntimeAssemblyDeploymentRef;
   gatewayEntryKey: string;
   gatewayEntryIdentity: string;
@@ -52,6 +65,8 @@ export interface RuntimeAssemblyIngressBinding {
   operationMode: 'unary' | 'serverStream';
   handler?: string;
   websocketEntryId?: string;
+  websocketRpcProfiles?: readonly RuntimeAssemblyWebSocketRpcProfile[];
+  websocketMethods?: RuntimeAssemblyWebSocketMethodTable;
   timeoutMs?: number;
 }
 
@@ -119,7 +134,7 @@ export class MemoryRuntimeAssemblySnapshotLoader implements RuntimeAssemblySnaps
     if (assembly === undefined) {
       throw new Error(`RuntimeAssembly ${ref.assemblyIdentity} is unavailable`);
     }
-    return structuredClone(assembly);
+    return cloneLoadedRuntimeAssembly(assembly);
   }
 }
 
@@ -163,6 +178,14 @@ export class RuntimeAssemblyIngressIndex {
 
   constructor(bindings: readonly RuntimeAssemblyIngressBinding[]) {
     for (const binding of bindings) {
+      if (
+        binding.selector.protocol === 'webSocket' &&
+        binding.selector.method !== null
+      ) {
+        throw new Error(
+          'WebSocket attach ingress method must be null; methods belong to the captured table'
+        );
+      }
       const key = runtimeAssemblyIngressKey(binding.selector);
       if (this.bindings.has(key)) {
         throw new Error(`RuntimeAssembly contains duplicate gateway ingress ${key}`);
@@ -218,10 +241,17 @@ export function runtimeAssemblyIngressKey(
     throw new Error('RuntimeAssembly ingress path must be an absolute URL path');
   }
   if (selector.protocol === 'webSocket') {
-    if (selector.method !== null) {
-      throw new Error('WebSocket RuntimeAssembly ingress method must be null');
+    if (
+      selector.method !== null &&
+      (selector.method.trim().length === 0 || selector.method.includes('\u0000'))
+    ) {
+      throw new Error(
+        'WebSocket JSON-RPC RuntimeAssembly ingress method must be non-empty'
+      );
     }
-    return `webSocket\u0000${host}\u0000${selector.path}`;
+    return selector.method === null
+      ? `webSocket\u0000${host}\u0000${selector.path}`
+      : `webSocket\u0000${host}\u0000${selector.method}\u0000${selector.path}`;
   }
   const method = selector.method.toUpperCase();
   if (method.length === 0) {
@@ -376,10 +406,20 @@ export function decodeRuntimeAssemblyIngressSelector(
   }
   let selector: RuntimeAssemblyIngressSelector;
   if (value.protocol === 'webSocket') {
-    if (value.method !== null) {
-      throw new Error(`${label}.method must be null for webSocket`);
+    if (
+      value.method !== null &&
+      (typeof value.method !== 'string' || value.method.trim().length === 0)
+    ) {
+      throw new Error(
+        `${label}.method must be null or a non-empty string for webSocket`
+      );
     }
-    selector = { protocol: 'webSocket', host, method: null, path };
+    selector = {
+      protocol: 'webSocket',
+      host,
+      method: value.method,
+      path
+    };
   } else {
     const method = requiredString(value, 'method');
     if (
@@ -543,4 +583,38 @@ function requiredString(value: Record<string, unknown>, field: string): string {
     throw new Error(`${field} must be a non-empty string`);
   }
   return fieldValue;
+}
+
+function cloneLoadedRuntimeAssembly(
+  assembly: LoadedRuntimeAssembly
+): LoadedRuntimeAssembly {
+  return {
+    schemaVersion: assembly.schemaVersion,
+    assemblyIdentity: assembly.assemblyIdentity,
+    ...(assembly.resolvedDeployments === undefined
+      ? {}
+      : { resolvedDeployments: structuredClone(assembly.resolvedDeployments) }),
+    ...(assembly.resolvedContracts === undefined
+      ? {}
+      : { resolvedContracts: structuredClone(assembly.resolvedContracts) }),
+    gatewayIngress: assembly.gatewayIngress.map((binding) => {
+      const {
+        websocketMethods,
+        websocketRpcProfiles,
+        ...serializableBinding
+      } = binding;
+      return {
+        ...structuredClone(serializableBinding),
+        ...(websocketRpcProfiles === undefined
+          ? {}
+          : { websocketRpcProfiles: Object.freeze([...websocketRpcProfiles]) }),
+        ...(websocketMethods === undefined
+          ? {}
+          : { websocketMethods: websocketMethods.clone() })
+      };
+    }),
+    ...(assembly.actorMethods === undefined
+      ? {}
+      : { actorMethods: structuredClone(assembly.actorMethods) })
+  };
 }

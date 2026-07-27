@@ -5,7 +5,10 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { FilesystemRuntimeAssemblySnapshotLoader } from '../src/router/filesystemRuntimeAssemblySnapshotLoader.js';
-import { deriveWebSocketEntryId } from '../src/router/runtimeAssemblyDeploymentSnapshot.js';
+import {
+  deriveCurrentRuntimeAssemblyServiceDeploymentIdentity,
+  deriveWebSocketEntryId
+} from '../src/router/runtimeAssemblyDeploymentSnapshot.js';
 
 const roots: string[] = [];
 const ASSEMBLY_IDENTITY =
@@ -13,10 +16,14 @@ const ASSEMBLY_IDENTITY =
 const SERVICE_PROTOCOL_IDENTITY =
   `skiff-service-protocol-v5:sha256:${'b'.repeat(64)}`;
 const GATEWAY_IDENTITIES = [
-  `skiff-gateway-entry-v1:sha256:${'1'.repeat(64)}`,
-  `skiff-gateway-entry-v1:sha256:${'2'.repeat(64)}`,
-  `skiff-gateway-entry-v1:sha256:${'3'.repeat(64)}`
+  'skiff-gateway-entry-v2:sha256:0fd289d7eec4e03b01e9e8f5633aedd7e1cc64158fa7932f99a9686e559c02f2',
+  'skiff-gateway-entry-v2:sha256:00d40bc2d3aa3da1b1056a2317800b19d1c3ccfaddac8c2bec4145e818aad099',
+  'skiff-gateway-entry-v2:sha256:fe171230932018f3bc7aaf13de6b7045b3afe65a7df6d7eeaf4cd394584eb6cf'
 ] as const;
+const WEBSOCKET_GATEWAY_IDENTITY =
+  'skiff-gateway-entry-v2:sha256:f385624021966bab998385e1fd2c88804b51992f15f9c9d76c05d3e17a75018d';
+const WEBSOCKET_METHOD_IDENTITY =
+  'skiff-gateway-entry-v2:sha256:76fd205e35d35474a2082dd58b914b25b653eeecbfd8b6c96c52d3d070eae331';
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -75,7 +82,7 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
   it.each([
     {
       name: 'handler present',
-      handler: `skiff-package-callable-v1:sha256:${'f'.repeat(64)}`
+      handler: 'pkg-callable:skiff.run/echo:top-level:main.connect'
     },
     {
       name: 'handler absent',
@@ -98,7 +105,7 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
         path: '/chat'
       },
       gatewayEntryKey: 'websocket',
-      gatewayEntryIdentity: GATEWAY_IDENTITIES[0],
+      gatewayEntryIdentity: WEBSOCKET_GATEWAY_IDENTITY,
       adapterKind: 'websocketConnect',
       operationMode: 'unary',
       websocketEntryId: deriveWebSocketEntryId(
@@ -111,6 +118,31 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     } else {
       expect(binding.handler).toBe(handler);
     }
+  });
+
+  it('loads current physical and JSON-RPC method entries into one captured table', async () => {
+    const root = await fixtureRoot();
+    const fixture = websocketRpcFixture();
+    await writeFixture(root, fixture);
+
+    const loaded = await loader(root).load({
+      assemblyIdentity: ASSEMBLY_IDENTITY
+    });
+    const binding = loaded.gatewayIngress[0]!;
+
+    expect(loaded.gatewayIngress).toHaveLength(1);
+    expect(Array.from(binding.websocketMethods!.capture())).toEqual([
+      [
+        'status',
+        expect.objectContaining({
+          gatewayEntryIdentity: WEBSOCKET_METHOD_IDENTITY,
+          handler:
+            'pkg-callable:skiff.run/echo:top-level:main.status',
+          profile: 'jsonrpc-2.0-text',
+          websocketEntryId: binding.websocketEntryId
+        })
+      ]
+    ]);
   });
 
   it.each([
@@ -177,7 +209,7 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
   ])('rejects an inexact current WebSocket snapshot: $name', async ({ mutate }) => {
     const root = await fixtureRoot();
     const fixture = websocketFixture(
-      `skiff-package-callable-v1:sha256:${'f'.repeat(64)}`
+      'pkg-callable:skiff.run/echo:top-level:main.connect'
     );
     mutate(fixture);
     await writeFixture(root, fixture);
@@ -187,7 +219,7 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     ).rejects.toThrow();
   });
 
-  it('uses declared v2 identities without recomputing Rust-owned content hashes', async () => {
+  it('validates nested current identity preimages while retaining the declared assembly identity', async () => {
     const root = await fixtureRoot();
     const fixture = canonicalFixture();
     fixture.assembly.roots = [...fixture.assembly.roots].reverse();
@@ -196,6 +228,45 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     await expect(
       loader(root).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
     ).resolves.toMatchObject({ assemblyIdentity: ASSEMBLY_IDENTITY });
+  });
+
+  it.each([
+    {
+      name: 'ServiceDeployment v2 schema',
+      mutate: (fixture: Fixture) => {
+        fixture.deployments[0]!.schemaVersion =
+          'skiff-service-deployment-v2';
+      }
+    },
+    {
+      name: 'DeploymentArtifact v2 identity',
+      mutate: (fixture: Fixture) => {
+        const legacy =
+          `skiff-deployment-artifact-v2:sha256:${'4'.repeat(64)}`;
+        fixture.deployments[0]!.deploymentArtifactIdentity = legacy;
+        fixture.assembly.resolvedDeployments[0].deploymentArtifactIdentity =
+          legacy;
+      }
+    },
+    {
+      name: 'GatewayEntry v1 identity',
+      mutate: (fixture: Fixture) => {
+        const legacy =
+          `skiff-gateway-entry-v1:sha256:${'1'.repeat(64)}`;
+        fixture.deployments[0]!.gatewayEntries.rawUnary.gatewayEntryIdentity =
+          legacy;
+        fixture.assembly.gatewayIngress[0].gatewayEntryIdentity = legacy;
+      }
+    }
+  ])('rejects legacy current-reader input: $name', async ({ mutate }) => {
+    const root = await fixtureRoot();
+    const fixture = canonicalFixture();
+    mutate(fixture);
+    await writeFixture(root, fixture);
+
+    await expect(
+      loader(root).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow();
   });
 
   it('accepts only PackageArtifact v9 records addressed by package build v10', async () => {
@@ -271,7 +342,7 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     const fixture = canonicalFixture();
     await writeFixture(mismatched, fixture);
     fixture.deployments[0]!.deploymentArtifactIdentity =
-      `skiff-deployment-artifact-v2:sha256:${'f'.repeat(64)}`;
+      `skiff-deployment-artifact-v3:sha256:${'f'.repeat(64)}`;
     await writeJson(
       mismatched,
       deploymentPath(deploymentRef(fixture.assembly, 0)),
@@ -416,7 +487,7 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
       name: 'deployment identity',
       mutate: (deploymentRecord: Record<string, any>) => {
         deploymentRecord.deploymentArtifactIdentity =
-          `skiff-deployment-artifact-v2:sha256:${'f'.repeat(64)}`;
+          `skiff-deployment-artifact-v3:sha256:${'f'.repeat(64)}`;
       }
     }
   ])('rejects a record with mismatched exact reference field: $name', async ({ mutate }) => {
@@ -552,6 +623,7 @@ function websocketFixture(handler: string | null): Fixture {
   const fixture = canonicalFixture();
   const deployment = fixture.deployments[0]!;
   const entry = deployment.gatewayEntries.rawUnary;
+  entry.gatewayEntryIdentity = WEBSOCKET_GATEWAY_IDENTITY;
   entry.protocolSurface = {
     protocol: {
       kind: 'websocketConnect',
@@ -563,7 +635,8 @@ function websocketFixture(handler: string | null): Fixture {
           { kind: 'websocket.connectRequest' },
           { kind: 'websocket.connectionId' }
         ],
-        downlinkFrames: ['binary', 'text']
+        downlinkFrames: ['binary', 'text'],
+        rpcProfiles: ['jsonrpc-2.0-text']
       }
     },
     externalErrorProjection: { kind: 'fixed', version: 'v1' }
@@ -597,6 +670,8 @@ function websocketFixture(handler: string | null): Fixture {
     },
     gatewayEntryKey: 'websocket'
   }];
+  deployment.deploymentArtifactIdentity =
+    deriveCurrentRuntimeAssemblyServiceDeploymentIdentity(deployment);
   fixture.deployments = [deployment];
   const reference = {
     serviceId: deployment.contract.serviceId,
@@ -615,6 +690,72 @@ function websocketFixture(handler: string | null): Fixture {
   return fixture;
 }
 
+function websocketRpcFixture(): Fixture {
+  const fixture = websocketFixture(null);
+  const deployment = fixture.deployments[0]!;
+  const selector = {
+    protocol: 'webSocket',
+    host: '*',
+    method: 'status',
+    path: '/chat'
+  };
+  deployment.gatewayEntries.status = {
+    gatewayEntryIdentity: WEBSOCKET_METHOD_IDENTITY,
+    protocolSurface: {
+      protocol: {
+        kind: 'websocketJsonRpc',
+        surface: {
+          profile: 'jsonrpc-2.0-text',
+          dispatchMode: 'unary',
+          externalSources: [
+            { kind: 'websocket.connectionId' },
+            { kind: 'websocket.jsonRpcParams' }
+          ],
+          paramsSchema: {
+            kind: 'record',
+            fields: { id: { kind: 'string' } },
+            required: ['id']
+          },
+          resultSchema: {
+            kind: 'record',
+            fields: { value: { kind: 'string' } },
+            required: ['value']
+          }
+        }
+      },
+      externalErrorProjection: { kind: 'fixed', version: 'v1' }
+    },
+    handler: 'pkg-callable:skiff.run/echo:top-level:main.status',
+    pre: null,
+    guard: null,
+    adapterPlan: {
+      kind: 'websocketJsonRpc',
+      args: [
+        {
+          param: 'connectionId',
+          source: { kind: 'websocket.connectionId' }
+        },
+        {
+          param: 'params',
+          source: { kind: 'websocket.jsonRpcParams' }
+        }
+      ]
+    }
+  };
+  deployment.ingress.push({
+    selector,
+    gatewayEntryKey: 'status'
+  });
+  fixture.assembly.gatewayIngress.push({
+    selector: structuredClone(selector),
+    deployment: fixture.assembly.resolvedDeployments[0],
+    gatewayEntryKey: 'status',
+    gatewayEntryIdentity: WEBSOCKET_METHOD_IDENTITY
+  });
+  refreshFixtureDeploymentIdentity(fixture, 0);
+  return fixture;
+}
+
 function deployment(
   revision: string,
   gatewayEntryKey: string,
@@ -628,8 +769,8 @@ function deployment(
 ): Record<string, any> {
   const typed = options.adapterKind === 'typedJson';
   const stream = options.operationMode === 'serverStream';
-  return {
-    schemaVersion: 'skiff-service-deployment-v2',
+  const record = {
+    schemaVersion: 'skiff-service-deployment-v3',
     contract: {
       serviceId: 'skiff.run/echo',
       contractVersion: '1.0.0',
@@ -637,7 +778,7 @@ function deployment(
     },
     deploymentRevision: revision,
     deploymentArtifactIdentity:
-      `skiff-deployment-artifact-v2:sha256:${(
+      `skiff-deployment-artifact-v3:sha256:${(
         gatewayEntryKey === 'rawUnary'
           ? '4'
           : gatewayEntryKey === 'rawStream'
@@ -707,6 +848,9 @@ function deployment(
     },
     diagnosticText: { displayName: gatewayEntryKey, notes: {} }
   };
+  record.deploymentArtifactIdentity =
+    deriveCurrentRuntimeAssemblyServiceDeploymentIdentity(record);
+  return record;
 }
 
 function gatewayEntry(
@@ -756,6 +900,18 @@ function deploymentRef(
   index: number
 ): DeploymentRefFixture {
   return assembly.resolvedDeployments[index] as DeploymentRefFixture;
+}
+
+function refreshFixtureDeploymentIdentity(
+  fixture: Fixture,
+  index: number
+): void {
+  const deploymentRecord = fixture.deployments[index]!;
+  const identity =
+    deriveCurrentRuntimeAssemblyServiceDeploymentIdentity(deploymentRecord);
+  deploymentRecord.deploymentArtifactIdentity = identity;
+  fixture.assembly.resolvedDeployments[index].deploymentArtifactIdentity =
+    identity;
 }
 
 function assemblyPath(): string {

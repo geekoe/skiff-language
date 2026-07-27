@@ -27,7 +27,9 @@ import {
 } from '../src/router/runtimeAssemblySnapshot.js';
 
 const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
-const DEPLOYMENT = `skiff-deployment-artifact-v2:sha256:${'c'.repeat(64)}`;
+const DEPLOYMENT = `skiff-deployment-artifact-v3:sha256:${'c'.repeat(64)}`;
+const LEGACY_HTTP_WIRE_GATEWAY_ENTRY_IDENTITY =
+  `skiff-gateway-entry-v1:sha256:${'e'.repeat(64)}`;
 const HTTP_HOST = 'p5-f345-http.example.test';
 const HTTP_PATH = '/convergence';
 const CONTROL_CASE = 'generic-control-same-safe-values-as-internal';
@@ -244,8 +246,7 @@ function binding(
       deploymentArtifactIdentity: DEPLOYMENT
     },
     gatewayEntryKey: 'convergence',
-    gatewayEntryIdentity:
-      `skiff-gateway-entry-v1:sha256:${'e'.repeat(64)}`,
+    gatewayEntryIdentity: LEGACY_HTTP_WIRE_GATEWAY_ENTRY_IDENTITY,
     adapterKind: 'typedJson',
     operationMode: 'unary'
   };

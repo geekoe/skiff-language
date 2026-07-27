@@ -52,7 +52,7 @@ describe('RuntimeAssembly ingress index', () => {
     ]);
   });
 
-  it('fails closed for duplicates and keeps WebSocket selectors method-free', () => {
+  it('fails closed for duplicates and keeps method declarations out of attach ingress', () => {
     const first = binding('echo.localhost', 'echo', '4');
     const duplicate = structuredClone(first);
     duplicate.selector.host = 'ECHO.LOCALHOST';
@@ -67,12 +67,21 @@ describe('RuntimeAssembly ingress index', () => {
       method: null,
       path: '/echo'
     })).toBe('webSocket\u0000echo.localhost\u0000/echo');
-    expect(() => runtimeAssemblyIngressKey({
+    expect(runtimeAssemblyIngressKey({
       protocol: 'webSocket',
       host: 'echo.localhost',
       method: 'GET',
       path: '/echo'
-    } as never)).toThrow(/method must be null/);
+    })).toBe('webSocket\u0000echo.localhost\u0000GET\u0000/echo');
+    expect(() => new RuntimeAssemblyIngressIndex([{
+      ...first,
+      selector: {
+        protocol: 'webSocket',
+        host: 'echo.localhost',
+        method: 'GET',
+        path: '/echo'
+      }
+    } as never])).toThrow(/attach ingress method must be null/);
   });
 
   it.each([
@@ -131,11 +140,11 @@ function binding(
       contractVersion: '1.0.0',
       deploymentRevision: 'revision',
       deploymentArtifactIdentity:
-        `skiff-deployment-artifact-v2:sha256:${identityCharacter.repeat(64)}`
+        `skiff-deployment-artifact-v3:sha256:${identityCharacter.repeat(64)}`
     },
     gatewayEntryKey,
     gatewayEntryIdentity:
-      `skiff-gateway-entry-v1:sha256:${identityCharacter.repeat(64)}`,
+      `skiff-gateway-entry-v2:sha256:${identityCharacter.repeat(64)}`,
     adapterKind: options.adapterKind ?? 'typedJson',
     operationMode: options.operationMode ?? 'unary',
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs })

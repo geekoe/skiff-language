@@ -1,6 +1,7 @@
-import { createHash } from 'node:crypto';
-
-import { stableStringify } from '../manifest/identity.js';
+import {
+  deriveCurrentRuntimeAssemblyGatewayEntryIdentity,
+  deriveCurrentRuntimeAssemblyServiceDeploymentIdentity
+} from './runtimeAssemblyDeploymentIdentity.js';
 import {
   decodeRuntimeAssemblyGatewayEntryKey,
   decodeRuntimeAssemblyIngressSelector,
@@ -12,16 +13,31 @@ import {
   type RuntimeAssemblyIngressBinding,
   type RuntimeAssemblyIngressSelector
 } from './runtimeAssemblySnapshot.js';
+import {
+  decodeRuntimeAssemblyWebSocketGatewayEntry,
+  isRuntimeAssemblyWebSocketProtocolKind,
+  methodBindingFromDecoded,
+  RuntimeAssemblyWebSocketMethodTable,
+  type DecodedRuntimeAssemblyWebSocketEntry,
+  type DecodedRuntimeAssemblyWebSocketMethodEntry,
+  type DecodedRuntimeAssemblyWebSocketPhysicalEntry
+} from './runtimeAssemblyWebSocketSnapshot.js';
+
+export { deriveWebSocketEntryId } from './runtimeAssemblyWebSocketSnapshot.js';
+export {
+  deriveCurrentRuntimeAssemblyServiceDeploymentIdentity
+} from './runtimeAssemblyDeploymentIdentity.js';
 
 const DEPLOYMENT_ARTIFACT_IDENTITY_PATTERN =
-  /^skiff-deployment-artifact-v2:sha256:[0-9a-f]{64}$/;
+  /^skiff-deployment-artifact-v3:sha256:[0-9a-f]{64}$/;
 const GATEWAY_ENTRY_IDENTITY_PATTERN =
-  /^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$/;
+  /^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$/;
 const SERVICE_PROTOCOL_IDENTITY_PATTERN =
   /^skiff-service-protocol-v5:sha256:[0-9a-f]{64}$/;
-const WEBSOCKET_ENTRY_IDENTITY_PREFIX =
-  'skiff-websocket-entry-v1:sha256:';
-const WEBSOCKET_GATEWAY_ENTRY_KEY = 'websocket';
+const PACKAGE_BUILD_IDENTITY_PATTERN =
+  /^skiff-package-build-v10:sha256:[0-9a-f]{64}$/;
+const PACKAGE_LOCAL_ABI_IDENTITY_PATTERN =
+  /^skiff-package-local-abi-v7:sha256:[0-9a-f]{64}$/;
 
 interface DecodedServiceDeployment {
   ref: RuntimeAssemblyDeploymentRef;
@@ -30,17 +46,29 @@ interface DecodedServiceDeployment {
   timeoutMs?: number;
 }
 
-interface DecodedDeploymentGatewayEntry {
+interface DecodedHttpDeploymentGatewayEntry {
+  kind: 'http';
   gatewayEntryIdentity: string;
-  adapterKind: 'rawHttp' | 'typedJson' | 'websocketConnect';
+  adapterKind: 'rawHttp' | 'typedJson';
   operationMode: 'unary' | 'serverStream';
-  handler?: string;
-  websocketEntryId?: string;
+  handler: string;
 }
+
+type DecodedDeploymentGatewayEntry =
+  | DecodedHttpDeploymentGatewayEntry
+  | DecodedRuntimeAssemblyWebSocketEntry;
 
 interface DecodedDeploymentIngressBinding {
   selector: RuntimeAssemblyIngressSelector;
   gatewayEntryKey: string;
+}
+
+interface ExpectedRuntimeAssemblyIngress {
+  selector: RuntimeAssemblyIngressSelector;
+  deployment: RuntimeAssemblyDeploymentRef;
+  gatewayEntryKey: string;
+  gatewayEntryIdentity: string;
+  attachBinding?: RuntimeAssemblyIngressBinding;
 }
 
 export function joinRuntimeAssemblyDeployments(
@@ -58,7 +86,7 @@ export function joinRuntimeAssemblyDeployments(
       contract
     ])
   );
-  const expectedBySelector = new Map<string, RuntimeAssemblyIngressBinding>();
+  const expectedBySelector = new Map<string, ExpectedRuntimeAssemblyIngress>();
   for (const [index, reference] of record.resolvedDeployments.entries()) {
     const expectedContract = contractByCoordinate.get(
       contractCoordinate(reference.serviceId, reference.contractVersion)
@@ -74,41 +102,19 @@ export function joinRuntimeAssemblyDeployments(
       expectedContract,
       `RouterSnapshot.serviceDeployments[${index}]`
     );
-    for (const binding of deployment.ingress) {
-      const selectorKey = runtimeAssemblyIngressKey(binding.selector);
+    for (const expected of buildDeploymentIngressExpectations(deployment)) {
+      const selectorKey = runtimeAssemblyIngressKey(expected.selector);
       if (expectedBySelector.has(selectorKey)) {
         throw new Error(
           `ServiceDeployment ingress contains duplicate selector ${selectorKey}`
         );
       }
-      const entry = deployment.gatewayEntries.get(binding.gatewayEntryKey);
-      if (entry === undefined) {
-        throw new Error(
-          `ServiceDeployment ingress references missing gateway entry ${binding.gatewayEntryKey}`
-        );
-      }
-      expectedBySelector.set(selectorKey, {
-        selector: binding.selector,
-        deployment: deployment.ref,
-        gatewayEntryKey: binding.gatewayEntryKey,
-        gatewayEntryIdentity: entry.gatewayEntryIdentity,
-        adapterKind: entry.adapterKind,
-        operationMode: entry.operationMode,
-        ...(entry.adapterKind !== 'websocketConnect' ||
-        entry.handler === undefined
-          ? {}
-          : { handler: entry.handler }),
-        ...(entry.websocketEntryId === undefined
-          ? {}
-          : { websocketEntryId: entry.websocketEntryId }),
-        ...(deployment.timeoutMs === undefined
-          ? {}
-          : { timeoutMs: deployment.timeoutMs })
-      });
+      expectedBySelector.set(selectorKey, expected);
     }
   }
 
-  const gatewayIngress = record.gatewayIngress.map((declared) => {
+  const gatewayIngress: RuntimeAssemblyIngressBinding[] = [];
+  for (const declared of record.gatewayIngress) {
     const selectorKey = runtimeAssemblyIngressKey(declared.selector);
     const expected = expectedBySelector.get(selectorKey);
     if (expected === undefined) {
@@ -127,8 +133,10 @@ export function joinRuntimeAssemblyDeployments(
       );
     }
     expectedBySelector.delete(selectorKey);
-    return expected;
-  });
+    if (expected.attachBinding !== undefined) {
+      gatewayIngress.push(expected.attachBinding);
+    }
+  }
   if (expectedBySelector.size > 0) {
     const [missing] = expectedBySelector.keys();
     throw new Error(
@@ -141,6 +149,202 @@ export function joinRuntimeAssemblyDeployments(
     resolvedDeployments: record.resolvedDeployments,
     resolvedContracts: record.resolvedContracts,
     gatewayIngress
+  };
+}
+
+function buildDeploymentIngressExpectations(
+  deployment: DecodedServiceDeployment
+): readonly ExpectedRuntimeAssemblyIngress[] {
+  const expected: ExpectedRuntimeAssemblyIngress[] = [];
+  const physical: Array<{
+    binding: DecodedDeploymentIngressBinding;
+    entry: DecodedRuntimeAssemblyWebSocketPhysicalEntry;
+  }> = [];
+  const methods: Array<{
+    binding: DecodedDeploymentIngressBinding;
+    entry: DecodedRuntimeAssemblyWebSocketMethodEntry;
+  }> = [];
+  const referenced = new Map<string, number>();
+  const methodNames = new Set<string>();
+
+  for (const binding of deployment.ingress) {
+    const entry = deployment.gatewayEntries.get(binding.gatewayEntryKey);
+    if (entry === undefined) {
+      throw new Error(
+        `ServiceDeployment ingress references missing gateway entry ${binding.gatewayEntryKey}`
+      );
+    }
+    referenced.set(
+      binding.gatewayEntryKey,
+      (referenced.get(binding.gatewayEntryKey) ?? 0) + 1
+    );
+    if (entry.kind === 'http') {
+      if (binding.selector.protocol !== 'http') {
+        throw new Error(
+          `ServiceDeployment ingress selector protocol does not match HTTP gateway entry ${binding.gatewayEntryKey}`
+        );
+      }
+      const attachBinding: RuntimeAssemblyIngressBinding = {
+        selector: binding.selector,
+        deployment: deployment.ref,
+        gatewayEntryKey: binding.gatewayEntryKey,
+        gatewayEntryIdentity: entry.gatewayEntryIdentity,
+        adapterKind: entry.adapterKind,
+        operationMode: entry.operationMode,
+        ...(deployment.timeoutMs === undefined
+          ? {}
+          : { timeoutMs: deployment.timeoutMs })
+      };
+      expected.push(expectedIngress(binding, deployment.ref, entry, attachBinding));
+      continue;
+    }
+    if (binding.selector.protocol !== 'webSocket') {
+      throw new Error(
+        `ServiceDeployment ingress selector protocol does not match WebSocket gateway entry ${binding.gatewayEntryKey}`
+      );
+    }
+    if (entry.kind === 'websocketConnect') {
+      if (binding.selector.method !== null) {
+        throw new Error(
+          `physical WebSocket gateway entry ${binding.gatewayEntryKey} requires method null`
+        );
+      }
+      physical.push({ binding, entry });
+      continue;
+    }
+    if (binding.selector.method === null) {
+      throw new Error(
+        `WebSocket JSON-RPC gateway entry ${binding.gatewayEntryKey} requires a method`
+      );
+    }
+    if (methodNames.has(binding.selector.method)) {
+      throw new Error(
+        `ServiceDeployment contains duplicate WebSocket JSON-RPC method ${JSON.stringify(binding.selector.method)}`
+      );
+    }
+    methodNames.add(binding.selector.method);
+    methods.push({ binding, entry });
+  }
+
+  for (const key of deployment.gatewayEntries.keys()) {
+    if (!referenced.has(key)) {
+      throw new Error(
+        `ServiceDeployment gateway entry ${key} is orphaned from ingress`
+      );
+    }
+  }
+  for (const method of methods) {
+    if (referenced.get(method.binding.gatewayEntryKey) !== 1) {
+      throw new Error(
+        `WebSocket JSON-RPC gateway entry ${method.binding.gatewayEntryKey} must have exactly one selector`
+      );
+    }
+  }
+  if (physical.length > 1) {
+    throw new Error(
+      'ServiceDeployment contains ambiguous physical WebSocket ingress'
+    );
+  }
+  if (methods.length > 0 && physical.length === 0) {
+    throw new Error(
+      'WebSocket JSON-RPC methods require a physical WebSocket ingress'
+    );
+  }
+  if (physical.length === 0) {
+    return expected;
+  }
+  const physicalBinding = physical[0]!;
+  if (referenced.get(physicalBinding.binding.gatewayEntryKey) !== 1) {
+    throw new Error(
+      'physical WebSocket gateway entry must have exactly one selector'
+    );
+  }
+  const physicalSelector = physicalBinding.binding.selector;
+  if (
+    physicalSelector.protocol !== 'webSocket' ||
+    physicalSelector.method !== null
+  ) {
+    throw new Error('physical WebSocket selector is invalid');
+  }
+  const methodBindings = methods.map(({ binding, entry }) => {
+    if (
+      binding.selector.protocol !== 'webSocket' ||
+      binding.selector.host !== physicalSelector.host ||
+      binding.selector.path !== physicalSelector.path
+    ) {
+      throw new Error(
+        `WebSocket JSON-RPC gateway entry ${binding.gatewayEntryKey} is orphaned from its physical host/path`
+      );
+    }
+    if (!physicalBinding.entry.rpcProfiles.includes(entry.profile)) {
+      throw new Error(
+        `WebSocket JSON-RPC gateway entry ${binding.gatewayEntryKey} uses an unsupported physical profile`
+      );
+    }
+    return methodBindingFromDecoded({
+      methodSelector: binding.selector,
+      entry,
+      deployment: deployment.ref,
+      gatewayEntryKey: binding.gatewayEntryKey,
+      websocketEntryId: physicalBinding.entry.websocketEntryId,
+      ...(deployment.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: deployment.timeoutMs })
+    });
+  });
+  const methodTable = new RuntimeAssemblyWebSocketMethodTable(methodBindings);
+  const attachBinding: RuntimeAssemblyIngressBinding = {
+    selector: {
+      protocol: 'webSocket',
+      host: physicalSelector.host,
+      method: null,
+      path: physicalSelector.path
+    },
+    deployment: deployment.ref,
+    gatewayEntryKey: physicalBinding.binding.gatewayEntryKey,
+    gatewayEntryIdentity: physicalBinding.entry.gatewayEntryIdentity,
+    adapterKind: 'websocketConnect',
+    operationMode: 'unary',
+    ...(physicalBinding.entry.handler === undefined
+      ? {}
+      : { handler: physicalBinding.entry.handler }),
+    websocketEntryId: physicalBinding.entry.websocketEntryId,
+    websocketRpcProfiles: Object.freeze([
+      ...physicalBinding.entry.rpcProfiles
+    ]),
+    websocketMethods: methodTable,
+    ...(deployment.timeoutMs === undefined
+      ? {}
+      : { timeoutMs: deployment.timeoutMs })
+  };
+  expected.push(
+    expectedIngress(
+      physicalBinding.binding,
+      deployment.ref,
+      physicalBinding.entry,
+      attachBinding
+    )
+  );
+  for (const method of methods) {
+    expected.push(
+      expectedIngress(method.binding, deployment.ref, method.entry)
+    );
+  }
+  return expected;
+}
+
+function expectedIngress(
+  binding: DecodedDeploymentIngressBinding,
+  deployment: RuntimeAssemblyDeploymentRef,
+  entry: DecodedDeploymentGatewayEntry,
+  attachBinding?: RuntimeAssemblyIngressBinding
+): ExpectedRuntimeAssemblyIngress {
+  return {
+    selector: binding.selector,
+    deployment,
+    gatewayEntryKey: binding.gatewayEntryKey,
+    gatewayEntryIdentity: entry.gatewayEntryIdentity,
+    ...(attachBinding === undefined ? {} : { attachBinding })
   };
 }
 
@@ -170,8 +374,8 @@ function decodeServiceDeployment(
     'policy',
     'diagnosticText'
   ], label);
-  if (value.schemaVersion !== 'skiff-service-deployment-v2') {
-    throw new Error(`${label}.schemaVersion must be skiff-service-deployment-v2`);
+  if (value.schemaVersion !== 'skiff-service-deployment-v3') {
+    throw new Error(`${label}.schemaVersion must be skiff-service-deployment-v3`);
   }
   const contract = decodeContractRef(value.contract, `${label}.contract`);
   const deploymentRevision = requiredString(value, 'deploymentRevision');
@@ -192,6 +396,10 @@ function decodeServiceDeployment(
   if (!DEPLOYMENT_ARTIFACT_IDENTITY_PATTERN.test(deploymentArtifactIdentity)) {
     throw new Error(`${label}.deploymentArtifactIdentity is invalid`);
   }
+  const implementationPackageId = decodeImplementationPackageId(
+    value.implementation,
+    `${label}.implementation`
+  );
   const gatewayEntriesValue = exactObject(
     value.gatewayEntries,
     `${label}.gatewayEntries`
@@ -208,22 +416,9 @@ function decodeServiceDeployment(
         entry,
         `${label}.gatewayEntries.${canonicalKey}`,
         contract.serviceId,
+        implementationPackageId,
         canonicalKey
       )
-    );
-  }
-  const websocketEntries = Array.from(gatewayEntries.entries()).filter(
-    ([, entry]) => entry.adapterKind === 'websocketConnect'
-  );
-  if (websocketEntries.length > 1) {
-    throw new Error(`${label}.gatewayEntries must contain at most one WebSocket entry`);
-  }
-  if (
-    websocketEntries[0] !== undefined &&
-    websocketEntries[0][0] !== WEBSOCKET_GATEWAY_ENTRY_KEY
-  ) {
-    throw new Error(
-      `${label}.gatewayEntries WebSocket entry key must be ${WEBSOCKET_GATEWAY_ENTRY_KEY}`
     );
   }
   if (!Array.isArray(value.ingress)) {
@@ -233,35 +428,14 @@ function decodeServiceDeployment(
     decodeDeploymentIngressBinding(entry, `${label}.ingress[${index}]`)
   );
   assertUniqueSelectors(ingress, `${label}.ingress`);
-  for (const binding of ingress) {
-    const gatewayEntry = gatewayEntries.get(binding.gatewayEntryKey);
-    if (gatewayEntry === undefined) {
-      throw new Error(
-        `${label}.ingress references missing gateway entry ${binding.gatewayEntryKey}`
-      );
-    }
-    if (
-      (binding.selector.protocol === 'webSocket') !==
-      (gatewayEntry.adapterKind === 'websocketConnect')
-    ) {
-      throw new Error(
-        `${label}.ingress selector protocol does not match gateway entry ${binding.gatewayEntryKey}`
-      );
-    }
-  }
-  const websocketIngress = ingress.filter(
-    (binding) => binding.selector.protocol === 'webSocket'
-  );
-  if (
-    websocketIngress.length !== websocketEntries.length ||
-    (websocketIngress[0] !== undefined &&
-      websocketIngress[0].gatewayEntryKey !== websocketEntries[0]?.[0])
-  ) {
+  const timeoutMs = decodeDeploymentPolicy(value.policy, `${label}.policy`);
+  const computedDeploymentIdentity =
+    deriveCurrentRuntimeAssemblyServiceDeploymentIdentity(value);
+  if (deploymentArtifactIdentity !== computedDeploymentIdentity) {
     throw new Error(
-      `${label} WebSocket ingress must exactly join its sole compiler-owned gateway entry`
+      `${label}.deploymentArtifactIdentity does not match its current preimage`
     );
   }
-  const timeoutMs = decodeDeploymentPolicy(value.policy, `${label}.policy`);
   return {
     ref: expected,
     gatewayEntries,
@@ -274,8 +448,18 @@ function decodeDeploymentGatewayEntry(
   input: unknown,
   label: string,
   serviceId: string,
+  implementationPackageId: string,
   gatewayEntryKey: string
 ): DecodedDeploymentGatewayEntry {
+  if (isRuntimeAssemblyWebSocketProtocolKind(input)) {
+    return decodeRuntimeAssemblyWebSocketGatewayEntry({
+      value: input,
+      label,
+      serviceId,
+      implementationPackageId,
+      gatewayEntryKey
+    });
+  }
   const value = exactObject(input, label);
   exactFields(
     value,
@@ -323,16 +507,6 @@ function decodeDeploymentGatewayEntry(
     protocol.surface,
     `${label}.protocolSurface.protocol.surface`
   );
-  if (protocol.kind === 'websocketConnect') {
-    return decodeWebSocketDeploymentGatewayEntry({
-      value,
-      surface,
-      label,
-      gatewayEntryIdentity,
-      serviceId,
-      gatewayEntryKey
-    });
-  }
   if (protocol.kind !== 'http') {
     throw new Error(`${label}.protocolSurface protocol kind is invalid`);
   }
@@ -408,146 +582,21 @@ function decodeDeploymentGatewayEntry(
       `${label}.adapterPlan.args[${index}].source`
     );
   }
+  if (
+    gatewayEntryIdentity !==
+    deriveCurrentRuntimeAssemblyGatewayEntryIdentity(protocolSurface)
+  ) {
+    throw new Error(
+      `${label}.gatewayEntryIdentity does not match its current surface`
+    );
+  }
   return {
+    kind: 'http',
     gatewayEntryIdentity,
     adapterKind: surface.adapterKind,
     operationMode: surface.dispatchMode,
     handler
   };
-}
-
-function decodeWebSocketDeploymentGatewayEntry(input: {
-  value: Record<string, unknown>;
-  surface: Record<string, unknown>;
-  label: string;
-  gatewayEntryIdentity: string;
-  serviceId: string;
-  gatewayEntryKey: string;
-}): DecodedDeploymentGatewayEntry {
-  const {
-    value,
-    surface,
-    label,
-    gatewayEntryIdentity,
-    serviceId,
-    gatewayEntryKey
-  } = input;
-  exactFields(
-    surface,
-    [
-      'connectRequestShape',
-      'connectResultShape',
-      'connectionPolicyShape',
-      'externalSources',
-      'downlinkFrames'
-    ],
-    `${label}.protocolSurface.protocol.surface`
-  );
-  if (
-    surface.connectRequestShape !== 'v1' ||
-    surface.connectResultShape !== 'v1' ||
-    surface.connectionPolicyShape !== 'v1'
-  ) {
-    throw new Error(`${label}.protocolSurface WebSocket shapes must all be v1`);
-  }
-  if (
-    !Array.isArray(surface.externalSources) ||
-    surface.externalSources.length !== 2
-  ) {
-    throw new Error(
-      `${label}.protocolSurface WebSocket externalSources must be the exact fixed pair`
-    );
-  }
-  const expectedSources = [
-    'websocket.connectRequest',
-    'websocket.connectionId'
-  ];
-  for (const [index, expectedKind] of expectedSources.entries()) {
-    const source = exactObject(
-      surface.externalSources[index],
-      `${label}.protocolSurface.protocol.surface.externalSources[${index}]`
-    );
-    exactFields(
-      source,
-      ['kind'],
-      `${label}.protocolSurface.protocol.surface.externalSources[${index}]`
-    );
-    if (source.kind !== expectedKind) {
-      throw new Error(
-        `${label}.protocolSurface WebSocket externalSources must be the exact fixed pair`
-      );
-    }
-  }
-  if (
-    !Array.isArray(surface.downlinkFrames) ||
-    surface.downlinkFrames.length !== 2 ||
-    surface.downlinkFrames[0] !== 'binary' ||
-    surface.downlinkFrames[1] !== 'text'
-  ) {
-    throw new Error(
-      `${label}.protocolSurface WebSocket downlinkFrames must be binary,text`
-    );
-  }
-  if (value.pre !== null || value.guard !== null) {
-    throw new Error(`${label} WebSocket entry cannot declare pre or guard`);
-  }
-  const handler =
-    value.handler === null
-      ? undefined
-      : requiredString(value, 'handler');
-
-  const adapterPlan = exactObject(value.adapterPlan, `${label}.adapterPlan`);
-  exactFields(adapterPlan, ['kind', 'args'], `${label}.adapterPlan`);
-  if (adapterPlan.kind !== 'websocketConnect') {
-    throw new Error(`${label}.adapterPlan.kind must be websocketConnect`);
-  }
-  if (!Array.isArray(adapterPlan.args)) {
-    throw new Error(`${label}.adapterPlan.args must be an array`);
-  }
-  if (handler === undefined && adapterPlan.args.length !== 0) {
-    throw new Error(`${label} handler-absent WebSocket entry must have no adapter args`);
-  }
-  const params = new Set<string>();
-  for (const [index, argumentInput] of adapterPlan.args.entries()) {
-    const argumentLabel = `${label}.adapterPlan.args[${index}]`;
-    const argument = exactObject(argumentInput, argumentLabel);
-    exactFields(argument, ['param', 'source'], argumentLabel);
-    const param = requiredString(argument, 'param');
-    if (params.has(param)) {
-      throw new Error(`${label}.adapterPlan.args contains duplicate param ${param}`);
-    }
-    params.add(param);
-    const source = exactObject(argument.source, `${argumentLabel}.source`);
-    exactFields(source, ['kind'], `${argumentLabel}.source`);
-    if (
-      source.kind !== 'websocket.connectRequest' &&
-      source.kind !== 'websocket.connectionId'
-    ) {
-      throw new Error(`${argumentLabel}.source.kind is invalid for websocketConnect`);
-    }
-  }
-
-  return {
-    gatewayEntryIdentity,
-    adapterKind: 'websocketConnect',
-    operationMode: 'unary',
-    ...(handler === undefined ? {} : { handler }),
-    websocketEntryId: deriveWebSocketEntryId(serviceId, gatewayEntryKey)
-  };
-}
-
-export function deriveWebSocketEntryId(
-  serviceId: string,
-  gatewayEntryKey: string
-): string {
-  const preimage = stableStringify({
-    gatewayEntryKey,
-    schema: 'skiff-websocket-entry-identity-v1',
-    serviceId
-  });
-  return `${WEBSOCKET_ENTRY_IDENTITY_PREFIX}${createHash('sha256')
-    .update(preimage)
-    .digest('hex')}`;
 }
 
 function decodeExternalSource(input: unknown, label: string): void {
@@ -613,6 +662,34 @@ function decodeDeploymentPolicy(input: unknown, label: string): number | undefin
     return undefined;
   }
   return positiveSafeInteger(value.timeoutMs, `${label}.timeoutMs`);
+}
+
+function decodeImplementationPackageId(input: unknown, label: string): string {
+  const value = exactObject(input, label);
+  exactFields(
+    value,
+    [
+      'packageId',
+      'packageVersion',
+      'packageBuildId',
+      'packageLocalAbiIdentity'
+    ],
+    label
+  );
+  const packageId = requiredString(value, 'packageId');
+  requiredString(value, 'packageVersion');
+  const packageBuildId = requiredString(value, 'packageBuildId');
+  if (!PACKAGE_BUILD_IDENTITY_PATTERN.test(packageBuildId)) {
+    throw new Error(`${label}.packageBuildId is invalid`);
+  }
+  const packageLocalAbiIdentity = requiredString(
+    value,
+    'packageLocalAbiIdentity'
+  );
+  if (!PACKAGE_LOCAL_ABI_IDENTITY_PATTERN.test(packageLocalAbiIdentity)) {
+    throw new Error(`${label}.packageLocalAbiIdentity is invalid`);
+  }
+  return packageId;
 }
 
 function decodeContractRef(input: unknown, label: string): RuntimeAssemblyContractRef {

@@ -67,7 +67,7 @@ implements RuntimeAssemblySnapshotLoader {
     );
     const identity = identityHash(
       reference.deploymentArtifactIdentity,
-      'skiff-deployment-artifact-v2:sha256:',
+      'skiff-deployment-artifact-v3:sha256:',
       'deploymentArtifactIdentity'
     );
     return await this.readRecord(
