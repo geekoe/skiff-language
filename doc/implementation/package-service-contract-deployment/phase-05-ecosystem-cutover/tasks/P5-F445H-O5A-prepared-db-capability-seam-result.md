@@ -1,6 +1,6 @@
 # P5-F445H-O5A Prepared DB capability seam result
 
-状态：`IMPLEMENTATION_COMPLETE / CAPABILITY_GREEN`。
+状态：`IMPLEMENTATION_COMPLETE / CAPABILITY_GREEN / STRUCTURE_CORRECTION_GREEN`。
 
 O5A 已在 capability abstraction 中建立一次性 prepared DB runtime operation seam。prepare 是同步
 调用，返回值只持有 `'static + Send` owned wait；wait 完成后返回一次性 `FnOnce` finalizer，
@@ -22,17 +22,44 @@ O6 才能把它当作 production path。
 | production prerequisite | `b6cb8a5d` |
 | task document | `1395c8e6` |
 | implementation | `bcda3eb2` |
+| initial result | `447e445d` |
+| test structure correction | `3551537a` |
 | worktree | `/Users/geek/workspace/skiff-p5-f445h-o5a-db-capability` |
 | branch | `codex/p5-f445h-o5a-db-capability` |
 
-implementation 写集精确为：
+最终代码写集精确为：
 
 - `runtime/capability-context/src/db.rs`
 - `runtime/capability-context/src/db/prepared_runtime.rs`
 - `runtime/capability-context/src/db/prepared_runtime_tests.rs`
+- `runtime/capability-context/src/db/prepared_runtime_tests/**`
 - `runtime/capability-context/src/lib.rs`，仅公共 re-export
 
 没有修改 service-db、eval、Actor、host/native、Cargo manifest 或 lockfile。
+
+### 1.1 文件职责
+
+production职责保持三层：
+
+- `db.rs` 只拥有 trait default与 `DbCapabilityStore` forwarding；
+- `db/prepared_runtime.rs` 只拥有 one-shot operation、owned wait、finalizer和 typed aliases；
+- `lib.rs` 只 re-export新公共类型。
+
+初始 test fixture集中在一个 1174 行文件。`3551537a` 只做结构修正，没有修改 production API、
+行为或七个测试的断言：
+
+| 测试文件 | 职责 | 行数 |
+| --- | --- | ---: |
+| `prepared_runtime_tests.rs` | child module目录 | 3 |
+| `prepared_runtime_tests/contract_tests.rs` | typed/default/raw合同测试 | 210 |
+| `prepared_runtime_tests/lifecycle_tests.rs` | Pending、drop/error、rollback生命周期测试 | 193 |
+| `prepared_runtime_tests/fake_store.rs` | fake facade与构造入口 | 26 |
+| `prepared_runtime_tests/fake_store/prepared.rs` | prepared/default fake implementors | 162 |
+| `prepared_runtime_tests/fake_store/state.rs` | 计数、gate、runtime context与lease hold | 136 |
+| `prepared_runtime_tests/fake_store/raw_read_api.rs` | raw read/transaction/lease trait适配 | 197 |
+| `prepared_runtime_tests/fake_store/raw_write_api.rs` | raw write trait适配 | 90 |
+
+因此没有新的测试文件继续混合全部职责，最大文件为 210 行。
 
 ## 2. Test-first 证据
 
@@ -53,7 +80,8 @@ CARGO_TARGET_DIR=/Users/geek/workspace/skiff-p5-f445h-o5a-db-capability/build/ca
 测试环境。
 
 随后才加入 production types、trait defaults、store forwarding 和 public re-export。同一聚焦
-命令转绿，实际执行 `7/7` tests。
+命令转绿，实际执行 `7/7` tests。结构修正后再次执行同一命令，测试名称、数量与断言保持
+`7/7` GREEN。
 
 ## 3. 一次性 ownership 合同
 
@@ -147,16 +175,25 @@ checkpoint 的分阶段合同。
 | `cargo fmt --check` | PASS |
 | `git diff --check` | PASS |
 
+`3551537a` 结构修正后的最终树重新执行了 focused、完整 capability-context、fmt和diff四项 gate；
+`59/59 + 2/2` 数量没有变化。两项 `cargo check` 来自 production implementation树，而
+`bcda3eb2..3551537a` 的 production diff为空。
+
 反向 scope 检查：
 
 ```text
-git diff --exit-code 1395c8e6..bcda3eb2 -- \
+git diff --exit-code 1395c8e6..3551537a -- \
   runtime/service-db runtime/eval Cargo.toml Cargo.lock \
   runtime/capability-context/Cargo.toml
+
+git diff --exit-code bcda3eb2..3551537a -- \
+  runtime/capability-context/src/db.rs \
+  runtime/capability-context/src/db/prepared_runtime.rs \
+  runtime/capability-context/src/lib.rs
 ```
 
-结果为空。implementation commit只包含任务允许的四个路径；没有运行 stable、live、network，也
-没有 merge、rebase 或 push。
+两项结果均为空。最终 candidate只包含任务允许的 capability与测试路径；没有运行
+stable、live、network，也没有 merge、rebase 或 push。
 
 ## 7. 后继
 
