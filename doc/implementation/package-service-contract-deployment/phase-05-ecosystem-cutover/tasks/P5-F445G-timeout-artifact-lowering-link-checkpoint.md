@@ -85,6 +85,7 @@ git diff --check
 只允许F445B-I3范围：
 
 - `artifact-model/**`
+- `artifact-identity/**`，仅限 File IR identity prefix、对应 canonical preimage/hash 测试与 golden
 - `compiler/core/src/spawn_targets.rs`
 - `compiler/compiled/**`
 - `compiler/lowering/**`
