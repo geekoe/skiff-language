@@ -84,6 +84,7 @@ git diff --check
 
 只允许：
 
+- `Cargo.lock`，仅限 `skiff-artifact-model` 新增 test/dev `skiff-syntax` dependency 的锁文件投影
 - `artifact-model/Cargo.toml`
 - `artifact-model/src/executable.rs`
 - `artifact-model/src/executable/timeout_execution_tests.rs`
@@ -93,6 +94,10 @@ git diff --check
 
 不得修改 syntax production、IR shape/generation、compiler lowering、linked-program、Router、
 eval/host/native 或其它 fixture。
+
+`Cargo.lock` 必须由 Cargo 对上述本地 path dev dependency 的正常解析生成；不得借机升级任何
+registry package、改 checksum/version 或引入其它依赖变化。验收同时运行
+`cargo check -p skiff-compiler --locked`。
 
 worktree：
 
