@@ -35,7 +35,7 @@ runtime prelude 类型包括 `Array<T>`、`Map<K,V>`、`Stream<T>`、`Config`、
 
 `Date` static surface 包括 `Date.now()`、`Date.fromEpochMilliseconds(ms)`、`Date.parse(value)` 和 `Date.requireParse(value)`。`parse` 对非法或越界文本返回 `null`；`requireParse` 抛 `std.time.DecodeError`。receiver surface 包括 `toEpochMilliseconds()`、`toISOString()`、`addMilliseconds(ms)`、`diffMilliseconds(other)`、`compare(other)`、`isBefore(other)` 和 `isAfter(other)`。
 
-HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.HttpHeader`、`std.http.HttpQueryParam`、`std.http.HttpRequest`、`std.http.HttpResponse`、`std.http.HttpClientRequest`、`std.http.HttpClientResponse`、`std.http.HttpClientStreamHandle`、`std.http.HttpSseEvent`、`std.http.HttpResponseStreamEvent` 和 `std.http.HttpError`（均不拍平到 `std` root，见 §11）。现有`std.websocket.ConnectionMessage`、`TextConnectionMessage`和`BinaryConnectionMessage`只属于raw receive迁移实现，不是冻结后的用户业务消息surface，见§13。Gateway/actor prelude不声明`ActorRef<T>`；每个actor声明的名义类型本身就是actor句柄类型。actor registry入口为`getOrCreate`、`replace`、`find`和`remove`。`ActorBinding`、`ClientSessionRef`和`ClientCapability`仍按各自surface定义；旧`std.actor.Actor<Id>`接口由显式actor声明及其id类型取代。
+HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.HttpHeader`、`std.http.HttpQueryParam`、`std.http.HttpRequest`、`std.http.HttpResponse`、`std.http.HttpClientRequest`、`std.http.HttpClientResponse`、`std.http.HttpClientStreamHandle`、`std.http.HttpSseEvent`、`std.http.HttpResponseStreamEvent` 和 `std.http.HttpError`（均不拍平到 `std` root，见 §11）。`std.websocket`不公开raw receive message类型；connect、send和平台拥有的outbound request/response surface见§13。Gateway/actor prelude不声明`ActorRef<T>`；每个actor声明的名义类型本身就是actor句柄类型。actor registry入口为`getOrCreate`、`replace`、`find`和`remove`。`ActorBinding`、`ClientSessionRef`和`ClientCapability`仍按各自surface定义；旧`std.actor.Actor<Id>`接口由显式actor声明及其id类型取代。
 
 这些 prelude 名字不能被用户声明、import alias 或局部绑定 shadow。
 
@@ -47,7 +47,8 @@ HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.
 当前 platform error surface 包括 `std.json.DecodeError`、`std.bytes.DecodeError`、`std.db.DecodeError`、
 `std.db.ConflictError`、`std.file.FileError`、`std.number.DecodeError`、`std.time.DecodeError`、
 `config.DecodeError`、`std.service.ProviderUnavailableError`、`std.service.ProtocolError`、
-`std.service.InternalError`、`std.http.HttpError`、`CancelError` 和 `TimeoutError`。
+`std.service.InternalError`、`std.http.HttpError`、`std.websocket.WebSocketRequestError`、
+`CancelError` 和 `TimeoutError`。
 
 decode 类错误按所属模块命名，用于用户代码发起的 JSON、bytes、DB、file、number、time 和 config 转换失败。runtime 内部 decode / artifact / transport 不变量失败不暴露为用户可 catch 的 decode 类型。错误消息必须脱敏，不能包含 secret 或原始敏感值。
 
@@ -56,6 +57,10 @@ decode 类错误按所属模块命名，用于用户代码发起的 JSON、bytes
 provider unavailable 类错误表示目标服务、网络连接、DNS、TLS 或 provider runtime 不可用。
 
 protocol 类错误表示跨服务、HTTP/SSE 或 gateway/runtime 协议不匹配、无法恢复 identity 或 payload 与 lock / schema 不一致。
+
+`std.websocket.WebSocketRequestError`表示Skiff主动发起的WebSocket request因connection、deadline、
+cancel、platform protocol或peer显式error而失败；JSON编码和typed response decode失败仍使用
+`std.json.DecodeError`。
 
 `std.service.InternalError`用于隐藏不能安全保留原始类型的跨服务错误。用户错误为私有类型、不可name、
 不满足`SchemaClosed`或实际编码失败时，runtime在该错误第一次越过service boundary时生成
@@ -255,31 +260,81 @@ effect metadata 是 telemetry write，target 对应具体 log level，cancel saf
 
 ## 13. std.websocket
 
-`std.websocket` 是 client-facing WebSocket ingress 的标准库 surface。新业务入口由 service config 顶层 websocket 声明；path、domain 和 service selection 属于 ingress / router 配置。
+`std.websocket` 是 client-facing WebSocket connection 的标准库 surface。新连接入口由 service config
+顶层 `websocket` 声明；path、domain 和 service selection 属于 ingress / router 配置。第一版每个service
+最多一个entry，只拥有path与可选connect handler。
 
-`WebSocketConnectRequest`、`WebSocketConnectResult<Context>`与connection policy是connect adapter使用的
-generic platform types。它们可以通过std Package API被源码引用，但声明本身不生成ordinary
-PackageSchema，也不能作为service-to-service payload。`service.yml`选择的connect handler从linked
-signature取得完整实例化类型；handler不要求出现在`api.yml`。
+`WebSocketConnectRequest`、`WebSocketConnectResult`与connection policy是connect adapter使用的固定
+platform types。它们可以通过std Package API被源码引用，但声明本身不生成ordinary PackageSchema，也
+不能作为service-to-service payload。`service.yml`选择的connect handler从linked signature取得精确类型；
+handler不要求出现在`api.yml`。
 
-旧`WebSocketReceiveEvent<Context>`、`WebSocketIngressEvent<Context>`和面向用户的raw
-`ConnectionMessage` receive surface不属于目标设计。Raw frame只表达transport事实；平台应在其上选择
-业务消息entry，service只实现typed业务消息handler。具体消息envelope/discriminator、binary/fallback以及
-handler context shape尚未冻结，因此当前reference不承诺替代类型或签名。现有实现可在迁移期间继续使用旧
-类型，但不能据此生成新artifact contract。
+connect request包含connection id、url、query、headers、cookies、可选version、websocket entry id和
+gateway entry identity。headers、query和cookies保留重复值。connect result是accept/reject
+discriminator union；accept branch携带可选`businessIdentity`和`connectionPolicy`，reject branch携带
+code与reason。
 
-connect request 包含 connection id、url、query、headers、cookies 和可选 version。headers、query 和 cookies 保留重复值。
-
-connect result 是 accept / reject discriminator union。accept branch 携带 typed connection context 和可选 actor binding；reject branch 携带可选 code 与 reason。
-
-未来业务消息handler不单独接收裸connection id。它如何接收当前actor、typed connection context和业务
-消息，以及返回值是否参与response correlation，必须随消息路由设计一起冻结。
+`std.websocket`不提供raw receive、client-initiated message handler、message selector或业务消息entry。
+外部peer主动发起的业务请求必须走HTTP。没有匹配platform pending request的客户端text/binary data frame
+以`1003`关闭；ping/pong/close由协议栈处理。
 
 send target 分两套：`...ToConnection` 按单个 connection id 发送，`...ToBusinessIdentity` 按 business identity 发送（投递到该 business identity 当前的所有连接）。`std.websocket.sendTextToConnection` / `sendTextToBusinessIdentity` 发送 text frame，`std.websocket.sendBinaryToConnection` / `sendBinaryToBusinessIdentity` 发送 binary frame（不做 base64 编码）；这四个是 runtime host operation。
 
 `std.websocket.sendJsonToConnection<T>` / `sendJsonToBusinessIdentity<T>` 是普通 std helper，使用 `std.json.encode<T>` 后分别委托对应的 text host operation，不是 host operation 本身。
 
-WebSocket send effect 是 external write，conflict-key 以 connection id 为基础，cancel safety 是 response-discardable。
+WebSocket还提供一个通用的、由Skiff发起的request/response操作：
+
+```skiff
+type WebSocketRequestError {
+  code: string,
+  message: string,
+  detail: Json?,
+}
+
+native function requestJsonToConnection<TRequest, TResponse>(
+  connectionId: string,
+  method: string,
+  value: TRequest
+) -> TResponse
+```
+
+平台把`value`编码进固定text JSON request envelope，并生成opaque `requestId`。外部peer可以异步、乱序
+返回固定response envelope，但必须在原connection上原样回显该ID。Gateway/runtime只解析outer
+`type/requestId/ok`与固定error shape；`method`、request payload和success payload保持opaque。匹配成功后
+直接恢复等待中的调用，不创建service ingress request，也不调用用户handler。业务源码不接触transport
+`requestId`。`method`必须是非空string；平台对method、encoded payload和pending数量实施固定上限。
+
+Request payload按`std.json.encode<TRequest>`语义编码，success payload按
+`std.json.decode<TResponse>`语义解码。请求值不可编码或success payload与`TResponse`不匹配时抛
+`std.json.DecodeError`；这是调用点类型/peer application protocol错误，不会被伪装成transport
+`WebSocketRequestError`，也不使Router按业务schema解释payload。
+
+第一版wire精确为：
+
+```json
+{"type":"request","requestId":"<opaque>","method":"<method>","payload":null}
+{"type":"response","requestId":"<opaque>","ok":true,"payload":null}
+{"type":"response","requestId":"<opaque>","ok":false,
+ "error":{"code":"<code>","message":"<message>","detail":null}}
+{"type":"cancel","requestId":"<opaque>"}
+```
+
+JSON示例中的`payload`是任意JSON值，不限于`null`。Outer envelope字段严格；wrong-connection、
+wrong-generation或未知id的response不能命中pending调用，并以协议错误`1002`关闭。平台保留有界短期
+settled tombstone；与完成/取消竞态的晚到或重复response只命中tombstone并被丢弃，不能恢复调用。没有
+pending request的普通data frame以`1003`关闭。第一版不支持binary request/response。
+
+`requestJsonToConnection`只接受精确connection id，不提供business identity fan-out版本。多个socket不能
+共同拥有一个unary response。调用受当前execution deadline与cancel约束；等待response时是真实
+suspension point。connection关闭、deadline、cancel、协议错误或remote `ok:false`抛
+`WebSocketRequestError`。Cancel/deadline先原子删除pending state，再在socket仍可写时best-effort发送
+cancel envelope；晚到response不能恢复其它调用。Transport pairing不提供业务幂等、重试或exactly-once；
+pending数量、payload大小和tombstone生命周期均受平台limit约束，达到上限时新request fail closed。
+有持久副作用的协议仍保留自己的`toolCallId`、`attemptId`、`idempotencyKey`等业务identity。
+
+WebSocket send effect是external write，conflict-key以connection id为基础，cancel safety是
+response-discardable。`requestJsonToConnection`也是external write，但拥有response wait并被静态标记为
+`maySuspend`；普通send保持non-suspending。
 
 version 优先来自 `X-Skiff-Version`，WebSocket query 只作为兼容 fallback，表示选中的 service version，应与 service root version 对齐。
 

@@ -22,21 +22,22 @@ Skiff runtime 是一组边界职责，不是用户源码可访问的全局对象
 
 Gateway adapter 负责外部协议适配：接收 HTTP、HTTP stream / SSE、WebSocket 等入口，维护外部连接，执行协议层 decode / encode，把外部入口转换成 router 可路由的 typed dispatch，并把 unary response、stream chunk、stream end 或 error 编码回外部协议。Gateway 不执行用户 Skiff 代码，不拥有 Skiff call stack 或 request heap。
 
-Hub / router 是独立于用户 service runtime 的平台基础设施。它负责 service runtime 注册、service revision 注册、可用实例选择、service protocol identity与gateway entry identity各自的匹配、client session / actor binding / WebSocket Connection 索引、in-flight request / stream 配对、cancel / drain 路由、负载和流量切换。Router core 不解释业务 host、path、cookie、session、应用 WebSocket eventName 或业务 requestId。
+Hub / router 是独立于用户 service runtime 的平台基础设施。它负责 service runtime 注册、service revision 注册、可用实例选择、service protocol identity与gateway entry identity各自的匹配、client session / actor binding / WebSocket Connection 索引、in-flight request / stream 配对、cancel / drain 路由、负载和流量切换。Router core 不解释业务 host、path、cookie、session、应用 WebSocket eventName 或业务 requestId。专用WebSocket request broker可以解释固定平台outer envelope中的transport `requestId`，但不能把它投影成业务字段或据此选择用户handler。
 
 Service runtime 是执行用户 Skiff 代码的边界。它加载已发布 artifact，构造 service revision singleton，为每次 dispatch 创建 request frame，解码 payload，调用 implementation method 或 entry handler，执行表达式、函数、collection mutation、`concurrent`、`timeout(...)`、`emit` 和 cleanup，并编码 response / chunk / error。
 
 Service runtime不维护外部WebSocket物理socket生命周期。WebSocket Connection属于gateway / hub；
-connect和平台选中的业务消息handler dispatch只是进入service runtime的一次request。Raw frame receive
-属于平台transport阶段，不是用户handler。
+connect handler dispatch是进入service runtime的一次request。Skiff主动发出的WebSocket request在原
+request frame内挂起；peer response由平台broker关联后恢复该frame，不创建新的service dispatch。
+Raw frame receive属于平台transport阶段，不是用户handler。
 
 生产 runtime 的 artifact 信任边界是平台 build service。Runtime 不把开发者本地编译产物视为线上发布权威；线上 artifact 必须由平台 build service 产生、签名并记录 provenance。
 
 ## 2. Dispatch and request frame
 
-以下事件创建request frame：unary service API call、server-stream service API call、raw HTTP entry
-dispatch、WebSocket connect dispatch、未来平台选中的WebSocket业务消息entry dispatch，以及测试runner
-构造的等价dispatch。单纯收取raw WebSocket frame本身不执行用户代码。
+以下事件创建request frame：unary service API call、server-stream service API call、HTTP entry
+dispatch、WebSocket connect dispatch，以及测试runner构造的等价dispatch。单纯收取raw WebSocket frame
+本身不执行用户代码；匹配平台pending request的peer response只恢复已有request frame。
 
 Gateway / router 可以维护 entry envelope、routing context、transport state、Connection 和 stream pairing state，但这些不是 Skiff request frame。
 
@@ -72,21 +73,22 @@ Service protocol identity 描述 service-to-service API 的公开协议。API �
 
 Gateway entry identity只描述external ingress的公开协议面。已冻结的HTTP identity覆盖entry/protocol
 kind、unary/stream mode、external request/response shape、影响wire的标准source选择和公开external
-error projection。WebSocket identity必须等业务消息entry层级与selector/envelope冻结后再定义，不能用
-`connect/receive`两个transport phase冒充业务协议面。Selector、handler/pre/guard callable、
+error projection。已冻结的WebSocket identity覆盖connect request/result shape、允许的Skiff主动发送
+frame类别、固定平台outbound request/response envelope版本与connection policy shape；它不包含业务
+`method`或payload协议，也不存在client-initiated业务消息entry identity。Selector、handler/pre/guard callable、
 目标参数名、Package build、deployment policy、内部connection-context nominal identity/codec及完整
 adapter execution plan不进入该identity；只替换实现而外部协议不变时只改变deployment revision。
 任何gateway entry变化都不改变service protocol identity。
 
 Stable target id描述执行类别，而不是资源实例。Service operation、HTTP entry、WebSocket connect、
-未来的业务消息entry、connection close平台事件、std host operation和Package wrapper都必须能映射到
+connection close平台事件、WebSocket send/request等std host operation和Package wrapper都必须能映射到
 stable target。Target用于
 effect metadata、timeout source、trace、日志、指标、测试替身和错误聚合。
 
 HTTP dispatch使用gateway entry identity做admission与观测。WebSocket Connection必须绑定connection
-protocol identity与deployment/activation generation；未来每次业务消息dispatch还要校验选中的message
-entry identity。具体两层identity待WebSocket业务消息模型冻结。它们都不绑定或冒充service-call protocol
-operation；schema-changing发布后，旧Connection继续使用其已pin generation，直到drain或断开。
+protocol identity与deployment/activation generation；平台outbound request的response还必须精确匹配
+原connection、socket generation与transport request id。它不绑定或冒充service-call protocol operation；
+schema-changing发布后，旧Connection继续使用其已pin generation，直到drain或断开。
 
 ## 5. Request heap and values
 
@@ -247,25 +249,26 @@ deployment `policy.timeoutMs` override中更早者。Host按已admit activation�
 WebSocket entry主要属于客户端直连的API层service。下游业务service不拥有Connection，也不把WebSocket
 当作service-to-service transport。
 
-WebSocket物理连接由gateway/hub维护。Connection拥有connection id、service id、状态、client session、
-actor binding、typed connection context、entry identity、deployment/activation generation和物理socket
-集合；它不需要一个service-call protocol operation identity。
+WebSocket物理连接由gateway/hub维护。Connection拥有connection id、service id、状态、
+business identity、entry identity、deployment/activation generation和物理socket；它不需要一个
+service-call protocol operation identity。
 
-Connect operation是一次request frame，用于连接验证、actor binding和typed connection context初始化。
-Gateway收到raw frame后由平台消息层decode/select；只有选中某个业务消息entry后才创建独立request frame并
-调用用户handler。用户不声明一个接收所有raw frame的`receive`函数。
+Connect operation是一次request frame，用于连接验证和connection policy初始化。连接建立后，service可
+发送单向notification，或通过`std.websocket.requestJsonToConnection`向精确connection发起request并等待
+peer response。用户不声明一个接收所有raw frame的`receive`函数，也不存在client-initiated业务消息entry。
 
-Router core仍不解释应用eventName、业务requestId、ack格式或应用错误格式。未来标准消息envelope或
-discriminator的解释应由专门的平台消息层完成，具体归属待设计；不能把它悄悄塞进Router core。Service端
-回写或主动推送必须显式调用`std.websocket` / client capability一类host operation；业务消息handler的
-返回值是否参与response correlation也尚未冻结，当前不得假定为隐式request-response。
+Router中的专用WebSocket request broker只解释固定平台outer envelope：`type`、opaque `requestId`、
+response `ok`和固定error shape。业务`method`与payload保持opaque。Response只有在
+`(connectionId, socket/generation identity, requestId)`精确命中pending request时才转回原runtime
+execution；它不创建新的runtime ingress request，不进入service handler。Unsolicited data frame仍拒绝。
 
-Business handler不接收raw socket id；目标上它接收typed业务消息以及当前actor / typed connection
-context。精确签名随消息入口设计冻结。
+Service端主动推送必须显式调用`std.websocket.send*`；需要peer结果时显式调用
+`requestJsonToConnection`。后者是潜在suspension point，并继承当前execution deadline/cancel。取消会
+删除pending并best-effort向peer发送platform cancel envelope。平台transport correlation不取代业务
+幂等、durable run或tool attempt identity。
 
-WebSocket连接按已冻结的connection protocol identity和deployment/activation generation路由；业务消息
-模型冻结后，每个选中message entry还要有自己的protocol identity。Schema-changing发布产生新identity；
-既有socket继续绑定旧generation，直到drain或断开。Runtime不把旧应用消息投影到新schema。
+WebSocket连接按已冻结的connection protocol identity和deployment/activation generation路由；
+request response不能跨connection或generation恢复。既有socket继续绑定旧generation，直到drain或断开。
 
 ## 12. Effect metadata at runtime
 
@@ -281,7 +284,11 @@ Metadata 是语义承诺，不是日志注释。Metadata 缺失、target / confl
 
 `config.require` / `config.optional` 读取当前 request frame 注入的 config view，是本地只读访问，不是外部 I/O。Array、Map、scalar receiver 方法只产生 local read/write effect，并按 mutable root provenance 参与并发检查。`std.json.encode` / `std.json.decode` 是 boundary codec helper，不访问外部系统。
 
-`std.http.request`、`std.http.stream`、`std.http.sse`、service call、telemetry emit 和 WebSocket send 是 host operation 或跨 runtime operation，必须有 effect metadata。`std.websocket.sendJson<T>` 若只编码 JSON 并调用 sendText，则 host write 发生在 sendText；helper 本身可以作为 wrapper 暴露高层 target / timeoutTarget，但不能隐藏底层 cancel 和 trace 事实。
+`std.http.request`、`std.http.stream`、`std.http.sse`、service call、telemetry emit、WebSocket send 和
+WebSocket request是host operation或跨runtime operation，必须有effect metadata。
+`std.websocket.sendJson<T>`若只编码JSON并调用sendText，则host write发生在sendText；helper本身可以
+作为wrapper暴露高层target / timeoutTarget，但不能隐藏底层cancel和trace事实。普通WebSocket send是
+non-suspending；`std.websocket.requestJsonToConnection`必须标记`maySuspend`并传播deadline/cancel。
 
 ## 13. Current unsupported runtime capabilities
 

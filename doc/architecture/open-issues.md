@@ -50,20 +50,18 @@ nominal public path和service dependency cycle已经在
    明确isolation、lifetime、分页/stream语义、重试、跨request可恢复性和与写transaction的关系，不能把当前
    request heap或driver session handle直接暴露为持久值。
 
-9. **WebSocket业务消息入口**
+9. **Client-initiated WebSocket业务消息入口**
 
-   Raw frame `receive`已确定为平台transport阶段，不再作为用户service handler。HTTP每次请求自带标准
-   `method + path`，WebSocket却只有Upgrade握手path，后续frame没有标准业务route；
-   `Sec-WebSocket-Protocol`也只能选择整条连接协议。因此目标上若要让每个业务消息handler与HTTP route
-   处于同一抽象层，平台必须额外定义Skiff application-message routing protocol。AIHub当前使用`type`，
-   Agine当前使用`eventName`，因此需要决定统一envelope、显式discriminator映射或typed literal union派生，
-   并同时定义binary、decode失败、unknown message、connection context、message key/identity和可选
-   request/response correlation。冻结前只推进HTTP gateway与service-call实现，不新增raw receive artifact。
+   第一版明确不提供这一surface。Raw frame `receive`不作为用户service handler；外部peer主动发起的业务
+   请求统一走HTTP。已经冻结的`std.websocket.requestJsonToConnection`方向相反：Skiff向精确connection
+   发request，peer只返回platform-owned response envelope；它不需要message route或用户receive。
+   以后只有出现无法用HTTP表达的真实client-initiated需求时，才重新设计application-message routing、
+   typed handler、binary与protocol identity，不能把response correlation反向扩张成通用raw receive。
 
 ## 建议处理顺序
 
-1. 在HTTP gateway/service-call链收敛后，先冻结WebSocket业务消息入口，避免迁移服务时继续扩散raw
-   receive抽象。
+1. 保持client-initiated WebSocket业务消息入口关闭；先完成已冻结的outbound request/response平台协议，
+   避免迁移服务时继续扩散raw receive抽象。
 2. 再细化宿主互操作 / FFI，避免所有第三方 SDK 都必须进入核心平台；普通用户插件开放前必须先完成 ABI、沙箱、权限和崩溃隔离设计。
 3. 然后设计用户级 async task、cron、startup 和 managed worker surface。
 4. 再补观测生产化扩展，支撑长期运行、告警和聚合。

@@ -74,8 +74,9 @@ registry entry保存bootstrap值，只用于实例激活。registry不是持久�
 - 同一 identity 同时至多一个 live 实例，materialize 在单一 owner runtime 上。
 - 实例在首个调用到达时从 bootstrap 激活。
 - 不同 actor 实例可以由不同 executor 或线程并行执行；同一实例固定在一个单线程 actor executor 上，不允许多个 OS 线程同时访问它的字段。
-- 同一实例的多个成员方法是并发协程。一个方法在同步代码段中独占 executor；stream next、异步 service call、timer 等潜在 suspension point 只有在运行时实际等待时才释放执行权，此时其他方法可以执行。恢复后的方法必须假设 actor 字段已经变化。
+- 同一实例的多个成员方法是并发协程。一个方法在同步代码段中独占 executor；stream next、异步 service call、WebSocket request、timer 等潜在 suspension point 只有在运行时实际等待时才释放执行权，此时其他方法可以执行。恢复后的方法必须假设 actor 字段已经变化。
 - `connection.send` 只把消息同步写入本地发送队列，不等待网络或对端确认，因此不是 suspension point，也不提供送达或 exactly-once 保证。
+- `std.websocket.requestJsonToConnection` 在发送平台 request envelope 后等待匹配 response；等待尚未完成时会释放执行权，因此是潜在 suspension point。它只保证同一 connection/generation 内的 transport 配对，不提供业务幂等或 exactly-once。
 - 调用是同步的：调用方挂起等待返回。调用方所在 runtime 不需要拥有实例；路由是位置透明的。
 - 实例状态的演化不写回 registry；逐出后重新激活回到 bootstrap。
 

@@ -2,11 +2,11 @@
 
 日期：2026-06-21
 
-更新：2026-07-27。第一版WebSocket明确为**服务端下行通道**：业务上行统一使用HTTP，WebSocket只负责
-连接建立、连接身份/policy和服务端主动发送。客户端text/binary业务frame不进入runtime，gateway以
-WebSocket close code `1003`关闭连接；ping、pong与close等协议control frame由WebSocket协议栈处理。
-因此第一版不存在用户可声明的`receive`、业务消息selector/envelope、typed message handler或消息级
-gateway identity。旧版相关设计已撤回，不保留兼容surface。
+更新：2026-07-27。第一版WebSocket明确为**Skiff主动发送的连接通道**：外部peer主动发起的业务请求
+统一使用HTTP；WebSocket负责连接建立、连接身份/policy、服务端单向通知，以及Skiff向精确connection
+发起并等待peer响应的通用request/response。后者的`requestId`与pending state由平台拥有，peer response
+直接恢复原Skiff调用，不形成新的service ingress。第一版仍不存在用户可声明的`receive`、client-initiated
+业务消息selector、typed message handler或消息级gateway identity。旧版相关设计已撤回，不保留兼容surface。
 
 本文定义 router 中 gateway、runtime 注册/调度和 gateway adapter 的长期内部边界。它是目标态架构契约，不是用户可见语言规范，也不是迁移 checklist。当前实现偏差和落地步骤见 `../implementation/gateway-runtime-adapter-refactor.md`。
 
@@ -18,7 +18,7 @@ Skiff 尚未发布，本文不要求兼容历史 manifest 字段、std.websocket
 
 - HTTP / WebSocket gateway 与 runtime 关系的模块边界。
 - HTTP adapter参数与WebSocket connect回调的目标模型。
-- WebSocket business identity、connection policy和下行发送的归属。
+- WebSocket business identity、connection policy、主动发送和平台request/response broker的归属。
 - router、runtime、compiler 在 payload codec 和 type/schema metadata 上的职责。
 - `RuntimeRegistry`、`RuntimeDispatcher`、runtime endpoint 的目标边界。
 
@@ -33,12 +33,13 @@ Skiff 尚未发布，本文不要求兼容历史 manifest 字段、std.websocket
 
 ### Gateway
 
-Gateway 是 router 的外部协议入口。HTTP gateway 处理 HTTP socket、route 选择、body 限制、CORS、HTTP response 写回。WebSocket gateway 处理 upgrade、物理连接生命周期、close、下行写回和连接索引；它不为业务frame建立pending message buffer。
+Gateway 是 router 的外部协议入口。HTTP gateway 处理 HTTP socket、route 选择、body 限制、CORS、HTTP response 写回。WebSocket gateway 处理 upgrade、物理连接生命周期、close、Skiff主动发送和连接索引。其专用request broker为Skiff主动发起的request维护有界pending table；它不为peer主动发送的业务消息建立buffer或dispatch。
 
 Gateway 可以理解平台事实：
 
 - HTTP method、path、query、headers、cookies、body bytes。
 - WebSocket connection id、upgrade request、control/data frame类别和close状态。
+- 平台WebSocket request/response outer envelope中的`type`、opaque `requestId`、`ok`与固定error shape。
 - service id、deployment revision、WebSocket entry id、gateway entry key与gateway entry identity。
 - request id、deadline、trace、telemetry。
 - WebSocket `businessIdentity` 这个 opaque string 作为连接管理 key。
@@ -46,7 +47,8 @@ Gateway 可以理解平台事实：
 Gateway 不可以理解业务事实：
 
 - `user`、`host`、tenant、device、session principal 等业务 subject kind。
-- 业务 request/response record、union、map、representation 的字段布局。
+- 业务 request/response record、union、map、representation 的字段布局；平台broker只把`method`与
+  payload当作opaque JSON值转发。
 - 某个业务 cookie/header 是否表示登录身份，除非它只是原样传给业务 connect/pre handler。
 
 ### Runtime Endpoint
@@ -55,7 +57,10 @@ Runtime endpoint 是 router 对 runtime 暴露的内部 WebSocket listener，通
 
 - 接收 runtime 连接。
 - 编码/解码 runtime frame envelope。
-- 接收 `runtime.register`、`runtime.capabilities`、`runtime.health`、`response.*`、runtime-originated `request.start`、`request.cancel`、`connection.send`。
+- 接收 `runtime.register`、`runtime.capabilities`、`runtime.health`、`response.*`、runtime-originated
+  `request.start`、`request.cancel`、`connection.send`以及专用的`connection.request` /
+  `connection.request.cancel` frame。
+- 把WebSocket request broker返回的`connection.response` frame写回原runtime。
 - 将已验证 frame 交给 `RuntimeRegistry` 或 `RuntimeDispatcher`。
 
 Runtime endpoint 不负责选择业务 runtime，也不持有长期 pending request 策略。
@@ -87,12 +92,25 @@ Runtime endpoint 拥有物理 runtime WebSocket writer。其它模块只能通�
 
 Gateway 依赖 `RuntimeDispatcher`，不直接依赖 `RuntimeRegistry` 做 dispatch。
 
+### WebSocket Request Broker
+
+`WebSocketRequestBroker`是router内Skiff-originated peer request的唯一pending owner。它负责：
+
+- 验证发起runtime、service、WebSocket entry与精确connection归属。
+- 生成peer-visible `requestId`，写入固定platform request envelope。
+- 将pending绑定到原runtime correlation和物理socket/generation。
+- 匹配peer response，向原runtime返回`connection.response`。
+- 处理cancel、deadline、socket/runtime disconnect、容量上限与短期settled tombstone。
+
+它不选择service handler、不创建runtime ingress、不解码业务类型，也不与`RuntimeDispatcher`共享
+service-call / gateway-dispatch pending state。
+
 ### Gateway Adapter
 
 Gateway adapter 是 runtime 侧的入口适配逻辑。它把 gateway 提供的平台 metadata 和 payload bytes 组装成用户 handler 参数。
 
 HTTP typed JSON route、raw HTTP route和WebSocket connect是第一版全部gateway adapter场景。
-WebSocket data frame不会被分派为runtime request，也没有message adapter。
+WebSocket peer response由平台broker处理，不被分派为runtime request，也没有message adapter。
 
 这些external ingress entry由`service.yml`拥有，不是`serviceCalls`从`api.yml` public graph选择的
 service-call operation。Handler、
@@ -104,10 +122,11 @@ identity与校验。
 
 `gatewayEntryIdentity`只覆盖external protocol surface：entry kind、外部参数来源、公开
 request/response/stream shape与影响gateway wire兼容性的metadata。HTTP identity覆盖HTTP wire surface；
-WebSocket identity覆盖connect request/result shape、允许的下行frame类别及connection policy shape，
-不包含任何业务消息协议。Identity不包含handler/pre/guard callable identity、source selector、Package
-build或业务实现体。具体callable binding和内部执行plan由ServiceDeployment及其revision覆盖；只替换实现
-不会伪装成external protocol变化。
+WebSocket identity覆盖connect request/result shape、允许的Skiff主动发送frame类别、固定平台
+request/response envelope版本及connection policy shape，不包含业务`method`或payload协议。
+Identity不包含handler/pre/guard callable identity、source selector、Package build或业务实现体。
+具体callable binding和内部执行plan由ServiceDeployment及其revision覆盖；只替换实现不会伪装成
+external protocol变化。
 
 ### Business Identity
 
@@ -120,15 +139,20 @@ build或业务实现体。具体callable binding和内部执行plan由ServiceDep
 目标依赖方向：
 
 ```text
-HttpGateway / WebSocketGateway
+HttpGateway
   -> RuntimeDispatcher
       -> RuntimeRegistry
+      -> RuntimeFrameSender
+
+WebSocketGateway
+  -> WebSocketRequestBroker
       -> RuntimeFrameSender
 
 RuntimeEndpoint
   -> RuntimeRegistry
   -> RuntimeDispatcher
   -> WebSocketGatewayOutbound
+  -> WebSocketRequestBroker
 ```
 
 更具体地说：
@@ -140,11 +164,17 @@ RuntimeEndpoint
 - `RuntimeRegistry` 保存 runtime connection handle、capability 和 routing index，不直接发 frame。
 - Runtime response 回到 `RuntimeEndpoint` 后，由 `RuntimeDispatcher` 完成 pending request。
 - `connection.send` 回到 `RuntimeEndpoint` 后转给 WebSocket gateway 的 outbound handler。
+- `connection.request`回到`RuntimeEndpoint`后转给`WebSocketRequestBroker`。Broker验证source runtime、
+  service、entry与精确connection的归属，生成peer-visible request id并保存原runtime correlation。
+- Peer response先由`WebSocketGateway`交给broker；精确匹配后，broker通过`RuntimeFrameSender`向原runtime
+  返回`connection.response`，不经过`RuntimeDispatcher`创建新的service request。
 
 禁止的依赖：
 
 - Gateway 不直接读写 `RuntimeRegistry.pending`。
 - Gateway 不调用业务 payload codec。
+- `RuntimeDispatcher`的service dispatch pending与`WebSocketRequestBroker`的peer response pending是
+  两个不同owner，不能共用一张无类型pending map。
 - `RuntimeRegistry` 不处理 HTTP/WebSocket 外部协议。
 - `RuntimeRegistry` 不知道 WebSocket business identity 连接索引。
 - `RuntimeRegistry` 不依赖 concrete `RuntimeEndpoint` 或 gateway。
@@ -343,7 +373,7 @@ type WebSocketConnectResponseMetadata =
 `businessIdentity`、无`connectionPolicy`），省去一次runtime往返。需要business identity或connection
 policy的entry必须声明connect handler。
 
-### WebSocket只下行
+### WebSocket主动发送与request/response
 
 第一版业务方向固定为：
 
@@ -358,14 +388,27 @@ user code
   -> runtime connection.send
   -> WebSocket gateway
   -> client / host
+
+user code
+  -> std.websocket.requestJsonToConnection
+  -> runtime connection.request
+  -> WebSocket request broker
+  -> host / peer
+  -> platform response envelope
+  -> WebSocket request broker
+  -> runtime connection.response
+  -> resume original user call
 ```
 
-客户端发来的text或binary data frame不产生runtime dispatch；gateway以close code `1003`关闭该连接。
-WebSocket ping、pong和close control frame由协议栈处理，不进入用户代码。由此：
+只有精确匹配pending request的platform response data frame会被broker消费；它不产生runtime ingress
+dispatch。Peer主动发送的request、notification或其它text/binary data frame以close code `1003`关闭。
+畸形或伪造的platform response以`1002`关闭。WebSocket ping、pong和close control frame由协议栈处理，
+不进入用户代码。由此：
 
 - `service.yml`没有`receive`、message entry、selector、envelope或fallback authoring；
 - shared artifact、compiler、router和runtime没有WebSocket business-message operation；
-- WebSocket不拥有request/response correlation或typed message schema；
+- WebSocket拥有一个平台固定的outbound request/response correlation协议，但不拥有用户可声明的
+  client-initiated request/response route或entry-local typed message schema；
 - Agine、AIHub及其它service的业务上行必须使用HTTP；HTTP server stream仍可承担流式响应。
 
 ## WebSocket connection model
@@ -376,6 +419,28 @@ message dispatch。连接关闭时gateway同步移除连接索引；关闭后到
 
 `std.websocket` 的 connection send 操作本身保持非挂起；它只尝试把 frame 交给 gateway，
 不等待客户端消费或为慢客户端提供 backpressure await。
+
+`std.websocket.requestJsonToConnection<TRequest, TResponse>`是不同操作。Runtime按`TRequest`编码payload，
+broker向精确connection发送固定platform request envelope；调用在等待匹配response时挂起，runtime按
+`TResponse`解码success payload。它继承当前execution deadline/cancel，不提供business-identity fan-out、
+自动重试、业务幂等或exactly-once。连接关闭、deadline、cancel、protocol failure和peer error均以
+`std.websocket.WebSocketRequestError`结束等待。请求编码与success response typed decode分别遵循
+`std.json.encode<TRequest>` / `std.json.decode<TResponse>`并保留`std.json.DecodeError`；broker不参与
+业务typed decode。
+
+Broker pending规则：
+
+- Runtime transport correlation与peer-visible `requestId`是两个内部层次；broker生成后者并保存到
+  原runtime connection/request correlation的映射，业务源码不能读取两者。
+- Pending identity至少包含物理socket object或generation、connection id和peer-visible request id；
+  response不能跨connection、重连generation或service/entry归属命中。
+- 同一connection上的response可以乱序完成；每个pending最多完成一次。
+- disconnect或原runtime断开会原子移除相关pending，并尽可能通知另一端取消/失败。
+- deadline/cancel先移除pending，再best-effort发送platform cancel envelope。Broker保留有界、短期
+  settled tombstone，以静默丢弃与完成/取消竞态的晚到或重复response；未知且不在tombstone中的
+  response id属于协议错误。
+- Pending数量、单payload大小和tombstone生命周期必须受平台limit约束；达到上限时新request fail closed，
+  不能无界缓存。
 
 目标std surface：
 
@@ -446,13 +511,14 @@ opaque `businessIdentity`；gateway不知道它表示user、host、tenant或其�
 长期边界：
 
 - Runtime 拥有业务 payload encode/decode。
-- Router 转发 opaque bytes，**不解析任何业务类型表示**，既不用 JsonSchema 也不用单独的类型 descriptor。
-- 业务类型的权威表示是 compiler 产出、runtime 加载的 linked program 类型（`TypeRefIr` / `LinkedTypeRef`）。runtime HTTP adapter 从 linked program 取 handler 参数/响应类型构造 `RuntimeTypePlan` 做 payload codec（`from_linked(&params[index].ty, …)`）。WebSocket connect只使用固定平台metadata，没有业务message payload codec。**runtime payload codec 不依赖 manifest。**
+- Router 转发 opaque bytes或opaque JSON值，**不解析任何业务类型表示**，既不用 JsonSchema 也不用单独的类型 descriptor。WebSocket broker可以验证固定outer envelope并提取payload JSON值，但不得按业务schema解释其字段。
+- 业务类型的权威表示是 compiler 产出、runtime 加载的 linked program 类型（`TypeRefIr` / `LinkedTypeRef`）。runtime HTTP adapter 从 linked program 取 handler 参数/响应类型构造 `RuntimeTypePlan` 做 payload codec（`from_linked(&params[index].ty, …)`）。WebSocket connect只使用固定平台metadata；outbound request/response codec来自`requestJsonToConnection<TRequest, TResponse>`调用点的concrete类型，不来自service entry manifest。**runtime payload codec 不依赖 manifest。**
 - JsonSchema 保留给外部协议校验、文档、diagnostics 和 HTTP JSON contract，不作为 runtime 二进制 payload codec 的 source of truth，也不进入 router 的 dispatch 决策。
 
-Compiler只为adapter plan中真正连接external source/sink的值派生entry-local schema：typed HTTP body、
-query/path/header参数和HTTP response。WebSocket没有业务message schema。Pre产生的业务context和guard
-内部值不属于外部协议。私有named type可以贡献结构，但其Skiff
+Compiler只为adapter plan中真正连接external ingress source/sink的值派生entry-local schema：typed HTTP
+body、query/path/header参数和HTTP response。WebSocket没有client-initiated业务message schema；outbound
+request/response的concrete codec由调用点类型决定，不进入`service.yml`或gateway entry schema。
+Pre产生的业务context和guard内部值不属于外部协议。私有named type可以贡献结构，但其Skiff
 source/public/nominal名字不自动出现在schema；entry-local component key必须由canonical external shape或显式
 external documentation metadata产生，不能借用Package public identity。
 
@@ -512,6 +578,10 @@ dispatch、cancel、telemetry和diagnostics，不投影为用户业务字段。
 不能为了兼容旧WebSocket envelope把这些ID统一命名为`requestId`。第一版HTTP server stream不复用一条
 response multiplex多个独立业务请求，因此stream event也不需要transport correlation id。
 
+上述限制只针对HTTP业务schema。平台WebSocket request/response envelope必须拥有transport `requestId`；
+它由broker生成并仅用于同一connection/generation内配对，不进入handler参数、返回类型、持久化状态或业务
+日志模型。
+
 ## HTTP flow
 
 ```text
@@ -566,7 +636,20 @@ user code calls std.websocket.sendTextToBusinessIdentity(...)
   -> matching sockets
 ```
 
-Gateway may also support direct connection id sends as low-level diagnostics/control, but application-level delivery should use `businessIdentity`.
+Request/response：
+
+```text
+user code calls std.websocket.requestJsonToConnection<TRequest, TResponse>(connectionId, method, value)
+  -> runtime encodes value and emits connection.request
+  -> WebSocketRequestBroker validates exact service/entry/connection ownership
+  -> broker generates requestId and sends platform request envelope
+  -> peer returns platform response envelope on the same socket
+  -> broker matches connection/generation/requestId and emits connection.response to the original runtime
+  -> runtime decodes TResponse and resumes the original call
+```
+
+Application notifications may use business identity fan-out or exact connection id；request/response只允许精确
+connection id，因为多个socket不能共同拥有一个unary response。
 
 ## Validation
 
@@ -575,6 +658,8 @@ Authoring/deployment manifest readers must fail closed:
 - 旧 WebSocket `bind` field 非法。
 - 新authoring中的用户`receive`、`websocketReceive`、`websocket.receiveEvent`、
   `websocket.message`与`websocket.messageBody`非法。
+- `service.yml`不能声明WebSocket request/response route；平台outbound request能力不产生新的gateway
+  entry、handler selector或entry-local schema。
 - 迁移后的旧 HTTP `handlerArgs` field 非法。
 - `adapterArgs[].source` unknown kind is invalid.
 - Any business context field binding is invalid.
@@ -589,6 +674,15 @@ Runtime connect response validation must fail closed:
 - `maxConnections`、`overflow`、`closeCode`、`closeReason` must satisfy the connection policy rules above.
 - Connect accept payload containing legacy `context`、`contextCodec`或`contextPayloadPresent` fields is invalid.
 
+WebSocket request broker validation must fail closed:
+
+- `connection.request`的source runtime必须已注册目标service，并且entry与connection必须精确属于该
+  service/deployment允许的WebSocket surface。
+- Outer envelope必须精确匹配冻结的request/response/cancel shape；peer不能选择或覆盖平台request id。
+- Response必须来自原物理socket/generation并命中pending或短期settled tombstone；未知response id、错误
+  connection/generation和畸形envelope不得恢复任何runtime调用。
+- Pending、payload size和settled tombstone都必须受配置limit约束。
+
 Because Skiff is unreleased, no compatibility aliases are required.
 
 ## Observability
@@ -597,6 +691,8 @@ Router telemetry may log:
 
 - service id、deployment revision、gateway entry key与gateway entry identity。
 - connection id。
+- 平台WebSocket request的method、完成状态、deadline/cancel原因和pending计数；request id只按平台
+  diagnostic策略记录，payload不得记录。
 - presence of `businessIdentity` and a redacted/hash form if needed.
 - connection policy decision。
 - adapter source kind names。
@@ -615,8 +711,14 @@ Target-state tests must prove:
 - `maxConnections=1, close-oldest` removes old sockets from fan-out before closing them.
 - `maxConnections=1, reject-new` leaves old sockets active and rejects the new socket.
 - Fan-out 和 policy 按 `(serviceId, websocketEntryId, businessIdentity)` 建 key，并有意忽略 version/build。
-- Client text/binary data frame closes with `1003` and produces no runtime request; ping/pong/close remains
-  protocol-owned.
+- Matching platform response frame resumes exactly one pending call and produces no runtime ingress request.
+- Peer-initiated request/notification和其它unsolicited text/binary data frame以`1003`关闭；
+  malformed/forged response以`1002`关闭；ping/pong/close remains protocol-owned.
+- Out-of-order responses match correctly；wrong connection/generation/unknown id不能恢复调用；cancel、
+  deadline、runtime disconnect和socket disconnect清理pending；late/duplicate settled response只命中
+  bounded tombstone并被丢弃。
+- `connection.send`保持non-suspending；`requestJsonToConnection`等待response时是suspension point，
+  并能由execution cancel/deadline终止。
 - Router production code does not import business payload codec, does not parse `parameters[].type` / `responseType`, and makes no dispatch decision from business type structure.
 - Runtime adapter tests cover typed HTTP body/context与WebSocket connect request arg construction。
 - Outbound send can resolve the sole WebSocket entry from a non-WebSocket execution carrying the current

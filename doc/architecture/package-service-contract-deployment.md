@@ -85,8 +85,10 @@ Package source由`.skiff`源码、`package.yml`、`api.yml`和静态资源组成
 
 Service仍走同一个package compiler入口；存在`service.yml`时，compiler/tooling再执行service projection。
 `service.yml`拥有service id、`serviceCalls` public-path选择与HTTP/WebSocket等外部ingress。HTTP包含route、handler/pre/guard source
-selector、adapter参数来源及外部协议metadata；第一版WebSocket是单一服务端下行entry，只包含连接path与
-可选connect callback，不存在用户receive或业务消息handler。External handler selector指向当前service package中的普通source callable，
+selector、adapter参数来源及外部协议metadata；第一版WebSocket是单一entry，只包含连接path与
+可选connect callback，不存在用户receive或业务消息handler。该连接支持服务端单向通知，以及由Skiff
+主动发起、外部peer只返回平台response envelope的request/response；response由平台关联，不形成新的
+service ingress。External handler selector指向当前service package中的普通source callable，
 不要求该callable出现在`api.yml`。`serviceCalls`中的每个元素则必须精确解析到`api.yml`已有的public
 function或public-instance root；它不是source function映射。`service.yml`不含version、dependency、
 service-call API signature/type映射、与handler类型重复的业务JSON schema、实现artifact binding、平台组织角色或request/response大小
@@ -110,9 +112,14 @@ unary handler return；runtime wrapper把该单个值编码为一次JSON respons
 chunks，也不得要求external caller理解Skiff的`Stream<T>`类型。
 
 `websocket`仍由`service.yml`拥有。第一版每个service最多一个WebSocket entry，拥有连接path与可选
-`connect`回调；它只用于服务端下发。业务上行统一走HTTP，客户端text/binary data frame由gateway以
-close code `1003`拒绝，ping/pong/close由协议栈处理。不存在raw `receive`、消息selector/envelope、
-typed message handler、消息级entry或message identity；不得从HTTP route模型类推这些surface。
+`connect`回调。外部peer主动发起的业务请求统一走HTTP；WebSocket支持服务端单向通知，以及
+`std.websocket.requestJsonToConnection`向精确connection发起的request。后一种request的response是
+平台协议帧，由gateway/runtime按平台生成的`requestId`关联并直接恢复等待中的Skiff调用，不分派给用户
+handler。不存在raw `receive`、client-initiated消息selector、typed message handler、消息级entry或
+message identity；不得从HTTP route模型类推这些surface。没有匹配pending request的客户端text/binary
+data frame以close code `1003`拒绝；畸形、wrong-connection/generation或未知id的response envelope属于
+协议错误，使用`1002`；与完成/取消竞态的晚到或重复response只命中有界短期tombstone并被丢弃；
+ping/pong/close由协议栈处理。
 
 PackageArtifact至少包含：
 
@@ -180,8 +187,9 @@ callable signature和专用gateway adapter plan编解码，不要求内部业务
 也不能反向成为runtime binary codec的事实源。
 
 Compiler只对adapter实际映射到external source/sink的值计算entry-local schema closure。已冻结部分包括
-HTTP body、query/path/header参数与HTTP response。WebSocket没有业务上行payload schema；connect只有
-平台request metadata和accept/reject metadata。Pre/guard内部context及其它只在runtime adapter与handler
+HTTP body、query/path/header参数与HTTP response。WebSocket没有client-initiated业务payload schema；
+connect只有平台request metadata和accept/reject metadata。Skiff主动发起的request/response codec来自
+调用点concrete类型，不进入entry-local schema。Pre/guard内部context及其它只在runtime adapter与handler
 之间流动的值不进入该closure。
 私有named type可以贡献外部shape，但其source name、module path与Skiff nominal identity不得泄露为public
 type；只改私有名字而保持canonical external shape不改变`GatewayEntryIdentity`。
@@ -389,8 +397,9 @@ named route同时声明唯一selector与entry definition。该限制只简化aut
 
 `GatewayEntryIdentity`只标识external protocol surface。已冻结的HTTP canonical preimage覆盖entry kind、
 外部request/response/stream shape、HTTP adapter source映射、公开错误投影及其它会改变gateway wire
-兼容性的metadata。第一版WebSocket identity只覆盖connect request/result shape、允许的下行frame类别和
-connection policy shape；它不表示业务消息协议，因为第一版没有业务消息入口。Identity不包含source selector、
+兼容性的metadata。第一版WebSocket identity覆盖connect request/result shape、允许的服务端frame类别、
+固定平台request/response envelope协议版本和connection policy shape；它不表示业务method或payload
+协议，因为第一版没有client-initiated业务消息入口。Identity不包含source selector、
 handler/pre/guard `PackageCallableId`、内部名义类型identity、PackageArtifact/build或deployment policy。
 Compiler仍必须验证由linked handler signature导出的external schema和typed adapter plan与该surface逐项
 一致。HTTP stream mode只能来自`rawHttp`的精确
@@ -619,16 +628,62 @@ ServiceContract作为对外声明：
 后者生成external gateway entry。Compiler必须分别验证并生成不同identity，不能因source target相同而把
 两者合并或互相推断。
 
-第一版WebSocket不接收业务请求，因此上述“外部请求”对WebSocket只指upgrade/connect。Agine、AIHub等
-service的浏览器或host业务上行必须声明HTTP entry；流式业务响应使用HTTP server stream，异步主动通知才
-使用WebSocket下行。`std.websocket`下行发送从当前`ActivationContext`解析当前service deployment中唯一的
-WebSocket entry，不能按path、display name或任意字符串猜entry；零entry或损坏的多entry状态fail closed。
+第一版WebSocket不接收外部peer主动发起的业务请求，因此上述“外部请求”对WebSocket只指
+upgrade/connect。Agine、AIHub等service的浏览器或Host主动上行业务必须声明HTTP entry；流式业务响应
+使用HTTP server stream，异步主动通知使用WebSocket下行。`std.websocket`发送从当前
+`ActivationContext`解析当前service deployment中唯一的WebSocket entry，不能按path、display name或
+任意字符串猜entry；零entry或损坏的多entry状态fail closed。
+
+WebSocket还提供一个平台拥有的反向request/response能力：Skiff代码向一个**精确connection id**发起
+request，外部peer接受该request并在同一socket上返回response。它不是外部peer向Skiff发起请求，也不改变
+`service.yml`：
+
+```text
+Skiff -> peer
+{ "type": "request", "requestId": opaque, "method": string, "payload": Json }
+
+peer -> Skiff
+{ "type": "response", "requestId": opaque, "ok": true, "payload": Json }
+| { "type": "response", "requestId": opaque, "ok": false,
+    "error": { "code": string, "message": string, "detail": Json? } }
+
+Skiff -> peer, best effort on caller cancel/deadline
+{ "type": "cancel", "requestId": opaque }
+```
+
+`requestId`由平台生成，外部peer只能原样回显；Skiff业务源码不生成、解析或持久化它。Pending key至少包含
+connection id、socket/generation identity与request id；response必须来自原connection，unknown、
+duplicate、跨generation或已取消的response不能命中其它调用。Router只解析固定outer envelope，
+`method`和`payload`保持opaque；response不创建runtime ingress request，也不调用用户handler。
+第一版只冻结text JSON request/response，binary data response不在该协议内。`method`必须非空；request
+payload使用`std.json.encode<TRequest>`语义，success payload使用
+`std.json.decode<TResponse>`语义。编码或typed decode失败抛`std.json.DecodeError`，不改写成transport
+error，也不要求Router理解业务schema。
+
+标准库入口是：
+
+```skiff
+native function requestJsonToConnection<TRequest, TResponse>(
+  connectionId: string,
+  method: string,
+  value: TRequest
+) -> TResponse
+```
+
+它只允许精确connection target，不提供business-identity fan-out版本，因为多个socket不能共同拥有一个
+unary response。调用受当前execution deadline与cancel约束；等待尚未完成时是真实suspension point。
+connection关闭、deadline、cancel、畸形response或peer返回`ok:false`时抛
+`std.websocket.WebSocketRequestError`。取消时平台删除pending state，并在socket仍可写时发送best-effort
+cancel envelope；平台保留有界短期settled tombstone以丢弃完成/取消竞态产生的晚到或重复response。
+Pending数量、payload大小与tombstone生命周期都有平台limit；达到上限时新request fail closed。
+外部副作用的幂等、去重和补偿仍由业务ID承担。
 
 HTTP request与其unary response/server stream已经由transport精确关联。External payload、response
 envelope和stream item不得保留只为模拟旧WebSocket req/res而存在的`requestId`或同义correlation字段；
 平台内部request/trace id也不进入业务schema。若操作真正需要幂等键、异步任务句柄或业务run identity，
 必须分别建模为`idempotencyKey`、`jobId`或`runId`，不能继续借用`requestId`。这一规则同时适用于
-Agine普通HTTP RPC、Host HTTP上行和AIHub HTTP event stream。
+Agine普通HTTP RPC、Host主动发起的HTTP上行和AIHub HTTP event stream；它不删除上述平台拥有的
+WebSocket request/response envelope中的transport `requestId`。
 
 ## 7. Linkable、Recoverable 与 Callback Capability
 

@@ -263,8 +263,9 @@ HTTP/WebSocket external ingress。一个wire-safe public callable未被该数组
 
 HTTP/WebSocket等external ingress不属于本节的public service-call operation。已冻结的HTTP entry由
 `service.yml`直接引用当前Package handler，并生成独立`GatewayEntryIdentity`与typed adapter plan。
-WebSocket connect仍由`service.yml`拥有；业务消息handler的authoring/identity尚待冻结，raw `receive`
-不是目标业务entry：
+WebSocket connect仍由`service.yml`拥有；第一版没有client-initiated业务消息handler，raw `receive`
+不是目标业务entry。`std.websocket.requestJsonToConnection`是Skiff主动调用的平台host operation，其
+response由平台关联，不生成`service.yml` entry或ServiceContract operation：
 
 - handler不要求出现在`api.yml`；
 - gateway entry不写入`ServiceContract.operations`，也不进入`ServiceProtocolIdentity`；
@@ -273,9 +274,10 @@ WebSocket connect仍由`service.yml`拥有；业务消息handler的authoring/ide
 - 同一函数同时出现在`api.yml`和`service.yml`时形成两个显式surface和两种identity，不自动合并。
 
 External schema closure与Package public/type closure严格分开。Compiler只为真正跨external boundary的
-adapter source/sink派生wire shape；当前包括typed HTTP body、query/path/header参数与HTTP response。未来
-typed WebSocket业务消息也遵守同一原则，但必须等消息路由模型冻结后再投影，不能从raw `receive`签名
-提前推导。`pre`产生的内部context、guard内部值、WebSocket connection context及其它只在
+adapter source/sink派生wire shape；当前包括typed HTTP body、query/path/header参数与HTTP response。
+平台WebSocket request/response payload的codec来自
+`requestJsonToConnection<TRequest, TResponse>`调用点的concrete类型，不是external ingress schema，
+不能从raw `receive`、`service.yml`或connect签名推导。`pre`产生的内部context、guard内部值及其它只在
 runtime adapter与handler之间流动的值不进入external schema。即使某个跨external boundary的shape来自私有
 named type，外部只看到entry-local结构/协议名，不获得该type的Skiff public path或名义identity；compiler
 也不得因此把它补进`api.yml`、PackageLocalAbi、PackageSchema或ServiceContract。
