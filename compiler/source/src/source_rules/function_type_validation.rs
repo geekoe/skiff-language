@@ -94,6 +94,9 @@ fn collect_stmt_function_type_violations(path: &str, stmt: &Stmt, violations: &m
             collect_expr_function_type_violations(path, target, violations);
             collect_expr_function_type_violations(path, value, violations);
         }
+        Stmt::Timeout { body, .. } | Stmt::Concurrent { body } | Stmt::Serial { body } => {
+            collect_block_function_type_violations(path, body, violations);
+        }
         Stmt::If {
             condition,
             then_block,
@@ -188,6 +191,13 @@ fn collect_expr_function_type_violations(path: &str, expr: &Expr, violations: &m
                     }
                 }
             }
+        }
+        Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+            collect_block_function_type_violations(path, &value.body, violations);
+            collect_expr_function_type_violations(path, &value.tail, violations);
+        }
+        Expr::Timeout { value, .. } => {
+            collect_expr_function_type_violations(path, value, violations);
         }
         Expr::Throw { value } => collect_expr_function_type_violations(path, value, violations),
         Expr::Rethrow { exception } => {

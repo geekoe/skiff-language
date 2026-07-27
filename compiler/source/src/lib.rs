@@ -11,6 +11,7 @@ mod contract_dependency_test_fixture;
 mod contract_type_resolution;
 mod dependency_analysis;
 pub mod entity;
+mod execution_semantics;
 pub(crate) mod expression_model;
 pub(crate) mod expression_type_model;
 mod linked_facts;
@@ -37,6 +38,8 @@ pub mod source_identity;
 pub mod source_name_resolution;
 pub(crate) mod source_rules;
 mod test_rules;
+#[cfg(test)]
+mod timeout_source_semantics_tests;
 pub(crate) mod type_resolution_model;
 mod type_symbol_index;
 
@@ -80,6 +83,10 @@ pub use dependency_analysis::{
     PackageDependencyConstantAnalysis, SourceDependencyAnalysisError,
     SourceDependencyAnalysisInput,
 };
+pub use execution_semantics::{
+    ConcurrentLaneKind, ConcurrentLanePlan, ConcurrentSourcePlan, ExecutionSourceSite,
+    SourceExecutionSemantics, TimeoutSourcePlan,
+};
 pub use expression_model::{
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceFact, ExpressionSourceMap,
 };
@@ -112,6 +119,12 @@ pub use type_resolution_model::{
     TypeResolutionPackageFacts, TypeResolutionPackageSchemaTypeFact,
 };
 pub use type_symbol_index::{publication_type_symbols, PublicationTypeSymbolIndex};
+
+pub fn validate_source_execution_semantics(
+    model: &PackageSourceModel,
+) -> Result<(), SourceCompileError> {
+    model.execution_semantics().validate_complete()
+}
 
 pub fn build_package_from_parsed_sources(
     input: CompileParsedPackageSourcesInput<'_, '_>,

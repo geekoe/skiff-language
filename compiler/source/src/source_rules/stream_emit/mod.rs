@@ -250,6 +250,9 @@ impl StreamEmitTypeChecker<'_> {
                 self.check_expr(target);
                 self.check_expr(value);
             }
+            Stmt::Timeout { body, .. } | Stmt::Concurrent { body } | Stmt::Serial { body } => {
+                self.check_block(body)
+            }
             Stmt::If {
                 condition,
                 then_block,
@@ -367,6 +370,11 @@ impl StreamEmitTypeChecker<'_> {
                     }
                 }
             }
+            Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+                self.check_block(&value.body);
+                self.check_expr(&value.tail);
+            }
+            Expr::Timeout { value, .. } => self.check_expr(value),
             Expr::Throw { value } => {
                 self.check_expr(value);
             }

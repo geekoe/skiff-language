@@ -140,6 +140,7 @@ pub struct PackageSourceModel {
     #[allow(dead_code)]
     dependency_config_requirements: ConfigRequirementSet,
     effective_config_requirements: ConfigRequirementSet,
+    execution_semantics: super::SourceExecutionSemantics,
 }
 
 pub struct PackageSourceModelInput<'a> {
@@ -248,6 +249,12 @@ impl PackageSourceModel {
         );
         let callable_effects = callable_analysis.effects;
         let callable_provenance = callable_analysis.provenance;
+        let execution_semantics = super::execution_semantics::analyze_source_execution_semantics(
+            &input.parsed_sources,
+            &expression_sources,
+            &resolved_call_targets,
+            &callable_effects,
+        )?;
         let executable_signatures = super::SourceExecutableSignatureFacts::build(
             &input.parsed_sources,
             &type_resolution,
@@ -308,6 +315,7 @@ impl PackageSourceModel {
             own_config_requirements,
             dependency_config_requirements,
             effective_config_requirements,
+            execution_semantics,
         })
     }
 
@@ -387,6 +395,10 @@ impl PackageSourceModel {
 
     pub fn resolved_call_targets(&self) -> &ResolvedCallTargetFacts {
         &self.resolved_call_targets
+    }
+
+    pub fn execution_semantics(&self) -> &super::SourceExecutionSemantics {
+        &self.execution_semantics
     }
 
     #[cfg(any(test, feature = "test-support"))]

@@ -53,6 +53,7 @@ pub fn compile_package(
     let contract_requirements = contract_requirements(&input);
     let pre_source_package_schemas = pre_source_contract_package_schemas(&input)?;
     let compiled = source_compile::compile(&input, &pre_source_package_schemas)?;
+    skiff_compiler_source::validate_source_execution_semantics(compiled.compile_model())?;
     let service_requirements = compiled
         .lowered()
         .service_calls()

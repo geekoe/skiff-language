@@ -53,6 +53,18 @@ pub(super) fn validate_emit_usage_in_stmt(
                 }
             }
         }
+        Stmt::Timeout { body, .. } | Stmt::Concurrent { body } | Stmt::Serial { body } => {
+            let mut body_env = env.clone();
+            validate_emit_usage_in_block(
+                path,
+                function_name,
+                stream_chunk,
+                body,
+                function_return_types,
+                &mut body_env,
+                violations,
+            );
+        }
         Stmt::If {
             condition,
             then_block,

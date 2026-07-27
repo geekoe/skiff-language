@@ -238,6 +238,7 @@ struct OwnerChecker<'a> {
     env: BTreeMap<String, ResolvedTypeRef>,
     contract_projection: ContractProjectionState,
     path_refinements: BTreeMap<String, ResolvedTypeRef>,
+    transparent_value_targets: BTreeMap<ExpressionKey, ExpressionKey>,
     test_effect_declarations: BTreeMap<ExactTestEffectTarget, String>,
     facts: &'a mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
     constructor_validations: &'a mut BTreeMap<ExpressionKey, ConstructorValidation>,
@@ -700,6 +701,7 @@ impl<'a> OwnerChecker<'a> {
             env,
             contract_projection,
             path_refinements: BTreeMap::new(),
+            transparent_value_targets: BTreeMap::new(),
             test_effect_declarations: BTreeMap::new(),
             facts,
             constructor_validations,
@@ -986,6 +988,14 @@ impl<'a> OwnerChecker<'a> {
                     self.contract_projection.bind(name, projected);
                 }
                 self.invalidate_path_refinements_for_write(target);
+                false
+            }
+            Stmt::Timeout { body, .. } | Stmt::Serial { body } => {
+                self.check_block_scoped(body, &TypeNarrowing::default());
+                false
+            }
+            Stmt::Concurrent { body } => {
+                self.check_concurrent_block(body, None);
                 false
             }
             Stmt::If {
@@ -1338,6 +1348,98 @@ impl<'a> OwnerChecker<'a> {
             .restore_bindings(saved_projected_env);
         self.path_refinements = saved_path_refinements;
         ty
+    }
+
+    fn check_value_block_expr(
+        &mut self,
+        root_key: &ExpressionKey,
+        value: &crate::shared::ast::ValueBlock,
+    ) -> Option<ResolvedTypeRef> {
+        let saved_env = self.env.clone();
+        let saved_projected_env = self.contract_projection.binding_snapshot();
+        let saved_path_refinements = self.path_refinements.clone();
+        self.check_block(&value.body);
+        let tail_key = self.peek_key();
+        let ty = self.check_expr(&value.tail);
+        let projected = self.contract_projection.expression_type(&tail_key).cloned();
+        self.env = saved_env;
+        self.contract_projection
+            .restore_bindings(saved_projected_env);
+        self.path_refinements = saved_path_refinements;
+        self.transparent_value_targets
+            .insert(root_key.clone(), tail_key);
+        if let Some(projected) = projected {
+            self.contract_projection
+                .record_expression_type(root_key.clone(), projected);
+        }
+        ty
+    }
+
+    fn check_concurrent_block(
+        &mut self,
+        body: &Block,
+        tail: Option<(&ExpressionKey, &Expr)>,
+    ) -> Option<ResolvedTypeRef> {
+        let saved_env = self.env.clone();
+        let saved_projected_env = self.contract_projection.binding_snapshot();
+        let saved_path_refinements = self.path_refinements.clone();
+        let mut sibling_env = saved_env.clone();
+        let mut sibling_projected_env = saved_projected_env.clone();
+
+        for statement in &body.statements {
+            self.env = sibling_env.clone();
+            self.contract_projection
+                .restore_bindings(sibling_projected_env.clone());
+            self.path_refinements = saved_path_refinements.clone();
+            self.check_stmt(statement);
+
+            if let Stmt::Let {
+                mutable: false,
+                name,
+                ..
+            } = statement
+            {
+                if let Some(ty) = self.env.get(name).cloned() {
+                    sibling_env.insert(name.clone(), ty);
+                }
+                match self
+                    .contract_projection
+                    .binding_snapshot()
+                    .get(name)
+                    .cloned()
+                {
+                    Some(projected) => {
+                        sibling_projected_env.insert(name.clone(), projected);
+                    }
+                    None => {
+                        sibling_projected_env.remove(name);
+                    }
+                }
+            }
+        }
+
+        let result = tail.map(|(root_key, tail)| {
+            self.env = sibling_env;
+            self.contract_projection
+                .restore_bindings(sibling_projected_env);
+            self.path_refinements = saved_path_refinements.clone();
+            let tail_key = self.peek_key();
+            let ty = self.check_expr(tail);
+            let projected = self.contract_projection.expression_type(&tail_key).cloned();
+            self.transparent_value_targets
+                .insert(root_key.clone(), tail_key);
+            if let Some(projected) = projected {
+                self.contract_projection
+                    .record_expression_type(root_key.clone(), projected);
+            }
+            ty
+        });
+
+        self.env = saved_env;
+        self.contract_projection
+            .restore_bindings(saved_projected_env);
+        self.path_refinements = saved_path_refinements;
+        result.flatten()
     }
 
     fn apply_narrowing(&mut self, narrowing: &TypeNarrowing) {
@@ -1966,6 +2068,25 @@ impl<'a> OwnerChecker<'a> {
                     }
                     None
                 }
+                Expr::ValueBlock(value) => self.check_value_block_expr(&key, value),
+                Expr::ConcurrentValue(value) => {
+                    self.check_concurrent_block(&value.body, Some((&key, &value.tail)))
+                }
+                Expr::Timeout { value, .. } => {
+                    let value_key = self.peek_key();
+                    let ty = self.check_expr(value);
+                    self.transparent_value_targets
+                        .insert(key.clone(), value_key.clone());
+                    if let Some(projected) = self
+                        .contract_projection
+                        .expression_type(&value_key)
+                        .cloned()
+                    {
+                        self.contract_projection
+                            .record_expression_type(key.clone(), projected);
+                    }
+                    ty
+                }
                 Expr::Throw { value } => {
                     if let Some(actual) = self.check_expr(value) {
                         self.validate_throw_payload(&key, &actual, "throw expression");
@@ -2353,15 +2474,43 @@ impl<'a> OwnerChecker<'a> {
         if let Some(change) = &operation.change {
             for op in &change.ops {
                 match op {
-                    DbChangeOp::Set { value, .. }
-                    | DbChangeOp::Inc { value, .. }
-                    | DbChangeOp::AddToSet { value, .. }
-                    | DbChangeOp::Remove { value, .. } => {
+                    DbChangeOp::Set { path, value }
+                    | DbChangeOp::Inc { path, value }
+                    | DbChangeOp::AddToSet { path, value }
+                    | DbChangeOp::Remove { path, value } => {
+                        self.validate_db_change_path(&operation.target, &path.segments);
                         self.check_expr(value);
                     }
-                    DbChangeOp::Unset { .. } => {}
+                    DbChangeOp::Unset { path } => {
+                        self.validate_db_change_path(&operation.target, &path.segments);
+                    }
                 }
             }
+        }
+    }
+
+    fn validate_db_change_path(&mut self, target: &TypeRef, path: &[String]) {
+        let Ok(target_type) = self
+            .type_resolution
+            .resolve_type_ref(target, &self.type_context)
+        else {
+            return;
+        };
+        if let Err(error) = DbProjectionTypeResolver::new(
+            self.module_path,
+            self.type_resolution,
+            self.publication_db_metadata,
+        )
+        .project_read_type(&target.name, target_type.ir, &[path.to_vec()])
+        {
+            if error.contains("has no DB metadata") {
+                return;
+            }
+            self.diagnostics.push(format!(
+                "{}: db change field path `{}` is invalid: {error}",
+                self.module_path,
+                path.join(".")
+            ));
         }
     }
 
@@ -2511,6 +2660,11 @@ impl<'a> OwnerChecker<'a> {
                 self.next_key();
                 self.consume_static_package_value_descendants(callee);
             }
+            Expr::Timeout { value, .. } => {
+                self.next_key();
+                self.consume_static_package_value_descendants(value);
+            }
+            Expr::ValueBlock(_) | Expr::ConcurrentValue(_) => {}
             Expr::Literal(_)
             | Expr::Identifier(_)
             | Expr::DependencySourceAddress(_)
@@ -3980,9 +4134,21 @@ impl<'a> OwnerChecker<'a> {
         context: &str,
         fallback_span: SourceSpan,
     ) -> bool {
-        if matches!(value, Expr::ObjectLiteral { .. }) {
+        let target_key = self.transparent_value_target_key(value_key);
+        let target_value = transparent_value_target(value);
+        if matches!(target_value, Expr::ObjectLiteral { .. }) {
+            let target_actual = self
+                .facts
+                .get(&target_key)
+                .and_then(|fact| fact.ty.clone())
+                .unwrap_or_else(|| actual.clone());
             return self.materialize_target_typed_object_literal(
-                annotation, value, value_key, actual, expected, context,
+                annotation,
+                target_value,
+                &target_key,
+                &target_actual,
+                expected,
+                context,
             );
         }
         let assignability = ExpressionAssignability::new(
@@ -4092,6 +4258,18 @@ impl<'a> OwnerChecker<'a> {
         }
         self.push_type_mismatch(context, fallback_span, expected, actual);
         false
+    }
+
+    fn transparent_value_target_key(&self, key: &ExpressionKey) -> ExpressionKey {
+        let mut target = key.clone();
+        let mut visited = BTreeSet::new();
+        while visited.insert(target.clone()) {
+            let Some(next) = self.transparent_value_targets.get(&target) else {
+                break;
+            };
+            target = next.clone();
+        }
+        target
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4863,6 +5041,16 @@ fn array_type(item: ResolvedTypeRef) -> ResolvedTypeRef {
 fn object_literal_key_text(key: &crate::shared::ast::ObjectLiteralKey) -> Option<String> {
     match key {
         crate::shared::ast::ObjectLiteralKey::Name(name) => Some(name.clone()),
+    }
+}
+
+fn transparent_value_target(expression: &Expr) -> &Expr {
+    match expression {
+        Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+            transparent_value_target(&value.tail)
+        }
+        Expr::Timeout { value, .. } => transparent_value_target(value),
+        _ => expression,
     }
 }
 

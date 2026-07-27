@@ -259,6 +259,18 @@ fn collect_config_uses_in_block(
                     violations,
                 );
             }
+            Stmt::Timeout { body, .. } | Stmt::Concurrent { body } | Stmt::Serial { body } => {
+                collect_config_uses_in_block(
+                    diagnostic_path,
+                    source_path,
+                    body,
+                    statement_spans.and_then(|spans| spans.blocks.first()),
+                    &const_strings,
+                    uses,
+                    presence_uses,
+                    violations,
+                );
+            }
             Stmt::If {
                 condition,
                 then_block,
@@ -577,6 +589,54 @@ fn collect_config_uses_in_expr(
                 }
             }
         }
+        Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+            collect_config_uses_in_block(
+                diagnostic_path,
+                source_path,
+                &value.body,
+                expr_spans.and_then(|spans| spans.blocks.first()),
+                const_strings,
+                uses,
+                presence_uses,
+                violations,
+            );
+            let mut tail_const_strings = const_strings.clone();
+            for statement in &value.body.statements {
+                if let Stmt::Let {
+                    mutable: false,
+                    name,
+                    value,
+                    ..
+                } = statement
+                {
+                    if let Some(const_value) = const_string_expr(value, &tail_const_strings) {
+                        tail_const_strings.insert(name.clone(), const_value);
+                    } else {
+                        tail_const_strings.remove(name);
+                    }
+                }
+            }
+            collect_config_uses_in_expr(
+                diagnostic_path,
+                source_path,
+                &value.tail,
+                child_span(expr_spans, 0),
+                &tail_const_strings,
+                uses,
+                presence_uses,
+                violations,
+            );
+        }
+        Expr::Timeout { value, .. } => collect_config_uses_in_expr(
+            diagnostic_path,
+            source_path,
+            value,
+            child_span(expr_spans, 0),
+            const_strings,
+            uses,
+            presence_uses,
+            violations,
+        ),
         Expr::Throw { value } => collect_config_uses_in_expr(
             diagnostic_path,
             source_path,

@@ -533,6 +533,15 @@ impl AstVisitorMut for RootRefResolver<'_> {
         if try_resolve_root_expr(expr, self.package_is_bound(), self.index, &mut self.outcome) {
             return;
         }
+        if let Expr::ValueBlock(value) | Expr::ConcurrentValue(value) = expr {
+            let entry_depth = self.package_binding_depth;
+            for statement in &mut value.body.statements {
+                self.visit_stmt(statement);
+            }
+            self.visit_expr(&mut value.tail);
+            self.package_binding_depth = entry_depth;
+            return;
+        }
         if let Expr::DbLeaseClaim(claim) = expr {
             self.visit_type_ref(&mut claim.target);
             self.visit_expr(&mut claim.key);
@@ -730,6 +739,15 @@ impl AstVisitor for RootRefCollector<'_> {
 
     fn visit_expr(&mut self, expr: &Expr) {
         if try_collect_root_expr(expr, self.package_is_bound(), self.index, &mut self.outcome) {
+            return;
+        }
+        if let Expr::ValueBlock(value) | Expr::ConcurrentValue(value) = expr {
+            let entry_depth = self.package_binding_depth;
+            for statement in &value.body.statements {
+                self.visit_stmt(statement);
+            }
+            self.visit_expr(&value.tail);
+            self.package_binding_depth = entry_depth;
             return;
         }
         if let Expr::DbLeaseClaim(claim) = expr {

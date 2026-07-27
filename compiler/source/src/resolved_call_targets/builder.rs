@@ -7,11 +7,8 @@ use crate::{
     parsed_sources::ParsedCompilerSource,
     prelude_registry::prelude_registry,
     shared::{
-        ast::{Expr, ForBinding, FunctionDecl, Pattern, Stmt},
-        ast_utils::{
-            dependency_source_address_parts, expr_path, walk_expr, walk_pattern, walk_stmt,
-            AstVisitor,
-        },
+        ast::{Block, Expr, ForBinding, FunctionDecl, Pattern, Stmt},
+        ast_utils::{dependency_source_address_parts, expr_path, walk_expr, walk_stmt, AstVisitor},
         type_syntax::generic_parts,
     },
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceMap, ExpressionTypeModel,
@@ -61,7 +58,7 @@ struct TargetCollector<'a> {
     expression_types: &'a ExpressionTypeModel,
     type_resolution: &'a TypeResolutionModel,
     dependencies: &'a SourceDependencyAnalysisInput,
-    local_value_names: BTreeSet<String>,
+    value_scope: BTreeSet<String>,
     targets: &'a mut BTreeMap<ExpressionKey, ResolvedCallTarget>,
     errors: &'a mut Vec<String>,
 }
@@ -179,7 +176,7 @@ fn collect_owner(
         expression_types,
         type_resolution,
         dependencies,
-        local_value_names: local_value_names(function),
+        value_scope: initial_value_scope(function),
         targets,
         errors,
     };
@@ -187,6 +184,82 @@ fn collect_owner(
 }
 
 impl AstVisitor for TargetCollector<'_> {
+    fn visit_block(&mut self, block: &Block) {
+        let saved_scope = self.value_scope.clone();
+        for statement in &block.statements {
+            self.visit_stmt(statement);
+        }
+        self.value_scope = saved_scope;
+    }
+
+    fn visit_stmt(&mut self, statement: &Stmt) {
+        match statement {
+            Stmt::CompilerTestEffectRegister { .. } => walk_stmt(self, statement),
+            Stmt::Let { name, value, .. } => {
+                self.visit_expr(value);
+                self.value_scope.insert(name.clone());
+            }
+            Stmt::Assign { target, value } => {
+                self.visit_expr(target);
+                self.visit_expr(value);
+            }
+            Stmt::Timeout { body, .. } | Stmt::Serial { body } => self.visit_block(body),
+            Stmt::Concurrent { body } => self.visit_concurrent_block(body, None),
+            Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                self.visit_expr(condition);
+                self.visit_block(then_block);
+                if let Some(else_block) = else_block {
+                    self.visit_block(else_block);
+                }
+            }
+            Stmt::For {
+                binding,
+                iterable,
+                body,
+            } => {
+                self.visit_expr(iterable);
+                let saved_scope = self.value_scope.clone();
+                match binding {
+                    ForBinding::Item { item } => {
+                        self.value_scope.insert(item.clone());
+                    }
+                    ForBinding::Entry { key, value } => {
+                        self.value_scope.insert(key.clone());
+                        self.value_scope.insert(value.clone());
+                    }
+                }
+                self.visit_block(body);
+                self.value_scope = saved_scope;
+            }
+            Stmt::Match { value, arms } => {
+                self.visit_expr(value);
+                for arm in arms {
+                    let saved_scope = self.value_scope.clone();
+                    collect_pattern_bindings(&arm.pattern, &mut self.value_scope);
+                    self.visit_block(&arm.body);
+                    self.value_scope = saved_scope;
+                }
+            }
+            Stmt::DbTransaction { body } => self.visit_block(body),
+            Stmt::Assert { condition, .. } => self.visit_expr(condition),
+            Stmt::Throw { value }
+            | Stmt::Rethrow { exception: value }
+            | Stmt::Emit(value)
+            | Stmt::Spawn { call: value, .. }
+            | Stmt::Expr(value) => self.visit_expr(value),
+            Stmt::Return(value) => {
+                if let Some(value) = value {
+                    self.visit_expr(value);
+                }
+            }
+            Stmt::Break | Stmt::Continue => {}
+        }
+    }
+
     fn visit_expr(&mut self, expr: &Expr) {
         let key = ExpressionKey::new(self.module_path, self.owner.clone(), self.next_index);
         self.next_index = self
@@ -197,11 +270,58 @@ impl AstVisitor for TargetCollector<'_> {
             let target = self.resolve_call_target(&key, callee);
             self.targets.insert(key, target);
         }
-        walk_expr(self, expr);
+        match expr {
+            Expr::ValueBlock(value) => self.visit_value_block(value),
+            Expr::ConcurrentValue(value) => {
+                self.visit_concurrent_block(&value.body, Some(&value.tail))
+            }
+            Expr::Timeout { value, .. } => self.visit_expr(value),
+            Expr::DbLeaseClaim(claim) => {
+                self.visit_expr(&claim.key);
+                let saved_scope = self.value_scope.clone();
+                if let Some(binding) = &claim.binding {
+                    self.value_scope.insert(binding.clone());
+                }
+                self.visit_block(&claim.body);
+                self.value_scope = saved_scope;
+            }
+            _ => walk_expr(self, expr),
+        }
     }
 }
 
 impl TargetCollector<'_> {
+    fn visit_value_block(&mut self, value: &crate::shared::ast::ValueBlock) {
+        let saved_scope = self.value_scope.clone();
+        for statement in &value.body.statements {
+            self.visit_stmt(statement);
+        }
+        self.visit_expr(&value.tail);
+        self.value_scope = saved_scope;
+    }
+
+    fn visit_concurrent_block(&mut self, body: &Block, tail: Option<&Expr>) {
+        let saved_scope = self.value_scope.clone();
+        let mut sibling_scope = saved_scope.clone();
+        for statement in &body.statements {
+            self.value_scope = sibling_scope.clone();
+            self.visit_stmt(statement);
+            if let Stmt::Let {
+                mutable: false,
+                name,
+                ..
+            } = statement
+            {
+                sibling_scope.insert(name.clone());
+            }
+        }
+        if let Some(tail) = tail {
+            self.value_scope = sibling_scope;
+            self.visit_expr(tail);
+        }
+        self.value_scope = saved_scope;
+    }
+
     fn resolve_call_target(
         &mut self,
         call_key: &ExpressionKey,
@@ -212,7 +332,7 @@ impl TargetCollector<'_> {
             let path_root = dependency_source_address_parts(&path)
                 .map(|(dependency_ref, _)| dependency_ref)
                 .unwrap_or_else(|| path.split('.').next().unwrap_or(&path));
-            let path_root_is_local = self.local_value_names.contains(path_root);
+            let path_root_is_local = self.value_scope.contains(path_root);
             if !path_root_is_local {
                 if let Some(intrinsic) = exact_config_intrinsic(callee) {
                     return ResolvedCallTarget::ConfigIntrinsic { intrinsic };
@@ -578,66 +698,39 @@ fn nominal_root(name: &str) -> String {
         .unwrap_or_else(|| name.trim().to_string())
 }
 
-fn local_value_names(function: &FunctionDecl) -> BTreeSet<String> {
-    struct Collector(BTreeSet<String>);
-
-    impl AstVisitor for Collector {
-        fn visit_expr(&mut self, expression: &Expr) {
-            if let Expr::DbLeaseClaim(claim) = expression {
-                if let Some(binding) = &claim.binding {
-                    self.0.insert(binding.clone());
-                }
-            }
-            walk_expr(self, expression);
-        }
-
-        fn visit_stmt(&mut self, statement: &Stmt) {
-            match statement {
-                Stmt::Let { name, .. } => {
-                    self.0.insert(name.clone());
-                }
-                Stmt::For { binding, .. } => match binding {
-                    ForBinding::Item { item } => {
-                        self.0.insert(item.clone());
-                    }
-                    ForBinding::Entry { key, value } => {
-                        self.0.insert(key.clone());
-                        self.0.insert(value.clone());
-                    }
-                },
-                _ => {}
-            }
-            walk_stmt(self, statement);
-        }
-
-        fn visit_pattern(&mut self, pattern: &Pattern) {
-            match pattern {
-                Pattern::Binding(name) => {
-                    self.0.insert(name.clone());
-                }
-                Pattern::Nominal { fields, .. } | Pattern::Record { fields } => {
-                    for field in fields.iter().filter(|field| field.pattern.is_none()) {
-                        self.0.insert(field.name.clone());
-                    }
-                }
-                Pattern::Or(_) | Pattern::Wildcard | Pattern::Literal(_) => {}
-            }
-            walk_pattern(self, pattern);
-        }
-    }
-
-    let mut collector = Collector(
-        function
-            .params
-            .iter()
-            .map(|parameter| parameter.name.clone())
-            .collect(),
-    );
+fn initial_value_scope(function: &FunctionDecl) -> BTreeSet<String> {
+    let mut scope = function
+        .params
+        .iter()
+        .map(|parameter| parameter.name.clone())
+        .collect::<BTreeSet<_>>();
     if function.implicit_self.is_some() {
-        collector.0.insert("self".to_string());
+        scope.insert("self".to_string());
     }
-    collector.visit_block(&function.body);
-    collector.0
+    scope
+}
+
+fn collect_pattern_bindings(pattern: &Pattern, scope: &mut BTreeSet<String>) {
+    match pattern {
+        Pattern::Binding(name) => {
+            scope.insert(name.clone());
+        }
+        Pattern::Nominal { fields, .. } | Pattern::Record { fields } => {
+            for field in fields {
+                if let Some(pattern) = &field.pattern {
+                    collect_pattern_bindings(pattern, scope);
+                } else {
+                    scope.insert(field.name.clone());
+                }
+            }
+        }
+        Pattern::Or(patterns) => {
+            for pattern in patterns {
+                collect_pattern_bindings(pattern, scope);
+            }
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => {}
+    }
 }
 
 fn unknown(reason: UnknownCallTargetReason) -> ResolvedCallTarget {

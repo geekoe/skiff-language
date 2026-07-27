@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use super::{
     object_literal_key_text,
     object_materialization::{ObjectMaterializationKind, ObjectMaterializationPlan},
-    resolved_type_from_ir, span_label, type_ir_is_null, type_ref_debug_text, ExpressionKey,
-    ExpressionSourceMap, ResolvedTypeRef, TypeResolutionContext, TypeResolutionModel,
+    resolved_type_from_ir, span_label, transparent_value_target, type_ir_is_null,
+    type_ref_debug_text, ExpressionKey, ExpressionSourceMap, ResolvedTypeRef,
+    TypeResolutionContext, TypeResolutionModel,
 };
 use skiff_artifact_model::{
     FunctionTypeParamIr, PackageRefIr, PackageTypeRef, TypeDescriptorIr, TypeRefIr,
@@ -77,6 +78,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         expected: &ResolvedTypeRef,
         actual_projected: Option<&PackageTypeRef>,
     ) -> Result<bool, String> {
+        let value = transparent_value_target(value);
         if self.package_json_context {
             if let (Some(actual), Some(dependencies)) = (actual_projected, self.dependency_analysis)
             {

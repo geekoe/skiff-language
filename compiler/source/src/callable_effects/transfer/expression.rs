@@ -139,6 +139,22 @@ impl Evaluator<'_, '_> {
                 }
                 self.allocate_fresh_container(key.preorder_index(), value)
             }
+            Expr::ValueBlock(value) => {
+                let mut nested = env.clone();
+                self.eval_block(&value.body, &mut nested);
+                let result = self.eval_expr(&value.tail, &mut nested);
+                let visible = env.keys().cloned().collect::<Vec<_>>();
+                for name in visible {
+                    if let Some(value) = nested.get(&name) {
+                        env.insert(name, value.clone());
+                    }
+                }
+                result
+            }
+            Expr::ConcurrentValue(value) => self
+                .eval_concurrent_block(&value.body, Some(&value.tail), env)
+                .unwrap_or_else(|| AbstractValue::unknown(reference)),
+            Expr::Timeout { value, .. } => self.eval_expr(value, env),
             Expr::Throw { value } => {
                 let value = self.eval_expr(value, env);
                 self.state.record_wire_detached_throw(&value);

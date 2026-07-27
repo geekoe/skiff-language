@@ -54,6 +54,15 @@ impl Evaluator<'_, '_> {
                     self.mark_unsupported_heap_store();
                 }
             }
+            Stmt::Timeout { body, .. } => {
+                self.eval_scoped_block(body, env);
+            }
+            Stmt::Concurrent { body } => {
+                self.eval_concurrent_block(body, None, env);
+            }
+            Stmt::Serial { body } => {
+                self.eval_scoped_block(body, env);
+            }
             Stmt::If {
                 condition,
                 then_block,
@@ -164,6 +173,55 @@ impl Evaluator<'_, '_> {
         // in the body and every explicit return/throw/escape lane were already
         // transferred above. The join environment is the loop fixed point for
         // this finite provenance lattice, so retain those exact facts.
+    }
+
+    pub(super) fn eval_scoped_block(
+        &mut self,
+        block: &crate::shared::ast::Block,
+        env: &mut Environment,
+    ) {
+        let visible = env.keys().cloned().collect::<Vec<_>>();
+        let mut nested = env.clone();
+        self.eval_block(block, &mut nested);
+        for name in visible {
+            if let Some(value) = nested.get(&name) {
+                env.insert(name, value.clone());
+            }
+        }
+    }
+
+    pub(super) fn eval_concurrent_block(
+        &mut self,
+        body: &crate::shared::ast::Block,
+        tail: Option<&crate::shared::ast::Expr>,
+        env: &mut Environment,
+    ) -> Option<AbstractValue> {
+        let mut sibling_env = env.clone();
+        for statement in &body.statements {
+            match statement {
+                Stmt::Let {
+                    mutable: false,
+                    name,
+                    value,
+                    ..
+                } => {
+                    let value = self.eval_expr(value, &mut sibling_env);
+                    sibling_env.insert(name.clone(), value);
+                }
+                Stmt::Serial { body } => {
+                    let mut lane_env = sibling_env.clone();
+                    self.eval_block(body, &mut lane_env);
+                }
+                _ => {
+                    let mut lane_env = sibling_env.clone();
+                    self.eval_stmt(statement, &mut lane_env);
+                }
+            }
+        }
+        tail.map(|tail| {
+            let mut tail_env = sibling_env;
+            self.eval_expr(tail, &mut tail_env)
+        })
     }
 
     fn mark_unsupported_heap_store(&mut self) {

@@ -212,6 +212,13 @@ impl OwnerCollector<'_> {
                     }
                 }
             }
+            Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+                self.visit_block(&value.body, next_block_child(&mut blocks, "value body")?)?;
+                self.visit_expr(&value.tail, next_expr_child(&mut children, "value tail")?)?;
+            }
+            Expr::Timeout { value, .. } => {
+                self.visit_expr(value, next_expr_child(&mut children, "timeout value")?)?;
+            }
             Expr::Throw { value } => {
                 self.visit_expr(value, next_expr_child(&mut children, "throw value")?)?
             }
@@ -344,6 +351,15 @@ impl OwnerCollector<'_> {
             Stmt::Assign { target, value } => {
                 self.visit_expr(target, next_stmt_expr(&mut expressions, "assign target")?)?;
                 self.visit_expr(value, next_stmt_expr(&mut expressions, "assign value")?)?;
+            }
+            Stmt::Timeout { body, .. } => {
+                self.visit_block(body, next_stmt_block(&mut blocks, "timeout body")?)?;
+            }
+            Stmt::Concurrent { body } => {
+                self.visit_block(body, next_stmt_block(&mut blocks, "concurrent body")?)?;
+            }
+            Stmt::Serial { body } => {
+                self.visit_block(body, next_stmt_block(&mut blocks, "serial body")?)?;
             }
             Stmt::If {
                 condition,
@@ -694,6 +710,9 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::Record { .. } => "record",
         Expr::ObjectLiteral { .. } => "object literal",
         Expr::Patch { .. } => "patch",
+        Expr::ValueBlock(_) => "value block",
+        Expr::ConcurrentValue(_) => "concurrent value",
+        Expr::Timeout { .. } => "timeout",
         Expr::Throw { .. } => "throw",
         Expr::Rethrow { .. } => "rethrow",
         Expr::Catch { .. } => "catch",

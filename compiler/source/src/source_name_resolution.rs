@@ -20,7 +20,7 @@ use crate::{
         EntityNamespace, PublicationEntityTable, ResolvedPath,
     },
     shared::ast::{Block, Expr, ForBinding, Pattern, SourceFile, Stmt},
-    shared::ast_utils::{expr_contains, expr_path},
+    shared::ast_utils::{expr_path, walk_expr, walk_stmt, AstVisitor},
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -146,39 +146,90 @@ pub fn build_source_name_resolution_file_facts(
             top_level_names.type_names(),
             input.current_publication_entities,
         );
-        collect_resolved_paths_in_expr(&constant.value, &env, &mut resolved_paths);
+        ResolvedPathCollector::new(&env, BTreeSet::new(), &mut resolved_paths)
+            .visit_expr(&constant.value);
     }
     for function in &input.ast.functions {
-        let mut names = top_level_expression_names.clone();
-        names.extend(function.params.iter().map(|param| param.name.clone()));
-        collect_local_bindings_in_block(&function.body, &mut names);
+        let mut local_scope = function
+            .params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<BTreeSet<_>>();
+        if function.implicit_self.is_some() {
+            local_scope.insert("self".to_string());
+        }
         let env = build_top_level_env(
             input.module_roots,
             input.package_aliases,
             input.service_aliases,
-            &names,
+            &top_level_expression_names,
             top_level_names.type_names(),
             input.current_publication_entities,
         );
-        collect_resolved_paths_in_block(&function.body, &env, &mut resolved_paths);
+        ResolvedPathCollector::new(&env, local_scope, &mut resolved_paths)
+            .visit_block(&function.body);
     }
     for implementation in &input.ast.impls {
         for method in &implementation.method_bodies {
-            let mut names = top_level_expression_names.clone();
-            names.extend(method.params.iter().map(|param| param.name.clone()));
+            let mut local_scope = method
+                .params
+                .iter()
+                .map(|param| param.name.clone())
+                .collect::<BTreeSet<_>>();
             if method.implicit_self.is_some() {
-                names.insert("self".to_string());
+                local_scope.insert("self".to_string());
             }
-            collect_local_bindings_in_block(&method.body, &mut names);
             let env = build_top_level_env(
                 input.module_roots,
                 input.package_aliases,
                 input.service_aliases,
-                &names,
+                &top_level_expression_names,
                 top_level_names.type_names(),
                 input.current_publication_entities,
             );
-            collect_resolved_paths_in_block(&method.body, &env, &mut resolved_paths);
+            ResolvedPathCollector::new(&env, local_scope, &mut resolved_paths)
+                .visit_block(&method.body);
+        }
+    }
+    for test in &input.ast.tests {
+        let env = build_top_level_env(
+            input.module_roots,
+            input.package_aliases,
+            input.service_aliases,
+            &top_level_expression_names,
+            top_level_names.type_names(),
+            input.current_publication_entities,
+        );
+        ResolvedPathCollector::new(&env, BTreeSet::new(), &mut resolved_paths)
+            .visit_block(&test.body);
+    }
+    for db in &input.ast.dbs {
+        let db_fields = input
+            .ast
+            .types
+            .iter()
+            .find(|declaration| declaration.name == db.name)
+            .map(|declaration| {
+                declaration
+                    .fields
+                    .iter()
+                    .map(|field| field.name.clone())
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let env = build_top_level_env(
+            input.module_roots,
+            input.package_aliases,
+            input.service_aliases,
+            &top_level_expression_names,
+            top_level_names.type_names(),
+            input.current_publication_entities,
+        );
+        for index in &db.indexes {
+            if let Some(where_expr) = &index.where_expr {
+                ResolvedPathCollector::new(&env, db_fields.clone(), &mut resolved_paths)
+                    .visit_expr(where_expr);
+            }
         }
     }
 
@@ -339,94 +390,7 @@ fn top_level_namespace_facts(ast: &SourceFile) -> NamespaceNameFacts {
     facts
 }
 
-fn collect_local_bindings_in_block(block: &Block, names: &mut BTreeSet<String>) {
-    for stmt in &block.statements {
-        match stmt {
-            Stmt::CompilerTestEffectRegister { .. } => {
-                for expression in crate::shared::ast_utils::compiler_test_effect_expressions(stmt)
-                    .expect("matched compiler test effect")
-                {
-                    collect_local_bindings_in_expr(expression, names);
-                }
-            }
-            Stmt::Let { name, value, .. } => {
-                names.insert(name.clone());
-                collect_local_bindings_in_expr(value, names);
-            }
-            Stmt::Assign { target, value } => {
-                collect_local_bindings_in_expr(target, names);
-                collect_local_bindings_in_expr(value, names);
-            }
-            Stmt::For {
-                binding,
-                iterable,
-                body,
-            } => {
-                match binding {
-                    ForBinding::Item { item } => {
-                        names.insert(item.clone());
-                    }
-                    ForBinding::Entry { key, value } => {
-                        names.insert(key.clone());
-                        names.insert(value.clone());
-                    }
-                }
-                collect_local_bindings_in_expr(iterable, names);
-                collect_local_bindings_in_block(body, names);
-            }
-            Stmt::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                collect_local_bindings_in_expr(condition, names);
-                collect_local_bindings_in_block(then_block, names);
-                if let Some(else_block) = else_block {
-                    collect_local_bindings_in_block(else_block, names);
-                }
-            }
-            Stmt::Match { value, arms } => {
-                collect_local_bindings_in_expr(value, names);
-                for arm in arms {
-                    collect_local_bindings_in_pattern(&arm.pattern, names);
-                    collect_local_bindings_in_block(&arm.body, names);
-                }
-            }
-            Stmt::DbTransaction { body } => collect_local_bindings_in_block(body, names),
-            Stmt::Assert { condition, .. } => collect_local_bindings_in_expr(condition, names),
-            Stmt::Emit(value) | Stmt::Expr(value) => collect_local_bindings_in_expr(value, names),
-            Stmt::Return(value) => {
-                if let Some(value) = value {
-                    collect_local_bindings_in_expr(value, names);
-                }
-            }
-            Stmt::Spawn { call } => collect_local_bindings_in_expr(call, names),
-            Stmt::Throw { value } => collect_local_bindings_in_expr(value, names),
-            Stmt::Rethrow { exception } => collect_local_bindings_in_expr(exception, names),
-            Stmt::Break | Stmt::Continue => {}
-        }
-    }
-}
-
-fn collect_local_bindings_in_expr(expr: &Expr, names: &mut BTreeSet<String>) {
-    expr_contains(expr, |candidate| {
-        match candidate {
-            Expr::DbTransaction(transaction) => {
-                collect_local_bindings_in_block(&transaction.body, names);
-            }
-            Expr::DbLeaseClaim(claim) => {
-                if let Some(binding) = &claim.binding {
-                    names.insert(binding.clone());
-                }
-                collect_local_bindings_in_block(&claim.body, names);
-            }
-            _ => {}
-        }
-        false
-    });
-}
-
-fn collect_local_bindings_in_pattern(pattern: &Pattern, names: &mut BTreeSet<String>) {
+fn collect_pattern_bindings(pattern: &Pattern, names: &mut BTreeSet<String>) {
     match pattern {
         Pattern::Binding(name) => {
             names.insert(name.clone());
@@ -434,7 +398,7 @@ fn collect_local_bindings_in_pattern(pattern: &Pattern, names: &mut BTreeSet<Str
         Pattern::Nominal { fields, .. } | Pattern::Record { fields } => {
             for field in fields {
                 if let Some(pattern) = &field.pattern {
-                    collect_local_bindings_in_pattern(pattern, names);
+                    collect_pattern_bindings(pattern, names);
                 } else {
                     names.insert(field.name.clone());
                 }
@@ -442,101 +406,177 @@ fn collect_local_bindings_in_pattern(pattern: &Pattern, names: &mut BTreeSet<Str
         }
         Pattern::Or(patterns) => {
             for pattern in patterns {
-                collect_local_bindings_in_pattern(pattern, names);
+                collect_pattern_bindings(pattern, names);
             }
         }
         Pattern::Wildcard | Pattern::Literal(_) => {}
     }
 }
 
-fn collect_resolved_paths_in_block(
-    block: &Block,
-    env: &ResolutionEnv<'_>,
-    resolved_paths: &mut Vec<SourceResolvedPathFact>,
-) {
-    for stmt in &block.statements {
-        match stmt {
-            Stmt::CompilerTestEffectRegister { .. } => {
-                for expression in crate::shared::ast_utils::compiler_test_effect_expressions(stmt)
-                    .expect("matched compiler test effect")
-                {
-                    collect_resolved_paths_in_expr(expression, env, resolved_paths);
-                }
+struct ResolvedPathCollector<'a, 'env> {
+    env: &'a ResolutionEnv<'env>,
+    scope: BTreeSet<String>,
+    resolved_paths: &'a mut Vec<SourceResolvedPathFact>,
+}
+
+impl<'a, 'env> ResolvedPathCollector<'a, 'env> {
+    fn new(
+        env: &'a ResolutionEnv<'env>,
+        scope: BTreeSet<String>,
+        resolved_paths: &'a mut Vec<SourceResolvedPathFact>,
+    ) -> Self {
+        Self {
+            env,
+            scope,
+            resolved_paths,
+        }
+    }
+
+    fn visit_value_block(&mut self, value: &crate::shared::ast::ValueBlock) {
+        let saved_scope = self.scope.clone();
+        for statement in &value.body.statements {
+            self.visit_stmt(statement);
+        }
+        self.visit_expr(&value.tail);
+        self.scope = saved_scope;
+    }
+
+    fn visit_concurrent_block(&mut self, body: &Block, tail: Option<&Expr>) {
+        let saved_scope = self.scope.clone();
+        let mut sibling_scope = saved_scope.clone();
+        for statement in &body.statements {
+            self.scope = sibling_scope.clone();
+            self.visit_stmt(statement);
+            if let Stmt::Let {
+                mutable: false,
+                name,
+                ..
+            } = statement
+            {
+                sibling_scope.insert(name.clone());
             }
-            Stmt::Let { value, .. } => collect_resolved_paths_in_expr(value, env, resolved_paths),
+        }
+        if let Some(tail) = tail {
+            self.scope = sibling_scope;
+            self.visit_expr(tail);
+        }
+        self.scope = saved_scope;
+    }
+}
+
+impl AstVisitor for ResolvedPathCollector<'_, '_> {
+    fn visit_block(&mut self, block: &Block) {
+        let saved_scope = self.scope.clone();
+        for statement in &block.statements {
+            self.visit_stmt(statement);
+        }
+        self.scope = saved_scope;
+    }
+
+    fn visit_stmt(&mut self, statement: &Stmt) {
+        match statement {
+            Stmt::CompilerTestEffectRegister { .. } => walk_stmt(self, statement),
+            Stmt::Let { name, value, .. } => {
+                self.visit_expr(value);
+                self.scope.insert(name.clone());
+            }
             Stmt::Assign { target, value } => {
-                collect_resolved_paths_in_expr(target, env, resolved_paths);
-                collect_resolved_paths_in_expr(value, env, resolved_paths);
+                self.visit_expr(target);
+                self.visit_expr(value);
             }
+            Stmt::Timeout { body, .. } | Stmt::Serial { body } => self.visit_block(body),
+            Stmt::Concurrent { body } => self.visit_concurrent_block(body, None),
             Stmt::If {
                 condition,
                 then_block,
                 else_block,
             } => {
-                collect_resolved_paths_in_expr(condition, env, resolved_paths);
-                collect_resolved_paths_in_block(then_block, env, resolved_paths);
+                self.visit_expr(condition);
+                self.visit_block(then_block);
                 if let Some(else_block) = else_block {
-                    collect_resolved_paths_in_block(else_block, env, resolved_paths);
+                    self.visit_block(else_block);
                 }
             }
-            Stmt::For { iterable, body, .. } => {
-                collect_resolved_paths_in_expr(iterable, env, resolved_paths);
-                collect_resolved_paths_in_block(body, env, resolved_paths);
+            Stmt::For {
+                binding,
+                iterable,
+                body,
+            } => {
+                self.visit_expr(iterable);
+                let saved_scope = self.scope.clone();
+                match binding {
+                    ForBinding::Item { item } => {
+                        self.scope.insert(item.clone());
+                    }
+                    ForBinding::Entry { key, value } => {
+                        self.scope.insert(key.clone());
+                        self.scope.insert(value.clone());
+                    }
+                }
+                self.visit_block(body);
+                self.scope = saved_scope;
             }
             Stmt::Match { value, arms } => {
-                collect_resolved_paths_in_expr(value, env, resolved_paths);
+                self.visit_expr(value);
                 for arm in arms {
-                    collect_resolved_paths_in_block(&arm.body, env, resolved_paths);
+                    let saved_scope = self.scope.clone();
+                    collect_pattern_bindings(&arm.pattern, &mut self.scope);
+                    self.visit_block(&arm.body);
+                    self.scope = saved_scope;
                 }
             }
-            Stmt::DbTransaction { body } => {
-                collect_resolved_paths_in_block(body, env, resolved_paths);
-            }
-            Stmt::Assert { condition, .. } => {
-                collect_resolved_paths_in_expr(condition, env, resolved_paths);
-            }
-            Stmt::Emit(value) | Stmt::Expr(value) => {
-                collect_resolved_paths_in_expr(value, env, resolved_paths);
-            }
+            Stmt::DbTransaction { body } => self.visit_block(body),
+            Stmt::Assert { condition, .. } => self.visit_expr(condition),
+            Stmt::Throw { value }
+            | Stmt::Rethrow { exception: value }
+            | Stmt::Emit(value)
+            | Stmt::Spawn { call: value, .. }
+            | Stmt::Expr(value) => self.visit_expr(value),
             Stmt::Return(value) => {
                 if let Some(value) = value {
-                    collect_resolved_paths_in_expr(value, env, resolved_paths);
+                    self.visit_expr(value);
                 }
-            }
-            Stmt::Throw { value } => {
-                collect_resolved_paths_in_expr(value, env, resolved_paths);
-            }
-            Stmt::Rethrow { exception } => {
-                collect_resolved_paths_in_expr(exception, env, resolved_paths);
-            }
-            Stmt::Spawn { call } => {
-                collect_resolved_paths_in_expr(call, env, resolved_paths);
             }
             Stmt::Break | Stmt::Continue => {}
         }
     }
-}
 
-fn collect_resolved_paths_in_expr(
-    expr: &Expr,
-    env: &ResolutionEnv<'_>,
-    resolved_paths: &mut Vec<SourceResolvedPathFact>,
-) {
-    expr_contains(expr, |candidate| {
-        let Some(expr_path) = expr_path(candidate).filter(|p| p.contains('.') && !p.contains('/'))
-        else {
-            return false;
-        };
-        let resolved_path =
-            crate::entity::resolve::resolve_dotted_path(env, &expr_path, EntityNamespace::Value);
-        let unresolved = resolved_path.is_none();
-        resolved_paths.push(SourceResolvedPathFact::new(
-            expr_path,
-            EntityNamespace::Value,
-            resolved_path,
-        ));
-        unresolved
-    });
+    fn visit_expr(&mut self, expression: &Expr) {
+        if let Some(path) =
+            expr_path(expression).filter(|path| path.contains('.') && !path.contains('/'))
+        {
+            let root = path.split('.').next().unwrap_or(path.as_str());
+            if !self.scope.contains(root) {
+                let resolved_path = crate::entity::resolve::resolve_dotted_path(
+                    self.env,
+                    &path,
+                    EntityNamespace::Value,
+                );
+                self.resolved_paths.push(SourceResolvedPathFact::new(
+                    path,
+                    EntityNamespace::Value,
+                    resolved_path,
+                ));
+            }
+        }
+        match expression {
+            Expr::ValueBlock(value) => self.visit_value_block(value),
+            Expr::ConcurrentValue(value) => {
+                self.visit_concurrent_block(&value.body, Some(&value.tail))
+            }
+            Expr::Timeout { value, .. } => self.visit_expr(value),
+            Expr::DbLeaseClaim(claim) => {
+                self.visit_expr(&claim.key);
+                let saved_scope = self.scope.clone();
+                if let Some(binding) = &claim.binding {
+                    self.scope.insert(binding.clone());
+                }
+                self.visit_block(&claim.body);
+                self.scope = saved_scope;
+            }
+            _ => walk_expr(self, expression),
+        }
+    }
 }
 
 /// 判断 root 是否为 builtin 点号表达式 root(兼容旧 public API)。

@@ -64,6 +64,16 @@ pub(super) fn collect_package_block_std_type_violations(
                     violations,
                 );
             }
+            Stmt::Timeout { body, .. } | Stmt::Concurrent { body } | Stmt::Serial { body } => {
+                collect_package_block_std_type_violations(
+                    path,
+                    body,
+                    imported_std_roots,
+                    dependency_roots,
+                    package_type_names,
+                    violations,
+                );
+            }
             Stmt::If {
                 condition,
                 then_block,

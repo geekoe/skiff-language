@@ -224,6 +224,9 @@ fn collect_call_targets_in_stmt(
             collect_call_targets_in_expr(target, known, targets);
             collect_call_targets_in_expr(value, known, targets);
         }
+        Stmt::Timeout { body, .. }
+        | Stmt::Concurrent { body }
+        | Stmt::Serial { body } => collect_call_targets_in_block(body, known, targets),
         Stmt::If {
             condition,
             then_block,
@@ -305,6 +308,12 @@ fn collect_call_targets_in_expr(
                 }
             }
         }
+        Expr::InterfaceBox { value, .. } => collect_call_targets_in_expr(value, known, targets),
+        Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+            collect_call_targets_in_block(&value.body, known, targets);
+            collect_call_targets_in_expr(&value.tail, known, targets);
+        }
+        Expr::Timeout { value, .. } => collect_call_targets_in_expr(value, known, targets),
         Expr::Throw { value } => collect_call_targets_in_expr(value, known, targets),
         Expr::Rethrow { exception } => collect_call_targets_in_expr(exception, known, targets),
         Expr::Catch { try_expr, .. } => collect_call_targets_in_expr(try_expr, known, targets),
@@ -315,7 +324,12 @@ fn collect_call_targets_in_expr(
         Expr::DbTransaction(transaction) => {
             collect_call_targets_in_block(&transaction.body, known, targets)
         }
-        Expr::Literal(_) | Expr::Identifier(_) => {}
+        Expr::DbLeaseClaim(claim) => {
+            collect_call_targets_in_expr(&claim.key, known, targets);
+            collect_call_targets_in_block(&claim.body, known, targets);
+        }
+        Expr::DbLeaseRead(read) => collect_call_targets_in_expr(&read.key, known, targets),
+        Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
     }
 }
 
