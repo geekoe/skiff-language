@@ -72,6 +72,13 @@ pub(super) struct WebSocketGenerationAcquireReceipt {
     receiver: oneshot::Receiver<std::result::Result<(), String>>,
 }
 
+#[derive(Debug)]
+#[allow(dead_code)] // Consumed by the downstream Host dispatch leaf after this pin-owner checkpoint.
+pub(super) struct ResolvedWebSocketJsonRpcExecution {
+    pub(super) target: RuntimeAssemblyWebSocketJsonRpcTarget,
+    pub(super) method_route: ActiveAssemblyRoute,
+}
+
 impl WebSocketGenerationAcquireReceipt {
     pub(super) async fn wait(self) -> Result<()> {
         match self.receiver.await {
@@ -417,8 +424,8 @@ impl WebSocketGenerationRegistry {
         Ok(pin.route.clone())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn websocket_jsonrpc_target(
+    #[allow(dead_code, clippy::too_many_arguments)] // Downstream Host dispatch consumes this seam.
+    pub(super) fn websocket_jsonrpc_execution_route(
         &self,
         router_session_id: &str,
         connection_id: &str,
@@ -430,7 +437,7 @@ impl WebSocketGenerationRegistry {
         method: &str,
         gateway_entry_identity: &GatewayEntryIdentity,
         profile: GatewayWebSocketRpcProfile,
-    ) -> Result<RuntimeAssemblyWebSocketJsonRpcTarget> {
+    ) -> Result<ResolvedWebSocketJsonRpcExecution> {
         let physical_route = self.acquired_physical_route(
             router_session_id,
             connection_id,
@@ -451,12 +458,46 @@ impl WebSocketGenerationRegistry {
                 target: connection_id.to_string(),
                 message: error.to_string(),
             })?;
-        method_route
+        let target = method_route
             .websocket_jsonrpc_target(&physical_route)
             .map_err(|error| RuntimeError::Protocol {
                 target: connection_id.to_string(),
                 message: error.to_string(),
-            })
+            })?;
+        Ok(ResolvedWebSocketJsonRpcExecution {
+            target,
+            method_route,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn websocket_jsonrpc_target(
+        &self,
+        router_session_id: &str,
+        connection_id: &str,
+        assembly_identity: &AssemblyIdentity,
+        assembly_generation: u64,
+        websocket_entry_id: &WebSocketEntryId,
+        host: &str,
+        path: &str,
+        method: &str,
+        gateway_entry_identity: &GatewayEntryIdentity,
+        profile: GatewayWebSocketRpcProfile,
+    ) -> Result<RuntimeAssemblyWebSocketJsonRpcTarget> {
+        Ok(self
+            .websocket_jsonrpc_execution_route(
+                router_session_id,
+                connection_id,
+                assembly_identity,
+                assembly_generation,
+                websocket_entry_id,
+                host,
+                path,
+                method,
+                gateway_entry_identity,
+                profile,
+            )?
+            .target)
     }
 
     pub(super) fn handle_release(

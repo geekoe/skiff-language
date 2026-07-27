@@ -10,10 +10,11 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageSchemaIndex,
-    PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    AssemblyActivationServiceDb, FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef,
+    PackageSchemaIndex, PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
     PackageSchemaTypeRecordRef, PackageTypeRef, PublicationResourceRef, RuntimeAssembly,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, TypeRefIr,
+    RuntimeAssemblyRef, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, TypeRefIr,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -22,6 +23,7 @@ use skiff_compiler::{
 use skiff_deployment::{assembly::resolve_runtime_assembly, storage::CanonicalArtifactStore};
 use skiff_runtime_loader::{
     FilesystemRuntimeAssemblyContentResolver, RuntimeAssemblyContentResolver,
+    RuntimeAssemblyRecordResolver,
 };
 use skiff_test_runner::canonical_std_seed::seed_canonical_std;
 
@@ -34,6 +36,8 @@ const VERSION: &str = "1.0.0";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static FIXTURE: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 static PATH_ONLY_FIXTURE: OnceLock<CompiledGatewayFixture> = OnceLock::new();
+static PINNED_ROUTE_FIXTURE_A: OnceLock<CompiledGatewayFixture> = OnceLock::new();
+static PINNED_ROUTE_FIXTURE_B: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 
 pub(super) async fn admitted_gateway_host() -> (RuntimeHost, HashMap<String, ActiveAssemblyRoute>) {
     let fixture = fixture();
@@ -137,31 +141,124 @@ pub(crate) async fn reloaded_websocket_gateway_host() -> (
     ActiveAssemblyRoute,
     ActiveAssemblyRoute,
 ) {
-    let fixture = fixture();
-    let resolver = fixture.resolver();
-    let (physical_selector, method_selector) = websocket_selectors(&fixture.assembly);
-    let host = super::super::test_host();
+    let fixture_a = pinned_route_fixture(false);
+    let fixture_b = pinned_route_fixture(true);
+    let resolver_a = fixture_a.resolver();
+    let resolver_b = fixture_b.resolver();
+    let (physical_selector_a, method_selector_a) = websocket_selectors(&fixture_a.assembly);
+    let (physical_selector_b, method_selector_b) = websocket_selectors(&fixture_b.assembly);
+    assert_eq!(physical_selector_a, physical_selector_b);
+    assert_eq!(method_selector_a, method_selector_b);
+    let host = pinned_route_test_host();
+    let service_db = AssemblyActivationServiceDb {
+        mongo_url: "mongodb://pinned-route.invalid".to_string(),
+    };
+    let assembly_a = skiff_artifact_identity::runtime_assembly_ref(&fixture_a.assembly).unwrap();
+    let assembly_b = skiff_artifact_identity::runtime_assembly_ref(&fixture_b.assembly).unwrap();
     host.assembly_admission
-        .admit(Arc::clone(&fixture.assembly), &resolver)
+        .recover_committed(
+            "pinned-route",
+            1,
+            &assembly_a,
+            &resolver_a,
+            Some(&service_db),
+        )
         .await
         .expect("WebSocket generation one should admit");
     let physical_a = host
-        .lookup_active_assembly_request_route(&physical_selector)
+        .lookup_active_assembly_request_route(&physical_selector_a)
         .expect("generation one physical WebSocket route");
     let method_a = host
-        .lookup_active_assembly_request_route(&method_selector)
+        .lookup_active_assembly_request_route(&method_selector_a)
         .expect("generation one WebSocket method route");
     host.assembly_admission
-        .admit(Arc::clone(&fixture.assembly), &resolver)
+        .recover_committed(
+            "pinned-route",
+            2,
+            &assembly_b,
+            &resolver_b,
+            Some(&service_db),
+        )
         .await
         .expect("WebSocket generation two should admit");
     let physical_b = host
-        .lookup_active_assembly_request_route(&physical_selector)
+        .lookup_active_assembly_request_route(&physical_selector_b)
         .expect("generation two physical WebSocket route");
     let method_b = host
-        .lookup_active_assembly_request_route(&method_selector)
+        .lookup_active_assembly_request_route(&method_selector_b)
         .expect("generation two WebSocket method route");
     (host, physical_a, method_a, physical_b, method_b)
+}
+
+#[derive(Clone, Default)]
+struct PinnedRouteDbProvider {
+    next_source: Arc<AtomicU64>,
+}
+
+impl skiff_runtime_capability_context::DbProviderFactory for PinnedRouteDbProvider {
+    fn build(
+        &self,
+        _input: skiff_runtime_capability_context::DbProviderBuildInput,
+    ) -> skiff_runtime_capability_context::DbCapabilityResult<
+        skiff_runtime_capability_context::DbCapabilitySource,
+    > {
+        let sequence = self.next_source.fetch_add(1, Ordering::SeqCst) + 1;
+        Ok(skiff_runtime_capability_context::DbCapabilitySource::new(
+            Some(PinnedRouteDbFactory {
+                marker: format!("pinned-route-db-source-{sequence}"),
+            }),
+        ))
+    }
+}
+
+#[derive(Clone)]
+struct PinnedRouteDbFactory {
+    marker: String,
+}
+
+impl skiff_runtime_capability_context::DbCapabilityFactory for PinnedRouteDbFactory {
+    fn context_for_request(
+        &self,
+        _owner: String,
+        _request_id: String,
+    ) -> skiff_runtime_capability_context::DbCapabilityContext {
+        skiff_runtime_capability_context::DbCapabilityContext::new(PinnedRouteDbContext {
+            marker: self.marker.clone(),
+        })
+    }
+}
+
+struct PinnedRouteDbContext {
+    marker: String,
+}
+
+impl skiff_runtime_capability_context::DbCapabilityContextApi for PinnedRouteDbContext {
+    fn require_store(
+        &self,
+        _target: &str,
+        _unavailable_reason: &str,
+    ) -> skiff_runtime_capability_context::DbCapabilityResult<
+        skiff_runtime_capability_context::DbCapabilityStore,
+    > {
+        Err(skiff_runtime_capability_context::DbCapabilityError::decode(
+            self.marker.clone(),
+        ))
+    }
+}
+
+fn pinned_route_test_host() -> RuntimeHost {
+    RuntimeHost::new(crate::host::RuntimeConfig {
+        db_provider: skiff_runtime_capability_context::DbProviderSource::new(
+            PinnedRouteDbProvider::default(),
+        ),
+        router_url: "ws://127.0.0.1:4001/runtime".to_string(),
+        base_runtime_id: "runtime-pinned-route".to_string(),
+        runtime_home: std::env::temp_dir().join("skiff-runtime-pinned-route-test-home"),
+        environment: "test".to_string(),
+        http_response_max_bytes: 1024,
+        http_egress_proxy: None,
+    })
+    .expect("pinned route runtime host should build")
 }
 
 fn websocket_selectors(
@@ -299,6 +396,20 @@ impl RuntimeAssemblyContentResolver for CompiledGatewayResolver<'_> {
     }
 }
 
+impl RuntimeAssemblyRecordResolver for CompiledGatewayResolver<'_> {
+    fn resolve_runtime_assembly(
+        &self,
+        reference: &RuntimeAssemblyRef,
+    ) -> anyhow::Result<Arc<RuntimeAssembly>> {
+        let fixture_reference =
+            skiff_artifact_identity::runtime_assembly_ref(&self.fixture.assembly)?;
+        if reference == &fixture_reference {
+            return Ok(Arc::clone(&self.fixture.assembly));
+        }
+        self.inner.resolve_runtime_assembly(reference)
+    }
+}
+
 fn fixture() -> &'static CompiledGatewayFixture {
     FIXTURE.get_or_init(|| compile_fixture(true))
 }
@@ -307,15 +418,44 @@ fn path_only_fixture() -> &'static CompiledGatewayFixture {
     PATH_ONLY_FIXTURE.get_or_init(|| compile_fixture(false))
 }
 
+fn pinned_route_fixture(replacement: bool) -> &'static CompiledGatewayFixture {
+    if replacement {
+        PINNED_ROUTE_FIXTURE_B.get_or_init(|| compile_pinned_route_fixture(true))
+    } else {
+        PINNED_ROUTE_FIXTURE_A.get_or_init(|| compile_pinned_route_fixture(false))
+    }
+}
+
 fn compile_fixture(with_jsonrpc_method: bool) -> CompiledGatewayFixture {
+    compile_fixture_variant(with_jsonrpc_method, false, false)
+}
+
+fn compile_pinned_route_fixture(replacement: bool) -> CompiledGatewayFixture {
+    compile_fixture_variant(true, true, replacement)
+}
+
+fn compile_fixture_variant(
+    with_jsonrpc_method: bool,
+    with_database: bool,
+    replacement: bool,
+) -> CompiledGatewayFixture {
     let temp = TempFixture::new(if with_jsonrpc_method {
-        "host-http-websocket-gateway"
+        if with_database {
+            "host-pinned-websocket-route"
+        } else {
+            "host-http-websocket-gateway"
+        }
     } else {
         "host-http-path-only-websocket-gateway"
     });
     let service_root = temp.child("service");
     let artifact_root = temp.child("artifacts");
-    write_service_fixture(&service_root, with_jsonrpc_method);
+    write_service_fixture(
+        &service_root,
+        with_jsonrpc_method,
+        with_database,
+        replacement,
+    );
     let platform = repository_platform_sources();
     seed_canonical_std(&platform, &artifact_root).expect("canonical std seed");
     let output = build_authoring_object(
@@ -574,15 +714,35 @@ fn localize_package_type_ref(
     }
 }
 
-fn write_service_fixture(root: &Path, with_jsonrpc_method: bool) {
+fn write_service_fixture(
+    root: &Path,
+    with_jsonrpc_method: bool,
+    with_database: bool,
+    replacement: bool,
+) {
     fs::create_dir_all(root).expect("gateway fixture directory");
+    let state = if with_database {
+        "state:\n  database:\n    kind: database\n"
+    } else {
+        ""
+    };
     fs::write(
         root.join("package.yml"),
-        format!("id: {PACKAGE_ID}\nversion: {VERSION}\n"),
+        format!("id: {PACKAGE_ID}\nversion: {VERSION}\n{state}"),
     )
     .expect("gateway package manifest");
-    fs::write(root.join("api.yml"), "health: main.health\n").expect("gateway API");
-    fs::write(root.join("service.yml"), format!("id: {SERVICE_ID}\n"))
+    let api = if replacement {
+        "health: main.health\nversion: main.version\n"
+    } else {
+        "health: main.health\n"
+    };
+    fs::write(root.join("api.yml"), api).expect("gateway API");
+    let service_id = if replacement {
+        "example.com/host-http-gateway-service-replacement"
+    } else {
+        SERVICE_ID
+    };
+    fs::write(root.join("service.yml"), format!("id: {service_id}\n"))
         .expect("gateway service manifest");
     fs::write(
         root.join("http.yml"),
@@ -637,14 +797,33 @@ jsonRpc:
         "path: /socket\n"
     };
     fs::write(root.join("websocket.yml"), websocket).expect("gateway WebSocket manifest");
-    fs::write(
-        root.join("config.dev.yml"),
-        "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\nlifecycle: { maxConcurrency: 1 }\n",
-    )
-    .expect("gateway config");
+    let config = match (with_database, replacement) {
+        (true, true) => {
+            "state:\n  database:\n    kind: database\n    namespace: pinned-route-b\ntimeout: 2200\nquota: { cpuMillis: 200, memoryBytes: 2097152 }\nprincipal: service:pinned-route-b\nlifecycle: { maxConcurrency: 2 }\n"
+        }
+        (true, false) => {
+            "state:\n  database:\n    kind: database\n    namespace: pinned-route-a\ntimeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\nlifecycle: { maxConcurrency: 1 }\n"
+        }
+        (false, _) => {
+            "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\nlifecycle: { maxConcurrency: 1 }\n"
+        }
+    };
+    fs::write(root.join("config.dev.yml"), config).expect("gateway config");
+    let database_source = if with_database {
+        "\ntype PinnedRouteRecord { id: string }\ndb object PinnedRouteRecord { primary key(id) }\n"
+    } else {
+        ""
+    };
+    let replacement_source = if replacement {
+        "\nfunction version() -> string {\n  return \"replacement\"\n}\n"
+    } else {
+        ""
+    };
     fs::write(
         root.join("main.skiff"),
-        r#"import std
+        format!(
+            "{}{}{}",
+            r#"import std
 
 function health() -> string {
   return "healthy"
@@ -681,6 +860,9 @@ function slow(body: string) -> string {
   return body
 }
 "#,
+            database_source,
+            replacement_source,
+        ),
     )
     .expect("gateway source");
 }

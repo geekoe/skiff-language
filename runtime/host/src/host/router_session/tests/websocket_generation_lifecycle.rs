@@ -318,174 +318,532 @@ mod websocket_jsonrpc_target {
     }
 }
 
+#[derive(Clone, Copy)]
+struct JsonRpcExecutionRouteLookup<'a> {
+    router_session_id: &'a str,
+    connection_id: &'a str,
+    assembly_identity: &'a skiff_artifact_model::AssemblyIdentity,
+    assembly_generation: u64,
+    websocket_entry_id: &'a skiff_artifact_model::WebSocketEntryId,
+    host: &'a str,
+    path: &'a str,
+    method: &'a str,
+    gateway_entry_identity: &'a skiff_artifact_model::GatewayEntryIdentity,
+    profile: skiff_artifact_model::GatewayWebSocketRpcProfile,
+}
+
+impl JsonRpcExecutionRouteLookup<'_> {
+    fn resolve(
+        self,
+        host: &crate::host::RuntimeHost,
+    ) -> crate::error::Result<crate::host::websocket_generation::ResolvedWebSocketJsonRpcExecution>
+    {
+        host.websocket_generations
+            .websocket_jsonrpc_execution_route(
+                self.router_session_id,
+                self.connection_id,
+                self.assembly_identity,
+                self.assembly_generation,
+                self.websocket_entry_id,
+                self.host,
+                self.path,
+                self.method,
+                self.gateway_entry_identity,
+                self.profile,
+            )
+    }
+}
+
+fn execution_route_lookup<'a>(
+    connection_id: &'a str,
+    physical: &'a crate::loader::assembly_admission::ActiveAssemblyRoute,
+    method: &'a crate::loader::assembly_admission::ActiveAssemblyRoute,
+    websocket_entry_id: &'a skiff_artifact_model::WebSocketEntryId,
+) -> JsonRpcExecutionRouteLookup<'a> {
+    JsonRpcExecutionRouteLookup {
+        router_session_id: ROUTER_SESSION,
+        connection_id,
+        assembly_identity: physical.assembly_identity(),
+        assembly_generation: physical.generation(),
+        websocket_entry_id,
+        host: &method.selector().host,
+        path: &method.selector().path,
+        method: method.selector().method.as_deref().unwrap(),
+        gateway_entry_identity: method.gateway_entry_identity(),
+        profile: skiff_artifact_model::GatewayWebSocketRpcProfile::JsonRpc2_0Text,
+    }
+}
+
+fn websocket_entry_id(
+    route: &crate::loader::assembly_admission::ActiveAssemblyRoute,
+) -> skiff_artifact_model::WebSocketEntryId {
+    skiff_artifact_identity::websocket_entry_id(
+        &route.entry().owner().service_id,
+        route.gateway_entry_key(),
+    )
+    .unwrap()
+}
+
+fn acquire_generation(
+    host: &crate::host::RuntimeHost,
+    route: &crate::loader::assembly_admission::ActiveAssemblyRoute,
+    websocket_entry_id: &skiff_artifact_model::WebSocketEntryId,
+    connection_id: &str,
+) -> WebSocketGenerationLifecycleControl {
+    let acquire = host
+        .websocket_generations
+        .begin_acquire(
+            ROUTER_SESSION,
+            route.clone(),
+            websocket_entry_id.as_str().to_string(),
+            connection_id.to_string(),
+        )
+        .unwrap();
+    host.websocket_generations
+        .handle_acquire_response(&acquire_ack(&acquire))
+        .unwrap();
+    acquire
+}
+
+fn db_source_marker(route: &crate::loader::assembly_admission::ActiveAssemblyRoute) -> String {
+    let result = route
+        .db_source()
+        .expect("route DB source")
+        .context_for_request("route-owner", "route-request")
+        .require_store("route-target", "route source must be configured");
+    match result {
+        Err(skiff_runtime_capability_context::DbCapabilityError::Decode(marker)) => marker,
+        Err(error) => panic!("unexpected route DB marker error: {error}"),
+        Ok(_) => panic!("marker DB source must not create a real store"),
+    }
+}
+
+fn assert_resolved_execution_owners(
+    resolved: &crate::host::websocket_generation::ResolvedWebSocketJsonRpcExecution,
+    expected: &crate::loader::assembly_admission::ActiveAssemblyRoute,
+) {
+    assert!(Arc::ptr_eq(
+        resolved.method_route.context_set(),
+        expected.context_set()
+    ));
+    assert!(Arc::ptr_eq(
+        resolved.method_route.activation(),
+        expected.activation()
+    ));
+    assert!(Arc::ptr_eq(
+        resolved.method_route.execution_image(),
+        expected.execution_image()
+    ));
+    assert!(Arc::ptr_eq(resolved.method_route.entry(), expected.entry()));
+    assert!(Arc::ptr_eq(
+        resolved.method_route.activation(),
+        resolved.target.eval().activation_context()
+    ));
+    assert!(Arc::ptr_eq(
+        resolved.method_route.execution_image(),
+        resolved.target.eval().execution_image()
+    ));
+    assert_eq!(resolved.method_route.selector(), expected.selector());
+    assert_eq!(
+        resolved.method_route.gateway_entry_key(),
+        resolved.target.gateway_entry_key()
+    );
+    assert_eq!(
+        resolved.method_route.gateway_entry_identity(),
+        resolved.target.gateway_entry_identity()
+    );
+    assert_eq!(
+        resolved.method_route.entry().owner(),
+        resolved.target.owner()
+    );
+    assert_eq!(
+        resolved
+            .method_route
+            .activation()
+            .implementation_package_build_id(),
+        resolved.target.implementation_package_build_id()
+    );
+    assert_eq!(
+        resolved.target.profile(),
+        skiff_artifact_model::GatewayWebSocketRpcProfile::JsonRpc2_0Text
+    );
+}
+
+fn assert_resolved_physical_route(
+    resolved: &crate::host::websocket_generation::ResolvedWebSocketJsonRpcExecution,
+    physical: &crate::loader::assembly_admission::ActiveAssemblyRoute,
+    websocket_entry_id: &skiff_artifact_model::WebSocketEntryId,
+) {
+    assert!(Arc::ptr_eq(
+        resolved.method_route.context_set(),
+        physical.context_set()
+    ));
+    assert!(Arc::ptr_eq(
+        resolved.method_route.activation(),
+        physical.activation()
+    ));
+    assert!(Arc::ptr_eq(
+        resolved.method_route.execution_image(),
+        physical.execution_image()
+    ));
+    assert_eq!(
+        resolved.target.physical_route().selector(),
+        physical.selector()
+    );
+    assert_eq!(
+        resolved.target.physical_route().gateway_entry_key(),
+        physical.gateway_entry_key()
+    );
+    assert_eq!(
+        resolved.target.physical_route().gateway_entry_identity(),
+        physical.gateway_entry_identity()
+    );
+    assert_eq!(resolved.target.websocket_entry_id(), websocket_entry_id);
+}
+
+fn assert_websocket_jsonrpc_targets_equivalent(
+    actual: &skiff_runtime_request::RuntimeAssemblyWebSocketJsonRpcTarget,
+    expected: &skiff_runtime_request::RuntimeAssemblyWebSocketJsonRpcTarget,
+) {
+    assert!(Arc::ptr_eq(
+        actual.eval().activation_context(),
+        expected.eval().activation_context()
+    ));
+    assert!(Arc::ptr_eq(
+        actual.eval().execution_image(),
+        expected.eval().execution_image()
+    ));
+    assert_eq!(actual.assembly_identity(), expected.assembly_identity());
+    assert_eq!(actual.assembly_generation(), expected.assembly_generation());
+    assert_eq!(actual.owner(), expected.owner());
+    assert_eq!(
+        actual.implementation_package_build_id(),
+        expected.implementation_package_build_id()
+    );
+    assert_eq!(actual.selector(), expected.selector());
+    assert_eq!(actual.gateway_entry_key(), expected.gateway_entry_key());
+    assert_eq!(
+        actual.gateway_entry_identity(),
+        expected.gateway_entry_identity()
+    );
+    assert_eq!(
+        actual.physical_route().selector(),
+        expected.physical_route().selector()
+    );
+    assert_eq!(
+        actual.physical_route().gateway_entry_key(),
+        expected.physical_route().gateway_entry_key()
+    );
+    assert_eq!(
+        actual.physical_route().gateway_entry_identity(),
+        expected.physical_route().gateway_entry_identity()
+    );
+    assert_eq!(actual.websocket_entry_id(), expected.websocket_entry_id());
+    assert_eq!(actual.profile(), expected.profile());
+    assert_eq!(actual.protocol_surface(), expected.protocol_surface());
+    assert_eq!(actual.adapter_plan(), expected.adapter_plan());
+    assert_eq!(actual.handler_callable_id(), expected.handler_callable_id());
+    assert_eq!(actual.handler_signature(), expected.handler_signature());
+    assert_eq!(actual.handler_addr(), expected.handler_addr());
+}
+
 #[tokio::test]
-async fn websocket_jsonrpc_target_resolves_from_old_and_current_generation_pins() {
+async fn websocket_jsonrpc_target_matches_websocket_jsonrpc_execution_route_for_old_context() {
     let (host, physical_a, method_a, physical_b, method_b) =
         fixture::reloaded_websocket_gateway_host().await;
     host.websocket_generations.connect(ROUTER_SESSION).unwrap();
-    let websocket_entry_id = skiff_artifact_identity::websocket_entry_id(
-        &physical_a.entry().owner().service_id,
-        physical_a.gateway_entry_key(),
-    )
-    .unwrap();
+    let websocket_entry_id_a = websocket_entry_id(&physical_a);
+    let websocket_entry_id_b = websocket_entry_id(&physical_b);
+    acquire_generation(
+        &host,
+        &physical_a,
+        &websocket_entry_id_a,
+        "old-generation-connection",
+    );
+    acquire_generation(
+        &host,
+        &physical_b,
+        &websocket_entry_id_b,
+        "current-generation-connection",
+    );
 
-    for (route, connection_id) in [
-        (&physical_a, "old-generation-connection"),
-        (&physical_b, "current-generation-connection"),
-    ] {
-        let acquire = host
-            .websocket_generations
-            .begin_acquire(
-                ROUTER_SESSION,
-                route.clone(),
-                websocket_entry_id.as_str().to_string(),
-                connection_id.to_string(),
-            )
-            .unwrap();
-        host.websocket_generations
-            .handle_acquire_response(&acquire_ack(&acquire))
-            .unwrap();
-    }
+    assert_ne!(db_source_marker(&method_a), db_source_marker(&method_b));
+    assert_ne!(
+        method_a.service_protocol_identity(),
+        method_b.service_protocol_identity()
+    );
+    assert_ne!(method_a.deployment_policy(), method_b.deployment_policy());
+    assert!(!Arc::ptr_eq(method_a.activation(), method_b.activation()));
+    assert!(!Arc::ptr_eq(
+        method_a.execution_image(),
+        method_b.execution_image()
+    ));
+    assert_ne!(
+        method_a.activation().implementation_package_build_id(),
+        method_b.activation().implementation_package_build_id()
+    );
+    assert_ne!(
+        method_a.entry().owner(),
+        method_b.entry().owner(),
+        "replacement fixture must distinguish deployment ownership"
+    );
 
-    let target_a = host
-        .websocket_generations
-        .websocket_jsonrpc_target(
-            ROUTER_SESSION,
-            "old-generation-connection",
-            physical_a.assembly_identity(),
-            physical_a.generation(),
-            &websocket_entry_id,
-            &method_a.selector().host,
-            &method_a.selector().path,
-            method_a.selector().method.as_deref().unwrap(),
-            method_a.gateway_entry_identity(),
-            skiff_artifact_model::GatewayWebSocketRpcProfile::JsonRpc2_0Text,
-        )
+    let lookup_a = execution_route_lookup(
+        "old-generation-connection",
+        &physical_a,
+        &method_a,
+        &websocket_entry_id_a,
+    );
+    let lookup_b = execution_route_lookup(
+        "current-generation-connection",
+        &physical_b,
+        &method_b,
+        &websocket_entry_id_b,
+    );
+    let resolved_a = lookup_a
+        .resolve(&host)
         .expect("old connection resolves only from its pinned generation A");
-    let target_b = host
-        .websocket_generations
-        .websocket_jsonrpc_target(
-            ROUTER_SESSION,
-            "current-generation-connection",
-            physical_b.assembly_identity(),
-            physical_b.generation(),
-            &websocket_entry_id,
-            &method_b.selector().host,
-            &method_b.selector().path,
-            method_b.selector().method.as_deref().unwrap(),
-            method_b.gateway_entry_identity(),
-            skiff_artifact_model::GatewayWebSocketRpcProfile::JsonRpc2_0Text,
-        )
+    let resolved_b = lookup_b
+        .resolve(&host)
         .expect("new connection resolves from generation B");
 
-    assert_eq!(target_a.assembly_generation(), 1);
-    assert_eq!(target_b.assembly_generation(), 2);
-    assert!(!Arc::ptr_eq(
-        target_a.eval().activation_context(),
-        target_b.eval().activation_context()
-    ));
-    assert_eq!(target_a.method(), "status.get");
-    assert_eq!(target_b.method(), "status.get");
-    assert!(host
+    assert_resolved_execution_owners(&resolved_a, &method_a);
+    assert_resolved_execution_owners(&resolved_b, &method_b);
+    assert_resolved_physical_route(&resolved_a, &physical_a, &websocket_entry_id_a);
+    assert_resolved_physical_route(&resolved_b, &physical_b, &websocket_entry_id_b);
+    assert_eq!(
+        db_source_marker(&resolved_a.method_route),
+        db_source_marker(&method_a)
+    );
+    assert_ne!(
+        db_source_marker(&resolved_a.method_route),
+        db_source_marker(&method_b)
+    );
+    assert_eq!(
+        resolved_a.method_route.service_protocol_identity(),
+        method_a.service_protocol_identity()
+    );
+    assert_ne!(
+        resolved_a.method_route.service_protocol_identity(),
+        method_b.service_protocol_identity()
+    );
+    assert_eq!(
+        resolved_a.method_route.deployment_policy(),
+        method_a.deployment_policy()
+    );
+    assert_ne!(
+        resolved_a.method_route.deployment_policy(),
+        method_b.deployment_policy()
+    );
+    assert_eq!(resolved_a.target.assembly_generation(), 1);
+    assert_eq!(resolved_b.target.assembly_generation(), 2);
+
+    let target_only_a = host
         .websocket_generations
         .websocket_jsonrpc_target(
-            ROUTER_SESSION,
-            "old-generation-connection",
-            physical_a.assembly_identity(),
-            physical_a.generation(),
-            &websocket_entry_id,
-            "wrong.test",
-            &method_a.selector().path,
-            "status.get",
-            method_a.gateway_entry_identity(),
-            skiff_artifact_model::GatewayWebSocketRpcProfile::JsonRpc2_0Text,
+            lookup_a.router_session_id,
+            lookup_a.connection_id,
+            lookup_a.assembly_identity,
+            lookup_a.assembly_generation,
+            lookup_a.websocket_entry_id,
+            lookup_a.host,
+            lookup_a.path,
+            lookup_a.method,
+            lookup_a.gateway_entry_identity,
+            lookup_a.profile,
         )
-        .is_err());
-    assert!(host
-        .websocket_generations
-        .websocket_jsonrpc_target(
-            ROUTER_SESSION,
-            "old-generation-connection",
-            physical_a.assembly_identity(),
-            physical_a.generation(),
-            &websocket_entry_id,
-            &method_a.selector().host,
-            "/wrong",
-            "status.get",
-            method_a.gateway_entry_identity(),
-            skiff_artifact_model::GatewayWebSocketRpcProfile::JsonRpc2_0Text,
-        )
-        .is_err());
+        .expect("target-only API delegates the same pinned join");
+    assert_websocket_jsonrpc_targets_equivalent(&target_only_a, &resolved_a.target);
+
     let wrong_websocket_entry_id = skiff_artifact_model::WebSocketEntryId::parse(format!(
         "skiff-websocket-entry-v1:sha256:{}",
         "e".repeat(64)
     ))
     .unwrap();
-    assert!(host
-        .websocket_generations
-        .websocket_jsonrpc_target(
-            ROUTER_SESSION,
-            "old-generation-connection",
-            physical_a.assembly_identity(),
-            physical_a.generation(),
-            &wrong_websocket_entry_id,
-            &method_a.selector().host,
-            &method_a.selector().path,
-            "status.get",
-            method_a.gateway_entry_identity(),
-            skiff_artifact_model::GatewayWebSocketRpcProfile::JsonRpc2_0Text,
+    for wrong in [
+        JsonRpcExecutionRouteLookup {
+            router_session_id: OTHER_ROUTER_SESSION,
+            ..lookup_a
+        },
+        JsonRpcExecutionRouteLookup {
+            connection_id: "missing-connection",
+            ..lookup_a
+        },
+        JsonRpcExecutionRouteLookup {
+            assembly_identity: physical_b.assembly_identity(),
+            ..lookup_a
+        },
+        JsonRpcExecutionRouteLookup {
+            assembly_generation: lookup_a.assembly_generation + 1,
+            ..lookup_a
+        },
+        JsonRpcExecutionRouteLookup {
+            websocket_entry_id: &wrong_websocket_entry_id,
+            ..lookup_a
+        },
+        JsonRpcExecutionRouteLookup {
+            host: "wrong.test",
+            ..lookup_a
+        },
+        JsonRpcExecutionRouteLookup {
+            path: "/wrong",
+            ..lookup_a
+        },
+        JsonRpcExecutionRouteLookup {
+            method: "status.missing",
+            ..lookup_a
+        },
+        JsonRpcExecutionRouteLookup {
+            gateway_entry_identity: physical_a.gateway_entry_identity(),
+            ..lookup_a
+        },
+    ] {
+        assert!(
+            wrong.resolve(&host).is_err(),
+            "mismatched pinned route tuple must fail closed"
+        );
+    }
+    assert!(
+        serde_json::from_str::<skiff_artifact_model::GatewayWebSocketRpcProfile>(
+            "\"wrong-profile\""
         )
-        .is_err());
-    assert!(host
-        .websocket_generations
-        .websocket_jsonrpc_target(
-            ROUTER_SESSION,
-            "old-generation-connection",
-            physical_a.assembly_identity(),
-            physical_a.generation() + 1,
-            &websocket_entry_id,
-            &method_a.selector().host,
-            &method_a.selector().path,
-            "status.get",
-            method_a.gateway_entry_identity(),
-            skiff_artifact_model::GatewayWebSocketRpcProfile::JsonRpc2_0Text,
-        )
-        .is_err());
-    assert!(host
-        .websocket_generations
-        .websocket_jsonrpc_target(
-            ROUTER_SESSION,
-            "old-generation-connection",
-            physical_a.assembly_identity(),
-            physical_a.generation(),
-            &websocket_entry_id,
-            &method_a.selector().host,
-            &method_a.selector().path,
-            "status.missing",
-            method_a.gateway_entry_identity(),
-            skiff_artifact_model::GatewayWebSocketRpcProfile::JsonRpc2_0Text,
-        )
-        .is_err());
-    assert!(host
-        .websocket_generations
-        .websocket_jsonrpc_target(
-            ROUTER_SESSION,
-            "old-generation-connection",
-            physical_a.assembly_identity(),
-            physical_a.generation(),
-            &websocket_entry_id,
-            &method_a.selector().host,
-            &method_a.selector().path,
-            "status.get",
-            physical_a.gateway_entry_identity(),
-            skiff_artifact_model::GatewayWebSocketRpcProfile::JsonRpc2_0Text,
-        )
-        .is_err());
+        .is_err(),
+        "the typed profile has no representable non-canonical resolver input"
+    );
 
     host.websocket_generations
         .disconnect(ROUTER_SESSION)
         .unwrap();
     assert_eq!(host.websocket_generations.pin_count().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn websocket_jsonrpc_execution_route_rejects_tentative_and_released_pin_and_reclaims_old() {
+    let (host, physical_a, method_a, physical_b, method_b) =
+        fixture::reloaded_websocket_gateway_host().await;
+    drop((physical_b, method_b));
+    host.websocket_generations.connect(ROUTER_SESSION).unwrap();
+    let websocket_entry_id_a = websocket_entry_id(&physical_a);
+    let retired_context = Arc::downgrade(physical_a.context_set());
+    let acquire = host
+        .websocket_generations
+        .begin_acquire(
+            ROUTER_SESSION,
+            physical_a.clone(),
+            websocket_entry_id_a.as_str().to_string(),
+            "release-connection".to_string(),
+        )
+        .unwrap();
+    let lookup = execution_route_lookup(
+        "release-connection",
+        &physical_a,
+        &method_a,
+        &websocket_entry_id_a,
+    );
+    assert!(
+        lookup.resolve(&host).is_err(),
+        "tentative pin without exact acquire receipt must expose no route"
+    );
+    host.websocket_generations
+        .handle_acquire_response(&acquire_ack(&acquire))
+        .unwrap();
+    lookup
+        .resolve(&host)
+        .expect("exact receipt exposes the pinned route");
+    let release = release_control("route-release", lifecycle_tuple(&acquire).clone());
+    assert!(matches!(
+        host.websocket_generations
+            .handle_release(ROUTER_SESSION, release)
+            .unwrap(),
+        WebSocketGenerationLifecycleControl::Ack {
+            operation: WebSocketGenerationLifecycleOperation::Release,
+            ..
+        }
+    ));
+    assert!(
+        lookup.resolve(&host).is_err(),
+        "released pin must expose no stale route"
+    );
+    drop(acquire);
+    drop(method_a);
+    drop(physical_a);
+    assert!(
+        retired_context.upgrade().is_none(),
+        "release must reclaim the retired route owner"
+    );
+}
+
+#[tokio::test]
+async fn websocket_jsonrpc_execution_route_rejects_disconnected_pin_and_reclaims_old() {
+    let (host, physical_a, method_a, physical_b, method_b) =
+        fixture::reloaded_websocket_gateway_host().await;
+    drop((physical_b, method_b));
+    host.websocket_generations.connect(ROUTER_SESSION).unwrap();
+    let websocket_entry_id_a = websocket_entry_id(&physical_a);
+    let retired_context = Arc::downgrade(physical_a.context_set());
+    acquire_generation(
+        &host,
+        &physical_a,
+        &websocket_entry_id_a,
+        "disconnect-connection",
+    );
+    let lookup = execution_route_lookup(
+        "disconnect-connection",
+        &physical_a,
+        &method_a,
+        &websocket_entry_id_a,
+    );
+    lookup
+        .resolve(&host)
+        .expect("acquired pin resolves before disconnect");
+    host.websocket_generations
+        .disconnect(ROUTER_SESSION)
+        .unwrap();
+    assert!(
+        lookup.resolve(&host).is_err(),
+        "disconnected pin must expose no stale route"
+    );
+    drop(method_a);
+    drop(physical_a);
+    assert!(
+        retired_context.upgrade().is_none(),
+        "disconnect must reclaim the retired route owner"
+    );
+}
+
+#[test]
+fn websocket_jsonrpc_execution_route_source_uses_only_the_pinned_route_join() {
+    let source = include_str!("../../websocket_generation.rs");
+    let start = source
+        .find("fn acquired_physical_route(")
+        .expect("pinned physical resolver source");
+    let end = source[start..]
+        .find("pub(super) fn handle_release(")
+        .map(|offset| start + offset)
+        .expect("resolver source terminator");
+    let resolver = &source[start..end];
+    let acquired = resolver
+        .find("acquired_physical_route(")
+        .expect("acquired pin join");
+    let method = resolver
+        .find(".websocket_jsonrpc_method_route(")
+        .expect("old sibling method join");
+    let target = resolver
+        .find(".websocket_jsonrpc_target(&physical_route)")
+        .expect("target projection from the same old route");
+    assert!(acquired < method && method < target);
+    for forbidden in [
+        "lookup_active_assembly",
+        "assembly_admission",
+        "resolve_runtime_assembly",
+        "artifact_store",
+        "FilesystemRuntimeAssembly",
+    ] {
+        assert!(
+            !resolver.contains(forbidden),
+            "generation resolver must not use current assembly or artifact lookup: {forbidden}"
+        );
+    }
 }
 
 #[tokio::test]
