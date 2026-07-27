@@ -12,14 +12,23 @@ const RUNTIME_ASSEMBLY_IDENTITY_PATTERN =
 const SERVICE_PROTOCOL_IDENTITY_PATTERN =
   /^skiff-service-protocol-v5:sha256:[0-9a-f]{64}$/;
 
-export type RuntimeAssemblyIngressProtocol = 'http';
-
-export interface RuntimeAssemblyIngressSelector {
-  protocol: RuntimeAssemblyIngressProtocol;
+export interface RuntimeAssemblyHttpIngressSelector {
+  protocol: 'http';
   host: string;
   method: string;
   path: string;
 }
+
+export interface RuntimeAssemblyWebSocketIngressSelector {
+  protocol: 'webSocket';
+  host: string;
+  method: null;
+  path: string;
+}
+
+export type RuntimeAssemblyIngressSelector =
+  | RuntimeAssemblyHttpIngressSelector
+  | RuntimeAssemblyWebSocketIngressSelector;
 
 export interface RuntimeAssemblyDeploymentRef {
   serviceId: string;
@@ -39,8 +48,10 @@ export interface RuntimeAssemblyIngressBinding {
   deployment: RuntimeAssemblyDeploymentRef;
   gatewayEntryKey: string;
   gatewayEntryIdentity: string;
-  adapterKind: 'rawHttp' | 'typedJson';
+  adapterKind: 'rawHttp' | 'typedJson' | 'websocketConnect';
   operationMode: 'unary' | 'serverStream';
+  handler?: string;
+  websocketEntryId?: string;
   timeoutMs?: number;
 }
 
@@ -197,17 +208,7 @@ export async function snapshotFromCommittedActivation(
 export function runtimeAssemblyIngressKey(
   selector: RuntimeAssemblyIngressSelector
 ): string {
-  if (selector.protocol !== 'http') {
-    throw new Error('RuntimeAssembly ingress currently accepts only HTTP');
-  }
   const host = canonicalIngressHost(selector.host);
-  if (typeof selector.method !== 'string') {
-    throw new Error('HTTP RuntimeAssembly ingress requires a method');
-  }
-  const method = selector.method.toUpperCase();
-  if (method.length === 0) {
-    throw new Error('HTTP RuntimeAssembly ingress requires a method');
-  }
   if (
     typeof selector.path !== 'string' ||
     !selector.path.startsWith('/') ||
@@ -215,6 +216,16 @@ export function runtimeAssemblyIngressKey(
     selector.path.includes('#')
   ) {
     throw new Error('RuntimeAssembly ingress path must be an absolute URL path');
+  }
+  if (selector.protocol === 'webSocket') {
+    if (selector.method !== null) {
+      throw new Error('WebSocket RuntimeAssembly ingress method must be null');
+    }
+    return `webSocket\u0000${host}\u0000${selector.path}`;
+  }
+  const method = selector.method.toUpperCase();
+  if (method.length === 0) {
+    throw new Error('HTTP RuntimeAssembly ingress requires a method');
   }
   return `http\u0000${host}\u0000${method}\u0000${selector.path}`;
 }
@@ -292,6 +303,7 @@ export function decodeRuntimeAssemblyRecord(
   const resolvedContracts = value.resolvedContracts.map((entry, index) =>
     decodeContractRef(entry, `RuntimeAssembly.resolvedContracts[${index}]`)
   );
+  assertUniqueContractRefs(resolvedContracts);
   const deploymentKeys = new Set(resolvedDeployments.map(deploymentRefKey));
   const gatewayIngress = value.gatewayIngress.map((entry, index) =>
     decodeGatewayIngressDeclaration(
@@ -351,30 +363,33 @@ export function decodeRuntimeAssemblyIngressSelector(
 ): RuntimeAssemblyIngressSelector {
   const value = exactObject(input, label);
   exactFields(value, ['protocol', 'host', 'method', 'path'], label);
-  if (value.protocol !== 'http') {
-    throw new Error(`${label}.protocol must be http`);
+  if (value.protocol !== 'http' && value.protocol !== 'webSocket') {
+    throw new Error(`${label}.protocol must be http or webSocket`);
   }
   const host = requiredString(value, 'host');
   if (canonicalIngressHost(host) !== host) {
     throw new Error(`${label}.host must be canonical lowercase Host syntax`);
   }
-  const method = requiredString(value, 'method');
-  if (
-    method !== method.toUpperCase() ||
-    !/^[A-Z0-9!#$%&'*+\-.^_`|~]+$/.test(method)
-  ) {
-    throw new Error(`${label}.method must be a canonical uppercase HTTP token`);
-  }
   const path = requiredString(value, 'path');
   if (/[\s\p{Cc}]/u.test(path)) {
     throw new Error(`${label}.path must not contain whitespace or control characters`);
   }
-  const selector: RuntimeAssemblyIngressSelector = {
-    protocol: 'http',
-    host,
-    method,
-    path
-  };
+  let selector: RuntimeAssemblyIngressSelector;
+  if (value.protocol === 'webSocket') {
+    if (value.method !== null) {
+      throw new Error(`${label}.method must be null for webSocket`);
+    }
+    selector = { protocol: 'webSocket', host, method: null, path };
+  } else {
+    const method = requiredString(value, 'method');
+    if (
+      method !== method.toUpperCase() ||
+      !/^[A-Z0-9!#$%&'*+\-.^_`|~]+$/.test(method)
+    ) {
+      throw new Error(`${label}.method must be a canonical uppercase HTTP token`);
+    }
+    selector = { protocol: 'http', host, method, path };
+  }
   runtimeAssemblyIngressKey(selector);
   return selector;
 }
@@ -405,6 +420,21 @@ function assertUniqueDeploymentRefs(
       );
     }
     coordinates.set(coordinate, reference.deploymentArtifactIdentity);
+  }
+}
+
+function assertUniqueContractRefs(
+  references: readonly RuntimeAssemblyContractRef[]
+): void {
+  const coordinates = new Set<string>();
+  for (const reference of references) {
+    const coordinate = `${reference.serviceId}\u0000${reference.contractVersion}`;
+    if (coordinates.has(coordinate)) {
+      throw new Error(
+        'RuntimeAssembly contains a duplicate resolved contract coordinate'
+      );
+    }
+    coordinates.add(coordinate);
   }
 }
 

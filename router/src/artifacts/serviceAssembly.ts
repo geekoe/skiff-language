@@ -59,7 +59,7 @@ async function routerManifestFromServiceAssembly(
   }
   if ("http" in assembly || "websocket" in assembly) {
     throw new Error(
-      `${pointer.indexPath} serviceAssembly top-level http/websocket is not supported; use gateway.http/gateway.websocket`,
+      `${pointer.indexPath} serviceAssembly top-level http/websocket is not supported; use gateway.http for legacy HTTP projection`,
     );
   }
   rejectLegacyServiceAssemblyConfigFields(assembly, pointer.indexPath);

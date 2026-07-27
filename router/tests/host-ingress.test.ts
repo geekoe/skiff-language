@@ -6,7 +6,7 @@ import {
   type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
 
-describe('RuntimeAssembly HTTP ingress index', () => {
+describe('RuntimeAssembly ingress index', () => {
   it('disambiguates the same method/path by canonical Host', () => {
     const codex = binding('codex-relay.localhost', 'models', '1');
     const aihub = binding('aihub.localhost', 'models', '2');
@@ -52,7 +52,7 @@ describe('RuntimeAssembly HTTP ingress index', () => {
     ]);
   });
 
-  it('fails closed for duplicate or non-HTTP selectors', () => {
+  it('fails closed for duplicates and keeps WebSocket selectors method-free', () => {
     const first = binding('echo.localhost', 'echo', '4');
     const duplicate = structuredClone(first);
     duplicate.selector.host = 'ECHO.LOCALHOST';
@@ -61,12 +61,18 @@ describe('RuntimeAssembly HTTP ingress index', () => {
     expect(() => new RuntimeAssemblyIngressIndex([first, duplicate])).toThrow(
       /duplicate gateway ingress/
     );
+    expect(runtimeAssemblyIngressKey({
+      protocol: 'webSocket',
+      host: 'echo.localhost',
+      method: null,
+      path: '/echo'
+    })).toBe('webSocket\u0000echo.localhost\u0000/echo');
     expect(() => runtimeAssemblyIngressKey({
       protocol: 'webSocket',
       host: 'echo.localhost',
-      method: '',
+      method: 'GET',
       path: '/echo'
-    } as never)).toThrow(/only HTTP/);
+    } as never)).toThrow(/method must be null/);
   });
 
   it.each([

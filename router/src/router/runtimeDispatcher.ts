@@ -12,9 +12,15 @@ import {
   type ResponseStartFrameHeader,
   type RouterToRuntimeFrameHeader
 } from '../protocol/envelope.js';
-import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
+import type {
+  RuntimeAssemblyRequestStartFrameHeader,
+  RuntimeAssemblyRequestStartFrameWireHeader,
+  RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
+} from '../protocol/runtimeAssemblyRequest.js';
 import {
-  type ValidatedResponseErrorFrame
+  type ValidatedResponseErrorFrame,
+  validateRuntimeAssemblyRequestStartFrameWireHeader,
+  validateRuntimeAssemblyWebSocketConnectResponseEndFrameHeader
 } from '../protocol/runtimeProtocol.js';
 import type {
   WebSocketGenerationLifecycleTuple
@@ -27,7 +33,6 @@ import type {
   RuntimeDispatchConnection,
   RuntimeDispatchFrameHeader,
   RuntimeDispatchRuntimeIdentity,
-  RuntimeInFlightRequest,
   RuntimeRegistry,
   RuntimeUnaryDispatchFrameHeader
 } from './runtimeRegistry.js';
@@ -66,31 +71,46 @@ export type PendingTerminal =
 export interface RuntimeFrameSender {
   sendFrame(
     ws: WebSocket,
-    header: RouterToRuntimeFrameHeader | RuntimeAssemblyRequestStartFrameHeader,
+    header: RouterToRuntimeFrameHeader | RuntimeAssemblyRequestStartFrameWireHeader,
     payloadBytes?: Uint8Array,
     callback?: RuntimeFrameSendCallback
   ): void;
 }
 
-interface RuntimeInvocationBase extends RuntimeInFlightRequest {
+type RuntimeUnaryDispatchWireHeader =
+  | RuntimeUnaryDispatchFrameHeader
+  | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader;
+
+interface RuntimeUnaryDispatchWireInput {
+  header: RuntimeUnaryDispatchWireHeader;
+  payloadBytes: Uint8Array;
+}
+
+interface RuntimeInvocationBase<TRequest extends RuntimeDispatchFrameHeader | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader> {
+  request: TRequest;
+  runtimeId?: string;
+  ws: WebSocket;
   timeout: NodeJS.Timeout;
   reject(error: unknown): void;
   abortCleanup?: () => void;
 }
 
-export interface RuntimeUnaryInvocation extends RuntimeInvocationBase {
+export interface RuntimeUnaryInvocation
+  extends RuntimeInvocationBase<RuntimeUnaryDispatchWireHeader> {
   kind: 'unary';
-  request: RuntimeUnaryDispatchFrameHeader;
+  request: RuntimeUnaryDispatchWireHeader;
   connectionReceipt: RuntimeDispatchConnectionReceipt;
   resolve(response: RuntimeBinaryDispatchResponseWithReceipt): void;
 }
 
-export interface RuntimeUnaryFrameInvocation extends RuntimeInvocationBase {
+export interface RuntimeUnaryFrameInvocation
+  extends RuntimeInvocationBase<RuntimeDispatchFrameHeader> {
   kind: 'unaryFrame';
   resolve(response: RuntimeBinaryDispatchResult): void;
 }
 
-export interface RuntimeStreamInvocation extends RuntimeInvocationBase {
+export interface RuntimeStreamInvocation
+  extends RuntimeInvocationBase<RuntimeUnaryDispatchFrameHeader> {
   kind: 'stream';
   request: RuntimeUnaryDispatchFrameHeader;
   resolve(response: RuntimeBinaryDispatchResponse): void;
@@ -260,8 +280,47 @@ export class RuntimeDispatcher {
     );
   }
 
+  dispatchAssemblyWebSocketConnect(
+    request: {
+      header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader;
+      payloadBytes: Uint8Array;
+    },
+    timeoutMs: number,
+    connection: RuntimeDispatchConnection,
+    options: RuntimeBinaryDispatchOptions = {}
+  ): Promise<RuntimeBinaryDispatchResponseWithReceipt> {
+    const validation = validateRuntimeAssemblyRequestStartFrameWireHeader(
+      request.header
+    );
+    if (
+      !validation.ok ||
+      validation.envelope.routing.ingress.protocol !== 'webSocket'
+    ) {
+      return Promise.reject(
+        new ServiceProtocolBoundaryError(
+          validation.ok
+            ? 'RuntimeAssembly WebSocket connect dispatch requires webSocket ingress'
+            : validation.error
+        )
+      );
+    }
+    if (request.payloadBytes.byteLength !== 0) {
+      return Promise.reject(
+        new ServiceProtocolBoundaryError(
+          'RuntimeAssembly WebSocket connect dispatch payload must be empty'
+        )
+      );
+    }
+    return this.dispatchBinaryWithConnection(
+      request,
+      timeoutMs,
+      options,
+      connection
+    );
+  }
+
   private dispatchBinaryWithConnection(
-    request: RuntimeBinaryDispatchInput<RuntimeUnaryDispatchFrameHeader>,
+    request: RuntimeUnaryDispatchWireInput,
     timeoutMs: number,
     options: RuntimeBinaryDispatchOptions,
     connection: RuntimeDispatchConnection | GatewayError | null | undefined
@@ -336,11 +395,27 @@ export class RuntimeDispatcher {
   }
 
   isPendingWebSocketAcquireSender(
-    _sender: WebSocket,
-    _tuple: WebSocketGenerationLifecycleTuple
+    sender: WebSocket,
+    tuple: WebSocketGenerationLifecycleTuple
   ): boolean {
-    // RuntimeAssembly business-message routing is not frozen. The canonical
-    // request lane is HTTP-only, so no acquire can be attributed here.
+    for (const pending of this.pending.values()) {
+      if (
+        pending.kind !== 'unary' ||
+        pending.ws !== sender ||
+        !isWebSocketConnectRequest(pending.request)
+      ) {
+        continue;
+      }
+      const request = pending.request;
+      if (
+        request.routing.assemblyIdentity === tuple.assemblyIdentity &&
+        request.routing.assemblyGeneration === tuple.assemblyGeneration &&
+        request.websocketConnect.connectionId === tuple.connectionId &&
+        request.websocketConnect.websocketEntryId === tuple.websocketEntryId
+      ) {
+        return true;
+      }
+    }
     return false;
   }
 
@@ -597,7 +672,7 @@ export class RuntimeDispatcher {
       return;
     }
     if (pending.kind === 'unary') {
-      const responseError = validateCanonicalHttpUnaryResponse(
+      const responseError = validateCanonicalAssemblyUnaryResponse(
         pending.request,
         response
       );
@@ -849,7 +924,22 @@ export class RuntimeDispatcher {
     this.detachPending(requestId, pending);
     pending.kind === 'stream' && pending.closeFromPendingTerminal?.(terminal);
     this.maybeSendPendingCancel(requestId, pending, terminal);
-    this.options.registry.refreshRuntimeStatesForRequest(pending);
+    if (pending.kind === 'unary') {
+      const request = pending.request;
+      if (isWebSocketConnectRequest(request)) {
+        this.options.registry.refreshAllRuntimeStates();
+      } else {
+        this.options.registry.refreshRuntimeStatesForRequest({
+          request,
+          ws: pending.ws,
+          ...(pending.runtimeId === undefined
+            ? {}
+            : { runtimeId: pending.runtimeId })
+        });
+      }
+    } else {
+      this.options.registry.refreshRuntimeStatesForRequest(pending);
+    }
   }
 
   private finishStreamPending(
@@ -986,12 +1076,22 @@ export class RuntimeDispatcher {
   }
 }
 
-function validateCanonicalHttpUnaryResponse(
-  request: RuntimeUnaryDispatchFrameHeader,
+function validateCanonicalAssemblyUnaryResponse(
+  request: RuntimeUnaryDispatchWireHeader,
   response: RuntimeBinaryDispatchResponse
 ): string | undefined {
-  if (!isRuntimeAssemblyRequestDispatchHeader(request)) {
+  if (!hasRuntimeAssemblyRouting(request)) {
     return undefined;
+  }
+  if (request.routing.ingress.protocol === 'webSocket') {
+    if (response.payloadBytes.byteLength !== 0) {
+      return 'RuntimeAssembly WebSocket connect response payload must be empty';
+    }
+    const validation =
+      validateRuntimeAssemblyWebSocketConnectResponseEndFrameHeader(
+        response.header
+      );
+    return validation.ok ? undefined : validation.error;
   }
   if (response.header.websocketConnect !== undefined) {
     return 'RuntimeAssembly HTTP unary response must not include WebSocket metadata';
@@ -1007,6 +1107,10 @@ function dispatchHeaderForConnection(
   connection: RuntimeDispatchConnection
 ): RequestStartFrameHeader;
 function dispatchHeaderForConnection(
+  header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+  connection: RuntimeDispatchConnection
+): RuntimeAssemblyWebSocketConnectRequestStartFrameHeader;
+function dispatchHeaderForConnection(
   header: RuntimeUnaryDispatchFrameHeader,
   connection: RuntimeDispatchConnection
 ): RuntimeUnaryDispatchFrameHeader;
@@ -1015,10 +1119,14 @@ function dispatchHeaderForConnection(
   connection: RuntimeDispatchConnection
 ): RuntimeDispatchFrameHeader;
 function dispatchHeaderForConnection(
-  header: RuntimeDispatchFrameHeader,
+  header: RuntimeUnaryDispatchWireHeader,
   connection: RuntimeDispatchConnection
-): RuntimeDispatchFrameHeader {
-  if (isRuntimeAssemblyRequestDispatchHeader(header)) {
+): RuntimeUnaryDispatchWireHeader;
+function dispatchHeaderForConnection(
+  header: RuntimeDispatchFrameHeader | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+  connection: RuntimeDispatchConnection
+): RuntimeDispatchFrameHeader | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
+  if (hasRuntimeAssemblyRouting(header)) {
     return header;
   }
   if (
@@ -1032,4 +1140,19 @@ function dispatchHeaderForConnection(
     ...header,
     buildId: connection.dispatchBuildId
   };
+}
+
+function hasRuntimeAssemblyRouting(
+  header: RuntimeDispatchFrameHeader | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
+): header is RuntimeAssemblyRequestStartFrameWireHeader {
+  return header.type === 'request.start' && 'routing' in header;
+}
+
+function isWebSocketConnectRequest(
+  header: RuntimeUnaryDispatchWireHeader
+): header is RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
+  return (
+    hasRuntimeAssemblyRouting(header) &&
+    header.routing.ingress.protocol === 'webSocket'
+  );
 }

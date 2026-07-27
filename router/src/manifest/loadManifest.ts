@@ -3,9 +3,6 @@ import { readFile } from 'node:fs/promises';
 import { isPublicationId, publicationStorageSegment } from '../publicationId.js';
 import { assertRevisionId } from './revisionId.js';
 import {
-  computeWebSocketConnectIdentity,
-  computeWebSocketEntryIdentity,
-  computeWebSocketReceiveIdentity,
   sha256Hex,
   stableStringify
 } from './identity.js';
@@ -22,13 +19,7 @@ import type {
   LoadedHttpRoute,
   LoadedManifest,
   LoadedRawHttpGateway,
-  LoadedWebSocketConnect,
-  LoadedWebSocketEntry,
-  LoadedWebSocketReceive,
-  OperationManifest,
-  WebSocketConnectManifest,
-  WebSocketEntryManifest,
-  WebSocketReceiveManifest
+  OperationManifest
 } from './types.js';
 
 const PROTOCOL_IDENTITY_PATTERN = /^skiff-service-protocol-v5:sha256:[0-9a-f]{64}$/;
@@ -37,34 +28,13 @@ const HTTP_INGRESS_IDENTITY_PATTERN = /^skiff-http-ingress-v1:sha256:[0-9a-f]{64
 const GATEWAY_ADAPTER_SOURCE_KINDS = new Set<GatewayAdapterSourceKind>([
   'http.request',
   'http.body',
-  'http.context',
-  'websocket.connectRequest',
-  'websocket.receiveEvent',
-  'websocket.connection',
-  'websocket.connectionContext',
-  'websocket.message',
-  'websocket.messageBody',
-  'websocket.connectionId',
-  'websocket.businessIdentity'
+  'http.context'
 ]);
 const HTTP_ADAPTER_SOURCE_KINDS = new Set<GatewayAdapterSourceKind>([
   'http.request',
   'http.body',
   'http.context'
 ]);
-const WEBSOCKET_CONNECT_ADAPTER_SOURCE_KINDS = new Set<GatewayAdapterSourceKind>([
-  'websocket.connectRequest'
-]);
-const WEBSOCKET_RECEIVE_ADAPTER_SOURCE_KINDS = new Set<GatewayAdapterSourceKind>([
-  'websocket.receiveEvent',
-  'websocket.connection',
-  'websocket.connectionContext',
-  'websocket.message',
-  'websocket.messageBody',
-  'websocket.connectionId',
-  'websocket.businessIdentity'
-]);
-
 export async function loadManifestFile(path: string): Promise<LoadedManifest> {
   const text = await readFile(path, 'utf8');
   return loadManifest(JSON.parse(text));
@@ -137,18 +107,16 @@ export function loadManifest(value: unknown): LoadedManifest {
     manifest.service.protocolIdentity,
     operationsByName
   );
+  if (manifest.gateway !== undefined) {
+    assertRecord(manifest.gateway, 'manifest.gateway');
+    rejectUnsupportedManifestKeys(
+      manifest.gateway,
+      'manifest.gateway',
+      new Set(['http'])
+    );
+  }
 
-  const websocketEntry = manifest.gateway?.websocket
-    ? loadWebSocketEntry({
-        entry: manifest.gateway.websocket,
-        manifest,
-        serviceId: manifest.service.id,
-        serviceProtocolIdentity: manifest.service.protocolIdentity,
-        operationsByName
-      })
-    : undefined;
-
-  const loadedManifest = {
+  return {
     ...manifest,
     service: manifest.service,
     operations,
@@ -156,22 +124,14 @@ export function loadManifest(value: unknown): LoadedManifest {
     operationsByTarget,
     httpRouteEntries: httpGateway.routeEntries,
     rawHttpEntries: httpGateway.rawEntries,
-    websocketEntries: websocketEntry ? [websocketEntry] : []
+    websocketEntries: []
   };
-  if (websocketEntry) {
-    return {
-      ...loadedManifest,
-      websocketEntry
-    };
-  }
-  return loadedManifest;
 }
 
 export function mergeLoadedManifests(manifests: LoadedManifest[]): LoadedManifest {
   const operationsByName = new Map<string, OperationManifest>();
   const operationsByTarget = new Map<string, OperationManifest>();
   const operations: OperationManifest[] = [];
-  const websocketEntries = manifests.flatMap((manifest) => manifest.websocketEntries);
   const httpRouteEntries = manifests.flatMap((manifest) => manifest.httpRouteEntries);
   const rawHttpEntries = manifests.flatMap((manifest) => manifest.rawHttpEntries);
 
@@ -216,8 +176,7 @@ export function mergeLoadedManifests(manifests: LoadedManifest[]): LoadedManifes
     operationsByName,
     operationsByTarget,
     rawHttpEntries,
-    websocketEntries,
-    ...(websocketEntries[0] ? { websocketEntry: websocketEntries[0] } : {}),
+    websocketEntries: [],
     ...(first?.timeout ? { timeout: first.timeout } : {})
   };
 }
@@ -656,18 +615,6 @@ function readOptionalGatewayAdapterArgs(
   return readGatewayAdapterArgs(value, label, allowedSourceKinds, allowedSourceDescription);
 }
 
-function readRequiredGatewayAdapterArgs(
-  value: unknown,
-  label: string,
-  allowedSourceKinds: ReadonlySet<GatewayAdapterSourceKind>,
-  allowedSourceDescription: string
-): GatewayAdapterArgManifest[] {
-  if (value === undefined || value === null) {
-    throw new Error(`${label} must be an array`);
-  }
-  return readGatewayAdapterArgs(value, label, allowedSourceKinds, allowedSourceDescription);
-}
-
 function readGatewayAdapterArgs(
   value: unknown,
   label: string,
@@ -932,465 +879,6 @@ function validatePackageTarget(target: string, label: string): void {
     symbolComponent.includes('/')
   ) {
     throw new Error(`${label} must be package.<encoded package id>.<encoded symbol path>`);
-  }
-}
-
-function isObjectSchema(
-  schema: JsonSchema | undefined
-): schema is Extract<JsonSchema, { type: 'object' }> {
-  return schema?.type === 'object';
-}
-
-function isStringSchema(schema: JsonSchema | undefined): boolean {
-  return schema?.type === 'string';
-}
-
-function loadWebSocketEntry(input: {
-  entry: WebSocketEntryManifest;
-  manifest: SkiffRuntimeManifest;
-  serviceId: string;
-  serviceProtocolIdentity: string;
-  operationsByName: Map<string, OperationManifest>;
-}): LoadedWebSocketEntry {
-  validateWebSocketEntry(input.entry);
-  const entry = input.entry;
-
-  let connect: LoadedWebSocketConnect | undefined;
-  let connectIdentityInput:
-    | {
-        connect: WebSocketConnectManifest;
-        serviceProtocolIdentity: string;
-      }
-    | undefined;
-  if (entry.connect) {
-    const operation = input.operationsByName.get(entry.connect.operation);
-    if (!operation) {
-      throw new Error(
-        `websocket ${entry.id} connect references unknown operation ${entry.connect.operation}`
-      );
-    }
-    validateAdapterArgTargets(
-      operation,
-      entry.connect.adapterArgs,
-      `websocket ${entry.id}.connect.adapterArgs`
-    );
-    assertWebSocketConnectResultSchema(
-      operation.response,
-      `websocket ${entry.id}.connect.response`
-    );
-    const serviceProtocolIdentity =
-      operation.serviceProtocolIdentity ?? input.serviceProtocolIdentity;
-    validateWebSocketOperationMetadata(
-      entry.connect,
-      operation,
-      serviceProtocolIdentity,
-      `websocket ${entry.id}.connect`
-    );
-    const operationManifest = withGatewayOperationDefaults(
-      operation,
-      input.manifest,
-      serviceProtocolIdentity
-    );
-    const connectGatewayEntryIdentity = computeWebSocketConnectIdentity({
-      serviceId: input.serviceId,
-      entry,
-      connect: entry.connect,
-      serviceProtocolIdentity
-    });
-    validateOptionalGatewayIdentity(
-      entry.connect.gatewayEntryIdentity,
-      connectGatewayEntryIdentity,
-      `websocket ${entry.id}.connect.gatewayEntryIdentity`
-    );
-    connect = {
-      ...entry.connect,
-      gatewayEntryIdentity: connectGatewayEntryIdentity,
-      operationManifest
-    };
-    connectIdentityInput = {
-      connect: entry.connect,
-      serviceProtocolIdentity
-    };
-  }
-
-  if (entry.context && !connect) {
-    throw new Error(`websocket ${entry.id} declares context without connect`);
-  }
-
-  const receiveOperation = input.operationsByName.get(entry.receive.operation);
-  if (!receiveOperation) {
-    throw new Error(
-      `websocket ${entry.id} receive references unknown operation ${entry.receive.operation}`
-    );
-  }
-  validateAdapterArgTargets(
-    receiveOperation,
-    entry.receive.adapterArgs,
-    `websocket ${entry.id}.receive.adapterArgs`
-  );
-  assertWebSocketReceiveResponseSchema(
-    receiveOperation.response,
-    `websocket ${entry.id}.receive.response`
-  );
-  const receiveServiceProtocolIdentity =
-    receiveOperation.serviceProtocolIdentity ?? input.serviceProtocolIdentity;
-  validateWebSocketOperationMetadata(
-    entry.receive,
-    receiveOperation,
-    receiveServiceProtocolIdentity,
-    `websocket ${entry.id}.receive`
-  );
-  const receiveOperationManifest = withGatewayOperationDefaults(
-    receiveOperation,
-    input.manifest,
-    receiveServiceProtocolIdentity
-  );
-  const receiveGatewayEntryIdentity = computeWebSocketReceiveIdentity({
-    serviceId: input.serviceId,
-    entry,
-    receive: entry.receive,
-    serviceProtocolIdentity: receiveServiceProtocolIdentity
-  });
-  validateOptionalGatewayIdentity(
-    entry.receive.gatewayEntryIdentity,
-    receiveGatewayEntryIdentity,
-    `websocket ${entry.id}.receive.gatewayEntryIdentity`
-  );
-  const receive: LoadedWebSocketReceive = {
-    ...entry.receive,
-    gatewayEntryIdentity: receiveGatewayEntryIdentity,
-    operationManifest: receiveOperationManifest
-  };
-
-  const entryIdentityInput = {
-    serviceId: input.serviceId,
-    entry,
-    receive: {
-      receive: entry.receive,
-      serviceProtocolIdentity: receiveServiceProtocolIdentity
-    }
-  };
-  const gatewayEntryIdentity =
-    connectIdentityInput
-      ? computeWebSocketEntryIdentity({
-          ...entryIdentityInput,
-          connect: connectIdentityInput
-        })
-      : computeWebSocketEntryIdentity(entryIdentityInput);
-  validateOptionalGatewayIdentity(
-    entry.gatewayEntryIdentity,
-    gatewayEntryIdentity,
-    `websocket ${entry.id}.gatewayEntryIdentity`
-  );
-
-  const loadedEntry = {
-    id: entry.id,
-    ...(entry.path !== undefined ? { path: entry.path } : {}),
-    ...(entry.serviceParam !== undefined ? { serviceParam: entry.serviceParam } : {}),
-    ...(entry.context !== undefined ? { context: entry.context } : {}),
-    ...(entry.contextExpectation !== undefined
-      ? { contextExpectation: entry.contextExpectation }
-      : {}),
-    receive,
-    gatewayEntryIdentity,
-    serviceId: input.serviceId,
-    serviceProtocolIdentity: input.serviceProtocolIdentity
-  };
-  if (connect) {
-    return {
-      ...loadedEntry,
-      connect
-    };
-  }
-  return loadedEntry;
-}
-
-function validateWebSocketOperationMetadata(
-  entry: WebSocketConnectManifest | WebSocketReceiveManifest,
-  operation: OperationManifest,
-  serviceProtocolIdentity: string,
-  label: string
-): void {
-  if (entry.operationAbiId !== operation.operationAbiId) {
-    throw new Error(`${label}.operationAbiId must match operation ${operation.operation}.operationAbiId`);
-  }
-  if (
-    entry.serviceOperationTarget !== undefined &&
-    entry.serviceOperationTarget !== operation.target
-  ) {
-    throw new Error(`${label}.serviceOperationTarget must match operation target`);
-  }
-  if (
-    entry.serviceProtocolIdentity !== undefined &&
-    entry.serviceProtocolIdentity !== serviceProtocolIdentity
-  ) {
-    throw new Error(`${label}.serviceProtocolIdentity must match operation serviceProtocolIdentity`);
-  }
-}
-
-function validateWebSocketEntry(entry: WebSocketEntryManifest): void {
-  assertRecord(entry, 'gateway.websocket');
-  rejectUnsupportedManifestKeys(
-    entry,
-    'gateway.websocket',
-    new Set([
-      'id',
-      'path',
-      'serviceParam',
-      'context',
-      'contextExpectation',
-      'connect',
-      'receive',
-      'routes',
-      'gatewayEntryIdentity'
-    ])
-  );
-  requireString(entry.id, 'gateway.websocket.id');
-  if (entry.path !== undefined) {
-    requireString(entry.path, `websocket ${entry.id}.path`);
-  }
-  if (entry.path !== undefined && !entry.path.startsWith('/')) {
-    throw new Error(`websocket ${entry.id}.path must start with /`);
-  }
-  if (entry.context !== undefined) {
-    assertRecord(entry.context, `websocket ${entry.id}.context`);
-  }
-  if (entry.contextExpectation !== undefined) {
-    validateWebSocketContextExpectation(
-      entry.contextExpectation,
-      `websocket ${entry.id}.contextExpectation`
-    );
-  }
-  if (entry.serviceParam !== undefined) {
-    requireString(entry.serviceParam, `websocket ${entry.id}.serviceParam`);
-  }
-  if (entry.connect !== undefined) {
-    validateWebSocketConnect(entry.connect, `websocket ${entry.id}.connect`);
-  }
-  validateWebSocketReceive(entry.receive, `websocket ${entry.id}.receive`);
-  if (entry.routes !== undefined) {
-    if (!Array.isArray(entry.routes)) {
-      throw new Error(`websocket ${entry.id}.routes must be an array`);
-    }
-    throw new Error(`websocket ${entry.id}.routes are no longer supported; use receive for application messages or HTTP for request-response`);
-  }
-}
-
-function validateWebSocketContextExpectation(value: unknown, name: string): void {
-  assertRecord(value, name);
-  if (value.kind !== 'null' && value.kind !== 'typed') {
-    throw new Error(`${name}.kind must be null or typed`);
-  }
-  if (value.kind === 'null') {
-    rejectUnsupportedManifestKeys(value, name, new Set(['kind']));
-    return;
-  }
-  rejectUnsupportedManifestKeys(
-    value,
-    name,
-    new Set(['kind', 'connectOperationAbiId', 'contextTypeIdentity'])
-  );
-  requireString(value.connectOperationAbiId, `${name}.connectOperationAbiId`);
-  requireString(value.contextTypeIdentity, `${name}.contextTypeIdentity`);
-}
-
-function validateWebSocketConnect(connect: WebSocketConnectManifest, name: string): void {
-  assertRecord(connect, name);
-  rejectUnsupportedManifestKeys(
-    connect,
-    name,
-    new Set([
-      'operation',
-      'operationAbiId',
-      'adapterArgs',
-      'serviceOperationTarget',
-      'serviceProtocolIdentity',
-      'gatewayEntryIdentity'
-    ])
-  );
-  requireString(connect.operation, `${name}.operation`);
-  requireString(connect.operationAbiId, `${name}.operationAbiId`);
-  readRequiredGatewayAdapterArgs(
-    connect.adapterArgs,
-    `${name}.adapterArgs`,
-    WEBSOCKET_CONNECT_ADAPTER_SOURCE_KINDS,
-    'websocket.connectRequest'
-  );
-}
-
-function validateWebSocketReceive(receive: WebSocketReceiveManifest, name: string): void {
-  assertRecord(receive, name);
-  rejectUnsupportedManifestKeys(
-    receive,
-    name,
-    new Set([
-      'operation',
-      'operationAbiId',
-      'adapterArgs',
-      'serviceOperationTarget',
-      'serviceProtocolIdentity',
-      'gatewayEntryIdentity'
-    ])
-  );
-  requireString(receive.operation, `${name}.operation`);
-  requireString(receive.operationAbiId, `${name}.operationAbiId`);
-  readRequiredGatewayAdapterArgs(
-    receive.adapterArgs,
-    `${name}.adapterArgs`,
-    WEBSOCKET_RECEIVE_ADAPTER_SOURCE_KINDS,
-    'websocket.receiveEvent, websocket.connection, websocket.connectionContext, websocket.message, websocket.messageBody, websocket.connectionId, or websocket.businessIdentity'
-  );
-}
-
-function validateAdapterArgTargets(
-  operation: OperationManifest,
-  adapterArgs: GatewayAdapterArgManifest[],
-  name: string
-): void {
-  const parameters = new Set(operation.parameters.map((parameter) => parameter.name));
-  const adapterParams = new Set(adapterArgs.map((arg) => arg.param));
-  for (const parameter of operation.parameters) {
-    if (!adapterParams.has(parameter.name)) {
-      throw new Error(`${name} is missing operation parameter ${parameter.name}`);
-    }
-  }
-  for (const arg of adapterArgs) {
-    if (!parameters.has(arg.param)) {
-      throw new Error(`${name} references unknown operation parameter ${arg.param}`);
-    }
-  }
-}
-
-function assertWebSocketConnectResultSchema(schema: JsonSchema, name: string): void {
-  if (isWebSocketConnectResultUnionSchema(schema)) {
-    return;
-  }
-  throw new Error(`${name} must be canonical WebSocketConnectResult oneOf schema`);
-}
-
-function isWebSocketConnectResultUnionSchema(schema: JsonSchema): boolean {
-  const record = schema as Record<string, unknown>;
-  const oneOf = record.oneOf;
-  if (!Array.isArray(oneOf)) {
-    return false;
-  }
-  if (oneOf.length !== 2) {
-    return false;
-  }
-  return (
-    oneOf.some((branch) =>
-      isTaggedWebSocketConnectResultBranch(branch, {
-        tag: 'accept',
-        requiredFields: ['context'],
-        optionalFields: ['businessIdentity', 'connectionPolicy'],
-        nullableFields: ['businessIdentity'],
-        fieldSchemas: {
-          businessIdentity: 'string'
-        }
-      })
-    ) &&
-    oneOf.some((branch) =>
-      isTaggedWebSocketConnectResultBranch(branch, {
-        tag: 'reject',
-        requiredFields: ['code', 'reason'],
-        fieldSchemas: {
-          code: 'integer',
-          reason: 'string'
-        }
-      })
-    )
-  );
-}
-
-function isTaggedWebSocketConnectResultBranch(
-  value: unknown,
-  expected: {
-    tag: 'accept' | 'reject';
-    requiredFields: string[];
-    optionalFields?: string[];
-    nullableFields?: string[];
-    fieldSchemas?: Record<string, JsonSchema['type']>;
-  }
-): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return false;
-  }
-  const schema = value as JsonSchema;
-  if (schema.type !== 'object' || schema.additionalProperties !== false) {
-    return false;
-  }
-  const properties = schema.properties ?? {};
-  const expectedFields = ['tag', ...expected.requiredFields, ...(expected.optionalFields ?? [])].sort();
-  const expectedRequiredFields = ['tag', ...expected.requiredFields].sort();
-  const propertyFields = Object.keys(properties).sort();
-  const requiredFields = [...(schema.required ?? [])].sort();
-  return (
-    schema.properties?.tag?.type === 'string' &&
-    schema.properties.tag.enum?.length === 1 &&
-    schema.properties.tag.enum[0] === expected.tag &&
-    sameStrings(propertyFields, expectedFields) &&
-    sameStrings(requiredFields, expectedRequiredFields) &&
-    [...expected.requiredFields, ...(expected.optionalFields ?? [])].every((field) => {
-      const expectedType = expected.fieldSchemas?.[field];
-      if (expectedType !== undefined && properties[field]?.type !== expectedType) {
-        return false;
-      }
-      if (field === 'connectionPolicy') {
-        return isWebSocketConnectionPolicySchema(properties[field]);
-      }
-      if ((expected.nullableFields ?? []).includes(field)) {
-        return properties[field]?.nullable === true;
-      }
-      return true;
-    })
-  );
-}
-
-function isWebSocketConnectionPolicySchema(schema: JsonSchema | undefined): boolean {
-  if (!isObjectSchema(schema) || schema.additionalProperties !== false) {
-    return false;
-  }
-  const properties = schema.properties ?? {};
-  return (
-    sameStrings(Object.keys(properties).sort(), [
-      'closeCode',
-      'closeReason',
-      'maxConnections',
-      'overflow'
-    ]) &&
-    sameStrings([...(schema.required ?? [])].sort(), ['maxConnections', 'overflow']) &&
-    properties.maxConnections?.type === 'integer' &&
-    isStringSchema(properties.overflow) &&
-    properties.closeCode?.type === 'integer' &&
-    properties.closeReason?.type === 'string'
-  );
-}
-
-function sameStrings(left: string[], right: string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function assertWebSocketReceiveResponseSchema(schema: JsonSchema, name: string): void {
-  if (schema.type === 'null') {
-    return;
-  }
-  throw new Error(`${name} must be null or void response schema`);
-}
-
-function validateOptionalGatewayIdentity(
-  supplied: string | undefined,
-  expected: string | string[],
-  name: string
-): void {
-  if (supplied === undefined) {
-    return;
-  }
-  if (!GATEWAY_IDENTITY_PATTERN.test(supplied)) {
-    throw new Error(`${name} must be skiff-gateway-v1:sha256:<64 lowercase hex>`);
-  }
-  const expectedIdentities = Array.isArray(expected) ? expected : [expected];
-  if (!expectedIdentities.includes(supplied)) {
-    throw new Error(`${name} must match computed gateway identity ${expectedIdentities[0]}`);
   }
 }
 

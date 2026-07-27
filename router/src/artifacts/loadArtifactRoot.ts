@@ -133,20 +133,8 @@ export async function loadRouterArtifactRoot(
         ...entry,
         buildId,
       })),
-      websocketEntries: manifest.websocketEntries.map((entry) => ({
-        ...entry,
-        buildId,
-      })),
+      websocketEntries: [],
     };
-    if (manifest.websocketEntry !== undefined) {
-      return {
-        ...loadedManifest,
-        websocketEntry: {
-          ...manifest.websocketEntry,
-          buildId,
-        },
-      };
-    }
     return loadedManifest;
   });
   const manifest =

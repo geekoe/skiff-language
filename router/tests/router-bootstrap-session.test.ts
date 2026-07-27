@@ -15,7 +15,7 @@ import { RuntimeEndpoint } from '../src/router/runtimeEndpoint.js';
 import { RuntimeRegistry } from '../src/router/runtimeRegistry.js';
 import {
   DEFAULT_TEST_BUILD_ID,
-  loadWebSocketManifest
+  loadRawHttpManifest
 } from './helpers/manifests.js';
 
 const tempDirs: string[] = [];
@@ -110,7 +110,7 @@ describe('Router runtime bootstrap session', () => {
       }
     ]);
 
-    const manifest = loadWebSocketManifest();
+    const manifest = loadRawHttpManifest();
     socket.send(encodeRuntimeFrame({
       schemaVersion: 'skiff-runtime-frame-v1',
       type: 'runtime.register',
@@ -119,7 +119,7 @@ describe('Router runtime bootstrap session', () => {
       revisionId: manifest.service.revisionId,
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [manifest.websocketEntry!.receive.operationManifest.target]
+      targets: [manifest.operations[0]!.target]
     }));
     await waitFor(() => frames.length === 2);
     expect(frames[1]).toMatchObject({

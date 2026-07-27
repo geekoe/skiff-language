@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { FilesystemRuntimeAssemblySnapshotLoader } from '../src/router/filesystemRuntimeAssemblySnapshotLoader.js';
+import { deriveWebSocketEntryId } from '../src/router/runtimeAssemblyDeploymentSnapshot.js';
 
 const roots: string[] = [];
 const ASSEMBLY_IDENTITY =
@@ -22,6 +23,12 @@ afterEach(async () => {
 });
 
 describe('filesystem RuntimeAssembly snapshot loader', () => {
+  it('matches the compiler-owned WebSocketEntryId language-neutral golden', () => {
+    expect(deriveWebSocketEntryId('example.com/chat', 'websocket')).toBe(
+      'skiff-websocket-entry-v1:sha256:3a0f9b39b684e0c324ff3f729395273987f86ed648e6c0ddd0cb35b67b1aa616'
+    );
+  });
+
   it('loads raw unary, raw server stream and typed unary from exact deployments', async () => {
     const root = await fixtureRoot();
     const fixture = canonicalFixture();
@@ -63,6 +70,121 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     expect(loaded.gatewayIngress[0]).not.toHaveProperty('handler');
     expect(loaded.gatewayIngress[0]).not.toHaveProperty('adapterPlan');
     expect(loaded.gatewayIngress[0]).not.toHaveProperty('contractOperationId');
+  });
+
+  it.each([
+    {
+      name: 'handler present',
+      handler: `skiff-package-callable-v1:sha256:${'f'.repeat(64)}`
+    },
+    {
+      name: 'handler absent',
+      handler: null
+    }
+  ])('loads an exact current WebSocket entry with $name', async ({ handler }) => {
+    const root = await fixtureRoot();
+    const fixture = websocketFixture(handler);
+    await writeFixture(root, fixture);
+
+    const loaded = await loader(root).load({
+      assemblyIdentity: ASSEMBLY_IDENTITY
+    });
+    const binding = loaded.gatewayIngress[0]!;
+    expect(binding).toMatchObject({
+      selector: {
+        protocol: 'webSocket',
+        host: '*',
+        method: null,
+        path: '/chat'
+      },
+      gatewayEntryKey: 'websocket',
+      gatewayEntryIdentity: GATEWAY_IDENTITIES[0],
+      adapterKind: 'websocketConnect',
+      operationMode: 'unary',
+      websocketEntryId: deriveWebSocketEntryId(
+        'skiff.run/echo',
+        'websocket'
+      )
+    });
+    if (handler === null) {
+      expect(binding).not.toHaveProperty('handler');
+    } else {
+      expect(binding.handler).toBe(handler);
+    }
+  });
+
+  it.each([
+    {
+      name: 'non-null method',
+      mutate: (fixture: Fixture) => {
+        fixture.deployments[0]!.ingress[0].selector.method = 'GET';
+        fixture.assembly.gatewayIngress[0].selector.method = 'GET';
+      }
+    },
+    {
+      name: 'non-compiler key',
+      mutate: (fixture: Fixture) => {
+        const entry = fixture.deployments[0]!.gatewayEntries.websocket;
+        fixture.deployments[0]!.gatewayEntries = { chat: entry };
+        fixture.deployments[0]!.ingress[0].gatewayEntryKey = 'chat';
+        fixture.assembly.gatewayIngress[0].gatewayEntryKey = 'chat';
+      }
+    },
+    {
+      name: 'wrong fixed downlink frame order',
+      mutate: (fixture: Fixture) => {
+        fixture.deployments[0]!.gatewayEntries.websocket
+          .protocolSurface.protocol.surface.downlinkFrames = ['text', 'binary'];
+      }
+    },
+    {
+      name: 'handler-absent adapter args',
+      mutate: (fixture: Fixture) => {
+        const entry = fixture.deployments[0]!.gatewayEntries.websocket;
+        entry.handler = null;
+        entry.adapterPlan.args = [{
+          param: 'request',
+          source: { kind: 'websocket.connectRequest' }
+        }];
+      }
+    },
+    {
+      name: 'legacy pre hook',
+      mutate: (fixture: Fixture) => {
+        fixture.deployments[0]!.gatewayEntries.websocket.pre =
+          `skiff-package-callable-v1:sha256:${'9'.repeat(64)}`;
+      }
+    },
+    {
+      name: 'HTTP alias for the WebSocket entry',
+      mutate: (fixture: Fixture) => {
+        const deploymentIngress = {
+          selector: {
+            protocol: 'http',
+            host: '*',
+            method: 'GET',
+            path: '/chat-http'
+          },
+          gatewayEntryKey: 'websocket'
+        };
+        fixture.deployments[0]!.ingress.push(deploymentIngress);
+        fixture.assembly.gatewayIngress.push({
+          ...structuredClone(fixture.assembly.gatewayIngress[0]),
+          selector: structuredClone(deploymentIngress.selector)
+        });
+      }
+    }
+  ])('rejects an inexact current WebSocket snapshot: $name', async ({ mutate }) => {
+    const root = await fixtureRoot();
+    const fixture = websocketFixture(
+      `skiff-package-callable-v1:sha256:${'f'.repeat(64)}`
+    );
+    mutate(fixture);
+    await writeFixture(root, fixture);
+
+    await expect(
+      loader(root).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow();
   });
 
   it('uses declared v2 identities without recomputing Rust-owned content hashes', async () => {
@@ -191,13 +313,6 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
         fixture.assembly.gatewayIngress[0].contractOperationId =
           `skiff-contract-operation-v1:sha256:${'c'.repeat(64)}`;
       }
-    },
-    {
-      name: 'WebSocket selector',
-      mutate: (fixture: Fixture) => {
-        fixture.assembly.gatewayIngress[0].selector.protocol = 'webSocket';
-        fixture.assembly.gatewayIngress[0].selector.method = null;
-      }
     }
   ])('rejects legacy RuntimeAssembly surface: $name', async ({ mutate }) => {
     const root = await fixtureRoot();
@@ -282,6 +397,13 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
       name: 'contract version',
       mutate: (deploymentRecord: Record<string, any>) => {
         deploymentRecord.contract.contractVersion = '2.0.0';
+      }
+    },
+    {
+      name: 'contract protocol identity',
+      mutate: (deploymentRecord: Record<string, any>) => {
+        deploymentRecord.contract.serviceProtocolIdentity =
+          `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`;
       }
     },
     {
@@ -424,6 +546,73 @@ function canonicalFixture(): Fixture {
     },
     deployments
   };
+}
+
+function websocketFixture(handler: string | null): Fixture {
+  const fixture = canonicalFixture();
+  const deployment = fixture.deployments[0]!;
+  const entry = deployment.gatewayEntries.rawUnary;
+  entry.protocolSurface = {
+    protocol: {
+      kind: 'websocketConnect',
+      surface: {
+        connectRequestShape: 'v1',
+        connectResultShape: 'v1',
+        connectionPolicyShape: 'v1',
+        externalSources: [
+          { kind: 'websocket.connectRequest' },
+          { kind: 'websocket.connectionId' }
+        ],
+        downlinkFrames: ['binary', 'text']
+      }
+    },
+    externalErrorProjection: { kind: 'fixed', version: 'v1' }
+  };
+  entry.handler = handler;
+  entry.pre = null;
+  entry.guard = null;
+  entry.adapterPlan = {
+    kind: 'websocketConnect',
+    args:
+      handler === null
+        ? []
+        : [
+            {
+              param: 'request',
+              source: { kind: 'websocket.connectRequest' }
+            },
+            {
+              param: 'connectionId',
+              source: { kind: 'websocket.connectionId' }
+            }
+          ]
+  };
+  deployment.gatewayEntries = { websocket: entry };
+  deployment.ingress = [{
+    selector: {
+      protocol: 'webSocket',
+      host: '*',
+      method: null,
+      path: '/chat'
+    },
+    gatewayEntryKey: 'websocket'
+  }];
+  fixture.deployments = [deployment];
+  const reference = {
+    serviceId: deployment.contract.serviceId,
+    contractVersion: deployment.contract.contractVersion,
+    deploymentRevision: deployment.deploymentRevision,
+    deploymentArtifactIdentity: deployment.deploymentArtifactIdentity
+  };
+  fixture.assembly.roots = [reference];
+  fixture.assembly.resolvedDeployments = [reference];
+  fixture.assembly.gatewayIngress = [{
+    selector: structuredClone(deployment.ingress[0].selector),
+    deployment: reference,
+    gatewayEntryKey: 'websocket',
+    gatewayEntryIdentity: entry.gatewayEntryIdentity
+  }];
+  return fixture;
 }
 
 function deployment(

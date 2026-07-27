@@ -1,7 +1,6 @@
 import WebSocket from 'ws';
 
 const DEFAULT_CONNECTION_LIMIT = 5_000;
-const DEFAULT_RECEIVE_QUEUE_LIMIT = 100;
 const DEFAULT_SLOW_CLIENT_BUDGET_BYTES = 16 * 1024 * 1024;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 1_000;
 const MAX_WEBSOCKET_CLOSE_REASON_BYTES = 123;
@@ -25,41 +24,20 @@ export interface WebSocketLifecycleOutboundMessage {
 
 export interface WebSocketConnectionLifecycleOptions {
   connectionLimit?: number;
-  receiveQueueLimit?: number;
   slowClientBudgetBytes?: number;
   shutdownTimeoutMs?: number;
 }
-
-export interface WebSocketReceiveLifecycleCounters {
-  inFlight: number;
-  queued: number;
-  abortOnClose: number;
-}
-
-export type WebSocketReceiveScheduleResult = 'started' | 'queued' | 'closed' | 'ignored';
 
 export type WebSocketPolicyAdmission =
   | { accepted: true }
   | { accepted: false; close: WebSocketLifecycleClose };
 
-interface PendingReceive {
-  run(signal: AbortSignal): Promise<void>;
-  onError(error: unknown): void;
-}
-
-interface ActiveReceive extends PendingReceive {
-  controller: AbortController;
-  abortCounted: boolean;
-}
-
 type LifecycleState = 'reserved' | 'admitted' | 'closed';
 
 interface LifecycleConnection<TConnection, TRuntime> {
-  activeReceive?: ActiveReceive;
   businessKey?: string;
   closeBeforeAttach?: (close: WebSocketLifecycleClose) => void;
   id: string;
-  receiveQueue: PendingReceive[];
   runtime?: TRuntime;
   socket?: WebSocket;
   state: LifecycleState;
@@ -74,7 +52,6 @@ export class WebSocketConnectionLimitExceededError extends Error {
 
 export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
   private readonly connectionLimit: number;
-  private readonly receiveQueueLimit: number;
   private readonly slowClientBudgetBytes: number;
   private readonly shutdownTimeoutMs: number;
   private readonly connectionsById = new Map<string, LifecycleConnection<TConnection, TRuntime>>();
@@ -86,11 +63,6 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     TRuntime,
     Set<LifecycleConnection<TConnection, TRuntime>>
   >();
-  private readonly receiveCountersValue: WebSocketReceiveLifecycleCounters = {
-    inFlight: 0,
-    queued: 0,
-    abortOnClose: 0
-  };
   private shutdownPromise: Promise<void> | undefined;
   private shuttingDown = false;
 
@@ -101,10 +73,6 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     this.connectionLimit = positiveInteger(
       options.connectionLimit ?? DEFAULT_CONNECTION_LIMIT,
       'connectionLimit'
-    );
-    this.receiveQueueLimit = nonNegativeInteger(
-      options.receiveQueueLimit ?? DEFAULT_RECEIVE_QUEUE_LIMIT,
-      'receiveQueueLimit'
     );
     this.slowClientBudgetBytes = nonNegativeInteger(
       options.slowClientBudgetBytes ?? DEFAULT_SLOW_CLIENT_BUDGET_BYTES,
@@ -133,7 +101,6 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     }
     const connection: LifecycleConnection<TConnection, TRuntime> = {
       id,
-      receiveQueue: [],
       state: 'reserved',
       value,
       ...(runtime !== undefined ? { runtime } : {}),
@@ -209,6 +176,15 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
         this.finishConnection(connection, undefined, false);
       }
     });
+    socket.once('error', () => {
+      if (connection.socket === socket) {
+        this.finishConnection(
+          connection,
+          { code: 1011, reason: 'websocket transport failed' },
+          true
+        );
+      }
+    });
     if (socket.readyState === WebSocket.CLOSED) {
       this.finishConnection(connection, undefined, false);
     }
@@ -249,34 +225,6 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     return Array.from(this.connectionsByBusinessKey.get(businessKey) ?? [], ({ value }) => value);
   }
 
-  scheduleReceive(
-    id: string,
-    receive: {
-      run(signal: AbortSignal): Promise<void>;
-      onError(error: unknown): void;
-    }
-  ): WebSocketReceiveScheduleResult {
-    const connection = this.connectionsById.get(id);
-    if (connection === undefined || connection.state !== 'admitted') {
-      return 'ignored';
-    }
-    if (connection.activeReceive === undefined) {
-      this.startReceive(connection, receive);
-      return 'started';
-    }
-    if (connection.receiveQueue.length >= this.receiveQueueLimit) {
-      this.finishConnection(
-        connection,
-        { code: 1008, reason: 'websocket receive queue is full' },
-        true
-      );
-      return 'closed';
-    }
-    connection.receiveQueue.push(receive);
-    this.receiveCountersValue.queued += 1;
-    return 'queued';
-  }
-
   sendToConnection(id: string, message: WebSocketLifecycleOutboundMessage): boolean {
     const connection = this.connectionsById.get(id);
     return connection === undefined ? false : this.send(connection, message);
@@ -305,10 +253,6 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     }
     this.finishConnection(connection, close, true);
     return true;
-  }
-
-  receiveCounters(): WebSocketReceiveLifecycleCounters {
-    return { ...this.receiveCountersValue };
   }
 
   connectionCount(): number {
@@ -352,62 +296,6 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
       throw new Error(`unknown websocket connection id ${id}`);
     }
     return connection;
-  }
-
-  private startReceive(
-    connection: LifecycleConnection<TConnection, TRuntime>,
-    receive: PendingReceive
-  ): void {
-    const active: ActiveReceive = {
-      ...receive,
-      controller: new AbortController(),
-      abortCounted: false
-    };
-    connection.activeReceive = active;
-    this.receiveCountersValue.inFlight += 1;
-
-    let receivePromise: Promise<void>;
-    try {
-      receivePromise = active.run(active.controller.signal);
-    } catch (error) {
-      receivePromise = Promise.reject(error);
-    }
-    void receivePromise
-      .catch((error: unknown) => {
-        if (connection.state === 'admitted') {
-          active.onError(error);
-        }
-      })
-      .finally(() => {
-        if (connection.activeReceive !== active) {
-          return;
-        }
-        delete connection.activeReceive;
-        this.receiveCountersValue.inFlight = Math.max(
-          0,
-          this.receiveCountersValue.inFlight - 1
-        );
-        if (active.abortCounted) {
-          this.receiveCountersValue.abortOnClose = Math.max(
-            0,
-            this.receiveCountersValue.abortOnClose - 1
-          );
-        }
-        this.drainReceiveQueue(connection);
-      })
-      .catch(() => undefined);
-  }
-
-  private drainReceiveQueue(connection: LifecycleConnection<TConnection, TRuntime>): void {
-    if (connection.state !== 'admitted' || connection.activeReceive !== undefined) {
-      return;
-    }
-    const receive = connection.receiveQueue.shift();
-    if (receive === undefined) {
-      return;
-    }
-    this.receiveCountersValue.queued = Math.max(0, this.receiveCountersValue.queued - 1);
-    this.startReceive(connection, receive);
   }
 
   private send(
@@ -463,20 +351,6 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
       this.onFinish?.(connection.value, connection.runtime);
     } catch {
       // The lifecycle is already deindexed; external cleanup cannot restore it.
-    }
-
-    if (connection.receiveQueue.length > 0) {
-      this.receiveCountersValue.queued = Math.max(
-        0,
-        this.receiveCountersValue.queued - connection.receiveQueue.length
-      );
-      connection.receiveQueue = [];
-    }
-    const active = connection.activeReceive;
-    if (active !== undefined && !active.controller.signal.aborted) {
-      active.abortCounted = true;
-      this.receiveCountersValue.abortOnClose += 1;
-      active.controller.abort();
     }
 
     if (closeTransport && close !== undefined) {

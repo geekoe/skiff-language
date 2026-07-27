@@ -6,10 +6,7 @@ import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { stableStringify } from "../src/manifest/identity.js";
-import {
-  loadManifest as loadRuntimeManifest,
-  packageHttpHandlerTarget,
-} from "../src/manifest/loadManifest.js";
+import { packageHttpHandlerTarget } from "../src/manifest/loadManifest.js";
 import { loadRouterArtifactRoot } from "../src/artifacts/loadArtifactRoot.js";
 import { serviceIdPathSegments } from "../src/artifacts/pathProjection.js";
 import { readActiveArtifactPointers } from "../src/artifacts/pointers.js";
@@ -22,7 +19,7 @@ import { writeMockIdentityCli } from "./helpers/mockIdentityCli.js";
 
 const tempDirs: string[] = [];
 const originalIdentityCliEnv = process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
-const SERVICE_ID = "example.com/websocket_fixture";
+const SERVICE_ID = "example.com/service_fixture";
 const CONTRACT_IDENTITY = fixtureIdentity("skiff-service-protocol-v5", SERVICE_ID);
 const CHAT_CONTRACT_IDENTITY = fixtureIdentity("skiff-service-protocol-v5", "chat");
 const LEGACY_CONTRACT_IDENTITY = fixtureIdentity("skiff-service-protocol-v5", "legacy");
@@ -78,31 +75,6 @@ async function createArtifactRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "skiff-router-artifacts-"));
   tempDirs.push(root);
   return root;
-}
-
-function loadManifest(value: unknown) {
-  addDefaultOperationAbiIds(value);
-  return loadRuntimeManifest(value);
-}
-
-function addDefaultOperationAbiIds(value: unknown): void {
-  if (!isRecord(value) || !Array.isArray(value.operations)) {
-    return;
-  }
-  value.operations.forEach((operation, index) => {
-    if (!isRecord(operation) || typeof operation.operationAbiId === "string") {
-      return;
-    }
-    const target =
-      typeof operation.target === "string"
-        ? operation.target
-        : typeof operation.entrypoint === "string"
-          ? operation.entrypoint
-          : typeof operation.operation === "string"
-            ? operation.operation
-            : `index:${index}`;
-    operation.operationAbiId = testOperationAbiId(target);
-  });
 }
 
 async function writeServiceConfigSource(
@@ -259,12 +231,12 @@ describe("router artifact root", () => {
     const primaryRoot = await createArtifactRoot();
     const overlayRoot = await createArtifactRoot();
     const serviceStorageSegment = publicationStorageSegment(SERVICE_ID);
-    const primaryEntrypoint = `runtime.${serviceStorageSegment}.WebSocketFixtureHttpApi.primaryHandle`;
-    const overlayEntrypoint = `runtime.${serviceStorageSegment}.WebSocketFixtureHttpApi.overlayHandle`;
+    const primaryEntrypoint = `runtime.${serviceStorageSegment}.FixtureHttpApi.primaryHandle`;
+    const overlayEntrypoint = `runtime.${serviceStorageSegment}.FixtureHttpApi.overlayHandle`;
 
     const primaryAssemblyValue = serviceAssembly(SERVICE_ID) as any;
     primaryAssemblyValue.operations.find(
-      (operation: any) => operation.operation === "WebSocketFixtureHttpApi.handle",
+      (operation: any) => operation.operation === "FixtureHttpApi.handle",
     )!.entrypoint = primaryEntrypoint;
     const primaryAssembly = await writeServiceAssembly(
       primaryRoot,
@@ -275,7 +247,7 @@ describe("router artifact root", () => {
 
     const overlayAssemblyValue = serviceAssembly(SERVICE_ID) as any;
     overlayAssemblyValue.operations.find(
-      (operation: any) => operation.operation === "WebSocketFixtureHttpApi.handle",
+      (operation: any) => operation.operation === "FixtureHttpApi.handle",
     )!.entrypoint = overlayEntrypoint;
     const overlayAssembly = await writeServiceAssembly(
       overlayRoot,
@@ -415,7 +387,7 @@ describe("router artifact root", () => {
     const assembly = serviceAssembly(SERVICE_ID) as any;
     const typedTarget = testServiceRouteTarget(
       SERVICE_ID,
-      "WebSocketFixtureHttpApi.handle",
+      "FixtureHttpApi.handle",
     );
     const serviceUnit = await writeServiceUnit(
       root,
@@ -424,7 +396,7 @@ describe("router artifact root", () => {
       {
         assembly,
         entrypoints: {
-          "WebSocketFixtureHttpApi.handle": typedTarget,
+          "FixtureHttpApi.handle": typedTarget,
         },
       },
     );
@@ -437,7 +409,7 @@ describe("router artifact root", () => {
 
     const loaded = await loadRouterArtifactRoot(root);
     const operation = loaded.manifest.operations.find(
-      (candidate) => candidate.operation === "WebSocketFixtureHttpApi.handle",
+      (candidate) => candidate.operation === "FixtureHttpApi.handle",
     );
 
     expect(operation?.target).toBe(typedTarget);
@@ -460,13 +432,13 @@ describe("router artifact root", () => {
       {
         method: "POST",
         path: "/session",
-        operation: "WebSocketFixtureHttpApi.handle",
+        operation: "FixtureHttpApi.handle",
         target: `gateway.${publicationStorageSegment(SERVICE_ID)}.http.session`,
         adapter: {
           kind: "rawHttp",
           handler: {
             kind: "serviceFunction",
-            modulePath: "internal.websocket_fixture_service",
+            modulePath: "internal.service_fixture_service",
             symbol: "handle",
           },
           adapterArgs: [{ param: "request", source: { kind: "http.request" } }],
@@ -484,10 +456,10 @@ describe("router artifact root", () => {
       serviceId: SERVICE_ID,
       method: "POST",
       path: "/session",
-      operation: "WebSocketFixtureHttpApi.handle",
+      operation: "FixtureHttpApi.handle",
       gatewayTarget: `gateway.${publicationStorageSegment(SERVICE_ID)}.http.session`,
       operationManifest: {
-        target: testServiceRouteTarget(SERVICE_ID, "WebSocketFixtureHttpApi.handle"),
+        target: testServiceRouteTarget(SERVICE_ID, "FixtureHttpApi.handle"),
       },
     });
     expect(route?.buildId).toBe(
@@ -639,7 +611,7 @@ describe("router artifact root", () => {
       },
     );
     const connectOperation = (assembly.operations as Array<any>).find(
-      (operation: any) => operation.operation === "WebSocketFixtureConnection.connect",
+      (operation: any) => operation.operation === "FixtureWorker.primary",
     )!;
     connectOperation.operationAbiId = "operation:test:mismatch";
     const writtenAssembly = await writeServiceAssembly(root, assembly);
@@ -650,7 +622,7 @@ describe("router artifact root", () => {
     await writeContractFile(root);
 
     await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /serviceAssembly\.operation\.operationAbiId for WebSocketFixtureConnection\.connect must match typed serviceUnit operationAbiId/,
+      /serviceAssembly\.operation\.operationAbiId for FixtureWorker\.primary must match typed serviceUnit operationAbiId/,
     );
   });
 
@@ -1385,7 +1357,7 @@ describe("router artifact root", () => {
     );
     const buildId =
       "skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const version = "websocket_fixture-ios-1.3.7";
+    const version = "service_fixture-ios-1.3.7";
     await writeVersionPointer(root, {
       buildId,
       serviceId: SERVICE_ID,
@@ -1427,11 +1399,11 @@ describe("router artifact root", () => {
     await writeContractFile(root);
     const assembly = runtimeProgramServiceAssembly(SERVICE_ID);
     const writtenAssembly = await writeServiceAssembly(root, assembly);
-    const serviceVersion = "websocket_fixture-ios-defaults";
-    const serviceUnitPath = "units/services/websocket_fixture-defaults.json";
+    const serviceVersion = "service_fixture-ios-defaults";
+    const serviceUnitPath = "units/services/service_fixture-defaults.json";
     const fileIrIdentity =
       "skiff-file-ir-v3:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-    const filePath = "units/files/websocket_fixture-main.json";
+    const filePath = "units/files/service_fixture-main.json";
     await writeFile(
       join(root, serviceUnitPath),
       JSON.stringify(
@@ -1505,7 +1477,7 @@ describe("router artifact root", () => {
       buildId:
         "legacy-build:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       serviceId: SERVICE_ID,
-      version: "websocket_fixture-ios-1.3.7",
+      version: "service_fixture-ios-1.3.7",
     });
 
     await expect(
@@ -1524,7 +1496,7 @@ describe("router artifact root", () => {
     await writeVersionPointer(root, {
       buildId: versionBuildId,
       serviceId: SERVICE_ID,
-      version: "websocket_fixture-ios-1.3.7",
+      version: "service_fixture-ios-1.3.7",
     });
     await mkdir(
       join(root, "builds", "services", ...serviceIdPathSegments(SERVICE_ID)),
@@ -1542,7 +1514,7 @@ describe("router artifact root", () => {
         {
           schemaVersion: "skiff-service-build-v1",
           serviceId: SERVICE_ID,
-          serviceVersion: "websocket_fixture-ios-1.3.7",
+          serviceVersion: "service_fixture-ios-1.3.7",
           buildId: buildRecordBuildId,
           serviceAssembly: {
             assemblyIdentity: ASSEMBLY_IDENTITY,
@@ -1571,7 +1543,7 @@ describe("router artifact root", () => {
     await writeVersionPointer(root, {
       buildId,
       serviceId: SERVICE_ID,
-      version: "websocket_fixture-ios-1.3.7",
+      version: "service_fixture-ios-1.3.7",
     });
     await mkdir(
       join(root, "builds", "services", ...serviceIdPathSegments(SERVICE_ID)),
@@ -1589,7 +1561,7 @@ describe("router artifact root", () => {
         {
           schemaVersion: "skiff-service-build-v1",
           serviceId: SERVICE_ID,
-          serviceVersion: "websocket_fixture-ios-1.3.7",
+          serviceVersion: "service_fixture-ios-1.3.7",
           buildId,
           protocolIdentity: CONTRACT_IDENTITY,
           serviceAssembly: {
@@ -1619,7 +1591,7 @@ describe("router artifact root", () => {
     await writeVersionPointer(root, {
       buildId,
       serviceId: SERVICE_ID,
-      version: "websocket_fixture-ios-1.3.7",
+      version: "service_fixture-ios-1.3.7",
     });
     await mkdir(
       join(root, "builds", "services", ...serviceIdPathSegments(SERVICE_ID)),
@@ -1637,7 +1609,7 @@ describe("router artifact root", () => {
         {
           schemaVersion: "skiff-service-build-v1",
           serviceId: SERVICE_ID,
-          serviceVersion: "websocket_fixture-ios-1.3.7",
+          serviceVersion: "service_fixture-ios-1.3.7",
           buildId,
           serviceProtocolIdentity: CONTRACT_IDENTITY,
           serviceAssembly: {
@@ -1674,13 +1646,13 @@ describe("router artifact root", () => {
     await writeVersionPointer(root, {
       buildId,
       serviceId: SERVICE_ID,
-      version: "websocket_fixture-ios-1.3.7",
+      version: "service_fixture-ios-1.3.7",
     });
     await writeBuildRecord(root, {
       buildId,
       serviceId: SERVICE_ID,
       assembly: writtenAssembly,
-      serviceVersion: "websocket_fixture-ios-1.3.8",
+      serviceVersion: "service_fixture-ios-1.3.8",
     });
 
     await expect(
@@ -1697,7 +1669,7 @@ describe("router artifact root", () => {
     await writeVersionPointer(root, {
       buildId,
       serviceId: SERVICE_ID,
-      version: "websocket_fixture-ios-1.3.7",
+      version: "service_fixture-ios-1.3.7",
     });
     await mkdir(
       join(root, "builds", "services", ...serviceIdPathSegments(SERVICE_ID)),
@@ -1817,7 +1789,7 @@ describe("router artifact root", () => {
     await expect(
       loadRouterArtifactRoot(root, { devReload: true }),
     ).rejects.toThrow(
-      /dev\/services\/example~com~~websocket_fixture\.json buildId must be a non-empty string/,
+      /dev\/services\/example~com~~service_fixture\.json buildId must be a non-empty string/,
     );
   });
 
@@ -2004,7 +1976,7 @@ describe("router artifact root", () => {
     expect(
       loaded.activationByServiceOperation.get({
         serviceId: SERVICE_ID,
-        target: testServiceRouteTarget(SERVICE_ID, "WebSocketFixtureHttpApi.handle"),
+        target: testServiceRouteTarget(SERVICE_ID, "FixtureHttpApi.handle"),
         buildId: serviceConfig.buildId,
       }),
     ).toBe(serviceConfig.activationIdentity);
@@ -2062,7 +2034,7 @@ describe("router artifact root", () => {
                 "skiff-runtime-activation-v1:opaque:service-test-first",
               operationTarget: testServiceRouteTarget(
                 SERVICE_ID,
-                "WebSocketFixtureConnection.connect",
+                "FixtureWorker.primary",
               ),
               storageServiceId: "example.com/test-first",
               configPath: firstConfigPath,
@@ -2075,7 +2047,7 @@ describe("router artifact root", () => {
                 "skiff-runtime-activation-v1:opaque:service-test-second",
               operationTarget: testServiceRouteTarget(
                 SERVICE_ID,
-                "WebSocketFixtureConnection.receive",
+                "FixtureWorker.secondary",
               ),
               storageServiceId: "example.com/test-second",
               configPath: secondConfigPath,
@@ -2130,7 +2102,7 @@ describe("router artifact root", () => {
         serviceId: SERVICE_ID,
         target: testServiceRouteTarget(
           SERVICE_ID,
-          "WebSocketFixtureConnection.connect",
+          "FixtureWorker.primary",
         ),
         buildId: first.buildId,
       }),
@@ -2140,7 +2112,7 @@ describe("router artifact root", () => {
         serviceId: SERVICE_ID,
         target: testServiceRouteTarget(
           SERVICE_ID,
-          "WebSocketFixtureConnection.receive",
+          "FixtureWorker.secondary",
         ),
         buildId: second.buildId,
       }),
@@ -2382,7 +2354,7 @@ describe("router artifact root", () => {
     expect(
       loaded.activationByServiceOperation.get({
         serviceId: SERVICE_ID,
-        target: testServiceRouteTarget(SERVICE_ID, "WebSocketFixtureHttpApi.handle"),
+        target: testServiceRouteTarget(SERVICE_ID, "FixtureHttpApi.handle"),
         buildId: serviceConfig.buildId,
       }),
     ).toBe(serviceConfig.activationIdentity);
@@ -2410,7 +2382,7 @@ describe("router artifact root", () => {
     await expect(
       loadRouterArtifactRoot(root, { configProfile: "prod" }),
     ).rejects.toThrow(
-      /serviceAssembly\.configShape requires at least one config source \(configs\/services\/example~com~~websocket_fixture\/config\.yml, configs\/services\/example~com~~websocket_fixture\/config\.prod\.yml, configs\/services\/example~com~~websocket_fixture\/config\.prod\.secret\.yml\)/,
+      /serviceAssembly\.configShape requires at least one config source \(configs\/services\/example~com~~service_fixture\/config\.yml, configs\/services\/example~com~~service_fixture\/config\.prod\.yml, configs\/services\/example~com~~service_fixture\/config\.prod\.secret\.yml\)/,
     );
   });
 
@@ -2460,7 +2432,7 @@ describe("router artifact root", () => {
     const writtenServiceA = await writeServiceAssembly(root, serviceA);
     await writeIndexPointer(root, serviceAssemblyIndex(writtenServiceA));
 
-    const serviceBId = "example.com/websocket_fixture-admin";
+    const serviceBId = "example.com/service_fixture-admin";
     await writeServiceConfigSource(
       root,
       serviceBId,
@@ -2510,14 +2482,14 @@ describe("router artifact root", () => {
     expect(
       loaded.activationByServiceOperation.get({
         serviceId: SERVICE_ID,
-        target: testServiceRouteTarget(SERVICE_ID, "WebSocketFixtureHttpApi.handle"),
+        target: testServiceRouteTarget(SERVICE_ID, "FixtureHttpApi.handle"),
         buildId: serviceAConfig!.buildId,
       }),
     ).toBe(serviceAConfig?.activationIdentity);
     expect(
       loaded.activationByServiceOperation.get({
         serviceId: serviceBId,
-        target: testServiceRouteTarget(serviceBId, "WebSocketFixtureHttpApi.handle"),
+        target: testServiceRouteTarget(serviceBId, "FixtureHttpApi.handle"),
         buildId: serviceBConfig!.buildId,
       }),
     ).toBe(serviceBConfig?.activationIdentity);
@@ -2893,7 +2865,7 @@ describe("router artifact root", () => {
     const assembly = serviceAssembly(SERVICE_ID) as any;
     assembly.http = {
       raw: {
-        operation: "WebSocketFixtureHttpApi.handle",
+        operation: "FixtureHttpApi.handle",
         target: `gateway.${publicationStorageSegment(SERVICE_ID)}.http.raw`,
       },
     };
@@ -2913,7 +2885,7 @@ describe("router artifact root", () => {
     const assembly = serviceAssembly(SERVICE_ID) as any;
     delete assembly.gateway.http;
     const rawHttpOperation = (assembly.operations as Array<any>).find(
-      (operation: any) => operation.operation === "WebSocketFixtureHttpApi.handle",
+      (operation: any) => operation.operation === "FixtureHttpApi.handle",
     )!;
     rawHttpOperation.parameters[0] = {
       name: "request",
@@ -2940,7 +2912,7 @@ describe("router artifact root", () => {
 
     const loaded = await loadRouterArtifactRoot(root);
     const operation = loaded.manifest.operations.find(
-      (operation) => operation.operation === "WebSocketFixtureHttpApi.handle",
+      (operation) => operation.operation === "FixtureHttpApi.handle",
     );
 
     expect(operation?.parameters[0]?.schema).toMatchObject({
@@ -2963,23 +2935,20 @@ describe("router artifact root", () => {
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
     await mkdir(join(root, "files"), { recursive: true });
     const assembly = serviceAssembly(SERVICE_ID) as any;
-    const receiveOperation = (assembly.operations as Array<any>).find(
-      (operation: any) => operation.operation === "WebSocketFixtureConnection.receive",
+    const selectedOperation = (assembly.operations as Array<any>).find(
+      (operation: any) => operation.operation === "FixtureWorker.secondary",
     )!;
-    receiveOperation.mode = "serverStream";
+    selectedOperation.mode = "serverStream";
     const writtenAssembly = await writeServiceAssembly(root, assembly);
     await writeIndexPointer(root, serviceAssemblyIndex(writtenAssembly));
     await writeContractFile(root);
 
     const loaded = await loadRouterArtifactRoot(root);
     const operation = loaded.manifest.operations.find(
-      (operation) => operation.operation === "WebSocketFixtureConnection.receive",
+      (operation) => operation.operation === "FixtureWorker.secondary",
     );
 
     expect(operation?.mode).toBe("serverStream");
-    expect(
-      loaded.manifest.websocketEntry?.receive?.operationManifest.mode,
-    ).toBe("serverStream");
   });
 
   it("does not derive dispatch mode from serviceUnit publicationAbi maySuspend", async () => {
@@ -3040,79 +3009,6 @@ describe("router artifact root", () => {
     );
   });
 
-  it("normalizes service assembly websocket context wrappers before gateway identity validation", async () => {
-    const root = await createArtifactRoot();
-    await mkdir(join(root, "assemblies", "services"), { recursive: true });
-    await mkdir(join(root, "files"), { recursive: true });
-    const assembly = serviceAssembly(SERVICE_ID) as any;
-    delete assembly.gateway.http;
-
-    const contextSchema = connectionContextSchema();
-    const websocket = assembly.gateway.websocket;
-    websocket.context = {
-      type: "ConnectionContext",
-      schema: contextSchema,
-    };
-    websocket.connect.adapterArgs = [
-      { param: "request", source: { kind: "websocket.connectRequest" } },
-    ];
-    const connectOperation = (assembly.operations as Array<any>).find(
-      (operation: any) => operation.operation === "WebSocketFixtureConnection.connect",
-    )!;
-    connectOperation.parameters = [
-      {
-        name: "request",
-        schema: webSocketConnectRequestSchema(),
-      },
-    ];
-
-    const directManifest = loadManifest({
-      schemaVersion: "skiff-runtime-manifest-v1",
-      service: {
-        id: assembly.service.id,
-        revisionId: assembly.service.revisionId,
-        protocolIdentity: assembly.service.protocolIdentity,
-      },
-      operations: assembly.operations.map((operation: any) => ({
-        ...operation,
-        target: operation.entrypoint,
-        mode: operation.mode ?? "unary",
-      })),
-      gateway: {
-        websocket: {
-          ...websocket,
-          context: contextSchema,
-        },
-      },
-    } as any);
-    const directEntry = directManifest.websocketEntry;
-    expect(directEntry?.connect?.adapterArgs).toEqual([
-      { param: "request", source: { kind: "websocket.connectRequest" } },
-    ]);
-    websocket.connect.gatewayEntryIdentity =
-      directEntry!.connect!.gatewayEntryIdentity;
-    websocket.receive.gatewayEntryIdentity =
-      directEntry!.receive.gatewayEntryIdentity;
-    websocket.gatewayEntryIdentity = directEntry!.gatewayEntryIdentity;
-
-    const writtenAssembly = await writeServiceAssembly(root, assembly);
-    await writeIndexPointer(root, serviceAssemblyIndex(writtenAssembly));
-    await writeContractFile(root);
-
-    const loaded = await loadRouterArtifactRoot(root);
-    const loadedEntry = loaded.manifest.websocketEntry;
-    expect(loadedEntry?.context).toEqual(contextSchema);
-    expect(loadedEntry?.connect?.adapterArgs).toEqual([
-      { param: "request", source: { kind: "websocket.connectRequest" } },
-    ]);
-    expect(loadedEntry?.connect?.gatewayEntryIdentity).toBe(
-      directEntry!.connect!.gatewayEntryIdentity,
-    );
-    expect(loadedEntry?.gatewayEntryIdentity).toBe(
-      directEntry!.gatewayEntryIdentity,
-    );
-  });
-
   it("uses service assembly oneOf schemas without type projection fallback", async () => {
     const root = await createArtifactRoot();
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
@@ -3120,7 +3016,7 @@ describe("router artifact root", () => {
     const assembly = serviceAssembly(SERVICE_ID) as any;
     delete assembly.gateway.http;
     const rawHttpOperation = (assembly.operations as Array<any>).find(
-      (operation: any) => operation.operation === "WebSocketFixtureHttpApi.handle",
+      (operation: any) => operation.operation === "FixtureHttpApi.handle",
     )!;
     rawHttpOperation.parameters[0] = {
       name: "request",
@@ -3155,7 +3051,7 @@ describe("router artifact root", () => {
 
     const loaded = await loadRouterArtifactRoot(root);
     const operation = loaded.manifest.operations.find(
-      (operation) => operation.operation === "WebSocketFixtureHttpApi.handle",
+      (operation) => operation.operation === "FixtureHttpApi.handle",
     );
 
     expect(operation?.parameters[0]?.schema).toMatchObject({
@@ -3745,7 +3641,7 @@ async function writeServiceUnit(
       ? { packageAbiExpectations: options.packageAbiExpectations }
       : {}),
     operations,
-    gateway: serviceUnitGatewayFromAssembly(assembly),
+    gateway: {},
     config: options.config ?? {},
   };
   const unitHash = artifactHash(value);
@@ -3874,35 +3770,6 @@ function implementationFromAssemblyOperation(
   return {
     modulePath: target.slice(0, dotIndex),
     symbol: target.slice(dotIndex + 1),
-  };
-}
-
-function serviceUnitGatewayFromAssembly(assembly: Record<string, any>) {
-  const websocket = assembly.gateway?.websocket;
-  if (!websocket) {
-    return {};
-  }
-  const receiveOperation = websocket.receive?.operation;
-  const connectOperation = websocket.connect?.operation;
-  return {
-    webSockets: {
-      default: {
-        path: websocket.path,
-        operation: receiveOperation,
-        ...(receiveOperation !== undefined
-          ? { operationAbiId: operationAbiIdForServiceOperation(receiveOperation) }
-          : {}),
-        ...(connectOperation !== undefined
-          ? { connectOperation: websocket.connect.operation }
-          : {}),
-        ...(connectOperation !== undefined
-          ? {
-              connectOperationAbiId:
-                operationAbiIdForServiceOperation(connectOperation),
-            }
-          : {}),
-      },
-    },
   };
 }
 
@@ -4347,66 +4214,66 @@ function serviceAssembly(
     ],
     operations: [
       {
-        operation: "WebSocketFixtureConnection.connect",
+        operation: "FixtureWorker.primary",
         operationAbiId: operationAbiIdForServiceOperation(
-          "WebSocketFixtureConnection.connect",
+          "FixtureWorker.primary",
         ),
         mode: "unary",
         entrypoint: testServiceRouteTarget(
           serviceId,
-          "WebSocketFixtureConnection.connect",
+          "FixtureWorker.primary",
         ),
         implementation: testServiceImplementation(
           serviceId,
-          "WebSocketFixtureConnection.connect",
+          "FixtureWorker.primary",
         ),
         parameters: [
           {
             name: "input",
-            schema: connectionConnectInputSchema(),
+            schema: fixtureObjectSchema(),
           },
         ],
-        response: gatewayConnectResultSchema(connectionContextSchema()),
+        response: fixtureObjectSchema(),
       },
       {
-        operation: "WebSocketFixtureConnection.receive",
+        operation: "FixtureWorker.secondary",
         operationAbiId: operationAbiIdForServiceOperation(
-          "WebSocketFixtureConnection.receive",
+          "FixtureWorker.secondary",
         ),
         mode: "unary",
         entrypoint: testServiceRouteTarget(
           serviceId,
-          "WebSocketFixtureConnection.receive",
+          "FixtureWorker.secondary",
         ),
         implementation: testServiceImplementation(
           serviceId,
-          "WebSocketFixtureConnection.receive",
+          "FixtureWorker.secondary",
         ),
         parameters: [
           {
             name: "context",
-            schema: connectionContextSchema(),
+            schema: fixtureObjectSchema(),
           },
           {
             name: "message",
-            schema: connectionMessageSchema(),
+            schema: fixtureObjectSchema(),
           },
         ],
         response: { type: "null" },
       },
       {
-        operation: "WebSocketFixtureHttpApi.handle",
+        operation: "FixtureHttpApi.handle",
         operationAbiId: operationAbiIdForServiceOperation(
-          "WebSocketFixtureHttpApi.handle",
+          "FixtureHttpApi.handle",
         ),
         mode: "unary",
         entrypoint: testServiceRouteTarget(
           serviceId,
-          "WebSocketFixtureHttpApi.handle",
+          "FixtureHttpApi.handle",
         ),
         implementation: testServiceImplementation(
           serviceId,
-          "WebSocketFixtureHttpApi.handle",
+          "FixtureHttpApi.handle",
         ),
         parameters: [
           {
@@ -4420,33 +4287,8 @@ function serviceAssembly(
     gateway: {
       http: {
         raw: {
-          operation: "WebSocketFixtureHttpApi.handle",
+          operation: "FixtureHttpApi.handle",
           target: `gateway.${publicationStorageSegment(serviceId)}.http.raw`,
-        },
-      },
-      websocket: {
-        id: "client",
-        path: "/ws",
-        serviceParam: "service",
-        context: connectionContextSchema(),
-        connect: {
-          operation: "WebSocketFixtureConnection.connect",
-          operationAbiId: operationAbiIdForServiceOperation(
-            "WebSocketFixtureConnection.connect",
-          ),
-          adapterArgs: [
-            { param: "input", source: { kind: "websocket.connectRequest" } },
-          ],
-        },
-        receive: {
-          operation: "WebSocketFixtureConnection.receive",
-          operationAbiId: operationAbiIdForServiceOperation(
-            "WebSocketFixtureConnection.receive",
-          ),
-          adapterArgs: [
-            { param: "context", source: { kind: "websocket.connectionContext" } },
-            { param: "message", source: { kind: "websocket.message" } },
-          ],
         },
       },
     },
@@ -4497,108 +4339,10 @@ function runtimeProgramServiceAssembly(serviceId: string) {
   };
 }
 
-function connectionConnectInputSchema() {
+function fixtureObjectSchema() {
   return {
     type: "object",
-    properties: {
-      deviceId: { type: "string" },
-    },
-    required: ["deviceId"],
-    additionalProperties: false,
-  };
-}
-
-function connectionContextSchema() {
-  return {
-    type: "object",
-    properties: {
-      userId: { type: "string" },
-    },
-    required: ["userId"],
-    additionalProperties: false,
-  };
-}
-
-function connectionMessageSchema() {
-  return {
-    oneOf: [
-      {
-        type: "object",
-        required: ["tag", "text"],
-        properties: {
-          tag: { type: "string", enum: ["text"] },
-          text: { type: "string" },
-        },
-        additionalProperties: false,
-      },
-      {
-        type: "object",
-        required: ["tag", "base64"],
-        properties: {
-          tag: { type: "string", enum: ["binary"] },
-          base64: { type: "string" },
-        },
-        additionalProperties: false,
-      },
-    ],
-  };
-}
-
-function webSocketConnectRequestSchema() {
-  return {
-    type: "object",
-    required: ["connectionId", "url", "query", "headers", "cookies"],
-    properties: {
-      connectionId: { type: "string" },
-      url: { type: "string" },
-      query: { type: "array", items: httpHeaderSchema() },
-      headers: { type: "array", items: httpHeaderSchema() },
-      cookies: { type: "array", items: httpHeaderSchema() },
-      version: { type: "string", nullable: true },
-    },
-    additionalProperties: false,
-  };
-}
-
-function gatewayConnectResultSchema(context: Record<string, unknown>) {
-  return {
-    oneOf: [
-      {
-        type: "object",
-        required: ["tag", "context"],
-        properties: {
-          tag: { type: "string", enum: ["accept"] },
-          context,
-          businessIdentity: { type: "string", nullable: true },
-          connectionPolicy: websocketConnectionPolicySchema(),
-        },
-        additionalProperties: false,
-      },
-      {
-        type: "object",
-        required: ["tag", "code", "reason"],
-        properties: {
-          tag: { type: "string", enum: ["reject"] },
-          code: { type: "integer" },
-          reason: { type: "string" },
-        },
-        additionalProperties: false,
-      },
-    ],
-  };
-}
-
-function websocketConnectionPolicySchema() {
-  return {
-    type: "object",
-    required: ["maxConnections", "overflow"],
-    properties: {
-      maxConnections: { type: "integer" },
-      overflow: { type: "string" },
-      closeCode: { type: "integer" },
-      closeReason: { type: "string" },
-    },
-    additionalProperties: false,
+    additionalProperties: true,
   };
 }
 
@@ -4665,7 +4409,7 @@ function fileIrUnitTypes(fileIrIdentity: string) {
       types: [
         {
           kind: "record",
-          name: "ConnectionConnectInput",
+          name: "FixtureInput",
           fields: [
             {
               name: "deviceId",
@@ -4675,7 +4419,7 @@ function fileIrUnitTypes(fileIrIdentity: string) {
         },
         {
           kind: "record",
-          name: "ConnectionContext",
+          name: "FixtureContext",
           fields: [
             {
               name: "userId",

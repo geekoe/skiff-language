@@ -95,15 +95,7 @@ export type HttpRouteAdapterCallableManifest =
 export type GatewayAdapterSourceKind =
   | 'http.request'
   | 'http.body'
-  | 'http.context'
-  | 'websocket.connectRequest'
-  | 'websocket.receiveEvent'
-  | 'websocket.connection'
-  | 'websocket.connectionContext'
-  | 'websocket.message'
-  | 'websocket.messageBody'
-  | 'websocket.connectionId'
-  | 'websocket.businessIdentity';
+  | 'http.context';
 
 export interface GatewayAdapterSourceManifest {
   kind: GatewayAdapterSourceKind;
@@ -167,46 +159,6 @@ export interface LoadedHttpRoute extends HttpRouteManifest {
   operationManifest?: OperationManifest;
 }
 
-export interface WebSocketConnectManifest {
-  operation: string;
-  operationAbiId: string;
-  adapterArgs: GatewayAdapterArgManifest[];
-  serviceOperationTarget?: string;
-  serviceProtocolIdentity?: string;
-  gatewayEntryIdentity?: string;
-}
-
-export interface WebSocketReceiveManifest {
-  operation: string;
-  operationAbiId: string;
-  adapterArgs: GatewayAdapterArgManifest[];
-  serviceOperationTarget?: string;
-  serviceProtocolIdentity?: string;
-  gatewayEntryIdentity?: string;
-}
-
-export type WebSocketContextExpectationManifest =
-  | {
-      kind: 'null';
-    }
-  | {
-      kind: 'typed';
-      connectOperationAbiId: string;
-      contextTypeIdentity: string;
-    };
-
-export interface WebSocketEntryManifest {
-  id: string;
-  path?: string;
-  serviceParam?: string;
-  context?: JsonSchema;
-  contextExpectation?: WebSocketContextExpectationManifest;
-  connect?: WebSocketConnectManifest;
-  receive: WebSocketReceiveManifest;
-  routes?: unknown[];
-  gatewayEntryIdentity?: string;
-}
-
 export interface SkiffRuntimeManifest {
   schemaVersion: 'skiff-runtime-manifest-v1';
   service: {
@@ -220,7 +172,6 @@ export interface SkiffRuntimeManifest {
       raw?: RawHttpGatewayManifest;
       routes?: HttpRouteManifest[];
     };
-    websocket?: WebSocketEntryManifest;
   };
   timeout?: {
     defaultMs?: number;
@@ -228,30 +179,10 @@ export interface SkiffRuntimeManifest {
   };
 }
 
-export interface LoadedWebSocketConnect extends WebSocketConnectManifest {
-  gatewayEntryIdentity: string;
-  operationManifest: OperationManifest;
-}
-
-export interface LoadedWebSocketReceive extends WebSocketReceiveManifest {
-  gatewayEntryIdentity: string;
-  operationManifest: OperationManifest;
-}
-
-export interface LoadedWebSocketEntry extends WebSocketEntryManifest {
-  buildId?: string;
-  connect?: LoadedWebSocketConnect;
-  receive: LoadedWebSocketReceive;
-  gatewayEntryIdentity: string;
-  serviceId: string;
-  serviceProtocolIdentity: string;
-}
-
 export interface LoadedManifest extends SkiffRuntimeManifest {
   httpRouteEntries: LoadedHttpRoute[];
   operationsByName: Map<string, OperationManifest>;
   operationsByTarget: Map<string, OperationManifest>;
   rawHttpEntries: LoadedRawHttpGateway[];
-  websocketEntry?: LoadedWebSocketEntry;
-  websocketEntries: LoadedWebSocketEntry[];
+  websocketEntries: Array<{ path?: string }>;
 }

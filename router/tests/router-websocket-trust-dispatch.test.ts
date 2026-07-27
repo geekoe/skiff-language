@@ -1,16 +1,16 @@
+import WebSocket from 'ws';
 import { describe, expect, it, vi } from 'vitest';
 
 import { RUNTIME_FRAME_SCHEMA_VERSION } from '../src/protocol/envelope.js';
-import type { RuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeAssemblyRequest.js';
-import { validateRuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeProtocol.js';
-import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
-import { ServiceProtocolBoundaryError } from '../src/router/errors.js';
+import type {
+  RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
+} from '../src/protocol/runtimeAssemblyRequest.js';
 import {
   RuntimeDispatcher,
+  type RuntimeDispatchRegistry,
   type RuntimeFrameSender
 } from '../src/router/runtimeDispatcher.js';
 import {
-  RouterActiveAssemblySnapshotStore,
   RuntimeAssemblyIngressIndex,
   type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
@@ -18,97 +18,126 @@ import {
 const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 const GATEWAY_ENTRY_IDENTITY =
   `skiff-gateway-entry-v1:sha256:${'b'.repeat(64)}`;
-const HOST = 'chat.localhost';
-const PATH = '/v1/chat';
+const WEBSOCKET_ENTRY_ID =
+  `skiff-websocket-entry-v1:sha256:${'e'.repeat(64)}`;
 
-describe('retired RuntimeAssembly WebSocket dispatch', () => {
-  it('keeps the current ingress index HTTP-only', () => {
-    const index = new RuntimeAssemblyIngressIndex([httpBinding()]);
-    expect(index.values()).toHaveLength(1);
-    expect(() => new RuntimeAssemblyIngressIndex([
-      {
-        ...httpBinding(),
-        selector: {
-          protocol: 'webSocket',
-          host: HOST,
-          method: null,
-          path: PATH
-        }
-      } as never
-    ])).toThrow(/only HTTP/);
+describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
+  it('indexes WebSocket selectors independently from HTTP methods', () => {
+    const index = new RuntimeAssemblyIngressIndex([websocketBinding()]);
+    expect(index.get({
+      protocol: 'webSocket',
+      host: 'chat.localhost',
+      method: null,
+      path: '/v1/chat'
+    })).toEqual(websocketBinding());
+    expect(index.get({
+      protocol: 'http',
+      host: 'chat.localhost',
+      method: 'GET',
+      path: '/v1/chat'
+    })).toBeUndefined();
   });
 
-  it('rejects legacy WebSocket routing and adapter fields at the strict wire validator', () => {
-    const validation = validateRuntimeAssemblyRequestStartFrameHeader(
-      legacyWebSocketRequest()
-    );
-    expect(validation.ok).toBe(false);
-    if (validation.ok) {
-      throw new Error('legacy RuntimeAssembly WebSocket request was accepted');
-    }
-    expect(validation.error).toMatch(
-      /gatewayEntryIdentity|routing|ingress|unknown|HTTP/i
-    );
-  });
-
-  it('fails closed before selecting or writing to a Runtime connection', async () => {
-    const snapshots = snapshotStore();
-    const registry = new AssemblyRuntimeRegistry(snapshots);
+  it('attributes acquire only to the exact pending connect sender and tuple', async () => {
+    const runtime = socket();
     const sender = {
       sendFrame: vi.fn()
     } satisfies RuntimeFrameSender;
-    const dispatcher = new RuntimeDispatcher({ registry, frameSender: sender });
-    const request = legacyWebSocketRequest();
-
-    expect(registry.pickDispatchConnection(request)).toBeInstanceOf(
-      ServiceProtocolBoundaryError
+    const dispatcher = new RuntimeDispatcher({
+      registry: registry(),
+      frameSender: sender
+    });
+    const header = connectHeader();
+    const responsePromise = dispatcher.dispatchAssemblyWebSocketConnect(
+      { header, payloadBytes: new Uint8Array() },
+      1_000,
+      { runtimeId: 'runtime-one', ws: runtime }
     );
-    await expect(dispatcher.dispatchBinary(
-      { header: request, payloadBytes: new Uint8Array() },
-      1_000
-    )).rejects.toBeInstanceOf(ServiceProtocolBoundaryError);
-    expect(sender.sendFrame).not.toHaveBeenCalled();
+
+    const tuple = {
+      routerSessionId: 'skiff-router-session-v1:opaque:router-one',
+      serviceId: 'example.com/chat',
+      assemblyIdentity: ASSEMBLY,
+      assemblyGeneration: 7,
+      websocketEntryId: WEBSOCKET_ENTRY_ID,
+      connectionId: 'connection-one'
+    };
+    expect(dispatcher.isPendingWebSocketAcquireSender(runtime, tuple)).toBe(true);
+    expect(dispatcher.isPendingWebSocketAcquireSender(socket(), tuple)).toBe(false);
+    expect(dispatcher.isPendingWebSocketAcquireSender(runtime, {
+      ...tuple,
+      assemblyGeneration: 8
+    })).toBe(false);
+    expect(dispatcher.isPendingWebSocketAcquireSender(runtime, {
+      ...tuple,
+      websocketEntryId:
+        `skiff-websocket-entry-v1:sha256:${'f'.repeat(64)}`
+    })).toBe(false);
+
+    dispatcher.resolveRequest(runtime, {
+      header: {
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.end',
+        requestId: header.requestId,
+        payloadPresent: false,
+        websocketConnect: { result: 'accept' }
+      } as never,
+      payloadBytes: new Uint8Array()
+    });
+    const response = await responsePromise;
+    expect(
+      dispatcher.isRuntimeConnectionReceiptSender(
+        response.connectionReceipt,
+        runtime
+      )
+    ).toBe(true);
+    expect(dispatcher.isPendingWebSocketAcquireSender(runtime, tuple)).toBe(false);
+  });
+
+  it('rejects a non-WebSocket terminal response on the current connect lane', async () => {
+    const runtime = socket();
+    const dispatcher = new RuntimeDispatcher({
+      registry: registry(),
+      frameSender: { sendFrame: vi.fn() }
+    });
+    const header = connectHeader();
+    const response = dispatcher.dispatchAssemblyWebSocketConnect(
+      { header, payloadBytes: new Uint8Array() },
+      1_000,
+      { runtimeId: 'runtime-one', ws: runtime }
+    );
+
+    dispatcher.resolveRequest(runtime, {
+      header: {
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.end',
+        requestId: header.requestId,
+        payloadPresent: false
+      },
+      payloadBytes: new Uint8Array()
+    });
+    await expect(response).rejects.toThrow(/websocketConnect is required/);
   });
 });
 
-function snapshotStore(): RouterActiveAssemblySnapshotStore {
-  const snapshots = new RouterActiveAssemblySnapshotStore();
-  snapshots.replace({
-    environment: 'test',
-    generation: 7,
-    assembly: { assemblyIdentity: ASSEMBLY },
-    ingress: new RuntimeAssemblyIngressIndex([httpBinding()])
-  });
-  return snapshots;
-}
-
-function httpBinding(): RuntimeAssemblyIngressBinding {
+function registry(): RuntimeDispatchRegistry {
   return {
-    selector: {
-      protocol: 'http',
-      host: HOST,
-      method: 'POST',
-      path: PATH
-    },
-    deployment: {
-      serviceId: 'example/chat',
-      contractVersion: '1.0.0',
-      deploymentRevision: 'revision-a',
-      deploymentArtifactIdentity:
-        `skiff-deployment-artifact-v2:sha256:${'c'.repeat(64)}`
-    },
-    gatewayEntryKey: 'chat',
-    gatewayEntryIdentity: GATEWAY_ENTRY_IDENTITY,
-    adapterKind: 'typedJson',
-    operationMode: 'unary'
+    setInFlightCounter: () => undefined,
+    pickDispatchConnection: () => null,
+    refreshAllRuntimeStates: () => undefined,
+    refreshRuntimeStatesForRequest: () => undefined
   };
 }
 
-function legacyWebSocketRequest(): RuntimeAssemblyRequestStartFrameHeader {
+function socket(): WebSocket {
+  return { readyState: WebSocket.OPEN } as WebSocket;
+}
+
+function connectHeader(): RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
   return {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
     type: 'request.start',
-    requestId: 'legacy-websocket-request',
+    requestId: 'request-one',
     mode: 'unary',
     caller: { kind: 'gateway' },
     routing: {
@@ -118,26 +147,45 @@ function legacyWebSocketRequest(): RuntimeAssemblyRequestStartFrameHeader {
       gatewayEntryIdentity: GATEWAY_ENTRY_IDENTITY,
       ingress: {
         protocol: 'webSocket',
-        host: HOST,
+        host: 'chat.localhost',
         method: null,
-        path: PATH
+        path: '/v1/chat'
       }
     },
-    gatewayEntryIdentity:
-      `skiff-gateway-v1:sha256:${'d'.repeat(64)}`,
-    websocketEntryId:
-      `skiff-websocket-entry-v1:sha256:${'e'.repeat(64)}`,
-    websocketAdapter: {
-      kind: 'receive',
-      adapterArgs: [
-        { param: 'event', source: { kind: 'websocket.ingressEvent' } }
-      ],
-      receiveEvent: {
-        connectionId: 'connection-a',
-        message: { tag: 'text', encoding: 'utf8' },
-        payloadSegments: []
-      }
+    trace: { traceId: 'trace', spanId: 'span' },
+    websocketConnect: {
+      connectionId: 'connection-one',
+      url: 'ws://chat.localhost/v1/chat',
+      query: [],
+      headers: [],
+      cookies: [],
+      websocketEntryId: WEBSOCKET_ENTRY_ID,
+      gatewayEntryIdentity: GATEWAY_ENTRY_IDENTITY
     },
     testEffectsEnabled: false
-  } as unknown as RuntimeAssemblyRequestStartFrameHeader;
+  };
+}
+
+function websocketBinding(): RuntimeAssemblyIngressBinding {
+  return {
+    selector: {
+      protocol: 'webSocket',
+      host: 'chat.localhost',
+      method: null,
+      path: '/v1/chat'
+    },
+    deployment: {
+      serviceId: 'example.com/chat',
+      contractVersion: '1.0.0',
+      deploymentRevision: 'revision-a',
+      deploymentArtifactIdentity:
+        `skiff-deployment-artifact-v2:sha256:${'c'.repeat(64)}`
+    },
+    gatewayEntryKey: 'websocket',
+    gatewayEntryIdentity: GATEWAY_ENTRY_IDENTITY,
+    adapterKind: 'websocketConnect',
+    operationMode: 'unary',
+    handler: 'package-callable-connect',
+    websocketEntryId: WEBSOCKET_ENTRY_ID
+  };
 }

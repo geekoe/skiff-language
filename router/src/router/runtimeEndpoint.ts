@@ -27,7 +27,9 @@ import {
   type RouterControlFrameHeader,
   type RouterToRuntimeFrameHeader
 } from '../protocol/envelope.js';
-import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
+import type {
+  RuntimeAssemblyRequestStartFrameWireHeader
+} from '../protocol/runtimeAssemblyRequest.js';
 import {
   validateResponseErrorFrame,
   validateRuntimeToRouterFrameHeader
@@ -769,8 +771,8 @@ export class RuntimeEndpoint
 }
 
 function isRuntimeAssemblyOutboundHeader(
-  header: RouterToRuntimeFrameHeader | RuntimeAssemblyRequestStartFrameHeader
-): header is RuntimeAssemblyRequestStartFrameHeader {
+  header: RouterToRuntimeFrameHeader | RuntimeAssemblyRequestStartFrameWireHeader
+): header is RuntimeAssemblyRequestStartFrameWireHeader {
   return header.type === 'request.start' && 'routing' in header;
 }
 

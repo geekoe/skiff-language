@@ -2,7 +2,6 @@ import type {
   HttpRouteHandlerManifest,
   JsonSchema,
   SkiffRuntimeManifest,
-  WebSocketEntryManifest,
 } from "../manifest/types.js";
 import {
   assertRecord,
@@ -369,12 +368,14 @@ export function gatewayFromServiceAssembly(
       ...(routes !== undefined ? { routes } : {}),
     };
   }
-  const websocket = readOptionalRecord(gatewayRecord.websocket);
-  if (websocket) {
-    gateway.websocket = websocketFromServiceAssembly(
-      websocket,
-      `${indexPath} serviceAssembly.gateway.websocket`,
-      operationByName,
+  const unsupportedGatewayKeys = Object.keys(gatewayRecord).filter(
+    (key) => key !== "http",
+  );
+  if (unsupportedGatewayKeys.length > 0) {
+    throw new Error(
+      `${indexPath} serviceAssembly.gateway does not support ${unsupportedGatewayKeys
+        .map((key) => JSON.stringify(key))
+        .join(", ")}`,
     );
   }
   return gateway;
@@ -620,82 +621,4 @@ function sameStrings(left: string[], right: string[]): boolean {
     left.length === right.length &&
     left.every((value, index) => value === right[index])
   );
-}
-
-function websocketFromServiceAssembly(
-  websocket: Record<string, unknown>,
-  label: string,
-  operationByName: ReadonlyMap<
-    string,
-    SkiffRuntimeManifest["operations"][number]
-  >,
-): WebSocketEntryManifest {
-  const projected = { ...websocket };
-  if (projected.context !== undefined) {
-    projected.context = websocketContextSchema(
-      projected.context,
-      `${label}.context`,
-    );
-  }
-  projected.connect = websocketOperationFromServiceAssembly(
-    projected.connect,
-    `${label}.connect`,
-    operationByName,
-  );
-  projected.receive = websocketOperationFromServiceAssembly(
-    projected.receive,
-    `${label}.receive`,
-    operationByName,
-  );
-  if (Array.isArray(projected.routes)) {
-    projected.routes = projected.routes.map((route, index) =>
-      websocketOperationFromServiceAssembly(
-        route,
-        `${label}.routes[${index}]`,
-        operationByName,
-      ),
-    );
-  }
-  return projected as unknown as WebSocketEntryManifest;
-}
-
-function websocketOperationFromServiceAssembly(
-  value: unknown,
-  label: string,
-  operationByName: ReadonlyMap<
-    string,
-    SkiffRuntimeManifest["operations"][number]
-  >,
-): unknown {
-  if (value === undefined || value === null) {
-    return value;
-  }
-  const operation = readOptionalRecord(value);
-  if (!operation) {
-    return value;
-  }
-  const operationName = readRequiredString(
-    operation.operation,
-    `${label}.operation`,
-  );
-  const typedOperation = operationByName.get(operationName);
-  if (!typedOperation) {
-    throw new Error(
-      `${label} references unknown typed serviceUnit operation ${operationName}`,
-    );
-  }
-  return {
-    ...operation,
-    operationAbiId: typedOperation.operationAbiId,
-    serviceOperationTarget: typedOperation.target,
-    serviceProtocolIdentity: typedOperation.serviceProtocolIdentity,
-  };
-}
-
-function websocketContextSchema(value: unknown, label: string): JsonSchema {
-  const record = readOptionalRecord(value);
-  if (record && "schema" in record) {
-    return readRequiredJsonSchema(record.schema, `${label}.schema`);
-  }
-  return readRequiredJsonSchema(value, label);
 }

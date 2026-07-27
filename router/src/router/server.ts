@@ -20,6 +20,7 @@ import { ActorRuntimeDisconnectController } from './actorRuntimeDisconnectContro
 import { ProductionActorMethodRouter } from './productionActorMethodRouter.js';
 import { RuntimeAssemblyActorMethodCatalog } from './runtimeAssemblyActorMethodCatalog.js';
 import { ActorOwnerLeaseIdleController } from './actorOwnerLeaseIdleController.js';
+import { AssemblyWebSocketGateway } from '../gateway/webSocketGateway.js';
 
 const args = parseArgs({
   options: {
@@ -175,6 +176,41 @@ const httpGateway = new AssemblyHttpGateway({
   maxResponseBytes: config.httpMaxResponseBytes
 });
 const httpServer = await httpGateway.listen();
+const webSocketGateway = new AssemblyWebSocketGateway({
+  server: httpServer.server,
+  snapshots,
+  dispatcher,
+  generationLifecycle,
+  runtimeConnectionSend: runtimeEndpoint,
+  selectRuntime: (binding) =>
+    registry.actorRuntimeCandidates(binding.deployment.serviceId)[0],
+  runtimeOwner: (sender, serviceId) => {
+    if (
+      serviceId !== undefined &&
+      !registry
+        .actorRuntimeCandidates(serviceId)
+        .some((candidate) => candidate.ws === sender)
+    ) {
+      return undefined;
+    }
+    const replicaId = registry.replicaIdForConnection(sender);
+    const replica =
+      replicaId === undefined
+        ? undefined
+        : registry.snapshot().find(
+            (candidate) => candidate.replicaId === replicaId
+          );
+    return replica === undefined
+      ? undefined
+      : {
+          assemblyIdentity: replica.assemblyIdentity,
+          assemblyGeneration: replica.generation,
+          replicaId: replica.replicaId
+        };
+  },
+  requestTimeoutMs: config.requestTimeoutMs
+});
+webSocketGateway.listen();
 const active = snapshots.get();
 
 console.log(
@@ -185,6 +221,7 @@ console.log(
       activeAssembly: active.assembly.assemblyIdentity,
       generation: active.generation,
       http: httpServer.url,
+      websocket: httpServer.url.replace(/^http:/, 'ws:'),
       runtime: runtimeServer.url,
       control: `http://${runtimeServer.host}:${runtimeServer.port}`
     },
@@ -197,6 +234,7 @@ async function shutdown(): Promise<void> {
   clearInterval(actorIdleSweep);
   const failures: unknown[] = [];
   for (const close of [
+    () => webSocketGateway.close(),
     () => httpGateway.close(),
     () => runtimeEndpoint.close(),
     () => activation.client.close()
