@@ -9,8 +9,9 @@ use common::{
 use serde_json::json;
 use skiff_artifact_model::{
     GatewayAdapterKind, GatewayDispatchMode, GatewayExternalSchema, GatewayProtocolSurface,
-    PackageLocalAbiSymbol, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    ServiceConfigProfileAuthoring, ServiceDeployment, ServiceManifestAuthoring,
+    HttpGatewayDocumentAuthoring, PackageLocalAbiSymbol, PackageSchemaTypeId,
+    PackageSchemaTypeRecord, ServiceConfigProfileAuthoring, ServiceDeployment,
+    ServiceManifestAuthoring,
 };
 use skiff_compiler::{
     generate_service_deployment, GeneratedServiceDeploymentError, GeneratedServiceDeploymentInput,
@@ -95,47 +96,46 @@ function rawStream(
   return null
 }
 "#,
-        r#"http:
-  typed:
-    method: POST
-    path: /typed
-    kind: typedJson
-    handler: main.typed
-    guard: main.guard
-    pre: main.prepare
-    adapterArgs:
-      - param: request
-        source: { kind: http.request }
-      - param: body
-        source: { kind: http.body }
-      - param: bodyAgain
-        source: { kind: http.body }
-      - param: context
-        source: { kind: http.context }
-  boxed:
-    method: POST
-    path: /boxed
-    kind: typedJson
-    handler: main.boxed
-    adapterArgs:
-      - param: body
-        source: { kind: http.body }
-  raw:
-    method: GET
-    path: /raw
-    kind: rawHttp
-    handler: main.raw
-    adapterArgs:
-      - param: request
-        source: { kind: http.request }
-  rawStream:
-    method: GET
-    path: /raw-stream
-    kind: rawHttp
-    handler: main.rawStream
-    adapterArgs:
-      - param: request
-        source: { kind: http.request }
+        r#"typed:
+  method: POST
+  path: /typed
+  kind: typedJson
+  handler: main.typed
+  guard: main.guard
+  pre: main.prepare
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+    - param: body
+      source: { kind: http.body }
+    - param: bodyAgain
+      source: { kind: http.body }
+    - param: context
+      source: { kind: http.context }
+boxed:
+  method: POST
+  path: /boxed
+  kind: typedJson
+  handler: main.boxed
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+raw:
+  method: GET
+  path: /raw
+  kind: rawHttp
+  handler: main.raw
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+rawStream:
+  method: GET
+  path: /raw-stream
+  kind: rawHttp
+  handler: main.rawStream
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
 "#,
     );
     let deployment = fixture.generate().expect("all HTTP modes must project");
@@ -262,7 +262,7 @@ function unprojectable(body: Input) -> Stream<Map<string, string>> {
   return null
 }
 "#,
-        "http: {}\n",
+        "{}\n",
     );
     let expected = "typedJson supports only unary handler returns; HTTP streaming requires rawHttp + Stream<std.http.HttpResponseStreamEvent>";
     let errors = ["main.eligible", "main.unprojectable"].map(|handler| {
@@ -281,17 +281,33 @@ function unprojectable(body: Input) -> Stream<Map<string, string>> {
 }
 
 #[test]
-fn service_operation_and_http_gateway_keep_distinct_identity_domains() {
+fn compiler_owned_websocket_key_is_reserved_from_http_entries() {
     let fixture = compile_fixture(
+        "reserved-websocket-key",
+        "health: main.health\n",
+        r#"function health() -> string { return "ok" }
+type Input { value: string }
+type Output { accepted: boolean }
+function typed(body: Input) -> Output { return { accepted: true } }
+"#,
+        typed_http("main.typed", "body").replacen("typed:", "websocket:", 1),
+    );
+    let error = fixture
+        .generate()
+        .expect_err("HTTP must not occupy the compiler-owned WebSocket key");
+    assert!(error.to_string().contains("reserved"), "{error}");
+}
+
+#[test]
+fn service_operation_and_http_gateway_keep_distinct_identity_domains() {
+    let fixture = compile_fixture_with_service_calls(
         "dual-surface",
         "health: main.health\ndual: main.dual\n",
         r#"function health() -> string { return "ok" }
 function dual(body: string) -> string { return "ok" }
 "#,
-        format!(
-            "serviceCalls:\n  - dual\n{}",
-            typed_http("main.dual", "body")
-        ),
+        &["dual"],
+        typed_http("main.dual", "body"),
     );
     let deployment = fixture.generate().expect("dual surface must project");
     assert_eq!(fixture.api.contract.operations.len(), 1);
@@ -327,11 +343,9 @@ fn selector_body_shape_implementation_and_adapter_plan_obey_identity_boundaries(
     let base_deployment = base.generate().unwrap();
     let base_gateway = gateway_identity(&base_deployment, "typed").to_string();
 
-    let mut selector_service = base.service.clone();
+    let mut selector_service = base.http.clone();
     let selector = selector_service
-        .http
-        .as_mut()
-        .unwrap()
+        .entries
         .get_mut(&gateway_key("typed"))
         .unwrap();
     selector.host = "api.example.com".to_string();
@@ -417,11 +431,9 @@ function second(payload: Input) -> Output { return { value: payload.value } }
         typed_http("main.first", "body"),
     );
     let first = names.generate().unwrap();
-    let mut second_service = names.service.clone();
+    let mut second_service = names.http.clone();
     let entry = second_service
-        .http
-        .as_mut()
-        .unwrap()
+        .entries
         .get_mut(&gateway_key("typed"))
         .unwrap();
     entry.handler = "main.second".to_string();
@@ -435,6 +447,154 @@ function second(payload: Input) -> Output { return { value: payload.value } }
         first.deployment_artifact_identity,
         second.deployment_artifact_identity
     );
+}
+
+#[test]
+fn real_split_http_file_mutation_preserves_package_and_contract_bytes() {
+    let root = TestDir::new("skiff-compiler-http-gateway", "real-file-mutation");
+    root.write("package.yml", format!("id: {PACKAGE_ID}\nversion: 1.0.0\n"));
+    root.write("api.yml", "health: main.health\n");
+    root.write("service.yml", format!("id: {SERVICE_ID}\n"));
+    root.write(
+        "main.skiff",
+        typed_identity_source("return Output { value: body.value }", "string"),
+    );
+    root.write("http.yml", typed_http("main.typed", "body"));
+
+    let first_root = read_service_package_root(root.path()).unwrap();
+    let (first_project, first_api) = compile_service_package_project(root.path()).unwrap();
+    let first_closure = first_project
+        .dependency_packages
+        .iter()
+        .map(|package| package.artifact.clone())
+        .collect::<Vec<_>>();
+    let first = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &first_root.service,
+        http: first_root.http.as_ref(),
+        websocket: None,
+        profile_name: "dev",
+        profile: &profile(),
+        service_api: &first_api,
+        implementation: &first_project.package.artifact,
+        package_closure: &first_closure,
+        package_schema_records: &first_project.package.resolved_package_schema_type_records,
+    })
+    .unwrap();
+
+    root.write(
+        "http.yml",
+        typed_http("main.typed", "body")
+            .replace("method: POST", "method: PUT")
+            .replace("path: /typed", "path: /moved"),
+    );
+    let second_root = read_service_package_root(root.path()).unwrap();
+    let (second_project, second_api) = compile_service_package_project(root.path()).unwrap();
+    let second_closure = second_project
+        .dependency_packages
+        .iter()
+        .map(|package| package.artifact.clone())
+        .collect::<Vec<_>>();
+    let second = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &second_root.service,
+        http: second_root.http.as_ref(),
+        websocket: None,
+        profile_name: "dev",
+        profile: &profile(),
+        service_api: &second_api,
+        implementation: &second_project.package.artifact,
+        package_closure: &second_closure,
+        package_schema_records: &second_project.package.resolved_package_schema_type_records,
+    })
+    .unwrap();
+
+    assert_eq!(
+        serde_json::to_vec(&first_project.package.artifact).unwrap(),
+        serde_json::to_vec(&second_project.package.artifact).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_vec(&first_api.contract).unwrap(),
+        serde_json::to_vec(&second_api.contract).unwrap()
+    );
+    assert_eq!(
+        gateway_identity(&first, "typed"),
+        gateway_identity(&second, "typed")
+    );
+    assert_ne!(first.deployment_revision, second.deployment_revision);
+}
+
+#[test]
+fn real_split_http_handler_switch_changes_only_protocol_and_deployment_domains() {
+    let root = TestDir::new("skiff-compiler-http-gateway", "real-handler-mutation");
+    root.write("package.yml", format!("id: {PACKAGE_ID}\nversion: 1.0.0\n"));
+    root.write("api.yml", "health: main.health\n");
+    root.write("service.yml", format!("id: {SERVICE_ID}\n"));
+    root.write(
+        "main.skiff",
+        r#"function health() -> string { return "ok" }
+type StringInput { value: string }
+type StringOutput { value: string }
+type IntegerInput { value: integer }
+type IntegerOutput { value: integer }
+function first(body: StringInput) -> StringOutput { return { value: body.value } }
+function second(body: IntegerInput) -> IntegerOutput { return { value: body.value } }
+"#,
+    );
+    root.write("http.yml", typed_http("main.first", "body"));
+
+    let first_root = read_service_package_root(root.path()).unwrap();
+    let (first_project, first_api) = compile_service_package_project(root.path()).unwrap();
+    let first_closure = first_project
+        .dependency_packages
+        .iter()
+        .map(|package| package.artifact.clone())
+        .collect::<Vec<_>>();
+    let first = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &first_root.service,
+        http: first_root.http.as_ref(),
+        websocket: None,
+        profile_name: "dev",
+        profile: &profile(),
+        service_api: &first_api,
+        implementation: &first_project.package.artifact,
+        package_closure: &first_closure,
+        package_schema_records: &first_project.package.resolved_package_schema_type_records,
+    })
+    .unwrap();
+
+    root.write("http.yml", typed_http("main.second", "body"));
+    let second_root = read_service_package_root(root.path()).unwrap();
+    let (second_project, second_api) = compile_service_package_project(root.path()).unwrap();
+    let second_closure = second_project
+        .dependency_packages
+        .iter()
+        .map(|package| package.artifact.clone())
+        .collect::<Vec<_>>();
+    let second = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &second_root.service,
+        http: second_root.http.as_ref(),
+        websocket: None,
+        profile_name: "dev",
+        profile: &profile(),
+        service_api: &second_api,
+        implementation: &second_project.package.artifact,
+        package_closure: &second_closure,
+        package_schema_records: &second_project.package.resolved_package_schema_type_records,
+    })
+    .unwrap();
+
+    assert_eq!(
+        serde_json::to_vec(&first_project.package.artifact).unwrap(),
+        serde_json::to_vec(&second_project.package.artifact).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_vec(&first_api.contract).unwrap(),
+        serde_json::to_vec(&second_api.contract).unwrap()
+    );
+    assert_ne!(
+        gateway_identity(&first, "typed"),
+        gateway_identity(&second, "typed")
+    );
+    assert_ne!(first.deployment_revision, second.deployment_revision);
 }
 
 #[test]
@@ -455,11 +615,9 @@ fn resolver_and_signature_mismatches_fail_closed_without_public_fallback() {
             "current-package source selector",
         ),
     ] {
-        let mut service = fixture.service.clone();
+        let mut service = fixture.http.clone();
         service
-            .http
-            .as_mut()
-            .unwrap()
+            .entries
             .get_mut(&gateway_key("raw"))
             .unwrap()
             .handler = selector.to_string();
@@ -475,7 +633,7 @@ fn resolver_and_signature_mismatches_fail_closed_without_public_fallback() {
         .unwrap()
         .target
         .callable_abi_id = "forged".to_string();
-    let error = fixture.generate_error(&fixture.service, &forged);
+    let error = fixture.generate_error(&fixture.http, &forged);
     assert!(
         error.to_string().contains("identity") || error.to_string().contains("callable"),
         "{error}"
@@ -529,7 +687,7 @@ function rawStream(request: std.http.HttpRequest) -> Stream<string> {
         ),
         (
             "missing-formal",
-            "http:\n  typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.typed\n    adapterArgs: []\n".to_string(),
+            "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.typed\n    adapterArgs: []\n".to_string(),
             "cover every handler formal",
         ),
         (
@@ -539,37 +697,37 @@ function rawStream(request: std.http.HttpRequest) -> Stream<string> {
         ),
         (
             "duplicate-formal",
-            "http:\n  typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.typed\n    adapterArgs:\n      - param: body\n        source: { kind: http.body }\n      - param: body\n        source: { kind: http.body }\n".to_string(),
+            "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.typed\n    adapterArgs:\n      - param: body\n        source: { kind: http.body }\n      - param: body\n        source: { kind: http.body }\n".to_string(),
             "cover every handler formal exactly once",
         ),
         (
             "same-source-different-type",
-            "http:\n  typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.two\n    adapterArgs:\n      - param: a\n        source: { kind: http.body }\n      - param: b\n        source: { kind: http.body }\n".to_string(),
+            "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.two\n    adapterArgs:\n      - param: a\n        source: { kind: http.body }\n      - param: b\n        source: { kind: http.body }\n".to_string(),
             "incompatible exact formal types",
         ),
         (
             "request-mismatch",
-            "http:\n  typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.request\n    adapterArgs:\n      - param: value\n        source: { kind: http.request }\n".to_string(),
+            "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.request\n    adapterArgs:\n      - param: value\n        source: { kind: http.request }\n".to_string(),
             "HttpRequest",
         ),
         (
             "context-without-pre",
-            "http:\n  typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.context\n    adapterArgs:\n      - param: body\n        source: { kind: http.body }\n      - param: value\n        source: { kind: http.context }\n".to_string(),
+            "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.context\n    adapterArgs:\n      - param: body\n        source: { kind: http.body }\n      - param: value\n        source: { kind: http.context }\n".to_string(),
             "requires an entry-local pre",
         ),
         (
             "typed-missing-body",
-            "http:\n  typed:\n    method: GET\n    path: /typed\n    kind: typedJson\n    handler: main.health\n    adapterArgs: []\n".to_string(),
+            "typed:\n    method: GET\n    path: /typed\n    kind: typedJson\n    handler: main.health\n    adapterArgs: []\n".to_string(),
             "requires at least one http.body",
         ),
         (
             "raw-return",
-            "http:\n  raw:\n    method: GET\n    path: /raw\n    kind: rawHttp\n    handler: main.raw\n    adapterArgs:\n      - param: request\n        source: { kind: http.request }\n".to_string(),
+            "raw:\n    method: GET\n    path: /raw\n    kind: rawHttp\n    handler: main.raw\n    adapterArgs:\n      - param: request\n        source: { kind: http.request }\n".to_string(),
             "HttpResponse",
         ),
         (
             "raw-body",
-            "http:\n  raw:\n    method: POST\n    path: /raw\n    kind: rawHttp\n    handler: main.rawBody\n    adapterArgs:\n      - param: request\n        source: { kind: http.request }\n      - param: body\n        source: { kind: http.body }\n".to_string(),
+            "raw:\n    method: POST\n    path: /raw\n    kind: rawHttp\n    handler: main.rawBody\n    adapterArgs:\n      - param: request\n        source: { kind: http.request }\n      - param: body\n        source: { kind: http.body }\n".to_string(),
             "rawHttp cannot consume http.body",
         ),
         (
@@ -579,7 +737,7 @@ function rawStream(request: std.http.HttpRequest) -> Stream<string> {
         ),
         (
             "raw-stream-item",
-            "http:\n  raw:\n    method: GET\n    path: /raw\n    kind: rawHttp\n    handler: main.rawStream\n    adapterArgs:\n      - param: request\n        source: { kind: http.request }\n".to_string(),
+            "raw:\n    method: GET\n    path: /raw\n    kind: rawHttp\n    handler: main.rawStream\n    adapterArgs:\n      - param: request\n        source: { kind: http.request }\n".to_string(),
             "HttpResponseStreamEvent",
         ),
     ];
@@ -591,12 +749,7 @@ function rawStream(request: std.http.HttpRequest) -> Stream<string> {
 
     for (field, selector) in [("pre", "main.genericPre"), ("guard", "main.genericGuard")] {
         let mut service = parse_service(&typed_http("main.typed", "body"));
-        let entry = service
-            .http
-            .as_mut()
-            .unwrap()
-            .get_mut(&gateway_key("typed"))
-            .unwrap();
+        let entry = service.entries.get_mut(&gateway_key("typed")).unwrap();
         if field == "pre" {
             entry.pre = Some(selector.to_string());
         } else {
@@ -611,12 +764,7 @@ function rawStream(request: std.http.HttpRequest) -> Stream<string> {
         ("guard-parameter", "guard", "main.wrongGuard", "HttpRequest"),
     ] {
         let mut service = parse_service(&typed_http("main.typed", "body"));
-        let entry = service
-            .http
-            .as_mut()
-            .unwrap()
-            .get_mut(&gateway_key("typed"))
-            .unwrap();
+        let entry = service.entries.get_mut(&gateway_key("typed")).unwrap();
         if field == "pre" {
             entry.pre = Some(selector.to_string());
         } else {
@@ -627,7 +775,7 @@ function rawStream(request: std.http.HttpRequest) -> Stream<string> {
     }
 
     let context_mismatch = parse_service(
-        "http:\n  typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.context\n    pre: main.prepare\n    adapterArgs:\n      - param: body\n        source: { kind: http.body }\n      - param: value\n        source: { kind: http.context }\n",
+        "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.context\n    pre: main.prepare\n    adapterArgs:\n      - param: body\n        source: { kind: http.body }\n      - param: value\n        source: { kind: http.context }\n",
     );
     let error = fixture.generate_error(&context_mismatch, &fixture.project.package.artifact);
     assert!(
@@ -656,7 +804,7 @@ function recursive(body: Node) -> string { return body.value }
 function callback(body: fn(value: string) -> string) -> string { return "x" }
 function interfaceBody(body: any Reader) -> string { return "x" }
 "#,
-        "http: {}\n",
+        "{}\n",
     );
     for (label, handler, expected) in [
         ("map", "main.mapBody", "Map"),
@@ -755,13 +903,13 @@ function typed(body: Input) -> Output {{
 
 fn raw_http(handler: &str, param: &str) -> String {
     format!(
-        "http:\n  raw:\n    method: GET\n    path: /raw\n    kind: rawHttp\n    handler: {handler}\n    adapterArgs:\n      - param: {param}\n        source: {{ kind: http.request }}\n"
+        "raw:\n    method: GET\n    path: /raw\n    kind: rawHttp\n    handler: {handler}\n    adapterArgs:\n      - param: {param}\n        source: {{ kind: http.request }}\n"
     )
 }
 
 fn typed_http(handler: &str, param: &str) -> String {
     format!(
-        "http:\n  typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: {handler}\n    adapterArgs:\n      - param: {param}\n        source: {{ kind: http.body }}\n"
+        "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: {handler}\n    adapterArgs:\n      - param: {param}\n        source: {{ kind: http.body }}\n"
     )
 }
 
@@ -769,6 +917,7 @@ struct Fixture {
     project: PublishedPackageProject,
     api: ServiceApiProjection,
     service: ServiceManifestAuthoring,
+    http: HttpGatewayDocumentAuthoring,
 }
 
 impl Fixture {
@@ -781,32 +930,32 @@ impl Fixture {
     }
 
     fn generate(&self) -> Result<ServiceDeployment, GeneratedServiceDeploymentError> {
-        self.generate_result(&self.service, &self.project.package.artifact)
+        self.generate_result(&self.http, &self.project.package.artifact)
     }
 
     fn generate_with(
         &self,
-        service: &ServiceManifestAuthoring,
+        http: &HttpGatewayDocumentAuthoring,
         implementation: &skiff_artifact_model::PackageArtifact,
     ) -> ServiceDeployment {
-        self.generate_result(service, implementation).unwrap()
+        self.generate_result(http, implementation).unwrap()
     }
 
     fn generate_error(
         &self,
-        service: &ServiceManifestAuthoring,
+        http: &HttpGatewayDocumentAuthoring,
         implementation: &skiff_artifact_model::PackageArtifact,
     ) -> GeneratedServiceDeploymentError {
-        self.generate_result(service, implementation).unwrap_err()
+        self.generate_result(http, implementation).unwrap_err()
     }
 
     fn generate_result(
         &self,
-        service: &ServiceManifestAuthoring,
+        http: &HttpGatewayDocumentAuthoring,
         implementation: &skiff_artifact_model::PackageArtifact,
     ) -> Result<ServiceDeployment, GeneratedServiceDeploymentError> {
         self.generate_result_with_records(
-            service,
+            http,
             implementation,
             &self.project.package.resolved_package_schema_type_records,
         )
@@ -814,13 +963,15 @@ impl Fixture {
 
     fn generate_result_with_records(
         &self,
-        service: &ServiceManifestAuthoring,
+        http: &HttpGatewayDocumentAuthoring,
         implementation: &skiff_artifact_model::PackageArtifact,
         package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     ) -> Result<ServiceDeployment, GeneratedServiceDeploymentError> {
         let closure = self.closure();
         generate_service_deployment(GeneratedServiceDeploymentInput {
-            service,
+            service: &self.service,
+            http: Some(http),
+            websocket: None,
             profile_name: "dev",
             profile: &profile(),
             service_api: &self.api,
@@ -835,25 +986,46 @@ fn compile_fixture(
     name: &str,
     api: &str,
     source: impl AsRef<str>,
-    service_fields: impl AsRef<str>,
+    http_yml: impl AsRef<str>,
+) -> Fixture {
+    compile_fixture_with_service_calls(name, api, source, &[], http_yml)
+}
+
+fn compile_fixture_with_service_calls(
+    name: &str,
+    api: &str,
+    source: impl AsRef<str>,
+    service_calls: &[&str],
+    http_yml: impl AsRef<str>,
 ) -> Fixture {
     let root = TestDir::new("skiff-compiler-http-gateway", name);
     root.write("package.yml", format!("id: {PACKAGE_ID}\nversion: 1.0.0\n"));
     root.write("api.yml", api);
+    let calls = service_calls
+        .iter()
+        .map(|call| format!("  - {call}\n"))
+        .collect::<String>();
     root.write(
         "service.yml",
-        format!("id: {SERVICE_ID}\n{}", service_fields.as_ref()),
+        format!(
+            "id: {SERVICE_ID}\n{}",
+            (!calls.is_empty())
+                .then(|| format!("serviceCalls:\n{calls}"))
+                .unwrap_or_default()
+        ),
     );
+    root.write("http.yml", http_yml.as_ref());
     root.write("main.skiff", source.as_ref());
-    let service = read_service_package_root(root.path())
-        .expect("fixture service authoring")
-        .service;
+    let authoring = read_service_package_root(root.path()).expect("fixture service authoring");
+    let service = authoring.service;
+    let http = authoring.http.expect("fixture HTTP authoring");
     let (project, api) =
         compile_service_package_project(root.path()).expect("fixture source compilation");
     Fixture {
         project,
         api,
         service,
+        http,
     }
 }
 
@@ -866,10 +1038,8 @@ fn compile_dependency_fixture() -> Fixture {
         ),
     );
     root.write("api.yml", "health: main.health\n");
-    root.write(
-        "service.yml",
-        format!("id: {SERVICE_ID}\n{}", typed_http("main.typed", "body")),
-    );
+    root.write("service.yml", format!("id: {SERVICE_ID}\n"));
+    root.write("http.yml", typed_http("main.typed", "body"));
     root.write(
         "main.skiff",
         r#"import models
@@ -902,15 +1072,17 @@ function typed(body: models.Payload) -> models.Payload { return body }
         ".skiff-packages/example~com~~http-gateway-primitives/1.0.0/detail.skiff",
         "type Detail { code: integer }\n",
     );
-    let service = read_service_package_root(root.path())
-        .expect("dependency fixture service authoring")
-        .service;
+    let authoring =
+        read_service_package_root(root.path()).expect("dependency fixture service authoring");
+    let service = authoring.service;
+    let http = authoring.http.expect("dependency fixture HTTP authoring");
     let (project, api) = compile_service_package_project(root.path())
         .expect("dependency fixture source compilation");
     Fixture {
         project,
         api,
         service,
+        http,
     }
 }
 
@@ -920,7 +1092,7 @@ fn assert_schema_records_fail_closed(
     label: &str,
 ) {
     let error = fixture
-        .generate_result_with_records(&fixture.service, &fixture.project.package.artifact, records)
+        .generate_result_with_records(&fixture.http, &fixture.project.package.artifact, records)
         .expect_err("forged dependency schema facts must fail closed");
     assert!(
         error.to_string().contains("schema")
@@ -930,8 +1102,8 @@ fn assert_schema_records_fail_closed(
     );
 }
 
-fn parse_service(http: &str) -> ServiceManifestAuthoring {
-    serde_yaml::from_str(&format!("id: {SERVICE_ID}\n{http}")).unwrap()
+fn parse_service(http: &str) -> HttpGatewayDocumentAuthoring {
+    serde_yaml::from_str(http).unwrap()
 }
 
 fn profile() -> ServiceConfigProfileAuthoring {
@@ -962,6 +1134,9 @@ fn http_surface<'a>(
         GatewayProtocolSurface::Http(surface) => surface,
         GatewayProtocolSurface::WebSocketConnect(_) => {
             panic!("HTTP fixture unexpectedly contains websocketConnect")
+        }
+        GatewayProtocolSurface::WebSocketJsonRpc(_) => {
+            panic!("HTTP fixture unexpectedly contains websocketJsonRpc")
         }
     }
 }

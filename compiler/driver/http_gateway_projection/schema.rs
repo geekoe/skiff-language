@@ -184,6 +184,27 @@ impl<'a> ExactTypeClassifier<'a> {
         }
     }
 
+    pub(crate) fn require_nullable_builtin_type(
+        &self,
+        ty: &PackageTypeRef,
+        expected: &str,
+    ) -> Result<(), String> {
+        match ty {
+            PackageTypeRef::Nullable { inner } => self.require_builtin_type(inner, expected),
+            PackageTypeRef::Local {
+                local_type: TypeRefIr::Nullable { inner },
+            } => match inner.as_ref() {
+                TypeRefIr::Builtin { name, args } if name == expected && args.is_empty() => Ok(()),
+                _ => Err(format!(
+                    "expected exact nullable non-generic builtin {expected}, got a different type"
+                )),
+            },
+            _ => Err(format!(
+                "expected exact nullable non-generic builtin {expected}, got a different type"
+            )),
+        }
+    }
+
     fn project_package_type(
         &self,
         ty: &PackageTypeRef,

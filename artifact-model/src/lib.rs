@@ -121,10 +121,11 @@ pub use deployment::{
 pub use ecosystem_authoring::{
     is_dependency_alias_lexically_valid, is_dependency_alias_reserved, is_dependency_alias_valid,
     parse_runtime_assembly_yml, parse_service_contract_definition_yml,
-    parse_service_deployment_yml, EcosystemAuthoringError, HttpGatewayEntryAuthoring,
-    RuntimeAssemblyAuthoring, ServiceAuthoringKind, ServiceConfigProfileAuthoring,
-    ServiceContractDefinition, ServiceContractDefinitionDiagnosticText, ServiceDeploymentAuthoring,
-    ServiceManifestAuthoring, WebSocketConnectAuthoring, WebSocketGatewayEntryAuthoring,
+    parse_service_deployment_yml, EcosystemAuthoringError, HttpGatewayDocumentAuthoring,
+    HttpGatewayEntryAuthoring, RuntimeAssemblyAuthoring, ServiceAuthoringKind,
+    ServiceConfigProfileAuthoring, ServiceContractDefinition,
+    ServiceContractDefinitionDiagnosticText, ServiceDeploymentAuthoring, ServiceManifestAuthoring,
+    WebSocketConnectAuthoring, WebSocketGatewayDocumentAuthoring, WebSocketJsonRpcMethodAuthoring,
     DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS, DEPENDENCY_ALIAS_POSITIVE_VECTORS,
     DEPENDENCY_ALIAS_RESERVED_VECTORS,
 };
@@ -145,9 +146,11 @@ pub use gateway::{
     GatewayExternalErrorProjectionKind, GatewayExternalErrorProjectionVersion,
     GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface,
     GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
+    GatewayWebSocketJsonRpcProtocolSurface, GatewayWebSocketRpcProfile,
     GatewayWebSocketShapeVersion, WebSocketEntryId, WebSocketEntryIdParseError,
     WEBSOCKET_CONNECTION_POLICY_V1_TYPE, WEBSOCKET_CONNECT_REQUEST_V1_TYPE,
     WEBSOCKET_CONNECT_RESULT_V1_TYPE, WEBSOCKET_ENTRY_ID_PREFIX, WEBSOCKET_GATEWAY_ENTRY_KEY,
+    WEBSOCKET_JSON_RPC_TEXT_PROFILE,
 };
 pub use metadata::MetadataValue;
 pub use native_signature::{

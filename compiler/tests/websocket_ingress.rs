@@ -6,9 +6,11 @@ use common::{
 };
 use serde_json::json;
 use skiff_artifact_model::{
-    GatewayAdapterKind, GatewayAdapterSource, GatewayEntryKey, GatewayProtocolSurface,
-    GatewayWebSocketDownlinkFrame, IngressProtocol, PackageLocalAbiSymbol, PackageTypeRef,
-    ServiceConfigProfileAuthoring, ServiceDeployment, ServiceManifestAuthoring, TypeRefIr,
+    GatewayAdapterKind, GatewayAdapterSource, GatewayDispatchMode, GatewayEntryKey,
+    GatewayExternalSchema, GatewayProtocolSurface, GatewayWebSocketDownlinkFrame,
+    GatewayWebSocketRpcProfile, HttpGatewayDocumentAuthoring, IngressProtocol,
+    PackageLocalAbiSymbol, PackageTypeRef, ServiceConfigProfileAuthoring, ServiceDeployment,
+    ServiceManifestAuthoring, TypeRefIr, WebSocketGatewayDocumentAuthoring,
     WEBSOCKET_GATEWAY_ENTRY_KEY,
 };
 use skiff_compiler::{
@@ -81,9 +83,13 @@ fn connect_only_websocket_projects_exact_deployment_and_assembly_entry() {
         ]
     );
     assert_eq!(
-        entry.gateway_entry_identity.as_str(),
-        "skiff-gateway-entry-v1:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936"
+        surface.rpc_profiles,
+        vec![GatewayWebSocketRpcProfile::JsonRpc2_0Text]
     );
+    assert!(entry
+        .gateway_entry_identity
+        .as_str()
+        .starts_with("skiff-gateway-entry-v1:sha256:"));
 
     let PackageLocalAbiSymbol::Callable {
         callable_id: implementation_callable,
@@ -124,6 +130,163 @@ fn connect_only_websocket_projects_exact_deployment_and_assembly_entry() {
 }
 
 #[test]
+fn declared_json_rpc_methods_project_independent_typed_unary_entries() {
+    let fixture = compile_fixture(
+        "json-rpc-positive",
+        "health: main.health\n",
+        json_rpc_source(),
+        r#"path: /chat
+connect:
+  handler: main.onConnect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
+    - param: connectionId
+      source: { kind: websocket.connectionId }
+jsonRpc:
+  status:
+    method: status.get
+    handler: main.status
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+      - param: connectionId
+        source: { kind: websocket.connectionId }
+      - param: businessIdentity
+        source: { kind: websocket.businessIdentity }
+  acknowledge:
+    method: status.acknowledge
+    handler: main.acknowledge
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+"#,
+    );
+    let deployment = fixture.generate().expect("JSON-RPC method projection");
+    assert!(fixture.api.contract.operations.is_empty());
+    assert_eq!(deployment.gateway_entries.len(), 3);
+    assert_eq!(deployment.ingress.len(), 3);
+
+    let status_key = GatewayEntryKey::parse("status").unwrap();
+    let status = &deployment.gateway_entries[&status_key];
+    assert_eq!(
+        status.adapter_plan.kind,
+        GatewayAdapterKind::WebSocketJsonRpc
+    );
+    assert_eq!(
+        status
+            .adapter_plan
+            .args
+            .iter()
+            .map(|argument| (argument.param.as_str(), argument.source))
+            .collect::<Vec<_>>(),
+        vec![
+            ("params", GatewayAdapterSource::WebSocketJsonRpcParams),
+            ("connectionId", GatewayAdapterSource::WebSocketConnectionId),
+            (
+                "businessIdentity",
+                GatewayAdapterSource::WebSocketBusinessIdentity
+            )
+        ]
+    );
+    let GatewayProtocolSurface::WebSocketJsonRpc(surface) = &status.protocol_surface.protocol
+    else {
+        panic!("declared method must have the websocketJsonRpc surface")
+    };
+    assert_eq!(surface.profile, GatewayWebSocketRpcProfile::JsonRpc2_0Text);
+    assert_eq!(surface.dispatch_mode, GatewayDispatchMode::Unary);
+    assert_eq!(
+        surface.external_sources,
+        vec![
+            GatewayAdapterSource::WebSocketBusinessIdentity,
+            GatewayAdapterSource::WebSocketConnectionId,
+            GatewayAdapterSource::WebSocketJsonRpcParams
+        ]
+    );
+    assert!(matches!(
+        surface.params_schema,
+        GatewayExternalSchema::Record { .. }
+    ));
+    assert!(matches!(
+        surface.result_schema,
+        GatewayExternalSchema::Record { .. }
+    ));
+    let binding = deployment
+        .ingress
+        .iter()
+        .find(|binding| binding.gateway_entry_key == status_key)
+        .unwrap();
+    assert_eq!(binding.selector.protocol, IngressProtocol::WebSocket);
+    assert_eq!(binding.selector.host, "*");
+    assert_eq!(binding.selector.path, "/chat");
+    assert_eq!(binding.selector.method.as_deref(), Some("status.get"));
+
+    let acknowledge = &deployment.gateway_entries[&GatewayEntryKey::parse("acknowledge").unwrap()];
+    let GatewayProtocolSurface::WebSocketJsonRpc(surface) = &acknowledge.protocol_surface.protocol
+    else {
+        panic!("void method must have the websocketJsonRpc surface")
+    };
+    assert_eq!(surface.result_schema, GatewayExternalSchema::Null);
+}
+
+#[test]
+fn json_rpc_signature_source_and_return_mismatches_fail_closed() {
+    let fixture = compile_fixture(
+        "json-rpc-negative",
+        "health: main.health\n",
+        json_rpc_source(),
+        "path: /chat\n",
+    );
+    for (label, handler, args, expected) in [
+        (
+            "generic",
+            "main.genericStatus",
+            "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n",
+            "generic parameters",
+        ),
+        (
+            "scalar params",
+            "main.scalarParams",
+            "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n",
+            "top-level object or array",
+        ),
+        (
+            "stream return",
+            "main.streamStatus",
+            "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n",
+            "only unary",
+        ),
+        (
+            "wrong connection id",
+            "main.wrongConnectionIdRpc",
+            "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n      - param: connectionId\n        source: { kind: websocket.connectionId }\n",
+            "builtin string",
+        ),
+        (
+            "non-null business identity",
+            "main.wrongBusinessIdentityRpc",
+            "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n      - param: businessIdentity\n        source: { kind: websocket.businessIdentity }\n",
+            "nullable",
+        ),
+        (
+            "missing params",
+            "main.status",
+            "      - param: connectionId\n        source: { kind: websocket.connectionId }\n      - param: businessIdentity\n        source: { kind: websocket.businessIdentity }\n",
+            "signature order",
+        ),
+    ] {
+        let websocket = parse_service(&format!(
+            "path: /chat\njsonRpc:\n  status:\n    method: status.get\n    handler: {handler}\n    adapterArgs:\n{args}"
+        ));
+        let error = fixture.generate_with(Some(&websocket)).unwrap_err();
+        assert!(
+            error.to_string().contains(expected),
+            "{label}: expected {expected:?}, got {error}"
+        );
+    }
+}
+
+#[test]
 fn path_only_and_connect_variants_preserve_protocol_identity_boundaries() {
     let fixture = compile_fixture(
         "identity-boundaries",
@@ -134,11 +297,10 @@ fn path_only_and_connect_variants_preserve_protocol_identity_boundaries() {
     let connected = fixture.generate().unwrap();
     let connected_entry = &connected.gateway_entries[&websocket_key()];
 
-    let mut path_only_service = fixture.service.clone();
-    let websocket = path_only_service.websocket.as_mut().unwrap();
-    websocket.path = "/other".to_string();
-    websocket.connect = None;
-    let path_only = fixture.generate_with(&path_only_service).unwrap();
+    let mut path_only_service = fixture.websocket.clone();
+    path_only_service.path = "/other".to_string();
+    path_only_service.connect = None;
+    let path_only = fixture.generate_with(Some(&path_only_service)).unwrap();
     let path_only_entry = &path_only.gateway_entries[&websocket_key()];
     assert!(path_only_entry.handler.is_none());
     assert!(path_only_entry.adapter_plan.args.is_empty());
@@ -159,9 +321,7 @@ fn path_only_and_connect_variants_preserve_protocol_identity_boundaries() {
         connected.deployment_artifact_identity
     );
 
-    let mut absent_service = fixture.service.clone();
-    absent_service.websocket = None;
-    let absent = fixture.generate_with(&absent_service).unwrap();
+    let absent = fixture.generate_with(None).unwrap();
     assert!(absent.gateway_entries.is_empty());
     assert!(absent.ingress.is_empty());
     assert_eq!(
@@ -198,12 +358,137 @@ fn path_only_and_connect_variants_preserve_protocol_identity_boundaries() {
 }
 
 #[test]
+fn json_rpc_method_rename_changes_selector_and_revision_but_not_gateway_identity() {
+    let fixture = compile_fixture(
+        "json-rpc-method-identity",
+        "health: main.health\n",
+        json_rpc_source(),
+        r#"path: /chat
+jsonRpc:
+  status:
+    method: status.get
+    handler: main.status
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+      - param: connectionId
+        source: { kind: websocket.connectionId }
+      - param: businessIdentity
+        source: { kind: websocket.businessIdentity }
+"#,
+    );
+    let first = fixture.generate().unwrap();
+    let status_key = GatewayEntryKey::parse("status").unwrap();
+    let first_binding = first
+        .ingress
+        .iter()
+        .find(|binding| binding.gateway_entry_key == status_key)
+        .unwrap();
+    assert_eq!(first_binding.selector.method.as_deref(), Some("status.get"));
+
+    let mut renamed_authoring = fixture.websocket.clone();
+    renamed_authoring
+        .json_rpc
+        .get_mut(&status_key)
+        .unwrap()
+        .method = "status.read".to_string();
+    let renamed = fixture.generate_with(Some(&renamed_authoring)).unwrap();
+    let renamed_binding = renamed
+        .ingress
+        .iter()
+        .find(|binding| binding.gateway_entry_key == status_key)
+        .unwrap();
+    assert_eq!(
+        renamed_binding.selector.method.as_deref(),
+        Some("status.read")
+    );
+    assert_eq!(
+        first.gateway_entries[&status_key].gateway_entry_identity,
+        renamed.gateway_entries[&status_key].gateway_entry_identity,
+        "external method is a deployment selector, not a gateway protocol identity input"
+    );
+    assert_ne!(first.deployment_revision, renamed.deployment_revision);
+}
+
+#[test]
+fn real_split_websocket_path_mutation_preserves_package_and_contract_bytes() {
+    let root = TestDir::new("skiff-compiler-websocket", "real-file-mutation");
+    root.write("package.yml", format!("id: {PACKAGE_ID}\nversion: 1.0.0\n"));
+    root.write("api.yml", "health: main.health\n");
+    root.write("service.yml", format!("id: {SERVICE_ID}\n"));
+    root.write("main.skiff", connect_source());
+    root.write(
+        "websocket.yml",
+        connect_authoring("main.onConnect", "request", "connectionId"),
+    );
+
+    let first_root = read_service_package_root(root.path()).unwrap();
+    let (first_project, first_api) = compile_service_package_project(root.path()).unwrap();
+    let first_closure = first_project
+        .dependency_packages
+        .iter()
+        .map(|package| package.artifact.clone())
+        .collect::<Vec<_>>();
+    let first = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &first_root.service,
+        http: None,
+        websocket: first_root.websocket.as_ref(),
+        profile_name: "dev",
+        profile: &profile(),
+        service_api: &first_api,
+        implementation: &first_project.package.artifact,
+        package_closure: &first_closure,
+        package_schema_records: &first_project.package.resolved_package_schema_type_records,
+    })
+    .unwrap();
+
+    root.write(
+        "websocket.yml",
+        connect_authoring("main.onConnect", "request", "connectionId")
+            .replace("path: /chat", "path: /moved"),
+    );
+    let second_root = read_service_package_root(root.path()).unwrap();
+    let (second_project, second_api) = compile_service_package_project(root.path()).unwrap();
+    let second_closure = second_project
+        .dependency_packages
+        .iter()
+        .map(|package| package.artifact.clone())
+        .collect::<Vec<_>>();
+    let second = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &second_root.service,
+        http: None,
+        websocket: second_root.websocket.as_ref(),
+        profile_name: "dev",
+        profile: &profile(),
+        service_api: &second_api,
+        implementation: &second_project.package.artifact,
+        package_closure: &second_closure,
+        package_schema_records: &second_project.package.resolved_package_schema_type_records,
+    })
+    .unwrap();
+
+    assert_eq!(
+        serde_json::to_vec(&first_project.package.artifact).unwrap(),
+        serde_json::to_vec(&second_project.package.artifact).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_vec(&first_api.contract).unwrap(),
+        serde_json::to_vec(&second_api.contract).unwrap()
+    );
+    assert_eq!(
+        first.gateway_entries[&websocket_key()].gateway_entry_identity,
+        second.gateway_entries[&websocket_key()].gateway_entry_identity
+    );
+    assert_ne!(first.deployment_revision, second.deployment_revision);
+}
+
+#[test]
 fn resolver_adapter_and_signature_mismatches_fail_closed() {
     let fixture = compile_fixture(
         "negative-signatures",
         "health: main.health\n",
         negative_source(),
-        "websocket:\n  path: /chat\n",
+        "path: /chat\n",
     );
 
     let cases = [
@@ -244,13 +529,12 @@ fn resolver_adapter_and_signature_mismatches_fail_closed() {
         ),
         (
             "missing formal",
-            r#"websocket:
-  path: /chat
-  connect:
-    handler: main.onConnect
-    adapterArgs:
-      - param: request
-        source: { kind: websocket.connectRequest }
+            r#"path: /chat
+connect:
+  handler: main.onConnect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
 "#
             .to_string(),
             "cover every handler formal exactly once",
@@ -262,45 +546,42 @@ fn resolver_adapter_and_signature_mismatches_fail_closed() {
         ),
         (
             "duplicate formal",
-            r#"websocket:
-  path: /chat
-  connect:
-    handler: main.onConnect
-    adapterArgs:
-      - param: request
-        source: { kind: websocket.connectRequest }
-      - param: request
-        source: { kind: websocket.connectionId }
+            r#"path: /chat
+connect:
+  handler: main.onConnect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
+    - param: request
+      source: { kind: websocket.connectionId }
 "#
             .to_string(),
             "cover every handler formal exactly once",
         ),
         (
             "reordered formals",
-            r#"websocket:
-  path: /chat
-  connect:
-    handler: main.onConnect
-    adapterArgs:
-      - param: connectionId
-        source: { kind: websocket.connectionId }
-      - param: request
-        source: { kind: websocket.connectRequest }
+            r#"path: /chat
+connect:
+  handler: main.onConnect
+  adapterArgs:
+    - param: connectionId
+      source: { kind: websocket.connectionId }
+    - param: request
+      source: { kind: websocket.connectRequest }
 "#
             .to_string(),
             "signature order",
         ),
         (
             "HTTP source",
-            r#"websocket:
-  path: /chat
-  connect:
-    handler: main.onConnect
-    adapterArgs:
-      - param: request
-        source: { kind: http.request }
-      - param: connectionId
-        source: { kind: websocket.connectionId }
+            r#"path: /chat
+connect:
+  handler: main.onConnect
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+    - param: connectionId
+      source: { kind: websocket.connectionId }
 "#
             .to_string(),
             "not allowed for websocketConnect",
@@ -308,8 +589,8 @@ fn resolver_adapter_and_signature_mismatches_fail_closed() {
     ];
 
     for (label, authoring, expected) in cases {
-        let service = parse_service(&authoring);
-        let error = fixture.generate_with(&service).unwrap_err();
+        let websocket = parse_service(&authoring);
+        let error = fixture.generate_with(Some(&websocket)).unwrap_err();
         assert!(
             error.to_string().contains(expected),
             "{label} expected {expected:?}, got {error}"
@@ -318,24 +599,20 @@ fn resolver_adapter_and_signature_mismatches_fail_closed() {
 }
 
 #[test]
-fn fixed_key_collision_and_legacy_generic_std_types_fail_closed() {
+fn fixed_json_rpc_key_collision_and_legacy_generic_std_types_fail_closed() {
     let collision = compile_fixture(
         "fixed-key-collision",
         "health: main.health\n",
         connect_source(),
-        format!(
-            r#"http:
+        r#"path: /chat
+jsonRpc:
   websocket:
-    method: GET
-    path: /http
-    kind: rawHttp
-    handler: main.raw
+    method: status.get
+    handler: main.health
     adapterArgs:
-      - param: request
-        source: {{ kind: http.request }}
-{}"#,
-            connect_authoring("main.onConnect", "request", "connectionId")
-        ),
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+"#,
     );
     let error = collision.generate().unwrap_err();
     assert!(
@@ -365,12 +642,62 @@ function legacy() -> std.websocket.WebSocketConnectResult<string> {
 }
 
 #[test]
+fn http_and_json_rpc_entry_keys_share_one_collision_domain() {
+    let fixture = compile_fixture(
+        "cross-document-key-collision",
+        "health: main.health\n",
+        json_rpc_source(),
+        r#"path: /chat
+jsonRpc:
+  status:
+    method: status.get
+    handler: main.status
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+      - param: connectionId
+        source: { kind: websocket.connectionId }
+      - param: businessIdentity
+        source: { kind: websocket.businessIdentity }
+"#,
+    );
+    let http: HttpGatewayDocumentAuthoring = serde_yaml::from_str(
+        r#"status:
+  method: GET
+  path: /status
+  kind: rawHttp
+  handler: main.raw
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+"#,
+    )
+    .unwrap();
+    let closure = fixture.closure();
+    let error = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &fixture.service,
+        http: Some(&http),
+        websocket: Some(&fixture.websocket),
+        profile_name: "dev",
+        profile: &profile(),
+        service_api: &fixture.api,
+        implementation: &fixture.project.package.artifact,
+        package_closure: &closure,
+        package_schema_records: &fixture.project.package.resolved_package_schema_type_records,
+    })
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("both http.yml and websocket.yml"));
+}
+
+#[test]
 fn compiler_published_std_keeps_only_connect_shapes_and_exact_send_signatures() {
     let fixture = compile_fixture(
         "std-surface",
         "health: main.health\n",
         connect_source(),
-        "websocket:\n  path: /chat\n",
+        "path: /chat\n",
     );
     let std = fixture
         .project
@@ -475,6 +802,62 @@ function raw(request: std.http.HttpRequest) -> std.http.HttpResponse {
 "#
 }
 
+fn json_rpc_source() -> &'static str {
+    r#"import std
+
+type Params { value: string }
+type Result { accepted: boolean }
+
+function health() -> string { return "ok" }
+
+function onConnect(
+  request: std.websocket.WebSocketConnectRequest,
+  connectionId: string
+) -> std.websocket.WebSocketConnectResult {
+  return {
+    tag: "accept",
+    businessIdentity: connectionId,
+    connectionPolicy: null
+  }
+}
+
+function status(
+  params: Params,
+  connectionId: string,
+  businessIdentity: string?
+) -> Result {
+  return { accepted: true }
+}
+
+function acknowledge(params: Params) -> void {}
+
+function raw(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return std.http.noContent()
+}
+
+function genericStatus<T>(params: T) -> Result {
+  return { accepted: true }
+}
+
+function scalarParams(params: string) -> Result {
+  return { accepted: true }
+}
+
+function streamStatus(params: Params) -> Stream<Result> {
+  emit({ accepted: true })
+  return null
+}
+
+function wrongConnectionIdRpc(params: Params, connectionId: integer) -> Result {
+  return { accepted: true }
+}
+
+function wrongBusinessIdentityRpc(params: Params, businessIdentity: string) -> Result {
+  return { accepted: true }
+}
+"#
+}
+
 fn negative_source() -> &'static str {
     r#"import std
 
@@ -532,15 +915,14 @@ function wrongResult(
 
 fn connect_authoring(handler: &str, request: &str, connection_id: &str) -> String {
     format!(
-        r#"websocket:
-  path: /chat
-  connect:
-    handler: {handler}
-    adapterArgs:
-      - param: {request}
-        source: {{ kind: websocket.connectRequest }}
-      - param: {connection_id}
-        source: {{ kind: websocket.connectionId }}
+        r#"path: /chat
+connect:
+  handler: {handler}
+  adapterArgs:
+    - param: {request}
+      source: {{ kind: websocket.connectRequest }}
+    - param: {connection_id}
+      source: {{ kind: websocket.connectionId }}
 "#
     )
 }
@@ -549,6 +931,7 @@ struct Fixture {
     project: PublishedPackageProject,
     api: ServiceApiProjection,
     service: ServiceManifestAuthoring,
+    websocket: WebSocketGatewayDocumentAuthoring,
 }
 
 impl Fixture {
@@ -561,16 +944,18 @@ impl Fixture {
     }
 
     fn generate(&self) -> Result<ServiceDeployment, GeneratedServiceDeploymentError> {
-        self.generate_with(&self.service)
+        self.generate_with(Some(&self.websocket))
     }
 
     fn generate_with(
         &self,
-        service: &ServiceManifestAuthoring,
+        websocket: Option<&WebSocketGatewayDocumentAuthoring>,
     ) -> Result<ServiceDeployment, GeneratedServiceDeploymentError> {
         let closure = self.closure();
         generate_service_deployment(GeneratedServiceDeploymentInput {
-            service,
+            service: &self.service,
+            http: None,
+            websocket,
             profile_name: "dev",
             profile: &profile(),
             service_api: &self.api,
@@ -585,30 +970,29 @@ fn compile_fixture(
     name: &str,
     api: &str,
     source: impl AsRef<str>,
-    service_fields: impl AsRef<str>,
+    websocket_yml: impl AsRef<str>,
 ) -> Fixture {
     let root = TestDir::new("skiff-compiler-websocket", name);
     root.write("package.yml", format!("id: {PACKAGE_ID}\nversion: 1.0.0\n"));
     root.write("api.yml", api);
-    root.write(
-        "service.yml",
-        format!("id: {SERVICE_ID}\n{}", service_fields.as_ref()),
-    );
+    root.write("service.yml", format!("id: {SERVICE_ID}\n"));
+    root.write("websocket.yml", websocket_yml.as_ref());
     root.write("main.skiff", source.as_ref());
-    let service = read_service_package_root(root.path())
-        .expect("fixture service authoring")
-        .service;
+    let authoring = read_service_package_root(root.path()).expect("fixture service authoring");
+    let service = authoring.service;
+    let websocket = authoring.websocket.expect("fixture WebSocket authoring");
     let (project, api) =
         compile_service_package_project(root.path()).expect("fixture source compilation");
     Fixture {
         project,
         api,
         service,
+        websocket,
     }
 }
 
-fn parse_service(fields: &str) -> ServiceManifestAuthoring {
-    serde_yaml::from_str(&format!("id: {SERVICE_ID}\n{fields}")).unwrap()
+fn parse_service(fields: &str) -> WebSocketGatewayDocumentAuthoring {
+    serde_yaml::from_str(fields).unwrap()
 }
 
 fn profile() -> ServiceConfigProfileAuthoring {

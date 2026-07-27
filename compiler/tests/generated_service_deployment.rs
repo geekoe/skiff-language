@@ -2,7 +2,10 @@ mod common;
 
 use common::{package_project::compile_service_package_project, TestDir};
 use serde_json::json;
-use skiff_artifact_model::{ServiceConfigProfileAuthoring, ServiceManifestAuthoring};
+use skiff_artifact_model::{
+    HttpGatewayDocumentAuthoring, ServiceConfigProfileAuthoring, ServiceManifestAuthoring,
+    WebSocketGatewayDocumentAuthoring,
+};
 use skiff_compiler::{
     generate_service_deployment, GeneratedServiceDeploymentInput, ServiceApiProjection,
 };
@@ -16,6 +19,8 @@ fn generates_exact_operations_and_profile_bindings() {
     let profile = profile();
     let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &service,
+        http: None,
+        websocket: None,
         profile_name: "prod",
         profile: &profile,
         service_api: &service_api,
@@ -47,10 +52,11 @@ fn generates_exact_operations_and_profile_bindings() {
     assert_eq!(deployment.config_literals[0].path, "registry.token");
     assert_eq!(deployment.policy.principal, "service:registry");
 
-    let mut explicit_empty_http = service.clone();
-    explicit_empty_http.http = Some(Default::default());
+    let explicit_empty_http = HttpGatewayDocumentAuthoring::default();
     let explicit_empty = generate_service_deployment(GeneratedServiceDeploymentInput {
-        service: &explicit_empty_http,
+        service: &service,
+        http: Some(&explicit_empty_http),
+        websocket: None,
         profile_name: "prod",
         profile: &profile,
         service_api: &service_api,
@@ -134,9 +140,6 @@ db object PackageSecret {
         id: "example.com/mapping-service".to_string(),
         kind: skiff_artifact_model::ServiceAuthoringKind::Service,
         service_calls: vec!["read".to_string()],
-        http: None,
-        websocket: None,
-        timeout: None,
     };
     let mut mapping_profile = profile();
     mapping_profile.config = json!({});
@@ -153,6 +156,8 @@ db object PackageSecret {
         .collect::<Vec<_>>();
     let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &service,
+        http: None,
+        websocket: None,
         profile_name: "fixture",
         profile: &mapping_profile,
         service_api: &service_api,
@@ -191,6 +196,8 @@ fn omitted_or_null_timeout_does_not_generate_a_policy_override() {
 
     let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &manifest(),
+        http: None,
+        websocket: None,
         profile_name: "prod",
         profile: &profile,
         service_api: &service_api,
@@ -222,6 +229,8 @@ fn explicit_timeout_is_the_only_generated_timeout_override() {
     profile.timeout = json!(1250);
     let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &manifest(),
+        http: None,
+        websocket: None,
         profile_name: "prod",
         profile: &profile,
         service_api: &service_api,
@@ -252,6 +261,8 @@ fn invalid_timeout_values_fail_closed() {
         profile.timeout = timeout;
         let error = generate_service_deployment(GeneratedServiceDeploymentInput {
             service: &manifest(),
+            http: None,
+            websocket: None,
             profile_name: "prod",
             profile: &profile,
             service_api: &service_api,
@@ -276,6 +287,8 @@ fn automatic_service_api_mapping_fails_closed() {
     service_api.available.clear();
     let error = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &manifest(),
+        http: None,
+        websocket: None,
         profile_name: "prod",
         profile: &profile,
         service_api: &service_api,
@@ -315,6 +328,8 @@ fn automatic_service_api_mapping_fails_closed() {
     skiff_artifact_identity::assign_service_contract_identities(&mut duplicate.contract).unwrap();
     let error = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &manifest(),
+        http: None,
+        websocket: None,
         profile_name: "prod",
         profile: &profile,
         service_api: &duplicate,
@@ -351,18 +366,18 @@ function health() -> string {
 "#,
     );
     let (project, service_api) = compile_service_package_project(root.path()).unwrap();
-    let service = serde_yaml::from_str::<ServiceManifestAuthoring>(
+    let service_source = "id: example.com/http\n";
+    let service = serde_yaml::from_str::<ServiceManifestAuthoring>(service_source).unwrap();
+    let http = serde_yaml::from_str::<HttpGatewayDocumentAuthoring>(
         r#"
-id: example.com/http
-http:
-  raw:
-    method: GET
-    path: /artifacts
-    kind: rawHttp
-    handler: main.raw
-    adapterArgs:
-      - param: request
-        source: { kind: http.request }
+raw:
+  method: GET
+  path: /artifacts
+  kind: rawHttp
+  handler: main.raw
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
 "#,
     )
     .unwrap();
@@ -375,6 +390,8 @@ http:
     http_profile.config = json!({});
     let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &service,
+        http: Some(&http),
+        websocket: None,
         profile_name: "prod",
         profile: &http_profile,
         service_api: &service_api,
@@ -390,13 +407,11 @@ http:
 
 #[test]
 fn generated_service_deployment_refuses_legacy_websocket_operation_ingress() {
-    let error = serde_yaml::from_str::<ServiceManifestAuthoring>(
+    let error = serde_yaml::from_str::<WebSocketGatewayDocumentAuthoring>(
         r#"
-id: example.com/registry
-websocket:
-  routes:
-    - path: /events
-      operation: read
+routes:
+  - path: /events
+    operation: read
 "#,
     )
     .unwrap_err();
@@ -413,6 +428,8 @@ fn unbound_requirement_and_identity_mismatch_fail_closed() {
     missing.config = json!({});
     let error = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &manifest(),
+        http: None,
+        websocket: None,
         profile_name: "prod",
         profile: &missing,
         service_api: &service_api,
@@ -429,6 +446,8 @@ fn unbound_requirement_and_identity_mismatch_fail_closed() {
     wrong_service.id = "example.com/other".to_string();
     let error = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &wrong_service,
+        http: None,
+        websocket: None,
         profile_name: "prod",
         profile: &profile(),
         service_api: &service_api,
@@ -630,6 +649,8 @@ fn generate(
 ) -> skiff_artifact_model::ServiceDeployment {
     generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &manifest(),
+        http: None,
+        websocket: None,
         profile_name: "prod",
         profile: &profile(),
         service_api: api,
@@ -651,6 +672,8 @@ fn generate_with_manifest(
 ) -> skiff_artifact_model::ServiceDeployment {
     generate_service_deployment(GeneratedServiceDeploymentInput {
         service,
+        http: None,
+        websocket: None,
         profile_name: "prod",
         profile: &profile(),
         service_api: api,
@@ -699,9 +722,6 @@ fn manifest_with_calls(service_calls: &[&str]) -> ServiceManifestAuthoring {
             .iter()
             .map(|path| (*path).to_string())
             .collect(),
-        http: None,
-        websocket: None,
-        timeout: None,
     }
 }
 

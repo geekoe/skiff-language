@@ -9,6 +9,7 @@ pub const WEBSOCKET_GATEWAY_ENTRY_KEY: &str = "websocket";
 pub const WEBSOCKET_CONNECT_REQUEST_V1_TYPE: &str = "std.websocket.WebSocketConnectRequest";
 pub const WEBSOCKET_CONNECTION_POLICY_V1_TYPE: &str = "std.websocket.WebSocketConnectionPolicy";
 pub const WEBSOCKET_CONNECT_RESULT_V1_TYPE: &str = "std.websocket.WebSocketConnectResult";
+pub const WEBSOCKET_JSON_RPC_TEXT_PROFILE: &str = "jsonrpc-2.0-text";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebSocketEntryIdParseError {
@@ -84,6 +85,8 @@ pub enum GatewayAdapterKind {
     RawHttp,
     #[serde(rename = "websocketConnect")]
     WebSocketConnect,
+    #[serde(rename = "websocketJsonRpc")]
+    WebSocketJsonRpc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -97,8 +100,12 @@ pub enum GatewayAdapterSource {
     HttpContext,
     #[serde(rename = "websocket.connectRequest")]
     WebSocketConnectRequest,
+    #[serde(rename = "websocket.jsonRpcParams")]
+    WebSocketJsonRpcParams,
     #[serde(rename = "websocket.connectionId")]
     WebSocketConnectionId,
+    #[serde(rename = "websocket.businessIdentity")]
+    WebSocketBusinessIdentity,
 }
 
 impl<'de> Deserialize<'de> for GatewayAdapterSource {
@@ -117,8 +124,12 @@ impl<'de> Deserialize<'de> for GatewayAdapterSource {
             HttpContext {},
             #[serde(rename = "websocket.connectRequest")]
             WebSocketConnectRequest {},
+            #[serde(rename = "websocket.jsonRpcParams")]
+            WebSocketJsonRpcParams {},
             #[serde(rename = "websocket.connectionId")]
             WebSocketConnectionId {},
+            #[serde(rename = "websocket.businessIdentity")]
+            WebSocketBusinessIdentity {},
         }
 
         Ok(match Wire::deserialize(deserializer)? {
@@ -126,7 +137,9 @@ impl<'de> Deserialize<'de> for GatewayAdapterSource {
             Wire::HttpBody {} => Self::HttpBody,
             Wire::HttpContext {} => Self::HttpContext,
             Wire::WebSocketConnectRequest {} => Self::WebSocketConnectRequest,
+            Wire::WebSocketJsonRpcParams {} => Self::WebSocketJsonRpcParams,
             Wire::WebSocketConnectionId {} => Self::WebSocketConnectionId,
+            Wire::WebSocketBusinessIdentity {} => Self::WebSocketBusinessIdentity,
         })
     }
 }
@@ -138,22 +151,27 @@ impl GatewayAdapterSource {
             Self::HttpBody => "http.body",
             Self::HttpContext => "http.context",
             Self::WebSocketConnectRequest => "websocket.connectRequest",
+            Self::WebSocketJsonRpcParams => "websocket.jsonRpcParams",
             Self::WebSocketConnectionId => "websocket.connectionId",
+            Self::WebSocketBusinessIdentity => "websocket.businessIdentity",
         }
     }
 
     /// Whether selecting this source changes the external protocol view.
     ///
-    /// Internal context, connection bookkeeping and opaque business identity
-    /// remain in the deployment execution plan and cannot enter the gateway
-    /// protocol identity.
+    /// HTTP context remains in the deployment execution plan. WebSocket
+    /// connection and business-identity sources are part of the closed
+    /// protocol capability surface even though their formal parameter names
+    /// and order remain deployment-only facts.
     pub fn is_external_protocol_source(self) -> bool {
         matches!(
             self,
             Self::HttpRequest
                 | Self::HttpBody
                 | Self::WebSocketConnectRequest
+                | Self::WebSocketJsonRpcParams
                 | Self::WebSocketConnectionId
+                | Self::WebSocketBusinessIdentity
         )
     }
 }
@@ -255,6 +273,12 @@ fn adapter_source_is_allowed(kind: GatewayAdapterKind, source: GatewayAdapterSou
             source,
             GatewayAdapterSource::WebSocketConnectRequest
                 | GatewayAdapterSource::WebSocketConnectionId
+        ),
+        GatewayAdapterKind::WebSocketJsonRpc => matches!(
+            source,
+            GatewayAdapterSource::WebSocketJsonRpcParams
+                | GatewayAdapterSource::WebSocketConnectionId
+                | GatewayAdapterSource::WebSocketBusinessIdentity
         ),
     }
 }
@@ -500,6 +524,32 @@ pub struct GatewayWebSocketConnectProtocolSurface {
     pub connection_policy_shape: GatewayWebSocketShapeVersion,
     pub external_sources: Vec<GatewayAdapterSource>,
     pub downlink_frames: Vec<GatewayWebSocketDownlinkFrame>,
+    pub rpc_profiles: Vec<GatewayWebSocketRpcProfile>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum GatewayWebSocketRpcProfile {
+    #[serde(rename = "jsonrpc-2.0-text")]
+    #[allow(non_camel_case_types)]
+    JsonRpc2_0Text,
+}
+
+impl GatewayWebSocketRpcProfile {
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::JsonRpc2_0Text => WEBSOCKET_JSON_RPC_TEXT_PROFILE,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GatewayWebSocketJsonRpcProtocolSurface {
+    pub profile: GatewayWebSocketRpcProfile,
+    pub dispatch_mode: GatewayDispatchMode,
+    pub external_sources: Vec<GatewayAdapterSource>,
+    pub params_schema: GatewayExternalSchema,
+    pub result_schema: GatewayExternalSchema,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -535,6 +585,8 @@ pub enum GatewayProtocolSurface {
     Http(GatewayHttpProtocolSurface),
     #[serde(rename = "websocketConnect")]
     WebSocketConnect(GatewayWebSocketConnectProtocolSurface),
+    #[serde(rename = "websocketJsonRpc")]
+    WebSocketJsonRpc(GatewayWebSocketJsonRpcProtocolSurface),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -653,8 +705,16 @@ mod tests {
                 GatewayAdapterSource::WebSocketConnectRequest,
             ),
             (
+                "websocket.jsonRpcParams",
+                GatewayAdapterSource::WebSocketJsonRpcParams,
+            ),
+            (
                 "websocket.connectionId",
                 GatewayAdapterSource::WebSocketConnectionId,
+            ),
+            (
+                "websocket.businessIdentity",
+                GatewayAdapterSource::WebSocketBusinessIdentity,
             ),
         ];
         for (wire, source) in all_sources {
@@ -664,6 +724,14 @@ mod tests {
                 serde_json::from_value::<GatewayAdapterSource>(value).expect("source parse"),
                 source
             );
+        }
+        assert!(!GatewayAdapterSource::HttpContext.is_external_protocol_source());
+        for source in [
+            GatewayAdapterSource::WebSocketJsonRpcParams,
+            GatewayAdapterSource::WebSocketConnectionId,
+            GatewayAdapterSource::WebSocketBusinessIdentity,
+        ] {
+            assert!(source.is_external_protocol_source(), "{source:?}");
         }
         assert!(
             serde_json::from_value::<GatewayAdapterSource>(json!({ "kind": "http.query" }))
@@ -677,7 +745,16 @@ mod tests {
             serde_json::from_value::<GatewayAdapterKind>(json!("websocketConnect")).unwrap(),
             GatewayAdapterKind::WebSocketConnect
         );
-        for invalid in ["webSocketConnect", "websocket", "websocketReceive"] {
+        assert_eq!(
+            serde_json::from_value::<GatewayAdapterKind>(json!("websocketJsonRpc")).unwrap(),
+            GatewayAdapterKind::WebSocketJsonRpc
+        );
+        for invalid in [
+            "webSocketConnect",
+            "websocket",
+            "websocketReceive",
+            "webSocketJsonRpc",
+        ] {
             assert!(
                 serde_json::from_value::<GatewayAdapterKind>(json!(invalid)).is_err(),
                 "{invalid}"
@@ -719,6 +796,34 @@ mod tests {
             ],
         )
         .expect("WebSocket connect sources");
+        validate_gateway_adapter_args(
+            GatewayAdapterKind::WebSocketJsonRpc,
+            false,
+            &[
+                GatewayAdapterArg {
+                    param: "params".to_string(),
+                    source: GatewayAdapterSource::WebSocketJsonRpcParams,
+                },
+                GatewayAdapterArg {
+                    param: "connectionId".to_string(),
+                    source: GatewayAdapterSource::WebSocketConnectionId,
+                },
+                GatewayAdapterArg {
+                    param: "businessIdentity".to_string(),
+                    source: GatewayAdapterSource::WebSocketBusinessIdentity,
+                },
+            ],
+        )
+        .expect("WebSocket JSON-RPC sources");
+        assert!(validate_gateway_adapter_args(
+            GatewayAdapterKind::WebSocketJsonRpc,
+            false,
+            &[GatewayAdapterArg {
+                param: "request".to_string(),
+                source: GatewayAdapterSource::WebSocketConnectRequest,
+            }]
+        )
+        .is_err());
         assert!(validate_gateway_adapter_args(
             GatewayAdapterKind::WebSocketConnect,
             false,
@@ -749,6 +854,42 @@ mod tests {
             "targetType": "PrivateRequest"
         }))
         .is_err());
+    }
+
+    #[test]
+    fn websocket_json_rpc_protocol_surface_has_one_closed_profile_and_schema_shape() {
+        let surface = GatewayEntryProtocolSurface {
+            protocol: GatewayProtocolSurface::WebSocketJsonRpc(
+                GatewayWebSocketJsonRpcProtocolSurface {
+                    profile: GatewayWebSocketRpcProfile::JsonRpc2_0Text,
+                    dispatch_mode: GatewayDispatchMode::Unary,
+                    external_sources: vec![GatewayAdapterSource::WebSocketJsonRpcParams],
+                    params_schema: GatewayExternalSchema::Record {
+                        fields: BTreeMap::from([("id".to_string(), GatewayExternalSchema::String)]),
+                        required: vec!["id".to_string()],
+                    },
+                    result_schema: GatewayExternalSchema::Null,
+                },
+            ),
+            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+        };
+        let value = serde_json::to_value(&surface).unwrap();
+        assert_eq!(
+            value["protocol"]["surface"]["profile"],
+            json!("jsonrpc-2.0-text")
+        );
+        assert_eq!(
+            serde_json::from_value::<GatewayEntryProtocolSurface>(value).unwrap(),
+            surface
+        );
+        assert_eq!(
+            GatewayWebSocketRpcProfile::JsonRpc2_0Text.wire_name(),
+            WEBSOCKET_JSON_RPC_TEXT_PROFILE
+        );
+        assert!(
+            serde_json::from_value::<GatewayWebSocketRpcProfile>(json!("jsonrpc-1.0-text"))
+                .is_err()
+        );
     }
 
     #[test]
@@ -873,6 +1014,7 @@ mod tests {
                         GatewayWebSocketDownlinkFrame::Binary,
                         GatewayWebSocketDownlinkFrame::Text,
                     ],
+                    rpc_profiles: vec![GatewayWebSocketRpcProfile::JsonRpc2_0Text],
                 },
             ),
             external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
@@ -890,7 +1032,8 @@ mod tests {
                             { "kind": "websocket.connectRequest" },
                             { "kind": "websocket.connectionId" }
                         ],
-                        "downlinkFrames": ["binary", "text"]
+                        "downlinkFrames": ["binary", "text"],
+                        "rpcProfiles": ["jsonrpc-2.0-text"]
                     }
                 },
                 "externalErrorProjection": {

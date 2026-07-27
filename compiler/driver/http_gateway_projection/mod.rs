@@ -13,9 +13,9 @@ use skiff_artifact_model::{
     DeploymentGatewayEntry, DeploymentIngressBinding, GatewayAdapterKind, GatewayAdapterPlan,
     GatewayAdapterSource, GatewayDispatchMode, GatewayEntryKey, GatewayEntryProtocolSurface,
     GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
-    GatewayProtocolSurface, HttpGatewayEntryAuthoring, IngressProtocol, IngressSelector,
-    PackageArtifact, PackageCallableSignature, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    PackageTypeRef, ServiceManifestAuthoring,
+    GatewayProtocolSurface, HttpGatewayDocumentAuthoring, HttpGatewayEntryAuthoring,
+    IngressProtocol, IngressSelector, PackageArtifact, PackageCallableSignature,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, PackageTypeRef, WEBSOCKET_GATEWAY_ENTRY_KEY,
 };
 use thiserror::Error;
 
@@ -39,12 +39,12 @@ pub(crate) struct ProjectedHttpGateway {
 }
 
 pub(crate) fn project_http_gateway(
-    service: &ServiceManifestAuthoring,
+    http: Option<&HttpGatewayDocumentAuthoring>,
     implementation: &PackageArtifact,
     package_closure: &[PackageArtifact],
     package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 ) -> Result<ProjectedHttpGateway, HttpGatewayProjectionError> {
-    let Some(entries) = service.http.as_ref() else {
+    let Some(http) = http else {
         return Ok(ProjectedHttpGateway::default());
     };
     for artifact in package_closure
@@ -70,7 +70,15 @@ pub(crate) fn project_http_gateway(
     let classifier =
         ExactTypeClassifier::new(implementation, package_closure, package_schema_records);
     let mut projected = ProjectedHttpGateway::default();
-    for (key, authoring) in entries {
+    for (key, authoring) in &http.entries {
+        if key.as_str() == WEBSOCKET_GATEWAY_ENTRY_KEY {
+            return Err(HttpGatewayProjectionError::InvalidEntry {
+                entry: key.to_string(),
+                field: "key",
+                message: "entry key is reserved for the compiler-owned WebSocket connection entry"
+                    .to_string(),
+            });
+        }
         let entry = project_entry(key, authoring, &resolver, &classifier)?;
         let binding = DeploymentIngressBinding {
             selector: IngressSelector {
@@ -299,7 +307,9 @@ fn validate_handler_args(
                 None
             }
             GatewayAdapterSource::WebSocketConnectRequest
-            | GatewayAdapterSource::WebSocketConnectionId => {
+            | GatewayAdapterSource::WebSocketJsonRpcParams
+            | GatewayAdapterSource::WebSocketConnectionId
+            | GatewayAdapterSource::WebSocketBusinessIdentity => {
                 return Err(invalid(
                     key,
                     "adapterArgs",
@@ -359,6 +369,11 @@ fn body_schema(
             key,
             "kind",
             "websocketConnect is not an HTTP adapter kind",
+        )),
+        GatewayAdapterKind::WebSocketJsonRpc => Err(invalid(
+            key,
+            "kind",
+            "websocketJsonRpc is not an HTTP adapter kind",
         )),
         GatewayAdapterKind::TypedJson => {
             let by_name = signature
@@ -428,6 +443,11 @@ fn project_handler_return(
                 "kind",
                 "websocketConnect is not an HTTP adapter kind",
             )),
+            GatewayAdapterKind::WebSocketJsonRpc => Err(invalid(
+                key,
+                "kind",
+                "websocketJsonRpc is not an HTTP adapter kind",
+            )),
         };
     }
     match kind {
@@ -450,6 +470,11 @@ fn project_handler_return(
             key,
             "kind",
             "websocketConnect is not an HTTP adapter kind",
+        )),
+        GatewayAdapterKind::WebSocketJsonRpc => Err(invalid(
+            key,
+            "kind",
+            "websocketJsonRpc is not an HTTP adapter kind",
         )),
     }
 }

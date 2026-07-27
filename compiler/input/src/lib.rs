@@ -44,7 +44,9 @@ pub use resources::{
     MAX_PUBLICATION_RESOURCE_BYTE_LEN, MAX_PUBLICATION_RESOURCE_TOTAL_BYTE_LEN,
 };
 pub use service_config::{
-    read_service_package_root, ServiceConfigProfile, ServicePackageRoot, ServiceSourceConfigError,
+    read_http_gateway_document, read_service_package_root, read_websocket_gateway_document,
+    ServiceConfigProfile, ServicePackageRoot, ServiceSourceConfigError, HTTP_CONFIG_FILE,
+    SERVICE_CONFIG_FILE, WEBSOCKET_CONFIG_FILE,
 };
 pub use skiff_compiler_input_model::{
     CompilerRawSourceFile, PublicationResourceInput, PublicationResourceSpec,

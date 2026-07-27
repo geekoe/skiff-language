@@ -5,12 +5,13 @@ use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{package_artifact_ref, service_contract_ref};
 use skiff_artifact_model::{
     ActivationPolicy, ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentPolicy,
-    DeploymentRevision, MetadataValue, PackageArtifact, PackageBinding, PackageRequirementKey,
-    PackageSchemaTypeId, PackageSchemaTypeRecord, ResourceBinding, ResourcePolicy,
-    RuntimeCapabilityBinding, SecretRefBinding, ServiceConfigProfileAuthoring, ServiceContractRef,
-    ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentOperationInput,
-    ServiceManifestAuthoring, ServiceRequirementKey, ServiceSelectorBinding, StateBinding,
-    StateBindingKind, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    DeploymentRevision, HttpGatewayDocumentAuthoring, MetadataValue, PackageArtifact,
+    PackageBinding, PackageRequirementKey, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    ResourceBinding, ResourcePolicy, RuntimeCapabilityBinding, SecretRefBinding,
+    ServiceConfigProfileAuthoring, ServiceContractRef, ServiceDeployment, ServiceDeploymentInput,
+    ServiceDeploymentOperationInput, ServiceManifestAuthoring, ServiceRequirementKey,
+    ServiceSelectorBinding, StateBinding, StateBindingKind, WebSocketGatewayDocumentAuthoring,
+    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_compiler_contract::ServiceApiProjection;
 use skiff_deployment::projection::{project_service_deployment, ProjectionError};
@@ -27,6 +28,8 @@ use crate::websocket_gateway_projection::{
 /// `deployment.yml` or manually-authored operation map in this seam.
 pub struct GeneratedServiceDeploymentInput<'a> {
     pub service: &'a ServiceManifestAuthoring,
+    pub http: Option<&'a HttpGatewayDocumentAuthoring>,
+    pub websocket: Option<&'a WebSocketGatewayDocumentAuthoring>,
     pub profile_name: &'a str,
     pub profile: &'a ServiceConfigProfileAuthoring,
     pub service_api: &'a ServiceApiProjection,
@@ -67,7 +70,7 @@ pub fn generate_service_deployment(
         mut gateway_entries,
         mut ingress,
     } = project_http_gateway(
-        input.service,
+        input.http,
         input.implementation,
         input.package_closure,
         input.package_schema_records,
@@ -76,7 +79,7 @@ pub fn generate_service_deployment(
         gateway_entries: websocket_entries,
         ingress: websocket_ingress,
     } = project_websocket_gateway(
-        input.service,
+        input.websocket,
         input.implementation,
         input.package_closure,
         input.package_schema_records,
@@ -86,7 +89,7 @@ pub fn generate_service_deployment(
             return Err(GeneratedServiceDeploymentError::InvalidManifest {
                 field: "websocket",
                 message: format!(
-                    "compiler-owned WebSocket gateway key {key} collides with an HTTP entry"
+                    "gateway entry key {key} is declared by both http.yml and websocket.yml"
                 ),
             });
         }
@@ -485,6 +488,8 @@ fn generated_revision(
         &input.implementation.package_build_id,
         input.profile,
         &service,
+        input.http,
+        input.websocket,
     ))
     .map_err(|error| invalid(error.to_string()))?;
     Ok(DeploymentRevision::new(format!(
@@ -516,29 +521,24 @@ mod tests {
 
     #[test]
     fn generated_service_deployment_authoring_accepts_path_only_websocket() {
-        let service = serde_yaml::from_str::<ServiceManifestAuthoring>(
+        let websocket = serde_yaml::from_str::<WebSocketGatewayDocumentAuthoring>(
             r#"
-id: example.com/chat
-websocket:
-  path: /chat
+path: /chat
 "#,
         )
         .unwrap();
-        let websocket = service.websocket.expect("typed WebSocket authoring");
-        assert_eq!(websocket.host, "*");
         assert_eq!(websocket.path, "/chat");
         assert!(websocket.connect.is_none());
+        assert!(websocket.json_rpc.is_empty());
     }
 
     #[test]
     fn generated_service_deployment_rejects_legacy_websocket_operation_ingress() {
-        let error = serde_yaml::from_str::<ServiceManifestAuthoring>(
+        let error = serde_yaml::from_str::<WebSocketGatewayDocumentAuthoring>(
             r#"
-id: example.com/chat
-websocket:
-  routes:
-    - path: /chat
-      operation: receive
+routes:
+  - path: /chat
+    operation: receive
 "#,
         )
         .unwrap_err();

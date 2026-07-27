@@ -26,6 +26,7 @@ use skiff_compiler_input::{
     package_config::{read_user_package_manifest, PackageManifest, PACKAGE_CONFIG_FILE},
     package_sources::read_package_sources,
     read_publication_resources, read_service_package_root, CompilerPlatformSources,
+    HTTP_CONFIG_FILE, SERVICE_CONFIG_FILE, WEBSOCKET_CONFIG_FILE,
 };
 use skiff_compiler_source::prelude_registry::initialize_prelude_registry;
 use skiff_compiler_source::source_graph::PublicationSourceGraph;
@@ -81,6 +82,7 @@ pub fn build_authoring_object(
         match object {
             AuthoringObject::Package => {
                 return run_after_platform_context_guard(platform_sources, || {
+                    validate_external_manifest_inventory(root)?;
                     let manifest = read_user_package_manifest(&root.join(PACKAGE_CONFIG_FILE))?;
                     let store = CanonicalArtifactStore::create(artifact_root)?;
                     build_package_after_platform_context_guard(
@@ -170,7 +172,7 @@ fn build_package_after_platform_context_guard(
         output.insert("serviceApiReceipt".to_string(), service_api_receipt);
     }
 
-    if let Some((service, service_api)) = service_data {
+    if let Some((service_root, service_api)) = service_data {
         let contract = &service_api.contract;
         let contract_path = store.write_service_contract(contract)?;
         let contract_ref = service_contract_ref(contract)?;
@@ -182,7 +184,7 @@ fn build_package_after_platform_context_guard(
             }),
         );
 
-        let profile = match service.config_profiles.get(environment) {
+        let profile = match service_root.config_profiles.get(environment) {
             Some(profile) => &profile.authoring,
             None => {
                 return Err(invalid_input(format!(
@@ -194,7 +196,9 @@ fn build_package_after_platform_context_guard(
         let package_closure = reachable_package_closure(store, &published.artifact, &available)?;
         let package_schema_records = published.resolved_package_schema_type_records.clone();
         let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
-            service: &service.service,
+            service: &service_root.service,
+            http: service_root.http.as_ref(),
+            websocket: service_root.websocket.as_ref(),
             profile_name: environment,
             profile,
             service_api: &service_api,
@@ -683,6 +687,39 @@ fn reject_legacy_service_authoring(root: &Path) -> AuthoringResult<()> {
     Ok(())
 }
 
+fn validate_external_manifest_inventory(root: &Path) -> AuthoringResult<()> {
+    let mut external = Vec::new();
+    for file_name in [HTTP_CONFIG_FILE, WEBSOCKET_CONFIG_FILE] {
+        let path = root.join(file_name);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                if !metadata.file_type().is_file() {
+                    return Err(invalid_input(format!(
+                        "external service manifest {} must be a regular file",
+                        path.display()
+                    )));
+                }
+                external.push(path);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    if external.is_empty() {
+        return Ok(());
+    }
+    for required in [PACKAGE_CONFIG_FILE, "api.yml", SERVICE_CONFIG_FILE] {
+        let path = root.join(required);
+        if !fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_file()) {
+            return Err(invalid_input(format!(
+                "external service manifests require regular package.yml, api.yml, and service.yml in the same root; {} is missing or not a regular file",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn relative_path(store: &CanonicalArtifactStore, path: &Path) -> AuthoringResult<String> {
     Ok(path
         .strip_prefix(store.root())
@@ -703,3 +740,72 @@ fn invalid_input(message: impl Into<String>) -> Box<dyn std::error::Error + Send
 #[cfg(test)]
 #[path = "authoring/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod external_manifest_inventory_tests {
+    use std::{
+        fs, process,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::*;
+
+    #[test]
+    fn root_inventory_rejects_external_only_and_ordinary_package_external_files() {
+        let external_only = fixture_root("external-only");
+        fs::write(external_only.join(HTTP_CONFIG_FILE), "{}\n").unwrap();
+        assert!(validate_external_manifest_inventory(&external_only).is_err());
+        fs::remove_dir_all(external_only).unwrap();
+
+        let ordinary = fixture_root("ordinary");
+        fs::write(
+            ordinary.join(PACKAGE_CONFIG_FILE),
+            "id: example.com/a\nversion: 1.0.0\n",
+        )
+        .unwrap();
+        fs::write(ordinary.join("api.yml"), "{}\n").unwrap();
+        fs::write(ordinary.join(WEBSOCKET_CONFIG_FILE), "path: /chat\n").unwrap();
+        assert!(validate_external_manifest_inventory(&ordinary).is_err());
+        fs::remove_dir_all(ordinary).unwrap();
+    }
+
+    #[test]
+    fn root_inventory_accepts_only_complete_regular_service_roots() {
+        let complete = fixture_root("complete");
+        fs::write(
+            complete.join(PACKAGE_CONFIG_FILE),
+            "id: example.com/a\nversion: 1.0.0\n",
+        )
+        .unwrap();
+        fs::write(complete.join("api.yml"), "{}\n").unwrap();
+        fs::write(complete.join(SERVICE_CONFIG_FILE), "id: example.com/a\n").unwrap();
+        fs::write(complete.join(HTTP_CONFIG_FILE), "{}\n").unwrap();
+        validate_external_manifest_inventory(&complete).unwrap();
+        fs::remove_dir_all(complete).unwrap();
+
+        let non_regular = fixture_root("non-regular");
+        fs::write(
+            non_regular.join(PACKAGE_CONFIG_FILE),
+            "id: example.com/a\nversion: 1.0.0\n",
+        )
+        .unwrap();
+        fs::write(non_regular.join("api.yml"), "{}\n").unwrap();
+        fs::write(non_regular.join(SERVICE_CONFIG_FILE), "id: example.com/a\n").unwrap();
+        fs::create_dir(non_regular.join(HTTP_CONFIG_FILE)).unwrap();
+        assert!(validate_external_manifest_inventory(&non_regular).is_err());
+        fs::remove_dir_all(non_regular).unwrap();
+    }
+
+    fn fixture_root(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "skiff-authoring-inventory-{name}-{}-{unique}",
+            process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+}

@@ -113,6 +113,15 @@ pub struct WebSocketConnectAuthoring {
     pub adapter_args: Vec<GatewayAdapterArg>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebSocketJsonRpcMethodAuthoring {
+    pub method: String,
+    pub handler: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adapter_args: Vec<GatewayAdapterArg>,
+}
+
 fn deserialize_present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -121,11 +130,60 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct HttpGatewayDocumentAuthoring {
+    pub entries: BTreeMap<GatewayEntryKey, HttpGatewayEntryAuthoring>,
+}
+
+impl<'de> Deserialize<'de> for HttpGatewayDocumentAuthoring {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_http_gateway_entry_map(deserializer).map(|entries| Self { entries })
+    }
+}
+
+struct WebSocketJsonRpcMethodsVisitor;
+
+impl<'de> Visitor<'de> for WebSocketJsonRpcMethodsVisitor {
+    type Value = BTreeMap<GatewayEntryKey, WebSocketJsonRpcMethodAuthoring>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a mapping of unique WebSocket JSON-RPC gateway entry keys")
+    }
+
+    fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut entries = BTreeMap::new();
+        while let Some((key, entry)) =
+            access.next_entry::<GatewayEntryKey, WebSocketJsonRpcMethodAuthoring>()?
+        {
+            if entries.insert(key.clone(), entry).is_some() {
+                return Err(serde::de::Error::custom(format!(
+                    "duplicate WebSocket JSON-RPC gateway entry key {key:?}"
+                )));
+            }
+        }
+        Ok(entries)
+    }
+}
+
+fn deserialize_websocket_json_rpc_method_map<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<GatewayEntryKey, WebSocketJsonRpcMethodAuthoring>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_map(WebSocketJsonRpcMethodsVisitor)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct WebSocketGatewayEntryAuthoring {
-    #[serde(default = "default_http_host")]
-    pub host: String,
+pub struct WebSocketGatewayDocumentAuthoring {
     pub path: String,
     #[serde(
         default,
@@ -133,6 +191,12 @@ pub struct WebSocketGatewayEntryAuthoring {
         deserialize_with = "deserialize_present"
     )]
     pub connect: Option<WebSocketConnectAuthoring>,
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "deserialize_websocket_json_rpc_method_map"
+    )]
+    pub json_rpc: BTreeMap<GatewayEntryKey, WebSocketJsonRpcMethodAuthoring>,
 }
 
 struct HttpGatewayEntriesVisitor;
@@ -171,46 +235,6 @@ where
     deserializer.deserialize_map(HttpGatewayEntriesVisitor)
 }
 
-fn deserialize_http_gateway_entries<'de, D>(
-    deserializer: D,
-) -> Result<Option<BTreeMap<GatewayEntryKey, HttpGatewayEntryAuthoring>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    struct OptionalEntriesVisitor;
-
-    impl<'de> Visitor<'de> for OptionalEntriesVisitor {
-        type Value = Option<BTreeMap<GatewayEntryKey, HttpGatewayEntryAuthoring>>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("null or a mapping of unique HTTP gateway entry keys")
-        }
-
-        fn visit_none<E>(self) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(None)
-        }
-
-        fn visit_unit<E>(self) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(None)
-        }
-
-        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            deserialize_http_gateway_entry_map(deserializer).map(Some)
-        }
-    }
-
-    deserializer.deserialize_option(OptionalEntriesVisitor)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceManifestAuthoring {
@@ -219,20 +243,6 @@ pub struct ServiceManifestAuthoring {
     pub kind: ServiceAuthoringKind,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub service_calls: Vec<String>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_http_gateway_entries"
-    )]
-    pub http: Option<BTreeMap<GatewayEntryKey, HttpGatewayEntryAuthoring>>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_present"
-    )]
-    pub websocket: Option<WebSocketGatewayEntryAuthoring>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout: Option<serde_json::Value>,
 }
 
 /// One environment profile. Profiles bind already-declared runtime
@@ -524,76 +534,92 @@ mod tests {
     }
 
     #[test]
-    fn service_manifest_decodes_named_http_entries_in_canonical_key_order() {
-        let manifest = serde_yaml::from_str::<ServiceManifestAuthoring>(
-            r#"
-id: example.com/users
-http:
-  zRaw:
-    host: api.example.com
-    method: GET
-    path: /raw
-    kind: rawHttp
-    handler: handlers.raw
-  createUser:
-    method: POST
-    path: /users
-    kind: typedJson
-    handler: users.create
-    guard: users.guard
-    pre: users.prepare
-    adapterArgs:
-      - param: body
-        source: { kind: http.body }
-      - param: context
-        source: { kind: http.context }
-"#,
-        )
-        .unwrap();
-        let http = manifest.http.as_ref().unwrap();
-        assert_eq!(
-            http.keys().map(GatewayEntryKey::as_str).collect::<Vec<_>>(),
-            vec!["createUser", "zRaw"]
-        );
-        assert_eq!(
-            http[&GatewayEntryKey::parse("createUser").unwrap()].host,
-            "*"
-        );
-
-        let encoded = serde_json::to_string(&manifest).unwrap();
-        assert!(encoded.find("createUser").unwrap() < encoded.find("zRaw").unwrap());
-        assert_eq!(
-            serde_json::from_str::<ServiceManifestAuthoring>(&encoded).unwrap(),
-            manifest
-        );
-        assert!(serde_yaml::from_str::<ServiceManifestAuthoring>(
-            "id: example.com/users\nhttp: null\n"
-        )
-        .unwrap()
-        .http
-        .is_none());
+    fn service_manifest_rejects_inline_external_fields() {
+        for field in ["http: {}", "websocket: { path: /chat }", "timeout: 1000"] {
+            let source = format!("id: example.com/users\n{field}\n");
+            assert!(
+                serde_yaml::from_str::<ServiceManifestAuthoring>(&source).is_err(),
+                "{field} must not remain in service.yml"
+            );
+        }
     }
 
     #[test]
-    fn service_manifest_http_mapping_rejects_duplicate_keys_and_recursive_unknown_fields() {
+    fn http_document_decodes_named_entries_in_canonical_key_order() {
+        let document = serde_yaml::from_str::<HttpGatewayDocumentAuthoring>(
+            r#"
+zRaw:
+  host: api.example.com
+  method: GET
+  path: /raw
+  kind: rawHttp
+  handler: handlers.raw
+createUser:
+  method: POST
+  path: /users
+  kind: typedJson
+  handler: users.create
+  guard: users.guard
+  pre: users.prepare
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+    - param: context
+      source: { kind: http.context }
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            document
+                .entries
+                .keys()
+                .map(GatewayEntryKey::as_str)
+                .collect::<Vec<_>>(),
+            vec!["createUser", "zRaw"]
+        );
+        assert_eq!(
+            document.entries[&GatewayEntryKey::parse("createUser").unwrap()].host,
+            "*"
+        );
+
+        let encoded = serde_json::to_string(&document).unwrap();
+        assert!(encoded.find("createUser").unwrap() < encoded.find("zRaw").unwrap());
+        assert_eq!(
+            serde_json::from_str::<HttpGatewayDocumentAuthoring>(&encoded).unwrap(),
+            document
+        );
+        assert!(serde_yaml::from_str::<HttpGatewayDocumentAuthoring>("{}")
+            .unwrap()
+            .entries
+            .is_empty());
+        for invalid in ["null", "value", "[]", "http: {}"] {
+            assert!(
+                serde_yaml::from_str::<HttpGatewayDocumentAuthoring>(invalid).is_err(),
+                "{invalid:?} unexpectedly decoded"
+            );
+        }
+    }
+
+    #[test]
+    fn http_document_rejects_duplicate_keys_and_recursive_unknown_fields() {
         let duplicate = r#"
-id: example.com/users
-http:
-  createUser:
-    method: POST
-    path: /users
-    kind: typedJson
-    handler: users.create
-  createUser:
-    method: PUT
-    path: /users
-    kind: typedJson
-    handler: users.replace
+createUser:
+  method: POST
+  path: /users
+  kind: typedJson
+  handler: users.create
+createUser:
+  method: PUT
+  path: /users
+  kind: typedJson
+  handler: users.replace
 "#;
-        assert!(serde_yaml::from_str::<ServiceManifestAuthoring>(duplicate)
-            .unwrap_err()
-            .to_string()
-            .contains("duplicate HTTP gateway entry key"));
+        assert!(
+            serde_yaml::from_str::<HttpGatewayDocumentAuthoring>(duplicate)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate HTTP gateway entry key")
+        );
 
         for invalid in [
             "unknown: true",
@@ -602,65 +628,68 @@ http:
             "id: duplicate",
         ] {
             let source = format!(
-                "id: example.com/users\nhttp:\n  createUser:\n    method: POST\n    path: /users\n    kind: typedJson\n    handler: users.create\n    {invalid}\n"
+                "createUser:\n  method: POST\n  path: /users\n  kind: typedJson\n  handler: users.create\n  {invalid}\n"
             );
             assert!(
-                serde_yaml::from_str::<ServiceManifestAuthoring>(&source).is_err(),
+                serde_yaml::from_str::<HttpGatewayDocumentAuthoring>(&source).is_err(),
                 "{invalid}"
             );
         }
 
         let unknown_source_field = r#"
-id: example.com/users
-http:
-  createUser:
-    method: POST
-    path: /users
-    kind: typedJson
-    handler: users.create
-    adapterArgs:
-      - param: body
-        source: { kind: http.body, field: nested }
+createUser:
+  method: POST
+  path: /users
+  kind: typedJson
+  handler: users.create
+  adapterArgs:
+    - param: body
+      source: { kind: http.body, field: nested }
 "#;
-        assert!(serde_yaml::from_str::<ServiceManifestAuthoring>(unknown_source_field).is_err());
+        assert!(
+            serde_yaml::from_str::<HttpGatewayDocumentAuthoring>(unknown_source_field).is_err()
+        );
     }
 
     #[test]
-    fn service_manifest_websocket_is_one_strict_optional_entry() {
-        let path_only = serde_yaml::from_str::<ServiceManifestAuthoring>(
+    fn websocket_document_is_one_strict_entry_with_declared_json_rpc_methods() {
+        let path_only = serde_yaml::from_str::<WebSocketGatewayDocumentAuthoring>(
             r#"
-id: example.com/chat
-websocket:
-  path: /chat
+path: /chat
 "#,
         )
         .unwrap();
-        let websocket = path_only.websocket.as_ref().unwrap();
-        assert_eq!(websocket.host, "*");
-        assert_eq!(websocket.path, "/chat");
-        assert!(websocket.connect.is_none());
+        assert_eq!(path_only.path, "/chat");
+        assert!(path_only.connect.is_none());
+        assert!(path_only.json_rpc.is_empty());
 
-        let with_connect = serde_yaml::from_str::<ServiceManifestAuthoring>(
+        let with_connect = serde_yaml::from_str::<WebSocketGatewayDocumentAuthoring>(
             r#"
-id: example.com/chat
-websocket:
-  host: CHAT.EXAMPLE.COM
-  path: /chat
-  connect:
-    handler: handlers.connect
+path: /chat
+connect:
+  handler: handlers.connect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
+    - param: connectionId
+      source: { kind: websocket.connectionId }
+jsonRpc:
+  getStatus:
+    method: status.get
+    handler: handlers.getStatus
     adapterArgs:
-      - param: request
-        source: { kind: websocket.connectRequest }
-      - param: connectionId
-        source: { kind: websocket.connectionId }
+      - param: input
+        source: { kind: websocket.jsonRpcParams }
 "#,
         )
         .unwrap();
-        let websocket = with_connect.websocket.as_ref().unwrap();
-        assert_eq!(websocket.host, "CHAT.EXAMPLE.COM");
-        assert_eq!(websocket.connect.as_ref().unwrap().adapter_args.len(), 2);
+        assert_eq!(with_connect.connect.as_ref().unwrap().adapter_args.len(), 2);
         assert_eq!(
-            serde_json::from_value::<ServiceManifestAuthoring>(
+            with_connect.json_rpc[&GatewayEntryKey::parse("getStatus").unwrap()].method,
+            "status.get"
+        );
+        assert_eq!(
+            serde_json::from_value::<WebSocketGatewayDocumentAuthoring>(
                 serde_json::to_value(&with_connect).unwrap()
             )
             .unwrap(),
@@ -669,8 +698,9 @@ websocket:
     }
 
     #[test]
-    fn service_manifest_websocket_rejects_null_collection_legacy_and_duplicate_shapes() {
-        for (label, websocket) in [
+    fn websocket_document_rejects_null_collection_legacy_and_duplicate_shapes() {
+        for (label, source) in [
+            ("empty file", ""),
             ("null", "null"),
             ("scalar", "chat"),
             ("list", "[]"),
@@ -682,6 +712,8 @@ websocket:
             ("null connect", "{ path: /chat, connect: null }"),
             ("missing handler", "{ path: /chat, connect: {} }"),
             ("author id", "{ id: author, path: /chat }"),
+            ("host", "{ host: chat.example.com, path: /chat }"),
+            ("wrapper", "{ websocket: { path: /chat } }"),
             ("routes", "{ path: /chat, routes: [] }"),
             ("operation", "{ path: /chat, operation: receive }"),
             ("receive", "{ path: /chat, receive: handlers.receive }"),
@@ -689,20 +721,20 @@ websocket:
             ("context", "{ path: /chat, context: Context }"),
             ("unknown", "{ path: /chat, unknown: true }"),
         ] {
-            let source = format!("id: example.com/chat\nwebsocket: {websocket}\n");
             assert!(
-                serde_yaml::from_str::<ServiceManifestAuthoring>(&source).is_err(),
+                serde_yaml::from_str::<WebSocketGatewayDocumentAuthoring>(source).is_err(),
                 "{label} unexpectedly decoded"
             );
         }
 
         for duplicate in [
-            "id: example.com/chat\nwebsocket:\n  path: /one\n  path: /two\n",
-            "id: example.com/chat\nwebsocket:\n  path: /chat\n  connect:\n    handler: one.connect\n    handler: two.connect\n",
-            "id: example.com/chat\nwebsocket:\n  path: /one\nwebsocket:\n  path: /two\n",
+            "path: /one\npath: /two\n",
+            "path: /chat\nconnect:\n  handler: one.connect\n  handler: two.connect\n",
+            "path: /chat\njsonRpc:\n  status:\n    method: status.get\n    handler: one.status\n  status:\n    method: status.set\n    handler: two.status\n",
+            "path: /chat\njsonRpc:\n  status:\n    method: status.get\n    handler: one.status\n    handler: two.status\n",
         ] {
             assert!(
-                serde_yaml::from_str::<ServiceManifestAuthoring>(duplicate).is_err(),
+                serde_yaml::from_str::<WebSocketGatewayDocumentAuthoring>(duplicate).is_err(),
                 "duplicate field unexpectedly decoded"
             );
         }
