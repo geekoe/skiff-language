@@ -249,6 +249,10 @@ impl<'a> FunctionLowerer<'a> {
                 }
             }
             Expr::Generic { callee, .. } => self.infer_expr_type_text(callee),
+            Expr::Timeout { value, .. } => self.infer_expr_type_text(value),
+            Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+                self.infer_expr_type_text(&value.tail)
+            }
             Expr::InterfaceBox { interface, .. } => Some(format!("any {}", interface.name)),
             Expr::Literal(Literal::String(_)) => Some("string".to_string()),
             Expr::Literal(Literal::Number(_)) => Some("number".to_string()),

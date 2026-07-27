@@ -12,7 +12,7 @@ use skiff_compiler_source::{
     ConstructorFieldValueSource, ExpressionKey, ExpressionOwnerKey, ExpressionTypeModel,
     LocalDbObjectIndex, PackageInterfaceMethodIndex, PublicationDbMetadataIndex,
     PublicationTypeSymbolIndex, ResolvedCallTarget, ResolvedCallTargetFacts, ResolvedTypeRef,
-    SourceSymbolKey, TypeResolutionContext, TypeResolutionModel,
+    SourceExecutionSemantics, SourceSymbolKey, TypeResolutionContext, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{
@@ -47,6 +47,7 @@ use super::{
     },
 };
 
+mod execution;
 mod object_literal;
 
 const SPAWN_SUBMIT_METADATA_KEY: &str = "spawnSubmit";
@@ -107,6 +108,7 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) interface_semantics: &'a InterfaceSemantics,
     pub(super) type_resolution: &'a TypeResolutionModel,
     pub(super) expression_types: Option<&'a ExpressionTypeModel>,
+    pub(super) execution_semantics: Option<&'a SourceExecutionSemantics>,
     pub(super) callable_return_types: &'a BTreeMap<String, CallableReturnType>,
     pub(super) local_type_fields: &'a LocalTypeFieldIndex,
     pub(super) actor_self_fields: Option<&'a BTreeMap<String, TypeRefIr>>,
@@ -121,6 +123,8 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) body: ExecutableBody,
     pub(super) next_block_id: u32,
     pub(super) db_transaction_depth: u32,
+    pub(super) timeout_plan_cursor: usize,
+    pub(super) concurrent_plan_cursor: usize,
 }
 
 pub(super) type LocalTypeFieldIndex = BTreeMap<u32, BTreeMap<String, TypeRefIr>>;
@@ -154,6 +158,7 @@ impl<'a> FunctionLowerer<'a> {
         interface_semantics: &'a InterfaceSemantics,
         type_resolution: &'a TypeResolutionModel,
         expression_types: Option<&'a ExpressionTypeModel>,
+        execution_semantics: Option<&'a SourceExecutionSemantics>,
         callable_return_types: &'a BTreeMap<String, CallableReturnType>,
         local_type_fields: &'a LocalTypeFieldIndex,
         actor_self_fields: Option<&'a BTreeMap<String, TypeRefIr>>,
@@ -179,6 +184,7 @@ impl<'a> FunctionLowerer<'a> {
             interface_semantics,
             type_resolution,
             expression_types,
+            execution_semantics,
             callable_return_types,
             local_type_fields,
             actor_self_fields,
@@ -193,6 +199,8 @@ impl<'a> FunctionLowerer<'a> {
             body: ExecutableBody::default(),
             next_block_id: 0,
             db_transaction_depth: 0,
+            timeout_plan_cursor: 0,
+            concurrent_plan_cursor: 0,
         }
     }
 
@@ -523,6 +531,13 @@ impl<'a> FunctionLowerer<'a> {
                 let target = self.lower_assign_target(target)?;
                 let value = self.lower_expr(value)?;
                 StmtIr::Assign { target, value }
+            }
+            Stmt::Timeout { body, .. } => self.lower_timeout_statement(body)?,
+            Stmt::Concurrent { body } => self.lower_concurrent_statement(body)?,
+            Stmt::Serial { .. } => {
+                return Err(CompileError::Semantic(
+                    "serial lowering requires a compiler-checked concurrent lane plan".to_string(),
+                ));
             }
             Stmt::Return(value) => {
                 let expected_return_type = self.expected_return_type.clone();
@@ -1371,6 +1386,11 @@ impl<'a> FunctionLowerer<'a> {
                     body: self.push_expr(ExprIr::LoadSlot { slot: catch_slot }),
                 }
             }
+            Expr::ValueBlock(value) => self.lower_user_value_block(value, expected_target)?,
+            Expr::ConcurrentValue(value) => {
+                self.lower_concurrent_value(value, expected_target)?
+            }
+            Expr::Timeout { value, .. } => self.lower_timeout_value(value, expected_target)?,
             Expr::DbOperation(operation) => self.lower_db_operation(operation)?,
             Expr::DbQuery(query) => self.lower_db_query_value(query)?,
             Expr::DbTransaction(transaction) => self.lower_db_transaction_expr(transaction)?,
@@ -2517,6 +2537,10 @@ pub(super) fn expr_preorder_node_count(expr: &Expr) -> u32 {
             1 + expr_preorder_node_count(&claim.key) + block_preorder_node_count(&claim.body)
         }
         Expr::DbLeaseRead(read) => 1 + expr_preorder_node_count(&read.key),
+        Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+            1 + block_preorder_node_count(&value.body) + expr_preorder_node_count(&value.tail)
+        }
+        Expr::Timeout { value, .. } => 1 + expr_preorder_node_count(value),
     }
 }
 
@@ -2566,6 +2590,9 @@ fn stmt_preorder_node_count(stmt: &Stmt) -> u32 {
                     .sum::<u32>()
         }
         Stmt::DbTransaction { body } => block_preorder_node_count(body),
+        Stmt::Timeout { body, .. } | Stmt::Concurrent { body } | Stmt::Serial { body } => {
+            block_preorder_node_count(body)
+        }
         Stmt::Throw { value }
         | Stmt::Rethrow { exception: value }
         | Stmt::Emit(value)
@@ -2631,7 +2658,11 @@ fn stmt_contains_return_stmt(stmt: &Stmt) -> bool {
             block_contains_return_stmt(then_block)
                 || else_block.as_ref().is_some_and(block_contains_return_stmt)
         }
-        Stmt::For { body, .. } | Stmt::DbTransaction { body } => block_contains_return_stmt(body),
+        Stmt::For { body, .. }
+        | Stmt::DbTransaction { body }
+        | Stmt::Timeout { body, .. }
+        | Stmt::Concurrent { body }
+        | Stmt::Serial { body } => block_contains_return_stmt(body),
         Stmt::Match { arms, .. } => arms.iter().any(|arm| block_contains_return_stmt(&arm.body)),
         Stmt::Assert { .. }
         | Stmt::CompilerTestEffectRegister { .. }

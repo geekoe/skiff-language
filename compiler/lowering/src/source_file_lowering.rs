@@ -20,7 +20,7 @@ use skiff_compiler_source::{
     type_indices, ExpressionSourceMap, ExpressionTypeModel, LocalDbObjectIndex,
     PackageInterfaceMethodIndex, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
     ResolvedCallTargetFacts, SourceDependencyAnalysisInput, SourceExecutableSignatureFacts,
-    SourceInterfaceSignatureFacts, SourceSymbolKey, TypeResolutionModel,
+    SourceExecutionSemantics, SourceInterfaceSignatureFacts, SourceSymbolKey, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{ConstDecl, SourceFile},
@@ -55,6 +55,10 @@ pub struct PackageSourceLoweringInput<'a, 'context, 'publication> {
     pub source_alias_targets: &'a BTreeMap<String, String>,
     pub type_resolution: &'a TypeResolutionModel,
     pub expression_types: Option<&'a ExpressionTypeModel>,
+    /// Full package lowering must provide the compiler-validated execution
+    /// plan. Standalone helpers keep this absent and fail closed if execution
+    /// syntax is encountered.
+    pub execution_semantics: Option<&'a SourceExecutionSemantics>,
     pub callable_return_types: &'a BTreeMap<String, CallableReturnType>,
     pub executable_signatures: &'a SourceExecutableSignatureFacts,
     /// `None` is reserved for standalone helpers; an interface then fails
@@ -116,6 +120,7 @@ pub fn compile_package_source_file_ir_unit(
         input.source_alias_targets,
         input.type_resolution,
         input.expression_types,
+        input.execution_semantics,
         input.callable_return_types,
         input.executable_signatures,
         input.interface_signatures,
@@ -222,6 +227,7 @@ fn compile_parsed_source_file_ir_unit_with_lowering_context(
         source_alias_targets: parsed.alias_targets(),
         type_resolution: &type_resolution,
         expression_types: Some(&expression_types),
+        execution_semantics: None,
         callable_return_types: &callable_return_types,
         executable_signatures: &executable_signatures,
         interface_signatures: None,
@@ -379,6 +385,7 @@ fn lower_source_file_ir_unit(
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
+    execution_semantics: Option<&SourceExecutionSemantics>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     exact_executable_signatures: &SourceExecutableSignatureFacts,
     exact_interface_signatures: Option<&SourceInterfaceSignatureFacts>,
@@ -475,6 +482,7 @@ fn lower_source_file_ir_unit(
         source_alias_targets,
         type_resolution,
         expression_types,
+        execution_semantics,
         &callable_return_types,
         &local_type_fields,
         &executable_signatures,
@@ -501,6 +509,7 @@ fn lower_source_file_ir_unit(
         source_alias_targets,
         type_resolution,
         expression_types,
+        execution_semantics,
         &callable_return_types,
         &local_type_fields,
         &executable_signatures,
@@ -1137,8 +1146,9 @@ mod tests {
               }
             "#,
         );
-        assert_eq!(unit.schema_version, "skiff-file-ir-v8");
-        assert_eq!(unit.ir_format_version, "skiff-file-ir-format-v6");
+        assert_eq!(unit.schema_version, "skiff-file-ir-v9");
+        assert_eq!(unit.ir_format_version, "skiff-file-ir-format-v7");
+        assert_eq!(unit.opcode_table_version, "skiff-opcode-table-v2");
 
         let declaration = |name: &str| {
             unit.type_table
@@ -2647,7 +2657,7 @@ mod tests {
         assert!(!wire.contains("operationAbiId"));
         assert!(unit
             .file_ir_identity
-            .starts_with("skiff-file-ir-v8:sha256:"));
+            .starts_with("skiff-file-ir-v9:sha256:"));
     }
 
     #[test]

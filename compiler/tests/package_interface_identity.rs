@@ -14,7 +14,7 @@ use skiff_compiler_source::{
 const DIRECT_PROVIDER_ID: &str = "example.com/interface-provider";
 const DIRECT_PROVIDER_VERSION: &str = "1.0.0";
 const DIRECT_PROVIDER_BUILD_ID: &str =
-    "skiff-package-build-v10:sha256:3b9f3647318e5da0a7698be305309f5b18f0e0cbfdf256b6fc1fd7d5162116ef";
+    "skiff-package-build-v10:sha256:565fb88eb39f0933491952ab7d44d447735b7102424050b899394857da835bb8";
 const DIRECT_PROVIDER_LOCAL_ABI: &str =
     "skiff-package-local-abi-v7:sha256:2b6b70c8b858a3ee88df957eb0488a98224fd928669c84021f15aecf7de464e6";
 
@@ -30,7 +30,7 @@ fn direct_package_interface_identity_normalizes_dependency_and_package_id_owners
     assert_eq!(
         standalone.package.artifact.package_build_id.as_str(),
         DIRECT_PROVIDER_BUILD_ID,
-        "provider build identity must remain at its pre-fix value"
+        "provider build identity must include the current File IR format"
     );
     assert_eq!(
         standalone
@@ -44,7 +44,7 @@ fn direct_package_interface_identity_normalizes_dependency_and_package_id_owners
     );
     assert_eq!(
         standalone.package.published.identity, DIRECT_PROVIDER_BUILD_ID,
-        "the publication receipt identity must remain at its pre-fix value"
+        "the publication receipt identity must match the provider build"
     );
 
     let consumer = TestDir::new("skiff-compiler", "interface-consumer-direct");

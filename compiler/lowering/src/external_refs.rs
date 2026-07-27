@@ -198,6 +198,8 @@ fn collect_stmt_external_refs(stmt: &StmtIr, refs: &mut ExternalRefTable) {
             }
         }
         StmtIr::Let { .. }
+        | StmtIr::Timeout { .. }
+        | StmtIr::Concurrent { .. }
         | StmtIr::If { .. }
         | StmtIr::ForIn { .. }
         | StmtIr::Assert { .. }
@@ -285,7 +287,9 @@ fn collect_expr_external_refs(expr: &ExprIr, refs: &mut ExternalRefTable) {
         | ExprIr::Binary { .. }
         | ExprIr::Throw { .. }
         | ExprIr::Rethrow { .. }
-        | ExprIr::ValueBlock { .. } => {}
+        | ExprIr::Timeout { .. }
+        | ExprIr::ValueBlock { .. }
+        | ExprIr::ConcurrentValue { .. } => {}
     }
 }
 

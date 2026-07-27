@@ -3,15 +3,20 @@ use std::collections::BTreeMap;
 use anyhow::Context;
 use skiff_artifact_model as artifact;
 
+use super::execution_validation::validate_file_ir_execution;
 use crate::program::{
     addr::{ExecutableIndex, TypeIndex},
     linked::*,
 };
 
+#[cfg(test)]
+mod timeout_execution_tests;
+
 pub(crate) fn linked_file_unit_from_assembly_artifact(
     unit: &skiff_artifact_model::FileIrUnit,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
 ) -> anyhow::Result<LinkedFileUnit> {
+    validate_file_ir_execution(unit)?;
     artifact::validate_file_ir_type_refs(unit).map_err(|error| {
         anyhow::anyhow!(
             "File IR {} has invalid type ref at {}: {}",
@@ -688,6 +693,18 @@ fn linked_stmt(
             target: linked_assign_target(target),
             value: linked_expr_ref(value),
         },
+        artifact::StmtIr::Timeout {
+            duration_ms,
+            body,
+            site,
+        } => LinkedStmtIr::Timeout {
+            duration_ms: *duration_ms,
+            body: body.clone(),
+            site: site.clone(),
+        },
+        artifact::StmtIr::Concurrent { plan } => LinkedStmtIr::Concurrent {
+            plan: linked_concurrent_plan(plan),
+        },
         artifact::StmtIr::If {
             condition,
             then_block,
@@ -925,9 +942,21 @@ fn linked_expr(
             catch_type: linked_type_ref(catch_type),
             body: linked_expr_ref(body),
         },
+        artifact::ExprIr::Timeout {
+            duration_ms,
+            value,
+            site,
+        } => LinkedExprIr::Timeout {
+            duration_ms: *duration_ms,
+            value: linked_expr_ref(value),
+            site: site.clone(),
+        },
         artifact::ExprIr::ValueBlock { block, result } => LinkedExprIr::ValueBlock {
             block: block.clone(),
             result: linked_expr_ref(result),
+        },
+        artifact::ExprIr::ConcurrentValue { plan } => LinkedExprIr::ConcurrentValue {
+            plan: linked_concurrent_plan(plan),
         },
         artifact::ExprIr::DbOperation { operation } => LinkedExprIr::DbOperation {
             operation: linked_db_operation(operation),
@@ -948,6 +977,51 @@ fn linked_expr(
             read: linked_db_lease_read(read),
         },
     })
+}
+
+fn linked_concurrent_plan(plan: &artifact::ConcurrentPlanIr) -> LinkedConcurrentPlanIr {
+    LinkedConcurrentPlanIr {
+        lanes: plan
+            .lanes
+            .iter()
+            .map(|lane| match lane {
+                artifact::ConcurrentLaneIr::Statement {
+                    source_order,
+                    dependencies,
+                    body,
+                    site,
+                } => LinkedConcurrentLaneIr::Statement {
+                    source_order: *source_order,
+                    dependencies: dependencies.clone(),
+                    body: body.clone(),
+                    site: site.clone(),
+                },
+                artifact::ConcurrentLaneIr::Serial {
+                    source_order,
+                    dependencies,
+                    body,
+                    site,
+                } => LinkedConcurrentLaneIr::Serial {
+                    source_order: *source_order,
+                    dependencies: dependencies.clone(),
+                    body: body.clone(),
+                    site: site.clone(),
+                },
+                artifact::ConcurrentLaneIr::Tail {
+                    source_order,
+                    dependencies,
+                    tail,
+                    site,
+                } => LinkedConcurrentLaneIr::Tail {
+                    source_order: *source_order,
+                    dependencies: dependencies.clone(),
+                    tail: linked_expr_ref(tail),
+                    site: site.clone(),
+                },
+            })
+            .collect(),
+        site: plan.site.clone(),
+    }
 }
 
 fn linked_expr_ref_map(map: &BTreeMap<String, artifact::ExprRefIr>) -> BTreeMap<String, ExprRefIr> {

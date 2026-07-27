@@ -13,6 +13,10 @@ use super::addr::{
     ConstAddr, ExecutableAddr, ExecutableIndex, FileAddr, TypeAddr, TypeIndex, UnitAddr,
 };
 
+mod concurrent_plan;
+
+pub use concurrent_plan::{LinkedConcurrentLaneIr, LinkedConcurrentPlanIr};
+
 pub type FileIrIdentity = String;
 pub type SourceAstHash = String;
 pub type ConstIndex = usize;
@@ -739,6 +743,7 @@ pub struct StmtRefIr {
 #[serde(
     rename_all = "camelCase",
     rename_all_fields = "camelCase",
+    deny_unknown_fields,
     tag = "kind"
 )]
 pub enum LinkedStmtIr {
@@ -749,6 +754,14 @@ pub enum LinkedStmtIr {
     Assign {
         target: AssignTargetIr,
         value: ExprRefIr,
+    },
+    Timeout {
+        duration_ms: u64,
+        body: String,
+        site: InstructionSourceSite,
+    },
+    Concurrent {
+        plan: LinkedConcurrentPlanIr,
     },
     If {
         condition: ExprRefIr,
@@ -954,9 +967,17 @@ pub enum LinkedExprIr {
         catch_type: LinkedTypeRef,
         body: ExprRefIr,
     },
+    Timeout {
+        duration_ms: u64,
+        value: ExprRefIr,
+        site: InstructionSourceSite,
+    },
     ValueBlock {
         block: String,
         result: ExprRefIr,
+    },
+    ConcurrentValue {
+        plan: LinkedConcurrentPlanIr,
     },
     DbOperation {
         operation: DbOperationIr,

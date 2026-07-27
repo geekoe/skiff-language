@@ -130,6 +130,10 @@ path = "tests/service_calls_manifest_selection.rs"
 name = "actor_dispatch_linking"
 path = "tests/actor_dispatch_linking.rs"
 
+[[test]]
+name = "timeout_artifact_lowering"
+path = "tests/timeout_artifact_lowering.rs"
+
 [dependencies]
 skiff-artifact-identity = { path = "../artifact-identity" }
 skiff-artifact-model = { path = "../artifact-model" }

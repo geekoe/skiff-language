@@ -277,6 +277,8 @@ fn rewrite_stmt(index: &PublicationLocalRefIndex, module_path: &str, stmt: &mut 
         }
         StmtIr::Let { .. }
         | StmtIr::Assign { .. }
+        | StmtIr::Timeout { .. }
+        | StmtIr::Concurrent { .. }
         | StmtIr::If { .. }
         | StmtIr::Assert { .. }
         | StmtIr::Break
@@ -349,7 +351,9 @@ fn rewrite_expr(index: &PublicationLocalRefIndex, module_path: &str, expr: &mut 
         | ExprIr::Unary { .. }
         | ExprIr::Binary { .. }
         | ExprIr::Rethrow { .. }
-        | ExprIr::ValueBlock { .. } => {}
+        | ExprIr::Timeout { .. }
+        | ExprIr::ValueBlock { .. }
+        | ExprIr::ConcurrentValue { .. } => {}
     }
 }
 

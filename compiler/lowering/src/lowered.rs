@@ -117,6 +117,7 @@ impl LoweredPackage {
                     source_alias_targets: model.resolutions().alias_targets_for_module(module_path),
                     type_resolution: model.type_resolution(),
                     expression_types: Some(model.expression_types()),
+                    execution_semantics: Some(model.execution_semantics()),
                     callable_return_types: &callable_return_types,
                     executable_signatures: model.executable_signatures(),
                     interface_signatures: Some(model.interface_signatures()),

@@ -83,7 +83,7 @@ fn file_ir_identity_validation_rejects_non_current_generation_even_when_recomput
 fn file_ir_identity_validation_rejects_stale_prefix_with_current_preimage() {
     let mut unit = FileIrUnit::empty("internal.example", "source-ast-hash-a");
     let current = file_ir_identity(&unit).expect("current identity");
-    unit.file_ir_identity = current.replacen(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v7:sha256", 1);
+    unit.file_ir_identity = current.replacen(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v8:sha256", 1);
 
     assert!(matches!(
         validate_file_ir_identity(&unit),
@@ -394,7 +394,7 @@ fn service_call_table_and_instruction_indices_participate_in_file_ir_identity() 
     let baseline = file_ir_identity(&base).expect("valid service-call File IR identity");
     assert_eq!(
         baseline,
-        "skiff-file-ir-v8:sha256:084a479340fa5af4c1bbb233adab76c50c4ac137380008256ef3894e5dd11184"
+        "skiff-file-ir-v9:sha256:20e92b3da085320be0c3d14b38e33fe99a32cba0f4526c1bba3a8d07004df246"
     );
 
     let mut changed_ref = base.clone();

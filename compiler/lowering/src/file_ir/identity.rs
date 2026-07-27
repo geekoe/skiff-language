@@ -82,7 +82,7 @@ mod tests {
         assert_eq!(adapter_identity, canonical_identity);
         assert_eq!(
             adapter_identity,
-            "skiff-file-ir-v8:sha256:1602818650e23f9189e37e5e4997b2150200e61b06a5286f2a8c3ec69b6d230c"
+            "skiff-file-ir-v9:sha256:34f6e1e65fb5854a639a1b8b9dc9d868bc18d998d95b02cd7a08b2e30d895755"
         );
     }
 }

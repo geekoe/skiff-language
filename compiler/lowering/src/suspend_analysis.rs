@@ -428,6 +428,9 @@ impl SuspendContext<'_, '_> {
             Stmt::Assign { target, value } => {
                 self.expr_may_suspend(target) || self.expr_may_suspend(value)
             }
+            Stmt::Timeout { body, .. } | Stmt::Concurrent { body } | Stmt::Serial { body } => {
+                self.block_may_suspend(body)
+            }
             Stmt::If {
                 condition,
                 then_block,
@@ -535,6 +538,12 @@ impl SuspendContext<'_, '_> {
             Expr::Throw { value } => self.expr_may_suspend(value),
             Expr::Rethrow { exception } => self.expr_may_suspend(exception),
             Expr::Catch { try_expr, .. } => self.expr_may_suspend(try_expr),
+            Expr::Timeout { value, .. } => self.expr_may_suspend(value),
+            Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+                let body_may_suspend = self.block_may_suspend(&value.body);
+                let tail_may_suspend = self.expr_may_suspend(&value.tail);
+                body_may_suspend || tail_may_suspend
+            }
             Expr::DbOperation(operation) => self.db_operation_may_suspend(operation),
             Expr::DbQuery(query) => {
                 self.db_query_may_suspend(&query.query);
@@ -738,6 +747,10 @@ impl SuspendContext<'_, '_> {
             | Expr::Rethrow { .. }
             | Expr::Catch { .. }
             | Expr::DbQuery(_) => None,
+            Expr::Timeout { value, .. } => self.legacy_expr_type(value),
+            Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+                self.legacy_expr_type(&value.tail)
+            }
             Expr::DbOperation(operation) => {
                 db_operation_result_type_text_without_metadata(operation)
             }

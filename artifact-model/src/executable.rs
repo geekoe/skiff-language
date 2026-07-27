@@ -16,6 +16,13 @@ use crate::{
     ReceiverCallAbi,
 };
 
+mod concurrent_plan;
+
+pub use concurrent_plan::{ConcurrentLaneIr, ConcurrentPlanIr};
+
+#[cfg(test)]
+mod timeout_execution_tests;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecutableSignatureIr {
@@ -163,6 +170,14 @@ pub enum StmtIr {
     Assign {
         target: AssignTargetIr,
         value: ExprRefIr,
+    },
+    Timeout {
+        duration_ms: u64,
+        body: String,
+        site: InstructionSourceSite,
+    },
+    Concurrent {
+        plan: ConcurrentPlanIr,
     },
     If {
         condition: ExprRefIr,
@@ -400,9 +415,17 @@ pub enum ExprIr {
         catch_type: TypeRefIr,
         body: ExprRefIr,
     },
+    Timeout {
+        duration_ms: u64,
+        value: ExprRefIr,
+        site: InstructionSourceSite,
+    },
     ValueBlock {
         block: String,
         result: ExprRefIr,
+    },
+    ConcurrentValue {
+        plan: ConcurrentPlanIr,
     },
     DbOperation {
         operation: DbOperationIr,
@@ -870,6 +893,8 @@ fn visit_statement_type_refs<E>(
         StmtIr::Throw { payload_type, .. } => visit_type_ref(payload_type, visitor)?,
         StmtIr::Let { .. }
         | StmtIr::Assign { .. }
+        | StmtIr::Timeout { .. }
+        | StmtIr::Concurrent { .. }
         | StmtIr::If { .. }
         | StmtIr::ForIn { .. }
         | StmtIr::Assert { .. }
@@ -937,7 +962,9 @@ fn visit_expression_type_refs<E>(
         | ExprIr::Unary { .. }
         | ExprIr::Binary { .. }
         | ExprIr::Rethrow { .. }
-        | ExprIr::ValueBlock { .. } => {}
+        | ExprIr::Timeout { .. }
+        | ExprIr::ValueBlock { .. }
+        | ExprIr::ConcurrentValue { .. } => {}
     }
     Ok(())
 }

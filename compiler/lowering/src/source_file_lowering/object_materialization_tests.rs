@@ -97,6 +97,7 @@ fn lowering_error_with_expression_model(
                     .alias_targets_for_module(parsed.module_path()),
                 type_resolution: model.type_resolution(),
                 expression_types: Some(expression_model.expression_types()),
+                execution_semantics: Some(model.execution_semantics()),
                 callable_return_types: &callable_return_types,
                 executable_signatures: model.executable_signatures(),
                 interface_signatures: Some(model.interface_signatures()),

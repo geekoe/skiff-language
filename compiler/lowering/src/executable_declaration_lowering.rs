@@ -13,7 +13,7 @@ use skiff_compiler_source::{
     ExpressionOwnerKey, ExpressionTypeModel, LocalDbObjectIndex, PackageInterfaceMethodIndex,
     PublicationDbMetadataIndex, PublicationTypeSymbolIndex, ResolvedCallTargetFacts,
     SourceExecutableReceiver, SourceExecutableSignature, SourceExecutableSignatureFacts,
-    SourceSymbolKey, TypeResolutionModel,
+    SourceExecutionSemantics, SourceSymbolKey, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{ConstDecl, FunctionDecl, ImplDecl, Stmt, TypeRef},
@@ -78,6 +78,7 @@ pub(super) fn lower_const_declarations(
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
+    execution_semantics: Option<&SourceExecutionSemantics>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
@@ -131,6 +132,7 @@ pub(super) fn lower_const_declarations(
             source_alias_targets,
             type_resolution,
             expression_types,
+            execution_semantics,
             callable_return_types,
             local_type_fields,
             executable_signatures,
@@ -183,6 +185,7 @@ fn lower_const_initializer_body(
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
+    execution_semantics: Option<&SourceExecutionSemantics>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
@@ -207,6 +210,7 @@ fn lower_const_initializer_body(
         interface_semantics,
         type_resolution,
         expression_types,
+        execution_semantics,
         callable_return_types,
         local_type_fields,
         None,
@@ -222,6 +226,7 @@ fn lower_const_initializer_body(
         .statements
         .push(lowerer.push_stmt(StmtIr::Return { value: Some(value) }));
     lowerer.body.blocks.push(entry);
+    lowerer.validate_execution_plans_consumed()?;
     Ok(lowerer.body)
 }
 
@@ -343,6 +348,7 @@ pub(super) fn lower_executables(
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
+    execution_semantics: Option<&SourceExecutionSemantics>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
@@ -395,6 +401,7 @@ pub(super) fn lower_executables(
             source_alias_targets,
             type_resolution,
             expression_types,
+            execution_semantics,
             callable_return_types,
             local_type_fields,
             None,
@@ -459,6 +466,7 @@ pub(super) fn lower_executables(
                 source_alias_targets,
                 type_resolution,
                 expression_types,
+                execution_semantics,
                 callable_return_types,
                 local_type_fields,
                 actor_fields.get(&implementation.target),
@@ -538,6 +546,7 @@ fn push_executable(
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
+    execution_semantics: Option<&SourceExecutionSemantics>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     actor_self_fields: Option<&BTreeMap<String, TypeRefIr>>,
@@ -570,6 +579,7 @@ fn push_executable(
         source_alias_targets,
         type_resolution,
         expression_types,
+        execution_semantics,
         callable_return_types,
         local_type_fields,
         actor_self_fields,
@@ -623,6 +633,7 @@ fn lower_function_with_params(
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
+    execution_semantics: Option<&SourceExecutionSemantics>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     actor_self_fields: Option<&BTreeMap<String, TypeRefIr>>,
@@ -670,6 +681,7 @@ fn lower_function_with_params(
         interface_semantics,
         type_resolution,
         expression_types,
+        execution_semantics,
         callable_return_types,
         local_type_fields,
         actor_self_fields,
@@ -772,6 +784,7 @@ fn lower_function_with_params(
         }
     }
     lowerer.body.blocks.push(entry);
+    lowerer.validate_execution_plans_consumed()?;
     let slots = SlotLayout {
         frame_size: lowerer.slots.len() as u32,
         slots: lowerer.slots,
@@ -827,7 +840,11 @@ fn stmt_contains_bare_return(stmt: &Stmt) -> bool {
             block_contains_bare_return(then_block)
                 || else_block.as_ref().is_some_and(block_contains_bare_return)
         }
-        Stmt::For { body, .. } | Stmt::DbTransaction { body } => block_contains_bare_return(body),
+        Stmt::For { body, .. }
+        | Stmt::DbTransaction { body }
+        | Stmt::Timeout { body, .. }
+        | Stmt::Concurrent { body }
+        | Stmt::Serial { body } => block_contains_bare_return(body),
         Stmt::Match { arms, .. } => arms.iter().any(|arm| block_contains_bare_return(&arm.body)),
         Stmt::Assert { .. }
         | Stmt::CompilerTestEffectRegister { .. }
