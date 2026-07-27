@@ -1284,7 +1284,9 @@ fn package_test_http_fixture_is_zero_operation_reference_closed_and_fail_closed(
         entry.adapter_plan.args[0].source,
         GatewayAdapterSource::HttpBody
     );
-    let GatewayProtocolSurface::Http(surface) = &entry.protocol_surface.protocol;
+    let GatewayProtocolSurface::Http(surface) = &entry.protocol_surface.protocol else {
+        panic!("package-test HTTP fixture must use an HTTP protocol surface")
+    };
     assert_eq!(surface.adapter_kind, GatewayAdapterKind::TypedJson);
     assert_eq!(surface.dispatch_mode, GatewayDispatchMode::Unary);
     assert_eq!(surface.external_sources, [GatewayAdapterSource::HttpBody]);
