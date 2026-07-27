@@ -5,8 +5,9 @@ use skiff_artifact_model::{
     AssemblyActivationControl, AssemblyActivationRejectReason, AssemblyActivationServiceDb,
     AssemblyIdentity, BoundaryOperationDescriptor, ContractOperationId, DeploymentPolicy,
     GatewayAdapterKind, GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey,
-    GatewayEntryProtocolSurface, GatewayProtocolSurface, IngressProtocol, IngressSelector,
-    RuntimeAssembly, RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
+    GatewayEntryProtocolSurface, GatewayProtocolSurface, GatewayWebSocketRpcProfile,
+    IngressProtocol, IngressSelector, RuntimeAssembly, RuntimeAssemblyRef, ServiceContractRef,
+    ServiceDeploymentRef, WebSocketEntryId,
 };
 use skiff_runtime_activation::{ActivationContext, RequestActivationContext};
 use skiff_runtime_eval::{RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget};
@@ -19,6 +20,7 @@ use skiff_runtime_loader::{
 };
 use skiff_runtime_request::{
     RuntimeAssemblyHttpGatewayTarget, RuntimeAssemblyWebSocketConnectTarget,
+    RuntimeAssemblyWebSocketJsonRpcPhysicalRoute, RuntimeAssemblyWebSocketJsonRpcTarget,
 };
 use time::OffsetDateTime;
 use tokio::sync::Mutex;
@@ -187,6 +189,104 @@ impl ActiveAssemblyRoute {
             self.selector.clone(),
             Arc::clone(&self.entry),
         )?)
+    }
+
+    pub(crate) fn has_websocket_jsonrpc_methods(&self) -> anyhow::Result<bool> {
+        Ok(self.admitted_physical_websocket_entry()?.has_methods())
+    }
+
+    pub(crate) fn websocket_jsonrpc_method_route(
+        &self,
+        host: &str,
+        path: &str,
+        method: &str,
+        gateway_entry_identity: &GatewayEntryIdentity,
+        profile: GatewayWebSocketRpcProfile,
+        websocket_entry_id: &WebSocketEntryId,
+    ) -> anyhow::Result<Self> {
+        let admitted = self.admitted_physical_websocket_entry()?;
+        if &admitted.websocket_entry_id != websocket_entry_id {
+            anyhow::bail!(
+                "WebSocket JSON-RPC physical entry identity does not match the generation pin"
+            );
+        }
+        let sibling = admitted.method(method).ok_or_else(|| {
+            anyhow::anyhow!("WebSocket generation pin has no admitted JSON-RPC method {method:?}")
+        })?;
+        if sibling.selector.host != host
+            || sibling.selector.path != path
+            || sibling.selector.protocol != IngressProtocol::WebSocket
+            || sibling.selector.method.as_deref() != Some(method)
+            || &sibling.gateway_entry_identity != gateway_entry_identity
+            || sibling.profile != profile
+            || sibling.linked_entry.owner() != self.entry.owner()
+            || sibling.linked_entry.gateway_entry_key() != &sibling.gateway_entry_key
+            || sibling.linked_entry.gateway_entry_identity() != gateway_entry_identity
+        {
+            anyhow::bail!(
+                "WebSocket JSON-RPC request does not exactly match its pinned sibling method"
+            );
+        }
+        Ok(Self {
+            active: Arc::clone(&self.active),
+            selector: sibling.selector.clone(),
+            entry: Arc::clone(&sibling.linked_entry),
+            activation: Arc::clone(&self.activation),
+            policy: self.policy.clone(),
+        })
+    }
+
+    pub(crate) fn websocket_jsonrpc_target(
+        &self,
+        physical_route: &ActiveAssemblyRoute,
+    ) -> anyhow::Result<RuntimeAssemblyWebSocketJsonRpcTarget> {
+        if !Arc::ptr_eq(&self.active, &physical_route.active)
+            || !Arc::ptr_eq(&self.activation, &physical_route.activation)
+            || self.entry.owner() != physical_route.entry.owner()
+        {
+            anyhow::bail!(
+                "WebSocket JSON-RPC method route does not share the pinned physical generation"
+            );
+        }
+        let admitted = physical_route.admitted_physical_websocket_entry()?;
+        let request_activation = RequestActivationContext::begin(Arc::clone(&self.activation))?;
+        let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::clone(&self.active.contexts) as _;
+        let eval = RuntimeAssemblyEvalTarget::new(
+            Arc::clone(self.execution_image()),
+            request_activation,
+            resolver,
+        )?;
+        Ok(RuntimeAssemblyWebSocketJsonRpcTarget::new(
+            eval,
+            self.selector.clone(),
+            RuntimeAssemblyWebSocketJsonRpcPhysicalRoute::new(
+                admitted.selector.clone(),
+                admitted.gateway_entry_key.clone(),
+                admitted.gateway_entry_identity.clone(),
+                admitted.websocket_entry_id.clone(),
+            ),
+            Arc::clone(&self.entry),
+        )?)
+    }
+
+    fn admitted_physical_websocket_entry(
+        &self,
+    ) -> anyhow::Result<&super::active_assembly_context::AdmittedWebSocketEntry> {
+        let admitted = self
+            .active
+            .contexts
+            .websocket_entry(self.entry.owner())
+            .ok_or_else(|| {
+                anyhow::anyhow!("active route owner has no admitted physical WebSocket entry")
+            })?;
+        if admitted.selector != self.selector
+            || admitted.gateway_entry_key != *self.entry.gateway_entry_key()
+            || admitted.gateway_entry_identity != *self.entry.gateway_entry_identity()
+            || !Arc::ptr_eq(&admitted.linked_entry, &self.entry)
+        {
+            anyhow::bail!("active route is not the exact admitted physical WebSocket entry");
+        }
+        Ok(admitted)
     }
 
     pub(crate) fn entry(&self) -> &Arc<LinkedGatewayEntry> {
@@ -948,6 +1048,39 @@ fn validate_candidate(candidate: &AssemblyLinkedCandidate) -> anyhow::Result<()>
                 {
                     anyhow::bail!(
                         "linked ingress {:?} does not exactly match its admitted WebSocket entry",
+                        source.selector
+                    );
+                }
+            }
+            (IngressProtocol::WebSocket, GatewayProtocolSurface::WebSocketJsonRpc(surface)) => {
+                let admitted =
+                    admitted_websocket_entry(candidate, entry.owner())?.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "linked ingress {:?} has no admitted physical WebSocket entry",
+                            source.selector
+                        )
+                    })?;
+                let method = source.selector.method.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "linked WebSocket JSON-RPC ingress {:?} has no method",
+                        source.selector
+                    )
+                })?;
+                let admitted_method = admitted.method(method).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "linked ingress {:?} is absent from its immutable method table",
+                        source.selector
+                    )
+                })?;
+                if admitted_method.selector != source.selector
+                    || admitted_method.gateway_entry_key != *entry.gateway_entry_key()
+                    || admitted_method.gateway_entry_identity != *entry.gateway_entry_identity()
+                    || admitted_method.profile != surface.profile
+                    || !Arc::ptr_eq(&admitted_method.linked_entry, entry)
+                    || entry.adapter_plan().kind != GatewayAdapterKind::WebSocketJsonRpc
+                {
+                    anyhow::bail!(
+                        "linked ingress {:?} does not exactly match its admitted WebSocket JSON-RPC sibling",
                         source.selector
                     );
                 }

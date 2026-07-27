@@ -3,7 +3,10 @@ use std::{
     sync::Mutex,
 };
 
-use skiff_runtime_request::RouterWriterMessage;
+use skiff_artifact_model::{
+    AssemblyIdentity, GatewayEntryIdentity, GatewayWebSocketRpcProfile, WebSocketEntryId,
+};
+use skiff_runtime_request::{RouterWriterMessage, RuntimeAssemblyWebSocketJsonRpcTarget};
 use skiff_runtime_transport::websocket_generation_lifecycle::{
     assert_websocket_generation_lifecycle_response_matches,
     decode_websocket_generation_lifecycle_frame, encode_websocket_generation_lifecycle_frame,
@@ -12,7 +15,7 @@ use skiff_runtime_transport::websocket_generation_lifecycle::{
     WebSocketGenerationLifecycleSender, WebSocketGenerationLifecycleTuple,
     WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::{
@@ -24,6 +27,7 @@ use crate::{
 struct WebSocketGenerationPin {
     tuple: WebSocketGenerationLifecycleTuple,
     route: ActiveAssemblyRoute,
+    acquired: bool,
 }
 
 #[derive(Debug)]
@@ -31,6 +35,7 @@ struct AcquireRecord {
     request: WebSocketGenerationLifecycleControl,
     connection_key: ConnectionKey,
     inserted_pin: bool,
+    receipt: Option<oneshot::Sender<std::result::Result<(), String>>>,
 }
 
 #[derive(Debug)]
@@ -56,11 +61,27 @@ struct WebSocketGenerationState {
 
 /// Runtime owner for WebSocket connection pins that outlive one request.
 ///
-/// Each pin retains the immutable `ActiveAssemblyRoute` selected for connect, so a later receive
-/// never consults the current assembly pointer and never performs artifact I/O.
+/// Each pin retains the immutable physical `ActiveAssemblyRoute` selected for connect, so a later
+/// JSON-RPC method lookup never consults the current assembly pointer or performs artifact I/O.
 #[derive(Debug, Default)]
 pub(super) struct WebSocketGenerationRegistry {
     state: Mutex<WebSocketGenerationState>,
+}
+
+pub(super) struct WebSocketGenerationAcquireReceipt {
+    receiver: oneshot::Receiver<std::result::Result<(), String>>,
+}
+
+impl WebSocketGenerationAcquireReceipt {
+    pub(super) async fn wait(self) -> Result<()> {
+        match self.receiver.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(message)) => Err(RuntimeError::Decode(message)),
+            Err(_) => Err(RuntimeError::Decode(
+                "WebSocket generation acquire receipt owner was dropped".to_string(),
+            )),
+        }
+    }
 }
 
 impl WebSocketGenerationRegistry {
@@ -80,6 +101,44 @@ impl WebSocketGenerationRegistry {
         route: ActiveAssemblyRoute,
         websocket_entry_id: String,
         connection_id: String,
+    ) -> Result<WebSocketGenerationLifecycleControl> {
+        self.begin_acquire_inner(
+            router_session_id,
+            route,
+            websocket_entry_id,
+            connection_id,
+            None,
+        )
+    }
+
+    pub(super) fn begin_acquire_with_receipt(
+        &self,
+        router_session_id: &str,
+        route: ActiveAssemblyRoute,
+        websocket_entry_id: String,
+        connection_id: String,
+    ) -> Result<(
+        WebSocketGenerationLifecycleControl,
+        WebSocketGenerationAcquireReceipt,
+    )> {
+        let (sender, receiver) = oneshot::channel();
+        let request = self.begin_acquire_inner(
+            router_session_id,
+            route,
+            websocket_entry_id,
+            connection_id,
+            Some(sender),
+        )?;
+        Ok((request, WebSocketGenerationAcquireReceipt { receiver }))
+    }
+
+    fn begin_acquire_inner(
+        &self,
+        router_session_id: &str,
+        route: ActiveAssemblyRoute,
+        websocket_entry_id: String,
+        connection_id: String,
+        receipt: Option<oneshot::Sender<std::result::Result<(), String>>>,
     ) -> Result<WebSocketGenerationLifecycleControl> {
         let tuple = WebSocketGenerationLifecycleTuple {
             router_session_id: router_session_id.to_string(),
@@ -121,7 +180,11 @@ impl WebSocketGenerationRegistry {
         } else {
             state.pins.insert(
                 connection_key.clone(),
-                WebSocketGenerationPin { tuple, route },
+                WebSocketGenerationPin {
+                    tuple,
+                    route,
+                    acquired: false,
+                },
             );
             inserted_pin = true;
         }
@@ -131,6 +194,7 @@ impl WebSocketGenerationRegistry {
                 request: request.clone(),
                 connection_key,
                 inserted_pin,
+                receipt,
             },
         );
         info!(
@@ -200,6 +264,10 @@ impl WebSocketGenerationRegistry {
             if record.inserted_pin {
                 state.pins.remove(&record.connection_key);
             }
+            settle_receipt(
+                record.receipt,
+                Err("WebSocket generation acquire was rolled back".to_string()),
+            );
         }
         Ok(())
     }
@@ -219,14 +287,56 @@ impl WebSocketGenerationRegistry {
                 "WebSocket generation acquire response has no pending request".to_string(),
             )
         })?;
-        assert_websocket_generation_lifecycle_response_matches(&record.request, response)
-            .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+        if let Err(error) =
+            assert_websocket_generation_lifecycle_response_matches(&record.request, response)
+        {
+            let message = format!("WebSocket generation acquire receipt mismatch: {error}");
+            let record = state
+                .acquires
+                .remove(request_id)
+                .expect("correlated acquire record remains present");
+            if record.inserted_pin {
+                state.pins.remove(&record.connection_key);
+            }
+            settle_receipt(record.receipt, Err(message.clone()));
+            return Err(RuntimeError::Decode(message));
+        }
+        let record = state
+            .acquires
+            .remove(request_id)
+            .expect("validated acquire record remains present");
         match response {
             WebSocketGenerationLifecycleControl::Ack {
                 operation: WebSocketGenerationLifecycleOperation::Acquire,
                 ..
             } => {
                 let tuple = request_tuple(&record.request);
+                let pin_matches = state
+                    .pins
+                    .get(&record.connection_key)
+                    .is_some_and(|pin| pin.tuple == *tuple);
+                if !pin_matches {
+                    if record.inserted_pin {
+                        state.pins.remove(&record.connection_key);
+                    }
+                    settle_receipt(
+                        record.receipt,
+                        Err(
+                            "WebSocket generation acquire receipt changed its tentative pin"
+                                .to_string(),
+                        ),
+                    );
+                    return Err(RuntimeError::Decode(
+                        "WebSocket generation acquire receipt changed its tentative pin"
+                            .to_string(),
+                    ));
+                }
+                state
+                    .pins
+                    .get_mut(&record.connection_key)
+                    .expect("matching tentative pin remains present")
+                    .acquired = true;
+                settle_receipt(record.receipt, Ok(()));
                 info!(
                     event = "runtime.websocket_generation_acquired",
                     router_session_id = %tuple.router_session_id,
@@ -246,10 +356,15 @@ impl WebSocketGenerationRegistry {
             } => {
                 let connection_key = record.connection_key.clone();
                 let inserted_pin = record.inserted_pin;
-                state.acquires.remove(request_id);
                 if inserted_pin {
                     state.pins.remove(&connection_key);
                 }
+                settle_receipt(
+                    record.receipt,
+                    Err(format!(
+                        "WebSocket generation acquire was rejected ({code:?}): {reason}"
+                    )),
+                );
                 warn!(
                     event = "runtime.websocket_generation_acquire_rejected",
                     router_session_id = %connection_key.router_session_id,
@@ -265,7 +380,7 @@ impl WebSocketGenerationRegistry {
         }
     }
 
-    pub(super) fn pinned_route(
+    fn acquired_physical_route(
         &self,
         router_session_id: &str,
         connection_id: &str,
@@ -280,20 +395,68 @@ impl WebSocketGenerationRegistry {
         };
         let pin = state.pins.get(&key).ok_or_else(|| {
             RuntimeError::Unsupported(
-                "WebSocket receive has no acquired generation pin".to_string(),
+                "WebSocket JSON-RPC request has no acquired generation pin".to_string(),
             )
         })?;
+        if !pin.acquired {
+            return Err(RuntimeError::Unsupported(
+                "WebSocket JSON-RPC generation pin has no exact acquire receipt".to_string(),
+            ));
+        }
         if pin.tuple.assembly_identity != *assembly_identity
             || pin.tuple.assembly_generation != assembly_generation
             || pin.tuple.websocket_entry_id != websocket_entry_id
+            || pin.tuple.service_id != pin.route.entry().owner().service_id
         {
             return Err(RuntimeError::Protocol {
                 target: connection_id.to_string(),
-                message: "WebSocket receive tuple does not match its acquired generation pin"
+                message: "WebSocket JSON-RPC tuple does not match its acquired generation pin"
                     .to_string(),
             });
         }
         Ok(pin.route.clone())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn websocket_jsonrpc_target(
+        &self,
+        router_session_id: &str,
+        connection_id: &str,
+        assembly_identity: &AssemblyIdentity,
+        assembly_generation: u64,
+        websocket_entry_id: &WebSocketEntryId,
+        host: &str,
+        path: &str,
+        method: &str,
+        gateway_entry_identity: &GatewayEntryIdentity,
+        profile: GatewayWebSocketRpcProfile,
+    ) -> Result<RuntimeAssemblyWebSocketJsonRpcTarget> {
+        let physical_route = self.acquired_physical_route(
+            router_session_id,
+            connection_id,
+            assembly_identity,
+            assembly_generation,
+            websocket_entry_id.as_str(),
+        )?;
+        let method_route = physical_route
+            .websocket_jsonrpc_method_route(
+                host,
+                path,
+                method,
+                gateway_entry_identity,
+                profile,
+                websocket_entry_id,
+            )
+            .map_err(|error| RuntimeError::Protocol {
+                target: connection_id.to_string(),
+                message: error.to_string(),
+            })?;
+        method_route
+            .websocket_jsonrpc_target(&physical_route)
+            .map_err(|error| RuntimeError::Protocol {
+                target: connection_id.to_string(),
+                message: error.to_string(),
+            })
     }
 
     pub(super) fn handle_release(
@@ -353,9 +516,14 @@ impl WebSocketGenerationRegistry {
                 ),
                 Some(_) => {
                     state.pins.remove(&key);
-                    state
-                        .acquires
-                        .retain(|_, record| record.connection_key != key);
+                    let pending = take_connection_acquires(&mut state.acquires, &key);
+                    for record in pending {
+                        settle_receipt(
+                            record.receipt,
+                            Err("WebSocket generation was released before acquire completed"
+                                .to_string()),
+                        );
+                    }
                     info!(
                         event = "runtime.websocket_generation_released",
                         router_session_id = %tuple.router_session_id,
@@ -391,9 +559,22 @@ impl WebSocketGenerationRegistry {
         state
             .pins
             .retain(|key, _| key.router_session_id != router_session_id);
-        state
+        let disconnected_keys = state
             .acquires
-            .retain(|_, record| record.connection_key.router_session_id != router_session_id);
+            .iter()
+            .filter(|(_, record)| record.connection_key.router_session_id == router_session_id)
+            .map(|(request_id, _)| request_id.clone())
+            .collect::<Vec<_>>();
+        let disconnected_acquires = disconnected_keys
+            .into_iter()
+            .filter_map(|request_id| state.acquires.remove(&request_id))
+            .collect::<Vec<_>>();
+        for record in disconnected_acquires {
+            settle_receipt(
+                record.receipt,
+                Err("WebSocket generation Router session disconnected".to_string()),
+            );
+        }
         state
             .releases
             .retain(|_, cached| cached.router_session_id != router_session_id);
@@ -417,6 +598,30 @@ impl WebSocketGenerationRegistry {
             RuntimeError::Decode("WebSocket generation registry lock is poisoned".to_string())
         })
     }
+}
+
+fn settle_receipt(
+    receipt: Option<oneshot::Sender<std::result::Result<(), String>>>,
+    result: std::result::Result<(), String>,
+) {
+    if let Some(receipt) = receipt {
+        let _ = receipt.send(result);
+    }
+}
+
+fn take_connection_acquires(
+    acquires: &mut HashMap<String, AcquireRecord>,
+    connection_key: &ConnectionKey,
+) -> Vec<AcquireRecord> {
+    let request_ids = acquires
+        .iter()
+        .filter(|(_, record)| &record.connection_key == connection_key)
+        .map(|(request_id, _)| request_id.clone())
+        .collect::<Vec<_>>();
+    request_ids
+        .into_iter()
+        .filter_map(|request_id| acquires.remove(&request_id))
+        .collect()
 }
 
 fn request_tuple(

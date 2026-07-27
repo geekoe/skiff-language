@@ -33,6 +33,7 @@ const VERSION: &str = "1.0.0";
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static FIXTURE: OnceLock<CompiledGatewayFixture> = OnceLock::new();
+static PATH_ONLY_FIXTURE: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 
 pub(super) async fn admitted_gateway_host() -> (RuntimeHost, HashMap<String, ActiveAssemblyRoute>) {
     let fixture = fixture();
@@ -85,6 +86,108 @@ pub(crate) async fn reloaded_gateway_host(
         .lookup_active_assembly_request_route(&selector)
         .expect("generation two route");
     (host, pinned, current)
+}
+
+pub(crate) async fn admitted_websocket_gateway_host(
+) -> (RuntimeHost, ActiveAssemblyRoute, ActiveAssemblyRoute) {
+    let fixture = fixture();
+    let resolver = fixture.resolver();
+    let (physical_selector, method_selector) = websocket_selectors(&fixture.assembly);
+    let host = super::super::test_host();
+    host.assembly_admission
+        .admit(Arc::clone(&fixture.assembly), &resolver)
+        .await
+        .expect("compiled WebSocket gateway assembly should admit");
+    let physical = host
+        .lookup_active_assembly_request_route(&physical_selector)
+        .expect("physical WebSocket route");
+    let method = host
+        .lookup_active_assembly_request_route(&method_selector)
+        .expect("WebSocket JSON-RPC method route");
+    (host, physical, method)
+}
+
+pub(crate) async fn admitted_path_only_websocket_gateway_host() -> (RuntimeHost, ActiveAssemblyRoute)
+{
+    let fixture = path_only_fixture();
+    let resolver = fixture.resolver();
+    let physical_selector = fixture
+        .assembly
+        .gateway_ingress
+        .iter()
+        .find(|binding| binding.selector.path == "/socket" && binding.selector.method.is_none())
+        .expect("path-only physical WebSocket selector")
+        .selector
+        .clone();
+    let host = super::super::test_host();
+    host.assembly_admission
+        .admit(Arc::clone(&fixture.assembly), &resolver)
+        .await
+        .expect("path-only WebSocket gateway assembly should admit");
+    let physical = host
+        .lookup_active_assembly_request_route(&physical_selector)
+        .expect("path-only physical WebSocket route");
+    (host, physical)
+}
+
+pub(crate) async fn reloaded_websocket_gateway_host() -> (
+    RuntimeHost,
+    ActiveAssemblyRoute,
+    ActiveAssemblyRoute,
+    ActiveAssemblyRoute,
+    ActiveAssemblyRoute,
+) {
+    let fixture = fixture();
+    let resolver = fixture.resolver();
+    let (physical_selector, method_selector) = websocket_selectors(&fixture.assembly);
+    let host = super::super::test_host();
+    host.assembly_admission
+        .admit(Arc::clone(&fixture.assembly), &resolver)
+        .await
+        .expect("WebSocket generation one should admit");
+    let physical_a = host
+        .lookup_active_assembly_request_route(&physical_selector)
+        .expect("generation one physical WebSocket route");
+    let method_a = host
+        .lookup_active_assembly_request_route(&method_selector)
+        .expect("generation one WebSocket method route");
+    host.assembly_admission
+        .admit(Arc::clone(&fixture.assembly), &resolver)
+        .await
+        .expect("WebSocket generation two should admit");
+    let physical_b = host
+        .lookup_active_assembly_request_route(&physical_selector)
+        .expect("generation two physical WebSocket route");
+    let method_b = host
+        .lookup_active_assembly_request_route(&method_selector)
+        .expect("generation two WebSocket method route");
+    (host, physical_a, method_a, physical_b, method_b)
+}
+
+fn websocket_selectors(
+    assembly: &RuntimeAssembly,
+) -> (
+    skiff_artifact_model::IngressSelector,
+    skiff_artifact_model::IngressSelector,
+) {
+    let physical = assembly
+        .gateway_ingress
+        .iter()
+        .find(|binding| binding.selector.path == "/socket" && binding.selector.method.is_none())
+        .expect("physical WebSocket selector")
+        .selector
+        .clone();
+    let method = assembly
+        .gateway_ingress
+        .iter()
+        .find(|binding| {
+            binding.selector.path == "/socket"
+                && binding.selector.method.as_deref() == Some("status.get")
+        })
+        .expect("WebSocket JSON-RPC method selector")
+        .selector
+        .clone();
+    (physical, method)
 }
 
 struct CompiledGatewayFixture {
@@ -197,14 +300,22 @@ impl RuntimeAssemblyContentResolver for CompiledGatewayResolver<'_> {
 }
 
 fn fixture() -> &'static CompiledGatewayFixture {
-    FIXTURE.get_or_init(compile_fixture)
+    FIXTURE.get_or_init(|| compile_fixture(true))
 }
 
-fn compile_fixture() -> CompiledGatewayFixture {
-    let temp = TempFixture::new("host-http-gateway");
+fn path_only_fixture() -> &'static CompiledGatewayFixture {
+    PATH_ONLY_FIXTURE.get_or_init(|| compile_fixture(false))
+}
+
+fn compile_fixture(with_jsonrpc_method: bool) -> CompiledGatewayFixture {
+    let temp = TempFixture::new(if with_jsonrpc_method {
+        "host-http-websocket-gateway"
+    } else {
+        "host-http-path-only-websocket-gateway"
+    });
     let service_root = temp.child("service");
     let artifact_root = temp.child("artifacts");
-    write_service_fixture(&service_root);
+    write_service_fixture(&service_root, with_jsonrpc_method);
     let platform = repository_platform_sources();
     seed_canonical_std(&platform, &artifact_root).expect("canonical std seed");
     let output = build_authoring_object(
@@ -463,7 +574,7 @@ fn localize_package_type_ref(
     }
 }
 
-fn write_service_fixture(root: &Path) {
+fn write_service_fixture(root: &Path, with_jsonrpc_method: bool) {
     fs::create_dir_all(root).expect("gateway fixture directory");
     fs::write(
         root.join("package.yml"),
@@ -512,6 +623,20 @@ slow:
         ),
     )
     .expect("gateway HTTP manifest");
+    let websocket = if with_jsonrpc_method {
+        r#"path: /socket
+jsonRpc:
+  status:
+    method: status.get
+    handler: main.websocketStatus
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+"#
+    } else {
+        "path: /socket\n"
+    };
+    fs::write(root.join("websocket.yml"), websocket).expect("gateway WebSocket manifest");
     fs::write(
         root.join("config.dev.yml"),
         "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\nlifecycle: { maxConcurrency: 1 }\n",
@@ -523,6 +648,13 @@ slow:
 
 function health() -> string {
   return "healthy"
+}
+
+type WebSocketStatusParams { value: string }
+type WebSocketStatusResult { accepted: boolean }
+
+function websocketStatus(params: WebSocketStatusParams) -> WebSocketStatusResult {
+  return { accepted: true }
 }
 
 function typed(body: string) -> string {

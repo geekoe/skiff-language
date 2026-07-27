@@ -8,17 +8,17 @@ use serde_json::json;
 use skiff_artifact_identity::{gateway_entry_identity, websocket_entry_id};
 use skiff_artifact_model::{
     AssemblyActivationServiceDb, ContractOperationId, DbMetadataIndexIr, DbMetadataIr,
-    DeploymentGatewayEntry, DeploymentIngressBinding, GatewayAdapterKind, GatewayEntryKey,
-    GatewayProtocolSurface, IngressProtocol, OperationTargetRef, PackageBuildId, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, StateBindingKind,
-    WebSocketEntryId, WEBSOCKET_GATEWAY_ENTRY_KEY,
+    DeploymentGatewayEntry, DeploymentIngressBinding, GatewayAdapterKind, GatewayEntryIdentity,
+    GatewayEntryKey, GatewayProtocolSurface, GatewayWebSocketRpcProfile, IngressProtocol,
+    OperationTargetRef, PackageBuildId, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, StateBindingKind, WebSocketEntryId, WEBSOCKET_GATEWAY_ENTRY_KEY,
 };
 use skiff_runtime_activation::{ActivationContext, ActivationId};
 use skiff_runtime_capability_context::{
     DbCapabilitySource, DbProviderBuildInput, DbProviderConfig, DbProviderSource,
 };
 use skiff_runtime_eval::{AdmittedPackageSchemaRecords, RuntimeAssemblyEvalResolver};
-use skiff_runtime_linker::AssemblyLinkedCandidate;
+use skiff_runtime_linker::{AssemblyLinkedCandidate, LinkedGatewayEntry};
 
 /// Immutable activation owners and canonical target facts published with one assembly generation.
 #[derive(Debug)]
@@ -29,6 +29,7 @@ pub(crate) struct ActiveAssemblyContextSet {
     schema_records: BTreeMap<ServiceContractRef, AdmittedPackageSchemaRecords>,
     operation_targets: BTreeMap<(ActivationId, ContractOperationId), OperationTargetRef>,
     db_sources: BTreeMap<ActivationId, DbCapabilitySource>,
+    websocket_entries: BTreeMap<ServiceDeploymentRef, AdmittedWebSocketEntry>,
 }
 
 impl ActiveAssemblyContextSet {
@@ -46,6 +47,7 @@ impl ActiveAssemblyContextSet {
         let mut activations_by_deployment = BTreeMap::new();
         let mut operation_targets = BTreeMap::new();
         let mut db_sources = BTreeMap::new();
+        let mut websocket_entries = BTreeMap::new();
         for (deployment, linked) in candidate.activations() {
             let binding_template = candidate
                 .assembly()
@@ -58,15 +60,17 @@ impl ActiveAssemblyContextSet {
                         deployment
                     )
                 })?;
-            let websocket_entry = admitted_websocket_entry(candidate, deployment)?
-                .map(AdmittedWebSocketEntry::into_activation_parts);
+            let websocket_entry = admitted_websocket_entry(candidate, deployment)?;
+            let activation_websocket_entry = websocket_entry
+                .as_ref()
+                .map(AdmittedWebSocketEntry::activation_parts);
             let activation = ActivationContext::from_assembly_templates_with_websocket_entry(
                 candidate.assembly().assembly_identity.clone(),
                 generation,
                 runtime_replica_id,
                 linked.source(),
                 binding_template,
-                websocket_entry,
+                activation_websocket_entry,
             )
             .with_context(|| {
                 format!(
@@ -146,6 +150,17 @@ impl ActiveAssemblyContextSet {
                 );
             }
             db_sources.insert(activation.activation_id().clone(), db_source);
+            if let Some(websocket_entry) = websocket_entry {
+                if websocket_entries
+                    .insert(deployment.clone(), websocket_entry)
+                    .is_some()
+                {
+                    anyhow::bail!(
+                        "deployment {:?} has duplicate admitted WebSocket route sets",
+                        deployment
+                    );
+                }
+            }
             if activations_by_deployment
                 .insert(deployment.clone(), activation)
                 .is_some()
@@ -195,6 +210,7 @@ impl ActiveAssemblyContextSet {
             schema_records,
             operation_targets,
             db_sources,
+            websocket_entries,
         })
     }
 
@@ -209,6 +225,13 @@ impl ActiveAssemblyContextSet {
         self.db_sources.get(activation_id).cloned()
     }
 
+    pub(crate) fn websocket_entry(
+        &self,
+        deployment: &ServiceDeploymentRef,
+    ) -> Option<&AdmittedWebSocketEntry> {
+        self.websocket_entries.get(deployment)
+    }
+
     #[cfg(test)]
     pub(crate) fn admitted_schema_records(
         &self,
@@ -218,17 +241,19 @@ impl ActiveAssemblyContextSet {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct AdmittedWebSocketEntry {
     pub(crate) selector: skiff_artifact_model::IngressSelector,
     pub(crate) gateway_entry_key: skiff_artifact_model::GatewayEntryKey,
     pub(crate) gateway_entry_identity: skiff_artifact_model::GatewayEntryIdentity,
     pub(crate) websocket_entry_id: skiff_artifact_model::WebSocketEntryId,
+    pub(crate) linked_entry: Arc<LinkedGatewayEntry>,
+    methods: BTreeMap<String, AdmittedWebSocketMethodEntry>,
 }
 
 impl AdmittedWebSocketEntry {
-    fn into_activation_parts(
-        self,
+    fn activation_parts(
+        &self,
     ) -> (
         skiff_artifact_model::IngressSelector,
         skiff_artifact_model::GatewayEntryKey,
@@ -236,12 +261,29 @@ impl AdmittedWebSocketEntry {
         skiff_artifact_model::WebSocketEntryId,
     ) {
         (
-            self.selector,
-            self.gateway_entry_key,
-            self.gateway_entry_identity,
-            self.websocket_entry_id,
+            self.selector.clone(),
+            self.gateway_entry_key.clone(),
+            self.gateway_entry_identity.clone(),
+            self.websocket_entry_id.clone(),
         )
     }
+
+    pub(crate) fn has_methods(&self) -> bool {
+        !self.methods.is_empty()
+    }
+
+    pub(crate) fn method(&self, method: &str) -> Option<&AdmittedWebSocketMethodEntry> {
+        self.methods.get(method)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AdmittedWebSocketMethodEntry {
+    pub(crate) selector: skiff_artifact_model::IngressSelector,
+    pub(crate) gateway_entry_key: GatewayEntryKey,
+    pub(crate) gateway_entry_identity: GatewayEntryIdentity,
+    pub(crate) profile: GatewayWebSocketRpcProfile,
+    pub(crate) linked_entry: Arc<LinkedGatewayEntry>,
 }
 
 pub(crate) fn admitted_websocket_entry(
@@ -283,11 +325,67 @@ pub(crate) fn admitted_websocket_entry(
         );
     }
 
+    let mut methods = BTreeMap::new();
+    for method in deployment_facts.methods {
+        let linked_method = candidate
+            .gateway_entry(owner, method.entry_key)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "activation {owner:?} WebSocket JSON-RPC method {} is not linked",
+                    method.method
+                )
+            })?;
+        let selected_method = candidate.ingress(&method.binding.selector).ok_or_else(|| {
+            anyhow::anyhow!(
+                "activation {owner:?} WebSocket JSON-RPC selector {:?} is not linked",
+                method.binding.selector
+            )
+        })?;
+        if !Arc::ptr_eq(linked_method, selected_method)
+            || linked_method.owner() != owner
+            || linked_method.gateway_entry_key() != method.entry_key
+            || linked_method.gateway_entry_identity() != &method.entry.gateway_entry_identity
+            || linked_method.protocol_surface() != &method.entry.protocol_surface
+            || linked_method.adapter_plan() != &method.entry.adapter_plan
+            || linked_method
+                .optional_handler()
+                .map(|handler| handler.callable_id())
+                != method.entry.handler.as_ref()
+            || linked_method.pre().is_some()
+            || linked_method.guard().is_some()
+        {
+            anyhow::bail!(
+                "activation {owner:?} WebSocket JSON-RPC method {} selector, entry, identity, surface or handler join is not exact",
+                method.method
+            );
+        }
+        if methods
+            .insert(
+                method.method.to_string(),
+                AdmittedWebSocketMethodEntry {
+                    selector: method.binding.selector.clone(),
+                    gateway_entry_key: method.entry_key.clone(),
+                    gateway_entry_identity: method.entry.gateway_entry_identity.clone(),
+                    profile: method.profile,
+                    linked_entry: Arc::clone(linked_method),
+                },
+            )
+            .is_some()
+        {
+            anyhow::bail!(
+                "activation {owner:?} repeats WebSocket JSON-RPC method {:?}",
+                method.method
+            );
+        }
+    }
+
     Ok(Some(AdmittedWebSocketEntry {
         selector: binding.selector.clone(),
         gateway_entry_key: entry_key.clone(),
         gateway_entry_identity: deployment_entry.gateway_entry_identity.clone(),
         websocket_entry_id: deployment_facts.websocket_entry_id,
+        linked_entry: Arc::clone(linked_entry),
+        methods,
     }))
 }
 
@@ -296,13 +394,25 @@ struct DeploymentWebSocketEntry<'a> {
     entry: &'a DeploymentGatewayEntry,
     binding: &'a DeploymentIngressBinding,
     websocket_entry_id: WebSocketEntryId,
+    methods: Vec<DeploymentWebSocketMethodEntry<'a>>,
+}
+
+struct DeploymentWebSocketMethodEntry<'a> {
+    method: &'a str,
+    entry_key: &'a GatewayEntryKey,
+    entry: &'a DeploymentGatewayEntry,
+    binding: &'a DeploymentIngressBinding,
+    profile: GatewayWebSocketRpcProfile,
 }
 
 fn deployment_websocket_entry<'a>(
     deployment: &'a ServiceDeployment,
     owner: &ServiceDeploymentRef,
 ) -> anyhow::Result<Option<DeploymentWebSocketEntry<'a>>> {
-    let websocket_entries = deployment
+    if &skiff_artifact_identity::service_deployment_ref(deployment) != owner {
+        anyhow::bail!("WebSocket admission deployment owner is not exact");
+    }
+    let physical_entries = deployment
         .gateway_entries
         .iter()
         .filter(|(_, entry)| {
@@ -312,32 +422,52 @@ fn deployment_websocket_entry<'a>(
             )
         })
         .collect::<Vec<_>>();
-    if websocket_entries.len() > 1 {
-        anyhow::bail!("activation {owner:?} declares more than one WebSocket gateway entry");
+    if physical_entries.len() > 1 {
+        anyhow::bail!(
+            "activation {owner:?} declares more than one physical WebSocket gateway entry"
+        );
     }
 
+    let method_entries = deployment
+        .gateway_entries
+        .iter()
+        .filter(|(_, entry)| {
+            matches!(
+                entry.protocol_surface.protocol,
+                GatewayProtocolSurface::WebSocketJsonRpc(_)
+            )
+        })
+        .collect::<Vec<_>>();
     let websocket_bindings = deployment
         .ingress
         .iter()
         .filter(|binding| binding.selector.protocol == IngressProtocol::WebSocket)
         .collect::<Vec<_>>();
-    if websocket_bindings.len() > 1 {
-        anyhow::bail!("activation {owner:?} declares more than one WebSocket ingress selector");
-    }
 
-    let (entry_key, entry, binding) = match (websocket_entries.first(), websocket_bindings.first())
-    {
-        (None, None) => return Ok(None),
-        (Some(_), None) => {
-            anyhow::bail!("activation {owner:?} WebSocket gateway entry has no ingress selector")
+    let (entry_key, entry) = match physical_entries.first() {
+        None if method_entries.is_empty() && websocket_bindings.is_empty() => return Ok(None),
+        None if !method_entries.is_empty() => {
+            anyhow::bail!(
+                "activation {owner:?} declares orphan WebSocket JSON-RPC methods without a physical entry"
+            )
         }
-        (None, Some(binding)) => anyhow::bail!(
-            "activation {owner:?} WebSocket selector {:?} has no WebSocket gateway entry",
-            binding.selector
+        None => anyhow::bail!(
+            "activation {owner:?} WebSocket selectors have no physical WebSocket gateway entry"
         ),
-        (Some((entry_key, entry)), Some(binding)) => (*entry_key, *entry, *binding),
+        Some((entry_key, entry)) => (*entry_key, *entry),
     };
 
+    let physical_bindings = websocket_bindings
+        .iter()
+        .copied()
+        .filter(|binding| binding.gateway_entry_key == *entry_key)
+        .collect::<Vec<_>>();
+    if physical_bindings.len() != 1 {
+        anyhow::bail!(
+            "activation {owner:?} physical WebSocket gateway entry must have exactly one selector"
+        );
+    }
+    let binding = physical_bindings[0];
     if entry_key.as_str() != WEBSOCKET_GATEWAY_ENTRY_KEY || binding.gateway_entry_key != *entry_key
     {
         anyhow::bail!(
@@ -372,11 +502,108 @@ fn deployment_websocket_entry<'a>(
 
     let websocket_entry_id = websocket_entry_id(&owner.service_id, entry_key)
         .context("failed to compute canonical WebSocket entry id")?;
+    let GatewayProtocolSurface::WebSocketConnect(connect_surface) =
+        &entry.protocol_surface.protocol
+    else {
+        unreachable!("physical entries were filtered by the WebSocket connect surface")
+    };
+    let mut methods = Vec::with_capacity(method_entries.len());
+    let mut method_names = BTreeSet::new();
+    let mut method_binding_keys = BTreeSet::new();
+    for (method_key, method_entry) in method_entries {
+        if method_key.as_str() == WEBSOCKET_GATEWAY_ENTRY_KEY {
+            anyhow::bail!(
+                "activation {owner:?} WebSocket JSON-RPC method uses the physical entry key"
+            );
+        }
+        let matching_bindings = websocket_bindings
+            .iter()
+            .copied()
+            .filter(|candidate| candidate.gateway_entry_key == *method_key)
+            .collect::<Vec<_>>();
+        if matching_bindings.len() != 1 {
+            anyhow::bail!(
+                "activation {owner:?} WebSocket JSON-RPC entry {method_key} must have exactly one selector"
+            );
+        }
+        let method_binding = matching_bindings[0];
+        let Some(method) = method_binding.selector.method.as_deref() else {
+            anyhow::bail!(
+                "activation {owner:?} WebSocket JSON-RPC entry {method_key} has no method selector"
+            );
+        };
+        if method.is_empty()
+            || method_binding.selector.protocol != IngressProtocol::WebSocket
+            || method_binding.selector.host != binding.selector.host
+            || method_binding.selector.path != binding.selector.path
+        {
+            anyhow::bail!(
+                "activation {owner:?} WebSocket JSON-RPC selector {:?} is not an exact physical sibling",
+                method_binding.selector
+            );
+        }
+        if !method_names.insert(method) {
+            anyhow::bail!("activation {owner:?} repeats WebSocket JSON-RPC method {method:?}");
+        }
+        method_binding_keys.insert(method_key.clone());
+        if method_entry.handler.is_none()
+            || method_entry.pre.is_some()
+            || method_entry.guard.is_some()
+            || method_entry.adapter_plan.kind != GatewayAdapterKind::WebSocketJsonRpc
+        {
+            anyhow::bail!(
+                "activation {owner:?} WebSocket JSON-RPC entry {method_key} has invalid handler or adapter facts"
+            );
+        }
+        skiff_artifact_identity::validate_gateway_entry_protocol_surface(
+            &method_entry.protocol_surface,
+        )
+        .context("WebSocket JSON-RPC protocol surface is not canonical")?;
+        let expected_method_identity = gateway_entry_identity(&method_entry.protocol_surface)
+            .context("failed to compute canonical WebSocket JSON-RPC gateway identity")?;
+        if method_entry.gateway_entry_identity != expected_method_identity {
+            anyhow::bail!(
+                "activation {owner:?} WebSocket JSON-RPC entry {method_key} identity does not match its protocol surface"
+            );
+        }
+        let GatewayProtocolSurface::WebSocketJsonRpc(method_surface) =
+            &method_entry.protocol_surface.protocol
+        else {
+            unreachable!("method entries were filtered by the WebSocket JSON-RPC surface")
+        };
+        if !connect_surface
+            .rpc_profiles
+            .contains(&method_surface.profile)
+        {
+            anyhow::bail!(
+                "activation {owner:?} WebSocket JSON-RPC entry {method_key} profile is not supported by the physical entry"
+            );
+        }
+        methods.push(DeploymentWebSocketMethodEntry {
+            method,
+            entry_key: method_key,
+            entry: method_entry,
+            binding: method_binding,
+            profile: method_surface.profile,
+        });
+    }
+    if websocket_bindings.len() != methods.len() + 1
+        || websocket_bindings.iter().any(|candidate| {
+            candidate.gateway_entry_key != *entry_key
+                && !method_binding_keys.contains(&candidate.gateway_entry_key)
+        })
+    {
+        anyhow::bail!(
+            "activation {owner:?} has WebSocket selectors outside its physical/method route set"
+        );
+    }
+
     Ok(Some(DeploymentWebSocketEntry {
         entry_key,
         entry,
         binding,
         websocket_entry_id,
+        methods,
     }))
 }
 
@@ -550,11 +777,12 @@ mod websocket_admission_tests {
     use super::*;
     use skiff_artifact_model::{
         ActivationPolicy, DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentPolicy,
-        DeploymentRevision, GatewayAdapterPlan, GatewayAdapterSource, GatewayEntryProtocolSurface,
-        GatewayExternalErrorProjection, GatewayWebSocketConnectProtocolSurface,
-        GatewayWebSocketDownlinkFrame, GatewayWebSocketRpcProfile, GatewayWebSocketShapeVersion,
-        PackageArtifactRef, PackageLocalAbiIdentity, ResourcePolicy, ServiceProtocolIdentity,
-        SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+        DeploymentRevision, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
+        GatewayEntryProtocolSurface, GatewayExternalErrorProjection, GatewayExternalSchema,
+        GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
+        GatewayWebSocketJsonRpcProtocolSurface, GatewayWebSocketRpcProfile,
+        GatewayWebSocketShapeVersion, PackageArtifactRef, PackageLocalAbiIdentity, ResourcePolicy,
+        ServiceProtocolIdentity, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
     };
 
     fn owner() -> ServiceDeploymentRef {
@@ -591,6 +819,24 @@ mod websocket_admission_tests {
                         GatewayWebSocketDownlinkFrame::Text,
                     ],
                     rpc_profiles: vec![GatewayWebSocketRpcProfile::JsonRpc2_0Text],
+                },
+            ),
+            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+        }
+    }
+
+    fn websocket_jsonrpc_surface() -> GatewayEntryProtocolSurface {
+        GatewayEntryProtocolSurface {
+            protocol: GatewayProtocolSurface::WebSocketJsonRpc(
+                GatewayWebSocketJsonRpcProtocolSurface {
+                    profile: GatewayWebSocketRpcProfile::JsonRpc2_0Text,
+                    dispatch_mode: GatewayDispatchMode::Unary,
+                    external_sources: vec![GatewayAdapterSource::WebSocketJsonRpcParams],
+                    params_schema: GatewayExternalSchema::Record {
+                        fields: BTreeMap::new(),
+                        required: Vec::new(),
+                    },
+                    result_schema: GatewayExternalSchema::Null,
                 },
             ),
             external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
@@ -663,6 +909,45 @@ mod websocket_admission_tests {
         }
     }
 
+    fn add_jsonrpc_method(
+        deployment: &mut ServiceDeployment,
+        key: &str,
+        method: &str,
+        host: &str,
+        path: &str,
+    ) {
+        let method_key = GatewayEntryKey::parse(key).unwrap();
+        let method_surface = websocket_jsonrpc_surface();
+        deployment.gateway_entries.insert(
+            method_key.clone(),
+            DeploymentGatewayEntry {
+                gateway_entry_identity: gateway_entry_identity(&method_surface).unwrap(),
+                protocol_surface: method_surface,
+                handler: Some(skiff_artifact_model::PackageCallableId::new(format!(
+                    "callable:websocket-{key}"
+                ))),
+                pre: None,
+                guard: None,
+                adapter_plan: GatewayAdapterPlan {
+                    kind: GatewayAdapterKind::WebSocketJsonRpc,
+                    args: vec![skiff_artifact_model::GatewayAdapterArg {
+                        param: "params".to_string(),
+                        source: GatewayAdapterSource::WebSocketJsonRpcParams,
+                    }],
+                },
+            },
+        );
+        deployment.ingress.push(DeploymentIngressBinding {
+            selector: skiff_artifact_model::IngressSelector {
+                protocol: IngressProtocol::WebSocket,
+                host: host.to_string(),
+                method: Some(method.to_string()),
+                path: path.to_string(),
+            },
+            gateway_entry_key: method_key,
+        });
+    }
+
     #[test]
     fn websocket_admission_accepts_zero_or_one_exact_entry() {
         let owner = owner();
@@ -683,6 +968,121 @@ mod websocket_admission_tests {
         assert!(deployment_websocket_entry(&zero, &owner)
             .expect("zero WebSocket entries are legal")
             .is_none());
+    }
+
+    #[test]
+    fn websocket_jsonrpc_target_admission_accepts_handlerless_physical_with_method_sibling() {
+        let owner = owner();
+        let mut deployment = deployment();
+        deployment
+            .gateway_entries
+            .get_mut(&GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap())
+            .unwrap()
+            .handler = None;
+
+        add_jsonrpc_method(
+            &mut deployment,
+            "status",
+            "status.get",
+            "websocket.test",
+            "/connect",
+        );
+
+        deployment_websocket_entry(&deployment, &owner)
+            .expect("handlerless physical entry and exact method sibling must be admitted")
+            .expect("physical WebSocket entry remains the attach route");
+    }
+
+    #[test]
+    fn websocket_jsonrpc_target_admission_rejects_duplicate_or_orphan_methods() {
+        let owner = owner();
+        let mut duplicate = deployment();
+        add_jsonrpc_method(
+            &mut duplicate,
+            "status",
+            "status.get",
+            "websocket.test",
+            "/connect",
+        );
+        add_jsonrpc_method(
+            &mut duplicate,
+            "status-copy",
+            "status.get",
+            "websocket.test",
+            "/connect",
+        );
+        assert!(deployment_websocket_entry(&duplicate, &owner).is_err());
+
+        let mut orphan = deployment();
+        add_jsonrpc_method(
+            &mut orphan,
+            "status",
+            "status.get",
+            "websocket.test",
+            "/connect",
+        );
+        orphan
+            .gateway_entries
+            .remove(&GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap());
+        orphan
+            .ingress
+            .retain(|binding| binding.selector.method.is_some());
+        assert!(deployment_websocket_entry(&orphan, &owner).is_err());
+    }
+
+    #[test]
+    fn websocket_jsonrpc_target_admission_rejects_owner_host_path_profile_and_identity_mismatch() {
+        let owner = owner();
+        let mut wrong_owner = owner.clone();
+        wrong_owner.service_id = "service:other".to_string();
+        assert!(deployment_websocket_entry(&deployment(), &wrong_owner).is_err());
+
+        for (host, path) in [("other.test", "/connect"), ("websocket.test", "/other")] {
+            let mut mismatched = deployment();
+            add_jsonrpc_method(&mut mismatched, "status", "status.get", host, path);
+            assert!(deployment_websocket_entry(&mismatched, &owner).is_err());
+        }
+
+        let mut wrong_profile = deployment();
+        add_jsonrpc_method(
+            &mut wrong_profile,
+            "status",
+            "status.get",
+            "websocket.test",
+            "/connect",
+        );
+        let physical = wrong_profile
+            .gateway_entries
+            .get_mut(&GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap())
+            .unwrap();
+        let GatewayProtocolSurface::WebSocketConnect(surface) =
+            &mut physical.protocol_surface.protocol
+        else {
+            unreachable!()
+        };
+        surface.rpc_profiles.clear();
+        assert!(deployment_websocket_entry(&wrong_profile, &owner).is_err());
+
+        let mut wrong_method_identity = deployment();
+        add_jsonrpc_method(
+            &mut wrong_method_identity,
+            "status",
+            "status.get",
+            "websocket.test",
+            "/connect",
+        );
+        let physical_identity = wrong_method_identity
+            .gateway_entries
+            .get(&GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap())
+            .unwrap()
+            .gateway_entry_identity
+            .clone();
+        wrong_method_identity
+            .gateway_entries
+            .get_mut(&GatewayEntryKey::parse("status").unwrap())
+            .unwrap()
+            .gateway_entry_identity = physical_identity;
+        assert!(deployment_websocket_entry(&wrong_method_identity, &owner).is_err());
     }
 
     #[test]

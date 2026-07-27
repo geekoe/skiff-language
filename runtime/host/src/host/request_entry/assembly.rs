@@ -51,6 +51,50 @@ impl RuntimeHost {
     ) {
         let AdmittedWebSocketConnectRequest { route, header } = request;
         let request_id = header.request_id.clone();
+        if route.entry().optional_handler().is_none() {
+            let connection_id = header.websocket_connect.connection_id.clone();
+            let websocket_entry_id = header
+                .websocket_connect
+                .websocket_entry_id
+                .as_str()
+                .to_string();
+            let receipt = match self.queue_websocket_generation_acquire(
+                &route,
+                &router_session_id,
+                &websocket_entry_id,
+                &connection_id,
+                &sender,
+            ) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    self.send_http_gateway_admission_error(&request_id, error, &sender);
+                    return;
+                }
+            };
+            let host = self.clone();
+            tokio::spawn(async move {
+                if let Err(error) = receipt.wait().await {
+                    host.send_http_gateway_admission_error(&request_id, error, &sender);
+                    return;
+                }
+                match websocket_connect_result_into_message(
+                    request_id,
+                    RuntimeWebSocketConnectResult::Accept {
+                        business_identity: None,
+                        connection_policy: None,
+                    },
+                ) {
+                    Ok(message) => {
+                        let _ = sender.send(message);
+                    }
+                    Err(error) => {
+                        error!(event = "runtime.response_encode_error", error = %error)
+                    }
+                }
+                drop(route);
+            });
+            return;
+        }
         let target = match route.websocket_connect_target() {
             Ok(target) => target,
             Err(error) => {
@@ -139,13 +183,26 @@ impl RuntimeHost {
             match result {
                 Ok(result) => {
                     if matches!(result, RuntimeWebSocketConnectResult::Accept { .. }) {
-                        if let Err(error) = host.queue_websocket_generation_acquire(
+                        let receipt = match host.queue_websocket_generation_acquire(
                             &route,
                             &router_session_id,
                             &websocket_entry_id,
                             &connection_id,
                             &sender,
                         ) {
+                            Ok(receipt) => receipt,
+                            Err(error) => {
+                                host.finish_websocket_connect_error(
+                                    &supervised_request,
+                                    request_id,
+                                    RequestError::Decode(error.to_string()),
+                                    &sender,
+                                )
+                                .await;
+                                return;
+                            }
+                        };
+                        if let Err(error) = receipt.wait().await {
                             host.finish_websocket_connect_error(
                                 &supervised_request,
                                 request_id,
@@ -629,8 +686,8 @@ impl RuntimeHost {
         websocket_entry_id: &str,
         connection_id: &str,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
-    ) -> Result<()> {
-        let request = self.websocket_generations.begin_acquire(
+    ) -> Result<super::super::websocket_generation::WebSocketGenerationAcquireReceipt> {
+        let (request, receipt) = self.websocket_generations.begin_acquire_with_receipt(
             router_session_id,
             route.clone(),
             websocket_entry_id.to_string(),
@@ -652,7 +709,7 @@ impl RuntimeHost {
                 "failed to queue WebSocket generation acquire".to_string(),
             ));
         }
-        Ok(())
+        Ok(receipt)
     }
 
     #[cfg(test)]
@@ -671,6 +728,7 @@ impl RuntimeHost {
             connection_id,
             sender,
         )
+        .map(|_| ())
     }
 }
 

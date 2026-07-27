@@ -47,6 +47,9 @@ impl RuntimeHost {
             RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => {
                 header.request_id.clone()
             }
+            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
+                header.request_id.clone()
+            }
         };
         let result = match header {
             RuntimeAssemblyRequestStartFrameWireHeader::Http(header) => self
@@ -55,6 +58,11 @@ impl RuntimeHost {
             RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => self
                 .websocket_connect_request_from_wire(header, body)
                 .map(AdmittedRuntimeAssemblyRequest::WebSocketConnect),
+            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(_) => {
+                Err(RuntimeError::Unsupported(
+                    "RuntimeAssembly WebSocket JSON-RPC execution is not attached".to_string(),
+                ))
+            }
         };
         match result {
             Ok(AdmittedRuntimeAssemblyRequest::Http(request)) => {
@@ -104,12 +112,15 @@ impl RuntimeHost {
         let selector = websocket_connect_ingress_selector(&header);
         let route = self.lookup_active_assembly_request_route(&selector)?;
         validate_websocket_connect_route(&header, &selector, &route)?;
-        if route.entry().optional_handler().is_none() {
+        if route.entry().optional_handler().is_none()
+            && !route
+                .has_websocket_jsonrpc_methods()
+                .map_err(|error| RuntimeError::Decode(error.to_string()))?
+        {
             return Err(RuntimeError::Protocol {
                 target: route.gateway_entry_key().as_str().to_string(),
-                message:
-                    "Runtime refuses WebSocket connect dispatch for an entry without a handler"
-                        .to_string(),
+                message: "Runtime refuses WebSocket connect dispatch for a path-only entry"
+                    .to_string(),
             });
         }
         Ok(AdmittedWebSocketConnectRequest { route, header })

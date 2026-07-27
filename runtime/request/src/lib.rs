@@ -23,6 +23,7 @@ mod runner;
 mod runtime_ingress;
 mod websocket_connect_execution;
 mod websocket_connect_target;
+mod websocket_jsonrpc_target;
 
 pub use assembly_ingress::{
     execute_runtime_assembly_request, AssemblyRequestExecutionHandles,
@@ -81,4 +82,8 @@ pub use websocket_connect_execution::{
 };
 pub use websocket_connect_target::{
     RuntimeAssemblyWebSocketConnectTarget, RuntimeAssemblyWebSocketConnectTargetError,
+};
+pub use websocket_jsonrpc_target::{
+    RuntimeAssemblyWebSocketJsonRpcPhysicalRoute, RuntimeAssemblyWebSocketJsonRpcTarget,
+    RuntimeAssemblyWebSocketJsonRpcTargetError,
 };

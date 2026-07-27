@@ -622,6 +622,7 @@ mod tests {
                         GatewayWebSocketDownlinkFrame::Binary,
                         GatewayWebSocketDownlinkFrame::Text,
                     ],
+                    rpc_profiles: Vec::new(),
                 },
             ),
             external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
