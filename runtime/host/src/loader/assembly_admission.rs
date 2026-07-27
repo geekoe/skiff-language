@@ -17,12 +17,14 @@ use skiff_runtime_loader::{
     RuntimeAssemblyContentResolver, RuntimeAssemblyLoader, RuntimeAssemblyRecordResolver,
     ServiceContractStore,
 };
-use skiff_runtime_request::RuntimeAssemblyHttpGatewayTarget;
+use skiff_runtime_request::{
+    RuntimeAssemblyHttpGatewayTarget, RuntimeAssemblyWebSocketConnectTarget,
+};
 use time::OffsetDateTime;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use super::active_assembly_context::ActiveAssemblyContextSet;
+use super::active_assembly_context::{admitted_websocket_entry, ActiveAssemblyContextSet};
 use crate::capability_context::DbProviderSource;
 use crate::host::RuntimeHost;
 
@@ -166,6 +168,23 @@ impl ActiveAssemblyRoute {
         )?;
         Ok(RuntimeAssemblyHttpGatewayTarget::new(
             eval,
+            Arc::clone(&self.entry),
+        )?)
+    }
+
+    pub(crate) fn websocket_connect_target(
+        &self,
+    ) -> anyhow::Result<RuntimeAssemblyWebSocketConnectTarget> {
+        let request_activation = RequestActivationContext::begin(Arc::clone(&self.activation))?;
+        let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::clone(&self.active.contexts) as _;
+        let eval = RuntimeAssemblyEvalTarget::new(
+            Arc::clone(self.execution_image()),
+            request_activation,
+            resolver,
+        )?;
+        Ok(RuntimeAssemblyWebSocketConnectTarget::new(
+            eval,
+            self.selector.clone(),
             Arc::clone(&self.entry),
         )?)
     }
@@ -831,6 +850,7 @@ fn validate_candidate(candidate: &AssemblyLinkedCandidate) -> anyhow::Result<()>
                 );
             }
         }
+        admitted_websocket_entry(candidate, &source.deployment)?;
     }
 
     for source in &assembly.gateway_ingress {
@@ -895,29 +915,49 @@ fn validate_candidate(candidate: &AssemblyLinkedCandidate) -> anyhow::Result<()>
                 source.selector
             );
         }
-        if source.selector.protocol != IngressProtocol::Http {
-            anyhow::bail!("linked ingress {:?} is not HTTP", source.selector);
-        }
-        let GatewayProtocolSurface::Http(http) = &entry.protocol_surface().protocol else {
-            anyhow::bail!(
-                "linked ingress {:?} does not have an HTTP protocol surface",
-                source.selector
-            );
-        };
-        let mode_is_valid = matches!(
-            (http.adapter_kind, http.dispatch_mode),
-            (GatewayAdapterKind::TypedJson, GatewayDispatchMode::Unary)
-                | (GatewayAdapterKind::RawHttp, GatewayDispatchMode::Unary)
-                | (
-                    GatewayAdapterKind::RawHttp,
-                    GatewayDispatchMode::ServerStream
-                )
-        );
-        if !mode_is_valid {
-            anyhow::bail!(
-                "linked ingress {:?} has an unsupported HTTP adapter/mode",
-                source.selector
-            );
+        match (source.selector.protocol, &entry.protocol_surface().protocol) {
+            (IngressProtocol::Http, GatewayProtocolSurface::Http(http)) => {
+                let mode_is_valid = matches!(
+                    (http.adapter_kind, http.dispatch_mode),
+                    (GatewayAdapterKind::TypedJson, GatewayDispatchMode::Unary)
+                        | (GatewayAdapterKind::RawHttp, GatewayDispatchMode::Unary)
+                        | (
+                            GatewayAdapterKind::RawHttp,
+                            GatewayDispatchMode::ServerStream
+                        )
+                );
+                if !mode_is_valid {
+                    anyhow::bail!(
+                        "linked ingress {:?} has an unsupported HTTP adapter/mode",
+                        source.selector
+                    );
+                }
+            }
+            (IngressProtocol::WebSocket, GatewayProtocolSurface::WebSocketConnect(_)) => {
+                let admitted =
+                    admitted_websocket_entry(candidate, entry.owner())?.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "linked ingress {:?} has no admitted WebSocket activation entry",
+                            source.selector
+                        )
+                    })?;
+                if admitted.selector != source.selector
+                    || admitted.gateway_entry_key != *entry.gateway_entry_key()
+                    || admitted.gateway_entry_identity != *entry.gateway_entry_identity()
+                    || entry.adapter_plan().kind != GatewayAdapterKind::WebSocketConnect
+                {
+                    anyhow::bail!(
+                        "linked ingress {:?} does not exactly match its admitted WebSocket entry",
+                        source.selector
+                    );
+                }
+            }
+            _ => {
+                anyhow::bail!(
+                    "linked ingress {:?} protocol and entry surface do not match",
+                    source.selector
+                );
+            }
         }
         if candidate.activation(entry.owner()).is_none() {
             anyhow::bail!("linked ingress {:?} has no activation", source.selector);

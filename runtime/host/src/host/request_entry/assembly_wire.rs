@@ -6,7 +6,8 @@ use skiff_runtime_capability_context::ExecutionBudgetReason;
 use skiff_runtime_request::{RequestError, ResponseEvent, RouterWriterMessage};
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressProtocol,
-    RuntimeAssemblyRequestStartFrameHeader,
+    RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestStartFrameWireHeader,
+    RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::mpsc;
@@ -27,24 +28,51 @@ pub(super) struct AdmittedHttpGatewayRequest {
     pub(super) body: Vec<u8>,
 }
 
+pub(super) struct AdmittedWebSocketConnectRequest {
+    pub(super) route: ActiveAssemblyRoute,
+    pub(super) header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+}
+
 impl RuntimeHost {
     pub(crate) async fn spawn_runtime_assembly_request(
         &self,
         _router_session_id: &str,
-        header: RuntimeAssemblyRequestStartFrameHeader,
+        header: RuntimeAssemblyRequestStartFrameWireHeader,
         body: Vec<u8>,
         http_response_max_bytes: usize,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
-        let request_id = header.request_id.clone();
-        match self.http_gateway_request_from_wire(header, body) {
-            Ok(request) => {
+        let request_id = match &header {
+            RuntimeAssemblyRequestStartFrameWireHeader::Http(header) => header.request_id.clone(),
+            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => {
+                header.request_id.clone()
+            }
+        };
+        let result = match header {
+            RuntimeAssemblyRequestStartFrameWireHeader::Http(header) => self
+                .http_gateway_request_from_wire(header, body)
+                .map(AdmittedRuntimeAssemblyRequest::Http),
+            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => self
+                .websocket_connect_request_from_wire(header, body)
+                .map(AdmittedRuntimeAssemblyRequest::WebSocketConnect),
+        };
+        match result {
+            Ok(AdmittedRuntimeAssemblyRequest::Http(request)) => {
                 self.spawn_request_on_active_assembly_route(
                     request,
                     http_response_max_bytes,
                     sender,
                 )
-                .await;
+                .await
+            }
+            Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnect(request)) => {
+                self.spawn_websocket_connect_on_active_assembly_route(
+                    _router_session_id.to_string(),
+                    request,
+                    http_response_max_bytes,
+                    sender,
+                )
+                .await
             }
             Err(runtime_error) => {
                 error!(
@@ -65,6 +93,26 @@ impl RuntimeHost {
                 }
             }
         }
+    }
+
+    fn websocket_connect_request_from_wire(
+        &self,
+        header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+        body: Vec<u8>,
+    ) -> Result<AdmittedWebSocketConnectRequest> {
+        validate_websocket_connect_header(&header, &body)?;
+        let selector = websocket_connect_ingress_selector(&header);
+        let route = self.lookup_active_assembly_request_route(&selector)?;
+        validate_websocket_connect_route(&header, &selector, &route)?;
+        if route.entry().optional_handler().is_none() {
+            return Err(RuntimeError::Protocol {
+                target: route.gateway_entry_key().as_str().to_string(),
+                message:
+                    "Runtime refuses WebSocket connect dispatch for an entry without a handler"
+                        .to_string(),
+            });
+        }
+        Ok(AdmittedWebSocketConnectRequest { route, header })
     }
 
     fn http_gateway_request_from_wire(
@@ -102,6 +150,11 @@ impl RuntimeHost {
         validate_route(header, &selector, &route)?;
         effective_deadline(header, &route)
     }
+}
+
+enum AdmittedRuntimeAssemblyRequest {
+    Http(AdmittedHttpGatewayRequest),
+    WebSocketConnect(AdmittedWebSocketConnectRequest),
 }
 
 fn validate_http_header(header: &RuntimeAssemblyRequestStartFrameHeader) -> Result<()> {
@@ -154,6 +207,95 @@ fn ingress_selector(header: &RuntimeAssemblyRequestStartFrameHeader) -> IngressS
         method: Some(ingress.method.clone()),
         path: ingress.path.clone(),
     }
+}
+
+fn validate_websocket_connect_header(
+    header: &RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    body: &[u8],
+) -> Result<()> {
+    if header.request_id.is_empty() || header.caller.kind != "gateway" || header.mode != "unary" {
+        return Err(RuntimeError::Decode(
+            "canonical WebSocket connect requires a non-empty requestId, gateway caller and unary mode"
+                .to_string(),
+        ));
+    }
+    if !body.is_empty() {
+        return Err(RuntimeError::Decode(
+            "canonical WebSocket connect request payload must be empty".to_string(),
+        ));
+    }
+    let ingress = &header.routing.ingress;
+    let request = &header.websocket_connect;
+    if request.gateway_entry_identity != header.routing.gateway_entry_identity {
+        return Err(RuntimeError::Decode(
+            "websocketConnect gateway identity does not match routing".to_string(),
+        ));
+    }
+    let url = Url::parse(&request.url).map_err(|error| {
+        RuntimeError::Decode(format!(
+            "canonical websocketConnect URL is invalid: {error}"
+        ))
+    })?;
+    if !matches!(url.scheme(), "ws" | "wss")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url.host_str().is_none()
+        || url.path() != ingress.path
+        || &url[Position::BeforeHost..Position::AfterPort] != ingress.host.as_str()
+    {
+        return Err(RuntimeError::Decode(
+            "websocketConnect URL host/path does not match canonical routing ingress".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn websocket_connect_ingress_selector(
+    header: &RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+) -> IngressSelector {
+    let ingress = &header.routing.ingress;
+    IngressSelector {
+        protocol: IngressProtocol::WebSocket,
+        host: ingress.host.clone(),
+        method: None,
+        path: ingress.path.clone(),
+    }
+}
+
+fn validate_websocket_connect_route(
+    header: &RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    selector: &IngressSelector,
+    route: &ActiveAssemblyRoute,
+) -> Result<()> {
+    let routing = &header.routing;
+    let activation_identity = route.activation().identity();
+    if !matches!(
+        route.protocol_surface().protocol,
+        GatewayProtocolSurface::WebSocketConnect(_)
+    ) || route.assembly_identity() != &routing.assembly_identity
+        || route.generation() != routing.assembly_generation
+        || route.selector() != selector
+        || route.gateway_entry_identity() != &routing.gateway_entry_identity
+        || activation_identity.assembly_identity != routing.assembly_identity
+        || activation_identity.assembly_generation != routing.assembly_generation
+        || &activation_identity.deployment != route.entry().owner()
+        || route.gateway_entry_identity() != &header.websocket_connect.gateway_entry_identity
+        || !route.activation().websocket_entry_matches(
+            selector,
+            route.gateway_entry_key(),
+            route.gateway_entry_identity(),
+            &header.websocket_connect.websocket_entry_id,
+        )
+    {
+        return Err(RuntimeError::Protocol {
+            target: route.gateway_entry_key().as_str().to_string(),
+            message:
+                "canonical request routing does not match the admitted WebSocket connect route"
+                    .to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn validate_route(

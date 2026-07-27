@@ -21,6 +21,8 @@ mod response_stream_writer;
 mod response_writer;
 mod runner;
 mod runtime_ingress;
+mod websocket_connect_execution;
+mod websocket_connect_target;
 mod websocket_ingress;
 
 pub use assembly_ingress::{
@@ -76,4 +78,12 @@ pub use runner::{
     execute_runtime_request, execution_budget_trace_attrs, response_error_to_telemetry_map,
     RequestExecutionError, RequestExecutionHandles, RequestExecutionInput, RequestExecutionResult,
     RuntimeResponse,
+};
+pub use websocket_connect_execution::{
+    execute_runtime_websocket_connect, RuntimeWebSocketConnectEvalAdapter,
+    RuntimeWebSocketConnectEvalExecutionInputParts, RuntimeWebSocketConnectExecutionHandles,
+    RuntimeWebSocketConnectExecutionInput,
+};
+pub use websocket_connect_target::{
+    RuntimeAssemblyWebSocketConnectTarget, RuntimeAssemblyWebSocketConnectTargetError,
 };

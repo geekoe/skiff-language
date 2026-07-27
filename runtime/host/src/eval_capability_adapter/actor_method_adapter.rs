@@ -189,7 +189,12 @@ impl ActorMethodEvalExecution {
             self.http_options.clone(),
         ));
         let service_id = self.activation.identity().deployment.service_id.as_str();
-        let websocket = websocket_from_request(service_id, None, self.router_sender.as_ref());
+        let websocket_entry_id = self
+            .activation
+            .websocket_entry_id()
+            .map(|entry| entry.as_str());
+        let websocket =
+            websocket_from_request(service_id, websocket_entry_id, self.router_sender.as_ref());
         let actor = actor_from_request(
             self.runtime_id.as_str(),
             service_id,

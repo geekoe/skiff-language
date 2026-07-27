@@ -44,6 +44,7 @@ pub mod request_diagnostic;
 mod runtime_http_gateway;
 pub mod runtime_ops;
 pub mod runtime_value_view;
+mod runtime_websocket_connect;
 pub mod service_dispatch;
 pub mod source_context;
 pub mod spawn_ops;
@@ -94,6 +95,10 @@ pub use request_boundary::{
     EvalRequestWebSocketConnectReject, EvalRequestWebSocketContextCodec,
 };
 pub use runtime_http_gateway::{RuntimeHttpGatewayCallable, RuntimeHttpGatewayExecutionTarget};
+pub use runtime_websocket_connect::{
+    RuntimeWebSocketConnectCallable, RuntimeWebSocketConnectExecutionTarget,
+    RuntimeWebSocketConnectRequest, RuntimeWebSocketConnectResult, RuntimeWebSocketNameValue,
+};
 
 use skiff_runtime_linked_program::{
     ExecutableAddr, LinkOverlay, LinkedFileUnit, PackageUnit, RuntimeTypeContext,

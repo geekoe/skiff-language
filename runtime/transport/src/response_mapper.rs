@@ -15,7 +15,26 @@ use crate::{
         RuntimeWebSocketContextCodecFrameHeader, RuntimeWebSocketResponseFrameHeader,
         ValidatedResponseErrorFrame, RUNTIME_FRAME_SCHEMA_VERSION,
     },
+    runtime_assembly_request::{
+        RuntimeAssemblyWebSocketConnectResponseEndFrameHeader,
+        RuntimeAssemblyWebSocketConnectResponseFrameHeader,
+    },
 };
+
+pub fn runtime_assembly_websocket_connect_response_into_frame(
+    request_id: String,
+    response: RuntimeAssemblyWebSocketConnectResponseFrameHeader,
+) -> TransportResult<Vec<u8>> {
+    encode_binary_frame(
+        &RuntimeAssemblyWebSocketConnectResponseEndFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            frame_type: "response.end".to_string(),
+            request_id,
+            websocket_connect: response,
+        },
+        &[],
+    )
+}
 
 pub fn response_event_into_frame(
     request_id: String,

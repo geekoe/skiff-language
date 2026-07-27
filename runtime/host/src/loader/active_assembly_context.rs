@@ -5,10 +5,12 @@ use std::{
 
 use anyhow::Context;
 use serde_json::json;
+use skiff_artifact_identity::{gateway_entry_identity, websocket_entry_id};
 use skiff_artifact_model::{
     AssemblyActivationServiceDb, ContractOperationId, DbMetadataIndexIr, DbMetadataIr,
-    OperationTargetRef, PackageBuildId, ServiceContract, ServiceContractRef, ServiceDeploymentRef,
-    StateBindingKind,
+    GatewayAdapterKind, GatewayProtocolSurface, IngressProtocol, OperationTargetRef,
+    PackageBuildId, ServiceContract, ServiceContractRef, ServiceDeploymentRef, StateBindingKind,
+    WEBSOCKET_GATEWAY_ENTRY_KEY,
 };
 use skiff_runtime_activation::{ActivationContext, ActivationId};
 use skiff_runtime_capability_context::{
@@ -55,12 +57,15 @@ impl ActiveAssemblyContextSet {
                         deployment
                     )
                 })?;
-            let activation = ActivationContext::from_assembly_templates(
+            let websocket_entry = admitted_websocket_entry(candidate, deployment)?
+                .map(AdmittedWebSocketEntry::into_activation_parts);
+            let activation = ActivationContext::from_assembly_templates_with_websocket_entry(
                 candidate.assembly().assembly_identity.clone(),
                 generation,
                 runtime_replica_id,
                 linked.source(),
                 binding_template,
+                websocket_entry,
             )
             .with_context(|| {
                 format!(
@@ -210,6 +215,141 @@ impl ActiveAssemblyContextSet {
     ) -> Option<AdmittedPackageSchemaRecords> {
         self.schema_records.get(contract).cloned()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AdmittedWebSocketEntry {
+    pub(crate) selector: skiff_artifact_model::IngressSelector,
+    pub(crate) gateway_entry_key: skiff_artifact_model::GatewayEntryKey,
+    pub(crate) gateway_entry_identity: skiff_artifact_model::GatewayEntryIdentity,
+    pub(crate) websocket_entry_id: skiff_artifact_model::WebSocketEntryId,
+}
+
+impl AdmittedWebSocketEntry {
+    fn into_activation_parts(
+        self,
+    ) -> (
+        skiff_artifact_model::IngressSelector,
+        skiff_artifact_model::GatewayEntryKey,
+        skiff_artifact_model::GatewayEntryIdentity,
+        skiff_artifact_model::WebSocketEntryId,
+    ) {
+        (
+            self.selector,
+            self.gateway_entry_key,
+            self.gateway_entry_identity,
+            self.websocket_entry_id,
+        )
+    }
+}
+
+pub(crate) fn admitted_websocket_entry(
+    candidate: &AssemblyLinkedCandidate,
+    owner: &ServiceDeploymentRef,
+) -> anyhow::Result<Option<AdmittedWebSocketEntry>> {
+    let activation = candidate.activation(owner).ok_or_else(|| {
+        anyhow::anyhow!("WebSocket admission owner {owner:?} has no linked activation")
+    })?;
+    let deployment = activation.deployment();
+
+    let websocket_entries = deployment
+        .gateway_entries
+        .iter()
+        .filter(|(_, entry)| {
+            matches!(
+                entry.protocol_surface.protocol,
+                GatewayProtocolSurface::WebSocketConnect(_)
+            )
+        })
+        .collect::<Vec<_>>();
+    if websocket_entries.len() > 1 {
+        anyhow::bail!("activation {owner:?} declares more than one WebSocket gateway entry");
+    }
+
+    let websocket_bindings = deployment
+        .ingress
+        .iter()
+        .filter(|binding| binding.selector.protocol == IngressProtocol::WebSocket)
+        .collect::<Vec<_>>();
+    if websocket_bindings.len() > 1 {
+        anyhow::bail!("activation {owner:?} declares more than one WebSocket ingress selector");
+    }
+
+    let (entry_key, deployment_entry, binding) =
+        match (websocket_entries.first(), websocket_bindings.first()) {
+            (None, None) => return Ok(None),
+            (Some(_), None) => anyhow::bail!(
+                "activation {owner:?} WebSocket gateway entry has no ingress selector"
+            ),
+            (None, Some(binding)) => anyhow::bail!(
+                "activation {owner:?} WebSocket selector {:?} has no WebSocket gateway entry",
+                binding.selector
+            ),
+            (Some((entry_key, entry)), Some(binding)) => (*entry_key, *entry, *binding),
+        };
+
+    if entry_key.as_str() != WEBSOCKET_GATEWAY_ENTRY_KEY || binding.gateway_entry_key != *entry_key
+    {
+        anyhow::bail!(
+            "activation {owner:?} WebSocket selector does not join the compiler-owned {WEBSOCKET_GATEWAY_ENTRY_KEY:?} entry"
+        );
+    }
+    if binding.selector.method.is_some()
+        || binding.selector.host.trim().is_empty()
+        || binding.selector.path.trim().is_empty()
+    {
+        anyhow::bail!(
+            "activation {owner:?} WebSocket selector {:?} is not canonical",
+            binding.selector
+        );
+    }
+    if deployment_entry.adapter_plan.kind != GatewayAdapterKind::WebSocketConnect {
+        anyhow::bail!("activation {owner:?} WebSocket entry has a non-connect adapter plan");
+    }
+    if deployment_entry.handler.is_none() && !deployment_entry.adapter_plan.args.is_empty() {
+        anyhow::bail!("activation {owner:?} handler-free WebSocket entry has adapter arguments");
+    }
+
+    let expected_gateway_identity = gateway_entry_identity(&deployment_entry.protocol_surface)
+        .context("failed to compute canonical WebSocket gateway identity")?;
+    if deployment_entry.gateway_entry_identity != expected_gateway_identity {
+        anyhow::bail!(
+            "activation {owner:?} WebSocket gateway identity does not match its protocol surface"
+        );
+    }
+
+    let linked_entry = candidate
+        .gateway_entry(owner, entry_key)
+        .ok_or_else(|| anyhow::anyhow!("activation {owner:?} WebSocket entry is not linked"))?;
+    let selected_entry = candidate
+        .ingress(&binding.selector)
+        .ok_or_else(|| anyhow::anyhow!("activation {owner:?} WebSocket selector is not linked"))?;
+    if !Arc::ptr_eq(linked_entry, selected_entry)
+        || linked_entry.owner() != owner
+        || linked_entry.gateway_entry_key() != entry_key
+        || linked_entry.gateway_entry_identity() != &deployment_entry.gateway_entry_identity
+        || linked_entry.protocol_surface() != &deployment_entry.protocol_surface
+        || linked_entry.adapter_plan() != &deployment_entry.adapter_plan
+        || linked_entry
+            .optional_handler()
+            .map(|handler| handler.callable_id())
+            != deployment_entry.handler.as_ref()
+        || linked_entry.pre().is_some()
+        || linked_entry.guard().is_some()
+    {
+        anyhow::bail!(
+            "activation {owner:?} WebSocket selector, entry, identity, surface or handler join is not exact"
+        );
+    }
+
+    let websocket_entry_id = websocket_entry_id(&owner.service_id, entry_key)
+        .context("failed to compute canonical WebSocket entry id")?;
+    Ok(Some(AdmittedWebSocketEntry {
+        selector: binding.selector.clone(),
+        gateway_entry_key: entry_key.clone(),
+        gateway_entry_identity: deployment_entry.gateway_entry_identity.clone(),
+        websocket_entry_id,
+    }))
 }
 
 fn activation_db_metadata(

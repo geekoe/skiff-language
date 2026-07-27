@@ -3,9 +3,12 @@ use skiff_runtime_eval::program_execution::{ProgramExecutionContext, ProgramExec
 use skiff_runtime_linked_program::{GatewayConfig, ServiceMeta};
 use skiff_runtime_request::{
     RequestEnvelope, RuntimeHttpGatewayEvalAdapter, RuntimeHttpGatewayEvalExecutionInputParts,
-    RuntimeOperation,
+    RuntimeOperation, RuntimeWebSocketConnectEvalAdapter,
+    RuntimeWebSocketConnectEvalExecutionInputParts,
 };
-use skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestStartFrameHeader;
+use skiff_runtime_transport::runtime_assembly_request::{
+    RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+};
 
 use super::*;
 
@@ -130,6 +133,127 @@ pub(crate) fn http_gateway_eval_adapter(
     }))
 }
 
+pub(crate) struct RuntimeWebSocketConnectEvalAdapterInput {
+    pub(crate) runtime_id: String,
+    pub(crate) activation: Arc<ActivationContext>,
+    pub(crate) execution_image: Arc<skiff_runtime_linked_program::AssemblyExecutionImage>,
+    pub(crate) header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    pub(crate) gateway_entry_key: String,
+    pub(crate) service_protocol_identity: String,
+    pub(crate) ingress_selector: skiff_artifact_model::IngressSelector,
+    pub(crate) db_source: concrete::DbCapabilitySource,
+    pub(crate) file_source: concrete::FileCapabilitySource,
+    pub(crate) http_options: concrete::HttpRuntimeOptions,
+    pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
+    pub(crate) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
+    pub(crate) spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
+    pub(crate) telemetry_context: Option<RequestTelemetryContext>,
+    pub(crate) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
+    pub(crate) http_response_max_bytes: usize,
+}
+
+pub(crate) fn websocket_connect_eval_adapter(
+    input: RuntimeWebSocketConnectEvalAdapterInput,
+) -> anyhow::Result<Arc<dyn RuntimeWebSocketConnectEvalAdapter>> {
+    let config = crate::config_view::RuntimeConfigView::from_activation_literals(
+        &input.activation.owned_bindings().config_literals,
+    )?;
+    let package_configs = package_config_views(
+        input.execution_image.as_ref(),
+        &input.activation.owned_bindings().config_literals,
+    )?;
+    let deployment = &input.activation.identity().deployment;
+    let activation_identity = activation_identity_control(input.activation.as_ref());
+    let runtime_activation = Arc::new(RuntimeActivation {
+        service: ServiceMeta {
+            id: deployment.service_id.clone(),
+            display_name: None,
+            metadata: Default::default(),
+        },
+        version: deployment.contract_version.clone(),
+        package_configs: package_configs
+            .iter()
+            .map(|config| config.resolved_config_value().clone())
+            .collect(),
+        service_dependencies: Vec::new(),
+        timeout: Default::default(),
+        operation_route_bindings: Vec::new(),
+        db: Vec::new(),
+        actors: Vec::new(),
+        gateway: GatewayConfig::default(),
+    });
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "caller".to_string(),
+        serde_json::to_value(&input.header.caller)?,
+    );
+    if let Some(client_session) = &input.header.client_session {
+        extra.insert(
+            "clientSession".to_string(),
+            serde_json::to_value(client_session)?,
+        );
+    }
+    if let Some(deadline) = &input.header.deadline {
+        extra.insert("deadline".to_string(), serde_json::to_value(deadline)?);
+    }
+    extra.insert(
+        "trace".to_string(),
+        serde_json::to_value(&input.header.trace)?,
+    );
+    let request = RequestEnvelope {
+        request_id: input.header.request_id.clone(),
+        mode: input.header.mode.clone(),
+        target: input.gateway_entry_key.clone(),
+        operation_abi_id: None,
+        selector: None,
+        service_id: Some(deployment.service_id.clone()),
+        build_id: input
+            .activation
+            .implementation_package_build_id()
+            .as_str()
+            .to_string(),
+        service_protocol_identity: input.service_protocol_identity.clone(),
+        contract_identity: None,
+        activation_identity: Some(input.activation.activation_id().as_str().to_string()),
+        ingress_selector: Some(input.ingress_selector),
+        binary_http: None,
+        http_adapter: None,
+        websocket_adapter: None,
+        test_effects_enabled: input.header.test_effects_enabled,
+        test_effect_doubles: Default::default(),
+        payload_bytes: Vec::new(),
+        extra,
+    };
+    let operation = RuntimeOperation {
+        operation_abi_id: None,
+        operation: input.gateway_entry_key.clone(),
+        target: input.gateway_entry_key,
+        mode: input.header.mode,
+        parameters: Vec::new(),
+        service_protocol_identity: Some(input.service_protocol_identity),
+        extra: Default::default(),
+    };
+    Ok(Arc::new(RuntimeHttpGatewayEvalAdapterImpl {
+        runtime_id: input.runtime_id,
+        activation: input.activation,
+        activation_identity,
+        config,
+        package_configs,
+        runtime_activation,
+        db_source: input.db_source,
+        file_source: input.file_source,
+        http_options: input.http_options,
+        outbound_requests: input.outbound_requests,
+        actor_method_outbound: input.actor_method_outbound,
+        spawn_workers: input.spawn_workers,
+        telemetry_context: input.telemetry_context,
+        router_sender: input.router_sender,
+        http_response_max_bytes: input.http_response_max_bytes,
+        request,
+        operation,
+    }))
+}
+
 struct RuntimeHttpGatewayEvalAdapterImpl {
     runtime_id: String,
     activation: Arc<ActivationContext>,
@@ -150,26 +274,15 @@ struct RuntimeHttpGatewayEvalAdapterImpl {
     operation: RuntimeOperation,
 }
 
-impl RuntimeHttpGatewayEvalAdapter for RuntimeHttpGatewayEvalAdapterImpl {
-    fn runtime_factory(&self) -> eval_capabilities::EvalRuntimeFactory {
-        runtime_factory()
-    }
-
-    fn execution_context<'a>(
+impl RuntimeHttpGatewayEvalAdapterImpl {
+    fn program_execution_context<'a>(
         &'a self,
-        parts: RuntimeHttpGatewayEvalExecutionInputParts<'a>,
-        _request_context: skiff_runtime_request::RequestPayloadContext<'a>,
-        interpreter: &skiff_runtime_eval::Interpreter,
-        eval_target: &skiff_runtime_eval::RuntimeAssemblyEvalTarget,
+        execution: skiff_runtime_request::ExecutionControl<'a>,
+        cancellation: CancellationToken,
+        request_heap_limits: skiff_runtime_model::request_heap::RequestHeapLimits,
+        interpreter: &'a skiff_runtime_eval::Interpreter,
+        eval_target: &'a skiff_runtime_eval::RuntimeAssemblyEvalTarget,
     ) -> ProgramExecutionContext<'a> {
-        let RuntimeHttpGatewayEvalExecutionInputParts {
-            header: _,
-            execution,
-            cancellation,
-            cancelled: _,
-            execution_budget: _,
-            request_heap_limits,
-        } = parts;
         let request = &self.request;
         let operation = &self.operation;
         debug_assert!(Arc::ptr_eq(
@@ -190,7 +303,12 @@ impl RuntimeHttpGatewayEvalAdapter for RuntimeHttpGatewayEvalAdapterImpl {
             self.http_options.clone(),
         ));
         let service_id = self.activation.identity().deployment.service_id.as_str();
-        let websocket = websocket_from_request(service_id, None, self.router_sender.as_ref());
+        let websocket_entry_id = self
+            .activation
+            .websocket_entry_id()
+            .map(|entry| entry.as_str());
+        let websocket =
+            websocket_from_request(service_id, websocket_entry_id, self.router_sender.as_ref());
         let actor = actor_from_request(
             self.runtime_id.as_str(),
             service_id,
@@ -238,6 +356,65 @@ impl RuntimeHttpGatewayEvalAdapter for RuntimeHttpGatewayEvalAdapterImpl {
             request_heap_limits,
         })
         .with_runtime_assembly_target(eval_target.clone())
+    }
+}
+
+impl RuntimeHttpGatewayEvalAdapter for RuntimeHttpGatewayEvalAdapterImpl {
+    fn runtime_factory(&self) -> eval_capabilities::EvalRuntimeFactory {
+        runtime_factory()
+    }
+
+    fn execution_context<'a>(
+        &'a self,
+        parts: RuntimeHttpGatewayEvalExecutionInputParts<'a>,
+        _request_context: skiff_runtime_request::RequestPayloadContext<'a>,
+        interpreter: &'a skiff_runtime_eval::Interpreter,
+        eval_target: &'a skiff_runtime_eval::RuntimeAssemblyEvalTarget,
+    ) -> ProgramExecutionContext<'a> {
+        let RuntimeHttpGatewayEvalExecutionInputParts {
+            header: _,
+            execution,
+            cancellation,
+            cancelled: _,
+            execution_budget: _,
+            request_heap_limits,
+        } = parts;
+        self.program_execution_context(
+            execution,
+            cancellation,
+            request_heap_limits,
+            interpreter,
+            eval_target,
+        )
+    }
+}
+
+impl RuntimeWebSocketConnectEvalAdapter for RuntimeHttpGatewayEvalAdapterImpl {
+    fn runtime_factory(&self) -> eval_capabilities::EvalRuntimeFactory {
+        runtime_factory()
+    }
+
+    fn execution_context<'a>(
+        &'a self,
+        parts: RuntimeWebSocketConnectEvalExecutionInputParts<'a>,
+        interpreter: &'a skiff_runtime_eval::Interpreter,
+        eval_target: &'a skiff_runtime_eval::RuntimeAssemblyEvalTarget,
+    ) -> ProgramExecutionContext<'a> {
+        let RuntimeWebSocketConnectEvalExecutionInputParts {
+            header: _,
+            execution,
+            cancellation,
+            cancelled: _,
+            execution_budget: _,
+            request_heap_limits,
+        } = parts;
+        self.program_execution_context(
+            execution,
+            cancellation,
+            request_heap_limits,
+            interpreter,
+            eval_target,
+        )
     }
 }
 

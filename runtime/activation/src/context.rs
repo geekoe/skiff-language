@@ -2,9 +2,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
     ActivationTemplate, AssemblyIdentity, ConfigLiteralBinding, ContractOperationId,
-    DeploymentPolicy, PackageBuildId, ResourceBinding, SecretRefBinding, ServiceBindingTemplate,
-    ServiceContractRef, ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirementKey,
-    StateBinding,
+    DeploymentPolicy, GatewayEntryIdentity, GatewayEntryKey, IngressSelector, PackageBuildId,
+    ResourceBinding, SecretRefBinding, ServiceBindingTemplate, ServiceContractRef,
+    ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirementKey, StateBinding,
+    WebSocketEntryId,
 };
 
 use crate::capability::CallbackCapabilityTable;
@@ -65,6 +66,19 @@ pub struct ActivationOwnedBindings {
     pub policy: DeploymentPolicy,
 }
 
+/// The exact compiler-owned WebSocket entry admitted for one service activation.
+///
+/// A service may have no such entry, but it can never have more than one. Keeping the
+/// selector and both identities together prevents request or native callers from filling
+/// missing entry facts with defaults or caller-provided strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActivationWebSocketEntry {
+    selector: IngressSelector,
+    gateway_entry_key: GatewayEntryKey,
+    gateway_entry_identity: GatewayEntryIdentity,
+    websocket_entry_id: WebSocketEntryId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationServiceBinding {
     key: ServiceRequirementKey,
@@ -119,6 +133,7 @@ pub struct ActivationContext {
     activation_id: ActivationId,
     implementation_package_build_id: PackageBuildId,
     owned_bindings: ActivationOwnedBindings,
+    websocket_entry: Option<ActivationWebSocketEntry>,
     service_bindings: BTreeMap<ServiceRequirementKey, ActivationServiceBinding>,
     callback_capabilities: CallbackCapabilityTable,
 }
@@ -128,6 +143,27 @@ impl ActivationContext {
         identity: ActivationIdentity,
         implementation_package_build_id: PackageBuildId,
         owned_bindings: ActivationOwnedBindings,
+        service_bindings: Vec<ActivationServiceBinding>,
+    ) -> Result<Arc<Self>, ActivationContextError> {
+        Self::new_with_websocket_entry(
+            identity,
+            implementation_package_build_id,
+            owned_bindings,
+            None,
+            service_bindings,
+        )
+    }
+
+    pub fn new_with_websocket_entry(
+        identity: ActivationIdentity,
+        implementation_package_build_id: PackageBuildId,
+        owned_bindings: ActivationOwnedBindings,
+        websocket_entry: Option<(
+            IngressSelector,
+            GatewayEntryKey,
+            GatewayEntryIdentity,
+            WebSocketEntryId,
+        )>,
         service_bindings: Vec<ActivationServiceBinding>,
     ) -> Result<Arc<Self>, ActivationContextError> {
         let activation_id = identity.activation_id();
@@ -147,6 +183,16 @@ impl ActivationContext {
             activation_id,
             implementation_package_build_id,
             owned_bindings,
+            websocket_entry: websocket_entry.map(
+                |(selector, gateway_entry_key, gateway_entry_identity, websocket_entry_id)| {
+                    ActivationWebSocketEntry {
+                        selector,
+                        gateway_entry_key,
+                        gateway_entry_identity,
+                        websocket_entry_id,
+                    }
+                },
+            ),
             service_bindings: bindings_by_key,
             callback_capabilities,
         }))
@@ -158,6 +204,29 @@ impl ActivationContext {
         runtime_replica_id: impl Into<String>,
         activation_template: &ActivationTemplate,
         service_binding_template: &ServiceBindingTemplate,
+    ) -> Result<Arc<Self>, ActivationContextError> {
+        Self::from_assembly_templates_with_websocket_entry(
+            assembly_identity,
+            assembly_generation,
+            runtime_replica_id,
+            activation_template,
+            service_binding_template,
+            None,
+        )
+    }
+
+    pub fn from_assembly_templates_with_websocket_entry(
+        assembly_identity: AssemblyIdentity,
+        assembly_generation: u64,
+        runtime_replica_id: impl Into<String>,
+        activation_template: &ActivationTemplate,
+        service_binding_template: &ServiceBindingTemplate,
+        websocket_entry: Option<(
+            IngressSelector,
+            GatewayEntryKey,
+            GatewayEntryIdentity,
+            WebSocketEntryId,
+        )>,
     ) -> Result<Arc<Self>, ActivationContextError> {
         if activation_template.deployment != service_binding_template.activation {
             return Err(ActivationContextError::TemplateDeploymentMismatch {
@@ -190,7 +259,7 @@ impl ActivationContext {
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Self::new(
+        Self::new_with_websocket_entry(
             identity,
             activation_template.implementation_package_build_id.clone(),
             ActivationOwnedBindings {
@@ -200,6 +269,7 @@ impl ActivationContext {
                 resource_bindings: activation_template.resource_bindings.clone(),
                 policy: activation_template.policy.clone(),
             },
+            websocket_entry,
             service_bindings,
         )
     }
@@ -218,6 +288,27 @@ impl ActivationContext {
 
     pub fn owned_bindings(&self) -> &ActivationOwnedBindings {
         &self.owned_bindings
+    }
+
+    pub fn websocket_entry_id(&self) -> Option<&WebSocketEntryId> {
+        self.websocket_entry
+            .as_ref()
+            .map(|entry| &entry.websocket_entry_id)
+    }
+
+    pub fn websocket_entry_matches(
+        &self,
+        selector: &IngressSelector,
+        gateway_entry_key: &GatewayEntryKey,
+        gateway_entry_identity: &GatewayEntryIdentity,
+        websocket_entry_id: &WebSocketEntryId,
+    ) -> bool {
+        self.websocket_entry.as_ref().is_some_and(|entry| {
+            entry.selector == *selector
+                && entry.gateway_entry_key == *gateway_entry_key
+                && entry.gateway_entry_identity == *gateway_entry_identity
+                && entry.websocket_entry_id == *websocket_entry_id
+        })
     }
 
     pub fn callback_capabilities(&self) -> &CallbackCapabilityTable {

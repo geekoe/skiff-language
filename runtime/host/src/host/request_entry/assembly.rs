@@ -1,20 +1,29 @@
 use std::sync::{Arc, Mutex};
 
 use skiff_runtime_capability_context::ExecutionBudgetReason;
+use skiff_runtime_eval::RuntimeWebSocketConnectResult;
 use skiff_runtime_request::{
-    self as request_runner, BoundaryResponse, RequestError, ResponseEvent, ResponseEventSink,
-    ResponseStreamEvent, RouterWriterMessage,
+    self as request_runner, BoundaryResponse, RequestEnvelope, RequestError, ResponseEvent,
+    ResponseEventSink, ResponseStreamEvent, RouterWriterMessage,
 };
-#[cfg(test)]
 use skiff_runtime_transport::websocket_generation_lifecycle::{
     encode_websocket_generation_lifecycle_frame, WebSocketGenerationLifecycleDirection,
+};
+use skiff_runtime_transport::{
+    response_mapper::runtime_assembly_websocket_connect_response_into_frame,
+    runtime_assembly_request::{
+        RuntimeAssemblyWebSocketConnectResponseFrameHeader,
+        RuntimeAssemblyWebSocketConnectionPolicyFrameHeader,
+        RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader,
+    },
 };
 use tokio::{sync::mpsc, time::Duration};
 use tracing::error;
 
 use super::{
-    assembly_wire::AdmittedHttpGatewayRequest, request_error_into_runtime_error,
-    response_event_into_transport_message, response_into_transport_message,
+    assembly_wire::{AdmittedHttpGatewayRequest, AdmittedWebSocketConnectRequest},
+    request_error_into_runtime_error, response_event_into_transport_message,
+    response_into_transport_message,
 };
 use crate::{
     error::{Result, RuntimeError},
@@ -28,6 +37,139 @@ use crate::{
 };
 
 impl RuntimeHost {
+    pub(super) async fn spawn_websocket_connect_on_active_assembly_route(
+        &self,
+        router_session_id: String,
+        request: AdmittedWebSocketConnectRequest,
+        http_response_max_bytes: usize,
+        sender: mpsc::UnboundedSender<RouterWriterMessage>,
+    ) {
+        let AdmittedWebSocketConnectRequest { route, header } = request;
+        let request_id = header.request_id.clone();
+        let target = match route.websocket_connect_target() {
+            Ok(target) => target,
+            Err(error) => {
+                self.send_http_gateway_admission_error(&request_id, error, &sender);
+                return;
+            }
+        };
+        let handles = match self.websocket_connect_execution_handles(
+            &route,
+            &header,
+            http_response_max_bytes,
+            &sender,
+        ) {
+            Ok(handles) => handles,
+            Err(error) => {
+                self.send_http_gateway_admission_error(&request_id, error, &sender);
+                return;
+            }
+        };
+        let telemetry = self.websocket_connect_telemetry_context(&header, &route);
+        let supervisor_request = websocket_connect_supervisor_request(&header, &route);
+        let supervised_request = self
+            .request_supervisor
+            .begin(&supervisor_request, telemetry, "request.start")
+            .await;
+        let cancelled = supervised_request.cancelled();
+        let cancellation = supervised_request.cancellation_token();
+        let execution_budget = supervised_request.execution_budget();
+        let timeout_ms = header
+            .deadline
+            .as_ref()
+            .map(|deadline| deadline.timeout_ms)
+            .into_iter()
+            .chain(route.deployment_policy().timeout_ms)
+            .min();
+        let host = self.clone();
+        tokio::spawn(async move {
+            let connection_id = header.websocket_connect.connection_id.clone();
+            let websocket_entry_id = header
+                .websocket_connect
+                .websocket_entry_id
+                .as_str()
+                .to_string();
+            let execution = request_runner::execute_runtime_websocket_connect(
+                request_runner::RuntimeWebSocketConnectExecutionInput {
+                    target,
+                    header,
+                    cancelled,
+                    cancellation: cancellation.clone(),
+                    execution_budget: Arc::clone(&execution_budget),
+                    handles,
+                },
+            );
+            tokio::pin!(execution);
+            let cancel_wait = cancellation.clone();
+            let result = match timeout_ms {
+                Some(timeout_ms) => {
+                    tokio::select! {
+                        result = &mut execution => result,
+                        _ = cancel_wait.wait_cancelled() => Err(RequestError::Cancelled),
+                        _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
+                            cancellation.cancel();
+                            execution_budget.record_deadline_exceeded();
+                            Err(deadline_exceeded_error())
+                        }
+                    }
+                }
+                None => {
+                    tokio::select! {
+                        result = &mut execution => result,
+                        _ = cancel_wait.wait_cancelled() => Err(RequestError::Cancelled),
+                    }
+                }
+            };
+            match result {
+                Ok(result) => {
+                    if matches!(result, RuntimeWebSocketConnectResult::Accept { .. }) {
+                        if let Err(error) = host.queue_websocket_generation_acquire(
+                            &route,
+                            &router_session_id,
+                            &websocket_entry_id,
+                            &connection_id,
+                            &sender,
+                        ) {
+                            host.finish_websocket_connect_error(
+                                &supervised_request,
+                                request_id,
+                                RequestError::Decode(error.to_string()),
+                                &sender,
+                            )
+                            .await;
+                            return;
+                        }
+                    }
+                    host.request_supervisor
+                        .complete_success(
+                            &supervised_request,
+                            "request.end",
+                            CompletionTrace::RUNTIME,
+                        )
+                        .await;
+                    match websocket_connect_result_into_message(request_id, result) {
+                        Ok(message) => {
+                            let _ = sender.send(message);
+                        }
+                        Err(error) => {
+                            error!(event = "runtime.response_encode_error", error = %error)
+                        }
+                    }
+                }
+                Err(error) => {
+                    host.finish_websocket_connect_error(
+                        &supervised_request,
+                        request_id,
+                        error,
+                        &sender,
+                    )
+                    .await;
+                }
+            }
+            drop(route);
+        });
+    }
+
     pub(super) async fn spawn_request_on_active_assembly_route(
         &self,
         request: AdmittedHttpGatewayRequest,
@@ -294,8 +436,99 @@ impl RuntimeHost {
         context
     }
 
-    #[cfg(test)]
-    pub(crate) fn queue_websocket_generation_acquire_for_test(
+    async fn finish_websocket_connect_error(
+        &self,
+        supervised_request: &SupervisedRequest,
+        request_id: String,
+        request_error: RequestError,
+        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+    ) {
+        let response_error = request_error.response_error();
+        let runtime_error = request_error_into_runtime_error(request_error);
+        let event_name = if runtime_error.is_request_cancelled() {
+            "request.cancel"
+        } else {
+            "request.error"
+        };
+        self.request_supervisor
+            .complete_error(
+                supervised_request,
+                event_name,
+                &response_error,
+                CompletionTrace::RUNTIME,
+            )
+            .await;
+        if let Ok(message) =
+            response_event_into_transport_message(request_id, ResponseEvent::Error(response_error))
+        {
+            let _ = sender.send(message);
+        }
+    }
+
+    fn websocket_connect_execution_handles(
+        &self,
+        route: &ActiveAssemblyRoute,
+        header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+        http_response_max_bytes: usize,
+        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+    ) -> Result<request_runner::RuntimeWebSocketConnectExecutionHandles> {
+        let telemetry = self.websocket_connect_telemetry_context(header, route);
+        let eval_adapter = crate::eval_capability_adapter::websocket_connect_eval_adapter(
+            crate::eval_capability_adapter::RuntimeWebSocketConnectEvalAdapterInput {
+                runtime_id: self.base_runtime_id.clone(),
+                activation: Arc::clone(route.activation()),
+                execution_image: Arc::clone(route.execution_image()),
+                header: header.clone(),
+                gateway_entry_key: route.gateway_entry_key().as_str().to_string(),
+                service_protocol_identity: route.service_protocol_identity().as_str().to_string(),
+                ingress_selector: route.selector().clone(),
+                db_source: route
+                    .db_source()
+                    .map_err(|error| RuntimeError::Decode(error.to_string()))?,
+                file_source: crate::capability_context::FileCapabilitySource::new(
+                    self.file_runtime(),
+                ),
+                http_options: self.http_runtime_options.clone(),
+                outbound_requests: Arc::clone(&self.outbound_requests),
+                actor_method_outbound: Arc::clone(&self.actor_method_outbound),
+                spawn_workers: Arc::clone(&self.spawn_workers),
+                telemetry_context: Some(telemetry),
+                router_sender: Some(sender.clone()),
+                http_response_max_bytes,
+            },
+        )
+        .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+        Ok(request_runner::RuntimeWebSocketConnectExecutionHandles {
+            request_heap_limits: self.request_heap_limits(),
+            eval_adapter,
+        })
+    }
+
+    fn websocket_connect_telemetry_context(
+        &self,
+        header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+        route: &ActiveAssemblyRoute,
+    ) -> RequestTelemetryContext {
+        let mut context = RequestTelemetryContext::new(self.telemetry.clone());
+        context.service_id = Some(route.activation().identity().deployment.service_id.clone());
+        context.build_id = Some(
+            route
+                .activation()
+                .implementation_package_build_id()
+                .as_str()
+                .to_string(),
+        );
+        context.activation_identity = Some(route.activation().activation_id().as_str().to_string());
+        context.runtime_id = Some(self.base_runtime_id.clone());
+        context.request_id = Some(header.request_id.clone());
+        context.target = Some(route.gateway_entry_key().as_str().to_string());
+        context.trace_id = Some(header.trace.trace_id.clone());
+        context.span_id = Some(header.trace.span_id.clone());
+        context.parent_span_id = header.trace.parent_span_id.clone();
+        context
+    }
+
+    fn queue_websocket_generation_acquire(
         &self,
         route: &ActiveAssemblyRoute,
         router_session_id: &str,
@@ -327,6 +560,97 @@ impl RuntimeHost {
         }
         Ok(())
     }
+
+    #[cfg(test)]
+    pub(crate) fn queue_websocket_generation_acquire_for_test(
+        &self,
+        route: &ActiveAssemblyRoute,
+        router_session_id: &str,
+        websocket_entry_id: &str,
+        connection_id: &str,
+        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+    ) -> Result<()> {
+        self.queue_websocket_generation_acquire(
+            route,
+            router_session_id,
+            websocket_entry_id,
+            connection_id,
+            sender,
+        )
+    }
+}
+
+fn websocket_connect_supervisor_request(
+    header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    route: &ActiveAssemblyRoute,
+) -> RequestEnvelope {
+    let mut extra = serde_json::Map::new();
+    if let Some(deadline) = &header.deadline {
+        extra.insert(
+            "deadline".to_string(),
+            serde_json::to_value(deadline)
+                .expect("typed WebSocket connect deadline remains serializable"),
+        );
+    }
+    RequestEnvelope {
+        request_id: header.request_id.clone(),
+        mode: header.mode.clone(),
+        target: route.gateway_entry_key().as_str().to_string(),
+        operation_abi_id: None,
+        selector: None,
+        service_id: Some(route.activation().identity().deployment.service_id.clone()),
+        build_id: route
+            .activation()
+            .implementation_package_build_id()
+            .as_str()
+            .to_string(),
+        service_protocol_identity: route.service_protocol_identity().as_str().to_string(),
+        contract_identity: None,
+        activation_identity: Some(route.activation().activation_id().as_str().to_string()),
+        ingress_selector: Some(route.selector().clone()),
+        binary_http: None,
+        http_adapter: None,
+        websocket_adapter: None,
+        test_effects_enabled: header.test_effects_enabled,
+        test_effect_doubles: Default::default(),
+        payload_bytes: Vec::new(),
+        extra,
+    }
+}
+
+fn websocket_connect_result_into_message(
+    request_id: String,
+    result: RuntimeWebSocketConnectResult,
+) -> Result<RouterWriterMessage> {
+    let response = match result {
+        RuntimeWebSocketConnectResult::Accept {
+            business_identity,
+            connection_policy,
+        } => RuntimeAssemblyWebSocketConnectResponseFrameHeader::Accept {
+            business_identity,
+            connection_policy: connection_policy.map(|policy| {
+                RuntimeAssemblyWebSocketConnectionPolicyFrameHeader {
+                    max_connections: policy.max_connections,
+                    overflow: match policy.overflow {
+                        skiff_runtime_capability_context::WebSocketConnectionPolicyOverflowControl::CloseOldest => {
+                            RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader::CloseOldest
+                        }
+                        skiff_runtime_capability_context::WebSocketConnectionPolicyOverflowControl::RejectNew => {
+                            RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader::RejectNew
+                        }
+                    },
+                    close_code: policy.close_code,
+                    close_reason: policy.close_reason,
+                }
+            }),
+        },
+        RuntimeWebSocketConnectResult::Reject { code, reason } => {
+            RuntimeAssemblyWebSocketConnectResponseFrameHeader::Reject { code, reason }
+        }
+    };
+    runtime_assembly_websocket_connect_response_into_frame(request_id, response)
+        .map(RouterWriterMessage::Binary)
+        .map_err(super::transport_error_into_runtime_error)
 }
 
 struct HostHttpGatewayResponseSink {
