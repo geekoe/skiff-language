@@ -180,6 +180,9 @@ impl ServiceDbStore {
         let request_state = self.request_state_owner();
         let mut state = request_state.lock().await;
         state.ensure_lease_live()?;
+        if !command.requires_provider() {
+            return command.execute(&runtime, None).await;
+        }
         #[cfg(test)]
         if let Some(driver) = self.prepared_runtime_test_driver() {
             return command

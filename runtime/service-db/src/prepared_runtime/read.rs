@@ -99,14 +99,17 @@ impl ServiceDbRuntime {
         let binding = self.metadata.collection_for_type(type_name)?;
         let filter = binding.query_filter(query)?;
         let sort = binding.page_sort_document(&options)?;
-        let projection = binding.projection_document(projection.as_deref())?;
-        let plan = (options.limit != Some(0)).then_some(MongoFindManyPlan {
-            filter,
-            sort,
-            projection,
-            limit: options.limit,
-            offset: options.offset,
-        });
+        let plan = if options.limit == Some(0) {
+            None
+        } else {
+            Some(MongoFindManyPlan {
+                filter,
+                sort,
+                projection: binding.projection_document(projection.as_deref())?,
+                limit: options.limit,
+                offset: options.offset,
+            })
+        };
         Ok(PreparedFindMany {
             type_name: type_name.to_string(),
             collection_name: binding.collection_name.clone(),
@@ -181,6 +184,10 @@ impl CompletedFindOne {
 }
 
 impl PreparedFindMany {
+    pub(crate) fn requires_provider(&self) -> bool {
+        self.plan.is_some()
+    }
+
     pub(crate) async fn execute(
         self,
         runtime: &ServiceDbRuntime,

@@ -71,6 +71,53 @@ fn prepare_failure_never_builds_or_starts_a_provider_wait() {
 }
 
 #[tokio::test]
+async fn zero_limit_skips_projection_compilation_and_provider_wait() {
+    let driver = TestDriver::pending();
+    let store = store_with_driver(driver.clone());
+    let mut heap = RequestHeap::default();
+    let checkpoint = heap.checkpoint();
+    let stats = heap.stats();
+    let operation = store
+        .prepare_find_many_page_runtime(
+            "PreparedItem",
+            db_query(Value::Null),
+            ServiceDbFindOptions {
+                order: vec![DbOrderEntry {
+                    field: FieldPath {
+                        text: "title".to_string(),
+                        segments: vec!["title".to_string()],
+                    },
+                    direction: DbOrderDirection::Asc,
+                }],
+                limit: Some(0),
+                ..ServiceDbFindOptions::default()
+            },
+            Some(vec![FieldPath {
+                text: "missing.nested".to_string(),
+                segments: vec!["missing".to_string(), "nested".to_string()],
+            }]),
+            &mut heap,
+            context(),
+        )
+        .expect("zero limit should skip invalid projection compilation");
+
+    let finalizer = operation
+        .into_wait()
+        .await
+        .expect("zero limit should complete without a provider");
+    let values = finalizer
+        .finalize(&mut heap)
+        .expect("zero-limit finalizer should materialize an empty page");
+
+    assert!(values.is_empty());
+    assert_eq!(driver.starts(), 0);
+    assert_eq!(driver.completions(), 0);
+    assert_eq!(driver.pending_drops(), 0);
+    assert_eq!(heap.checkpoint(), checkpoint);
+    assert_eq!(heap.stats(), stats);
+}
+
+#[tokio::test]
 async fn pending_wait_releases_caller_heap_until_one_shot_finalize() {
     let driver = TestDriver::pending();
     let store = store_with_driver(driver.clone());
