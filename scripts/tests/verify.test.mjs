@@ -277,7 +277,7 @@ test('canonical runtime-live plan aggregates every missing explicit input', asyn
   }
 });
 
-test('runtime-live CLI fails closed on legacy fixtures and never reports success', async () => {
+test('runtime-live CLI fails closed when canonical target inputs are absent', async () => {
   const result = await runProcess(
     process.execPath,
     [verifyPath, '--only', 'runtime-live'],
@@ -286,7 +286,7 @@ test('runtime-live CLI fails closed on legacy fixtures and never reports success
   assert.notEqual(result.code, 0, result.stdout);
   assert.match(
     `${result.stderr}\n${result.stdout}`,
-    /no canonical package\.yml owner.*terminal canonical-harness migration/,
+    /runtime-live is missing required explicit input/,
   );
   assert.doesNotMatch(result.stdout, /All selected Skiff verification phases passed/);
   assert.doesNotMatch(result.stdout, /SKIP/);
@@ -358,7 +358,7 @@ test('runtime-live blocker prevents an earlier selected Cargo phase from startin
       },
     );
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /no canonical package\.yml owner/);
+    assert.match(result.stderr, /runtime-live is missing required explicit input/);
     await assert.rejects(access(marker), { code: 'ENOENT' });
   } finally {
     await rm(fixture, { recursive: true, force: true });
@@ -395,6 +395,47 @@ test('runtime-live fails closed for invalid paths or missing live fixtures', asy
         env: { PATH: fixture },
       }),
       /runtime-live found no \*\.live\.test\.skiff fixtures/,
+    );
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('runtime-live requires the canonical package owner and fixed test profile', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-root-policy-'));
+  try {
+    const artifactRoot = join(fixture, 'artifacts');
+    const packageRoot = join(fixture, 'runtime', 'live-tests');
+    await mkdir(artifactRoot);
+    await writeCanonicalRuntimeLiveFixture(
+      fixture,
+      'runtime/live-tests/example.live.test.skiff',
+    );
+
+    await rm(join(packageRoot, 'package.yml'));
+    await assert.rejects(
+      buildVerifyPlan({
+        root: fixture,
+        catalogRoot: root,
+        selectors: ['runtime-live'],
+        ...runtimeLiveInputs(artifactRoot),
+      }),
+      /canonical source root must own package\.yml/,
+    );
+
+    await writeFile(
+      join(packageRoot, 'package.yml'),
+      'id: example.com/runtime-live-fixture\nversion: 1.0.0\n',
+    );
+    await rm(join(packageRoot, 'config.skiff-test.yml'));
+    await assert.rejects(
+      buildVerifyPlan({
+        root: fixture,
+        catalogRoot: root,
+        selectors: ['runtime-live'],
+        ...runtimeLiveInputs(artifactRoot),
+      }),
+      /canonical source root must own fixed config\.skiff-test\.yml/,
     );
   } finally {
     await rm(fixture, { recursive: true, force: true });
@@ -451,6 +492,35 @@ test('runtime-live builds executable Cargo phases when config and fixtures exist
         cwd: fixture,
       },
     ]);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('runtime-live target environment does not select the source config profile', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-target-profile-'));
+  try {
+    const artifactRoot = join(fixture, 'artifacts');
+    await mkdir(artifactRoot);
+    await writeCanonicalRuntimeLiveFixture(
+      fixture,
+      'runtime/live-tests/example.live.test.skiff',
+    );
+    const plan = await buildVerifyPlan({
+      root: fixture,
+      catalogRoot: root,
+      selectors: ['runtime-live'],
+      ...runtimeLiveInputs(artifactRoot),
+      runtimeLiveEnvironment: 'remote.prod',
+    });
+
+    assert.equal(plan.phases.length, 1);
+    const environmentIndex = plan.phases[0].args.indexOf('--environment');
+    assert.equal(plan.phases[0].args[environmentIndex + 1], 'remote.prod');
+    await assert.rejects(
+      access(join(fixture, 'runtime', 'live-tests', 'config.remote.prod.yml')),
+      { code: 'ENOENT' },
+    );
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -516,6 +586,7 @@ test('runtime-live execution preflight catches target TOCTOU before any command 
 
     await rm(removedFixture);
     await rm(join(fixture, 'runtime', 'live-tests', 'package.yml'));
+    await rm(join(fixture, 'runtime', 'live-tests', 'config.skiff-test.yml'));
     await rm(artifactRoot, { recursive: true });
     await writeFile(artifactRoot, 'replacement file\n');
 
@@ -535,6 +606,12 @@ test('runtime-live execution preflight catches target TOCTOU before any command 
             error.message,
             new RegExp(
               `${escapeRegExp(phase.id)}: runtime-live package root is no longer canonical`,
+            ),
+          );
+          assert.match(
+            error.message,
+            new RegExp(
+              `${escapeRegExp(phase.id)}: runtime-live package root no longer owns fixed config`,
             ),
           );
         }
@@ -585,6 +662,17 @@ test('runtime-live rejects unsafe canonical URLs and wrong artifact-root types b
     }
     assert.match(error?.message ?? '', /must point exactly to \/__skiff\/activate-assembly/);
     assert.doesNotMatch(error?.message ?? '', new RegExp(sentinel));
+
+    await assert.rejects(
+      buildVerifyPlan({
+        root: fixture,
+        catalogRoot: root,
+        selectors: ['runtime-live'],
+        ...runtimeLiveInputs(fixture),
+        runtimeLiveIngressUrl: 'http://router.test:4100/private',
+      }),
+      /runtime-live URL must point exactly to \//,
+    );
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -616,25 +704,39 @@ test('generic development target environment cannot unlock runtime-live', async 
   }
 });
 
-test('real legacy runtime-live discovery fails closed before rendering commands', async () => {
+test('real canonical runtime-live root renders exactly four ordered phases', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-real-plan-'));
   try {
     const artifactRoot = join(fixture, 'artifacts');
     await mkdir(artifactRoot);
-    await assert.rejects(
-      buildVerifyPlan({
-        root,
-        selectors: ['runtime-live'],
-        ...runtimeLiveInputs(artifactRoot),
-      }),
-      /runtime-live fixture\(s\) have no canonical package\.yml owner.*terminal canonical-harness migration/,
+    const plan = await buildVerifyPlan({
+      root,
+      selectors: ['runtime-live'],
+      ...runtimeLiveInputs(artifactRoot),
+    });
+    assert.deepEqual(
+      plan.phases.map((phase) => phase.id),
+      [
+        'live:runtime:runtime/live-tests/internal/db_live.live.test.skiff',
+        'live:runtime:runtime/live-tests/internal/file_live.live.test.skiff',
+        'live:runtime:runtime/live-tests/internal/http_adapter.live.test.skiff',
+        'live:runtime:runtime/live-tests/internal/operation.live.test.skiff',
+      ],
     );
+    assert.deepEqual(
+      plan.phases.map((phase) => {
+        const index = phase.args.indexOf('--expected-generation');
+        return phase.args[index + 1];
+      }),
+      ['0', '1', '2', '3'],
+    );
+    assert.ok(plan.phases.every((phase) => !phase.args.includes('--base-assembly')));
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
 });
 
-test('runtime-live CLI list rejects legacy fixtures and hides invalid URL sentinels', async () => {
+test('runtime-live CLI lists the canonical fixtures and hides invalid URL sentinels', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-list-display-'));
   try {
     const artifactRoot = join(fixture, 'artifacts');
@@ -655,9 +757,17 @@ test('runtime-live CLI list rejects legacy fixtures and hides invalid URL sentin
       '0',
       '--list',
     ], { cwd: root });
-    assert.notEqual(listed.code, 0);
-    assert.match(listed.stderr, /no canonical package\.yml owner/);
-    assert.doesNotMatch(listed.stdout, /live:runtime:/);
+    assert.equal(listed.code, 0, listed.stderr);
+    for (const fixtureName of [
+      'db_live.live.test.skiff',
+      'file_live.live.test.skiff',
+      'http_adapter.live.test.skiff',
+      'operation.live.test.skiff',
+    ]) {
+      assert.match(listed.stdout, new RegExp(fixtureName.replaceAll('.', '\\.')));
+    }
+    assert.equal((listed.stdout.match(/--expected-generation/g) ?? []).length, 4);
+    assert.doesNotMatch(listed.stdout, /--base-assembly/);
 
     const sentinel = 'verify-runtime-url-sentinel';
     const rejected = await runProcess(process.execPath, [
@@ -1107,6 +1217,10 @@ async function writeCanonicalRuntimeLiveFixture(rootPath, relativePath) {
   await writeFile(
     join(packageRoot, 'package.yml'),
     'id: example.com/runtime-live-fixture\nversion: 1.0.0\n',
+  );
+  await writeFile(
+    join(packageRoot, 'config.skiff-test.yml'),
+    'timeout: 120000\n',
   );
 }
 

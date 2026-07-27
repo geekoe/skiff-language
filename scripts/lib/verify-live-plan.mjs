@@ -25,6 +25,7 @@ import {
   assertOwnershipTier,
   liveInvocationRecords,
 } from './verify-live-registry.mjs';
+import { maxExpectedAssemblyGeneration } from './package-service-authoring.mjs';
 
 const DISCOVERY_HANDLERS = Object.freeze({
   [LIVE_DISCOVERIES.RUNTIME_LIVE_TESTS]: discoverRuntimeLiveTests,
@@ -126,6 +127,7 @@ export function assertRegistryPhaseMetadata(phase) {
 
 async function inspectRuntimeFixtureState(root, entry, values) {
   const failures = [];
+  const sourceRoot = resolve(root, 'runtime', 'live-tests');
   const discover = DISCOVERY_HANDLERS[entry.source.discovery];
   if (discover === undefined) {
     throw new Error(`unsupported live discovery handler: ${entry.source.discovery}`);
@@ -140,12 +142,31 @@ async function inspectRuntimeFixtureState(root, entry, values) {
     file,
     packageRoot: canonicalPackageRoot(root, file),
   }));
+  if (!isFile(join(sourceRoot, 'package.yml'))) {
+    failures.push(
+      `runtime-live canonical source root must own package.yml: ${sourceRoot}`,
+    );
+  }
+  if (!isFile(join(sourceRoot, 'config.skiff-test.yml'))) {
+    failures.push(
+      `runtime-live canonical source root must own fixed config.skiff-test.yml: ${sourceRoot}`,
+    );
+  }
   const legacyFiles = fixtures
     .filter((fixture) => fixture.packageRoot === undefined)
     .map((fixture) => repoRelative(root, fixture.file));
   if (legacyFiles.length > 0) {
     failures.push(
       `runtime-live fixture(s) have no canonical package.yml owner and require terminal canonical-harness migration: ${legacyFiles.join(', ')}`,
+    );
+  }
+  const nonCanonicalFiles = fixtures
+    .filter((fixture) =>
+      fixture.packageRoot !== undefined && fixture.packageRoot !== sourceRoot)
+    .map((fixture) => repoRelative(root, fixture.file));
+  if (nonCanonicalFiles.length > 0) {
+    failures.push(
+      `runtime-live fixture(s) must be owned by the canonical runtime/live-tests package root: ${nonCanonicalFiles.join(', ')}`,
     );
   }
 
@@ -181,9 +202,16 @@ async function inspectRuntimeFixtureState(root, entry, values) {
   if (values.runtimeEnvironment !== undefined && !/^[A-Za-z0-9._-]{1,200}$/.test(values.runtimeEnvironment)) {
     failures.push('runtime-live environment must be a canonical ASCII token');
   }
-  if (values.runtimeExpectedGeneration !== undefined
-    && !/^(?:0|[1-9][0-9]*)$/.test(values.runtimeExpectedGeneration)) {
-    failures.push('runtime-live expected generation must be a non-negative integer');
+  let expectedGenerations;
+  if (values.runtimeExpectedGeneration !== undefined) {
+    try {
+      expectedGenerations = runtimeExpectedGenerations(
+        values.runtimeExpectedGeneration,
+        fixtures.length,
+      );
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
+    }
   }
 
   if (failures.length > 0) {
@@ -194,8 +222,9 @@ async function inspectRuntimeFixtureState(root, entry, values) {
     activationUrl,
     ingressUrl,
     environment: values.runtimeEnvironment,
-    expectedGeneration: values.runtimeExpectedGeneration,
+    expectedGenerations,
     fixtures,
+    sourceRoot,
   };
 }
 
@@ -205,18 +234,24 @@ function runtimeFixturePhases(root, invocation, runtimeState, env) {
     activationUrl,
     ingressUrl,
     environment,
-    expectedGeneration,
+    expectedGenerations,
     fixtures,
+    sourceRoot,
   } = runtimeState;
   const executionPreflight = () => {
     const failures = [];
-    for (const { file, packageRoot } of fixtures) {
+    for (const { file } of fixtures) {
       if (!isFile(file)) {
         failures.push(`runtime-live fixture is no longer an existing file: ${file}`);
       }
-      if (!isFile(join(packageRoot, 'package.yml'))) {
-        failures.push(`runtime-live package root is no longer canonical: ${packageRoot}`);
-      }
+    }
+    if (!isFile(join(sourceRoot, 'package.yml'))) {
+      failures.push(`runtime-live package root is no longer canonical: ${sourceRoot}`);
+    }
+    if (!isFile(join(sourceRoot, 'config.skiff-test.yml'))) {
+      failures.push(
+        `runtime-live package root no longer owns fixed config.skiff-test.yml: ${sourceRoot}`,
+      );
     }
     if (!isDirectory(artifactRoot)) {
       failures.push(
@@ -237,7 +272,7 @@ function runtimeFixturePhases(root, invocation, runtimeState, env) {
     return failures.length === 0 ? undefined : failures;
   };
 
-  return fixtures.map(({ file }) => {
+  return fixtures.map(({ file }, index) => {
     const args = [
       'run',
       '--manifest-path',
@@ -255,7 +290,7 @@ function runtimeFixturePhases(root, invocation, runtimeState, env) {
       '--environment',
       environment,
       '--expected-generation',
-      expectedGeneration,
+      expectedGenerations[index],
       ...(invocation.canonicalPolicy.forbidSkips ? ['--deny-skips'] : []),
       ...(invocation.canonicalPolicy.forbidUnchecked ? ['--require-tests'] : []),
     ];
@@ -266,6 +301,24 @@ function runtimeFixturePhases(root, invocation, runtimeState, env) {
       executionPreflight,
     });
   });
+}
+
+function runtimeExpectedGenerations(initialValue, fixtureCount) {
+  if (!/^(?:0|[1-9][0-9]*)$/.test(initialValue)) {
+    throw new Error('runtime-live expected generation must be a non-negative integer');
+  }
+  const initial = BigInt(initialValue);
+  const maximum = BigInt(maxExpectedAssemblyGeneration);
+  const last = initial + BigInt(Math.max(0, fixtureCount - 1));
+  if (initial > maximum || last > maximum) {
+    throw new Error(
+      `runtime-live expected generation sequence ending at ${last} must not exceed ${maximum}`,
+    );
+  }
+  return Array.from(
+    { length: fixtureCount },
+    (_, index) => (initial + BigInt(index)).toString(),
+  );
 }
 
 export function runtimeLivePlatformSourceArgs(skiffRoot) {

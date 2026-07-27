@@ -554,7 +554,7 @@ test('DB list is blocked and execute starts no command when a declared tool is a
   }
 });
 
-test('actual legacy runtime discovery fails closed before combined live phases exist', async () => {
+test('actual canonical runtime discovery composes with the managed live phase', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-live-registry-actual-'));
   try {
     const artifactRoot = join(fixture, 'artifacts');
@@ -575,16 +575,24 @@ test('actual legacy runtime discovery fails closed before combined live phases e
       runtimeLiveExpectedGeneration: '0',
       env: { PATH: bin },
     };
-    await assert.rejects(
-      buildVerifyPlan(options),
-      /runtime-live fixture\(s\) have no canonical package\.yml owner.*terminal canonical-harness migration/,
+    const plan = await buildVerifyPlan(options);
+    assert.equal(plan.phases.length, 5);
+    assert.deepEqual(
+      plan.phases.filter((phase) => phase.id.startsWith('live:runtime:'))
+        .map((phase) => phase.args[phase.args.indexOf('--expected-generation') + 1]),
+      ['0', '1', '2', '3'],
     );
-    await assert.rejects(
-      buildVerifyPlan({
-        ...options,
-        selectors: ['runtime-live', 'runtime-live'],
-      }),
-      /runtime-live fixture\(s\) have no canonical package\.yml owner/,
+    assert.equal(
+      plan.phases.filter((phase) => phase.id === 'live:db-encrypted-storage').length,
+      1,
+    );
+    const deduplicated = await buildVerifyPlan({
+      ...options,
+      selectors: ['runtime-live', 'runtime-live'],
+    });
+    assert.deepEqual(
+      deduplicated.phases.map((phase) => phase.id),
+      plan.phases.slice(0, 4).map((phase) => phase.id),
     );
   } finally {
     await rm(fixture, { recursive: true, force: true });
@@ -832,6 +840,10 @@ async function runtimeFixture(prefix) {
   await writeFile(
     join(packageRoot, 'package.yml'),
     'id: example.com/runtime-live-fixture\nversion: 1.0.0\n',
+  );
+  await writeFile(
+    join(packageRoot, 'config.skiff-test.yml'),
+    'timeout: 120000\n',
   );
   await writeFile(testFile, 'test defaultRun false\n');
   return {
