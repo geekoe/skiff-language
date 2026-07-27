@@ -217,8 +217,10 @@ thread mount和ToolProvider记录完成授权，并只向DB中解析出的 exact
 Host adapter只能返回固定platform error：
 
 ```text
-{ code: string, message: string, detail?: Json }
+{ code: string, message: string, detail: Json }
 ```
+
+`detail`是严格outer error shape中的必需字段；没有细节时发送JSON `null`，不能省略。
 
 - known workspace errors保留稳定code：
   `HOST_FILES_INVALID_PATH`、`HOST_FILES_PATH_OUTSIDE_ROOT`、
@@ -251,7 +253,7 @@ Host WebSocket production parser终态只接受：
 
 ```text
 {type:"response", requestId, ok:true, payload}
-{type:"response", requestId, ok:false, error:{code,message,detail?}}
+{type:"response", requestId, ok:false, error:{code,message,detail}}
 ```
 
 要求：
