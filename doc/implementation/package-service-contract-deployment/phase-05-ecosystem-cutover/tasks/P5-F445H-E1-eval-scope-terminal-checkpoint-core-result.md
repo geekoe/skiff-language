@@ -14,6 +14,7 @@ host、native、stream、artifact、compiler 或 Router。
 | production base | `27618e61` |
 | task document | `0bd34f25` |
 | implementation | `f254d11e` |
+| owned clock correction | `f04a7c82` |
 
 implementation 写集精确为：
 
@@ -45,6 +46,26 @@ CARGO_TARGET_DIR=/Users/geek/workspace/skiff-p5-f445h-e1-scope-core/build/cargo-
 - `error::ScopeTerminalCarrier` 与 `RuntimeError::ScopeTerminal` 尚不存在。
 
 RED 没有来自旧 exhaustive match 或写集外组件。随后才实现 E1 production core。
+
+### 2.1 独立验收 correction
+
+独立验收发现初始实现只让 `OwnedProgramExecutionContext` 保存 current execution control，
+`borrow()` 仍会重建 production clock，因而 scripted clock 无法跨 owned round-trip 继续同一调用
+序列。先增加单一 focused test：
+
+```text
+cargo test -p skiff-runtime-eval \
+  program_execution_scope_owned_round_trip_preserves_current_scripted_clock_sequence \
+  -- --nocapture
+```
+
+修正前该测试按预期 RED，exit `101`：capture 前第一个 checkpoint 消耗 scripted call 1，
+`owned.borrow()` 后的第二个 checkpoint 没有在 scripted call 2 越过 deadline。测试共享同一个
+clock queue/counter，没有重建替代 clock。
+
+`f04a7c82` 让 owned context 与 current control 一起 clone/capture `ExecutionClock`，并在 borrow
+后恢复该实例。修正后同一测试 PASS，call count 精确为 2，第二个 checkpoint 产生原 local owner
+terminal。
 
 ## 3. Current scope 与 clock
 
@@ -102,10 +123,10 @@ start/end、tail start 和 generated chunk；本节点没有迁移 evaluator cal
 
 | 命令 | 结果 |
 | --- | --- |
-| `cargo test -p skiff-runtime-eval program_execution_scope -- --nocapture` | PASS：8/8 |
+| `cargo test -p skiff-runtime-eval program_execution_scope -- --nocapture` | PASS：9/9 |
 | `cargo test -p skiff-runtime-eval scope_terminal -- --nocapture` | PASS：4/4 |
 | `cargo check -p skiff-runtime-eval --locked` | PASS |
-| `cargo test -p skiff-runtime-eval --no-fail-fast` | PASS：232 unit、10 integration、1 doc-test |
+| `cargo test -p skiff-runtime-eval --no-fail-fast` | PASS：233 unit、10 integration、1 doc-test |
 | `cargo fmt --check` | PASS |
 | `git diff --check` | PASS |
 
