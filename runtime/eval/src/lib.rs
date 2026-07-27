@@ -45,6 +45,7 @@ mod runtime_http_gateway;
 pub mod runtime_ops;
 pub mod runtime_value_view;
 mod runtime_websocket_connect;
+mod runtime_websocket_jsonrpc;
 pub mod service_dispatch;
 pub mod source_context;
 pub mod spawn_ops;
@@ -88,6 +89,11 @@ pub use runtime_http_gateway::{RuntimeHttpGatewayCallable, RuntimeHttpGatewayExe
 pub use runtime_websocket_connect::{
     RuntimeWebSocketConnectCallable, RuntimeWebSocketConnectExecutionTarget,
     RuntimeWebSocketConnectRequest, RuntimeWebSocketConnectResult, RuntimeWebSocketNameValue,
+};
+pub use runtime_websocket_jsonrpc::{
+    RuntimeWebSocketJsonRpcCallable, RuntimeWebSocketJsonRpcExecutionOutcome,
+    RuntimeWebSocketJsonRpcExecutionTarget, RuntimeWebSocketJsonRpcExecutionTerminal,
+    RuntimeWebSocketJsonRpcRequest, RUNTIME_WEBSOCKET_JSONRPC_MAX_PAYLOAD_BYTES,
 };
 
 use skiff_runtime_linked_program::{

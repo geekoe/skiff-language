@@ -23,6 +23,7 @@ mod runner;
 mod runtime_ingress;
 mod websocket_connect_execution;
 mod websocket_connect_target;
+mod websocket_jsonrpc_execution;
 mod websocket_jsonrpc_target;
 
 pub use assembly_ingress::{
@@ -75,6 +76,9 @@ pub use runner::{
     RequestExecutionError, RequestExecutionHandles, RequestExecutionInput, RequestExecutionResult,
     RuntimeResponse,
 };
+pub use skiff_runtime_eval::{
+    RuntimeWebSocketJsonRpcExecutionOutcome, RuntimeWebSocketJsonRpcExecutionTerminal,
+};
 pub use websocket_connect_execution::{
     execute_runtime_websocket_connect, RuntimeWebSocketConnectEvalAdapter,
     RuntimeWebSocketConnectEvalExecutionInputParts, RuntimeWebSocketConnectExecutionHandles,
@@ -82,6 +86,11 @@ pub use websocket_connect_execution::{
 };
 pub use websocket_connect_target::{
     RuntimeAssemblyWebSocketConnectTarget, RuntimeAssemblyWebSocketConnectTargetError,
+};
+pub use websocket_jsonrpc_execution::{
+    execute_runtime_websocket_jsonrpc, RuntimeWebSocketJsonRpcEvalAdapter,
+    RuntimeWebSocketJsonRpcEvalExecutionInputParts, RuntimeWebSocketJsonRpcExecutionHandles,
+    RuntimeWebSocketJsonRpcExecutionInput,
 };
 pub use websocket_jsonrpc_target::{
     RuntimeAssemblyWebSocketJsonRpcPhysicalRoute, RuntimeAssemblyWebSocketJsonRpcTarget,
