@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -18,7 +19,7 @@ use skiff_compiler_input::{
     },
     package_sources::{read_official_package_sources, read_package_sources},
     read_publication_resources, read_service_package_root, InputAssemblyError, ManifestOwner,
-    ServiceSourceConfigError,
+    ServiceSourceConfigError, HTTP_CONFIG_FILE, SERVICE_CONFIG_FILE, WEBSOCKET_CONFIG_FILE,
 };
 use skiff_compiler_source::{
     prelude_registry::{initialize_prelude_registry, PreludeRegistryInitializationError},
@@ -288,7 +289,15 @@ fn read_test_service_profile(
     root: &Path,
     test_environment: Option<&str>,
 ) -> Result<Option<CanonicalTestServiceProfile>, CanonicalPackageProjectError> {
-    if !root.join("service.yml").is_file() {
+    if !root.join(SERVICE_CONFIG_FILE).is_file() {
+        if has_external_service_control_file(root)? {
+            return match read_service_package_root(root) {
+                Ok(_) => unreachable!(
+                    "typed service root reader cannot accept external controls without a regular service.yml"
+                ),
+                Err(error) => Err(error.into()),
+            };
+        }
         return Ok(None);
     }
     let service = read_service_package_root(root)?;
@@ -312,6 +321,24 @@ fn read_test_service_profile(
         profile_name: profile_name.to_string(),
         authoring: profile.authoring.clone(),
     }))
+}
+
+fn has_external_service_control_file(root: &Path) -> Result<bool, CanonicalPackageProjectError> {
+    for file_name in [HTTP_CONFIG_FILE, WEBSOCKET_CONFIG_FILE] {
+        let path = root.join(file_name);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => return Ok(true),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(ServiceSourceConfigError::Read {
+                    path: path.display().to_string(),
+                    source,
+                }
+                .into());
+            }
+        }
+    }
+    Ok(false)
 }
 
 pub(crate) fn read_root_package_manifest(

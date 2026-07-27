@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import test from 'node:test';
@@ -8,6 +8,7 @@ import {
   classifyAuthoringRoot,
   readDevRegistry,
   runDevSyncOnce,
+  watchAuthoringRootChanges,
   writeDevRegistry,
 } from '../skiff-dev-sync.mjs';
 import { writePackageRoot } from './package-service-fixtures.mjs';
@@ -31,6 +32,72 @@ test('missing package manifest and retired authoring files fail closed', async (
   await writePackageRoot(temp);
   await writeFile(join(temp, 'deployment.yml'), '{}\n');
   await assert.rejects(classifyAuthoringRoot(temp), /retired independent authoring file.*deployment\.yml/);
+});
+
+test('external service control files require a service role in package roots', async () => {
+  for (const controlFile of ['http.yml', 'websocket.yml']) {
+    const externalOnly = await mkdtemp(join(tmpdir(), 'skiff-dev-sync-external-only-'));
+    await writeFile(
+      join(externalOnly, controlFile),
+      controlFile === 'http.yml' ? '{}\n' : 'path: /socket\n',
+    );
+    await assert.rejects(
+      classifyAuthoringRoot(externalOnly),
+      /external service control file.*require service\.yml/,
+    );
+
+    const ordinary = await mkdtemp(join(tmpdir(), 'skiff-dev-sync-ordinary-external-'));
+    await writePackageRoot(ordinary);
+    await writeFile(
+      join(ordinary, controlFile),
+      controlFile === 'http.yml' ? '{}\n' : 'path: /socket\n',
+    );
+    await assert.rejects(
+      classifyAuthoringRoot(ordinary),
+      /external service control file.*require service\.yml/,
+    );
+
+    await writeFile(join(ordinary, 'service.yml'), 'id: example.com/health\n');
+    assert.deepEqual(await classifyAuthoringRoot(ordinary), {
+      kind: 'package',
+      root: ordinary,
+    });
+  }
+});
+
+test('watch fingerprint schedules exactly one rebuild for external file bytes, deletion, and addition', async () => {
+  const fixture = await rootsFixture('external-watch');
+  const serviceRoot = fixture.roots.find(({ root }) => basename(root) === 'service').root;
+  const httpPath = join(serviceRoot, 'http.yml');
+  const websocketPath = join(serviceRoot, 'websocket.yml');
+  await writeFile(httpPath, '{}\n');
+
+  const roots = [await classifyAuthoringRoot(serviceRoot)];
+  let polls = 0;
+  let rebuilds = 0;
+  await assert.rejects(
+    watchAuthoringRootChanges({
+      roots,
+      pollIntervalMs: 1,
+      wait: async () => {
+        polls += 1;
+        if (polls === 1) {
+          await writeFile(httpPath, 'ping: {}\n');
+        } else if (polls === 3) {
+          await rm(httpPath);
+        } else if (polls === 5) {
+          await writeFile(websocketPath, 'path: /socket\n');
+        } else if (polls === 7) {
+          throw new Error('external watch mutation sequence complete');
+        }
+      },
+      onChange: async () => {
+        rebuilds += 1;
+      },
+    }),
+    /external watch mutation sequence complete/,
+  );
+  assert.equal(rebuilds, 3);
 });
 
 test('a failing package batch never sends activation prepare', async () => {

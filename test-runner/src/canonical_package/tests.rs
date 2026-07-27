@@ -3,7 +3,9 @@ use std::{cell::Cell, fs, path::PathBuf};
 use skiff_compiler::CompilerPlatformSources;
 use skiff_compiler_source::prelude_registry::prelude_registry;
 
-use super::{run_after_platform_context_guard, CanonicalPackageProjectError};
+use super::{
+    read_test_service_profile, run_after_platform_context_guard, CanonicalPackageProjectError,
+};
 
 #[cfg(unix)]
 #[path = "tests/combined.rs"]
@@ -37,6 +39,68 @@ fn p5_f18b_runner_mismatch_zero_source_reads() {
         )
     ));
     assert_eq!(mismatch_reads.get(), 0);
+}
+
+#[test]
+fn split_external_manifests_require_and_preserve_the_service_role_marker() {
+    for (external_file, source) in [("http.yml", "{}\n"), ("websocket.yml", "path: /socket\n")] {
+        let external_only = temporary_path(&format!("external-only-role-{external_file}"));
+        fs::create_dir_all(&external_only).unwrap();
+        fs::write(
+            external_only.join("package.yml"),
+            "id: example.com/external-only\nversion: 1.0.0\n",
+        )
+        .unwrap();
+        fs::write(external_only.join("api.yml"), "{}\n").unwrap();
+        fs::write(external_only.join(external_file), source).unwrap();
+        let error = read_test_service_profile(&external_only, Some("skiff-test"))
+            .expect_err("external files must not create a service role");
+        assert!(matches!(
+            error,
+            CanonicalPackageProjectError::ServiceConfig(_)
+        ));
+        assert!(
+            error.to_string().contains("service.yml"),
+            "unexpected error: {error}"
+        );
+        fs::remove_dir_all(external_only).unwrap();
+    }
+
+    let split = temporary_path("split-test-service-role");
+    fs::create_dir_all(&split).unwrap();
+    fs::write(
+        split.join("package.yml"),
+        "id: example.com/split-test\nversion: 1.0.0\n",
+    )
+    .unwrap();
+    fs::write(split.join("api.yml"), "{}\n").unwrap();
+    fs::write(
+        split.join("service.yml"),
+        "id: example.com/split-test\nkind: test\n",
+    )
+    .unwrap();
+    fs::write(split.join("http.yml"), "{}\n").unwrap();
+    fs::write(split.join("websocket.yml"), "path: /socket\n").unwrap();
+    fs::write(split.join("config.skiff-test.yml"), "timeout: 30000\n").unwrap();
+
+    let profile = read_test_service_profile(&split, Some("skiff-test"))
+        .unwrap()
+        .expect("service.yml kind: test should declare the test service role");
+    assert_eq!(profile.service_id, "example.com/split-test");
+    assert_eq!(profile.profile_name, "skiff-test");
+
+    fs::write(split.join("http.yml"), "http: {}\n").unwrap();
+    let error = read_test_service_profile(&split, Some("skiff-test"))
+        .expect_err("role discovery must use the typed split root reader");
+    assert!(matches!(
+        error,
+        CanonicalPackageProjectError::ServiceConfig(_)
+    ));
+    assert!(
+        error.to_string().contains("http.yml"),
+        "unexpected error: {error}"
+    );
+    fs::remove_dir_all(split).unwrap();
 }
 
 pub(super) fn repository_platform_sources() -> CompilerPlatformSources {

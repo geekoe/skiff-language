@@ -77,32 +77,31 @@ export async function main(rawArgs, dependencies = {}) {
   expectedGeneration = nextExpectedGeneration(initial, expectedGeneration);
   printResult(initial, options.json);
 
-  for (;;) {
-    await delay(options.pollIntervalMs);
-    const next = await rootsFingerprint(roots);
-    if (next === fingerprint) {
-      continue;
-    }
-    fingerprint = next;
-    try {
-      const result = await runDevSyncOnce({
-        roots,
-        environment,
-        artifactRoot: options.artifactRoot,
-        activationUrl: options.activationUrl,
-        activationId: undefined,
-        expectedGeneration,
-        buildOnly: options.buildOnly,
-        skiffRoot: dependencies.skiffRoot ?? skiffRoot,
-        fetchImpl: dependencies.fetchImpl ?? fetch,
-        compilerRunner: dependencies.compilerRunner ?? runCompilerAuthoring,
-      });
-      expectedGeneration = nextExpectedGeneration(result, expectedGeneration);
-      printResult(result, options.json);
-    } catch (error) {
-      console.error(`dev sync rejected: ${formatError(error)}`);
-    }
-  }
+  await watchAuthoringRootChanges({
+    roots,
+    initialFingerprint: fingerprint,
+    pollIntervalMs: options.pollIntervalMs,
+    onChange: async () => {
+      try {
+        const result = await runDevSyncOnce({
+          roots,
+          environment,
+          artifactRoot: options.artifactRoot,
+          activationUrl: options.activationUrl,
+          activationId: undefined,
+          expectedGeneration,
+          buildOnly: options.buildOnly,
+          skiffRoot: dependencies.skiffRoot ?? skiffRoot,
+          fetchImpl: dependencies.fetchImpl ?? fetch,
+          compilerRunner: dependencies.compilerRunner ?? runCompilerAuthoring,
+        });
+        expectedGeneration = nextExpectedGeneration(result, expectedGeneration);
+        printResult(result, options.json);
+      } catch (error) {
+        console.error(`dev sync rejected: ${formatError(error)}`);
+      }
+    },
+  });
 }
 
 export async function runDevSyncOnce({
@@ -301,7 +300,14 @@ export async function writeDevRegistry(path, registry) {
 export async function classifyAuthoringRoot(root) {
   const absolute = resolve(root);
   const present = [];
-  for (const file of ['package.yml', 'contract.yml', 'deployment.yml']) {
+  for (const file of [
+    'package.yml',
+    'service.yml',
+    'http.yml',
+    'websocket.yml',
+    'contract.yml',
+    'deployment.yml',
+  ]) {
     try {
       const metadata = await stat(join(absolute, file));
       if (metadata.isFile()) {
@@ -313,10 +319,20 @@ export async function classifyAuthoringRoot(root) {
       }
     }
   }
+  const externalServiceControlFiles = present.filter(
+    (file) => file === 'http.yml' || file === 'websocket.yml',
+  );
+  if (externalServiceControlFiles.length > 0 && !present.includes('service.yml')) {
+    throw new Error(
+      `${absolute} contains external service control file(s) ${externalServiceControlFiles.join(', ')}; external service control files require service.yml to declare the service role`,
+    );
+  }
   if (!present.includes('package.yml')) {
     throw new Error(`${absolute} must contain package.yml`);
   }
-  const legacy = present.filter((file) => file !== 'package.yml');
+  const legacy = present.filter(
+    (file) => file === 'contract.yml' || file === 'deployment.yml',
+  );
   if (legacy.length > 0) {
     throw new Error(`${absolute} contains retired independent authoring file(s): ${legacy.join(', ')}`);
   }
@@ -436,6 +452,25 @@ async function rootsFingerprint(roots) {
     await hashTree(root, root, hash);
   }
   return hash.digest('hex');
+}
+
+export async function watchAuthoringRootChanges({
+  roots,
+  initialFingerprint,
+  pollIntervalMs,
+  onChange,
+  wait = delay,
+}) {
+  let fingerprint = initialFingerprint ?? await rootsFingerprint(roots);
+  for (;;) {
+    await wait(pollIntervalMs);
+    const next = await rootsFingerprint(roots);
+    if (next === fingerprint) {
+      continue;
+    }
+    fingerprint = next;
+    await onChange();
+  }
 }
 
 async function hashTree(root, current, hash) {

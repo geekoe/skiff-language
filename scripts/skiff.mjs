@@ -612,9 +612,18 @@ async function detectRootKind(root) {
   } catch (error) {
     return { kind: 'missing', message: `failed to inspect root ${root}: ${formatError(error)}` };
   }
+  const entryNames = new Set(entries.map((entry) => entry.name));
   const files = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
   const hasPackage = files.has('package.yml');
   const hasService = files.has('service.yml');
+  const externalServiceControlFiles = ['http.yml', 'websocket.yml']
+    .filter((file) => entryNames.has(file));
+  if (externalServiceControlFiles.length > 0 && !hasService) {
+    return {
+      kind: 'missing',
+      message: `${root} contains external service control file(s) ${externalServiceControlFiles.join(', ')}; external service control files require service.yml to declare the service role`,
+    };
+  }
   if (hasPackage) {
     return { kind: 'package' };
   }

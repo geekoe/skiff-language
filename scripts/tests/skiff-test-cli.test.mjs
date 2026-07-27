@@ -87,11 +87,20 @@ test('skiff test selects the canonical binary once for absolute and relative roo
   }
 });
 
-test('skiff test treats package.yml as the root and service.yml as an optional role', async () => {
-  for (const withServiceRole of [false, true]) {
+test('skiff test treats package.yml as the root and external files as optional service controls', async () => {
+  for (const { withServiceRole, externalFiles } of [
+    { withServiceRole: false, externalFiles: [] },
+    { withServiceRole: true, externalFiles: [] },
+    { withServiceRole: true, externalFiles: ['http.yml'] },
+    { withServiceRole: true, externalFiles: ['websocket.yml'] },
+    { withServiceRole: true, externalFiles: ['http.yml', 'websocket.yml'] },
+  ]) {
     const fixture = await fakeCargoFixture();
     try {
-      const packageRoot = join(fixture.root, withServiceRole ? 'service-package' : 'package');
+      const packageRoot = join(
+        fixture.root,
+        withServiceRole ? `service-package-${externalFiles.length}` : 'package',
+      );
       const artifactRoot = join(fixture.root, 'artifacts');
       await mkdir(packageRoot);
       await mkdir(artifactRoot);
@@ -101,6 +110,12 @@ test('skiff test treats package.yml as the root and service.yml as an optional r
       );
       if (withServiceRole) {
         await writeFile(join(packageRoot, 'service.yml'), 'id: example.com/root-detection\n');
+      }
+      for (const externalFile of externalFiles) {
+        await writeFile(
+          join(packageRoot, externalFile),
+          externalFile === 'http.yml' ? '{}\n' : 'path: /socket\n',
+        );
       }
 
       const result = await runProcess(process.execPath, [
@@ -115,6 +130,46 @@ test('skiff test treats package.yml as the root and service.yml as an optional r
       assert.equal(result.code, 0, result.stderr);
       const args = JSON.parse(await readFile(fixture.marker, 'utf8'));
       assert.equal(args[args.indexOf('--') + 1], packageRoot);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('skiff test rejects external-only and ordinary package external files before Cargo', async () => {
+  for (const { withPackage, externalFiles } of [
+    { withPackage: false, externalFiles: ['http.yml'] },
+    { withPackage: false, externalFiles: ['websocket.yml'] },
+    { withPackage: true, externalFiles: ['http.yml'] },
+    { withPackage: true, externalFiles: ['websocket.yml'] },
+    { withPackage: true, externalFiles: ['http.yml', 'websocket.yml'] },
+  ]) {
+    const fixture = await fakeCargoFixture();
+    try {
+      const sourceRoot = join(fixture.root, withPackage ? 'ordinary-package' : 'external-only');
+      const artifactRoot = join(fixture.root, 'artifacts');
+      await mkdir(sourceRoot);
+      await mkdir(artifactRoot);
+      if (withPackage) {
+        await writeFile(
+          join(sourceRoot, 'package.yml'),
+          'id: example.com/root-detection\nversion: 1.0.0\n',
+        );
+      }
+      for (const externalFile of externalFiles) {
+        await writeFile(
+          join(sourceRoot, externalFile),
+          externalFile === 'http.yml' ? '{}\n' : 'path: /socket\n',
+        );
+      }
+
+      const result = await runProcess(process.execPath, [
+        skiffPath, 'test', sourceRoot, '--artifact-root', artifactRoot,
+      ], { env: fixture.env });
+
+      assert.notEqual(result.code, 0);
+      assert.match(result.stderr, /external service control file.*require service\.yml/);
+      await assert.rejects(access(fixture.marker), { code: 'ENOENT' });
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }
