@@ -16,18 +16,23 @@ const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 pub(super) fn decode_runtime_assembly_request_json_frame(
     frame: &[u8],
 ) -> Result<(Value, Vec<u8>), BinaryFrameError> {
+    decode_runtime_assembly_json_frame(frame, "runtimeAssembly request.start")
+}
+
+pub(super) fn decode_runtime_assembly_json_frame(
+    frame: &[u8],
+    label: &str,
+) -> Result<(Value, Vec<u8>), BinaryFrameError> {
     let (header, payload) = canonical_frame_parts(frame)?;
     let header = serde_json::from_slice::<StrictCanonicalJsonValue>(header)
         .map_err(|error| {
-            TransportError::decode(format!(
-                "invalid runtimeAssembly request.start frame header JSON: {error}"
-            ))
+            TransportError::decode(format!("invalid {label} frame header JSON: {error}"))
         })?
         .0;
     if !header.is_object() {
-        return Err(TransportError::decode(
-            "invalid runtimeAssembly request.start frame: header must be an object",
-        ));
+        return Err(TransportError::decode(format!(
+            "invalid {label} frame: header must be an object"
+        )));
     }
     Ok((header, payload.to_vec()))
 }

@@ -3,7 +3,11 @@ use std::collections::HashSet;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameHeader};
+use super::{
+    decode_runtime_assembly_request_start_frame,
+    decode_runtime_assembly_websocket_connect_response_end_frame,
+    RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestStartFrameWireHeader,
+};
 use crate::protocol::{
     encode_binary_frame, RequestStartFrameHeader, BINARY_FRAME_HEADER_ENCODING_JSON,
     BINARY_FRAME_MAGIC, BINARY_FRAME_VERSION,
@@ -56,6 +60,46 @@ struct EquivalentOptionPair {
     base_index: usize,
     path: String,
     value: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConnectWireCorpus {
+    request_cases: Vec<ConnectWireRequestCase>,
+    request_mutations: Vec<ConnectWireMutation>,
+    response_cases: Vec<ConnectWireResponseCase>,
+    response_mutations: Vec<ConnectWireMutation>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConnectWireRequestCase {
+    name: String,
+    kind: String,
+    header: Value,
+    payload_hex: String,
+    canonical_json: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConnectWireResponseCase {
+    name: String,
+    header: Value,
+    payload_hex: String,
+    canonical_json: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConnectWireMutation {
+    name: String,
+    base_index: usize,
+    set_path: Option<String>,
+    remove_path: Option<String>,
+    #[serde(default)]
+    value: Value,
+    payload_hex: Option<String>,
 }
 
 #[test]
@@ -122,7 +166,7 @@ fn runtime_assembly_request_start_decodes_shared_http_headers() {
     let mut modes = HashSet::new();
     for value in corpus.request_start_headers {
         let expected: RuntimeAssemblyRequestStartFrameHeader =
-            serde_json::from_value(value).expect("canonical request header");
+            serde_json::from_value(value.clone()).expect("canonical request header");
         modes.insert(expected.mode.clone());
         assert_eq!(expected.caller.kind, "gateway");
         assert_eq!(
@@ -130,13 +174,23 @@ fn runtime_assembly_request_start_decodes_shared_http_headers() {
             super::RuntimeAssemblyRequestIngressProtocol::Http
         );
         let serialized = serde_json::to_value(&expected).unwrap();
+        let mut normalized = value;
+        normalized
+            .as_object_mut()
+            .unwrap()
+            .entry("testEffectsEnabled")
+            .or_insert(Value::Bool(false));
+        assert_eq!(serialized, normalized);
         let reparsed: RuntimeAssemblyRequestStartFrameHeader =
             serde_json::from_value(serialized).unwrap();
         assert_eq!(reparsed, expected);
         let frame = encode_binary_frame(&expected, &[]).unwrap();
         let (decoded, decoded_payload) =
             decode_runtime_assembly_request_start_frame(&frame).unwrap();
-        assert_eq!(decoded, expected);
+        assert_eq!(
+            decoded,
+            RuntimeAssemblyRequestStartFrameWireHeader::Http(expected)
+        );
         assert!(decoded_payload.is_empty());
     }
     assert_eq!(
@@ -170,7 +224,7 @@ fn runtime_assembly_request_start_mutations_fail_closed() {
         let mut value = corpus.request_start_headers[mutation.base_index].clone();
         apply_mutation(&mut value, &mutation);
         assert!(
-            serde_json::from_value::<RuntimeAssemblyRequestStartFrameHeader>(value.clone())
+            serde_json::from_value::<RuntimeAssemblyRequestStartFrameWireHeader>(value.clone())
                 .is_err(),
             "{}",
             mutation.name
@@ -211,8 +265,145 @@ fn runtime_assembly_request_start_preserves_legacy_decoder_baseline() {
         let decoded: RequestStartFrameHeader =
             serde_json::from_value(value.clone()).expect("legacy request baseline");
         assert_eq!(serde_json::to_value(decoded).unwrap(), value);
-        assert!(serde_json::from_value::<RuntimeAssemblyRequestStartFrameHeader>(value).is_err());
+        assert!(
+            serde_json::from_value::<RuntimeAssemblyRequestStartFrameWireHeader>(value).is_err()
+        );
     }
+}
+
+#[test]
+fn runtime_assembly_request_current_wire_corpus_is_exact_and_uniquely_named() {
+    let corpus = connect_wire_corpus();
+    assert_eq!(corpus.request_cases.len(), 3);
+    assert!(corpus.request_mutations.len() >= 20);
+    assert_eq!(corpus.response_cases.len(), 3);
+    assert!(corpus.response_mutations.len() >= 20);
+
+    let mut names = HashSet::new();
+    for name in corpus
+        .request_cases
+        .iter()
+        .map(|case| case.name.as_str())
+        .chain(
+            corpus
+                .request_mutations
+                .iter()
+                .map(|case| case.name.as_str()),
+        )
+        .chain(corpus.response_cases.iter().map(|case| case.name.as_str()))
+        .chain(
+            corpus
+                .response_mutations
+                .iter()
+                .map(|case| case.name.as_str()),
+        )
+    {
+        assert!(
+            names.insert(name),
+            "duplicate connect wire corpus case {name}"
+        );
+    }
+}
+
+#[test]
+fn runtime_assembly_request_current_http_and_websocket_json_match_shared_goldens() {
+    for case in connect_wire_corpus().request_cases {
+        let payload = decode_hex(&case.payload_hex);
+        let frame = encode_binary_frame(&case.header, &payload)
+            .unwrap_or_else(|error| panic!("{} must encode: {error}", case.name));
+        let (decoded, decoded_payload) = decode_runtime_assembly_request_start_frame(&frame)
+            .unwrap_or_else(|error| panic!("{} must decode: {error}", case.name));
+        assert_eq!(decoded_payload, payload, "{} payload", case.name);
+        match (&*case.kind, &decoded) {
+            ("http", RuntimeAssemblyRequestStartFrameWireHeader::Http(_))
+            | (
+                "websocketConnect",
+                RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(_),
+            ) => {}
+            other => panic!("{} has wrong request branch {other:?}", case.name),
+        }
+        assert_eq!(
+            serde_json::to_string(&decoded).unwrap(),
+            case.canonical_json,
+            "{} canonical JSON",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn runtime_assembly_request_current_mutations_fail_closed() {
+    let corpus = connect_wire_corpus();
+    for mutation in corpus.request_mutations {
+        let base = corpus
+            .request_cases
+            .get(mutation.base_index)
+            .unwrap_or_else(|| panic!("{} base index", mutation.name));
+        let mut header = base.header.clone();
+        apply_connect_wire_mutation(&mut header, &mutation);
+        let payload = mutation
+            .payload_hex
+            .as_deref()
+            .map(decode_hex)
+            .unwrap_or_else(|| decode_hex(&base.payload_hex));
+        let frame = encode_binary_frame(&header, &payload)
+            .unwrap_or_else(|error| panic!("{} mutation frame: {error}", mutation.name));
+        assert!(
+            decode_runtime_assembly_request_start_frame(&frame).is_err(),
+            "{}",
+            mutation.name
+        );
+    }
+}
+
+#[test]
+fn runtime_assembly_websocket_connect_response_json_matches_shared_goldens() {
+    for case in connect_wire_corpus().response_cases {
+        let payload = decode_hex(&case.payload_hex);
+        let frame = encode_binary_frame(&case.header, &payload)
+            .unwrap_or_else(|error| panic!("{} must encode: {error}", case.name));
+        let decoded = decode_runtime_assembly_websocket_connect_response_end_frame(&frame)
+            .unwrap_or_else(|error| panic!("{} must decode: {error}", case.name));
+        assert_eq!(
+            serde_json::to_string(&decoded).unwrap(),
+            case.canonical_json,
+            "{} canonical JSON",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn runtime_assembly_websocket_connect_response_mutations_fail_closed() {
+    let corpus = connect_wire_corpus();
+    for mutation in corpus.response_mutations {
+        let base = corpus
+            .response_cases
+            .get(mutation.base_index)
+            .unwrap_or_else(|| panic!("{} base index", mutation.name));
+        let mut header = base.header.clone();
+        apply_connect_wire_mutation(&mut header, &mutation);
+        let payload = mutation
+            .payload_hex
+            .as_deref()
+            .map(decode_hex)
+            .unwrap_or_else(|| decode_hex(&base.payload_hex));
+        let frame = encode_binary_frame(&header, &payload)
+            .unwrap_or_else(|error| panic!("{} mutation frame: {error}", mutation.name));
+        assert!(
+            decode_runtime_assembly_websocket_connect_response_end_frame(&frame).is_err(),
+            "{}",
+            mutation.name
+        );
+    }
+}
+
+#[test]
+fn runtime_assembly_websocket_connect_response_rejects_duplicate_json_keys() {
+    let frame = raw_json_frame(
+        br#"{"schemaVersion":"skiff-runtime-frame-v1","type":"response.end","requestId":"one","requestId":"two","payloadPresent":false,"websocketConnect":{"result":"accept"}}"#,
+    );
+    assert!(decode_runtime_assembly_websocket_connect_response_end_frame(&frame).is_err());
 }
 
 fn corpus() -> Corpus {
@@ -220,6 +411,13 @@ fn corpus() -> Corpus {
         "../../../../cross-system-fixtures/package-service-ecosystem/runtime-request-wire.json"
     ))
     .expect("shared runtime request corpus")
+}
+
+fn connect_wire_corpus() -> ConnectWireCorpus {
+    serde_json::from_str(include_str!(
+        "../../../../cross-system-fixtures/package-service-ecosystem/runtime-websocket-connect-wire.json"
+    ))
+    .expect("shared runtime websocketConnect wire corpus")
 }
 
 fn raw_case_frame(raw_case: &RawCase) -> Vec<u8> {
@@ -263,6 +461,15 @@ fn apply_mutation(root: &mut Value, mutation: &Mutation) {
         .or(mutation.remove_path.as_ref())
         .expect("mutation path");
     apply_path(root, path, &mutation.value, mutation.remove_path.is_some());
+}
+
+fn apply_connect_wire_mutation(root: &mut Value, mutation: &ConnectWireMutation) {
+    if let Some(path) = mutation.set_path.as_deref() {
+        apply_path(root, path, &mutation.value, false);
+    }
+    if let Some(path) = mutation.remove_path.as_deref() {
+        apply_path(root, path, &Value::Null, true);
+    }
 }
 
 fn apply_path(root: &mut Value, path: &str, value: &Value, remove: bool) {

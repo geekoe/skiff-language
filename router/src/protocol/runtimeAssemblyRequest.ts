@@ -1,10 +1,13 @@
 import {
   type DispatchMode,
+  type HttpHeaderFrameMetadata,
+  type HttpQueryParamFrameMetadata,
   type HttpRequestFrameMetadata,
   isRecord,
   RUNTIME_FRAME_SCHEMA_VERSION,
   type RuntimeClientSessionFrameMetadata,
   type TraceContext,
+  type WebSocketCookieFrameMetadata,
 } from "./envelope.js";
 import {
   activationGeneration,
@@ -20,7 +23,9 @@ import {
   rejectUnknownObjectFields,
 } from "./runtimeAssemblyRequestStrict.js";
 
-export interface RuntimeAssemblyRequestRoutingFrameHeader {
+export type RuntimeAssemblyRequestWireKind = "http" | "websocketConnect";
+
+export interface RuntimeAssemblyHttpRequestRoutingFrameHeader {
   kind: "runtimeAssembly";
   assemblyIdentity: string;
   assemblyGeneration: number;
@@ -33,7 +38,25 @@ export interface RuntimeAssemblyRequestRoutingFrameHeader {
   };
 }
 
-export interface RuntimeAssemblyRequestStartFrameHeader {
+export interface RuntimeAssemblyWebSocketConnectRoutingFrameHeader {
+  kind: "runtimeAssembly";
+  assemblyIdentity: string;
+  assemblyGeneration: number;
+  gatewayEntryIdentity: string;
+  ingress: {
+    protocol: "webSocket";
+    host: string;
+    method: null;
+    path: string;
+  };
+}
+
+// The HTTP producer view remains a named type while the wire reader exposes
+// RuntimeAssemblyRequestStartFrameWireHeader as the exact closed union.
+export type RuntimeAssemblyRequestRoutingFrameHeader =
+  RuntimeAssemblyHttpRequestRoutingFrameHeader;
+
+interface RuntimeAssemblyRequestStartFrameHeaderBase {
   schemaVersion: typeof RUNTIME_FRAME_SCHEMA_VERSION;
   type: "request.start";
   requestId: string;
@@ -48,14 +71,41 @@ export interface RuntimeAssemblyRequestStartFrameHeader {
     expiresAt: string;
   };
   trace: TraceContext;
-  httpRequest: HttpRequestFrameMetadata;
   testEffectsEnabled: boolean;
 }
+
+export interface RuntimeAssemblyRequestStartFrameHeader
+  extends RuntimeAssemblyRequestStartFrameHeaderBase {
+  routing: RuntimeAssemblyHttpRequestRoutingFrameHeader;
+  httpRequest: HttpRequestFrameMetadata;
+}
+
+export interface RuntimeAssemblyWebSocketConnectRequestFrameMetadata {
+  connectionId: string;
+  url: string;
+  query: HttpQueryParamFrameMetadata[];
+  headers: HttpHeaderFrameMetadata[];
+  cookies: WebSocketCookieFrameMetadata[];
+  version?: string;
+  websocketEntryId: string;
+  gatewayEntryIdentity: string;
+}
+
+export interface RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
+  extends Omit<RuntimeAssemblyRequestStartFrameHeaderBase, "mode" | "routing"> {
+  mode: "unary";
+  routing: RuntimeAssemblyWebSocketConnectRoutingFrameHeader;
+  websocketConnect: RuntimeAssemblyWebSocketConnectRequestFrameMetadata;
+}
+
+export type RuntimeAssemblyRequestStartFrameWireHeader =
+  | RuntimeAssemblyRequestStartFrameHeader
+  | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader;
 
 const GATEWAY_ENTRY_IDENTITY_PATTERN =
   /^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$/;
 
-const canonicalHeaderFields = new Set([
+const commonHeaderFields = [
   "schemaVersion",
   "type",
   "requestId",
@@ -65,10 +115,9 @@ const canonicalHeaderFields = new Set([
   "clientSession",
   "deadline",
   "trace",
-  "httpRequest",
   "testEffectsEnabled",
-]);
-const requiredHeaderFields = new Set([
+] as const;
+const commonRequiredHeaderFields = [
   "schemaVersion",
   "type",
   "requestId",
@@ -76,7 +125,19 @@ const requiredHeaderFields = new Set([
   "caller",
   "routing",
   "trace",
+] as const;
+const httpHeaderFields = new Set([...commonHeaderFields, "httpRequest"]);
+const websocketConnectHeaderFields = new Set([
+  ...commonHeaderFields,
+  "websocketConnect",
+]);
+const httpRequiredHeaderFields = new Set([
+  ...commonRequiredHeaderFields,
   "httpRequest",
+]);
+const websocketConnectRequiredHeaderFields = new Set([
+  ...commonRequiredHeaderFields,
+  "websocketConnect",
 ]);
 const routingFields = new Set([
   "kind",
@@ -97,11 +158,20 @@ export function hasRuntimeAssemblyRouting(
 export function validateRuntimeAssemblyRequestStartHeader(
   envelope: Record<string, unknown>,
 ): string | null {
-  const unsupportedHeader = firstUnsupportedField(envelope, canonicalHeaderFields);
+  const wireKindResult = runtimeAssemblyRequestWireKind(envelope);
+  if ("error" in wireKindResult) return wireKindResult.error;
+  const { wireKind } = wireKindResult;
+  const allowedFields =
+    wireKind === "http" ? httpHeaderFields : websocketConnectHeaderFields;
+  const requiredFields =
+    wireKind === "http"
+      ? httpRequiredHeaderFields
+      : websocketConnectRequiredHeaderFields;
+  const unsupportedHeader = firstUnsupportedField(envelope, allowedFields);
   if (unsupportedHeader !== undefined) {
     return `invalid request.start runtimeAssembly envelope: ${unsupportedHeader} is not supported`;
   }
-  const missingHeader = firstMissingField(envelope, requiredHeaderFields);
+  const missingHeader = firstMissingField(envelope, requiredFields);
   if (missingHeader !== undefined) {
     return `invalid request.start runtimeAssembly envelope: ${missingHeader} is required`;
   }
@@ -117,17 +187,20 @@ export function validateRuntimeAssemblyRequestStartHeader(
   if (envelope.mode !== "unary" && envelope.mode !== "serverStream") {
     return "invalid request.start runtimeAssembly envelope: mode must be unary or serverStream";
   }
+  if (wireKind === "websocketConnect" && envelope.mode !== "unary") {
+    return "invalid request.start runtimeAssembly envelope: websocketConnect mode must be unary";
+  }
   const callerError = validateCaller(envelope.caller);
   if (callerError !== null) return callerError;
   return (
     validateRuntimeAssemblyRequestRouting(envelope) ??
-    validateRuntimeAssemblyRequestMetadata(envelope)
+    validateRuntimeAssemblyRequestMetadata(envelope, wireKind)
   );
 }
 
 export function normalizeRuntimeAssemblyRequestStartHeader(
   envelope: Record<string, unknown>,
-): RuntimeAssemblyRequestStartFrameHeader {
+): RuntimeAssemblyRequestStartFrameWireHeader {
   return normalizeRuntimeAssemblyRequestMetadata(envelope);
 }
 
@@ -171,6 +244,37 @@ export function validateRuntimeAssemblyRequestRouting(
   return validateIngress(routing.ingress);
 }
 
+function runtimeAssemblyRequestWireKind(
+  envelope: Record<string, unknown>,
+):
+  | { wireKind: RuntimeAssemblyRequestWireKind }
+  | {
+      error: string;
+    } {
+  if (!isRecord(envelope.routing)) {
+    return {
+      error:
+        "invalid request.start runtimeAssembly envelope: routing must be an object",
+    };
+  }
+  if (!isRecord(envelope.routing.ingress)) {
+    return {
+      error:
+        "invalid request.start runtimeAssembly envelope: routing.ingress must be an object",
+    };
+  }
+  if (envelope.routing.ingress.protocol === "http") {
+    return { wireKind: "http" };
+  }
+  if (envelope.routing.ingress.protocol === "webSocket") {
+    return { wireKind: "websocketConnect" };
+  }
+  return {
+    error:
+      "invalid request.start runtimeAssembly envelope: routing.ingress.protocol must be http or webSocket",
+  };
+}
+
 function validateCaller(input: unknown): string | null {
   if (!isRecord(input)) {
     return "invalid request.start runtimeAssembly envelope: caller must be an object";
@@ -194,14 +298,18 @@ function validateIngress(input: unknown): string | null {
   if (missing !== undefined) {
     return `invalid request.start envelope: routing.ingress.${missing} is required`;
   }
-  if (input.protocol !== "http") {
-    return "invalid request.start envelope: routing.ingress.protocol must be http";
+  if (input.protocol !== "http" && input.protocol !== "webSocket") {
+    return "invalid request.start envelope: routing.ingress.protocol must be http or webSocket";
   }
   if (typeof input.host !== "string" || input.host.length === 0) {
     return "invalid request.start envelope: routing.ingress.host must be a non-empty string";
   }
-  if (typeof input.method !== "string" || input.method.length === 0) {
-    return "invalid request.start envelope: routing.ingress.method must be a non-empty string";
+  if (
+    (input.protocol === "http" &&
+      (typeof input.method !== "string" || input.method.length === 0)) ||
+    (input.protocol === "webSocket" && input.method !== null)
+  ) {
+    return "invalid request.start envelope: routing.ingress.method does not match protocol";
   }
   if (typeof input.path !== "string" || !input.path.startsWith("/")) {
     return "invalid request.start envelope: routing.ingress.path must be an absolute path";

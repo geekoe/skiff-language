@@ -1,16 +1,30 @@
 import { isRecord } from "./envelope.js";
-import type { RuntimeAssemblyRequestStartFrameHeader } from "./runtimeAssemblyRequest.js";
+import type {
+  RuntimeAssemblyRequestStartFrameWireHeader,
+  RuntimeAssemblyRequestWireKind,
+} from "./runtimeAssemblyRequest.js";
 
 class RuntimeAssemblyRequestMetadataError extends Error {}
 
+const CONNECTION_ID_PATTERN = /^(?=.{1,255}$)[A-Za-z0-9._:~-]+$/;
+const GATEWAY_ENTRY_IDENTITY_PATTERN =
+  /^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$/;
+const WEBSOCKET_ENTRY_ID_PATTERN =
+  /^skiff-websocket-entry-v1:sha256:[0-9a-f]{64}$/;
+
 export function validateRuntimeAssemblyRequestMetadata(
   envelope: Record<string, unknown>,
+  wireKind: RuntimeAssemblyRequestWireKind,
 ): string | null {
   try {
     validateClientSession(envelope);
     validateDeadline(envelope);
     validateTrace(envelope);
-    validateHttpRequest(envelope);
+    if (wireKind === "http") {
+      validateHttpRequest(envelope);
+    } else {
+      validateWebSocketConnect(envelope);
+    }
     optionalBoolean(envelope, "testEffectsEnabled");
     return null;
   } catch (error) {
@@ -23,11 +37,11 @@ export function validateRuntimeAssemblyRequestMetadata(
 
 export function normalizeRuntimeAssemblyRequestMetadata(
   envelope: Record<string, unknown>,
-): RuntimeAssemblyRequestStartFrameHeader {
+): RuntimeAssemblyRequestStartFrameWireHeader {
   return {
     ...envelope,
     testEffectsEnabled: envelope.testEffectsEnabled ?? false,
-  } as unknown as RuntimeAssemblyRequestStartFrameHeader;
+  } as unknown as RuntimeAssemblyRequestStartFrameWireHeader;
 }
 
 function validateClientSession(envelope: Record<string, unknown>): void {
@@ -72,6 +86,58 @@ function validateHttpRequest(envelope: Record<string, unknown>): void {
   validateNameValueArray(request.headers, "httpRequest.headers");
 }
 
+function validateWebSocketConnect(envelope: Record<string, unknown>): void {
+  const connect = exactObject(
+    envelope.websocketConnect,
+    "websocketConnect",
+    [
+      "connectionId",
+      "url",
+      "query",
+      "headers",
+      "cookies",
+      "websocketEntryId",
+      "gatewayEntryIdentity",
+    ],
+    ["version"],
+  );
+  requirePattern(
+    connect,
+    "connectionId",
+    "websocketConnect.connectionId",
+    CONNECTION_ID_PATTERN,
+  );
+  requireString(connect, "url", "websocketConnect.url");
+  validateNameValueArray(connect.query, "websocketConnect.query");
+  validateNameValueArray(connect.headers, "websocketConnect.headers");
+  validateNameValueArray(connect.cookies, "websocketConnect.cookies");
+  optionalString(connect, "version", "websocketConnect.version");
+  requirePattern(
+    connect,
+    "websocketEntryId",
+    "websocketConnect.websocketEntryId",
+    WEBSOCKET_ENTRY_ID_PATTERN,
+  );
+  requirePattern(
+    connect,
+    "gatewayEntryIdentity",
+    "websocketConnect.gatewayEntryIdentity",
+    GATEWAY_ENTRY_IDENTITY_PATTERN,
+  );
+  const routing = exactObject(envelope.routing, "routing", [
+    "kind",
+    "assemblyIdentity",
+    "assemblyGeneration",
+    "gatewayEntryIdentity",
+    "ingress",
+  ]);
+  if (connect.gatewayEntryIdentity !== routing.gatewayEntryIdentity) {
+    fail(
+      "websocketConnect.gatewayEntryIdentity must match routing.gatewayEntryIdentity",
+    );
+  }
+}
+
 function validateNameValueArray(value: unknown, label: string): void {
   if (!Array.isArray(value)) fail(`${label} must be an array`);
   for (const [index, entry] of value.entries()) {
@@ -114,6 +180,21 @@ function optionalString(
 ): void {
   if (has(owner, field) && typeof owner[field] !== "string") {
     fail(`${label} must be a string when present`);
+  }
+}
+
+function requirePattern(
+  owner: Record<string, unknown>,
+  field: string,
+  label: string,
+  pattern: RegExp,
+): void {
+  if (
+    !has(owner, field) ||
+    typeof owner[field] !== "string" ||
+    !pattern.test(owner[field])
+  ) {
+    fail(`${label} is not canonical`);
   }
 }
 

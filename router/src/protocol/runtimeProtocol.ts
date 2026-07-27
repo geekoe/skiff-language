@@ -10,6 +10,7 @@ import {
   type RequestCancelReason,
   type ResponseErrorFrameHeader,
   type RouterToRuntimeFrameHeader,
+  type RuntimeAssemblyWebSocketConnectResponseEndFrameHeader,
   type RuntimeFrameHeader,
   type RuntimeFrameHeaderName,
   type RuntimeToRouterFrameHeader,
@@ -26,6 +27,7 @@ import {
   hasRuntimeAssemblyRouting,
   normalizeRuntimeAssemblyRequestStartHeader,
   type RuntimeAssemblyRequestStartFrameHeader,
+  type RuntimeAssemblyRequestStartFrameWireHeader,
   validateRuntimeAssemblyRequestStartHeader
 } from './runtimeAssemblyRequest.js';
 import {
@@ -40,7 +42,7 @@ export type RouterToRuntimeFrameHeaderName = RouterToRuntimeFrameHeader['type'];
 
 export interface ProtocolSchemaProperty {
   type: string | readonly string[];
-  enum?: readonly string[];
+  enum?: readonly (string | number | boolean | null)[];
   minLength?: number;
   pattern?: string;
   minimum?: number;
@@ -1531,6 +1533,141 @@ export const runtimeFrameHeaderSchemas = {
           testEffectsEnabled: { type: 'boolean' }
         },
         additionalProperties: false
+      },
+      {
+        type: 'object',
+        required: [
+          'schemaVersion',
+          'type',
+          'requestId',
+          'mode',
+          'caller',
+          'routing',
+          'trace',
+          'websocketConnect'
+        ],
+        properties: {
+          schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+          type: { type: 'string', enum: ['request.start'] },
+          requestId: { type: 'string' },
+          mode: { type: 'string', enum: ['unary'] },
+          caller: {
+            type: 'object',
+            required: ['kind'],
+            properties: {
+              kind: { type: 'string', enum: ['gateway'] }
+            },
+            additionalProperties: false
+          },
+          routing: {
+            type: 'object',
+            required: [
+              'kind',
+              'assemblyIdentity',
+              'assemblyGeneration',
+              'gatewayEntryIdentity',
+              'ingress'
+            ],
+            properties: {
+              kind: { type: 'string', enum: ['runtimeAssembly'] },
+              assemblyIdentity: {
+                type: 'string',
+                pattern: '^skiff-runtime-assembly-v2:sha256:[0-9a-f]{64}$'
+              },
+              assemblyGeneration: {
+                type: 'integer',
+                minimum: 0,
+                maximum: Number.MAX_SAFE_INTEGER
+              },
+              gatewayEntryIdentity: {
+                type: 'string',
+                pattern: '^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$'
+              },
+              ingress: {
+                type: 'object',
+                required: ['protocol', 'host', 'method', 'path'],
+                properties: {
+                  protocol: { type: 'string', enum: ['webSocket'] },
+                  host: { type: 'string', minLength: 1 },
+                  method: { type: 'null' },
+                  path: { type: 'string', pattern: '^/' }
+                },
+                additionalProperties: false
+              }
+            },
+            additionalProperties: false
+          },
+          clientSession: requestStartFrameProperties.clientSession,
+          deadline: requestStartFrameProperties.deadline,
+          trace: requestStartFrameProperties.trace,
+          websocketConnect: {
+            type: 'object',
+            required: [
+              'connectionId',
+              'url',
+              'query',
+              'headers',
+              'cookies',
+              'websocketEntryId',
+              'gatewayEntryIdentity'
+            ],
+            properties: {
+              connectionId: {
+                type: 'string',
+                pattern: '^(?=.{1,255}$)[A-Za-z0-9._:~-]+$'
+              },
+              url: { type: 'string' },
+              query: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['name', 'value'],
+                  properties: {
+                    name: { type: 'string' },
+                    value: { type: 'string' }
+                  },
+                  additionalProperties: false
+                }
+              },
+              headers: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['name', 'value'],
+                  properties: {
+                    name: { type: 'string' },
+                    value: { type: 'string' }
+                  },
+                  additionalProperties: false
+                }
+              },
+              cookies: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['name', 'value'],
+                  properties: {
+                    name: { type: 'string' },
+                    value: { type: 'string' }
+                  },
+                  additionalProperties: false
+                }
+              },
+              version: { type: 'string' },
+              websocketEntryId: {
+                type: 'string',
+                pattern: '^skiff-websocket-entry-v1:sha256:[0-9a-f]{64}$'
+              },
+              gatewayEntryIdentity: {
+                type: 'string',
+                pattern: '^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$'
+              }
+            },
+            additionalProperties: false
+          },
+          testEffectsEnabled: { type: 'boolean' }
+        },
+        additionalProperties: false
       }
     ]
   },
@@ -1596,67 +1733,127 @@ export const runtimeFrameHeaderSchemas = {
     additionalProperties: false
   },
   'response.end': {
-    type: 'object',
-    required: ['schemaVersion', 'type', 'requestId', 'payloadPresent'],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['response.end'] },
-      requestId: { type: 'string' },
-      payloadPresent: { type: 'boolean' },
-      httpResponse: {
+    oneOf: [
+      {
         type: 'object',
-        required: ['status', 'headers'],
+        required: ['schemaVersion', 'type', 'requestId', 'payloadPresent'],
         properties: {
-          status: { type: 'integer' },
-          headers: {
-            type: 'array',
-            items: {
-              type: 'object',
-              required: ['name', 'value'],
-              properties: {
-                name: { type: 'string' },
-                value: { type: 'string' }
-              },
-              additionalProperties: false
-            }
+          schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+          type: { type: 'string', enum: ['response.end'] },
+          requestId: { type: 'string' },
+          payloadPresent: { type: 'boolean' }
+        },
+        additionalProperties: false
+      },
+      {
+        type: 'object',
+        required: [
+          'schemaVersion',
+          'type',
+          'requestId',
+          'payloadPresent',
+          'httpResponse'
+        ],
+        properties: {
+          schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+          type: { type: 'string', enum: ['response.end'] },
+          requestId: { type: 'string' },
+          payloadPresent: { type: 'boolean' },
+          httpResponse: {
+            type: 'object',
+            required: ['status', 'headers'],
+            properties: {
+              status: { type: 'integer', minimum: 100, maximum: 599 },
+              headers: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['name', 'value'],
+                  properties: {
+                    name: { type: 'string' },
+                    value: { type: 'string' }
+                  },
+                  additionalProperties: false
+                }
+              }
+            },
+            additionalProperties: false
           }
         },
         additionalProperties: false
       },
-      websocketConnect: {
+      {
         type: 'object',
-        required: ['result', 'contextPayloadPresent'],
+        required: [
+          'schemaVersion',
+          'type',
+          'requestId',
+          'payloadPresent',
+          'websocketConnect'
+        ],
         properties: {
-          result: { type: 'string', enum: ['accept', 'reject'] },
-          businessIdentity: { type: 'string' },
-          connectionPolicy: {
+          schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+          type: { type: 'string', enum: ['response.end'] },
+          requestId: { type: 'string' },
+          payloadPresent: { type: 'boolean', enum: [false] },
+          websocketConnect: {
             type: 'object',
-            required: ['maxConnections', 'overflow'],
+            required: ['result'],
             properties: {
-              maxConnections: { type: 'integer' },
-              overflow: { type: 'string', enum: ['close-oldest', 'reject-new'] },
-              closeCode: { type: 'integer' },
-              closeReason: { type: 'string' }
+              result: { type: 'string', enum: ['accept'] },
+              businessIdentity: { type: 'string' },
+              connectionPolicy: {
+                type: 'object',
+                required: ['maxConnections', 'overflow'],
+                properties: {
+                  maxConnections: {
+                    type: 'integer',
+                    minimum: 1,
+                    maximum: 4_294_967_295
+                  },
+                  overflow: {
+                    type: 'string',
+                    enum: ['close-oldest', 'reject-new']
+                  },
+                  closeCode: { type: 'integer', minimum: 0, maximum: 65_535 },
+                  closeReason: { type: 'string' }
+                },
+                additionalProperties: false
+              }
             },
             additionalProperties: false
-          },
-          contextCodec: {
+          }
+        },
+        additionalProperties: false
+      },
+      {
+        type: 'object',
+        required: [
+          'schemaVersion',
+          'type',
+          'requestId',
+          'payloadPresent',
+          'websocketConnect'
+        ],
+        properties: {
+          schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+          type: { type: 'string', enum: ['response.end'] },
+          requestId: { type: 'string' },
+          payloadPresent: { type: 'boolean', enum: [false] },
+          websocketConnect: {
             type: 'object',
-            required: ['operationAbiId', 'contextTypeIdentity'],
+            required: ['result', 'code', 'reason'],
             properties: {
-              operationAbiId: { type: 'string' },
-              contextTypeIdentity: { type: 'string' }
+              result: { type: 'string', enum: ['reject'] },
+              code: { type: 'integer', minimum: 0, maximum: 65_535 },
+              reason: { type: 'string' }
             },
             additionalProperties: false
-          },
-          contextPayloadPresent: { type: 'boolean' },
-          code: { type: 'integer' },
-          reason: { type: 'string' }
+          }
         },
         additionalProperties: false
       }
-    },
-    additionalProperties: false
+    ]
   },
   'response.error': responseErrorSchema,
   'request.cancel': {
@@ -2512,6 +2709,24 @@ export function validateTelemetryEvent(
 export function validateRuntimeAssemblyRequestStartFrameHeader(
   value: unknown
 ): EnvelopeValidationResult<RuntimeAssemblyRequestStartFrameHeader> {
+  const result = validateRuntimeAssemblyRequestStartFrameWireHeader(value);
+  if (!result.ok) return result;
+  if (result.envelope.routing.ingress.protocol !== 'http') {
+    return {
+      ok: false,
+      error:
+        'invalid request.start runtimeAssembly envelope: HTTP consumer does not execute websocketConnect'
+    };
+  }
+  return {
+    ok: true,
+    envelope: result.envelope as RuntimeAssemblyRequestStartFrameHeader
+  };
+}
+
+export function validateRuntimeAssemblyRequestStartFrameWireHeader(
+  value: unknown
+): EnvelopeValidationResult<RuntimeAssemblyRequestStartFrameWireHeader> {
   const typeResult = validateEnvelopeType(value, ['request.start'], 'runtimeAssembly frame header');
   if (!typeResult.ok) {
     return typeResult;
@@ -2530,6 +2745,33 @@ export function validateRuntimeAssemblyRequestStartFrameHeader(
     ? {
         ok: true,
         envelope: normalizeRuntimeAssemblyRequestStartHeader(envelope)
+      }
+    : { ok: false, error };
+}
+
+export function validateRuntimeAssemblyWebSocketConnectResponseEndFrameHeader(
+  value: unknown
+): EnvelopeValidationResult<RuntimeAssemblyWebSocketConnectResponseEndFrameHeader> {
+  const typeResult = validateEnvelopeType(
+    value,
+    ['response.end'],
+    'runtimeAssembly websocketConnect response frame header'
+  );
+  if (!typeResult.ok) {
+    return typeResult;
+  }
+  const { envelope } = typeResult;
+  const error =
+    validateFrameHeaderBase(envelope, 'response.end') ??
+    validateResponseEndFrameHeader(envelope) ??
+    (envelope.websocketConnect === undefined
+      ? 'invalid response.end runtimeAssembly envelope: websocketConnect is required'
+      : null);
+  return error === null
+    ? {
+        ok: true,
+        envelope:
+          envelope as unknown as RuntimeAssemblyWebSocketConnectResponseEndFrameHeader
       }
     : { ok: false, error };
 }
@@ -3819,11 +4061,8 @@ function validateResponseEndVariant(envelope: Record<string, unknown>): string |
   if (envelope.httpResponse !== undefined && envelope.websocketConnect !== undefined) {
     return 'invalid response.end envelope: HTTP and WebSocket response metadata cannot be mixed';
   }
-  if (
-    isRecord(envelope.websocketConnect) &&
-    envelope.payloadPresent !== envelope.websocketConnect.contextPayloadPresent
-  ) {
-    return 'invalid response.end envelope: payloadPresent must match websocketConnect.contextPayloadPresent';
+  if (envelope.websocketConnect !== undefined && envelope.payloadPresent !== false) {
+    return 'invalid response.end envelope: websocketConnect payloadPresent must be false';
   }
   return null;
 }
@@ -4060,24 +4299,6 @@ function validateOptionalContextCodec(value: unknown, field: string): string | n
   );
 }
 
-function validateOptionalResponseContextCodec(value: unknown): string | null {
-  const field = 'websocketConnect.contextCodec';
-  if (value === undefined) {
-    return null;
-  }
-  if (!isRecord(value)) {
-    return `invalid response.end envelope: ${field} must be an object`;
-  }
-  return (
-    rejectUnsupportedObjectFields(value, 'response.end', field, [
-      'operationAbiId',
-      'contextTypeIdentity'
-    ]) ??
-    requireString(value, 'response.end', 'operationAbiId') ??
-    requireString(value, 'response.end', 'contextTypeIdentity')
-  );
-}
-
 function validateWebSocketConnectResponseFrameMetadata(
   envelope: Record<string, unknown>
 ): string | null {
@@ -4088,9 +4309,12 @@ function validateWebSocketConnectResponseFrameMetadata(
     return 'invalid response.end envelope: websocketConnect must be an object';
   }
   const metadata = envelope.websocketConnect;
-  const resultError =
-    requireEnum(envelope, 'response.end', 'websocketConnect.result', ['accept', 'reject']) ??
-    requireBoolean(envelope, 'response.end', 'websocketConnect.contextPayloadPresent');
+  const resultError = requireEnum(
+    envelope,
+    'response.end',
+    'websocketConnect.result',
+    ['accept', 'reject']
+  );
   if (resultError) {
     return resultError;
   }
@@ -4099,12 +4323,9 @@ function validateWebSocketConnectResponseFrameMetadata(
       rejectUnsupportedObjectFields(metadata, 'response.end', 'websocketConnect accept', [
         'result',
         'businessIdentity',
-        'connectionPolicy',
-        'contextCodec',
-        'contextPayloadPresent'
+        'connectionPolicy'
       ]) ??
       optionalString(envelope, 'response.end', 'websocketConnect.businessIdentity') ??
-      validateOptionalResponseContextCodec(metadata.contextCodec) ??
       validateWebSocketConnectionPolicy(metadata.connectionPolicy);
     if (acceptError) {
       return acceptError;
@@ -4113,7 +4334,6 @@ function validateWebSocketConnectResponseFrameMetadata(
     const rejectError =
       rejectUnsupportedObjectFields(metadata, 'response.end', 'websocketConnect reject', [
         'result',
-        'contextPayloadPresent',
         'code',
         'reason'
       ]) ??
@@ -4122,15 +4342,6 @@ function validateWebSocketConnectResponseFrameMetadata(
     if (rejectError) {
       return rejectError;
     }
-    if (metadata.contextPayloadPresent !== false) {
-      return 'invalid response.end envelope: websocketConnect reject must set contextPayloadPresent to false';
-    }
-  }
-  if (metadata.contextPayloadPresent === true && metadata.contextCodec === undefined) {
-    return 'invalid response.end envelope: websocketConnect.contextCodec is required when contextPayloadPresent is true';
-  }
-  if (metadata.contextPayloadPresent === false && metadata.contextCodec !== undefined) {
-    return 'invalid response.end envelope: websocketConnect.contextCodec is not supported when contextPayloadPresent is false';
   }
   return null;
 }
@@ -4155,14 +4366,18 @@ function validateWebSocketConnectionPolicy(value: unknown): string | null {
     return unsupported;
   }
   const policy = value as Record<string, unknown>;
-  if (!Number.isInteger(policy.maxConnections) || Number(policy.maxConnections) <= 0) {
-    return 'invalid response.end envelope: websocketConnect.connectionPolicy.maxConnections must be a positive integer';
+  if (
+    !Number.isInteger(policy.maxConnections) ||
+    Number(policy.maxConnections) <= 0 ||
+    Number(policy.maxConnections) > 4_294_967_295
+  ) {
+    return 'invalid response.end envelope: websocketConnect.connectionPolicy.maxConnections must be an unsigned non-zero 32-bit integer';
   }
   if (policy.overflow !== 'close-oldest' && policy.overflow !== 'reject-new') {
     return 'invalid response.end envelope: websocketConnect.connectionPolicy.overflow must be one of close-oldest, reject-new';
   }
   return (
-    optionalPositiveInteger(value, 'response.end', 'closeCode') ??
+    optionalUnsigned16Integer(value, 'response.end', 'closeCode') ??
     optionalString(value, 'response.end', 'closeReason')
   );
 }
@@ -4806,6 +5021,18 @@ function requireUnsigned16Integer(
 ): string | null {
   const value = getPathValue(envelope, field);
   return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 65_535
+    ? null
+    : `invalid ${envelopeType} envelope: ${field} must be an unsigned 16-bit integer`;
+}
+
+function optionalUnsigned16Integer(
+  envelope: Record<string, unknown>,
+  envelopeType: string,
+  field: string
+): string | null {
+  const value = getPathValue(envelope, field);
+  return value === undefined ||
+    (Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 65_535)
     ? null
     : `invalid ${envelopeType} envelope: ${field} must be an unsigned 16-bit integer`;
 }

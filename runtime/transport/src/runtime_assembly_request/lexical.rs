@@ -39,6 +39,24 @@ where
     Ok(value)
 }
 
+pub(super) fn deserialize_unary_dispatch_mode<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_exact_string(
+        deserializer,
+        "unary",
+        "runtimeAssembly websocketConnect request.start mode",
+    )
+}
+
+pub(super) fn deserialize_response_end_type<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_exact_string(deserializer, "response.end", "binary frame type")
+}
+
 pub(super) fn deserialize_gateway_caller_kind<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,

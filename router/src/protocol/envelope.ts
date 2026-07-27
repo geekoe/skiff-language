@@ -463,6 +463,25 @@ export interface WebSocketConnectResponseFrameMetadata {
   reason?: string;
 }
 
+export type RuntimeAssemblyWebSocketConnectResponseFrameMetadata =
+  | {
+      result: 'accept';
+      businessIdentity?: string;
+      connectionPolicy?: WebSocketConnectionPolicyFrameMetadata;
+    }
+  | {
+      result: 'reject';
+      code: number;
+      reason: string;
+    };
+
+export interface RuntimeAssemblyWebSocketConnectResponseEndFrameHeader
+  extends RuntimeFrameHeaderBase<'response.end'> {
+  requestId: string;
+  payloadPresent: false;
+  websocketConnect: RuntimeAssemblyWebSocketConnectResponseFrameMetadata;
+}
+
 export interface RequestStartFrameHeader extends RuntimeFrameHeaderBase<'request.start'> {
   requestId: string;
   mode: DispatchMode;

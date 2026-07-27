@@ -162,7 +162,7 @@ function matchesProtocolSchemaProperty(
   }
   if (
     schema.enum !== undefined &&
-    (typeof value !== 'string' || !schema.enum.includes(value))
+    !schema.enum.some((candidate) => Object.is(candidate, value))
   ) {
     return false;
   }
@@ -303,6 +303,25 @@ const runtimeAssemblyRequestCorpus = JSON.parse(
   legacyRequestStartHeaders: Array<Record<string, unknown>>;
 };
 
+const runtimeWebSocketConnectWireCorpus = JSON.parse(
+  readFileSync(
+    new URL(
+      '../../cross-system-fixtures/package-service-ecosystem/runtime-websocket-connect-wire.json',
+      import.meta.url
+    ),
+    'utf8'
+  )
+) as {
+  requestCases: Array<{
+    name: string;
+    header: Record<string, unknown>;
+  }>;
+  responseCases: Array<{
+    name: string;
+    header: Record<string, unknown>;
+  }>;
+};
+
 const serviceErrorResponseV2HeaderInvalidCaseNames = new Set([
   'legacy-v1-generic-response-error',
   'missing-error-kind',
@@ -359,16 +378,22 @@ const observabilityFixture = JSON.parse(
 };
 
 describe('runtime protocol fixtures and schemas', () => {
-  it('registers disjoint legacy and canonical HTTP request.start schema branches', () => {
+  it('registers disjoint legacy, current HTTP, and current websocketConnect request.start schema branches', () => {
     const schema = runtimeFrameHeaderSchemas['request.start'];
     expect('oneOf' in schema).toBe(true);
     if (!('oneOf' in schema)) throw new Error('request.start schema must be oneOf');
-    expect(schema.oneOf).toHaveLength(2);
+    expect(schema.oneOf).toHaveLength(3);
     expect(runtimeAssemblyRequestCorpus.requestStartHeaders.length).toBeGreaterThan(0);
     expect(runtimeAssemblyRequestCorpus.legacyRequestStartHeaders.length).toBeGreaterThan(0);
+    expect(runtimeWebSocketConnectWireCorpus.requestCases).toHaveLength(3);
 
     for (const header of runtimeAssemblyRequestCorpus.requestStartHeaders) {
       expect(matchesProtocolEnvelopeSchema(schema, header), String(header.requestId)).toBe(
+        true
+      );
+    }
+    for (const testCase of runtimeWebSocketConnectWireCorpus.requestCases) {
+      expect(matchesProtocolEnvelopeSchema(schema, testCase.header), testCase.name).toBe(
         true
       );
     }
@@ -386,6 +411,20 @@ describe('runtime protocol fixtures and schemas', () => {
     const routing = websocket.routing as Record<string, unknown>;
     (routing.ingress as Record<string, unknown>).protocol = 'webSocket';
     expect(matchesProtocolEnvelopeSchema(schema, websocket)).toBe(false);
+  });
+
+  it('matches the current websocketConnect accept/reject response corpus declaratively', () => {
+    const schema = runtimeFrameHeaderSchemas['response.end'];
+    expect('oneOf' in schema).toBe(true);
+    if (!('oneOf' in schema)) throw new Error('response.end schema must be oneOf');
+    expect(schema.oneOf).toHaveLength(4);
+    expect(runtimeWebSocketConnectWireCorpus.responseCases).toHaveLength(3);
+
+    for (const testCase of runtimeWebSocketConnectWireCorpus.responseCases) {
+      expect(matchesProtocolEnvelopeSchema(schema, testCase.header), testCase.name).toBe(
+        true
+      );
+    }
   });
 
   it('evaluates the response.error declarative oneOf against the shared header corpus', () => {
@@ -1796,7 +1835,6 @@ describe('runtime binary frame foundations', () => {
     const websocketConnect = {
       result: 'accept',
       businessIdentity: 'user-1',
-      contextPayloadPresent: false,
       connectionPolicy: {
         maxConnections: 1,
         overflow: 'close-oldest'
@@ -1851,7 +1889,7 @@ describe('runtime binary frame foundations', () => {
     ).toEqual({
       ok: false,
       error:
-        'invalid response.end envelope: websocketConnect.connectionPolicy.maxConnections must be a positive integer'
+        'invalid response.end envelope: websocketConnect.connectionPolicy.maxConnections must be an unsigned non-zero 32-bit integer'
     });
   });
 
