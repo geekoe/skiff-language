@@ -119,11 +119,11 @@ fn suspension_generations_are_atomic_and_unrelated_domains_remain_stable() {
     );
     assert_eq!(
         DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER,
-        "skiff-deployment-artifact-identity-v2"
+        "skiff-deployment-artifact-identity-v3"
     );
     assert_eq!(
         DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
-        "skiff-deployment-artifact-v2:sha256"
+        "skiff-deployment-artifact-v3:sha256"
     );
     assert_eq!(
         ASSEMBLY_IDENTITY_SCHEMA_MARKER,

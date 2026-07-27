@@ -190,7 +190,10 @@ fn validate_ingress_bindings(
 ) -> Result<()> {
     let mut selectors = BTreeSet::new();
     let mut referenced_entries = BTreeSet::new();
-    let mut websocket_entry_keys = BTreeSet::new();
+    let mut websocket_methods = BTreeSet::new();
+    let mut websocket_method_entries = BTreeSet::new();
+    let mut physical_selectors = Vec::new();
+    let mut method_selectors = Vec::new();
     for binding in ingress {
         validate_ingress(binding)?;
         let Some(entry) = gateway_entries.get(&binding.gateway_entry_key) else {
@@ -199,24 +202,54 @@ fn validate_ingress_bindings(
                 binding.gateway_entry_key
             ));
         };
-        let protocol_matches = matches!(
-            (binding.selector.protocol, &entry.protocol_surface.protocol),
+        match (
+            binding.selector.protocol,
+            &binding.selector.method,
+            &entry.protocol_surface.protocol,
+        ) {
             (
                 skiff_artifact_model::IngressProtocol::Http,
-                GatewayProtocolSurface::Http(_)
-            ) | (
+                Some(_),
+                GatewayProtocolSurface::Http(_),
+            ) => {}
+            (
                 skiff_artifact_model::IngressProtocol::WebSocket,
-                GatewayProtocolSurface::WebSocketConnect(_)
-            )
-        );
-        if !protocol_matches {
-            return invalid_deployment(format!(
-                "ingress selector {:?} protocol does not match gateway entry {} surface",
-                binding.selector, binding.gateway_entry_key
-            ));
-        }
-        if binding.selector.protocol == skiff_artifact_model::IngressProtocol::WebSocket {
-            websocket_entry_keys.insert(&binding.gateway_entry_key);
+                None,
+                GatewayProtocolSurface::WebSocketConnect(_),
+            ) => {
+                physical_selectors.push((
+                    binding.selector.host.as_str(),
+                    binding.selector.path.as_str(),
+                ));
+            }
+            (
+                skiff_artifact_model::IngressProtocol::WebSocket,
+                Some(method),
+                GatewayProtocolSurface::WebSocketJsonRpc(_),
+            ) => {
+                if !websocket_methods.insert(method.as_str()) {
+                    return invalid_deployment(format!(
+                        "duplicate WebSocket JSON-RPC method selector {method:?}"
+                    ));
+                }
+                if !websocket_method_entries.insert(&binding.gateway_entry_key) {
+                    return invalid_deployment(format!(
+                        "WebSocket JSON-RPC gateway entry {} has more than one selector",
+                        binding.gateway_entry_key
+                    ));
+                }
+                method_selectors.push((
+                    binding.gateway_entry_key.clone(),
+                    binding.selector.host.as_str(),
+                    binding.selector.path.as_str(),
+                ));
+            }
+            _ => {
+                return invalid_deployment(format!(
+                    "ingress selector {:?} does not match gateway entry {} protocol surface",
+                    binding.selector, binding.gateway_entry_key
+                ))
+            }
         }
         referenced_entries.insert(&binding.gateway_entry_key);
         if !selectors.insert(binding.selector.clone()) {
@@ -234,10 +267,20 @@ fn validate_ingress_bindings(
             "gateway entry {orphan} is not referenced by any ingress selector"
         ));
     }
-    if websocket_entry_keys.len() > 1 {
+    if !method_selectors.is_empty() && physical_selectors.is_empty() {
         return invalid_deployment(
-            "a service deployment may contain at most one WebSocket gateway entry",
+            "WebSocket JSON-RPC methods require the compiler-owned physical WebSocket entry",
         );
+    }
+    for (key, host, path) in method_selectors {
+        if !physical_selectors
+            .iter()
+            .any(|(physical_host, physical_path)| host == *physical_host && path == *physical_path)
+        {
+            return invalid_deployment(format!(
+                "WebSocket JSON-RPC gateway entry {key} host/path must match the physical WebSocket entry"
+            ));
+        }
     }
     Ok(())
 }
@@ -276,6 +319,11 @@ fn validate_gateway_entries(
 
         match &entry.protocol_surface.protocol {
             GatewayProtocolSurface::Http(http) => {
+                if key.as_str() == skiff_artifact_model::WEBSOCKET_GATEWAY_ENTRY_KEY {
+                    return invalid_deployment(format!(
+                        "HTTP gateway entry cannot use compiler-reserved key {key}"
+                    ));
+                }
                 if entry.handler.is_none() {
                     return invalid_deployment(format!(
                         "HTTP gateway entry {key} requires a handler"
@@ -324,6 +372,47 @@ fn validate_gateway_entries(
                 if entry.handler.is_none() && !entry.adapter_plan.args.is_empty() {
                     return invalid_deployment(format!(
                         "WebSocket gateway entry {key} without a handler must have empty adapter args"
+                    ));
+                }
+            }
+            GatewayProtocolSurface::WebSocketJsonRpc(json_rpc) => {
+                if key.as_str() == skiff_artifact_model::WEBSOCKET_GATEWAY_ENTRY_KEY {
+                    return invalid_deployment(format!(
+                        "WebSocket JSON-RPC gateway entry cannot use compiler-reserved key {key}"
+                    ));
+                }
+                if entry.handler.is_none() {
+                    return invalid_deployment(format!(
+                        "WebSocket JSON-RPC gateway entry {key} requires a handler"
+                    ));
+                }
+                if entry.pre.is_some() || entry.guard.is_some() {
+                    return invalid_deployment(format!(
+                        "WebSocket JSON-RPC gateway entry {key} cannot declare pre or guard callables"
+                    ));
+                }
+                if entry.adapter_plan.kind
+                    != skiff_artifact_model::GatewayAdapterKind::WebSocketJsonRpc
+                {
+                    return invalid_deployment(format!(
+                        "WebSocket JSON-RPC gateway entry {key} requires a websocketJsonRpc adapter plan"
+                    ));
+                }
+                let mut seen_sources = BTreeSet::new();
+                let mut external_sources = Vec::new();
+                for argument in &entry.adapter_plan.args {
+                    if !seen_sources.insert(argument.source) {
+                        return invalid_deployment(format!(
+                            "WebSocket JSON-RPC gateway entry {key} repeats source {}",
+                            argument.source.wire_name()
+                        ));
+                    }
+                    external_sources.push(argument.source);
+                }
+                external_sources.sort_by_key(|source| source.wire_name());
+                if external_sources != json_rpc.external_sources {
+                    return invalid_deployment(format!(
+                        "WebSocket JSON-RPC gateway entry {key} external protocol sources do not match adapter plan"
                     ));
                 }
             }
@@ -471,8 +560,8 @@ fn validate_ingress(binding: &DeploymentIngressBinding) -> Result<()> {
             require_non_empty("HTTP ingress method", method)?;
         }
         skiff_artifact_model::IngressProtocol::WebSocket => {
-            if binding.selector.method.is_some() {
-                return invalid_deployment("WebSocket ingress must not declare method");
+            if let Some(method) = &binding.selector.method {
+                require_non_empty("WebSocket JSON-RPC ingress method", method)?;
             }
         }
     }

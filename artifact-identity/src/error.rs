@@ -21,7 +21,8 @@ pub enum ArtifactIdentityError {
     #[error("gateway entry protocol surface is invalid: {message}")]
     InvalidGatewayEntryProtocolSurface { message: String },
     #[error(
-        "gateway entry identity {identity} must use skiff-gateway-entry-v1:sha256:<64 lowercase hex>"
+        "gateway entry identity {identity} must use {prefix}:<64 lowercase hex>",
+        prefix = crate::GATEWAY_ENTRY_IDENTITY_PREFIX
     )]
     InvalidGatewayEntryIdentity { identity: String },
     #[error("failed to serialize service protocol identity payload: {0}")]

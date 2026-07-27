@@ -63,7 +63,7 @@ string_identity!(DeploymentRevision);
 string_identity!(DeploymentArtifactIdentity);
 string_identity!(AssemblyIdentity);
 
-pub const GATEWAY_ENTRY_IDENTITY_PREFIX: &str = "skiff-gateway-entry-v1:sha256";
+pub const GATEWAY_ENTRY_IDENTITY_PREFIX: &str = "skiff-gateway-entry-v2:sha256";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayEntryKeyParseError {

@@ -368,10 +368,10 @@ fn projection_maps_every_operation_explicitly_and_emits_no_public_path() {
     let fixture = ProjectionFixture::new();
     assert_eq!(
         fixture.input.schema_version,
-        "skiff-service-deployment-input-v3"
+        "skiff-service-deployment-input-v4"
     );
     let deployment = fixture.project().unwrap();
-    assert_eq!(deployment.schema_version, "skiff-service-deployment-v2");
+    assert_eq!(deployment.schema_version, "skiff-service-deployment-v3");
     assert!(deployment
         .deployment_artifact_identity
         .as_str()

@@ -6,6 +6,7 @@ use skiff_artifact_model::{
     GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
     GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface,
     GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
+    GatewayWebSocketJsonRpcProtocolSurface, GatewayWebSocketRpcProfile,
     GatewayWebSocketShapeVersion, WebSocketEntryId, WEBSOCKET_ENTRY_ID_PREFIX,
 };
 
@@ -61,7 +62,23 @@ pub fn normalize_gateway_entry_protocol_surface(
                 .downlink_frames
                 .sort_by_key(|frame| frame.wire_name());
             websocket.downlink_frames.dedup();
+            websocket
+                .rpc_profiles
+                .sort_by_key(|profile| profile.wire_name());
+            websocket.rpc_profiles.dedup();
             GatewayProtocolSurface::WebSocketConnect(websocket)
+        }
+        GatewayProtocolSurface::WebSocketJsonRpc(mut json_rpc) => {
+            normalize_sources(&mut json_rpc.external_sources);
+            json_rpc.params_schema = normalize_schema(
+                json_rpc.params_schema,
+                "protocol.websocketJsonRpc.paramsSchema",
+            )?;
+            json_rpc.result_schema = normalize_schema(
+                json_rpc.result_schema,
+                "protocol.websocketJsonRpc.resultSchema",
+            )?;
+            GatewayProtocolSurface::WebSocketJsonRpc(json_rpc)
         }
     };
     validate_surface_semantics(&surface)?;
@@ -349,6 +366,9 @@ fn validate_surface_semantics(surface: &GatewayEntryProtocolSurface) -> Result<(
         GatewayProtocolSurface::WebSocketConnect(websocket) => {
             validate_websocket_connect_surface(websocket)
         }
+        GatewayProtocolSurface::WebSocketJsonRpc(json_rpc) => {
+            validate_websocket_json_rpc_surface(json_rpc)
+        }
     }
 }
 
@@ -381,7 +401,64 @@ fn validate_websocket_connect_surface(
             "WebSocket connect surface must expose the fixed binary and text downlink frame classes",
         );
     }
+    if surface.rpc_profiles != [GatewayWebSocketRpcProfile::JsonRpc2_0Text] {
+        return invalid_surface(
+            "WebSocket connect surface must expose exactly the jsonrpc-2.0-text profile",
+        );
+    }
     Ok(())
+}
+
+fn validate_websocket_json_rpc_surface(
+    surface: &GatewayWebSocketJsonRpcProtocolSurface,
+) -> Result<()> {
+    if surface.profile != GatewayWebSocketRpcProfile::JsonRpc2_0Text {
+        return invalid_surface("WebSocket JSON-RPC profile must be jsonrpc-2.0-text");
+    }
+    if surface.dispatch_mode != GatewayDispatchMode::Unary {
+        return invalid_surface("WebSocket JSON-RPC dispatch mode must be unary");
+    }
+    if !surface
+        .external_sources
+        .contains(&GatewayAdapterSource::WebSocketJsonRpcParams)
+    {
+        return invalid_surface(
+            "WebSocket JSON-RPC surface must expose websocket.jsonRpcParams exactly once",
+        );
+    }
+    if surface.external_sources.iter().any(|source| {
+        !matches!(
+            source,
+            GatewayAdapterSource::WebSocketJsonRpcParams
+                | GatewayAdapterSource::WebSocketConnectionId
+                | GatewayAdapterSource::WebSocketBusinessIdentity
+        )
+    }) {
+        return invalid_surface("WebSocket JSON-RPC surface contains a source from another phase");
+    }
+    if !json_rpc_params_are_structured(&surface.params_schema) {
+        return invalid_surface(
+            "WebSocket JSON-RPC paramsSchema must accept only top-level objects or arrays",
+        );
+    }
+    Ok(())
+}
+
+fn json_rpc_params_are_structured(schema: &GatewayExternalSchema) -> bool {
+    match schema {
+        GatewayExternalSchema::Record { .. } | GatewayExternalSchema::Array { .. } => true,
+        GatewayExternalSchema::ClosedUnion { branches } => {
+            !branches.is_empty() && branches.iter().all(json_rpc_params_are_structured)
+        }
+        GatewayExternalSchema::Null
+        | GatewayExternalSchema::String
+        | GatewayExternalSchema::Number
+        | GatewayExternalSchema::Integer
+        | GatewayExternalSchema::Boolean
+        | GatewayExternalSchema::Bytes
+        | GatewayExternalSchema::Nullable { .. }
+        | GatewayExternalSchema::StringLiteral { .. } => false,
+    }
 }
 
 fn validate_http_surface(surface: &GatewayHttpProtocolSurface) -> Result<()> {
@@ -462,6 +539,9 @@ fn validate_http_surface(surface: &GatewayHttpProtocolSurface) -> Result<()> {
         }
         GatewayAdapterKind::WebSocketConnect => {
             return invalid_surface("HTTP protocol surface cannot use websocketConnect")
+        }
+        GatewayAdapterKind::WebSocketJsonRpc => {
+            return invalid_surface("HTTP protocol surface cannot use websocketJsonRpc")
         }
     }
     Ok(())

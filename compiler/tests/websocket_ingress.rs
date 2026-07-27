@@ -89,7 +89,7 @@ fn connect_only_websocket_projects_exact_deployment_and_assembly_entry() {
     assert!(entry
         .gateway_entry_identity
         .as_str()
-        .starts_with("skiff-gateway-entry-v1:sha256:"));
+        .starts_with("skiff-gateway-entry-v2:sha256:"));
 
     let PackageLocalAbiSymbol::Callable {
         callable_id: implementation_callable,

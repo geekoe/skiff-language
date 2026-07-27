@@ -7,6 +7,7 @@ use skiff_artifact_model::{
     GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
     GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
     GatewayProtocolSurface, GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
+    GatewayWebSocketJsonRpcProtocolSurface, GatewayWebSocketRpcProfile,
     GatewayWebSocketShapeVersion, IngressProtocol, IngressSelector, PackageArtifactRef,
     PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, ResourcePolicy, ServiceContractRef,
     ServiceDeployment, ServiceDeploymentInput, ServiceProtocolIdentity,
@@ -17,7 +18,10 @@ use skiff_artifact_model::{
 use super::{
     assign_service_deployment_identity, gateway_entry_identity, service_deployment_identity,
     validate_service_deployment_input, validate_service_deployment_surface,
-    DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
+    DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX, DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER,
+    GATEWAY_ENTRY_IDENTITY_PREFIX, GATEWAY_ENTRY_IDENTITY_SCHEMA_MARKER,
+    PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX, PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
+    SERVICE_PROTOCOL_IDENTITY_PREFIX,
 };
 
 fn protocol_surface(kind: GatewayAdapterKind) -> GatewayEntryProtocolSurface {
@@ -41,6 +45,9 @@ fn protocol_surface(kind: GatewayAdapterKind) -> GatewayEntryProtocolSurface {
         GatewayAdapterKind::WebSocketConnect => {
             panic!("HTTP deployment fixture does not accept websocketConnect")
         }
+        GatewayAdapterKind::WebSocketJsonRpc => {
+            panic!("HTTP deployment fixture does not accept websocketJsonRpc")
+        }
     };
     GatewayEntryProtocolSurface {
         protocol: GatewayProtocolSurface::Http(http),
@@ -55,6 +62,9 @@ fn gateway_entry(kind: GatewayAdapterKind) -> DeploymentGatewayEntry {
         GatewayAdapterKind::RawHttp => GatewayAdapterSource::HttpRequest,
         GatewayAdapterKind::WebSocketConnect => {
             panic!("HTTP deployment fixture does not accept websocketConnect")
+        }
+        GatewayAdapterKind::WebSocketJsonRpc => {
+            panic!("HTTP deployment fixture does not accept websocketJsonRpc")
         }
     };
     DeploymentGatewayEntry {
@@ -93,6 +103,7 @@ fn websocket_gateway_entry(
                     GatewayWebSocketDownlinkFrame::Binary,
                     GatewayWebSocketDownlinkFrame::Text,
                 ],
+                rpc_profiles: vec![GatewayWebSocketRpcProfile::JsonRpc2_0Text],
             },
         ),
         external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
@@ -105,6 +116,43 @@ fn websocket_gateway_entry(
         guard: None,
         adapter_plan: GatewayAdapterPlan {
             kind: GatewayAdapterKind::WebSocketConnect,
+            args,
+        },
+    }
+}
+
+fn websocket_json_rpc_gateway_entry(
+    handler: Option<PackageCallableId>,
+    args: Vec<GatewayAdapterArg>,
+    params_schema: GatewayExternalSchema,
+    result_schema: GatewayExternalSchema,
+) -> DeploymentGatewayEntry {
+    let mut external_sources = args
+        .iter()
+        .map(|argument| argument.source)
+        .collect::<Vec<_>>();
+    external_sources.sort_by_key(|source| source.wire_name());
+    external_sources.dedup();
+    let protocol_surface = GatewayEntryProtocolSurface {
+        protocol: GatewayProtocolSurface::WebSocketJsonRpc(
+            GatewayWebSocketJsonRpcProtocolSurface {
+                profile: GatewayWebSocketRpcProfile::JsonRpc2_0Text,
+                dispatch_mode: GatewayDispatchMode::Unary,
+                external_sources,
+                params_schema,
+                result_schema,
+            },
+        ),
+        external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+    };
+    DeploymentGatewayEntry {
+        gateway_entry_identity: gateway_entry_identity(&protocol_surface).unwrap(),
+        protocol_surface,
+        handler,
+        pre: None,
+        guard: None,
+        adapter_plan: GatewayAdapterPlan {
+            kind: GatewayAdapterKind::WebSocketJsonRpc,
             args,
         },
     }
@@ -194,6 +242,48 @@ fn websocket_deployment(
     deployment
 }
 
+fn websocket_json_rpc_deployment() -> ServiceDeployment {
+    let mut deployment = websocket_deployment(None, Vec::new());
+    let key = GatewayEntryKey::parse("status").unwrap();
+    deployment.gateway_entries.insert(
+        key.clone(),
+        websocket_json_rpc_gateway_entry(
+            Some(PackageCallableId::new(
+                "pkg-callable:example.provider:status",
+            )),
+            vec![
+                GatewayAdapterArg {
+                    param: "params".to_string(),
+                    source: GatewayAdapterSource::WebSocketJsonRpcParams,
+                },
+                GatewayAdapterArg {
+                    param: "connectionId".to_string(),
+                    source: GatewayAdapterSource::WebSocketConnectionId,
+                },
+            ],
+            GatewayExternalSchema::Record {
+                fields: BTreeMap::from([("requestId".to_string(), GatewayExternalSchema::String)]),
+                required: vec!["requestId".to_string()],
+            },
+            GatewayExternalSchema::Record {
+                fields: BTreeMap::from([("status".to_string(), GatewayExternalSchema::String)]),
+                required: vec!["status".to_string()],
+            },
+        ),
+    );
+    deployment.ingress.push(DeploymentIngressBinding {
+        selector: IngressSelector {
+            protocol: IngressProtocol::WebSocket,
+            host: "*".to_string(),
+            method: Some("status.get".to_string()),
+            path: "/chat".to_string(),
+        },
+        gateway_entry_key: key,
+    });
+    assign_service_deployment_identity(&mut deployment).unwrap();
+    deployment
+}
+
 fn input_from(deployment: &ServiceDeployment) -> ServiceDeploymentInput {
     ServiceDeploymentInput {
         schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
@@ -267,6 +357,251 @@ fn deployment_gateway_validation_accepts_websocket_with_or_without_connect_handl
         gateway_entry_key: GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap(),
     });
     validate_service_deployment_surface(&aliased).unwrap();
+}
+
+#[test]
+fn deployment_gateway_validation_accepts_linked_websocket_json_rpc_methods() {
+    let deployment = websocket_json_rpc_deployment();
+    validate_service_deployment_surface(&deployment).unwrap();
+    validate_service_deployment_input(&input_from(&deployment)).unwrap();
+
+    let physical = deployment
+        .ingress
+        .iter()
+        .find(|binding| binding.gateway_entry_key.as_str() == WEBSOCKET_GATEWAY_ENTRY_KEY)
+        .unwrap();
+    let method = deployment
+        .ingress
+        .iter()
+        .find(|binding| binding.gateway_entry_key.as_str() == "status")
+        .unwrap();
+    assert_eq!(physical.selector.method, None);
+    assert_eq!(method.selector.method.as_deref(), Some("status.get"));
+    assert_eq!(method.selector.host, physical.selector.host);
+    assert_eq!(method.selector.path, physical.selector.path);
+}
+
+#[test]
+fn deployment_websocket_json_rpc_identity_boundaries_are_exact() {
+    let baseline = websocket_json_rpc_deployment();
+    let baseline_gateway = baseline.gateway_entries[&GatewayEntryKey::parse("status").unwrap()]
+        .gateway_entry_identity
+        .clone();
+    let baseline_deployment = service_deployment_identity(&baseline).unwrap();
+
+    let mut renamed_method = baseline.clone();
+    renamed_method
+        .ingress
+        .iter_mut()
+        .find(|binding| binding.gateway_entry_key.as_str() == "status")
+        .unwrap()
+        .selector
+        .method = Some("status.read".to_string());
+    assert_eq!(
+        renamed_method.gateway_entries[&GatewayEntryKey::parse("status").unwrap()]
+            .gateway_entry_identity,
+        baseline_gateway
+    );
+    assert_ne!(
+        service_deployment_identity(&renamed_method).unwrap(),
+        baseline_deployment
+    );
+
+    let mut shape_changed = baseline.clone();
+    let entry = shape_changed
+        .gateway_entries
+        .get_mut(&GatewayEntryKey::parse("status").unwrap())
+        .unwrap();
+    let GatewayProtocolSurface::WebSocketJsonRpc(surface) = &mut entry.protocol_surface.protocol
+    else {
+        panic!("status must be websocketJsonRpc")
+    };
+    surface.params_schema = GatewayExternalSchema::Array {
+        items: Box::new(GatewayExternalSchema::String),
+    };
+    entry.gateway_entry_identity = gateway_entry_identity(&entry.protocol_surface).unwrap();
+    assert_ne!(entry.gateway_entry_identity, baseline_gateway);
+    assert_ne!(
+        service_deployment_identity(&shape_changed).unwrap(),
+        baseline_deployment
+    );
+
+    let mut handler_changed = baseline.clone();
+    handler_changed
+        .gateway_entries
+        .get_mut(&GatewayEntryKey::parse("status").unwrap())
+        .unwrap()
+        .handler = Some(PackageCallableId::new(
+        "pkg-callable:example.provider:replacementStatus",
+    ));
+    assert_eq!(
+        handler_changed.gateway_entries[&GatewayEntryKey::parse("status").unwrap()]
+            .gateway_entry_identity,
+        baseline_gateway
+    );
+    assert_ne!(
+        service_deployment_identity(&handler_changed).unwrap(),
+        baseline_deployment
+    );
+
+    let mut key_changed = baseline.clone();
+    let old_key = GatewayEntryKey::parse("status").unwrap();
+    let new_key = GatewayEntryKey::parse("renamed-status").unwrap();
+    let entry = key_changed.gateway_entries.remove(&old_key).unwrap();
+    key_changed.gateway_entries.insert(new_key.clone(), entry);
+    key_changed
+        .ingress
+        .iter_mut()
+        .find(|binding| binding.gateway_entry_key == old_key)
+        .unwrap()
+        .gateway_entry_key = new_key.clone();
+    assert_eq!(
+        key_changed.gateway_entries[&new_key].gateway_entry_identity,
+        baseline_gateway
+    );
+    assert_ne!(
+        service_deployment_identity(&key_changed).unwrap(),
+        baseline_deployment
+    );
+
+    let mut args_reordered = baseline.clone();
+    args_reordered
+        .gateway_entries
+        .get_mut(&GatewayEntryKey::parse("status").unwrap())
+        .unwrap()
+        .adapter_plan
+        .args
+        .reverse();
+    assert_eq!(
+        args_reordered.gateway_entries[&GatewayEntryKey::parse("status").unwrap()]
+            .gateway_entry_identity,
+        baseline_gateway
+    );
+    assert_ne!(
+        service_deployment_identity(&args_reordered).unwrap(),
+        baseline_deployment
+    );
+}
+
+#[test]
+fn deployment_websocket_json_rpc_association_and_tamper_fail_closed() {
+    let baseline = websocket_json_rpc_deployment();
+    let assert_invalid = |deployment: &ServiceDeployment| {
+        assert!(
+            validate_service_deployment_surface(deployment).is_err(),
+            "tampered deployment unexpectedly validated"
+        );
+    };
+
+    let mut missing_physical = baseline.clone();
+    missing_physical
+        .gateway_entries
+        .remove(&GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap());
+    missing_physical
+        .ingress
+        .retain(|binding| binding.gateway_entry_key.as_str() != WEBSOCKET_GATEWAY_ENTRY_KEY);
+    assert_invalid(&missing_physical);
+
+    let mut method_without_selector = baseline.clone();
+    method_without_selector
+        .ingress
+        .iter_mut()
+        .find(|binding| binding.gateway_entry_key.as_str() == "status")
+        .unwrap()
+        .selector
+        .method = None;
+    assert_invalid(&method_without_selector);
+
+    let mut physical_with_method = baseline.clone();
+    physical_with_method
+        .ingress
+        .iter_mut()
+        .find(|binding| binding.gateway_entry_key.as_str() == WEBSOCKET_GATEWAY_ENTRY_KEY)
+        .unwrap()
+        .selector
+        .method = Some("status.get".to_string());
+    assert_invalid(&physical_with_method);
+
+    let mutations: [fn(&mut IngressSelector); 2] = [
+        |selector: &mut IngressSelector| selector.host = "other.example.test".to_string(),
+        |selector: &mut IngressSelector| selector.path = "/other".to_string(),
+    ];
+    for mutate in mutations {
+        let mut mismatched = baseline.clone();
+        mutate(
+            &mut mismatched
+                .ingress
+                .iter_mut()
+                .find(|binding| binding.gateway_entry_key.as_str() == "status")
+                .unwrap()
+                .selector,
+        );
+        assert_invalid(&mismatched);
+    }
+
+    let mut missing_handler = baseline.clone();
+    missing_handler
+        .gateway_entries
+        .get_mut(&GatewayEntryKey::parse("status").unwrap())
+        .unwrap()
+        .handler = None;
+    assert_invalid(&missing_handler);
+
+    let mut wrong_kind = baseline.clone();
+    wrong_kind
+        .gateway_entries
+        .get_mut(&GatewayEntryKey::parse("status").unwrap())
+        .unwrap()
+        .adapter_plan
+        .kind = GatewayAdapterKind::WebSocketConnect;
+    assert_invalid(&wrong_kind);
+
+    let mut wrong_source = baseline.clone();
+    wrong_source
+        .gateway_entries
+        .get_mut(&GatewayEntryKey::parse("status").unwrap())
+        .unwrap()
+        .adapter_plan
+        .args[0]
+        .source = GatewayAdapterSource::WebSocketConnectRequest;
+    assert_invalid(&wrong_source);
+
+    let mut source_set_mismatch = baseline.clone();
+    source_set_mismatch
+        .gateway_entries
+        .get_mut(&GatewayEntryKey::parse("status").unwrap())
+        .unwrap()
+        .adapter_plan
+        .args
+        .pop();
+    assert_invalid(&source_set_mismatch);
+
+    let mut reserved_http = deployment_with(GatewayAdapterKind::TypedJson);
+    let old_key = reserved_http.gateway_entries.keys().next().unwrap().clone();
+    let entry = reserved_http.gateway_entries.remove(&old_key).unwrap();
+    let reserved = GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap();
+    reserved_http
+        .gateway_entries
+        .insert(reserved.clone(), entry);
+    reserved_http.ingress[0].gateway_entry_key = reserved;
+    assert_invalid(&reserved_http);
+
+    let mut duplicate_method = baseline;
+    let duplicate_key = GatewayEntryKey::parse("duplicate-status").unwrap();
+    duplicate_method.gateway_entries.insert(
+        duplicate_key.clone(),
+        duplicate_method.gateway_entries[&GatewayEntryKey::parse("status").unwrap()].clone(),
+    );
+    duplicate_method.ingress.push(DeploymentIngressBinding {
+        selector: IngressSelector {
+            protocol: IngressProtocol::WebSocket,
+            host: "*".to_string(),
+            method: Some("status.get".to_string()),
+            path: "/chat".to_string(),
+        },
+        gateway_entry_key: duplicate_key,
+    });
+    assert_invalid(&duplicate_method);
 }
 
 #[test]
@@ -349,7 +684,7 @@ fn deployment_gateway_validation_rejects_cross_field_mismatches() {
         .next()
         .unwrap()
         .gateway_entry_identity =
-        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v1:sha256:{}", "f".repeat(64)))
+        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v2:sha256:{}", "f".repeat(64)))
             .unwrap();
     assert!(validate_service_deployment_surface(&identity).is_err());
 
@@ -459,21 +794,58 @@ fn deployment_identity_is_stable_under_reorder_and_rejects_stale_generation() {
     assert_eq!(service_deployment_identity(&deployment).unwrap(), expected);
 
     let mut stale_input = input_from(&deployment);
-    stale_input.schema_version = "skiff-service-deployment-input-v1".to_string();
+    stale_input.schema_version = "skiff-service-deployment-input-v3".to_string();
     assert!(validate_service_deployment_input(&stale_input).is_err());
 
     let mut stale_schema = deployment.clone();
-    stale_schema.schema_version = "skiff-service-deployment-v1".to_string();
+    stale_schema.schema_version = "skiff-service-deployment-v2".to_string();
     assert!(service_deployment_identity(&stale_schema).is_err());
 
     let mut stale_identity = deployment;
     stale_identity.deployment_artifact_identity = DeploymentArtifactIdentity::new(format!(
-        "skiff-deployment-artifact-v1:sha256:{}",
+        "skiff-deployment-artifact-v2:sha256:{}",
         "a".repeat(64)
     ));
     assert!(super::validate_service_deployment_identity(&stale_identity).is_err());
     assert_eq!(
+        SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+        "skiff-service-deployment-input-v4"
+    );
+    assert_eq!(
+        SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+        "skiff-service-deployment-v3"
+    );
+    assert_eq!(
         DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
-        "skiff-deployment-artifact-v2:sha256"
+        "skiff-deployment-artifact-v3:sha256"
+    );
+    assert_eq!(
+        DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER,
+        "skiff-deployment-artifact-identity-v3"
+    );
+    assert_eq!(
+        GATEWAY_ENTRY_IDENTITY_PREFIX,
+        "skiff-gateway-entry-v2:sha256"
+    );
+    assert_eq!(
+        GATEWAY_ENTRY_IDENTITY_SCHEMA_MARKER,
+        "skiff-gateway-entry-identity-v2"
+    );
+    assert_eq!(
+        PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+        "skiff-package-build-v10:sha256"
+    );
+    assert_eq!(
+        PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
+        "skiff-package-local-abi-v7:sha256"
+    );
+    assert_eq!(
+        SERVICE_PROTOCOL_IDENTITY_PREFIX,
+        "skiff-service-protocol-v5:sha256"
+    );
+    assert!(
+        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v1:sha256:{}", "a".repeat(64)))
+            .is_err(),
+        "stale gateway identity generation must fail at the typed reader"
     );
 }

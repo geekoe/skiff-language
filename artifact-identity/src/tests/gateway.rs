@@ -7,6 +7,7 @@ use skiff_artifact_model::{
     GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
     GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface,
     GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
+    GatewayWebSocketJsonRpcProtocolSurface, GatewayWebSocketRpcProfile,
     GatewayWebSocketShapeVersion, WEBSOCKET_GATEWAY_ENTRY_KEY,
 };
 
@@ -88,6 +89,7 @@ fn websocket_surface() -> GatewayEntryProtocolSurface {
                     GatewayWebSocketDownlinkFrame::Text,
                     GatewayWebSocketDownlinkFrame::Binary,
                 ],
+                rpc_profiles: vec![GatewayWebSocketRpcProfile::JsonRpc2_0Text],
             },
         ),
         external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
@@ -98,7 +100,8 @@ fn websocket_surface() -> GatewayEntryProtocolSurface {
 fn http_surface(surface: &GatewayEntryProtocolSurface) -> &GatewayHttpProtocolSurface {
     match &surface.protocol {
         GatewayProtocolSurface::Http(http) => http,
-        GatewayProtocolSurface::WebSocketConnect(_) => {
+        GatewayProtocolSurface::WebSocketConnect(_)
+        | GatewayProtocolSurface::WebSocketJsonRpc(_) => {
             panic!("HTTP surface helper received websocketConnect")
         }
     }
@@ -107,8 +110,40 @@ fn http_surface(surface: &GatewayEntryProtocolSurface) -> &GatewayHttpProtocolSu
 fn http_surface_mut(surface: &mut GatewayEntryProtocolSurface) -> &mut GatewayHttpProtocolSurface {
     match &mut surface.protocol {
         GatewayProtocolSurface::Http(http) => http,
-        GatewayProtocolSurface::WebSocketConnect(_) => {
+        GatewayProtocolSurface::WebSocketConnect(_)
+        | GatewayProtocolSurface::WebSocketJsonRpc(_) => {
             panic!("HTTP surface helper received websocketConnect")
+        }
+    }
+}
+
+fn websocket_json_rpc_surface(
+    external_sources: Vec<GatewayAdapterSource>,
+    params_schema: GatewayExternalSchema,
+    result_schema: GatewayExternalSchema,
+) -> GatewayEntryProtocolSurface {
+    normalize_gateway_entry_protocol_surface(GatewayEntryProtocolSurface {
+        protocol: GatewayProtocolSurface::WebSocketJsonRpc(
+            GatewayWebSocketJsonRpcProtocolSurface {
+                profile: GatewayWebSocketRpcProfile::JsonRpc2_0Text,
+                dispatch_mode: GatewayDispatchMode::Unary,
+                external_sources,
+                params_schema,
+                result_schema,
+            },
+        ),
+        external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+    })
+    .expect("canonical WebSocket JSON-RPC surface")
+}
+
+fn websocket_json_rpc_surface_mut(
+    surface: &mut GatewayEntryProtocolSurface,
+) -> &mut GatewayWebSocketJsonRpcProtocolSurface {
+    match &mut surface.protocol {
+        GatewayProtocolSurface::WebSocketJsonRpc(json_rpc) => json_rpc,
+        GatewayProtocolSurface::Http(_) | GatewayProtocolSurface::WebSocketConnect(_) => {
+            panic!("JSON-RPC surface helper received another protocol")
         }
     }
 }
@@ -117,11 +152,11 @@ fn http_surface_mut(surface: &mut GatewayEntryProtocolSurface) -> &mut GatewayHt
 fn gateway_identity_marker_parser_and_preimage_match_exact_golden() {
     assert_eq!(
         GATEWAY_ENTRY_IDENTITY_SCHEMA_MARKER,
-        "skiff-gateway-entry-identity-v1"
+        "skiff-gateway-entry-identity-v2"
     );
     assert_eq!(
         GATEWAY_ENTRY_IDENTITY_PREFIX,
-        "skiff-gateway-entry-v1:sha256"
+        "skiff-gateway-entry-v2:sha256"
     );
 
     let surface = typed_http_surface();
@@ -130,12 +165,12 @@ fn gateway_identity_marker_parser_and_preimage_match_exact_golden() {
     let preimage = String::from_utf8(bytes).expect("JSON UTF-8");
     assert_eq!(
         preimage,
-        r#"{"schema":"skiff-gateway-entry-identity-v1","surface":{"externalErrorProjection":{"kind":"fixed","version":"v1"},"protocol":{"kind":"http","surface":{"adapterKind":"typedJson","dispatchMode":"unary","externalSources":[{"kind":"http.body"},{"kind":"http.request"}],"requestBodySchema":{"fields":{"query":{"kind":"string"},"requestId":{"kind":"string"}},"kind":"record","required":["query","requestId"]},"responseSchema":{"branches":[{"kind":"stringLiteral","value":"accepted"},{"kind":"stringLiteral","value":"ok"}],"kind":"closedUnion"},"streamItemSchema":null}}}}"#
+        r#"{"schema":"skiff-gateway-entry-identity-v2","surface":{"externalErrorProjection":{"kind":"fixed","version":"v1"},"protocol":{"kind":"http","surface":{"adapterKind":"typedJson","dispatchMode":"unary","externalSources":[{"kind":"http.body"},{"kind":"http.request"}],"requestBodySchema":{"fields":{"query":{"kind":"string"},"requestId":{"kind":"string"}},"kind":"record","required":["query","requestId"]},"responseSchema":{"branches":[{"kind":"stringLiteral","value":"accepted"},{"kind":"stringLiteral","value":"ok"}],"kind":"closedUnion"},"streamItemSchema":null}}}}"#
     );
     let identity = gateway_entry_identity(&surface).expect("gateway identity");
     assert_eq!(
         identity.as_str(),
-        "skiff-gateway-entry-v1:sha256:a24d48c28b531ef534b0ffcbff94554c505caab62f0a9de1cd47c4ab0ec4f685"
+        "skiff-gateway-entry-v2:sha256:1ce33a44e725ea8fdea02caa1cc874567007967e3639e9c98ddeed04de5d4f5c"
     );
     assert_eq!(
         gateway_entry_identity_hash(identity.as_str()).expect("identity hash"),
@@ -146,6 +181,7 @@ fn gateway_identity_marker_parser_and_preimage_match_exact_golden() {
     for invalid in [
         String::new(),
         format!("skiff-gateway-v1:sha256:{digest}"),
+        format!("skiff-gateway-entry-v1:sha256:{digest}"),
         format!("{GATEWAY_ENTRY_IDENTITY_PREFIX}:{}", "a".repeat(63)),
         format!("{GATEWAY_ENTRY_IDENTITY_PREFIX}:{}", "A".repeat(64)),
         format!("{GATEWAY_ENTRY_IDENTITY_PREFIX}:{}", "g".repeat(64)),
@@ -155,6 +191,15 @@ fn gateway_identity_marker_parser_and_preimage_match_exact_golden() {
             "{invalid} must be rejected"
         );
     }
+
+    let diagnostic =
+        gateway_entry_identity_hash(&format!("skiff-gateway-entry-v1:sha256:{digest}"))
+            .unwrap_err()
+            .to_string();
+    assert!(
+        diagnostic.contains(GATEWAY_ENTRY_IDENTITY_PREFIX),
+        "diagnostic must reuse the canonical prefix: {diagnostic}"
+    );
 }
 
 #[test]
@@ -164,11 +209,11 @@ fn websocket_gateway_and_internal_entry_id_match_language_neutral_goldens() {
         canonical_gateway_entry_identity_bytes(&surface).expect("canonical gateway preimage");
     assert_eq!(
         String::from_utf8(bytes).unwrap(),
-        r#"{"schema":"skiff-gateway-entry-identity-v1","surface":{"externalErrorProjection":{"kind":"fixed","version":"v1"},"protocol":{"kind":"websocketConnect","surface":{"connectRequestShape":"v1","connectResultShape":"v1","connectionPolicyShape":"v1","downlinkFrames":["binary","text"],"externalSources":[{"kind":"websocket.connectRequest"},{"kind":"websocket.connectionId"}]}}}}"#
+        r#"{"schema":"skiff-gateway-entry-identity-v2","surface":{"externalErrorProjection":{"kind":"fixed","version":"v1"},"protocol":{"kind":"websocketConnect","surface":{"connectRequestShape":"v1","connectResultShape":"v1","connectionPolicyShape":"v1","downlinkFrames":["binary","text"],"externalSources":[{"kind":"websocket.connectRequest"},{"kind":"websocket.connectionId"}],"rpcProfiles":["jsonrpc-2.0-text"]}}}}"#
     );
     assert_eq!(
         gateway_entry_identity(&surface).unwrap().as_str(),
-        "skiff-gateway-entry-v1:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936"
+        "skiff-gateway-entry-v2:sha256:f385624021966bab998385e1fd2c88804b51992f15f9c9d76c05d3e17a75018d"
     );
 
     let key = GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap();
@@ -195,6 +240,234 @@ fn websocket_gateway_and_internal_entry_id_match_language_neutral_goldens() {
     );
     for service_id in ["", " ", "\n"] {
         assert!(websocket_entry_id(service_id, &key).is_err());
+    }
+}
+
+#[test]
+fn websocket_connect_profiles_normalize_and_loaded_sequences_are_strict() {
+    let canonical = websocket_surface();
+    let GatewayProtocolSurface::WebSocketConnect(connect) = &canonical.protocol else {
+        panic!("expected websocketConnect")
+    };
+    assert_eq!(
+        connect.rpc_profiles,
+        vec![GatewayWebSocketRpcProfile::JsonRpc2_0Text]
+    );
+
+    let mut duplicate = canonical.clone();
+    let GatewayProtocolSurface::WebSocketConnect(connect) = &mut duplicate.protocol else {
+        panic!("expected websocketConnect")
+    };
+    connect
+        .rpc_profiles
+        .push(GatewayWebSocketRpcProfile::JsonRpc2_0Text);
+    assert!(
+        validate_gateway_entry_protocol_surface(&duplicate).is_err(),
+        "loaded duplicate profiles must not be silently repaired"
+    );
+    assert_eq!(
+        normalize_gateway_entry_protocol_surface(duplicate).unwrap(),
+        canonical,
+        "producer normalization must canonicalize the closed profile set"
+    );
+
+    let mut empty = canonical.clone();
+    let GatewayProtocolSurface::WebSocketConnect(connect) = &mut empty.protocol else {
+        panic!("expected websocketConnect")
+    };
+    connect.rpc_profiles.clear();
+    assert!(normalize_gateway_entry_protocol_surface(empty).is_err());
+
+    let mut wrong_profile = serde_json::to_value(canonical).unwrap();
+    wrong_profile["protocol"]["surface"]["rpcProfiles"] = json!(["future-rpc"]);
+    assert!(
+        serde_json::from_value::<GatewayEntryProtocolSurface>(wrong_profile).is_err(),
+        "unknown profiles must fail at the strict artifact reader"
+    );
+}
+
+#[test]
+fn websocket_json_rpc_surface_is_canonical_structured_and_phase_exact() {
+    let canonical = websocket_json_rpc_surface(
+        vec![
+            GatewayAdapterSource::WebSocketJsonRpcParams,
+            GatewayAdapterSource::WebSocketBusinessIdentity,
+            GatewayAdapterSource::WebSocketConnectionId,
+        ],
+        string_record(&["requestId"], vec!["requestId".to_string()]),
+        GatewayExternalSchema::Null,
+    );
+    let GatewayProtocolSurface::WebSocketJsonRpc(json_rpc) = &canonical.protocol else {
+        panic!("expected websocketJsonRpc")
+    };
+    assert_eq!(
+        json_rpc.external_sources,
+        vec![
+            GatewayAdapterSource::WebSocketBusinessIdentity,
+            GatewayAdapterSource::WebSocketConnectionId,
+            GatewayAdapterSource::WebSocketJsonRpcParams,
+        ]
+    );
+    assert_eq!(json_rpc.result_schema, GatewayExternalSchema::Null);
+
+    let mut noncanonical = canonical.clone();
+    let json_rpc = websocket_json_rpc_surface_mut(&mut noncanonical);
+    json_rpc.external_sources.reverse();
+    assert!(
+        validate_gateway_entry_protocol_surface(&noncanonical).is_err(),
+        "loaded source order must already be canonical"
+    );
+    assert_eq!(
+        normalize_gateway_entry_protocol_surface(noncanonical).unwrap(),
+        canonical
+    );
+
+    let mut duplicate = canonical.clone();
+    websocket_json_rpc_surface_mut(&mut duplicate)
+        .external_sources
+        .push(GatewayAdapterSource::WebSocketJsonRpcParams);
+    assert!(
+        validate_gateway_entry_protocol_surface(&duplicate).is_err(),
+        "loaded duplicate sources must fail closed"
+    );
+
+    let mut missing_params = canonical.clone();
+    websocket_json_rpc_surface_mut(&mut missing_params)
+        .external_sources
+        .retain(|source| *source != GatewayAdapterSource::WebSocketJsonRpcParams);
+    assert!(normalize_gateway_entry_protocol_surface(missing_params).is_err());
+
+    let mut wrong_phase = canonical.clone();
+    websocket_json_rpc_surface_mut(&mut wrong_phase)
+        .external_sources
+        .push(GatewayAdapterSource::WebSocketConnectRequest);
+    assert!(normalize_gateway_entry_protocol_surface(wrong_phase).is_err());
+
+    let mut wrong_dispatch = canonical.clone();
+    websocket_json_rpc_surface_mut(&mut wrong_dispatch).dispatch_mode =
+        GatewayDispatchMode::ServerStream;
+    assert!(normalize_gateway_entry_protocol_surface(wrong_dispatch).is_err());
+
+    for invalid_params in [
+        GatewayExternalSchema::Null,
+        GatewayExternalSchema::String,
+        GatewayExternalSchema::Nullable {
+            inner: Box::new(string_record(&["id"], vec!["id".to_string()])),
+        },
+        GatewayExternalSchema::ClosedUnion {
+            branches: vec![
+                string_record(&["id"], vec!["id".to_string()]),
+                GatewayExternalSchema::String,
+            ],
+        },
+    ] {
+        let mut invalid = canonical.clone();
+        websocket_json_rpc_surface_mut(&mut invalid).params_schema = invalid_params;
+        assert!(
+            normalize_gateway_entry_protocol_surface(invalid).is_err(),
+            "JSON-RPC params must remain object/array structured"
+        );
+    }
+
+    let structured_union = websocket_json_rpc_surface(
+        vec![GatewayAdapterSource::WebSocketJsonRpcParams],
+        GatewayExternalSchema::ClosedUnion {
+            branches: vec![
+                string_record(&["id"], vec!["id".to_string()]),
+                GatewayExternalSchema::Array {
+                    items: Box::new(GatewayExternalSchema::String),
+                },
+            ],
+        },
+        GatewayExternalSchema::String,
+    );
+    validate_gateway_entry_protocol_surface(&structured_union).unwrap();
+
+    let mut wrong_profile = serde_json::to_value(canonical).unwrap();
+    wrong_profile["protocol"]["surface"]["profile"] = json!("future-rpc");
+    assert!(
+        serde_json::from_value::<GatewayEntryProtocolSurface>(wrong_profile).is_err(),
+        "unknown JSON-RPC profiles must fail at the strict artifact reader"
+    );
+}
+
+#[test]
+fn websocket_json_rpc_identity_tracks_only_the_canonical_protocol_surface() {
+    let base = websocket_json_rpc_surface(
+        vec![
+            GatewayAdapterSource::WebSocketJsonRpcParams,
+            GatewayAdapterSource::WebSocketConnectionId,
+        ],
+        string_record(&["id"], vec!["id".to_string()]),
+        string_record(&["value"], vec!["value".to_string()]),
+    );
+    let base_identity = gateway_entry_identity(&base).unwrap();
+    let preimage =
+        String::from_utf8(canonical_gateway_entry_identity_bytes(&base).unwrap()).unwrap();
+    assert_eq!(
+        preimage,
+        r#"{"schema":"skiff-gateway-entry-identity-v2","surface":{"externalErrorProjection":{"kind":"fixed","version":"v1"},"protocol":{"kind":"websocketJsonRpc","surface":{"dispatchMode":"unary","externalSources":[{"kind":"websocket.connectionId"},{"kind":"websocket.jsonRpcParams"}],"paramsSchema":{"fields":{"id":{"kind":"string"}},"kind":"record","required":["id"]},"profile":"jsonrpc-2.0-text","resultSchema":{"fields":{"value":{"kind":"string"}},"kind":"record","required":["value"]}}}}}"#
+    );
+    assert_eq!(
+        base_identity.as_str(),
+        "skiff-gateway-entry-v2:sha256:76fd205e35d35474a2082dd58b914b25b653eeecbfd8b6c96c52d3d070eae331"
+    );
+
+    let reordered = websocket_json_rpc_surface(
+        vec![
+            GatewayAdapterSource::WebSocketConnectionId,
+            GatewayAdapterSource::WebSocketJsonRpcParams,
+        ],
+        string_record(&["id"], vec!["id".to_string()]),
+        string_record(&["value"], vec!["value".to_string()]),
+    );
+    assert_eq!(
+        gateway_entry_identity(&reordered).unwrap(),
+        base_identity,
+        "formal parameter/source order is deployment-only"
+    );
+
+    let source_changed = websocket_json_rpc_surface(
+        vec![
+            GatewayAdapterSource::WebSocketJsonRpcParams,
+            GatewayAdapterSource::WebSocketBusinessIdentity,
+            GatewayAdapterSource::WebSocketConnectionId,
+        ],
+        string_record(&["id"], vec!["id".to_string()]),
+        string_record(&["value"], vec!["value".to_string()]),
+    );
+    let params_changed = websocket_json_rpc_surface(
+        vec![
+            GatewayAdapterSource::WebSocketJsonRpcParams,
+            GatewayAdapterSource::WebSocketConnectionId,
+        ],
+        string_record(&["requestId"], vec!["requestId".to_string()]),
+        string_record(&["value"], vec!["value".to_string()]),
+    );
+    let result_changed = websocket_json_rpc_surface(
+        vec![
+            GatewayAdapterSource::WebSocketJsonRpcParams,
+            GatewayAdapterSource::WebSocketConnectionId,
+        ],
+        string_record(&["id"], vec!["id".to_string()]),
+        GatewayExternalSchema::Null,
+    );
+    for changed in [source_changed, params_changed, result_changed] {
+        assert_ne!(gateway_entry_identity(&changed).unwrap(), base_identity);
+    }
+
+    for deployment_only in [
+        "status.get",
+        "status-entry",
+        "pkg-callable:example.provider:status",
+        "connectionFormal",
+        "skiff-package-build-v10",
+        "example.internal.Nominal",
+    ] {
+        assert!(
+            !preimage.contains(deployment_only),
+            "{deployment_only} leaked into {preimage}"
+        );
     }
 }
 
