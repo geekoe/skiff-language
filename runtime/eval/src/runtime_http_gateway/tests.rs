@@ -381,7 +381,13 @@ impl CompiledGatewayFixture {
             identity: entry.gateway_entry_identity.clone(),
             surface: entry.protocol_surface.clone(),
             plan: entry.adapter_plan.clone(),
-            handler: self.callable(entry.handler.as_str()),
+            handler: self.callable(
+                entry
+                    .handler
+                    .as_ref()
+                    .expect("HTTP gateway fixture entry requires a handler")
+                    .as_str(),
+            ),
             pre: entry.pre.as_ref().map(|id| self.callable(id.as_str())),
             guard: entry.guard.as_ref().map(|id| self.callable(id.as_str())),
         }
