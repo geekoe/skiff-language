@@ -19,6 +19,9 @@ mod telemetry;
 mod time;
 mod websocket;
 
+#[cfg(test)]
+mod cancellation_terminal_tests;
+
 pub use actor::{
     ActorCapabilityApi, ActorCapabilityContext, ActorClient, OwnedActorCapabilityContext,
 };
@@ -199,12 +202,14 @@ mod tests {
     #[test]
     fn file_capability_error_payload_and_catch_projection_match_public_contract() {
         let file = FileCapabilityError::file("std.file not found: test");
-        let payload = file.payload();
+        let payload = file
+            .ordinary_payload()
+            .expect("file failure should remain ordinary");
         assert_eq!(payload.code, "std.file.FileError");
         assert_eq!(payload.message, "std.file not found: test");
         assert_eq!(payload.details, None);
         assert_eq!(
-            file.catch_projection(),
+            file.ordinary_catch_projection(),
             Some((
                 PlatformBuiltinErrorIdentity::File.catch_identity(),
                 json!({
@@ -215,7 +220,9 @@ mod tests {
 
         let provider =
             FileCapabilityError::provider_unavailable("svc.account", "no active runtime");
-        let payload = provider.payload();
+        let payload = provider
+            .ordinary_payload()
+            .expect("provider failure should remain ordinary");
         assert_eq!(payload.code, "std.service.ProviderUnavailableError");
         assert_eq!(payload.message, "no active runtime");
         assert_eq!(
@@ -226,7 +233,7 @@ mod tests {
             }))
         );
         assert_eq!(
-            provider.catch_projection(),
+            provider.ordinary_catch_projection(),
             Some((
                 PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
                 json!({
@@ -237,12 +244,20 @@ mod tests {
         );
 
         let decode = FileCapabilityError::decode("bad file payload");
-        assert_eq!(decode.payload().code, "InternalError");
-        assert_eq!(decode.catch_projection(), None);
+        assert_eq!(
+            decode
+                .ordinary_payload()
+                .expect("decode failure should remain ordinary")
+                .code,
+            "InternalError"
+        );
+        assert_eq!(decode.ordinary_catch_projection(), None);
 
         let resource =
             FileCapabilityError::resource_limit_exceeded("response.body", "too large", 10, 8, 4);
-        let payload = resource.payload();
+        let payload = resource
+            .ordinary_payload()
+            .expect("resource failure should remain ordinary");
         assert_eq!(payload.code, "ResourceLimitExceeded");
         assert_eq!(
             payload.details,
@@ -254,7 +269,7 @@ mod tests {
                 "requestedDelta": 4,
             }))
         );
-        assert_eq!(resource.catch_projection(), None);
+        assert_eq!(resource.ordinary_catch_projection(), None);
     }
 
     #[test]
@@ -334,25 +349,29 @@ mod tests {
     }
 
     #[test]
-    fn file_capability_wrappers_forward_inner_catch_projection() {
+    fn file_capability_wrappers_separate_internal_terminal_from_ordinary_projection() {
         assert_eq!(
-            FileCapabilityError::opaque(TestWirePayload).catch_projection(),
+            FileCapabilityError::opaque(TestWirePayload).ordinary_catch_projection(),
             test_fixture_catch_projection()
         );
 
         let stream = StreamRuntimeError::producer(TestWirePayload);
-        let stream_projection = stream.catch_projection();
+        let stream_projection = stream.ordinary_catch_projection();
         assert_eq!(
-            FileCapabilityError::from(stream).catch_projection(),
+            FileCapabilityError::from(stream).ordinary_catch_projection(),
             stream_projection
         );
 
         let execution = ExecutionControlError::Cancelled;
-        let execution_projection = execution.catch_projection();
-        assert_eq!(
-            FileCapabilityError::from(execution).catch_projection(),
-            execution_projection
-        );
+        let execution = FileCapabilityError::from(execution);
+        assert!(execution.is_cancellation_terminal());
+        assert_eq!(execution.ordinary_payload(), None);
+        assert_eq!(execution.ordinary_catch_projection(), None);
+
+        let stream = FileCapabilityError::from(StreamRuntimeError::cancelled());
+        assert!(stream.is_cancellation_terminal());
+        assert_eq!(stream.ordinary_payload(), None);
+        assert_eq!(stream.ordinary_catch_projection(), None);
     }
 
     #[test]
@@ -381,18 +400,11 @@ mod tests {
     }
 
     #[test]
-    fn execution_control_error_payload_and_catch_projection_match_public_contract() {
+    fn execution_control_cancellation_is_terminal_and_timeouts_remain_ordinary() {
         let cancelled = ExecutionControlError::Cancelled;
-        assert_eq!(cancelled.payload().code, "CancelError");
-        assert_eq!(
-            cancelled.catch_projection(),
-            Some((
-                PlatformBuiltinErrorIdentity::Cancel.catch_identity(),
-                json!({
-                    "message": "request was cancelled",
-                }),
-            ))
-        );
+        assert!(cancelled.is_cancellation_terminal());
+        assert_eq!(cancelled.ordinary_payload(), None);
+        assert_eq!(cancelled.ordinary_catch_projection(), None);
 
         let cancelled_budget = ExecutionControlError::BudgetExceeded(ExecutionBudgetFailure {
             reason: ExecutionBudgetReason::Cancelled,
@@ -400,11 +412,9 @@ mod tests {
             limit: Some(10),
             elapsed_ms: 1.5,
         });
-        assert_eq!(cancelled_budget.payload().code, "CancelError");
-        assert_eq!(
-            cancelled_budget.catch_projection().unwrap().0,
-            PlatformBuiltinErrorIdentity::Cancel.catch_identity()
-        );
+        assert!(cancelled_budget.is_cancellation_terminal());
+        assert_eq!(cancelled_budget.ordinary_payload(), None);
+        assert_eq!(cancelled_budget.ordinary_catch_projection(), None);
 
         let timeout = ExecutionControlError::BudgetExceeded(ExecutionBudgetFailure {
             reason: ExecutionBudgetReason::DeadlineExceeded,
@@ -412,7 +422,10 @@ mod tests {
             limit: Some(100),
             elapsed_ms: 12.5,
         });
-        let payload = timeout.payload();
+        assert!(!timeout.is_cancellation_terminal());
+        let payload = timeout
+            .ordinary_payload()
+            .expect("deadline should remain an ordinary timeout");
         assert_eq!(payload.code, "TimeoutError");
         assert_eq!(payload.message, "execution deadline exceeded");
         assert_eq!(
@@ -425,7 +438,7 @@ mod tests {
             }))
         );
         assert_eq!(
-            timeout.catch_projection(),
+            timeout.ordinary_catch_projection(),
             Some((
                 PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
                 json!({
@@ -443,34 +456,51 @@ mod tests {
             limit: Some(100),
             elapsed_ms: 3.5,
         });
-        assert_eq!(instruction_limit.payload().code, "TimeoutError");
+        assert!(!instruction_limit.is_cancellation_terminal());
         assert_eq!(
-            instruction_limit.catch_projection().unwrap().0,
+            instruction_limit
+                .ordinary_payload()
+                .expect("instruction limit should remain an ordinary timeout")
+                .code,
+            "TimeoutError"
+        );
+        assert_eq!(
+            instruction_limit.ordinary_catch_projection().unwrap().0,
             PlatformBuiltinErrorIdentity::Timeout.catch_identity()
         );
     }
 
     #[test]
-    fn stream_runtime_error_payload_and_catch_projection_delegate_producer() {
+    fn stream_runtime_cancellation_is_terminal_and_ordinary_errors_still_project() {
         let decode = StreamRuntimeError::decode("bad stream frame");
-        assert_eq!(decode.payload().code, "InternalError");
-        assert_eq!(decode.catch_projection(), None);
+        assert!(!decode.is_cancellation_terminal());
+        assert_eq!(
+            decode
+                .ordinary_payload()
+                .expect("decode failure should remain ordinary")
+                .code,
+            "InternalError"
+        );
+        assert_eq!(decode.ordinary_catch_projection(), None);
 
         let cancelled = StreamRuntimeError::cancelled();
-        assert_eq!(cancelled.payload().code, "CancelError");
-        assert_eq!(
-            cancelled.catch_projection(),
-            Some((
-                PlatformBuiltinErrorIdentity::Cancel.catch_identity(),
-                json!({
-                    "message": "request was cancelled",
-                }),
-            ))
-        );
+        assert!(cancelled.is_cancellation_terminal());
+        assert_eq!(cancelled.ordinary_payload(), None);
+        assert_eq!(cancelled.ordinary_catch_projection(), None);
 
         let producer = StreamRuntimeError::producer(TestWirePayload);
-        assert_eq!(producer.payload().code, "test.ProducerError");
-        assert_eq!(producer.catch_projection(), test_fixture_catch_projection());
+        assert!(!producer.is_cancellation_terminal());
+        assert_eq!(
+            producer
+                .ordinary_payload()
+                .expect("producer failure should remain ordinary")
+                .code,
+            "test.ProducerError"
+        );
+        assert_eq!(
+            producer.ordinary_catch_projection(),
+            test_fixture_catch_projection()
+        );
     }
 
     #[test]

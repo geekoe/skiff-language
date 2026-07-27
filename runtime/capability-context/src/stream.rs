@@ -14,17 +14,13 @@ use skiff_runtime_model::{
     error::{RuntimeErrorPayload, WirePayload},
     request_heap::RequestHeap,
     runtime_value::RuntimeValue,
-    service_error::{
-        CatchIdentity, ExceptionStackFrame, OpaqueServiceError, PlatformBuiltinErrorIdentity,
-    },
+    service_error::{CatchIdentity, ExceptionStackFrame, OpaqueServiceError},
     type_plan::RuntimeTypePlan,
 };
 
 use crate::{CancellationToken, ExecutionControl};
 
 pub type StreamRuntimeResult<T> = Result<T, StreamRuntimeError>;
-
-const REQUEST_CANCELLED_MESSAGE: &str = "request was cancelled";
 
 /// Caller-side facts captured when an in-process service stream is created.
 ///
@@ -208,6 +204,14 @@ impl StreamProducerFailure for DynamicStreamProducerFailure {
 }
 
 #[derive(Debug)]
+/// Stream cancellation is an internal terminal, not an ordinary producer error.
+///
+/// ```compile_fail
+/// use skiff_runtime_capability_context::StreamRuntimeError;
+/// use skiff_runtime_model::error::WirePayload;
+///
+/// let _ = WirePayload::payload(&StreamRuntimeError::cancelled());
+/// ```
 pub enum StreamRuntimeError {
     Decode(String),
     Cancelled,
@@ -255,6 +259,30 @@ impl StreamRuntimeError {
                 remote_operation_id,
             ),
         )))
+    }
+
+    pub fn is_cancellation_terminal(&self) -> bool {
+        matches!(self, Self::Cancelled)
+    }
+
+    pub fn ordinary_payload(&self) -> Option<RuntimeErrorPayload> {
+        match self {
+            Self::Decode(message) => Some(RuntimeErrorPayload {
+                code: "InternalError".to_string(),
+                message: message.clone(),
+                status: None,
+                details: None,
+            }),
+            Self::Cancelled => None,
+            Self::Producer(error) => Some(error.payload()),
+        }
+    }
+
+    pub fn ordinary_catch_projection(&self) -> Option<(CatchIdentity, Value)> {
+        match self {
+            Self::Cancelled | Self::Decode(_) => None,
+            Self::Producer(error) => error.catch_projection(),
+        }
     }
 
     #[allow(clippy::type_complexity)]
@@ -309,47 +337,6 @@ impl Error for StreamRuntimeError {
             Self::Producer(error) => Some(error.as_ref()),
             Self::Decode(_) | Self::Cancelled => None,
         }
-    }
-}
-
-impl WirePayload for StreamRuntimeError {
-    fn payload(&self) -> RuntimeErrorPayload {
-        match self {
-            Self::Decode(message) => RuntimeErrorPayload {
-                code: "InternalError".to_string(),
-                message: message.clone(),
-                status: None,
-                details: None,
-            },
-            Self::Cancelled => cancel_payload(),
-            Self::Producer(error) => error.payload(),
-        }
-    }
-
-    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
-        match self {
-            Self::Cancelled => Some((
-                PlatformBuiltinErrorIdentity::Cancel.catch_identity(),
-                serde_json::json!({
-                    "message": REQUEST_CANCELLED_MESSAGE,
-                }),
-            )),
-            Self::Producer(error) => error.catch_projection(),
-            Self::Decode(_) => None,
-        }
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-fn cancel_payload() -> RuntimeErrorPayload {
-    RuntimeErrorPayload {
-        code: "CancelError".to_string(),
-        message: REQUEST_CANCELLED_MESSAGE.to_string(),
-        status: None,
-        details: None,
     }
 }
 

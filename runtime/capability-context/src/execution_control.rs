@@ -7,13 +7,11 @@ use std::{
 
 use serde_json::json;
 use skiff_runtime_model::{
-    error::{RuntimeErrorPayload, WirePayload},
+    error::RuntimeErrorPayload,
     service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
 };
 
 use crate::{CancellationToken, FileSourceStreamContext, StreamRuntime};
-
-const REQUEST_CANCELLED_MESSAGE: &str = "request was cancelled";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionBudgetReason {
@@ -29,6 +27,10 @@ impl ExecutionBudgetReason {
             ExecutionBudgetReason::DeadlineExceeded => "deadlineExceeded",
             ExecutionBudgetReason::InstructionLimitExceeded => "instructionLimitExceeded",
         }
+    }
+
+    pub fn is_cancellation_terminal(self) -> bool {
+        self == Self::Cancelled
     }
 }
 
@@ -55,9 +57,64 @@ impl fmt::Display for ExecutionBudgetFailure {
 impl std::error::Error for ExecutionBudgetFailure {}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+/// Execution control failures keep cancellation as an internal terminal.
+///
+/// Cancellation must not satisfy the ordinary wire-error contract:
+///
+/// ```compile_fail
+/// use skiff_runtime_capability_context::ExecutionControlError;
+/// use skiff_runtime_model::error::WirePayload;
+///
+/// let _ = WirePayload::payload(&ExecutionControlError::Cancelled);
+/// ```
 pub enum ExecutionControlError {
     Cancelled,
     BudgetExceeded(ExecutionBudgetFailure),
+}
+
+impl ExecutionControlError {
+    pub fn is_cancellation_terminal(&self) -> bool {
+        match self {
+            Self::Cancelled => true,
+            Self::BudgetExceeded(failure) => failure.reason.is_cancellation_terminal(),
+        }
+    }
+
+    pub fn ordinary_payload(&self) -> Option<RuntimeErrorPayload> {
+        let Self::BudgetExceeded(failure) = self else {
+            return None;
+        };
+        let message = budget_timeout_message(failure.reason)?;
+        Some(RuntimeErrorPayload {
+            code: "TimeoutError".to_string(),
+            message: message.to_string(),
+            status: None,
+            details: Some(json!({
+                "reason": failure.reason.as_str(),
+                "instructionCount": failure.instruction_count,
+                "limit": failure.limit,
+                "elapsedMs": failure.elapsed_ms,
+            })),
+        })
+    }
+
+    pub fn ordinary_catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
+        let Self::BudgetExceeded(failure) = self else {
+            return None;
+        };
+        if failure.reason.is_cancellation_terminal() {
+            return None;
+        }
+        Some((
+            PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
+            json!({
+                "reason": failure.reason.as_str(),
+                "instructionCount": failure.instruction_count,
+                "limit": failure.limit,
+                "elapsedMs": failure.elapsed_ms,
+            }),
+        ))
+    }
 }
 
 impl fmt::Display for ExecutionControlError {
@@ -78,79 +135,13 @@ impl std::error::Error for ExecutionControlError {
     }
 }
 
-impl WirePayload for ExecutionControlError {
-    fn payload(&self) -> RuntimeErrorPayload {
-        match self {
-            ExecutionControlError::Cancelled => cancel_payload(),
-            ExecutionControlError::BudgetExceeded(failure) => {
-                if failure.reason == ExecutionBudgetReason::Cancelled {
-                    cancel_payload()
-                } else {
-                    RuntimeErrorPayload {
-                        code: "TimeoutError".to_string(),
-                        message: budget_timeout_message(failure.reason).to_string(),
-                        status: None,
-                        details: Some(json!({
-                            "reason": failure.reason.as_str(),
-                            "instructionCount": failure.instruction_count,
-                            "limit": failure.limit,
-                            "elapsedMs": failure.elapsed_ms,
-                        })),
-                    }
-                }
-            }
-        }
-    }
-
-    fn catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
-        match self {
-            ExecutionControlError::Cancelled => Some(cancel_catch_projection()),
-            ExecutionControlError::BudgetExceeded(failure) => {
-                if failure.reason == ExecutionBudgetReason::Cancelled {
-                    Some(cancel_catch_projection())
-                } else {
-                    Some((
-                        PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
-                        json!({
-                            "reason": failure.reason.as_str(),
-                            "instructionCount": failure.instruction_count,
-                            "limit": failure.limit,
-                            "elapsedMs": failure.elapsed_ms,
-                        }),
-                    ))
-                }
-            }
-        }
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-fn cancel_payload() -> RuntimeErrorPayload {
-    RuntimeErrorPayload {
-        code: "CancelError".to_string(),
-        message: REQUEST_CANCELLED_MESSAGE.to_string(),
-        status: None,
-        details: None,
-    }
-}
-
-fn cancel_catch_projection() -> (CatchIdentity, serde_json::Value) {
-    (
-        PlatformBuiltinErrorIdentity::Cancel.catch_identity(),
-        json!({
-            "message": REQUEST_CANCELLED_MESSAGE,
-        }),
-    )
-}
-
-fn budget_timeout_message(reason: ExecutionBudgetReason) -> &'static str {
+fn budget_timeout_message(reason: ExecutionBudgetReason) -> Option<&'static str> {
     match reason {
-        ExecutionBudgetReason::DeadlineExceeded => "execution deadline exceeded",
-        ExecutionBudgetReason::InstructionLimitExceeded => "execution instruction limit exceeded",
-        ExecutionBudgetReason::Cancelled => REQUEST_CANCELLED_MESSAGE,
+        ExecutionBudgetReason::DeadlineExceeded => Some("execution deadline exceeded"),
+        ExecutionBudgetReason::InstructionLimitExceeded => {
+            Some("execution instruction limit exceeded")
+        }
+        ExecutionBudgetReason::Cancelled => None,
     }
 }
 

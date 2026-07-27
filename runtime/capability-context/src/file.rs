@@ -68,6 +68,87 @@ impl FileCapabilityError {
             requested_delta,
         }
     }
+
+    pub fn is_cancellation_terminal(&self) -> bool {
+        match self {
+            Self::Stream(error) => error.is_cancellation_terminal(),
+            Self::Execution(error) => error.is_cancellation_terminal(),
+            Self::Decode(_)
+            | Self::File(_)
+            | Self::Opaque(_)
+            | Self::ProviderUnavailable { .. }
+            | Self::ResourceLimitExceeded { .. } => false,
+        }
+    }
+
+    pub fn ordinary_payload(&self) -> Option<RuntimeErrorPayload> {
+        match self {
+            Self::Decode(message) => Some(RuntimeErrorPayload {
+                code: "InternalError".to_string(),
+                message: message.clone(),
+                status: None,
+                details: None,
+            }),
+            Self::File(message) => Some(RuntimeErrorPayload {
+                code: "std.file.FileError".to_string(),
+                message: message.clone(),
+                status: None,
+                details: None,
+            }),
+            Self::Opaque(error) => Some(error.payload()),
+            Self::ProviderUnavailable { target, reason } => Some(RuntimeErrorPayload {
+                code: "std.service.ProviderUnavailableError".to_string(),
+                message: reason.clone(),
+                status: None,
+                details: Some(json!({
+                    "target": target,
+                    "reason": reason,
+                })),
+            }),
+            Self::ResourceLimitExceeded {
+                resource,
+                reason,
+                limit,
+                current,
+                requested_delta,
+            } => Some(RuntimeErrorPayload {
+                code: "ResourceLimitExceeded".to_string(),
+                message: format!("resource limit exceeded for {resource}: {reason}"),
+                status: None,
+                details: Some(json!({
+                    "resource": resource,
+                    "reason": reason,
+                    "limit": limit,
+                    "current": current,
+                    "requestedDelta": requested_delta,
+                })),
+            }),
+            Self::Stream(error) => error.ordinary_payload(),
+            Self::Execution(error) => error.ordinary_payload(),
+        }
+    }
+
+    pub fn ordinary_catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
+        match self {
+            Self::File(message) => Some((
+                PlatformBuiltinErrorIdentity::File.catch_identity(),
+                json!({
+                    "message": message,
+                }),
+            )),
+            Self::Opaque(error) => error.catch_projection(),
+            Self::ProviderUnavailable { target, reason } => Some((
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
+                json!({
+                    "target": target,
+                    "reason": reason,
+                }),
+            )),
+            Self::Stream(error) => error.ordinary_catch_projection(),
+            Self::Execution(error) => error.ordinary_catch_projection(),
+            Self::Decode(_) | Self::ResourceLimitExceeded { .. } => None,
+        }
+    }
 }
 
 impl fmt::Display for FileCapabilityError {
@@ -101,81 +182,6 @@ impl Error for FileCapabilityError {
             | Self::ProviderUnavailable { .. }
             | Self::ResourceLimitExceeded { .. } => None,
         }
-    }
-}
-
-impl WirePayload for FileCapabilityError {
-    fn payload(&self) -> RuntimeErrorPayload {
-        match self {
-            Self::Decode(message) => RuntimeErrorPayload {
-                code: "InternalError".to_string(),
-                message: message.clone(),
-                status: None,
-                details: None,
-            },
-            Self::File(message) => RuntimeErrorPayload {
-                code: "std.file.FileError".to_string(),
-                message: message.clone(),
-                status: None,
-                details: None,
-            },
-            Self::Opaque(error) => error.payload(),
-            Self::ProviderUnavailable { target, reason } => RuntimeErrorPayload {
-                code: "std.service.ProviderUnavailableError".to_string(),
-                message: reason.clone(),
-                status: None,
-                details: Some(json!({
-                    "target": target,
-                    "reason": reason,
-                })),
-            },
-            Self::ResourceLimitExceeded {
-                resource,
-                reason,
-                limit,
-                current,
-                requested_delta,
-            } => RuntimeErrorPayload {
-                code: "ResourceLimitExceeded".to_string(),
-                message: format!("resource limit exceeded for {resource}: {reason}"),
-                status: None,
-                details: Some(json!({
-                    "resource": resource,
-                    "reason": reason,
-                    "limit": limit,
-                    "current": current,
-                    "requestedDelta": requested_delta,
-                })),
-            },
-            Self::Stream(error) => error.payload(),
-            Self::Execution(error) => error.payload(),
-        }
-    }
-
-    fn catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
-        match self {
-            Self::File(message) => Some((
-                PlatformBuiltinErrorIdentity::File.catch_identity(),
-                json!({
-                    "message": message,
-                }),
-            )),
-            Self::Opaque(error) => error.catch_projection(),
-            Self::ProviderUnavailable { target, reason } => Some((
-                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
-                json!({
-                    "target": target,
-                    "reason": reason,
-                }),
-            )),
-            Self::Stream(error) => error.catch_projection(),
-            Self::Execution(error) => error.catch_projection(),
-            Self::Decode(_) | Self::ResourceLimitExceeded { .. } => None,
-        }
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
