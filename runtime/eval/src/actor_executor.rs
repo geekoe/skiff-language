@@ -1,10 +1,3 @@
-use std::{
-    future::Future,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::Poll,
-};
-
 use serde_json::Value;
 use skiff_artifact_model::ActorMethodIdentity;
 use skiff_canonical_json::canonical_json_bytes;
@@ -22,275 +15,21 @@ use thiserror::Error;
 
 use crate::{
     actor_instance::{
-        resolve_actor_declaration, validate_declaration_fence, ActorExecutionToken,
-        ActorExecutorAuthority, ActorFieldValue, ActorInstanceExecutionLease, ActorInstanceHandle,
-        ActorInstanceStore, ActorInstanceStoreError,
+        resolve_actor_declaration, validate_declaration_fence, ActorExecutorAuthority,
+        ActorInstanceHandle, ActorInstanceStore, ActorInstanceStoreError,
     },
     error::RuntimeError,
     program_execution::ProgramExecutionContext,
     Interpreter,
 };
 
-#[derive(Clone)]
-pub(crate) struct ActorExecutionFrame {
-    suspension: Arc<ActorSuspensionState>,
-}
+mod actor_concurrent_continuation;
 
-impl ActorExecutionFrame {
-    pub(crate) fn new(
-        store: ActorInstanceStore,
-        handle: ActorInstanceHandle,
-        lease: ActorInstanceExecutionLease,
-        field_plans: Vec<(String, RuntimeTypePlan)>,
-    ) -> Self {
-        Self {
-            suspension: Arc::new(ActorSuspensionState {
-                store,
-                handle,
-                continuation: ActorContinuationFence {
-                    instance_identity: lease.instance_identity(),
-                },
-                field_plans,
-                lease: Mutex::new(Some(lease)),
-            }),
-        }
-    }
-
-    fn current_access(
-        &self,
-    ) -> Result<(Arc<ActorExecutionToken>, Arc<Mutex<Vec<ActorFieldValue>>>), RuntimeError> {
-        let lease = self
-            .suspension
-            .lease
-            .lock()
-            .expect("actor suspension lease lock poisoned");
-        let lease = lease.as_ref().ok_or_else(|| {
-            RuntimeError::InvalidArtifact(
-                "Actor self field access attempted while its continuation is suspended".to_string(),
-            )
-        })?;
-        Ok((lease.token(), lease.fields()))
-    }
-
-    pub(crate) fn read_field(&self, field: &str) -> Result<RuntimeValue, RuntimeError> {
-        let (token, fields) = self.current_access()?;
-        token.ensure_active().map_err(store_error)?;
-        let value = fields
-            .lock()
-            .expect("actor execution fields lock poisoned")
-            .iter()
-            .find(|candidate| candidate.name == field)
-            .map(|candidate| candidate.value.clone())
-            .ok_or_else(|| {
-                RuntimeError::InvalidArtifact(format!(
-                    "Actor execution field {field} is absent from the instance frame"
-                ))
-            });
-        value
-    }
-
-    pub(crate) fn write_field(
-        &self,
-        field: &str,
-        field_type: &LinkedTypeRef,
-        program: ProgramTypeView<'_>,
-        current_addr: &ExecutableAddr,
-        value: &RuntimeValue,
-        heap: &mut RequestHeap,
-    ) -> Result<(), RuntimeError> {
-        let (token, fields) = self.current_access()?;
-        token.ensure_active().map_err(store_error)?;
-        let plan = RuntimeTypePlan::from_linked(
-            field_type,
-            &PlanContext::from_type_view(program, current_addr),
-        )?;
-        // A boundary round trip is intentional: it proves the new live value
-        // against the linked field plan and leaves no unchecked heap handle in
-        // the persistent Actor frame.
-        let codec = RuntimeBoundaryCodec::new(
-            &plan,
-            BoundaryUse::NativeArg,
-            format!("Actor self field {field}"),
-        );
-        let wire = codec.to_wire_json(value, heap)?;
-        let checked = codec.from_wire_json(&wire, heap)?;
-        let mut fields = fields.lock().expect("actor execution fields lock poisoned");
-        let target = fields
-            .iter_mut()
-            .find(|candidate| candidate.name == field)
-            .ok_or_else(|| {
-                RuntimeError::InvalidArtifact(format!(
-                    "Actor execution field {field} is absent from the instance frame"
-                ))
-            })?;
-        target.value = checked;
-        Ok(())
-    }
-
-    /// Commits the current synchronous segment and invalidates its execution
-    /// token before the caller starts waiting on an asynchronous capability.
-    pub(crate) fn suspend(&self, heap: &RequestHeap) -> Result<(), RuntimeError> {
-        let lease = self
-            .suspension
-            .lease
-            .lock()
-            .expect("actor suspension lease lock poisoned")
-            .take()
-            .ok_or_else(|| {
-                RuntimeError::InvalidArtifact(
-                    "Actor continuation attempted to suspend without an execution token"
-                        .to_string(),
-                )
-            })?;
-        self.suspension
-            .store
-            .commit_execution(&self.suspension.handle, lease, heap.clone())
-            .map_err(store_error)
-    }
-
-    /// Re-enters the instance scheduler and replaces the request heap with the
-    /// newly fenced instance snapshot. No old token, field view, or scheduler
-    /// guard survives this boundary.
-    pub(crate) async fn resume(
-        &self,
-        heap: &mut RequestHeap,
-        execution: &crate::capabilities::ExecutionControl<'_>,
-    ) -> Result<(), RuntimeError> {
-        execution
-            .poll_execution_budget()
-            .map_err(RuntimeError::from)?;
-        let cancel = execution.cancellation_token();
-        let authority = ActorExecutorAuthority::new();
-        let acquire = self
-            .suspension
-            .store
-            .acquire_execution(&authority, &self.suspension.handle);
-        tokio::pin!(acquire);
-        let mut budget_tick = tokio::time::interval(std::time::Duration::from_millis(5));
-        let mut lease = loop {
-            tokio::select! {
-                result = &mut acquire => break result.map_err(store_error)?,
-                () = cancel.wait_cancelled() => {
-                    execution.poll_execution_budget().map_err(RuntimeError::from)?;
-                    return Err(RuntimeError::from(
-                        skiff_runtime_capability_context::ExecutionControlError::Cancelled,
-                    ));
-                }
-                _ = budget_tick.tick() => {
-                    execution.poll_execution_budget().map_err(RuntimeError::from)?;
-                }
-            }
-        };
-        if lease.instance_identity() != self.suspension.continuation.instance_identity {
-            return Err(store_error(ActorInstanceStoreError::InstanceReplaced));
-        }
-        {
-            let fields = lease.fields();
-            let source_heap = lease.heap_mut();
-            let mut fields = fields.lock().expect("actor execution fields lock poisoned");
-            for field in fields.iter_mut() {
-                let (_, plan) = self
-                    .suspension
-                    .field_plans
-                    .iter()
-                    .find(|(name, _)| name == &field.name)
-                    .ok_or_else(|| {
-                        RuntimeError::InvalidArtifact(format!(
-                            "Actor continuation field {} has no linked type plan",
-                            field.name
-                        ))
-                    })?;
-                let codec = RuntimeBoundaryCodec::new(
-                    plan,
-                    BoundaryUse::NativeArg,
-                    format!("Actor resume field {}", field.name),
-                );
-                let wire = codec.to_wire_json(&field.value, source_heap)?;
-                field.value = codec.from_wire_json(&wire, heap)?;
-            }
-        }
-        let mut current = self
-            .suspension
-            .lease
-            .lock()
-            .expect("actor suspension lease lock poisoned");
-        if current.is_some() {
-            return Err(RuntimeError::InvalidArtifact(
-                "Actor continuation resumed with an execution token already installed".to_string(),
-            ));
-        }
-        *current = Some(lease);
-        Ok(())
-    }
-
-    /// Polls once while the current synchronous segment is still owned.
-    /// A buffered/ready operation therefore completes without introducing a
-    /// scheduler cut point. Only a real `Pending` result commits and yields.
-    pub(crate) async fn await_if_pending<F>(
-        &self,
-        heap: &mut RequestHeap,
-        execution: &crate::capabilities::ExecutionControl<'_>,
-        future: F,
-    ) -> Result<F::Output, RuntimeError>
-    where
-        F: Future,
-    {
-        tokio::pin!(future);
-        if let Some(output) = poll_once_without_yield(future.as_mut()).await {
-            return Ok(output);
-        }
-        self.suspend(heap)?;
-        let output = future.await;
-        self.resume(heap, execution).await?;
-        Ok(output)
-    }
-
-    pub(crate) fn finish(&self, heap: RequestHeap) -> Result<(), RuntimeError> {
-        let lease = self
-            .suspension
-            .lease
-            .lock()
-            .expect("actor suspension lease lock poisoned")
-            .take()
-            .ok_or_else(|| {
-                RuntimeError::InvalidArtifact(
-                    "Actor method completed while its continuation was suspended".to_string(),
-                )
-            })?;
-        self.suspension
-            .store
-            .commit_execution(&self.suspension.handle, lease, heap)
-            .map_err(store_error)
-    }
-}
-
-async fn poll_once_without_yield<F>(mut future: Pin<&mut F>) -> Option<F::Output>
-where
-    F: Future,
-{
-    std::future::poll_fn(|context| {
-        Poll::Ready(match future.as_mut().poll(context) {
-            Poll::Ready(output) => Some(output),
-            Poll::Pending => None,
-        })
-    })
-    .await
-}
-
-/// The continuation-owned fence deliberately contains only a plain instance
-/// identity. Actor fields, the execution token and the scheduler guard remain
-/// exclusively in `ActorSuspensionState::lease`, which is empty while waiting.
-struct ActorContinuationFence {
-    instance_identity: usize,
-}
-
-struct ActorSuspensionState {
-    store: ActorInstanceStore,
-    handle: ActorInstanceHandle,
-    continuation: ActorContinuationFence,
-    field_plans: Vec<(String, RuntimeTypePlan)>,
-    lease: Mutex<Option<ActorInstanceExecutionLease>>,
-}
+// E4 consumes these crate-private bridge types when it wires evaluator lanes.
+#[allow(unused_imports)]
+pub(crate) use actor_concurrent_continuation::{
+    ActorConcurrentContinuationBridge, ActorConcurrentContinuationLane, ActorExecutionFrame,
+};
 
 pub struct ActorMethodExecutionRequest<'a> {
     pub instance: &'a ActorInstanceHandle,
@@ -588,6 +327,9 @@ mod tests {
         EvalRuntimeProgram,
     };
     use sha2::{Digest, Sha256};
+
+    #[path = "actor_concurrent_continuation_tests.rs"]
+    mod actor_concurrent_continuation;
 
     const FILE_ID: &str = "file:actor-executor";
 
