@@ -77,7 +77,7 @@ framing等叶子类型，但不能用共享DTO重新制造隐式父模型。
 14. concrete executable的suspension summary由body、调用图和内建等待点推断。concrete public Package
     callable保留该summary作为Local ABI fact；interface requirement与conformance不拥有或比较该位。
     service call自身是caller的潜在挂起点，ServiceContract不携带provider内部summary，也不从它派生
-    protocol identity或operation级取消类别。
+    protocol identity或operation级内部停止类别。
 
 ## 3. Package 与 PackageArtifact
 
@@ -169,8 +169,8 @@ request创建新的runtime ingress并执行该handler；Skiff通过
 
 WebSocket本身只是通用双向transport；双向request/response correlation由编码无关的平台broker拥有，
 第一版内置`jsonrpc-2.0-text`编码配置。不存在raw `receive`、按任意event name分派的message handler或
-把transport `id`交给业务代码的surface。除平台`$/cancelRequest`外，第一版不声明业务JSON-RPC
-notification handler。Raw outbound text/binary send仍合法；未声明method的request返回JSON-RPC
+把transport `id`交给业务代码的surface。第一版不声明任何JSON-RPC notification handler或peer主动取消
+request的能力。Raw outbound text/binary send仍合法；未声明method的request返回JSON-RPC
 `Method not found`，其它未被配置接纳的业务notification不进入用户代码。
 
 PackageArtifact至少包含：
@@ -326,15 +326,15 @@ provenance和link facts，使deployment无需读取源码。
 在该body外增加稳定operation key/id，不把Package类型重写成`ContractTypeId`。service operation统一拥有
 §6.3定义的开放错误通道，不在operation contract中列出可能抛出的类型集合。
 
-Service call的pending wait统一参与caller request deadline与ancestor cancellation；这是调用种类本身的
+Service call的pending wait统一参与caller request deadline与ancestor内部停止；这是调用种类本身的
 语义，不是operation descriptor从provider body推断出的承诺。`BoundaryOperationContract`不得携带
 provider concrete `maySuspend`，也不得保留由该位机械映射出的`NotCancellable`/`Cooperative`类别。
-caller停止等待后provider是否、何时观察cancel signal是runtime/deployment执行机制，不承诺callee业务
-工作已经停止。stream关闭等已由stream contract定义的结构化取消语义不依赖callee内部summary。
+caller停止等待后provider是否、何时观察internal stop hint是runtime/deployment执行机制，不承诺callee
+业务工作已经停止。Stream关闭等已由stream contract定义的内部停止语义不依赖callee内部summary。
 
 具体config/state/native capability requirement和完整may-effect（包括concrete suspension summary）属于
 `BoundaryImplementationRequirements`或由deployment从PackageArtifact形成的implementation metadata，
-不能泄漏进ServiceProtocolIdentity。若external gateway需要独立取消policy，它归gateway
+不能泄漏进ServiceProtocolIdentity。External gateway的deadline与consumer-disconnect处理归gateway
 entry/deployment owner，不能复用ServiceContract operation字段或从callable summary推导。
 
 callback-capable interface的Package schema operation同样只保存interface requirement的参数、返回与其它
@@ -368,7 +368,7 @@ ServiceContract
 
 每个operation descriptor包含canonical参数、返回、stream、callback与value plan契约，并统一使用开放
 错误通道；它不包含operation-specific throw set、provider内部suspension summary或由该summary派生的
-取消类别。ServiceContract不拥有第二套boundary类型，不内嵌或复制Package字段定义。它记录精确
+内部停止类别。ServiceContract不拥有第二套boundary类型，不内嵌或复制Package字段定义。它记录精确
 `PackageTypeRequirement`：
 
 ```text
@@ -436,7 +436,7 @@ identity确定性生成。只有`service.yml.serviceCalls`显式选择的roots�
 callable id，runtime禁止按display name猜target。
 
 deployment execution plan可以从绑定的PackageArtifact读取concrete callable suspension summary，用于选择
-provider内部执行lane、cancel signal投递或其它Host机制；该summary只验证implementation callable与其
+provider内部执行lane、internal stop signal投递或其它Host机制；该summary只验证implementation callable与其
 executable一致，不与ServiceContract对账。summary改变会因implementation build改变而产生新的deployment
 revision/identity，但不能倒灌成新的service protocol。
 
@@ -563,7 +563,7 @@ ServiceContract operation
 ```
 
 进程内实现必须保留boundary语义：切换到provider ActivationContext，按value plan materialize参数，
-使用同一error/stream/callback contract与统一request cancellation语义，再materialize返回值。它不能因为
+使用同一error/stream/callback contract与统一runtime内部停止语义，再materialize返回值。它不能因为
 地址可见就直接传递本地引用或method table。
 
 Consumer lowering不会链接provider executable，也不生成伪PackageArtifact。它保存结构化调用引用：
@@ -670,7 +670,7 @@ HTTP、WebSocket及未来其它gateway entry不是service boundary call。外部
 gateway entry binding中冻结的精确
 `PackageCallableId`执行handler；它不经过service dependency slot，也不伪造`ContractOperationId`。
 
-Ingress仍复用普通语言函数、Package本地链接、ActivationContext、错误通道和结构化取消，但不复用
+Ingress仍复用普通语言函数、Package本地链接、ActivationContext、错误通道和runtime内部停止机制，但不复用
 ServiceContract作为对外声明：
 
 - handler/pre/guard只需由`http.yml`或`websocket.yml`显式引用，不需要出现在`api.yml`；
@@ -708,7 +708,7 @@ WebSocket transport、request/response broker与编码配置分层：
   -> TCP
 ```
 
-Broker只拥有request identity、pending、deadline/cancel、connection/generation归属和容量限制，不把
+Broker只拥有request identity、pending、deadline/内部停止、connection/generation归属和容量限制，不把
 JSON字段写死在核心状态机中。第一版只内置`jsonrpc-2.0-text`配置；未来binary RPC必须以独立配置显式定义
 版本、framing、codec与协商规则，不能把任意binary frame自动当作RPC。现有`sendText*`/`sendBinary*`保持
 raw outbound send，不因为RPC配置而改变语义。
@@ -721,7 +721,6 @@ JSON-RPC 2.0只定义message编码，不假设某一种连接生命周期；`jso
 {"jsonrpc":"2.0","id":"<id>","result":null}
 {"jsonrpc":"2.0","id":"<id>",
  "error":{"code":-32603,"message":"<message>","data":null}}
-{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"<id>"}}
 ```
 
 第一版不执行JSON-RPC batch；收到peer batch时返回单个`Invalid Request`且不执行其中成员。平台发起请求时
@@ -730,19 +729,17 @@ safe integer `id`，平台按原JSON类型和值回显；fraction、超出safe i
 Skiff业务源码不生成、解析或持久化任一方向的transport id。
 
 Inbound response id规则同样固定：parse失败、batch或无法识别出合法request id的Invalid Request使用
-`"id": null`；已经识别出合法typed id后的method/params/capacity/timeout/cancel/internal error必须回显
-原string或safe-integer值。缺少`id`的合法object是notification，除`$/cancelRequest`外一律不dispatch也不
-response。相同connection/generation/direction上仍active或仍在bounded settled tombstone中的id不得再次
-发起request；重复id是`1002`协议错误并关闭socket，不能先返回一个同id错误再让旧execution或晚到cancel
+`"id": null`；已经识别出合法typed id后的method/params/capacity/timeout/internal error必须回显
+原string或safe-integer值。缺少`id`的合法object是notification，一律不dispatch也不response。
+相同connection/generation/direction上仍active或仍在bounded settled tombstone中的id不得再次
+发起request；重复id是`1002`协议错误并关闭socket，不能先返回一个同id错误再让旧execution或晚到result
 作用于新request。Tombstone到期或按容量驱逐后可以复用该id；peer应优先生成connection-lifetime唯一id。
 平台生成的outbound string id在同一connection generation内不得复用。
 
-`$/cancelRequest`沿用Language Server Protocol的通用取消形状，是本配置在JSON-RPC核心之上的
-best-effort notification。它只取消**发送该notification的一方此前发起**、且仍在执行的request；同值但
-方向相反的id不受影响。取消不成为handler可捕获错误。Pending key至少包含direction、connection id、
-socket/generation identity、配置id与request id；response必须来自原connection，unknown、duplicate、
-跨generation或已取消的response不能命中其它调用。配置adapter只解析JSON-RPC控制字段；`method`、
-`params`、`result`与error `data`保持opaque。
+第一版所有notification都没有业务或平台取消语义。Pending key至少包含direction、connection id、
+socket/generation identity、配置id与request id；response必须来自原connection，unknown、duplicate或
+跨generation的response不能命中其它调用。配置adapter只解析JSON-RPC request/response控制字段；
+`method`、`params`、`result`与error `data`保持opaque。
 
 `method`必须非空。`value`按`std.json.encode<TRequest>`语义编码，并且顶层结果必须是JSON object或array，
 以满足JSON-RPC `params`约束；无参数方法传空object。Success `result`按
@@ -760,14 +757,15 @@ native function requestJsonToConnection<TRequest, TResponse>(
 ```
 
 它只允许精确connection target，不提供business-identity fan-out版本，因为多个socket不能共同拥有一个
-unary response。调用受当前execution deadline与cancel约束；等待尚未完成时是真实suspension point。
-当前有效deadline到达时抛`TimeoutError`；ancestor cancellation终止当前request/lane且不可被用户
-`catch`。二者都先删除pending state，再在socket仍可写时best-effort发送`$/cancelRequest`。目标不存在或
+unary response。调用受当前execution deadline与runtime内部停止约束；等待尚未完成时是真实suspension
+point。当前有效deadline到达时抛`TimeoutError`；ancestor内部停止只结束当前request/lane且不可被用户
+`catch`。二者都先删除pending state并丢弃late response；第一版不向peer发送request cancellation
+notification。目标不存在或
 已关闭、发送后transport丢失、response协议错误、平台容量拒绝和peer JSON-RPC error分别投影为
 `std.websocket.WebSocketRequestError`的封闭分支；本地分支只暴露固定、脱敏信息，remote分支保留经过
 大小和shape校验的JSON-RPC integer `code`、`message`与可选`data`。
 
-平台保留有界短期settled tombstone以丢弃完成/取消竞态产生的晚到或重复response。Pending数量和payload
+平台保留有界短期settled tombstone以丢弃完成/内部停止竞态产生的晚到或重复response。Pending数量和payload
 大小达到上限时新request fail closed；tombstone达到容量时按最旧到期顺序驱逐，不因已完成请求占满表而
 拒绝新request。驱逐后的晚到response按unknown id处理，仍不能恢复任何调用。Transport不自动retry；
 断线可能发生在peer收到request之前或之后，因此外部副作用的幂等、去重和补偿仍由业务ID承担。
@@ -786,14 +784,13 @@ Peer主动request的dispatch规则：
   失败应使用返回union。未捕获throw统一投影为`-32603 Internal error`，不暴露Skiff名义错误、message、stack
   或私有字段。
 - JSON parse失败返回`-32700 Parse error`，非法request object或batch返回`-32600 Invalid Request`；
-  平台容量拒绝返回`-32000 Server busy`，有效deadline到达返回`-32001 Request timed out`，已接纳request
-  被peer取消返回`-32800 Request cancelled`。这些平台错误使用固定message且默认省略`data`。
-- 有`id`的合法request必须恰好产生一次result或error，除非socket已经关闭。Peer disconnect会取消该
-  connection/generation上的全部inbound executions；晚到完成被丢弃。收到有效`$/cancelRequest`后，
-  平台原子地把active mapping转为cancelled/settled，并保留完成写回所需的socket与原始typed id；
-  随后best-effort返回`-32800`，晚到完成被丢弃。Unknown/already-settled id静默忽略。
-- 除`$/cancelRequest`外，任何业务JSON-RPC notification都不调用用户代码、不产生response；即使method与
-  已声明request method同名也一样，只记录有界诊断。Binary frame不是本配置的一部分；没有用户raw
+  平台容量拒绝返回`-32000 Server busy`，有效deadline到达返回`-32001 Request timed out`。
+  这些平台错误使用固定message且默认省略`data`。
+- 有`id`的合法request必须恰好产生一次result或error，除非socket已经关闭。Peer disconnect会内部停止该
+  connection/generation上仍在运行的inbound execution；晚到完成被丢弃，但这只是runtime内部停止，
+  不产生cancel response或rollback承诺。
+- 任何JSON-RPC notification都不调用用户代码、不产生response；平台保留前缀也没有特殊取消语义。
+  即使notification method与已声明request method同名也一样，只记录有界诊断。Binary frame不是本配置的一部分；没有用户raw
   receive时以`1003`拒绝。
 - Response object只允许恢复Skiff发起的outbound pending；request object只允许创建上述declared ingress。
   畸形/伪造response、wrong connection/generation或unknown outbound response id属于`1002`协议错误，不能
@@ -847,7 +844,7 @@ CallbackCapability
 约束：
 
 - capability由创建该值的activation拥有；
-- 生命周期到顶层request结束，stream存在时延长到stream关闭；cancel或owner退出会提前失效；
+- 生命周期到顶层request结束，stream存在时延长到stream关闭；内部停止或owner退出会提前失效；
 - 对端只能通过contract声明的operation回调owner，不能得到method table、native object或本地地址；
 - capability不能进入DB、spawn、queue、persistent payload或其它recoverable lane；
 - 失效返回稳定`CapabilityExpired`/`CapabilityUnavailable`错误，不重建、不fallback；

@@ -33,6 +33,7 @@
 - `doc/reference/std-surface.md`
 - `doc/architecture/gateway-runtime-adapter-boundary.md`
 - `doc/architecture/package-service-contract-deployment.md`
+- `doc/architecture/open-issues.md`
 - 本result
 
 要求：

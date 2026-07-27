@@ -59,7 +59,7 @@ provider unavailable 类错误表示目标服务、网络连接、DNS、TLS 或 
 protocol 类错误表示跨服务、HTTP/SSE 或 gateway/runtime 协议不匹配、无法恢复 identity 或 payload 与 lock / schema 不一致。
 
 `std.websocket.WebSocketRequestError`表示Skiff主动发起的WebSocket request因connection、transport、
-RPC配置协议、平台容量或peer显式error而失败。Deadline仍使用`TimeoutError`；结构化取消不生成用户可
+RPC配置协议、平台容量或peer显式error而失败。Deadline仍使用`TimeoutError`；runtime内部停止不生成用户可
 捕获错误。JSON编码、非法JSON-RPC params shape和typed response decode失败仍使用
 `std.json.DecodeError`。
 
@@ -199,7 +199,7 @@ URL percent-encoding helper 区分 query component 和 path；path encoding 保�
 
 `std.time` 只承载 request-local time control API；wall-clock value 读取属于 `Date` surface。
 
-`sleep(ms)` 只挂起当前 request，不创建 durable timer。`ms <= 0` 立即返回；单次等待最多 60 秒，超过上限按 60 秒处理。sleep 受当前 request timeout 和 cancel 约束。
+`sleep(ms)` 只挂起当前 request，不创建 durable timer。`ms <= 0` 立即返回；单次等待最多 60 秒，超过上限按 60 秒处理。Sleep受当前request timeout和内部停止状态约束。
 
 含 `Date.now()` 的测试不应断言具体 instant；需要稳定值时使用 `Date.fromEpochMilliseconds(...)` 或运行时测试设施注入固定时间。
 
@@ -239,13 +239,15 @@ DNS、连接失败、TLS、payload decode 或协议错误抛标准平台错误�
 
 `std.http.HttpResponseStreamEvent` 表达 raw HTTP streaming response：`start` 必须先于 `chunk`，`end` 后不能再 emit。`std.http.streamStart` / `std.http.streamChunk` / `std.http.streamEnd` 是构造该 stream event 的平台 helper。
 
-调用方提前退出、外层 timeout 或 ancestor cancel 时，stream / sse 必须 abort in-flight HTTP request。
+调用方提前退出、外层timeout或ancestor内部停止时，stream / sse尽力abort in-flight HTTP request；
+底层不支持时丢弃late response，并由HTTP client operation deadline收束。
 
 SSE helper 在 2xx 状态后输出完整 event；非 2xx 时按 body chunk 输出，供上层 package 读取有限错误体并脱敏。
 
 effect metadata 默认按 method 推导：GET / HEAD 为 external read 且 idempotent，其他 method 为 external write 且 non-idempotent。
 
-HTTP conflict-key 以 method 和 origin 为基础；origin 无法静态确定时为 opaque。stream / sse 的 cancel-safety 是 response-discardable。
+HTTP conflict-key以method和origin为基础；origin无法静态确定时为opaque。stream / sse的late
+response可以丢弃；这不表示已经发出的HTTP副作用可撤销。
 
 ## 12. std.log
 
@@ -255,7 +257,8 @@ HTTP conflict-key 以 method 和 origin 为基础；origin 无法静态确定时
 
 attrs 是结构化 JSON object；runtime / exporter 可按 telemetry 配置丢弃、采样或脱敏。
 
-effect metadata 是 telemetry write，target 对应具体 log level，cancel safety 是 fire-and-forget，business semantics 是 non-observable。
+effect metadata是telemetry write，target对应具体log level，business semantics是non-observable；
+runtime内部停止后允许丢弃尚未提交的日志，已提交日志不回滚。
 
 需要可靠业务事件时，应使用后续单独 event / queue API，而不是 `std.log.*`。
 
@@ -277,8 +280,8 @@ code与reason。
 
 `std.websocket`不提供raw receive、任意event-name dispatcher或transport id。Peer只能调用
 `websocket.yml.jsonRpc`显式声明的typed unary method；该handler由gateway adapter调用，不是std函数。
-Unknown method返回`-32601`；除`$/cancelRequest`外的notification即使与已声明request method同名也不进入
-用户代码。Binary data frame以`1003`关闭；ping/pong/close由协议栈处理。
+Unknown method返回`-32601`；所有notification即使与已声明request method同名也不进入用户代码，第一版
+没有peer request cancellation。Binary data frame以`1003`关闭；ping/pong/close由协议栈处理。
 
 send target 分两套：`...ToConnection` 按单个 connection id 发送，`...ToBusinessIdentity` 按 business identity 发送（投递到该 business identity 当前的所有连接）。`std.websocket.sendTextToConnection` / `sendTextToBusinessIdentity` 发送 text frame，`std.websocket.sendBinaryToConnection` / `sendBinaryToBusinessIdentity` 发送 binary frame（不做 base64 编码）；这四个是 runtime host operation。
 
@@ -302,7 +305,7 @@ native function requestJsonToConnection<TRequest, TResponse>(
 ```
 
 WebSocket是通用双向transport；平台request broker与编码配置分离。Broker拥有request identity、pending、
-deadline/cancel、connection/generation归属和容量限制，不把JSON字段写死在核心状态机中。第一版
+deadline/内部停止、connection/generation归属和容量限制，不把JSON字段写死在核心状态机中。第一版
 `requestJsonToConnection`选择内置`jsonrpc-2.0-text`配置；未来binary RPC必须用新的显式API/配置定义
 版本、framing、codec与协商，不能把普通binary frame自动解释成RPC。现有raw text/binary send不受影响。
 
@@ -325,29 +328,28 @@ Skiff主动发起request时的wire精确为：
 {"jsonrpc":"2.0","id":"<opaque>","result":null}
 {"jsonrpc":"2.0","id":"<opaque>",
  "error":{"code":-32603,"message":"<message>","data":null}}
-{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"<opaque>"}}
 ```
 
 `result`与error `data`可以是任意受大小限制的JSON值。第一版每个text frame只接受一个JSON-RPC对象，
 不执行batch；request `params`必须是object或array，outbound response `id`必须是string，error `code`必须是
 integer且`message`必须是string。Wrong-connection、wrong-generation或未知id的response不能命中pending
-调用，并以协议错误`1002`关闭。平台保留有界短期settled tombstone；与完成/取消竞态的晚到或重复response
+调用，并以协议错误`1002`关闭。平台保留有界短期settled tombstone；与完成/内部停止竞态的晚到或重复response
 只命中tombstone并被丢弃，不能恢复调用。Declared peer request走独立inbound mapping，不能误命中同值
 outbound id。第一版不支持binary request/response。
 
 Peer发起request时，id可以是非空string或safe integer，业务handler看不到该id。Params由
 `websocket.jsonRpcParams`解码，return编码为result；handler还可显式接收平台提供的
 `websocket.connectionId`和`websocket.businessIdentity`。Platform parse/invalid/method/params/internal
-错误固定为`-32700/-32600/-32601/-32602/-32603`，容量、timeout与cancel固定为
-`-32000/-32001/-32800`。无法识别合法request id的错误使用`id: null`，其余错误原样回显typed id；
+错误固定为`-32700/-32600/-32601/-32602/-32603`，容量与timeout固定为
+`-32000/-32001`。无法识别合法request id的错误使用`id: null`，其余错误原样回显typed id；
 同方向重复active或仍在bounded settled tombstone中的id以`1002`关闭；tombstone到期/驱逐后才可复用。
 未捕获业务throw只返回脱敏Internal error；预期失败应由result union表达。
 
 `requestJsonToConnection`只接受精确connection id，不提供business identity fan-out版本。多个socket不能
-共同拥有一个unary response。调用受当前execution deadline与cancel约束；等待response时是真实
-suspension point。有效deadline抛`TimeoutError`；ancestor cancellation终止当前request/lane且不可被用户
-`catch`。二者都先原子删除pending state，再在socket仍可写时best-effort发送
-`$/cancelRequest` notification；晚到response不能恢复其它调用。
+共同拥有一个unary response。调用受当前execution deadline与内部停止状态约束；等待response时是真实
+suspension point。有效deadline抛`TimeoutError`；ancestor内部停止终止当前request/lane且不可被用户
+`catch`。二者都先原子删除pending state并丢弃晚到response；第一版不向peer发送request cancellation
+notification。
 
 目标解析失败或发送前已关闭映射为`connectionUnavailable`；request已接纳后socket或runtime/router
 transport丢失映射为`transportUnavailable`，但不承诺peer未执行；畸形或伪造response映射为
@@ -359,8 +361,8 @@ Transport pairing不提供业务幂等、自动重试或exactly-once。Pending�
 fail closed；tombstone数量与生命周期也有界，但饱和时驱逐最旧项，不因settled记录拒绝新request。
 有持久副作用的协议仍保留自己的`toolCallId`、`attemptId`、`idempotencyKey`等业务identity。
 
-WebSocket send effect是external write，conflict-key以connection id为基础，cancel safety是
-response-discardable。`requestJsonToConnection`也是external write，但拥有response wait并被静态标记为
+WebSocket send effect是external write，conflict-key以connection id为基础；晚到response可以丢弃，
+但已发送request的副作用不承诺撤销。`requestJsonToConnection`也是external write，但拥有response wait并被静态标记为
 `maySuspend`；普通send保持non-suspending。
 
 version 优先来自 `X-Skiff-Version`，WebSocket query 只作为兼容 fallback，表示选中的 service version，应与 service root version 对齐。
@@ -379,7 +381,8 @@ native host operation 可以声明特权 stream 参数，用来在当前 request
 
 stream 消费通过 `for event in stream` 顺序读取。end 正常退出；source error 映射为当前 lane 的 ordinary throw。
 
-break、return、外层 timeout 或 ancestor cancel 必须向 source 传播 cancel。stream 完成、出错或取消后不能再次消费。
+break、return、外层timeout或ancestor内部停止必须结束当前consumption，并向source发送best-effort
+stop hint。Stream完成、出错或停止后不能再次消费。
 
 `emit` 是 server-stream producer 的 ordered external write，也是 backpressure point。它不能在 concurrent sibling lanes 中直接使用。
 
@@ -411,6 +414,7 @@ prelude surface 是语言默认可见集合；`std` surface 是官方 package AP
 
 platform errors 描述运行平台或协议层失败。业务可预期失败应进入 API 返回类型，不应依赖未捕获 throw 越过服务边界。
 
-host-backed `std` API 必须发布 effect metadata，包括 target、conflict-key、cancel safety 和 stream / callback 行为。
+host-backed `std` API 必须发布 effect metadata，包括target、conflict-key以及stream / callback行为；
+第一版不要求通用cancel-safety、commit point或cleanup action字段。
 
 新增 prelude 或 `std` surface 时，需要同时明确 namespace 归属、schema closure 能力、effect metadata、测试替身 target 和与 service boundary 的关系。

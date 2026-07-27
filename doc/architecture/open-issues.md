@@ -55,9 +55,9 @@ nominal public path和service dependency cycle已经在
    第一版已经支持双向JSON-RPC unary request：Skiff使用
    `std.websocket.requestJsonToConnection`向peer发起；peer只能调用`websocket.yml.jsonRpc`显式声明的
    method。Raw frame `receive`、任意event-name dispatcher与业务可见transport id仍不存在。
-   第一版除`$/cancelRequest`外不声明业务notification handler，也不支持binary RPC。未来若出现真实需求，
-   必须分别定义notification的admission/错误/背压语义，或binary profile的版本、framing、codec与协商；
-   不能把普通text/binary frame自动变成业务入口。
+   第一版不声明任何notification handler，也不支持peer request cancellation或binary RPC。未来若出现
+   真实需求，必须分别定义notification的admission/错误/背压语义、取消请求的业务与副作用边界，或binary
+   profile的版本、framing、codec与协商；不能把普通text/binary frame自动变成业务入口。
 
 ## 建议处理顺序
 

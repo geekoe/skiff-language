@@ -127,11 +127,11 @@ jsonRpc:
 
 一个peer request按
 `(websocket entry id, jsonrpc-2.0-text, method) -> GatewayEntryKey -> GatewayEntryIdentity`
-在socket pin住的deployment generation中路由。业务handler看不到transport id。除平台
-`$/cancelRequest`外，第一版没有业务notification handler；即使notification的`method`与已声明request
-method同名也不dispatch。第一版也不支持JSON-RPC batch或binary RPC。
+在socket pin住的deployment generation中路由。业务handler看不到transport id。第一版不支持任何
+notification handler；即使notification的`method`与已声明request method同名也不dispatch。
+第一版也不支持JSON-RPC batch、peer request cancellation或binary RPC。
 
-## 5. 错误与取消
+## 5. 错误与内部停止
 
 Inbound JSON-RPC固定使用以下platform codes：
 
@@ -144,14 +144,15 @@ Inbound JSON-RPC固定使用以下platform codes：
 | `-32603` | Internal error |
 | `-32000` | Server busy |
 | `-32001` | Request timed out |
-| `-32800` | Request cancelled |
 
 未捕获Skiff throw统一脱敏为`-32603`，不把名义错误、stack或私有字段发给peer。预期业务失败使用typed result
-union。Peer `$/cancelRequest`触发不可捕获的结构化取消；disconnect取消该connection/generation上的全部
-inbound request。每个有id的已接纳request最多写一个result/error。Parse、batch或无法识别合法id的Invalid
-Request用`id: null`；其余request错误回显原string/safe-integer id。同方向重复active id以`1002`关闭连接；
-仍在bounded settled tombstone中的id也不得复用；tombstone到期/驱逐后才可复用。两个方向的同值id始终
-互不冲突。
+union。Peer disconnect后socket已没有response consumer，runtime可以内部停止该
+connection/generation上仍在执行的handler并丢弃晚到结果；这不产生JSON-RPC cancel error，也不承诺撤销
+handler已经提交的副作用。所有notification（包括平台保留前缀）都不执行用户代码、不改变active request。
+每个有id且socket仍存活的已接纳request最多写一个result/error。Parse、batch或无法识别合法id的
+Invalid Request用`id: null`；其余request错误回显原string/safe-integer id。同方向重复active id以`1002`
+关闭连接；仍在bounded settled tombstone中的id也不得复用；tombstone到期/驱逐后才可复用。两个方向的
+同值id始终互不冲突。
 
 ## 6. Fail-closed
 

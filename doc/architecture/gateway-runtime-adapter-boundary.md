@@ -66,6 +66,10 @@ Runtime endpoint 是 router 对 runtime 暴露的内部 WebSocket listener，通
 
 Runtime endpoint 不负责选择业务 runtime，也不持有长期 pending request 策略。
 
+`request.cancel`与`connection.request.cancel`是历史命名的runtime内部best-effort stop hint：
+发送方先独立收束本地pending，不能依赖对端收到hint来保证业务正确性；接收方幂等停止无用执行并隔离
+late result。它们不是用户可调用的取消请求协议，不产生public cancel error，也不承诺回滚已提交副作用。
+
 Runtime endpoint 拥有物理 runtime WebSocket writer。其它模块只能通过窄接口 `RuntimeFrameSender` 发送 frame，不能直接持有 runtime socket。
 
 ### RuntimeRegistry
@@ -78,7 +82,7 @@ Runtime endpoint 拥有物理 runtime WebSocket writer。其它模块只能通�
 - version -> build id 索引。
 - runtime capability snapshot。
 
-`RuntimeRegistry` 不负责 request pending map、timeout、cancel、stream response sequencing、service-to-service forward request id 映射。
+`RuntimeRegistry` 不负责 request pending map、timeout、内部停止、stream response sequencing、service-to-service forward request id 映射。
 
 ### RuntimeDispatcher
 
@@ -86,10 +90,10 @@ Runtime endpoint 拥有物理 runtime WebSocket writer。其它模块只能通�
 
 - 从 `RuntimeRegistry` 选择目标 runtime。
 - 发出 `request.start` frame。
-- 维护 pending request、deadline、abort/cancel cleanup。
+- 维护pending request、deadline与内部停止后的本地收束。
 - 处理 unary、frame unary、server stream 的 response lifecycle。
 - 处理 runtime-originated service-to-service request forwarding。
-- 在 runtime disconnect 时完成 pending request 的失败、取消或转移。
+- 在runtime disconnect时完成pending request的失败、内部停止或转移。
 
 Gateway 依赖 `RuntimeDispatcher`，不直接依赖 `RuntimeRegistry` 做 dispatch。
 
@@ -103,8 +107,8 @@ Gateway 依赖 `RuntimeDispatcher`，不直接依赖 `RuntimeRegistry` 做 dispa
 - 通过所选编码配置匹配peer response，向原runtime返回`connection.response`。
 - 把peer request method解析为socket pinned generation中的`IngressSelector`，通过
   `RuntimeDispatcher`创建普通gateway request，并把runtime response写回同一socket/id。
-- 把peer `$/cancelRequest`路由到对应inbound runtime request，且不影响同值outbound id。
-- 处理cancel、deadline、socket/runtime disconnect、容量上限与短期settled tombstone。
+- 忽略所有peer notification，不把它们路由为runtime request。
+- 处理内部停止、deadline、socket/runtime disconnect、容量上限与短期settled tombstone。
 
 Broker核心不解释JSON或binary业务payload，不选择具体Package handler，也不解码业务类型。Inbound方向只
 解析canonical ingress selector并委托`RuntimeDispatcher`；gateway-dispatch pending仍由dispatcher拥有，
@@ -449,7 +453,7 @@ client / host
 
 精确匹配outbound pending的response只恢复原调用，不产生runtime ingress。合法peer request只有在
 `websocket.yml.jsonRpc`声明method时才产生runtime ingress；unknown method返回JSON-RPC error，不猜handler。
-除`$/cancelRequest`外的notification不进入用户代码。畸形或伪造的outbound response以`1002`关闭；
+所有notification都不进入用户代码。畸形或伪造的outbound response以`1002`关闭；
 不属于text JSON profile的binary data以`1003`关闭。WebSocket ping、pong和close control frame由协议栈
 处理，不进入用户代码。由此：
 
@@ -464,8 +468,8 @@ client / host
 
 WebSocket connect handler可以按普通函数语义挂起；每次upgrade最多创建一次connect dispatch，runtime
 等待handler完成后才结束该dispatch，不把它隐式拆成detached work，也不重复执行。连接建立后，只有声明
-JSON-RPC method可以创建业务dispatch。连接关闭时gateway同步移除连接索引，取消该generation全部inbound
-execution并失败outbound pending；关闭后到达的下行发送按已关闭连接正常失败。
+JSON-RPC method可以创建业务dispatch。连接关闭时gateway同步移除连接索引，runtime内部停止该generation
+全部inbound execution并失败outbound pending；关闭后到达的下行发送按已关闭连接正常失败。
 
 `std.websocket` 的 connection send 操作本身保持非挂起；它只尝试把 frame 交给 gateway，
 不等待客户端消费或为慢客户端提供 backpressure await。
@@ -473,8 +477,8 @@ execution并失败outbound pending；关闭后到达的下行发送按已关闭�
 `std.websocket.requestJsonToConnection<TRequest, TResponse>`是不同操作。Runtime按`TRequest`编码payload，
 并要求顶层结果是JSON object或array；broker通过`jsonrpc-2.0-text`配置向精确connection发送JSON-RPC 2.0
 request。调用在等待匹配response时挂起，runtime按`TResponse`解码success `result`。它继承当前execution
-deadline/cancel，不提供business-identity fan-out、自动重试、业务幂等或exactly-once。当前deadline产生
-`TimeoutError`；ancestor cancellation是不可捕获的结构化控制。Connection/transport、protocol、
+deadline与内部停止状态，不提供business-identity fan-out、自动重试、业务幂等或exactly-once。当前deadline产生
+`TimeoutError`；ancestor内部停止不可被用户捕获。Connection/transport、protocol、
 resource-limit和peer error投影成`std.websocket.WebSocketRequestError`的封闭分支。请求编码、params
 shape与success response typed decode分别遵循`std.json.encode<TRequest>` /
 `std.json.decode<TResponse>`并保留`std.json.DecodeError`；broker不参与业务typed decode。
@@ -488,11 +492,11 @@ Broker pending规则：
   peer-visible request id；
   response不能跨connection、重连generation或service/entry归属命中。
 - 同一connection上两个方向的request/response可以乱序完成；每个pending或inbound execution最多完成一次。
-- disconnect或原runtime断开会原子移除相关pending/inbound mapping，并尽可能通知另一端取消/失败。
-- deadline/cancel先移除pending，再best-effort通过当前配置发送取消；`jsonrpc-2.0-text`使用
-  `$/cancelRequest` notification。Outbound方向保留有界短期response tombstone，以静默丢弃与
-  完成/取消竞态的晚到或重复response；inbound方向保留有界短期settled-id tombstone，避免晚到cancel或
-  重复request作用于新execution。Unknown且不在outbound tombstone中的response id属于协议错误。
+- disconnect或原runtime断开会原子移除相关pending/inbound mapping，并在本地内部停止无用执行。
+- deadline或内部停止先移除pending，不向peer发送request cancellation notification。Outbound方向保留
+  有界短期response tombstone，以静默丢弃与完成/停止竞态的晚到或重复response；inbound方向保留有界短期
+  settled-id tombstone，避免重复request作用于新execution。Unknown且不在outbound tombstone中的response
+  id属于协议错误。
 - Outbound pending、inbound active request、单payload大小以及tombstone数量和生命周期必须分别受平台limit
   约束；outbound达到上限时本地调用fail closed，inbound达到上限时返回`-32000 Server busy`。Tombstone达到
   容量时驱逐最旧项，不因settled记录拒绝新request，也不能无界缓存。
@@ -504,14 +508,13 @@ Inbound JSON-RPC lifecycle规则：
 - Request object按`method`解析pinned generation中的gateway entry；`params`只作为opaque JSON交给runtime
   typed adapter。Runtime返回opaque encoded result或固定gateway error，Router不执行typed codec。
 - Platform parse/invalid/method/params/internal error分别使用JSON-RPC `-32700`、`-32600`、`-32601`、
-  `-32602`、`-32603`；容量、timeout与cancel使用`-32000`、`-32001`、`-32800`。
+  `-32602`、`-32603`；容量与timeout使用`-32000`、`-32001`。
 - Parse、batch或尚未识别出合法request id的Invalid Request使用`id: null`；识别出合法id后的错误回显原
-  string/safe-integer值。同方向重复active或仍在settled tombstone中的id以`1002`关闭并取消该connection的
+  string/safe-integer值。同方向重复active或仍在settled tombstone中的id以`1002`关闭并内部停止该connection的
   inbound executions；tombstone到期/驱逐后才可复用，旧dispatcher correlation不能完成新request。
-- Peer cancel固定当前inbound request为不可捕获结构化取消，并best-effort写回`-32800`；unknown或已settled
-  id静默忽略。Peer disconnect取消全部inbound request，不再尝试写response。
-- 除`$/cancelRequest`外的notification不dispatch、不response，即使method与已声明request method同名；
-  batch不执行任何成员并返回单个`-32600`。
+- Peer disconnect使全部inbound request失去response consumer，runtime内部停止其执行且不再尝试写response。
+- 所有notification都不dispatch、不response，即使method与已声明request method同名；平台保留前缀没有
+  特殊取消语义。Batch不执行任何成员并返回单个`-32600`。
 
 目标std surface：
 
@@ -635,10 +638,10 @@ type GatewayEntryProtocolManifest = {
 
 ### HTTP关联与业务ID
 
-一次HTTP request天然只对应自己的unary response或server stream，transport已经拥有精确关联、取消和
+一次HTTP request天然只对应自己的unary response或server stream，transport已经拥有精确关联、内部停止和
 trace metadata。业务payload、HTTP response envelope和stream item不得再声明只用于模拟WebSocket
 req/res correlation的`requestId`、`correlationId`或同义字段。Router/runtime内部request id只用于
-dispatch、cancel、telemetry和diagnostics，不投影为用户业务字段。
+dispatch、内部停止、telemetry和diagnostics，不投影为用户业务字段。
 
 真正拥有独立业务生命周期的ID仍然合法，但必须按语义命名和验证，例如：
 
@@ -787,7 +790,7 @@ Router telemetry may log:
 
 - service id、deployment revision、gateway entry key与gateway entry identity。
 - connection id。
-- 平台WebSocket request的method、完成状态、deadline/cancel原因和pending计数；request id只按平台
+- 平台WebSocket request的method、完成状态、deadline/内部停止原因和pending计数；request id只按平台
   diagnostic策略记录，payload不得记录。
 - presence of `businessIdentity` and a redacted/hash form if needed.
 - connection policy decision。
@@ -813,14 +816,14 @@ Target-state tests must prove:
   unknown method/invalid params/internal error使用冻结JSON-RPC code。Business notification不dispatch。
 - Malformed/forged outbound response以`1002`关闭；binary data以`1003`关闭；ping/pong/close remains
   protocol-owned。
-- Out-of-order responses match correctly；wrong connection/generation/unknown id不能恢复调用；cancel、
-  deadline、runtime disconnect和socket disconnect清理pending；late/duplicate settled response只命中
+- Out-of-order responses match correctly；wrong connection/generation/unknown id不能恢复调用；
+  deadline、内部停止、runtime disconnect和socket disconnect清理pending；late/duplicate settled response只命中
   bounded tombstone并被丢弃；tombstone饱和驱逐最旧项而不拒绝新request。
-- Bidirectional same-value ids remain isolated；peer cancel只终止同方向inbound request；disconnect、
-  timeout、capacity和cancel各自产生冻结结果且late handler completion不能二次写回。
+- Bidirectional same-value ids remain isolated；disconnect、timeout和capacity各自产生冻结结果且late
+  handler completion不能二次写回；第一版没有peer request cancellation。
 - `connection.send`保持non-suspending；`requestJsonToConnection`等待response时是suspension point，
-  并能由execution cancel/deadline终止；deadline产生`TimeoutError`，ancestor cancellation不可捕获。
-- JSON-RPC success/error、非法params、batch拒绝、peer error与`$/cancelRequest`best-effort发送都有协议测试；
+  并能由execution内部停止/deadline终止；deadline产生`TimeoutError`，ancestor内部停止不可捕获。
+- JSON-RPC success/error、非法params、batch拒绝、peer error与notification ignore都有协议测试；
   broker状态机测试不依赖JSON字段，并证明未来配置无需复制pending owner。
 - Router production code does not import business payload codec, does not parse `parameters[].type` / `responseType`, and makes no dispatch decision from business type structure.
 - Runtime adapter tests cover typed HTTP body/context、WebSocket connect与JSON-RPC params/result codec。
