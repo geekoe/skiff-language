@@ -54,8 +54,6 @@ impl PackageSchemaTypeIdentity {
 /// intentionally absent: it is a normal Package-owned public typed error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PlatformBuiltinErrorIdentity {
-    #[serde(rename = "CancelError")]
-    Cancel,
     #[serde(rename = "TimeoutError")]
     Timeout,
     #[serde(rename = "config.DecodeError")]
@@ -85,7 +83,6 @@ pub enum PlatformBuiltinErrorIdentity {
 impl PlatformBuiltinErrorIdentity {
     pub fn from_symbol(symbol: &str) -> Option<Self> {
         Some(match symbol {
-            "CancelError" => Self::Cancel,
             "TimeoutError" => Self::Timeout,
             "config.DecodeError" => Self::ConfigDecode,
             "std.bytes.DecodeError" => Self::BytesDecode,
@@ -104,7 +101,6 @@ impl PlatformBuiltinErrorIdentity {
 
     pub const fn symbol(self) -> &'static str {
         match self {
-            Self::Cancel => "CancelError",
             Self::Timeout => "TimeoutError",
             Self::ConfigDecode => "config.DecodeError",
             Self::BytesDecode => "std.bytes.DecodeError",
@@ -589,6 +585,70 @@ mod tests {
             trace_id: "trace-1".to_string(),
             error_id: "error-3".to_string(),
         }
+    }
+
+    #[test]
+    fn legacy_cancel_platform_error_envelope_is_rejected_by_the_finite_registry() {
+        let legacy = r#"{
+          "kind": "platformError",
+          "builtinErrorIdentity": "CancelError",
+          "encodedPayload": [],
+          "traceId": "trace-cancel",
+          "errorId": "error-cancel"
+        }"#;
+
+        let error = serde_json::from_str::<ServiceErrorEnvelope>(legacy).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown variant `CancelError`"),
+            "legacy identity must be rejected before payload validation: {error}"
+        );
+    }
+
+    #[test]
+    fn legacy_cancel_symbol_is_not_a_platform_builtin_identity() {
+        assert_eq!(
+            PlatformBuiltinErrorIdentity::from_symbol("CancelError"),
+            None
+        );
+    }
+
+    #[test]
+    fn legacy_cancel_json_string_is_rejected_by_the_finite_registry() {
+        assert!(serde_json::from_str::<PlatformBuiltinErrorIdentity>(r#""CancelError""#).is_err());
+    }
+
+    #[test]
+    fn timeout_platform_identity_and_envelope_round_trip_unchanged() {
+        let identity = PlatformBuiltinErrorIdentity::Timeout;
+
+        assert_eq!(identity.symbol(), "TimeoutError");
+        assert_eq!(
+            PlatformBuiltinErrorIdentity::from_symbol("TimeoutError"),
+            Some(identity)
+        );
+        assert_eq!(
+            identity.catch_identity(),
+            CatchIdentity::Nominal(NominalTypeIdentity::PlatformBuiltin(identity))
+        );
+
+        let identity_json = serde_json::to_string(&identity).unwrap();
+        assert_eq!(identity_json, r#""TimeoutError""#);
+        assert_eq!(
+            serde_json::from_str::<PlatformBuiltinErrorIdentity>(&identity_json).unwrap(),
+            identity
+        );
+
+        let envelope = ServiceErrorEnvelope::PlatformError {
+            builtin_error_identity: identity,
+            encoded_payload: br#"{"message":"deadline exceeded"}"#.to_vec(),
+            trace_id: "trace-timeout".to_string(),
+            error_id: "error-timeout".to_string(),
+        };
+        let wire = serde_json::to_vec(&envelope).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<ServiceErrorEnvelope>(&wire).unwrap(),
+            envelope
+        );
     }
 
     fn exact_public_bytes() -> Vec<u8> {
