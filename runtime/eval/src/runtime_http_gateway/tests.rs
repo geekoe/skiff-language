@@ -689,55 +689,55 @@ fn write_service_fixture(root: &Path) {
     )
     .expect("gateway package manifest");
     fs::write(root.join("api.yml"), "health: main.health\n").expect("gateway API");
+    fs::write(root.join("service.yml"), format!("id: {SERVICE_ID}\n"))
+        .expect("gateway service manifest");
     fs::write(
-        root.join("service.yml"),
+        root.join("http.yml"),
         format!(
-            r#"id: {SERVICE_ID}
-http:
-  typed:
-    method: POST
-    path: /typed
-    kind: typedJson
-    handler: main.typed
-    guard: main.allow
-    pre: main.prepare
-    adapterArgs:
-      - param: body
-        source: {{ kind: http.body }}
-      - param: context
-        source: {{ kind: http.context }}
-  blocked:
-    method: POST
-    path: /blocked
-    kind: typedJson
-    handler: main.typed
-    guard: main.block
-    pre: main.prepare
-    adapterArgs:
-      - param: body
-        source: {{ kind: http.body }}
-      - param: context
-        source: {{ kind: http.context }}
-  raw:
-    method: POST
-    path: /raw
-    kind: rawHttp
-    handler: main.raw
-    adapterArgs:
-      - param: request
-        source: {{ kind: http.request }}
-  stream:
-    method: POST
-    path: /stream
-    kind: rawHttp
-    handler: main.stream
-    adapterArgs:
-      - param: request
-        source: {{ kind: http.request }}
+            r#"typed:
+  method: POST
+  path: /typed
+  kind: typedJson
+  handler: main.typed
+  guard: main.allow
+  pre: main.prepare
+  adapterArgs:
+    - param: body
+      source: {{ kind: http.body }}
+    - param: context
+      source: {{ kind: http.context }}
+blocked:
+  method: POST
+  path: /blocked
+  kind: typedJson
+  handler: main.typed
+  guard: main.block
+  pre: main.prepare
+  adapterArgs:
+    - param: body
+      source: {{ kind: http.body }}
+    - param: context
+      source: {{ kind: http.context }}
+raw:
+  method: POST
+  path: /raw
+  kind: rawHttp
+  handler: main.raw
+  adapterArgs:
+    - param: request
+      source: {{ kind: http.request }}
+stream:
+  method: POST
+  path: /stream
+  kind: rawHttp
+  handler: main.stream
+  adapterArgs:
+    - param: request
+      source: {{ kind: http.request }}
 "#
         ),
     )
-    .expect("gateway service manifest");
+    .expect("gateway HTTP manifest");
     fs::write(
         root.join("config.dev.yml"),
         "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:runtime-http-gateway\nlifecycle: { maxConcurrency: 1 }\n",

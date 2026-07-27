@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, request as requestHttp } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -77,6 +78,11 @@ test('command-double runs only one copied-consumer negative Host probe', async (
     assert.equal(result.fixture.checkedInUnchanged, true);
     assert.equal(result.fixture.checkedInSha256After, result.fixture.checkedInSha256Before);
     assert.deepEqual(result.fixture.copiedConsumerModifiedFiles, ['main.test.skiff']);
+    assert.deepEqual(result.fixture.copiedExternalControlFiles, [{
+      path: 'http.yml',
+      sha256: createHash('sha256').update(TEMP_HTTP_MANIFEST).digest('hex'),
+      size: Buffer.byteLength(TEMP_HTTP_MANIFEST),
+    }]);
     assert.equal(result.runner.exitCode, 1);
     assert.equal(result.runner.failedTests, 1);
     assert.equal(result.runner.failureSummary, '1 test failed');
@@ -231,13 +237,30 @@ async function makeCheckout() {
     join(tests, 'service.yml'),
     'id: test.skiff/consumer-tests\nkind: test\n',
   );
+  await writeFile(join(tests, 'http.yml'), TEMP_HTTP_MANIFEST);
   await writeFile(join(tests, 'config.skiff-test.yml'), '{}\n');
+  await writeFile(
+    join(tests, 'main.skiff'),
+    'function probe(body: null) -> string { return "ok" }\n',
+  );
   await writeFile(
     join(tests, 'main.test.skiff'),
     'import subject\n\ntest "positive" {\n  assert subject/main.run() == "ok"\n}\n',
   );
   return root;
 }
+
+const TEMP_HTTP_MANIFEST = [
+  'probe:',
+  '  method: POST',
+  '  path: /probe',
+  '  kind: typedJson',
+  '  handler: main.probe',
+  '  adapterArgs:',
+  '    - param: body',
+  '      source: { kind: http.body }',
+  '',
+].join('\n');
 
 async function commandDoubleRuntimeOwner({ runTest }) {
   const tempRoot = await mkdtemp(join(tmpdir(), 'skiff-host-negative-runtime-'));

@@ -471,47 +471,47 @@ fn write_service_fixture(root: &Path) {
     )
     .expect("gateway package manifest");
     fs::write(root.join("api.yml"), "health: main.health\n").expect("gateway API");
+    fs::write(root.join("service.yml"), format!("id: {SERVICE_ID}\n"))
+        .expect("gateway service manifest");
     fs::write(
-        root.join("service.yml"),
+        root.join("http.yml"),
         format!(
-            r#"id: {SERVICE_ID}
-http:
-  typed:
-    method: POST
-    path: /typed
-    kind: typedJson
-    handler: main.typed
-    adapterArgs:
-      - param: body
-        source: {{ kind: http.body }}
-  raw:
-    method: POST
-    path: /raw
-    kind: rawHttp
-    handler: main.raw
-    adapterArgs:
-      - param: request
-        source: {{ kind: http.request }}
-  stream:
-    method: POST
-    path: /stream
-    kind: rawHttp
-    handler: main.stream
-    adapterArgs:
-      - param: request
-        source: {{ kind: http.request }}
-  slow:
-    method: POST
-    path: /slow
-    kind: typedJson
-    handler: main.slow
-    adapterArgs:
-      - param: body
-        source: {{ kind: http.body }}
+            r#"typed:
+  method: POST
+  path: /typed
+  kind: typedJson
+  handler: main.typed
+  adapterArgs:
+    - param: body
+      source: {{ kind: http.body }}
+raw:
+  method: POST
+  path: /raw
+  kind: rawHttp
+  handler: main.raw
+  adapterArgs:
+    - param: request
+      source: {{ kind: http.request }}
+stream:
+  method: POST
+  path: /stream
+  kind: rawHttp
+  handler: main.stream
+  adapterArgs:
+    - param: request
+      source: {{ kind: http.request }}
+slow:
+  method: POST
+  path: /slow
+  kind: typedJson
+  handler: main.slow
+  adapterArgs:
+    - param: body
+      source: {{ kind: http.body }}
 "#
         ),
     )
-    .expect("gateway service manifest");
+    .expect("gateway HTTP manifest");
     fs::write(
         root.join("config.dev.yml"),
         "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\nlifecycle: { maxConcurrency: 1 }\n",

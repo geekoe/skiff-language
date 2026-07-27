@@ -250,3 +250,56 @@ fn author(
     )
     .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use super::copy_fixture_tree;
+
+    static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn recursive_copy_fixture_tree_receipt_preserves_external_control_files() {
+        let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "skiff-host-fixture-copy-receipt-{}-{sequence}",
+            std::process::id()
+        ));
+        let source = root.join("source");
+        let target = root.join("target");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::write(source.join("http.yml"), "probe: { method: GET }\n").unwrap();
+        fs::write(source.join("nested/websocket.yml"), "path: /socket\n").unwrap();
+        fs::write(
+            source.join("nested/source.skiff"),
+            "function marker() -> bool { return true }\n",
+        )
+        .unwrap();
+
+        copy_fixture_tree(&source, &target).unwrap();
+
+        let receipt = ["http.yml", "nested/websocket.yml"].map(|path| {
+            (
+                path,
+                fs::read(source.join(path)).unwrap(),
+                fs::read(target.join(path)).unwrap(),
+            )
+        });
+        assert!(
+            receipt
+                .iter()
+                .all(|(_, source_bytes, copied_bytes)| source_bytes == copied_bytes),
+            "recursive copy receipt must retain exact external control-file bytes"
+        );
+        assert_eq!(
+            fs::read(target.join("nested/source.skiff")).unwrap(),
+            fs::read(source.join("nested/source.skiff")).unwrap()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+}

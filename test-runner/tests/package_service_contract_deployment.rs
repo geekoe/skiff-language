@@ -1162,8 +1162,8 @@ fn overlay_is_a_separate_build_and_external_store_remains_read_only() {
 #[test]
 fn package_test_http_fixture_is_zero_operation_reference_closed_and_fail_closed() {
     const NULL_GATEWAY_IDENTITY: &str = concat!(
-        "skiff-gateway-entry-v1:sha256:",
-        "cfcfced94f984612809ce837f81e975016b09f206925389d95e925e087fc32d4"
+        "skiff-gateway-entry-v2:sha256:",
+        "b97af7d9ff0b9ddbfcb6ea8b19e6173722095c99f1566ccd6b1a6fd2ead3f305"
     );
 
     let root = TestRoot::new("package-test-http-gateway");
@@ -1331,7 +1331,7 @@ fn package_test_http_fixture_is_zero_operation_reference_closed_and_fail_closed(
         .get_mut(&entrypoint.gateway_entry_key)
         .unwrap()
         .gateway_entry_identity =
-        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v1:sha256:{}", "a".repeat(64)))
+        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v2:sha256:{}", "a".repeat(64)))
             .unwrap();
     assert!(skiff_artifact_identity::validate_service_deployment_surface(&wrong_identity).is_err());
 
@@ -1850,12 +1850,12 @@ fn fresh_helper_mutation_then_detached_service_call_projects_and_assembles() {
 #[test]
 fn ecosystem_http_fixture_uses_two_gateway_entries_without_ws_compat() {
     const PACKAGE_TEST_IDENTITY: &str = concat!(
-        "skiff-gateway-entry-v1:sha256:",
-        "cfcfced94f984612809ce837f81e975016b09f206925389d95e925e087fc32d4"
+        "skiff-gateway-entry-v2:sha256:",
+        "b97af7d9ff0b9ddbfcb6ea8b19e6173722095c99f1566ccd6b1a6fd2ead3f305"
     );
     const PROBE_IDENTITY: &str = concat!(
-        "skiff-gateway-entry-v1:sha256:",
-        "adfaa17c077af0388f2b5751bbe4b9ba392ec647f5ce33022c8e8ec83eaf6653"
+        "skiff-gateway-entry-v2:sha256:",
+        "94d4fb9ed499a8e4717ac6a46eb716a4595445573808f2543b7ea5aeefe83705"
     );
 
     let root = TestRoot::new("smoke-unary");
@@ -1934,8 +1934,8 @@ function __skiffHttpProbe(body: null) -> string {
 #[test]
 fn i02_submit_probe_is_private_http_gateway_not_service_operation() {
     const PROBE_IDENTITY: &str = concat!(
-        "skiff-gateway-entry-v1:sha256:",
-        "adfaa17c077af0388f2b5751bbe4b9ba392ec647f5ce33022c8e8ec83eaf6653"
+        "skiff-gateway-entry-v2:sha256:",
+        "94d4fb9ed499a8e4717ac6a46eb716a4595445573808f2543b7ea5aeefe83705"
     );
 
     let root = TestRoot::new("i02-spawn-submit-effects");
@@ -2081,8 +2081,8 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
             "return marker()",
             "skiff-package-build-v10:sha256:5ce089038445f6ea1bf05a5d8876ebb784c9193f4509ee993f0eb6b415c25880",
             "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
-            "skiff-deployment-artifact-v2:sha256:3e020a778a528ff61ddb4b953186299b9145beaa7c368bb8fa121a8c7db8ccf5",
-            "skiff-runtime-assembly-v2:sha256:d949679862b2e0b5cff67cbd517bab56b6bb7b2165906a3860811b3db181c342",
+            "skiff-deployment-artifact-v3:sha256:787c89e6ca10c1b3d29fd30ff4f6fae9791113d6a98ae5f96401940e546a71fb",
+            "skiff-runtime-assembly-v2:sha256:80d53e6b18e987a61959557b0343835b5f126366e98e27510dcc8ae0e86ec664",
         ),
         (
             "package-service-websocket-generation-a",
@@ -2091,8 +2091,8 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
             "return marker()",
             "skiff-package-build-v10:sha256:25b98b03e66c0a7398859a6d0362dd53c20ff39f77ea36377408b74da6bfb37b",
             "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
-            "skiff-deployment-artifact-v2:sha256:6a4e17954474836b8a2511442e44855b16a0d51d77e4b82fd90d8842daf9c9c5",
-            "skiff-runtime-assembly-v2:sha256:6cae8bf053cba5247aafe4ef4ab635d453cd9688f6935ad01891679d6ed3f1dd",
+            "skiff-deployment-artifact-v3:sha256:bdc58ca03bb32567156582d4725e67b2efca9a8398586901360d44e0ac52fd21",
+            "skiff-runtime-assembly-v2:sha256:135a4afee48fa8c7a729ecd317620e5c4615ea08949f926aed9b7b3239becca9",
         ),
         (
             "package-service-websocket-generation-b",
@@ -2101,8 +2101,8 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
             "return marker()",
             "skiff-package-build-v10:sha256:3f42eb72f997ccf6a65b986cb49af485ae63c67db32e5b587822cfadf9c5e791",
             "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
-            "skiff-deployment-artifact-v2:sha256:0897f23f6972709688cf420e30589ff2cb64380cd63a4e45cc6938aa96308d8b",
-            "skiff-runtime-assembly-v2:sha256:f73298e2908b53e535d1fe4f6b7c654166a304c1f0468b0c88a8feba08c4f079",
+            "skiff-deployment-artifact-v3:sha256:e9d5508571436a9b6e1516a7f662cf76b16c328422adb9b0df602fc443bfccf2",
+            "skiff-runtime-assembly-v2:sha256:5dd9eb3300f0bb95e9ceca0a59a3080f2879dbf4816f57643969bc46ab6e55ec",
         ),
         (
             "package-service-i02-spawn-submit",
@@ -2111,8 +2111,8 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
             "return submitSpawnReceipt()",
             "skiff-package-build-v10:sha256:6f686ba330266ad08baf8dd04baba0bfcc315ec4e0ed8308344f9f8a7f8230b8",
             "skiff-package-local-abi-v7:sha256:3db7056f815676834489b34a069b5016f05973b3be9379eb55736a545d7dcdf9",
-            "skiff-deployment-artifact-v2:sha256:6eb0fffd40ee1d373db397063ae81e587ec564852be149bfa1f225bc763c8766",
-            "skiff-runtime-assembly-v2:sha256:11b8f9d38d44c642438f37a6b787b58b3deca8545d9c48d850a6a0c00813752a",
+            "skiff-deployment-artifact-v3:sha256:4bfe86f13a9a5622b1c323601624585e7132cb22cc6caf0b0027b73e79b3efa8",
+            "skiff-runtime-assembly-v2:sha256:b479a7b5dc4e1cb966448039dd93af20875b9c1e041e92b675cc6511869cad37",
         ),
     ] {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2157,8 +2157,8 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
         assert_eq!(
             websocket.gateway_entry_identity.as_str(),
             concat!(
-                "skiff-gateway-entry-v1:sha256:",
-                "d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936"
+                "skiff-gateway-entry-v2:sha256:",
+                "f385624021966bab998385e1fd2c88804b51992f15f9c9d76c05d3e17a75018d"
             )
         );
         assert!(matches!(
@@ -2240,24 +2240,70 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
         assert_eq!(
             fixture.unary.gateway_entry_identity.as_str(),
             concat!(
-                "skiff-gateway-entry-v1:sha256:",
-                "adfaa17c077af0388f2b5751bbe4b9ba392ec647f5ce33022c8e8ec83eaf6653"
+                "skiff-gateway-entry-v2:sha256:",
+                "94d4fb9ed499a8e4717ac6a46eb716a4595445573808f2543b7ea5aeefe83705"
             )
         );
     }
 }
 
+#[test]
+fn canonical_websocket_fixtures_use_split_external_manifests() {
+    const WEBSOCKET: &str = r#"path: /socket
+connect:
+  handler: main.websocketConnect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
+    - param: connectionId
+      source: { kind: websocket.connectionId }
+"#;
+    for (fixture_name, service_id) in [
+        (
+            "package-service-websocket-smoke",
+            "test.skiff/package-service-websocket-smoke",
+        ),
+        (
+            "package-service-websocket-generation-a",
+            "test.skiff/package-service-websocket-smoke",
+        ),
+        (
+            "package-service-websocket-generation-b",
+            "test.skiff/package-service-websocket-smoke",
+        ),
+        (
+            "package-service-i02-spawn-submit",
+            "test.skiff/package-service-i02-spawn-submit",
+        ),
+    ] {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures")
+            .join(fixture_name);
+        assert_eq!(
+            fs::read_to_string(package.join("service.yml")).unwrap(),
+            format!("id: {service_id}\nkind: test\n"),
+            "{fixture_name} service.yml must only declare service role"
+        );
+        assert_eq!(
+            fs::read_to_string(package.join("websocket.yml")).unwrap(),
+            WEBSOCKET,
+            "{fixture_name} websocket.yml must own the exact connect surface"
+        );
+        assert_current_websocket_test_service(&package, service_id);
+    }
+}
+
 fn assert_current_websocket_test_service(package: &Path, expected_service_id: &str) {
-    let service = read_service_package_root(package)
-        .unwrap_or_else(|error| panic!("{} service authoring: {error}", package.display()))
-        .service;
-    assert_eq!(service.id, expected_service_id);
-    assert_eq!(service.kind, ServiceAuthoringKind::Test);
-    let websocket = service
-        .websocket
-        .expect("current singleton WebSocket entry");
-    assert_eq!(websocket.host, "*");
+    let root = read_service_package_root(package)
+        .unwrap_or_else(|error| panic!("{} service authoring: {error}", package.display()));
+    assert_eq!(root.service.id, expected_service_id);
+    assert_eq!(root.service.kind, ServiceAuthoringKind::Test);
+    let websocket = root.websocket.expect("current singleton WebSocket entry");
     assert_eq!(websocket.path, "/socket");
+    assert!(
+        websocket.json_rpc.is_empty(),
+        "connect-only canonical fixtures must not invent JSON-RPC methods"
+    );
     let connect = websocket.connect.expect("private connect target");
     assert_eq!(connect.handler, "main.websocketConnect");
     assert_eq!(
@@ -2306,6 +2352,8 @@ fn generate_current_websocket_service_fixture(
     let profile = &service.config_profiles["skiff-test"].authoring;
     let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &service.service,
+        http: service.http.as_ref(),
+        websocket: service.websocket.as_ref(),
         profile_name: "skiff-test",
         profile,
         service_api: &compiled.service_api,
@@ -2500,6 +2548,40 @@ fn copy_tree(source: &Path, target: &Path) {
             fs::copy(source_path, target_path).unwrap();
         }
     }
+}
+
+#[test]
+fn recursive_copy_tree_receipt_preserves_external_control_files() {
+    let root = TestRoot::new("external-control-copy-receipt");
+    let source = root.child("source");
+    let target = root.child("target");
+    fs::create_dir_all(source.join("nested")).unwrap();
+    fs::write(source.join("http.yml"), "probe: { method: GET }\n").unwrap();
+    fs::write(source.join("nested/websocket.yml"), "path: /socket\n").unwrap();
+    fs::write(
+        source.join("nested/source.skiff"),
+        "function marker() -> bool { return true }\n",
+    )
+    .unwrap();
+
+    copy_tree(&source, &target);
+
+    let receipt = ["http.yml", "nested/websocket.yml"]
+        .map(|path| {
+            (
+                path,
+                fs::read(source.join(path)).unwrap(),
+                fs::read(target.join(path)).unwrap(),
+            )
+        })
+        .to_vec();
+    assert!(
+        receipt
+            .iter()
+            .all(|(_, source_bytes, copied_bytes)| source_bytes == copied_bytes),
+        "recursive copy receipt must retain exact external control-file bytes"
+    );
+    assert_eq!(read_tree(&source), read_tree(&target));
 }
 
 fn package_service_host_fixture_root() -> PathBuf {

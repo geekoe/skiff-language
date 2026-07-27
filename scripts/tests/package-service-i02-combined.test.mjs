@@ -118,9 +118,10 @@ test('I02 fixture uses the canonical normal-source spawn statement', async () =>
     'fixtures',
     'package-service-i02-spawn-submit',
   );
-  const [api, service, source] = await Promise.all([
+  const [api, service, websocket, source] = await Promise.all([
     readFile(join(fixtureRoot, 'api.yml'), 'utf8'),
     readFile(join(fixtureRoot, 'service.yml'), 'utf8'),
+    readFile(join(fixtureRoot, 'websocket.yml'), 'utf8'),
     readFile(join(fixtureRoot, 'main.skiff'), 'utf8'),
   ]);
   assert.equal(
@@ -131,15 +132,18 @@ test('I02 fixture uses the canonical normal-source spawn statement', async () =>
     service,
     `id: test.skiff/package-service-i02-spawn-submit
 kind: test
-websocket:
-  path: /socket
-  connect:
-    handler: main.websocketConnect
-    adapterArgs:
-      - param: request
-        source: { kind: websocket.connectRequest }
-      - param: connectionId
-        source: { kind: websocket.connectionId }
+`,
+  );
+  assert.equal(
+    websocket,
+    `path: /socket
+connect:
+  handler: main.websocketConnect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
+    - param: connectionId
+      source: { kind: websocket.connectionId }
 `,
   );
   assert.match(

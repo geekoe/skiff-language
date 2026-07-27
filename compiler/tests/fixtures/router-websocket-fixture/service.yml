@@ -1,12 +1,1 @@
 id: example.com/websocket_fixture
-
-http:
-  ping:
-    host: websocket-fixture.skiff.localhost
-    method: GET
-    path: /ping
-    kind: typedJson
-    handler: main.__skiffHttpPing
-    adapterArgs:
-      - param: body
-        source: { kind: http.body }

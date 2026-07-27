@@ -11,6 +11,30 @@ import {
 
 const ENVIRONMENT = 'p5-f387-http-fixture';
 
+test('router compiler fixture uses split HTTP authoring and keeps dev timeout', async () => {
+  const root = join('compiler', 'tests', 'fixtures', 'router-websocket-fixture');
+  const [service, http, config] = await Promise.all([
+    readFile(join(root, 'service.yml'), 'utf8'),
+    readFile(join(root, 'http.yml'), 'utf8'),
+    readFile(join(root, 'config.dev.yml'), 'utf8'),
+  ]);
+  assert.equal(service, 'id: example.com/websocket_fixture\n');
+  assert.equal(
+    http,
+    `ping:
+  host: websocket-fixture.skiff.localhost
+  method: GET
+  path: /ping
+  kind: typedJson
+  handler: main.__skiffHttpPing
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+`,
+  );
+  assert.match(config, /^timeout: 120000$/m);
+});
+
 test('owned WebSocket source fixtures use private current connect authoring', async () => {
   for (const [name, serviceId, api, functionNames] of [
     [
@@ -44,9 +68,10 @@ test('owned WebSocket source fixtures use private current connect authoring', as
     ],
   ]) {
     const root = join('test-runner', 'fixtures', name);
-    const [actualApi, service, source] = await Promise.all([
+    const [actualApi, service, websocket, source] = await Promise.all([
       readFile(join(root, 'api.yml'), 'utf8'),
       readFile(join(root, 'service.yml'), 'utf8'),
+      readFile(join(root, 'websocket.yml'), 'utf8'),
       readFile(join(root, 'main.skiff'), 'utf8'),
     ]);
     assert.equal(actualApi, api, `${name} API`);
@@ -54,17 +79,21 @@ test('owned WebSocket source fixtures use private current connect authoring', as
       service,
       `id: ${serviceId}
 kind: test
-websocket:
-  path: /socket
-  connect:
-    handler: main.websocketConnect
-    adapterArgs:
-      - param: request
-        source: { kind: websocket.connectRequest }
-      - param: connectionId
-        source: { kind: websocket.connectionId }
 `,
       `${name} service authoring`,
+    );
+    assert.equal(
+      websocket,
+      `path: /socket
+connect:
+  handler: main.websocketConnect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
+    - param: connectionId
+      source: { kind: websocket.connectionId }
+`,
+      `${name} WebSocket authoring`,
     );
     assert.match(
       source,

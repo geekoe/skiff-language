@@ -52,6 +52,7 @@ export async function runPackageServiceHostNegativeProbe({
   let negativeProbeRuns = 0;
   let runtimeResources;
   let probeEvidence;
+  let copiedExternalControlFiles;
 
   await runtimeOwner({
     skiffRoot: absoluteSkiffRoot,
@@ -89,6 +90,10 @@ export async function runPackageServiceHostNegativeProbe({
       );
       const copiedConsumer = await snapshotDirectory(negativeConsumerRoot);
       assertOnlyNegativeTestChanged(sourceConsumer, copiedConsumer);
+      copiedExternalControlFiles = externalControlFileReceipt(
+        sourceConsumer,
+        copiedConsumer,
+      );
 
       commandRuns.hostPreparer += 1;
       const prepareOutcome = await runCommand(
@@ -183,6 +188,7 @@ export async function runPackageServiceHostNegativeProbe({
       checkedInSha256After: fixtureHashAfter,
       checkedInUnchanged: true,
       copiedConsumerModifiedFiles: [NEGATIVE_TEST_RELATIVE_PATH],
+      copiedExternalControlFiles,
       falseAssertion: 'assert false',
     },
     ...probeEvidence,
@@ -484,6 +490,26 @@ function assertOnlyNegativeTestChanged(source, copied) {
   if (copied.get(NEGATIVE_TEST_RELATIVE_PATH)?.sha256 !== expectedHash) {
     throw new Error('negative Host consumer copy omitted the deterministic false assertion');
   }
+}
+
+function externalControlFileReceipt(source, copied) {
+  return [...source.entries()]
+    .filter(([name]) =>
+      name === 'http.yml'
+      || name.endsWith('/http.yml')
+      || name === 'websocket.yml'
+      || name.endsWith('/websocket.yml'))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([path, metadata]) => {
+      const copiedMetadata = copied.get(path);
+      if (
+        copiedMetadata?.sha256 !== metadata.sha256
+        || copiedMetadata?.size !== metadata.size
+      ) {
+        throw new Error(`negative Host consumer copy lost external control file ${path}`);
+      }
+      return { path, ...metadata };
+    });
 }
 
 function listenOnLoopback(server) {
