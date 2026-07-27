@@ -36,6 +36,7 @@ F437B workflow/provenance checkpoint
 - `scripts/prepare-canonical-assembly.test.mjs`
 - `scripts/isolated-service-graph.test.mjs`
 - `scripts/test-isolated-service.test.mjs`
+- `agine/service/test-isolated-service-receipt.mjs`
 - `AGENTS.md`（只同步canonical linked-worktree所需的两个显式root）
 - 如职责确实独立，可在`scripts/`新增一个只负责canonical source root/provenance的小模块及direct test
 - 本leaf result
@@ -49,6 +50,8 @@ stable/local config或其它workflow。若正确实现需要改调用方package 
 1. Exported canonical workflow函数显式接收三个root：
    `internalsRoot`、`skiffRoot`、`skiffPackagesRoot`。Executable入口必须要求绝对
    `SKIFF_ROOT`与`SKIFF_PACKAGES_ROOT`；缺失时fail closed，不猜sibling、不回退main/stable。
+   `agine/service/test-isolated-service-receipt.mjs`也必须读取这两个required env并把三个root完整传给
+   shared workflow，不得保留自己的fallback。
 2. Canonical package顺序精确为：
 
    ```text
@@ -76,6 +79,7 @@ stable/local config或其它workflow。若正确实现需要改调用方package 
    signal cleanup与linked-worktree mutation guard现有语义。
 7. Direct tests必须至少覆盖：
    - exact六package/fourservice顺序；
+   - omitted `SKIFF_ROOT`；
    - omitted `SKIFF_PACKAGES_ROOT`；
    - nonexistent/non-absolute root；
    - wrong git top-level或coordinate/root mapping；
@@ -101,6 +105,7 @@ SKIFF_PACKAGES_ROOT=/Users/geek/workspace/skiff-packages-p5-f437b-canonical-root
 node --check scripts/prepare-canonical-assembly.mjs
 node --check scripts/check-isolated-service-graph.mjs
 node --check scripts/test-isolated-service.mjs
+node --check agine/service/test-isolated-service-receipt.mjs
 git diff --check
 ```
 

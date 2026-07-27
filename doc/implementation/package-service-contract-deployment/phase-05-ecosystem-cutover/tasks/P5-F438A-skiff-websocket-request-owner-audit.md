@@ -27,6 +27,13 @@ production/test owner，避免按编译首错逐文件扩张。它不实现、�
 - `runtime/**`中native dispatch、capability context、outbound pending、cancel、transport与actor executor
 - `router/**`中runtime protocol/endpoint、WebSocket gateway、connection/generation索引与tests
 - `test-runner/**`、`scripts/**`中直接生成或校验上述surface的fixture/checker
+- `cross-system-fixtures/package-service-ecosystem/**`中Router/Rust共同消费的runtime wire fixture
+- `doc/reference/std-surface.md`
+- `doc/reference/runtime.md`
+- `doc/reference/api-yml.md`
+- `doc/architecture/actor-model.md`
+- `doc/architecture/runtime-layered-crate-architecture.md`
+- `doc/architecture/gateway-runtime-adapter-boundary.md`
 - 父节点及其引用链
 
 唯一允许写入是本leaf result。禁止修改production/test/design、Internals或skiff-packages。
@@ -73,7 +80,8 @@ production/test owner，避免按编译首错逐文件扩张。它不实现、�
    - `maySuspend`、effect、target/conflict key、cancel safety与required context；
    - 普通send保持non-suspending的反向保护。
 6. 列出全部会受影响的production、direct fixture、README/checker，区分必须修改、负例保留与历史
-   implementation result不改写。反向搜索不能只覆盖当前首错。
+   implementation result不改写。共享wire fixture必须进入shared checkpoint owner集合；反向搜索不能
+   只覆盖当前首错。
 7. 给出后继实现DAG：
    - 单一shared std/native+wire checkpoint的精确写集；
    - runtime与Router可并行leaf的互斥写集及依赖；

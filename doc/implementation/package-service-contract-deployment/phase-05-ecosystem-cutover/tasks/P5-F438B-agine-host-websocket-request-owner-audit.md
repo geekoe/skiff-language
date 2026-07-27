@@ -25,8 +25,14 @@
 - `agine/service/**`
 - `agine/host/**`
 - `agine/client/**`
+- `shared-client/**`
 - 直接相关的Internals package/API类型与workflow tests
-- Skiff父节点、权威WebSocket/reference文档以及`std.websocket`目标surface
+- Skiff父节点与以下精确权威文档：
+  - `doc/architecture/package-service-contract-deployment.md`
+  - `doc/architecture/gateway-runtime-adapter-boundary.md`
+  - `doc/reference/std-surface.md`
+  - `doc/reference/runtime.md`
+  - `doc/reference/api-yml.md`
 
 禁止修改production、test、manifest、design或generated fixture。唯一写入是本leaf result。
 
