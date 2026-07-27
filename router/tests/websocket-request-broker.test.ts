@@ -84,6 +84,47 @@ describe('WebSocketRequestBroker outbound core', () => {
     expectNoActive(harness.broker);
   });
 
+  it('detaches and tombstones before the runtime terminal callback re-enters', () => {
+    const harness = createHarness();
+    let reentrantSnapshot:
+      | ReturnType<WebSocketRequestBroker['debugSnapshot']>
+      | undefined;
+    const runtime: TestRuntime = {
+      sender: {},
+      sessionToken: 'session-a',
+      responses: [],
+      respond(response) {
+        runtime.responses.push(response);
+        reentrantSnapshot = harness.broker.debugSnapshot();
+      }
+    };
+    harness.request(runtime, 'runtime-a', {
+      deadlineAtMs: Date.now() + 1_000
+    });
+    const id = outboundId(harness.peer.writes[0]!);
+    expect(harness.broker.debugSnapshot()).toMatchObject({
+      outboundPeerEntries: 1,
+      outboundRuntimeEntries: 1,
+      outboundGenerationActive: 1,
+      timerCount: 1,
+      terminalLeaseCount: 1
+    });
+
+    harness.broker.handlePeerText(
+      harness.generation,
+      `{"jsonrpc":"2.0","id":${JSON.stringify(id)},"result":true}`
+    );
+
+    expect(reentrantSnapshot).toMatchObject({
+      outboundPeerEntries: 0,
+      outboundRuntimeEntries: 0,
+      outboundGenerationActive: 0,
+      outboundTombstones: 1,
+      timerCount: 0,
+      terminalLeaseCount: 0
+    });
+  });
+
   it('treats a batch containing an active id as one invalid request without table lookup', async () => {
     const harness = createHarness();
     const runtime = createRuntime('session-a');
@@ -387,6 +428,42 @@ describe('WebSocketRequestBroker inbound core', () => {
       '{"jsonrpc":"2.0","id":7,"result":{"ok":true}}'
     ]);
     expectNoActive(harness.broker);
+  });
+
+  it('detaches and tombstones before the peer terminal writer re-enters', async () => {
+    let reentrantSnapshot:
+      | ReturnType<WebSocketRequestBroker['debugSnapshot']>
+      | undefined;
+    let terminalFrame: string | undefined;
+    const harness = createHarness({
+      writeText(frame) {
+        terminalFrame = frame;
+        reentrantSnapshot = harness.broker.debugSnapshot();
+      }
+    });
+
+    harness.broker.handlePeerText(
+      harness.generation,
+      '{"jsonrpc":"2.0","id":"peer-a","method":"status.get","params":{}}'
+    );
+    expect(harness.broker.debugSnapshot()).toMatchObject({
+      inboundActiveEntries: 1,
+      inboundGenerationActive: 1,
+      timerCount: 1,
+      terminalLeaseCount: 1
+    });
+    await flush();
+
+    expect(terminalFrame).toBe(
+      '{"jsonrpc":"2.0","id":"peer-a","result":null}'
+    );
+    expect(reentrantSnapshot).toMatchObject({
+      inboundActiveEntries: 0,
+      inboundGenerationActive: 0,
+      inboundTombstones: 1,
+      timerCount: 0,
+      terminalLeaseCount: 0
+    });
   });
 
   it('emits an ignored notification action without dispatch or terminal write', () => {

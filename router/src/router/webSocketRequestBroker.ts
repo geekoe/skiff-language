@@ -3,8 +3,9 @@ import type {
   OpaquePeerId,
   PlatformRpcError,
   ProfileId,
+  ProfileResponse,
   WebSocketRpcProfileAdapter
-} from '../protocol/jsonRpc20TextProfile.js';
+} from '../protocol/jsonRpc20TextProfileContracts.js';
 import {
   BrokerTombstoneStore,
   SYSTEM_BROKER_CLOCK,
@@ -24,6 +25,15 @@ import type {
   WebSocketRequestBrokerOptions,
   WebSocketRequestBrokerSnapshot
 } from './webSocketRequestBrokerTypes.js';
+import {
+  encodeInboundTerminalFrame,
+  encodeOutboundPeerRequest,
+  mapInboundDispatchResultToTerminal,
+  mapPeerTerminalToRuntimeResponse,
+  materializeOutboundPeerParams,
+  tryEncodePeerCancelFrame,
+  type InboundTerminal
+} from './webSocketRequestBrokerWire.js';
 
 export type {
   AttachBrokerGenerationOptions,
@@ -263,11 +273,11 @@ export class WebSocketRequestBroker {
     let peerId: OpaquePeerId;
     let frame: string;
     try {
-      params = state.adapter.fromRuntimePayload(
-        request.payloadBytes,
-        'outboundParams',
-        this.options.profileLimits
-      );
+      params = materializeOutboundPeerParams({
+        adapter: state.adapter,
+        payloadBytes: request.payloadBytes,
+        limits: this.options.profileLimits
+      });
       peerId = state.adapter.nextOutboundId({
         randomPrefix: state.idGeneration.randomPrefix,
         takeSequence: () => {
@@ -276,7 +286,8 @@ export class WebSocketRequestBroker {
           return sequence;
         }
       });
-      frame = state.adapter.encodeOutboundRequest({
+      frame = encodeOutboundPeerRequest({
+        adapter: state.adapter,
         id: peerId,
         method: request.method,
         params
@@ -480,15 +491,7 @@ export class WebSocketRequestBroker {
   private handleOutboundResponse(
     state: GenerationState,
     peerId: OpaquePeerId,
-    terminal:
-      | { readonly kind: 'success'; readonly result: OpaquePayload }
-      | {
-          readonly kind: 'remoteError';
-          readonly code: number;
-          readonly message: string;
-          readonly dataPresent: boolean;
-          readonly data?: OpaquePayload;
-        }
+    terminal: ProfileResponse
   ): void {
     const peerKey = this.peerKey(state, peerId);
     const entry = this.outboundByPeer.get(peerKey);
@@ -507,34 +510,12 @@ export class WebSocketRequestBroker {
 
     let response: BrokerRuntimeResponse;
     try {
-      if (terminal.kind === 'success') {
-        response = {
-          requestId: entry.requestId,
-          outcome: 'success',
-          payloadBytes: state.adapter.toRuntimePayload(
-            terminal.result,
-            this.options.profileLimits
-          )
-        };
-      } else {
-        response = {
-          requestId: entry.requestId,
-          outcome: 'remote',
-          remote: {
-            code: terminal.code,
-            message: terminal.message,
-            dataPresent: terminal.dataPresent
-          },
-          ...(terminal.data === undefined
-            ? {}
-            : {
-                payloadBytes: state.adapter.toRuntimePayload(
-                  terminal.data,
-                  this.options.profileLimits
-                )
-              })
-        };
-      }
+      response = mapPeerTerminalToRuntimeResponse({
+        adapter: state.adapter,
+        limits: this.options.profileLimits,
+        requestId: entry.requestId,
+        terminal
+      });
     } catch {
       this.closeGeneration(
         state,
@@ -682,52 +663,27 @@ export class WebSocketRequestBroker {
     entry: InboundEntry,
     result: InboundDispatchResult
   ): void {
-    switch (result.kind) {
-      case 'success':
-        this.finishInbound(entry, { kind: 'success', result: result.result });
-        return;
-      case 'invalidParams':
-        this.finishInbound(entry, { kind: 'invalidParams' });
-        return;
-      case 'internalError':
-      case 'runtimeUnavailable':
-        this.finishInbound(entry, { kind: 'internal' });
-        return;
-      case 'deadlineExceeded':
-        this.finishInbound(entry, { kind: 'timeout' }, true);
-        return;
+    const plan = mapInboundDispatchResultToTerminal(result);
+    if (plan === undefined) {
+      return;
     }
+    this.finishInbound(entry, plan.terminal, plan.abort);
   }
 
   private finishInbound(
     entry: InboundEntry,
-    terminal:
-      | { readonly kind: 'success'; readonly result: OpaquePayload }
-      | PlatformRpcError,
+    terminal: InboundTerminal,
     abort = false
   ): void {
     if (!this.inboundIsActive(entry)) {
       return;
     }
 
-    let frame: string;
-    try {
-      frame =
-        terminal.kind === 'success'
-          ? entry.generation.adapter.encodeResult(
-              entry.peerId,
-              terminal.result
-            )
-          : entry.generation.adapter.encodePlatformError(
-              entry.peerId,
-              terminal
-            );
-    } catch {
-      frame = entry.generation.adapter.encodePlatformError(
-        entry.peerId,
-        { kind: 'internal' }
-      );
-    }
+    const frame = encodeInboundTerminalFrame({
+      adapter: entry.generation.adapter,
+      id: entry.peerId,
+      terminal
+    });
     this.detachInbound(entry);
     if (abort) {
       entry.controller.abort();
@@ -821,10 +777,11 @@ export class WebSocketRequestBroker {
   }
 
   private bestEffortCancel(entry: OutboundEntry): void {
-    let frame: string;
-    try {
-      frame = entry.generation.adapter.encodeCancel(entry.peerId);
-    } catch {
+    const frame = tryEncodePeerCancelFrame({
+      adapter: entry.generation.adapter,
+      id: entry.peerId
+    });
+    if (frame === undefined) {
       return;
     }
     this.writePeer(entry.generation, frame, () => undefined);

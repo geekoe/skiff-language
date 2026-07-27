@@ -6,8 +6,29 @@ import {
   type OpaquePeerId,
   type ProfileAction
 } from '../src/protocol/jsonRpc20TextProfile.js';
+import {
+  DEFAULT_JSON_RPC_20_TEXT_LIMITS as CONTRACTS_DEFAULT_JSON_RPC_20_TEXT_LIMITS
+} from '../src/protocol/jsonRpc20TextProfileContracts.js';
+import {
+  JsonRpc20TextProfile as JsonRpc20TextProfileImplementation
+} from '../src/protocol/jsonRpc20TextProfileImplementation.js';
+import {
+  DEFAULT_JSON_RPC_20_TEXT_LIMITS as INDEX_DEFAULT_JSON_RPC_20_TEXT_LIMITS,
+  JsonRpc20TextProfile as IndexJsonRpc20TextProfile
+} from '../src/index.js';
 
 describe('jsonrpc-2.0-text profile', () => {
+  it('preserves class and default-limits identity across every public facade', () => {
+    expect(JsonRpc20TextProfile).toBe(JsonRpc20TextProfileImplementation);
+    expect(JsonRpc20TextProfile).toBe(IndexJsonRpc20TextProfile);
+    expect(DEFAULT_JSON_RPC_20_TEXT_LIMITS).toBe(
+      CONTRACTS_DEFAULT_JSON_RPC_20_TEXT_LIMITS
+    );
+    expect(DEFAULT_JSON_RPC_20_TEXT_LIMITS).toBe(
+      INDEX_DEFAULT_JSON_RPC_20_TEXT_LIMITS
+    );
+  });
+
   it('classifies a strict request while preserving opaque params', () => {
     const profile = new JsonRpc20TextProfile();
 
