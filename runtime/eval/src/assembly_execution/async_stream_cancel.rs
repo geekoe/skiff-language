@@ -56,7 +56,14 @@ use crate::{
     RuntimeAssemblyServiceCallTarget,
 };
 
+mod prepared_unary;
+#[allow(unused_imports)]
+pub(crate) use prepared_unary::{execute_provider_unary, prepare_provider_unary};
+
 static PROVIDER_STREAM_TASKS_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+mod prepared_unary_tests;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn provider_stream_tasks_active_for_test() -> usize {
@@ -73,15 +80,15 @@ pub(crate) async fn execute_service_call(
         target.provider_request().cancel();
         return Err(error.into());
     }
-    validate_supported_callback_contract(
-        &target.descriptor().operation_id,
-        &target.descriptor().contract.callbacks,
-    )?;
     match AsyncStreamSpawn::for_target(&target) {
         AsyncStreamSpawn::ProviderUnary => {
             execute_provider_unary(context, call, target, args).await
         }
         AsyncStreamSpawn::ProviderStreamProducer => {
+            validate_supported_callback_contract(
+                &target.descriptor().operation_id,
+                &target.descriptor().contract.callbacks,
+            )?;
             start_provider_stream(context, call, target, args)
         }
     }
@@ -104,86 +111,27 @@ impl AsyncStreamSpawn {
     }
 }
 
-async fn execute_provider_unary(
-    context: &mut EvalContext<'_>,
-    call: &CallIr,
-    target: RuntimeAssemblyServiceCallTarget,
-    args: Vec<RuntimeValue>,
-) -> Result<RuntimeValue> {
-    let boundary = CanonicalServiceBoundaryPlan::new(
-        target.descriptor(),
-        target.schema_records().as_ref(),
-        args.len(),
-    )?;
-    let caller_package_build_id = context
-        .context
-        .runtime_assembly_target()?
-        .activation_context()
-        .implementation_package_build_id()
-        .clone();
-    let mut provider_heap = boundary.fresh_provider_heap(context.context.request_heap_limits());
-    let caller_hooks = CallbackNativeCapabilityHooks::new(&context.context);
-    let provider_args =
-        boundary.materialize_parameters(&args, context.heap, &mut provider_heap, &caller_hooks)?;
-    let provider_context = provider_execution_context(&context.context, &target)?;
-    // Every service call owns its provider activation while the provider future is pending.
-    // A concrete executable suspension summary never selects a runtime boundary lane.
-    let owned_provider = OwnedProgramExecutionContext::capture(&provider_context);
-    let provider_addr = target.executable_addr().clone();
-    let caller_addr = context.addr.clone();
-    let caller_env = context.env.clone();
-    let type_args = call.type_args.clone();
-    let provider_request = target.provider_request().clone();
-    let provider_result = {
-        let provider_context = owned_provider.borrow();
-        let provider_future = context.interpreter.call_program_executable(
-            provider_context,
-            &mut provider_heap,
-            &caller_env,
-            &caller_addr,
-            &provider_addr,
-            &type_args,
-            provider_args,
-        );
-        await_provider_unary(&context.execution, &provider_request, provider_future).await
-    };
-    let provider_result = match provider_result {
-        Err(error) if error.is_cancelled() => {
-            provider_request.cancel();
-            return Err(error);
-        }
-        result => result,
-    };
+enum ProviderUnaryWaitTerminal {
+    Provider(Result<RuntimeValue>),
+    CallerCancelled,
+    DeadlineExceeded(RuntimeError),
+}
 
-    let provider_context = owned_provider.borrow();
-    let provider_result = match provider_result {
-        Ok(value) => Ok(value),
-        Err(error) => Err(RuntimeError::FixedServiceFailure(export_provider_failure(
-            context.interpreter,
-            &provider_context,
-            &provider_heap,
-            &caller_package_build_id,
-            target
-                .provider_activation()
-                .implementation_package_build_id(),
-            &target
-                .provider_activation()
-                .identity()
-                .deployment
-                .service_id,
-            target.descriptor().operation_id.as_str(),
-            &error,
-        )?)),
-    };
-    let hooks = CallbackNativeCapabilityHooks::new(&provider_context);
-    boundary.materialize_provider_result(provider_result, &mut provider_heap, context.heap, &hooks)
+impl ProviderUnaryWaitTerminal {
+    fn into_result(self) -> Result<RuntimeValue> {
+        match self {
+            Self::Provider(result) => result,
+            Self::CallerCancelled => Err(RuntimeError::Cancelled),
+            Self::DeadlineExceeded(error) => Err(error),
+        }
+    }
 }
 
 async fn await_provider_unary<F>(
     execution: &ExecutionControl<'_>,
     provider_request: &skiff_runtime_activation::RequestActivationContext,
     provider_future: F,
-) -> Result<RuntimeValue>
+) -> ProviderUnaryWaitTerminal
 where
     F: Future<Output = Result<RuntimeValue>>,
 {
@@ -195,13 +143,13 @@ where
         biased;
         _ = cancellation.wait_cancelled() => {
             provider_request.cancel();
-            Err(RuntimeError::Cancelled)
+            ProviderUnaryWaitTerminal::CallerCancelled
         }
         _ = &mut deadline => {
             provider_request.cancel();
-            Err(deadline_error(execution))
+            ProviderUnaryWaitTerminal::DeadlineExceeded(deadline_error(execution))
         }
-        result = &mut provider_future => result,
+        result = &mut provider_future => ProviderUnaryWaitTerminal::Provider(result),
     }
 }
 
@@ -1114,6 +1062,7 @@ mod tests {
         let value =
             await_provider_unary(&execution, &request, async { Ok(RuntimeValue::Bool(true)) })
                 .await
+                .into_result()
                 .expect("ready provider should return during the initial poll");
         assert_eq!(value, RuntimeValue::Bool(true));
         assert!(request.open_stream().is_some());
@@ -1134,6 +1083,7 @@ mod tests {
                     Ok(RuntimeValue::Bool(true))
                 })
                 .await
+                .into_result()
             }
         });
         tokio::task::yield_now().await;
@@ -1150,7 +1100,11 @@ mod tests {
         let waiter = tokio::spawn({
             let execution = execution.clone();
             let request = request.clone();
-            async move { await_provider_unary(&execution, &request, std::future::pending()).await }
+            async move {
+                await_provider_unary(&execution, &request, std::future::pending())
+                    .await
+                    .into_result()
+            }
         });
 
         cancellation.cancel();
@@ -1176,6 +1130,7 @@ mod tests {
             RequestActivationContext::begin(activation("deadline", "deadline-build")).unwrap();
         let error = await_provider_unary(&execution, &request, std::future::pending())
             .await
+            .into_result()
             .expect_err("expired deadline should wake the pending provider");
         assert!(matches!(
             error,
@@ -1204,6 +1159,7 @@ mod tests {
             })
         })
         .await
+        .into_result()
         .expect_err("pre-cancelled request should win the biased select");
         assert!(matches!(error, RuntimeError::Cancelled));
     }
