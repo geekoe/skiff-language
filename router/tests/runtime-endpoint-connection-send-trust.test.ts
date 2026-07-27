@@ -3,11 +3,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { encodeAssemblyActivationFrame } from '../src/protocol/assemblyActivationFrame.js';
 import {
+  decodeBinaryFrame,
   decodeRuntimeFrame,
   encodeRuntimeFrame,
   RUNTIME_FRAME_SCHEMA_VERSION,
   type ConnectionRequestFrameHeader
 } from '../src/protocol/envelope.js';
+import type {
+  RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader
+} from '../src/protocol/runtimeAssemblyRequest.js';
 import { runtimeFrameHeaderFixtures } from '../src/protocol/runtimeProtocol.js';
 import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
 import { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
@@ -29,6 +33,8 @@ const RUNTIME_ID = 'runtime-connection-send-a';
 const SERVICE_ID = 'example/chat';
 const WEBSOCKET_ENTRY_ID =
   `skiff-websocket-entry-v1:sha256:${'e'.repeat(64)}`;
+const METHOD_GATEWAY_ENTRY_IDENTITY =
+  `skiff-gateway-entry-v2:sha256:${'d'.repeat(64)}`;
 
 const fixtures: EndpointFixture[] = [];
 
@@ -40,6 +46,46 @@ afterEach(async () => {
 });
 
 describe('runtime connection.send sender binding and observability', () => {
+  it('admits the current method-bearing assembly executable without widening to inbound-only frames', () => {
+    const endpoint = new RuntimeEndpoint({ registry: new RuntimeRegistry() });
+    const sent: unknown[] = [];
+    const runtime = {
+      readyState: WebSocket.OPEN,
+      send: (frame: unknown) => sent.push(frame)
+    } as unknown as WebSocket;
+    const payloadBytes = Buffer.from('{"message":"hello"}', 'utf8');
+
+    endpoint.sendFrame(
+      runtime,
+      websocketJsonRpcRequestHeader(),
+      payloadBytes
+    );
+    expect(sent).toHaveLength(1);
+    const frame = decodeBinaryFrame(sent[0] as Buffer);
+    expect(frame.header).toMatchObject({
+      type: 'request.start',
+      requestId: 'runtime-endpoint-jsonrpc',
+      routing: {
+        ingress: {
+          protocol: 'webSocket',
+          method: 'chat.send'
+        }
+      }
+    });
+    expect(frame.payloadBytes).toEqual(payloadBytes);
+
+    type EndpointOutboundHeader = Parameters<
+      RuntimeEndpoint['sendFrame']
+    >[1];
+    type AcceptsInboundOnlyConnectionRequest =
+      ConnectionRequestFrameHeader extends EndpointOutboundHeader
+        ? true
+        : false;
+    const acceptsInboundOnlyConnectionRequest:
+      AcceptsInboundOnlyConnectionRequest = false;
+    expect(acceptsInboundOnlyConnectionRequest).toBe(false);
+  });
+
   it.each([
     {
       reason: 'service-mismatch',
@@ -253,6 +299,36 @@ describe('runtime connection.send sender binding and observability', () => {
     ).toThrow('captured runtime session');
   });
 });
+
+function websocketJsonRpcRequestHeader(): RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader {
+  return {
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    type: 'request.start',
+    requestId: 'runtime-endpoint-jsonrpc',
+    mode: 'unary',
+    caller: { kind: 'gateway' },
+    routing: {
+      kind: 'runtimeAssembly',
+      assemblyIdentity: ASSEMBLY,
+      assemblyGeneration: 7,
+      gatewayEntryIdentity: METHOD_GATEWAY_ENTRY_IDENTITY,
+      ingress: {
+        protocol: 'webSocket',
+        host: 'chat.localhost',
+        method: 'chat.send',
+        path: '/v1/chat'
+      }
+    },
+    trace: { traceId: 'trace', spanId: 'span' },
+    websocketJsonRpc: {
+      profile: 'jsonrpc-2.0-text',
+      connectionId: 'connection-a',
+      websocketEntryId: WEBSOCKET_ENTRY_ID,
+      gatewayEntryIdentity: METHOD_GATEWAY_ENTRY_IDENTITY
+    },
+    testEffectsEnabled: false
+  };
+}
 
 interface EndpointFixture {
   endpoint: RuntimeEndpoint;

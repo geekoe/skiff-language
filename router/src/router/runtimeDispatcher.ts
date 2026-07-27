@@ -10,13 +10,21 @@ import {
   type ResponseEndFrameHeader,
   type ResponseErrorFrameHeader,
   type ResponseStartFrameHeader,
-  type RouterToRuntimeFrameHeader
+  type RouterToRuntimeFrameHeader,
+  type RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader
 } from '../protocol/envelope.js';
 import type {
   RuntimeAssemblyRequestStartFrameHeader,
   RuntimeAssemblyRequestStartFrameWireHeader,
-  RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
+  RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+  RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader
 } from '../protocol/runtimeAssemblyRequest.js';
+import {
+  validateRuntimeAssemblyRequestStartFrame
+} from '../protocol/runtimeAssemblyRequestFrame.js';
+import {
+  validateRuntimeAssemblyWebSocketJsonRpcResponseEndFrame
+} from '../protocol/runtimeAssemblyRequestResponseFrame.js';
 import {
   type ValidatedResponseErrorFrame,
   validateRuntimeAssemblyRequestStartFrameWireHeader,
@@ -26,6 +34,7 @@ import type {
   WebSocketGenerationLifecycleTuple
 } from '../protocol/webSocketGenerationLifecycle.js';
 import {
+  isRequestCancelReason,
   REQUEST_CANCEL_SITUATION,
   requestCancelReasonForSituation
 } from '../protocol/cancelReason.js';
@@ -86,7 +95,12 @@ interface RuntimeUnaryDispatchWireInput {
   payloadBytes: Uint8Array;
 }
 
-interface RuntimeInvocationBase<TRequest extends RuntimeDispatchFrameHeader | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader> {
+interface RuntimeInvocationBase<
+  TRequest extends
+    | RuntimeDispatchFrameHeader
+    | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
+    | RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader
+> {
   request: TRequest;
   runtimeId?: string;
   ws: WebSocket;
@@ -109,6 +123,13 @@ export interface RuntimeUnaryFrameInvocation
   resolve(response: RuntimeBinaryDispatchResult): void;
 }
 
+interface RuntimeAssemblyWebSocketJsonRpcInvocation
+  extends RuntimeInvocationBase<RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader> {
+  kind: 'websocketJsonRpc';
+  executionToken: object;
+  resolve(response: RuntimeAssemblyWebSocketJsonRpcDispatchResponse): void;
+}
+
 export interface RuntimeStreamInvocation
   extends RuntimeInvocationBase<RuntimeUnaryDispatchFrameHeader> {
   kind: 'stream';
@@ -125,11 +146,26 @@ export interface RuntimeStreamInvocation
 export type RuntimeInvocation =
   | RuntimeUnaryInvocation
   | RuntimeUnaryFrameInvocation
+  | RuntimeAssemblyWebSocketJsonRpcInvocation
   | RuntimeStreamInvocation;
 
 export interface RuntimeBinaryDispatchResponse {
   header: ResponseEndFrameHeader;
   payloadBytes: Uint8Array;
+}
+
+export interface RuntimeAssemblyWebSocketJsonRpcDispatchRequest {
+  header: RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader;
+  payloadBytes: Uint8Array;
+}
+
+export interface RuntimeAssemblyWebSocketJsonRpcDispatchResponse {
+  header: RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader;
+  payloadBytes: Uint8Array;
+}
+
+export interface RuntimeAssemblyWebSocketJsonRpcDispatchOptions {
+  signal: AbortSignal;
 }
 
 const runtimeDispatchConnectionReceiptBrand: unique symbol = Symbol(
@@ -148,6 +184,7 @@ export interface RuntimeBinaryDispatchResponseWithReceipt
 
 interface RuntimeDispatchConnectionReceiptRecord {
   connection: RuntimeDispatchConnection;
+  active: boolean;
 }
 
 export interface RuntimeBinaryDispatchError {
@@ -222,6 +259,10 @@ export class RuntimeDispatcher {
     RuntimeDispatchConnectionReceipt,
     RuntimeDispatchConnectionReceiptRecord
   >();
+  private readonly connectionReceiptsBySocket = new WeakMap<
+    WebSocket,
+    Set<RuntimeDispatchConnectionReceiptRecord>
+  >();
 
   constructor(private readonly options: RuntimeDispatcherOptions) {
     this.options.registry.setInFlightCounter({
@@ -294,12 +335,14 @@ export class RuntimeDispatcher {
     );
     if (
       !validation.ok ||
-      validation.envelope.routing.ingress.protocol !== 'webSocket'
+      validation.envelope.routing.ingress.protocol !== 'webSocket' ||
+      validation.envelope.routing.ingress.method !== null ||
+      !('websocketConnect' in validation.envelope)
     ) {
       return Promise.reject(
         new ServiceProtocolBoundaryError(
           validation.ok
-            ? 'RuntimeAssembly WebSocket connect dispatch requires webSocket ingress'
+            ? 'RuntimeAssembly WebSocket connect dispatch requires method-null webSocket ingress'
             : validation.error
         )
       );
@@ -316,6 +359,157 @@ export class RuntimeDispatcher {
       timeoutMs,
       options,
       connection
+    );
+  }
+
+  dispatchAssemblyWebSocketJsonRpc(
+    request: RuntimeAssemblyWebSocketJsonRpcDispatchRequest,
+    timeoutMs: number,
+    connectionReceipt: RuntimeDispatchConnectionReceipt,
+    options: RuntimeAssemblyWebSocketJsonRpcDispatchOptions
+  ): Promise<RuntimeAssemblyWebSocketJsonRpcDispatchResponse> {
+    let header: RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader;
+    try {
+      const validated = validateRuntimeAssemblyRequestStartFrame(
+        request.header,
+        request.payloadBytes
+      );
+      if (
+        validated.routing.ingress.protocol !== 'webSocket' ||
+        validated.routing.ingress.method === null ||
+        !('websocketJsonRpc' in validated)
+      ) {
+        return Promise.reject(
+          new ServiceProtocolBoundaryError(
+            'RuntimeAssembly WebSocket JSON-RPC dispatch requires method-bearing webSocket ingress'
+          )
+        );
+      }
+      header =
+        validated as RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader;
+    } catch (error) {
+      return Promise.reject(
+        new ServiceProtocolBoundaryError(runtimeProtocolValidationMessage(error))
+      );
+    }
+
+    const receiptRecord = this.connectionByReceipt.get(connectionReceipt);
+    if (receiptRecord === undefined) {
+      return Promise.reject(
+        new ServiceProtocolBoundaryError(
+          'runtime dispatch connection receipt was not issued by this dispatcher'
+        )
+      );
+    }
+    if (!receiptRecord.active) {
+      return Promise.reject(
+        new ProviderUnavailableError(
+          'Pinned runtime connection receipt has expired'
+        )
+      );
+    }
+    const connection = receiptRecord.connection;
+    if (connection.ws.readyState !== WebSocket.OPEN) {
+      this.expireConnectionReceipts(connection.ws);
+      return Promise.reject(
+        new ProviderUnavailableError('Pinned runtime disconnected')
+      );
+    }
+    if (this.pending.has(header.requestId)) {
+      return Promise.reject(
+        new ServiceProtocolBoundaryError(
+          `runtime dispatch requestId ${header.requestId} is already pending`
+        )
+      );
+    }
+
+    const executionToken = {};
+    return new Promise<RuntimeAssemblyWebSocketJsonRpcDispatchResponse>(
+      (resolve, reject) => {
+        const timeout = setTimeout(() => {
+          const pending = this.pending.get(header.requestId);
+          if (
+            pending?.kind !== 'websocketJsonRpc' ||
+            pending.executionToken !== executionToken
+          ) {
+            return;
+          }
+          this.finishPending(header.requestId, pending, {
+            source: 'timeout',
+            kind: 'cancelled',
+            reason: requestCancelReasonForSituation(
+              REQUEST_CANCEL_SITUATION.timeout
+            )
+          });
+          pending.reject(new RuntimeTimeoutError(timeoutMs));
+        }, timeoutMs);
+
+        const pending: RuntimeAssemblyWebSocketJsonRpcInvocation = {
+          kind: 'websocketJsonRpc',
+          executionToken,
+          ...(connection.runtimeId === undefined
+            ? {}
+            : { runtimeId: connection.runtimeId }),
+          request: header,
+          timeout,
+          ws: connection.ws,
+          resolve,
+          reject
+        };
+        const abortCleanup = this.attachWebSocketJsonRpcAbortHandler(
+          header.requestId,
+          executionToken,
+          options.signal
+        );
+        if (abortCleanup !== undefined) {
+          pending.abortCleanup = abortCleanup;
+        }
+        this.pending.set(header.requestId, pending);
+
+        try {
+          this.options.frameSender.sendFrame(
+            connection.ws,
+            header,
+            request.payloadBytes,
+            (error) => {
+              if (!error) {
+                return;
+              }
+              const current = this.pending.get(header.requestId);
+              if (
+                current?.kind !== 'websocketJsonRpc' ||
+                current.executionToken !== executionToken
+              ) {
+                return;
+              }
+              const providerError = new ProviderUnavailableError(error.message);
+              this.finishPending(header.requestId, current, {
+                source: 'callback_error',
+                kind: 'failed',
+                error: providerError
+              });
+              current.reject(providerError);
+            }
+          );
+        } catch (error) {
+          const current = this.pending.get(header.requestId);
+          if (
+            current?.kind !== 'websocketJsonRpc' ||
+            current.executionToken !== executionToken
+          ) {
+            return;
+          }
+          const providerError = new ProviderUnavailableError(
+            runtimeProtocolValidationMessage(error)
+          );
+          this.finishPending(header.requestId, current, {
+            source: 'callback_error',
+            kind: 'failed',
+            error: providerError
+          });
+          current.reject(providerError);
+        }
+      }
     );
   }
 
@@ -391,7 +585,8 @@ export class RuntimeDispatcher {
     receipt: RuntimeDispatchConnectionReceipt,
     sender: WebSocket
   ): boolean {
-    return this.connectionByReceipt.get(receipt)?.connection.ws === sender;
+    const record = this.connectionByReceipt.get(receipt);
+    return record?.active === true && record.connection.ws === sender;
   }
 
   isPendingWebSocketAcquireSender(
@@ -628,12 +823,43 @@ export class RuntimeDispatcher {
   private issueConnectionReceipt(
     connection: RuntimeDispatchConnection
   ): RuntimeDispatchConnectionReceipt {
+    const capturedConnection = Object.freeze({
+      ...(connection.runtimeId === undefined
+        ? {}
+        : { runtimeId: connection.runtimeId }),
+      ...(connection.dispatchBuildId === undefined
+        ? {}
+        : { dispatchBuildId: connection.dispatchBuildId }),
+      ws: connection.ws
+    }) satisfies RuntimeDispatchConnection;
     const receipt = Object.freeze({
-      ...(connection.runtimeId !== undefined ? { runtimeId: connection.runtimeId } : {}),
+      ...(capturedConnection.runtimeId !== undefined
+        ? { runtimeId: capturedConnection.runtimeId }
+        : {}),
       [runtimeDispatchConnectionReceiptBrand]: true as const
     }) as RuntimeDispatchConnectionReceipt;
-    this.connectionByReceipt.set(receipt, { connection });
+    const record = {
+      connection: capturedConnection,
+      active: true
+    } satisfies RuntimeDispatchConnectionReceiptRecord;
+    this.connectionByReceipt.set(receipt, record);
+    const records =
+      this.connectionReceiptsBySocket.get(capturedConnection.ws) ?? new Set();
+    records.add(record);
+    this.connectionReceiptsBySocket.set(capturedConnection.ws, records);
     return receipt;
+  }
+
+  private expireConnectionReceipts(ws: WebSocket): void {
+    const records = this.connectionReceiptsBySocket.get(ws);
+    if (records === undefined) {
+      return;
+    }
+    for (const record of records) {
+      record.active = false;
+    }
+    records.clear();
+    this.connectionReceiptsBySocket.delete(ws);
   }
 
   handleRuntimeCancel(ws: WebSocket, envelope: RequestCancelEnvelope): void {
@@ -669,6 +895,30 @@ export class RuntimeDispatcher {
       return;
     }
     if (!this.isPendingRuntimeSocket(ws, pending)) {
+      return;
+    }
+    if (pending.kind === 'websocketJsonRpc') {
+      let header: RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader;
+      try {
+        header = validateRuntimeAssemblyWebSocketJsonRpcResponseEndFrame(
+          response.header,
+          response.payloadBytes
+        );
+      } catch (error) {
+        this.rejectPendingRuntimeError(ws, requestId, {
+          code: 'WebSocketJsonRpcResponseProtocolError',
+          message: runtimeProtocolValidationMessage(error)
+        });
+        return;
+      }
+      this.finishPending(requestId, pending, {
+        source: 'runtime_response_end',
+        kind: 'completed'
+      });
+      pending.resolve({
+        header,
+        payloadBytes: response.payloadBytes
+      });
       return;
     }
     if (pending.kind === 'unary') {
@@ -862,6 +1112,7 @@ export class RuntimeDispatcher {
   }
 
   handleRuntimeDisconnect(ws: WebSocket): void {
+    this.expireConnectionReceipts(ws);
     for (const [requestId, pending] of Array.from(this.pending.entries())) {
       if (pending.ws === ws) {
         this.finishPending(requestId, pending, {
@@ -924,7 +1175,9 @@ export class RuntimeDispatcher {
     this.detachPending(requestId, pending);
     pending.kind === 'stream' && pending.closeFromPendingTerminal?.(terminal);
     this.maybeSendPendingCancel(requestId, pending, terminal);
-    if (pending.kind === 'unary') {
+    if (pending.kind === 'websocketJsonRpc') {
+      this.options.registry.refreshAllRuntimeStates();
+    } else if (pending.kind === 'unary') {
       const request = pending.request;
       if (isWebSocketConnectRequest(request)) {
         this.options.registry.refreshAllRuntimeStates();
@@ -1049,16 +1302,59 @@ export class RuntimeDispatcher {
     return () => signal.removeEventListener('abort', abort);
   }
 
+  private attachWebSocketJsonRpcAbortHandler(
+    requestId: string,
+    executionToken: object,
+    signal: AbortSignal
+  ): (() => void) | undefined {
+    const abort = () => {
+      const pending = this.pending.get(requestId);
+      if (
+        pending?.kind !== 'websocketJsonRpc' ||
+        pending.executionToken !== executionToken
+      ) {
+        return;
+      }
+      const reason =
+        typeof signal.reason === 'string' &&
+        isRequestCancelReason(signal.reason)
+          ? signal.reason
+          : requestCancelReasonForSituation(
+              REQUEST_CANCEL_SITUATION.callerAbort
+            );
+      this.finishPending(requestId, pending, {
+        source: 'caller_abort',
+        kind: 'cancelled',
+        reason
+      });
+      pending.reject(
+        new ProviderUnavailableError(
+          'Runtime request was cancelled before completion'
+        )
+      );
+    };
+    if (signal.aborted) {
+      queueMicrotask(abort);
+      return undefined;
+    }
+    signal.addEventListener('abort', abort, { once: true });
+    return () => signal.removeEventListener('abort', abort);
+  }
+
   private sendCancel(ws: WebSocket, cancel: RequestCancelEnvelope): void {
     if (ws.readyState !== WebSocket.OPEN) {
       return;
     }
-    this.options.frameSender.sendFrame(ws, {
-      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-      type: 'request.cancel',
-      requestId: cancel.requestId,
-      reason: cancel.reason
-    });
+    try {
+      this.options.frameSender.sendFrame(ws, {
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'request.cancel',
+        requestId: cancel.requestId,
+        reason: cancel.reason
+      });
+    } catch {
+      // Cancellation is advisory after the pending entry is detached.
+    }
   }
 
   private isPendingRuntimeSocket(ws: WebSocket, pending: RuntimeInvocation): boolean {
@@ -1143,7 +1439,9 @@ function dispatchHeaderForConnection(
 }
 
 function hasRuntimeAssemblyRouting(
-  header: RuntimeDispatchFrameHeader | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
+  header:
+    | RuntimeDispatchFrameHeader
+    | RuntimeAssemblyRequestStartFrameWireHeader
 ): header is RuntimeAssemblyRequestStartFrameWireHeader {
   return header.type === 'request.start' && 'routing' in header;
 }
@@ -1153,6 +1451,14 @@ function isWebSocketConnectRequest(
 ): header is RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
   return (
     hasRuntimeAssemblyRouting(header) &&
-    header.routing.ingress.protocol === 'webSocket'
+    header.routing.ingress.protocol === 'webSocket' &&
+    header.routing.ingress.method === null &&
+    'websocketConnect' in header
   );
+}
+
+function runtimeProtocolValidationMessage(error: unknown): string {
+  return error instanceof Error
+    ? error.message
+    : 'RuntimeAssembly WebSocket JSON-RPC protocol validation failed';
 }

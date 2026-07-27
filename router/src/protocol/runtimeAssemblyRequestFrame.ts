@@ -15,11 +15,12 @@ export function encodeRuntimeAssemblyRequestStartFrame(
   header: RuntimeAssemblyRequestStartFrameTransportWireHeader,
   payloadBytes: Uint8Array = new Uint8Array(),
 ): Buffer {
-  const result = validateRuntimeAssemblyRequestStartFrameWireHeader(header);
-  if (!result.ok) throw new BinaryFrameDecodeError(result.error);
-  validateRuntimeAssemblyRequestPayload(result.envelope, payloadBytes);
+  const envelope = validateRuntimeAssemblyRequestStartFrame(
+    header,
+    payloadBytes,
+  );
   return encodeBinaryFrame(
-    result.envelope as RuntimeAssemblyRequestStartFrameTransportWireHeader &
+    envelope as RuntimeAssemblyRequestStartFrameTransportWireHeader &
       Record<string, unknown>,
     payloadBytes,
   );
@@ -37,15 +38,26 @@ export function decodeRuntimeAssemblyRequestStartFrame(
       "invalid runtimeAssembly request.start frame: header must be an object",
     );
   }
-  const result = validateRuntimeAssemblyRequestStartFrameWireHeader(header);
-  if (!result.ok) throw new BinaryFrameDecodeError(result.error);
-  validateRuntimeAssemblyRequestPayload(result.envelope, frame.payloadBytes);
+  const envelope = validateRuntimeAssemblyRequestStartFrame(
+    header,
+    frame.payloadBytes,
+  );
   return {
     header:
-      result.envelope as RuntimeAssemblyRequestStartFrameTransportWireHeader &
+      envelope as RuntimeAssemblyRequestStartFrameTransportWireHeader &
       Record<string, unknown>,
     payloadBytes: frame.payloadBytes,
   };
+}
+
+export function validateRuntimeAssemblyRequestStartFrame(
+  header: unknown,
+  payloadBytes: Uint8Array,
+): RuntimeAssemblyRequestStartFrameTransportWireHeader {
+  const result = validateRuntimeAssemblyRequestStartFrameWireHeader(header);
+  if (!result.ok) throw new BinaryFrameDecodeError(result.error);
+  validateRuntimeAssemblyRequestPayload(result.envelope, payloadBytes);
+  return result.envelope;
 }
 
 function validateRuntimeAssemblyRequestPayload(

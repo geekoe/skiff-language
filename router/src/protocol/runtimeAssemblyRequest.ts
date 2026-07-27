@@ -131,14 +131,11 @@ export interface RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader
 
 export type RuntimeAssemblyRequestStartFrameWireHeader =
   | RuntimeAssemblyRequestStartFrameHeader
-  | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader;
-
-// websocketJsonRpc is a transport-only W0 sibling until E0/R0b attach an
-// executable owner. Existing dispatch candidates intentionally keep the
-// narrower RuntimeAssemblyRequestStartFrameWireHeader type above.
-export type RuntimeAssemblyRequestStartFrameTransportWireHeader =
-  | RuntimeAssemblyRequestStartFrameWireHeader
+  | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
   | RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader;
+
+export type RuntimeAssemblyRequestStartFrameTransportWireHeader =
+  RuntimeAssemblyRequestStartFrameWireHeader;
 
 const LEGACY_GATEWAY_ENTRY_IDENTITY_PATTERN =
   /^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$/;

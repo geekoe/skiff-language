@@ -14,6 +14,7 @@ import {
   encodeRuntimeAssemblyWebSocketJsonRpcResponseEndFrame
 } from '../src/protocol/runtimeAssemblyRequestResponseFrame.js';
 import type {
+  RuntimeAssemblyRequestStartFrameWireHeader,
   RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader
 } from '../src/protocol/runtimeAssemblyRequest.js';
 import {
@@ -89,7 +90,8 @@ function responseHeader(
 
 describe('runtimeAssembly websocketJsonRpc strict transport wire', () => {
   it('round-trips the canonical method-bearing request without parsing opaque params', () => {
-    const header = canonicalRequest();
+    const header: RuntimeAssemblyRequestStartFrameWireHeader =
+      canonicalRequest();
     expect(validateRuntimeAssemblyRequestStartFrameWireHeader(header)).toMatchObject({
       ok: true
     });

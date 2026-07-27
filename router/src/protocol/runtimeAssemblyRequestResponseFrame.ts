@@ -50,15 +50,12 @@ export function encodeRuntimeAssemblyWebSocketJsonRpcResponseEndFrame(
   header: RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader,
   payloadBytes: Uint8Array = new Uint8Array(),
 ): Buffer {
-  const result =
-    validateRuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader(header);
-  if (!result.ok) throw new BinaryFrameDecodeError(result.error);
-  validateRuntimeAssemblyWebSocketJsonRpcResponsePayload(
-    result.envelope,
+  const envelope = validateRuntimeAssemblyWebSocketJsonRpcResponseEndFrame(
+    header,
     payloadBytes,
   );
   return encodeBinaryFrame(
-    result.envelope as RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader &
+    envelope as RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader &
       Record<string, unknown>,
     payloadBytes,
   );
@@ -80,19 +77,30 @@ export function decodeRuntimeAssemblyWebSocketJsonRpcResponseEndFrame(
       "invalid runtimeAssembly websocketJsonRpc response.end frame: header must be an object",
     );
   }
+  const envelope = validateRuntimeAssemblyWebSocketJsonRpcResponseEndFrame(
+    header,
+    frame.payloadBytes,
+  );
+  return {
+    header:
+      envelope as RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader &
+        Record<string, unknown>,
+    payloadBytes: frame.payloadBytes,
+  };
+}
+
+export function validateRuntimeAssemblyWebSocketJsonRpcResponseEndFrame(
+  header: unknown,
+  payloadBytes: Uint8Array,
+): RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader {
   const result =
     validateRuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader(header);
   if (!result.ok) throw new BinaryFrameDecodeError(result.error);
   validateRuntimeAssemblyWebSocketJsonRpcResponsePayload(
     result.envelope,
-    frame.payloadBytes,
+    payloadBytes,
   );
-  return {
-    header:
-      result.envelope as RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader &
-        Record<string, unknown>,
-    payloadBytes: frame.payloadBytes,
-  };
+  return result.envelope;
 }
 
 function validateRuntimeAssemblyWebSocketJsonRpcResponsePayload(
