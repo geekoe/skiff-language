@@ -224,8 +224,8 @@ targets，但投影后的数字仍必须有 owner context。裸 `3` 不是 stabl
 ## Package Entity Table
 
 Package是唯一source compile owner。Service首先是Package，因此不会引入另一种entity table或compile
-kind；两者的差异只出现在`service.yml.serviceCalls`选择、external ingress与后续
-ServiceContract/Deployment projection。
+kind；两者的差异只出现在`service.yml.serviceCalls`选择、`http.yml`/`websocket.yml` external ingress
+与后续ServiceContract/Deployment projection。
 
 ```rust
 struct PackageEntityModel {

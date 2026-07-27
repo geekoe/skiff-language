@@ -29,15 +29,17 @@ Service runtime 是执行用户 Skiff 代码的边界。它加载已发布 artif
 Service runtime不维护外部WebSocket物理socket生命周期。WebSocket Connection属于gateway / hub；
 connect handler dispatch是进入service runtime的一次request。Skiff主动发出的WebSocket request在原
 request frame内挂起；peer response由平台broker关联后恢复该frame，不创建新的service dispatch。
-Raw frame receive属于平台transport阶段，不是用户handler。
+Peer向`websocket.yml.jsonRpc`已声明method发起的request则创建独立gateway request frame。Raw frame
+receive属于平台transport阶段，不是用户handler。
 
 生产 runtime 的 artifact 信任边界是平台 build service。Runtime 不把开发者本地编译产物视为线上发布权威；线上 artifact 必须由平台 build service 产生、签名并记录 provenance。
 
 ## 2. Dispatch and request frame
 
 以下事件创建request frame：unary service API call、server-stream service API call、HTTP entry
-dispatch、WebSocket connect dispatch，以及测试runner构造的等价dispatch。单纯收取raw WebSocket frame
-本身不执行用户代码；匹配平台pending request的peer response只恢复已有request frame。
+dispatch、WebSocket connect dispatch、declared WebSocket JSON-RPC method dispatch，以及测试runner构造的
+等价dispatch。单纯收取raw WebSocket frame本身不执行用户代码；匹配平台pending request的peer response只
+恢复已有request frame。
 
 Gateway / router 可以维护 entry envelope、routing context、transport state、Connection 和 stream pairing state，但这些不是 Skiff request frame。
 
@@ -73,9 +75,10 @@ Service protocol identity 描述 service-to-service API 的公开协议。API �
 
 Gateway entry identity只描述external ingress的公开协议面。已冻结的HTTP identity覆盖entry/protocol
 kind、unary/stream mode、external request/response shape、影响wire的标准source选择和公开external
-error projection。已冻结的WebSocket identity覆盖connect request/result shape、允许的Skiff主动发送
-frame类别、固定平台outbound request/response envelope版本与connection policy shape；它不包含业务
-`method`或payload协议，也不存在client-initiated业务消息entry identity。Selector、handler/pre/guard callable、
+error projection。WebSocket connect identity覆盖connect request/result shape、允许frame类别、
+JSON-RPC profile版本与connection policy shape；每个declared JSON-RPC method另有entry identity，覆盖
+params/result shape、adapter sources和固定external error projection。外部method仍是selector。
+Selector、handler/pre/guard callable、
 目标参数名、Package build、deployment policy、内部connection-context nominal identity/codec及完整
 adapter execution plan不进入该identity；只替换实现而外部协议不变时只改变deployment revision。
 任何gateway entry变化都不改变service protocol identity。
@@ -86,9 +89,10 @@ stable target。Target用于
 effect metadata、timeout source、trace、日志、指标、测试替身和错误聚合。
 
 HTTP dispatch使用gateway entry identity做admission与观测。WebSocket Connection必须绑定connection
-protocol identity与deployment/activation generation；平台outbound request的response还必须精确匹配
-原connection、socket generation与transport request id。它不绑定或冒充service-call protocol operation；
-schema-changing发布后，旧Connection继续使用其已pin generation，直到drain或断开。
+protocol identity与deployment/activation generation；outbound response必须精确匹配原connection、
+socket generation与transport request id，inbound method也必须在同一pinned generation中解析gateway
+entry。它不绑定或冒充service-call protocol operation；schema-changing发布后，旧Connection继续使用其
+已pin generation，直到drain或断开。
 
 ## 5. Request heap and values
 
@@ -226,7 +230,7 @@ HTTP entry 是gateway-selected external HTTP dispatch，不是service-to-service
 Skiff service之间的调用始终使用ServiceContract，不通过HTTP entry伪装。
 
 Router根据trusted selector、deployment/activation和loaded gateway entry metadata调用HTTP handler。该
-handler由`service.yml`选择，不要求进入`api.yml`或ServiceContract。Router不按display/source path猜target，
+handler由`http.yml`选择，不要求进入`api.yml`或ServiceContract。Router不按display/source path猜target，
 也不根据content-type自行解释业务类型。
 
 外部 HTTP request 在 dispatch 前打包为标准 HTTP request envelope；method、url、path、query、headers 和 body 保持为业务可检查的数据。Query 和 headers 使用数组保留重复项和顺序。
@@ -257,14 +261,23 @@ service-call protocol operation identity。
 
 Connect operation是一次request frame，用于连接验证和connection policy初始化。连接建立后，service可
 发送单向notification，或通过`std.websocket.requestJsonToConnection`向精确connection发起request并等待
-peer response。用户不声明一个接收所有raw frame的`receive`函数，也不存在client-initiated业务消息entry。
+peer response。Peer也可以调用`websocket.yml.jsonRpc`显式声明的method；用户不声明一个接收所有raw
+frame的`receive`函数。未声明request method不进入业务代码；除`$/cancelRequest`外的notification即使与
+已声明request method同名也不进入业务代码。
 
 Router中的专用WebSocket request broker拥有编码无关的request identity、pending生命周期和
 connection/generation归属；第一版`jsonrpc-2.0-text` adapter解释JSON-RPC 2.0控制字段。业务`method`、
 `params`、`result`与error `data`保持opaque。Response只有在
-`(connectionId, socket/generation identity, profile, id)`精确命中pending request时才转回原runtime
-execution；它不创建新的runtime ingress request，不进入service handler。Unsolicited data frame仍拒绝。
-Raw text/binary send不选择RPC配置；未来binary RPC必须是另一个显式配置。
+`(outbound, connectionId, socket/generation identity, profile, id)`精确命中pending request时才转回原
+runtime execution；它不创建新的runtime ingress request。Request按
+`(inbound, websocketEntryId, pinned generation, profile, method)`解析gateway entry，经
+`RuntimeDispatcher`创建独立request frame。Raw text/binary send不选择RPC配置；未来binary RPC必须是
+另一个显式配置。
+
+Inbound handler的`params`按linked adapter plan decode，return按linked type编码为JSON-RPC `result`；
+handler只能unary return。Platform parse/invalid/method/params/internal错误使用`-32700`、`-32600`、
+`-32601`、`-32602`、`-32603`，容量、timeout和cancel使用`-32000`、`-32001`、`-32800`。业务未捕获throw
+一律脱敏为Internal error；预期失败使用typed result union。
 
 Service端主动推送必须显式调用`std.websocket.send*`；需要peer结果时显式调用
 `requestJsonToConnection`。后者是潜在suspension point，并继承当前execution deadline/cancel。取消会
@@ -273,7 +286,9 @@ deadline仍产生`TimeoutError`。平台transport correlation不取代业务幂�
 identity，也不提供自动retry。
 
 WebSocket连接按已冻结的connection protocol identity和deployment/activation generation路由；
-request response不能跨connection或generation恢复。既有socket继续绑定旧generation，直到drain或断开。
+request/response不能跨connection或generation恢复。Peer `$/cancelRequest`只取消同方向inbound request；
+peer disconnect取消全部inbound execution并失败outbound pending。既有socket继续绑定旧generation，直到
+drain或断开。
 
 ## 12. Effect metadata at runtime
 

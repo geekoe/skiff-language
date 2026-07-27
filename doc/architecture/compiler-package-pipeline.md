@@ -12,7 +12,7 @@ Package 是唯一源码编译单元；ServiceContract、ServiceDeployment 与 Ru
 本文负责：
 
 - Package source compile 的阶段边界与事实 owner。
-- `package.yml`、`api.yml`、可选 `service.yml` 和 `config.*.yml` 的读取边界。
+- `package.yml`、`api.yml`、可选`service.yml`/`http.yml`/`websocket.yml`和`config.*.yml`的读取边界。
 - Package dependency 与 service dependency 的 typed inputs。
 - config requirement 的合并与诊断 provenance。
 - ServiceContract、external ingress 和 ServiceDeployment projection 的输入输出。
@@ -36,7 +36,7 @@ CompiledPackage + PackageArtifact + service id
   -> ServiceContractProjection
   -> ServiceContract
 
-CompiledPackage + PackageArtifact + typed service.yml ingress
+CompiledPackage + PackageArtifact + typed http.yml/websocket.yml ingress
   -> GatewayEntryProjection
   -> typed gateway entries
 
@@ -78,6 +78,7 @@ PackageCompileInput
   resolved PackageArtifact dependencies
   resolved code-free ServiceContract dependencies
   optional service.yml authoring metadata
+  optional http.yml / websocket.yml authoring metadata
 ```
 
 职责固定为：
@@ -85,8 +86,9 @@ PackageCompileInput
 - `package.yml`：Package id/version、package dependencies、service dependencies，以及
   config/state/resource/runtime capability requirements 的声明入口；
 - `api.yml`：Package public source graph；
-- `service.yml`：service id、`serviceCalls` public-path选择、HTTP/WebSocket external ingress、
-  handler/pre/guard selector、adapter source与外部协议 metadata；
+- `service.yml`：service id与`serviceCalls` public-path选择；
+- `http.yml`/`websocket.yml`：external ingress、handler/pre/guard selector、adapter source与外部协议
+  metadata；
 - `config.*.yml`：部署时为已声明 requirement 提供或选择值与 owner，不进入 Package compile。
 
 Service 首先是 Package。存在 `service.yml` 不会把 root 切换成另一种 source input，也不会让
@@ -124,7 +126,8 @@ dependency kind。
 - package/service dependency resolution；
 - callable effect、provenance、escape、write、alias 与 same-heap identity facts；
 - config/state/resource/runtime requirement 使用事实；
-- `service.yml` source selector 的 typed resolution intent。
+- `service.yml.serviceCalls` public-path选择，以及`http.yml`/`websocket.yml` handler selector的typed
+  resolution intent。
 
 Source 阶段可以 parse/resolve/type-check，但：
 
@@ -238,7 +241,7 @@ ServiceContract：
 External ingress 是单独的 typed projection：
 
 ```text
-service.yml entry
+http.yml / websocket.yml entry
   -> strict typed authoring DTO
   -> source selector resolution
   -> exact PackageCallableId/signature/link facts
@@ -298,7 +301,8 @@ Profile 只能绑定已声明 requirements，不能增加/删除 Package depende
 
 - compiler没有Package/Service共同`Publication`输入或产物；
 - service root仍通过唯一Package compile入口；
-- `service.yml` external ingress不会进入Package API graph或ServiceContract；
+- `http.yml`/`websocket.yml` external ingress不会进入Package API graph或ServiceContract；
+- `service.yml`不接受HTTP/WebSocket内联字段；
 - config profile值只在deployment/activation边界读取；
 - SourceModel之后不重建name/type/conformance；
 - lowering不读取manifest或重新推断expression type；

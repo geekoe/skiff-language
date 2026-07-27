@@ -317,10 +317,10 @@ API，即使技术上boundary-available也不会成为service operation。普通
 interface仍只是conformance contract，不直接成为service operation。`serviceCalls`只引用`api.yml`
 public path，不重复source selector或signature；重复、unknown或non-callable path均fail closed。
 
-HTTP、WebSocket等external ingress不属于service-call projection。它们由`service.yml`选择当前Package中的
-handler/pre/guard；这些callable不要求public，也不生成service operation。Compiler按其linked signature与
-gateway adapter source检查参数/返回，生成独立gateway entry identity。Ingress不得使用或伪造
-`ContractOperationId`。
+HTTP、WebSocket等external ingress不属于service-call projection。它们分别由`http.yml`和
+`websocket.yml`选择当前Package中的handler/pre/guard；这些callable不要求public，也不生成service
+operation。Compiler按其linked signature与gateway adapter source检查参数/返回，生成独立gateway entry
+identity。Ingress不得使用或伪造`ContractOperationId`。
 
 source module path是组织方式，不是协议身份。service protocol identity由显式service-call public path、
 operation name、canonical signature、public instance receiver root metadata、schema closure和

@@ -537,7 +537,8 @@ IngressDispatcher
 - binary HTTP、typed JSON adapter、server stream、WebSocket connect和普通runtime payload都必须被
   建模为`IngressMode`，而不是在一个大函数中互相读取局部变量。平台
   `std.websocket.requestJsonToConnection`的peer response只恢复已有execution中的host operation，
-  不是新的ingress mode；raw WebSocket receive必须删除，不能据此冻结用户handler surface。其pending
+  不是新的ingress mode；peer向`websocket.yml.jsonRpc`已声明method发起的request则是独立typed
+  `IngressMode`。Raw WebSocket receive必须删除，不能让任意frame成为用户handler。双向pending/active
   生命周期owner必须与编码配置adapter分离：第一版JSON-RPC 2.0 text adapter只能解释framing和控制字段，
   不能让request broker核心依赖JSON业务payload。
 - request crate 不拥有 route registry、lazy artifact loading、`ServiceRuntimeContext` 或

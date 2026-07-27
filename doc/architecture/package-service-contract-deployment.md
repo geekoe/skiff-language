@@ -1,8 +1,8 @@
 # Package、Service Contract 与 Deployment 架构
 
 本文定义Skiff长期目标中的代码编译、service协议、deployment装配与runtime执行边界。它是
-compiler、artifact、runtime、router和registry共同遵守的canonical架构契约，不是实现计划，也不
-冻结最终YAML字段名或CLI拼写。
+compiler、artifact、runtime、router和registry共同遵守的canonical架构契约，不是实现计划。本文冻结
+manifest owner与跨层数据流；精确YAML shape由`../reference/service-yml.md`冻结，CLI拼写不在本文定义。
 
 Skiff尚未发布。实现应直接收敛到本文模型，不为旧service源码、旧共同发布对象artifact或旧
 compiler pipeline保留兼容层。
@@ -41,20 +41,23 @@ framing等叶子类型，但不能用共享DTO重新制造隐式父模型。
 
 以下约束是实现和演进的硬边界：
 
-1. Package是唯一用户源码与独立编译单元；service首先是package，只比普通package多`service.yml`和
-   `config.*.yml`。
+1. Package是唯一用户源码与独立编译单元；service首先是package，只比普通package多`service.yml`、
+   可选`http.yml`/`websocket.yml`和`config.*.yml`。
 2. 普通package root包含`.skiff`、`package.yml`和`api.yml`；service root在此基础上增加
-   `service.yml`与零个或多个`config.*.yml`。service root不得缺少`package.yml`，也不存在开发者维护的
-   `deployment.yml`。`api.yml`也不得省略；没有公开API时必须显式写为`{}`。
+   `service.yml`、可选`http.yml`/`websocket.yml`与零个或多个`config.*.yml`。`http.yml`或
+   `websocket.yml`不能脱离`service.yml`单独出现。service root不得缺少`package.yml`，也不存在开发者
+   维护的`deployment.yml`。`api.yml`也不得省略；没有公开API时必须显式写为`{}`。
 3. `api.yml`是package call与service-to-service call共用的公开API owner；`service.yml.serviceCalls`
-   只按public path选择已有callable roots。HTTP、WebSocket等外部入口也由`service.yml`拥有。外部handler
-   不因成为ingress而进入`api.yml`，也不因此对其它service可调用。
+   只按public path选择已有callable roots。HTTP与WebSocket外部入口分别由`http.yml`和`websocket.yml`
+   拥有；`service.yml`不得再内联这两类配置。外部handler不因成为ingress而进入`api.yml`，也不因此对
+   其它service可调用。
 4. `service.yml.serviceCalls`不重复source selector、signature或type；未选择的callable只是Package API。
    ServiceContract只由compiler/tooling从这些显式roots及其typed
    PackageSchema closure确定性投影；
    consumer只依赖发布后的code-free projection，不读取provider实现源码或外部ingress。
 5. ServiceDeployment不解析AST、不重新做type/effect分析；它由工具消费typed PackageArtifact、
-   ServiceContract、compiler已经形成的typed ingress projection、`service.yml`和所选
+   ServiceContract、compiler已经形成的typed ingress projection、`service.yml`、可选
+   `http.yml`/`websocket.yml`和所选
    `config.*.yml`生成。
 6. package call与service call是不同语义；物理同进程不允许把service call退化成普通package call。
 7. 第一版service binding全部是`InProcessBoundary`；缺少本地provider时assembly失败，不经router
@@ -84,25 +87,71 @@ Package source由`.skiff`源码、`package.yml`、`api.yml`和静态资源组成
 运算。
 
 Service仍走同一个package compiler入口；存在`service.yml`时，compiler/tooling再执行service projection。
-`service.yml`拥有service id、`serviceCalls` public-path选择与HTTP/WebSocket等外部ingress。HTTP包含route、handler/pre/guard source
-selector、adapter参数来源及外部协议metadata；第一版WebSocket是单一entry，只包含连接path与
-可选connect callback，不存在用户receive或业务消息handler。该连接支持服务端单向通知，以及由Skiff
-主动发起、外部peer只返回平台response envelope的request/response；response由平台关联，不形成新的
-service ingress。External handler selector指向当前service package中的普通source callable，
+`service.yml`只拥有service id与`serviceCalls` public-path选择；它不拥有HTTP、WebSocket或deployment
+policy字段。可选`http.yml`直接保存以稳定名字为key的HTTP entry mapping；可选`websocket.yml`
+直接保存当前service唯一WebSocket entry的path、可选connect callback与可选`jsonRpc` method mapping。
+HTTP/WebSocket external handler selector指向当前service package中的普通source callable，
 不要求该callable出现在`api.yml`。`serviceCalls`中的每个元素则必须精确解析到`api.yml`已有的public
-function或public-instance root；它不是source function映射。`service.yml`不含version、dependency、
-service-call API signature/type映射、与handler类型重复的业务JSON schema、实现artifact binding、平台组织角色或request/response大小
-策略。External schema和runtime codec plan由compiler从精确linked handler signature、adapter kind与参数
-来源确定性生成。`config.*.yml`只绑定已经声明的
+function或public-instance root；它不是source function映射。三个service authoring manifest都不含
+version、dependency、service-call API signature/type映射、与handler类型重复的业务JSON schema、
+实现artifact binding或平台组织角色。Request/response大小等平台limit不由源码manifest配置。
+External schema和runtime codec plan由compiler从精确linked handler signature、adapter kind与参数来源
+确定性生成。`config.*.yml`只绑定已经声明的
 config/secret/state/resource requirement，不改变package/service dependency graph。
 
+三个authoring文件的层次为：
+
+```yaml
+# service.yml
+id: example/service
+serviceCalls:
+  - users.get
+```
+
+```yaml
+# http.yml
+createUser:
+  method: POST
+  path: /users
+  kind: typedJson
+  handler: http.createUser
+  adapterArgs:
+    - param: input
+      source: { kind: http.body }
+```
+
+```yaml
+# websocket.yml
+path: /ws
+connect:
+  handler: websocket.connect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
+jsonRpc:
+  getStatus:
+    method: status.get
+    handler: websocket.getStatus
+    adapterArgs:
+      - param: input
+        source: { kind: websocket.jsonRpcParams }
+      - param: connectionId
+        source: { kind: websocket.connectionId }
+```
+
+`http.yml`与`websocket.yml`都是可选文件；文件存在时必须是非`null` mapping，显式空HTTP surface写`{}`。
+`websocket.yml`存在时`path`必填，`connect`和`jsonRpc`可分别省略；但一个既无connect也无JSON-RPC
+handler、只供Skiff主动发送的connection仍是合法entry。旧`service.yml.http`与
+`service.yml.websocket`直接报错，不提供兼容读取。
+
 Authoring层不要求开发者分别维护entry表与route表，也没有只起分类作用的`routes`中间层。已冻结的HTTP
-写法中，`http`本身就是以稳定名字为key的entry mapping；每个value把external selector与该entry的
-handler/adapter声明写在一起。Mapping key就是service-owner-local `GatewayEntryKey`。Compiler必须把
+写法中，`http.yml`顶层本身就是以稳定名字为key的entry mapping，不再套一层`http:`；每个value把
+external selector与该entry的handler/adapter声明写在一起。Mapping key就是service-owner-local
+`GatewayEntryKey`。Compiler必须把
 这一个HTTP authoring record确定性拆成`IngressSelector -> GatewayEntryKey`和
 `GatewayEntryKey -> resolved gateway entry`两个artifact事实。第一版一个HTTP authoring route只定义
 一个entry，不提供多个selector复用同一entry定义的别名/引用语法。`guard`/`pre`属于具体HTTP entry，
-不占用`http`下的保留key，也没有隐式全局继承。
+不占用顶层保留key，也没有隐式全局继承。
 
 HTTP entry kind决定external response协议，不能只按handler的`Stream<T>`外形推断。`typedJson`只允许
 unary handler return；runtime wrapper把该单个值编码为一次JSON response，compiler必须拒绝
@@ -111,16 +160,18 @@ unary handler return；runtime wrapper把该单个值编码为一次JSON respons
 由handler显式控制status、headers和后续body chunks。Compiler不得把raw HTTP stream改投影成typed JSON
 chunks，也不得要求external caller理解Skiff的`Stream<T>`类型。
 
-`websocket`仍由`service.yml`拥有。第一版每个service最多一个WebSocket entry，拥有连接path与可选
-`connect`回调。外部peer主动发起的业务请求统一走HTTP；WebSocket支持服务端单向通知，以及
-`std.websocket.requestJsonToConnection`向精确connection发起的request。WebSocket本身只是通用双向
-transport；request/response correlation由与编码解耦的平台broker拥有，第一版内置
-`jsonrpc-2.0-text`编码配置。Peer response由gateway/runtime关联并直接恢复等待中的Skiff调用，不分派给
-用户handler。不存在raw `receive`、client-initiated消息selector、typed message handler、消息级entry或
-message identity；不得从HTTP route模型类推这些surface。没有匹配pending request的客户端text/binary
-data frame以close code `1003`拒绝；畸形、wrong-connection/generation或未知id的response属于协议错误，
-使用`1002`；与完成/取消竞态的晚到或重复response只命中有界短期tombstone并被丢弃；
-ping/pong/close由协议栈处理。
+第一版每个service最多一个`websocket.yml`，文件本身就是WebSocket entry，不再套一层`websocket:`。
+它拥有连接path、可选`connect`回调，以及可选`jsonRpc` mapping。`jsonRpc`下每个稳定key把外部JSON-RPC
+`method`与一个typed handler/adapter声明写在一起；compiler同样拆成
+`(websocketEntry, profile, method) -> GatewayEntryKey -> resolved gateway entry`。Peer发来的合法
+request创建新的runtime ingress并执行该handler；Skiff通过
+`std.websocket.requestJsonToConnection`发起的request，其response只恢复原调用，不创建ingress。
+
+WebSocket本身只是通用双向transport；双向request/response correlation由编码无关的平台broker拥有，
+第一版内置`jsonrpc-2.0-text`编码配置。不存在raw `receive`、按任意event name分派的message handler或
+把transport `id`交给业务代码的surface。除平台`$/cancelRequest`外，第一版不声明业务JSON-RPC
+notification handler。Raw outbound text/binary send仍合法；未声明method的request返回JSON-RPC
+`Method not found`，其它未被配置接纳的业务notification不进入用户代码。
 
 PackageArtifact至少包含：
 
@@ -139,11 +190,14 @@ PackageArtifact
   unresolved ServiceCallRefs
 ```
 
-PackageArtifact不保存`serviceCallRoots`或其它service selection字段，也不读取`service.yml`。
+PackageArtifact不保存`serviceCallRoots`或其它service selection字段，也不读取`service.yml`、
+`http.yml`或`websocket.yml`。
 它发布完整Package public callable graph及每个callable的boundary projection；ServiceContract projection
 再用`service.yml.serviceCalls`选择roots。只改变`serviceCalls`而Package source、`package.yml`与
 `api.yml`不变时，PackageArtifact与PackageLocalAbi identity必须bit-identical；operation集合变化只进入
-ServiceContract/ServiceProtocolIdentity及其后续deployment。
+ServiceContract/ServiceProtocolIdentity及其后续deployment。只改变`http.yml`或`websocket.yml`时，
+PackageArtifact与ServiceContract也必须bit-identical；变化只进入typed ingress projection、
+GatewayEntryIdentity、ServiceDeployment及其后续assembly。
 
 `PackageLocalAbi`描述同一linked program内的public symbol、canonical signature、nominal type、
 public instance、const与executable link信息。concrete public callable的canonical signature包含其推断
@@ -188,10 +242,11 @@ callable signature和专用gateway adapter plan编解码，不要求内部业务
 也不能反向成为runtime binary codec的事实源。
 
 Compiler只对adapter实际映射到external source/sink的值计算entry-local schema closure。已冻结部分包括
-HTTP body、query/path/header参数与HTTP response。WebSocket没有client-initiated业务payload schema；
-connect只有平台request metadata和accept/reject metadata。Skiff主动发起的request/response codec来自
-调用点concrete类型，不进入entry-local schema。Pre/guard内部context及其它只在runtime adapter与handler
-之间流动的值不进入该closure。
+HTTP body、query/path/header参数与HTTP response、WebSocket connect metadata，以及
+`websocket.yml.jsonRpc`中每个method handler的params/result。Skiff主动发起的request/response codec来自
+调用点concrete类型，不进入entry-local schema；peer主动request的codec来自被声明handler的linked
+signature和adapter sources。Pre/guard内部context及其它只在runtime adapter与handler之间流动的值不进入
+该closure。
 私有named type可以贡献外部shape，但其source name、module path与Skiff nominal identity不得泄露为public
 type；只改私有名字而保持canonical external shape不改变`GatewayEntryIdentity`。
 
@@ -257,11 +312,11 @@ public-instance root的canonical public path；它不复制source selector、参
 选择一次表示其显式listed interfaces的全部methods；若只需部分methods，
 作者必须使用更窄interface或wrapper function。
 
-`service.yml`引用的每个external handler另行生成typed ingress projection。它可以引用非public callable和
-非public named type，但必须有完整linked signature、精确PackageCallableId、合法adapter plan以及可执行的
-external codec。Ingress availability与service-call availability分开报告；不能通过把handler补进
-`api.yml`来绕过ingress校验。第一版handler/pre/guard不能是generic function declaration；其concrete
-signature可以引用fully instantiated generic platform types。
+`http.yml`或`websocket.yml`引用的每个external handler另行生成typed ingress projection。它可以引用
+非public callable和非public named type，但必须有完整linked signature、精确PackageCallableId、合法
+adapter plan以及可执行的external codec。Ingress availability与service-call availability分开报告；
+不能通过把handler补进`api.yml`来绕过ingress校验。第一版handler/pre/guard不能是generic function
+declaration；其concrete signature可以引用fully instantiated generic platform types。
 
 缺字段不表示不可用或尚未分析。PackageArtifact必须保存完成boundary判断所需的typed effect、
 provenance和link facts，使deployment无需读取源码。
@@ -385,27 +440,29 @@ provider内部执行lane、cancel signal投递或其它Host机制；该summary�
 executable一致，不与ServiceContract对账。summary改变会因implementation build改变而产生新的deployment
 revision/identity，但不能倒灌成新的service protocol。
 
-Ingress不绑定`ContractOperationId`，也不进入ServiceContract。Compiler从`service.yml`的source selector
+Ingress不绑定`ContractOperationId`，也不进入ServiceContract。Compiler从`http.yml`或`websocket.yml`
+的source selector
 解析当前implementation中的精确`PackageCallableId`，校验handler signature与adapter source，生成typed
-gateway entry并计算`GatewayEntryIdentity`。`gatewayEntryKey`只是`service.yml`内稳定、owner-local的entry
-键，使同一协议identity可以绑定不同implementation或被多个selector复用；它不是内容identity。
+gateway entry并计算`GatewayEntryIdentity`。`gatewayEntryKey`只是对应external manifest内稳定、
+owner-local的entry键，使同一协议identity可以绑定不同implementation或被多个selector复用；它不是内容identity。
 Deployment只消费该typed projection并把external selector绑定到gateway entry；
 Router和Runtime不得按source path、display name或同名service operation猜handler。
 
-Artifact模型允许多个selector绑定同一个key，但第一版`service.yml`不暴露独立entry引用或复用语法：
-named route同时声明唯一selector与entry definition。该限制只简化authoring，不得把selector并入
+Artifact模型允许多个selector绑定同一个key，但第一版`http.yml`和`websocket.yml.jsonRpc`不暴露独立
+entry引用或复用语法：named entry同时声明唯一selector与entry definition。该限制只简化authoring，不得把selector并入
 `GatewayEntryIdentity`，也不得让Router跳过上述两步查找。
 
 `GatewayEntryIdentity`只标识external protocol surface。已冻结的HTTP canonical preimage覆盖entry kind、
 外部request/response/stream shape、HTTP adapter source映射、公开错误投影及其它会改变gateway wire
-兼容性的metadata。第一版WebSocket identity覆盖connect request/result shape、允许的服务端frame类别、
-固定平台request/response envelope协议版本和connection policy shape；它不表示业务method或payload
-协议，因为第一版没有client-initiated业务消息入口。Identity不包含source selector、
-handler/pre/guard `PackageCallableId`、内部名义类型identity、PackageArtifact/build或deployment policy。
+兼容性的metadata。WebSocket connect entry identity覆盖connect request/result shape、允许的frame类别、
+JSON-RPC profile版本和connection policy shape。每个WebSocket JSON-RPC method另有gateway entry identity，
+覆盖params/result external shape、adapter source映射和固定错误投影；外部`method`字符串仍是
+`IngressSelector`，不并入entry identity。Identity不包含source selector、handler/pre/guard
+`PackageCallableId`、内部名义类型identity、PackageArtifact/build或deployment policy。
 Compiler仍必须验证由linked handler signature导出的external schema和typed adapter plan与该surface逐项
 一致。HTTP stream mode只能来自`rawHttp`的精确
 `Stream<std.http.HttpResponseStreamEvent>`返回；`typedJson` identity始终是unary，不能生成或接受
-server-stream shape。
+server-stream shape。WebSocket JSON-RPC handler第一版也只能unary return，不能返回`Stream<T>`。
 
 具体handler/pre/guard callable、完整typed adapter execution plan、implementation artifact、external
 selector和policy只由ServiceDeployment及其revision覆盖。只替换实现且external protocol不变时，
@@ -442,7 +499,8 @@ deployment validation必须保证：
 - implementation boundary-visible may-effect满足contract公开effect保证，且所有implementation
   requirements得到binding；concrete suspension summary只与Package callable/executable事实对账，不与
   interface requirement或ServiceContract比较；
-- 每个`service.yml` ingress selector恰好绑定一个canonical gateway entry；
+- 每个`http.yml` HTTP selector和`websocket.yml.jsonRpc` method selector恰好绑定一个canonical
+  gateway entry；
 - gateway entry中的handler/pre/guard全部解析到当前implementation的精确callable，adapterArgs与其linked
   signature逐项匹配，且不会被加入ServiceContract；
 - gateway entry protocol identity与deployment binding/revision分别覆盖各自规定的全部事实，互不吞并；
@@ -615,7 +673,7 @@ gateway entry binding中冻结的精确
 Ingress仍复用普通语言函数、Package本地链接、ActivationContext、错误通道和结构化取消，但不复用
 ServiceContract作为对外声明：
 
-- handler/pre/guard只需由`service.yml`显式引用，不需要出现在`api.yml`；
+- handler/pre/guard只需由`http.yml`或`websocket.yml`显式引用，不需要出现在`api.yml`；
 - ingress callable不会出现在service dependency的code-free API module中；
 - handler参数和返回值的runtime codec来自linked callable signature及typed adapter plan；
 - gateway只持有route、adapter metadata和opaque payload bytes，不解析业务类型；
@@ -625,19 +683,20 @@ ServiceContract作为对外声明：
   可`catch<E>`的Skiff service caller。
 
 同一个source function可以通过`api.yml` public path被`service.yml.serviceCalls`选择，同时又被
-`service.yml.http`引用为external handler，但这是两个显式surface：前者生成service-call operation，
-后者生成external gateway entry。Compiler必须分别验证并生成不同identity，不能因source target相同而把
-两者合并或互相推断。
+`http.yml`或`websocket.yml`引用为external handler，但这是两个显式surface：前者生成service-call
+operation，后者生成external gateway entry。Compiler必须分别验证并生成不同identity，不能因source
+target相同而把两者合并或互相推断。
 
-第一版WebSocket不接收外部peer主动发起的业务请求，因此上述“外部请求”对WebSocket只指
-upgrade/connect。Agine、AIHub等service的浏览器或Host主动上行业务必须声明HTTP entry；流式业务响应
-使用HTTP server stream，异步主动通知使用WebSocket下行。`std.websocket`发送从当前
-`ActivationContext`解析当前service deployment中唯一的WebSocket entry，不能按path、display name或
-任意字符串猜entry；零entry或损坏的多entry状态fail closed。
+WebSocket external ingress包含upgrade/connect，以及`websocket.yml.jsonRpc`显式声明的peer-initiated
+request。它不包含raw frame receive、任意event name分派或任何业务notification handler。HTTP仍是浏览器和外部
+系统普通请求的默认入口；需要一条已建立双工connection、低延迟反向调用的场景可以显式声明JSON-RPC
+method。流式业务响应仍使用HTTP server stream，异步主动通知使用WebSocket下行。
 
-WebSocket还提供一个平台拥有的反向request/response能力：Skiff代码向一个**精确connection id**发起
-request，外部peer接受该request并在同一socket上返回response。它不是外部peer向Skiff发起请求，也不改变
-`service.yml`。
+`std.websocket`发送从当前`ActivationContext`解析当前service deployment中唯一的WebSocket entry，不能按
+path、display name或任意字符串猜entry；零entry或损坏的多entry状态fail closed。Skiff代码也可以向一个
+**精确connection id**发起request，外部peer接受该request并在同一socket上返回response；该response只恢复
+原调用。Peer向Skiff发起的request则按socket pin住的deployment/activation generation解析method并创建新的
+runtime ingress。两个方向共享frame codec但不共享pending identity namespace。
 
 WebSocket transport、request/response broker与编码配置分层：
 
@@ -658,20 +717,32 @@ JSON-RPC 2.0只定义message编码，不假设某一种连接生命周期；`jso
 一个WebSocket text frame，并精确使用JSON-RPC 2.0单请求/单响应对象：
 
 ```json
-{"jsonrpc":"2.0","id":"<opaque>","method":"<method>","params":{}}
-{"jsonrpc":"2.0","id":"<opaque>","result":null}
-{"jsonrpc":"2.0","id":"<opaque>",
+{"jsonrpc":"2.0","id":"<id>","method":"<method>","params":{}}
+{"jsonrpc":"2.0","id":"<id>","result":null}
+{"jsonrpc":"2.0","id":"<id>",
  "error":{"code":-32603,"message":"<message>","data":null}}
-{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"<opaque>"}}
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"<id>"}}
 ```
 
-第一版不支持JSON-RPC batch。平台只生成非空string `id`，外部peer只能原样回显；Skiff业务源码不生成、
-解析或持久化它。`$/cancelRequest`沿用Language Server Protocol的通用取消形状，是本配置在JSON-RPC核心
-之上的best-effort notification；它不要求peer返回response，也不把取消变成用户可捕获错误。Pending key
-至少包含connection id、socket/generation identity、配置id与request id；response必须来自原connection，
-unknown、duplicate、跨generation或已取消的response不能命中其它调用。配置adapter只解析JSON-RPC控制
-字段；`method`、`params`、`result`与error `data`保持opaque。Response不创建runtime ingress request，
-也不调用用户handler。
+第一版不执行JSON-RPC batch；收到peer batch时返回单个`Invalid Request`且不执行其中成员。平台发起请求时
+只生成非空string `id`，外部peer只能在response中原样回显。Peer发起请求时可以使用非空string或JavaScript
+safe integer `id`，平台按原JSON类型和值回显；fraction、超出safe integer范围、`null`或其它类型非法。
+Skiff业务源码不生成、解析或持久化任一方向的transport id。
+
+Inbound response id规则同样固定：parse失败、batch或无法识别出合法request id的Invalid Request使用
+`"id": null`；已经识别出合法typed id后的method/params/capacity/timeout/cancel/internal error必须回显
+原string或safe-integer值。缺少`id`的合法object是notification，除`$/cancelRequest`外一律不dispatch也不
+response。相同connection/generation/direction上仍active的id不得再次发起request；重复active id是
+`1002`协议错误并关闭socket，不能先返回一个同id错误再让旧execution产生第二个response。前一request已经
+settled后可以复用同一id，因为runtime completion还由独立dispatcher correlation约束，旧completion不能
+命中新execution。
+
+`$/cancelRequest`沿用Language Server Protocol的通用取消形状，是本配置在JSON-RPC核心之上的
+best-effort notification。它只取消**发送该notification的一方此前发起**、且仍在执行的request；同值但
+方向相反的id不受影响。取消不成为handler可捕获错误。Pending key至少包含direction、connection id、
+socket/generation identity、配置id与request id；response必须来自原connection，unknown、duplicate、
+跨generation或已取消的response不能命中其它调用。配置adapter只解析JSON-RPC控制字段；`method`、
+`params`、`result`与error `data`保持opaque。
 
 `method`必须非空。`value`按`std.json.encode<TRequest>`语义编码，并且顶层结果必须是JSON object或array，
 以满足JSON-RPC `params`约束；无参数方法传空object。Success `result`按
@@ -700,6 +771,33 @@ unary response。调用受当前execution deadline与cancel约束；等待尚未
 大小达到上限时新request fail closed；tombstone达到容量时按最旧到期顺序驱逐，不因已完成请求占满表而
 拒绝新request。驱逐后的晚到response按unknown id处理，仍不能恢复任何调用。Transport不自动retry；
 断线可能发生在peer收到request之前或之后，因此外部副作用的幂等、去重和补偿仍由业务ID承担。
+
+Peer主动request的dispatch规则：
+
+- `(websocket entry id, jsonrpc-2.0-text, method)`必须在socket pin住的deployment generation中精确命中
+  `websocket.yml.jsonRpc`的一个entry；unknown method返回`-32601 Method not found`。
+- `params`必须是object或array，并按该entry的linked handler signature和
+  `websocket.jsonRpcParams` adapter source做typed decode；缺失、shape不符或typed decode失败返回
+  `-32602 Invalid params`，handler不执行。
+- 第一版可用adapter source只有`websocket.jsonRpcParams`、`websocket.connectionId`和
+  `websocket.businessIdentity`。每个handler必须且只能绑定一次完整params；后两者由平台连接状态提供，
+  业务不能伪造；handler永远拿不到transport id。
+- Handler只能unary return。普通return按linked return type编码到`result`；`void`编码为`null`。预期业务
+  失败应使用返回union。未捕获throw统一投影为`-32603 Internal error`，不暴露Skiff名义错误、message、stack
+  或私有字段。
+- JSON parse失败返回`-32700 Parse error`，非法request object或batch返回`-32600 Invalid Request`；
+  平台容量拒绝返回`-32000 Server busy`，有效deadline到达返回`-32001 Request timed out`，已接纳request
+  被peer取消返回`-32800 Request cancelled`。这些平台错误使用固定message且默认省略`data`。
+- 有`id`的合法request必须恰好产生一次result或error，除非socket已经关闭。Peer disconnect会取消该
+  connection/generation上的全部inbound executions；晚到完成被丢弃。收到有效`$/cancelRequest`后，
+  平台原子地把active mapping转为cancelled/settled，并保留完成写回所需的socket与原始typed id；
+  随后best-effort返回`-32800`，晚到完成被丢弃。Unknown/already-settled id静默忽略。
+- 除`$/cancelRequest`外，任何业务JSON-RPC notification都不调用用户代码、不产生response；即使method与
+  已声明request method同名也一样，只记录有界诊断。Binary frame不是本配置的一部分；没有用户raw
+  receive时以`1003`拒绝。
+- Response object只允许恢复Skiff发起的outbound pending；request object只允许创建上述declared ingress。
+  畸形/伪造response、wrong connection/generation或unknown outbound response id属于`1002`协议错误，不能
+  被误判成peer request。
 
 HTTP request与其unary response/server stream已经由transport精确关联。External payload、response
 envelope和stream item不得保留只为模拟旧WebSocket req/res而存在的`requestId`或同义correlation字段；
@@ -947,7 +1045,8 @@ registry分别存储不可变PackageArtifact、ServiceContract、ServiceDeployme
 release pointer可以选择contract-compatible deployment revision和active assembly。
 
 生产registry由可选的普通Skiff service `skiff.run/registry`实现。它和其它service一样首先是package，
-源码root包含`package.yml`、`api.yml`、`service.yml`与`config.*.yml`，可以位于官方
+源码root包含`package.yml`、`api.yml`、`service.yml`、按需存在的`http.yml`/`websocket.yml`与
+`config.*.yml`，可以位于官方
 `skiff-packages`仓库；其ServiceContract与ServiceDeployment均由tooling生成而非独立author。它不是
 `skiff.run/std`、compiler platform source、语言intrinsic、native adapter或拥有compiler特权的package。
 语言、compiler和runtime在没有该service时仍然完整可用。调用者通过普通typed ServiceContract调用registry；
@@ -991,8 +1090,12 @@ prepared/connected集合、伪造participant ACK或维护第二份activation sta
 - service API schema不闭合或operation identity冲突；
 - 自动生成的deployment operation缺失、重复、额外或descriptor不匹配；
 - selected callable boundary unavailable；
-- `service.yml` ingress handler/pre/guard无法解析到当前Package callable，或adapterArgs与linked signature
-  不匹配；
+- `service.yml`仍包含`http`/`websocket`，普通package出现`http.yml`/`websocket.yml`，或external
+  manifest shape/selector重复、非法；
+- `http.yml`或`websocket.yml`的handler/pre/guard无法解析到当前Package callable，或adapterArgs与
+  linked signature不匹配；
+- `websocket.yml.jsonRpc` method重复、非法，params/result不是可执行的unary JSON codec，或使用
+  未授权adapter source；
 - ingress仍指向`ContractOperationId`、要求handler先进入`api.yml`，或gateway entry identity与typed
   projection不一致；
 - service/package dependency缺失、版本或identity不匹配；

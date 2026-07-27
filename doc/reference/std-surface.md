@@ -35,7 +35,7 @@ runtime prelude 类型包括 `Array<T>`、`Map<K,V>`、`Stream<T>`、`Config`、
 
 `Date` static surface 包括 `Date.now()`、`Date.fromEpochMilliseconds(ms)`、`Date.parse(value)` 和 `Date.requireParse(value)`。`parse` 对非法或越界文本返回 `null`；`requireParse` 抛 `std.time.DecodeError`。receiver surface 包括 `toEpochMilliseconds()`、`toISOString()`、`addMilliseconds(ms)`、`diffMilliseconds(other)`、`compare(other)`、`isBefore(other)` 和 `isAfter(other)`。
 
-HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.HttpHeader`、`std.http.HttpQueryParam`、`std.http.HttpRequest`、`std.http.HttpResponse`、`std.http.HttpClientRequest`、`std.http.HttpClientResponse`、`std.http.HttpClientStreamHandle`、`std.http.HttpSseEvent`、`std.http.HttpResponseStreamEvent` 和 `std.http.HttpError`（均不拍平到 `std` root，见 §11）。`std.websocket`不公开raw receive message类型；connect、send和平台拥有的outbound request/response surface见§13。Gateway/actor prelude不声明`ActorRef<T>`；每个actor声明的名义类型本身就是actor句柄类型。actor registry入口为`getOrCreate`、`replace`、`find`和`remove`。`ActorBinding`、`ClientSessionRef`和`ClientCapability`仍按各自surface定义；旧`std.actor.Actor<Id>`接口由显式actor声明及其id类型取代。
+HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.HttpHeader`、`std.http.HttpQueryParam`、`std.http.HttpRequest`、`std.http.HttpResponse`、`std.http.HttpClientRequest`、`std.http.HttpClientResponse`、`std.http.HttpClientStreamHandle`、`std.http.HttpSseEvent`、`std.http.HttpResponseStreamEvent` 和 `std.http.HttpError`（均不拍平到 `std` root，见 §11）。`std.websocket`不公开raw receive message类型；connect、send、平台拥有的outbound request/response及manifest声明的inbound JSON-RPC surface见§13。Gateway/actor prelude不声明`ActorRef<T>`；每个actor声明的名义类型本身就是actor句柄类型。actor registry入口为`getOrCreate`、`replace`、`find`和`remove`。`ActorBinding`、`ClientSessionRef`和`ClientCapability`仍按各自surface定义；旧`std.actor.Actor<Id>`接口由显式actor声明及其id类型取代。
 
 这些 prelude 名字不能被用户声明、import alias 或局部绑定 shadow。
 
@@ -261,13 +261,13 @@ effect metadata 是 telemetry write，target 对应具体 log level，cancel saf
 
 ## 13. std.websocket
 
-`std.websocket` 是 client-facing WebSocket connection 的标准库 surface。新连接入口由 service config
-顶层 `websocket` 声明；path、domain 和 service selection 属于 ingress / router 配置。第一版每个service
-最多一个entry，只拥有path与可选connect handler。
+`std.websocket` 是 client-facing WebSocket connection 的标准库 surface。新连接入口由可选
+`websocket.yml`声明；path、domain和service selection属于ingress/router配置。第一版每个service最多一个
+entry，文件拥有path、可选connect handler与可选JSON-RPC method mapping。
 
 `WebSocketConnectRequest`、`WebSocketConnectResult`与connection policy是connect adapter使用的固定
 platform types。它们可以通过std Package API被源码引用，但声明本身不生成ordinary PackageSchema，也
-不能作为service-to-service payload。`service.yml`选择的connect handler从linked signature取得精确类型；
+不能作为service-to-service payload。`websocket.yml`选择的connect handler从linked signature取得精确类型；
 handler不要求出现在`api.yml`。
 
 connect request包含connection id、url、query、headers、cookies、可选version、websocket entry id和
@@ -275,9 +275,10 @@ gateway entry identity。headers、query和cookies保留重复值。connect resu
 discriminator union；accept branch携带可选`businessIdentity`和`connectionPolicy`，reject branch携带
 code与reason。
 
-`std.websocket`不提供raw receive、client-initiated message handler、message selector或业务消息entry。
-外部peer主动发起的业务请求必须走HTTP。没有匹配platform pending request的客户端text/binary data frame
-以`1003`关闭；ping/pong/close由协议栈处理。
+`std.websocket`不提供raw receive、任意event-name dispatcher或transport id。Peer只能调用
+`websocket.yml.jsonRpc`显式声明的typed unary method；该handler由gateway adapter调用，不是std函数。
+Unknown method返回`-32601`；除`$/cancelRequest`外的notification即使与已声明request method同名也不进入
+用户代码。Binary data frame以`1003`关闭；ping/pong/close由协议栈处理。
 
 send target 分两套：`...ToConnection` 按单个 connection id 发送，`...ToBusinessIdentity` 按 business identity 发送（投递到该 business identity 当前的所有连接）。`std.websocket.sendTextToConnection` / `sendTextToBusinessIdentity` 发送 text frame，`std.websocket.sendBinaryToConnection` / `sendBinaryToBusinessIdentity` 发送 binary frame（不做 base64 编码）；这四个是 runtime host operation。
 
@@ -317,7 +318,7 @@ Request payload按`std.json.encode<TRequest>`语义编码，success payload按
 `TResponse`不匹配时抛`std.json.DecodeError`；这是调用点类型/peer application protocol错误，不会被
 伪装成transport `WebSocketRequestError`，也不使Router按业务schema解释payload。
 
-第一版wire精确为：
+Skiff主动发起request时的wire精确为：
 
 ```json
 {"jsonrpc":"2.0","id":"<opaque>","method":"<method>","params":{}}
@@ -328,11 +329,19 @@ Request payload按`std.json.encode<TRequest>`语义编码，success payload按
 ```
 
 `result`与error `data`可以是任意受大小限制的JSON值。第一版每个text frame只接受一个JSON-RPC对象，
-不支持batch；request `params`必须是object或array，response `id`必须是string，error `code`必须是
+不执行batch；request `params`必须是object或array，outbound response `id`必须是string，error `code`必须是
 integer且`message`必须是string。Wrong-connection、wrong-generation或未知id的response不能命中pending
 调用，并以协议错误`1002`关闭。平台保留有界短期settled tombstone；与完成/取消竞态的晚到或重复response
-只命中tombstone并被丢弃，不能恢复调用。没有pending request的普通data frame以`1003`关闭。第一版不支持
-binary request/response。
+只命中tombstone并被丢弃，不能恢复调用。Declared peer request走独立inbound mapping，不能误命中同值
+outbound id。第一版不支持binary request/response。
+
+Peer发起request时，id可以是非空string或safe integer，业务handler看不到该id。Params由
+`websocket.jsonRpcParams`解码，return编码为result；handler还可显式接收平台提供的
+`websocket.connectionId`和`websocket.businessIdentity`。Platform parse/invalid/method/params/internal
+错误固定为`-32700/-32600/-32601/-32602/-32603`，容量、timeout与cancel固定为
+`-32000/-32001/-32800`。无法识别合法request id的错误使用`id: null`，其余错误原样回显typed id；
+同方向重复active id以`1002`关闭，settled后可复用。未捕获业务throw只返回脱敏Internal error；预期失败
+应由result union表达。
 
 `requestJsonToConnection`只接受精确connection id，不提供business identity fan-out版本。多个socket不能
 共同拥有一个unary response。调用受当前execution deadline与cancel约束；等待response时是真实

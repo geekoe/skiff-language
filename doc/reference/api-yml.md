@@ -27,12 +27,12 @@ service-to-service operation。空文件会被 YAML 解析为 `null`，不是合
 `api.yml` 也必须报错。这样 compiler 能区分“作者明确选择没有 public API”和“漏交 API 声明”，并且永远
 不得从其它 manifest 推断 public API。任何Package都可以显式选择空API；它不能向dependency提供可写
 public symbol。Service可以据此只暴露external ingress或只承担内部/test运行角色，其HTTP/WebSocket
-handler仍由`service.yml`直接引用。
+handler仍分别由`http.yml`/`websocket.yml`直接引用。
 
 `package.yml`不列public symbol。`service.yml.serviceCalls`可以引用`api.yml`已经声明的public callable
 root，但不声明新的public symbol，也不做rename/namespace projection；public API的唯一符号事实来源仍是
-`api.yml`。`service.yml`还可以为HTTP/WebSocket等external ingress显式引用非public
-handler/pre/guard，这只创建gateway entry，不把这些source symbol加入public API。
+`api.yml`。`http.yml`/`websocket.yml`可以为external ingress显式引用非public handler/pre/guard，这只
+创建gateway entry，不把这些source symbol加入public API。`service.yml`不得内联HTTP/WebSocket配置。
 
 Skiff source declaration 不使用 `export` 关键字表达 public visibility。普通 source file 没有 public
 visibility marker；source file 不是包内 privacy 边界。
@@ -262,29 +262,30 @@ HTTP/WebSocket external ingress。一个wire-safe public callable未被该数组
 不会因`BoundaryCallableProjection::Available`而被远程暴露。
 
 HTTP/WebSocket等external ingress不属于本节的public service-call operation。已冻结的HTTP entry由
-`service.yml`直接引用当前Package handler，并生成独立`GatewayEntryIdentity`与typed adapter plan。
-WebSocket connect仍由`service.yml`拥有；第一版没有client-initiated业务消息handler，raw `receive`
-不是目标业务entry。`std.websocket.requestJsonToConnection`是Skiff主动调用的平台host operation，其
-response由编码无关的平台broker关联；第一版使用内置JSON-RPC 2.0 text配置。它不生成`service.yml`
-entry或ServiceContract operation：
+`http.yml`直接引用当前Package handler，并生成独立`GatewayEntryIdentity`与typed adapter plan。
+WebSocket connect和peer-initiated JSON-RPC method由`websocket.yml`拥有；raw `receive`不是目标业务
+entry。`std.websocket.requestJsonToConnection`是Skiff主动调用的平台host operation，其response由编码
+无关的平台broker关联；它不要求在`websocket.yml`重复声明outbound method，也不生成ServiceContract
+operation：
 
 - handler不要求出现在`api.yml`；
 - gateway entry不写入`ServiceContract.operations`，也不进入`ServiceProtocolIdentity`；
 - runtime codec读取linked handler signature，compiler从精确handler类型与adapter source生成entry-local
-  external schema及codec plan；`service.yml`不得手写一份重复的业务JSON schema；
-- 同一函数同时出现在`api.yml`和`service.yml`时形成两个显式surface和两种identity，不自动合并。
+  external schema及codec plan；external manifest不得手写一份重复的业务JSON schema；
+- 同一函数同时出现在`api.yml`和external manifest时形成两个显式surface和两种identity，不自动合并。
 
 External schema closure与Package public/type closure严格分开。Compiler只为真正跨external boundary的
-adapter source/sink派生wire shape；当前包括typed HTTP body、query/path/header参数与HTTP response。
-平台WebSocket request/response payload的codec来自
-`requestJsonToConnection<TRequest, TResponse>`调用点的concrete类型，不是external ingress schema，
-不能从raw `receive`、`service.yml`或connect签名推导。`pre`产生的内部context、guard内部值及其它只在
-runtime adapter与handler之间流动的值不进入external schema。即使某个跨external boundary的shape来自私有
+adapter source/sink派生wire shape；当前包括typed HTTP body、query/path/header参数与HTTP response，以及
+declared WebSocket JSON-RPC handler的params/result。Skiff-originated WebSocket request/response payload
+codec来自`requestJsonToConnection<TRequest, TResponse>`调用点的concrete类型，不是external ingress
+schema；peer-originated codec来自`websocket.yml.jsonRpc`所选linked handler。两者都不能从raw
+`receive`或手写schema推导。`pre`产生的内部context、guard内部值及其它只在runtime adapter与handler之间
+流动的值不进入external schema。即使某个跨external boundary的shape来自私有
 named type，外部只看到entry-local结构/协议名，不获得该type的Skiff public path或名义identity；compiler
 也不得因此把它补进`api.yml`、PackageLocalAbi、PackageSchema或ServiceContract。
 
 上述JSON配置不把WebSocket锁定为JSON-RPC-only transport。Raw text/binary send保持独立；未来binary RPC
-必须使用独立、显式版本化的配置和API，不能由`service.yml`或payload形状隐式推断。
+必须使用独立、显式版本化的配置和API，不能由manifest或payload形状隐式推断。
 
 第一版external handler/pre/guard不能是generic function declaration；其concrete signature可以包含fully
 instantiated generic platform types。两者不能混为“只要出现generic就拒绝”。

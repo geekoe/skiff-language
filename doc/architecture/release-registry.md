@@ -30,7 +30,7 @@ Production可为一次Package源码快照创建immutable source revision，至�
 
 - Package id/version label；
 - source snapshot与content hash；
-- `package.yml`、`api.yml`、可选`service.yml`及配置声明hash；
+- `package.yml`、`api.yml`、可选`service.yml`/`http.yml`/`websocket.yml`及配置声明hash；
 - dependency resolution snapshot；
 - compiler/toolchain provenance；
 - publisher、时间和registry generation。
@@ -91,7 +91,8 @@ Service workflow：
 exact PackageArtifact
   -> resolve service.yml.serviceCalls against Package public paths
   -> project ServiceContract from selected callable roots
-  -> project typed gateway entries and ServiceDeployment
+  -> resolve http.yml/websocket.yml handlers and project typed gateway entries
+  -> project ServiceDeployment
   -> write immutable records
   -> CAS compatible ServiceDeployment pointer
 ```
