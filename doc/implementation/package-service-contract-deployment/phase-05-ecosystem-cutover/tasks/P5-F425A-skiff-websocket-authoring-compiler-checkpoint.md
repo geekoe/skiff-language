@@ -40,8 +40,10 @@ Internals或skiff-packages。
    operation、receive/message/context、unknown/duplicate field。
 3. connect target只接受当前package private non-generic callable；adapter source只允许
    `websocket.connectRequest`和`websocket.connectionId`，参数名唯一且与signature精确匹配。
-4. std只保留connect request、policy、non-generic无Context connect result与四个send native/JSON helper；
-   删除message/receive/connection/ingress union和user close event。
+4. std source只保留connect request、policy、non-generic无Context connect result与四个send native/JSON
+   helper；删除message/receive/connection/ingress union和user close event。compiler与artifact producer
+   不再生成或引用这些旧public types。仍由后继D2拥有的runtime boundary/linked-type/eval legacy shape
+   API可暂时保留为不可达consumer，本leaf不得为删除它们越界。
 5. connect result精确为accept/reject；accept只有可选business identity/policy。wrong/nullable/generic
    return fail closed。
 6. 增加`websocketConnect` external surface与typed execution plan。HTTP entry仍必须有handler；
@@ -51,7 +53,8 @@ Internals或skiff-packages。
 8. entry只进入ServiceDeployment gateway entries/ingress与RuntimeAssembly gateway ingress，不进入
    ServiceContract、service operation或`ContractOperationId`。
 9. 删除`reject_unwired_websocket_authoring`的总拒绝，保留对legacy shape的精确负例。
-10. 修复授权范围内所有同类legacy projection残留；不得保留兼容alias。
+10. 修复授权范围内所有同类legacy projection残留；不得保留compiler/authoring兼容alias。Result必须列出
+    后继D2精确拥有、当前producer已不可达的runtime legacy allowlist，不能把它们误报为已清理。
 
 ## 完成标准与验证
 
@@ -64,6 +67,8 @@ Internals或skiff-packages。
 - gateway/entry/deployment/assembly identity稳定且cross-language framing不分叉；
 -新增WebSocket不改变ServiceContract与ServiceProtocolIdentity；
 - 四个send native signature和`may_suspend=false`不变。
+- production authoring/compiler反向搜索不再产生legacy receive/message surface；runtime D2 allowlist之外
+  的同类残留为零。
 
 运行实际匹配的聚焦测试并记录discovery：
 
