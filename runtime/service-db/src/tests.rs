@@ -396,7 +396,7 @@ fn mongo_provider_rejects_invalid_opaque_config() {
 fn provider_input(config: Value) -> DbProviderBuildInput {
     DbProviderBuildInput {
         service_id: service_id("provider"),
-        state_namespace: service_id("provider"),
+        state_namespace: "provider_fixture".to_string(),
         config: DbProviderConfig::opaque(config),
         runtime_program_db: Vec::new(),
     }
@@ -1988,6 +1988,7 @@ fn recoverable_runtime_context_reexport_preserves_write_contract_fields() {
 }
 
 #[tokio::test]
+#[ignore = "requires a local MongoDB replica set and real network resources"]
 async fn service_db_runtime_create_and_find_runtime_roundtrips_local_interface() {
     let service_id = format!(
         "skiff.run/p5dbprodtest-{}-{}",
