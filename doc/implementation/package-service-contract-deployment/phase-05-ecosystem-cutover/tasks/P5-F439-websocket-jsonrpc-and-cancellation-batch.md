@@ -1,6 +1,9 @@
 # P5-F439 WebSocket JSON-RPC与取消语义批次
 
-状态：Ready for bounded audits。当前是设计检查点，不是实现候选。
+状态：Superseded by `P5-F440-external-manifest-and-bidirectional-websocket-batch.md`。
+
+F439A与F439C审计结果继续作为后继输入；F439B在用户把WebSocket从outbound-only改为双向declared
+JSON-RPC request后停止，未产生result。本文保留为历史任务检查点，不再据此启动新实现。
 
 ## 直接父节点与权威设计
 
@@ -92,4 +95,3 @@ F439C result + Skiff combined checkpoint
 - Agine/Host业务代码不感知transport `id`，同步Host读取像HTTP调用一样返回typed result或名义错误；
   durable tool IDs不被删除。
 - Skiff与Internals聚焦combined通过后才建立预验收候选；最终gate仍由后续唯一owner执行。
-
