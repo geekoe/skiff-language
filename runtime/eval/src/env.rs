@@ -4,8 +4,39 @@ use super::capabilities::{
 };
 use super::type_descriptor::TypeSubstitutions;
 use crate::error::{Result, RuntimeError};
-use skiff_runtime_linked_program::{LinkedExecutable, SlotLayoutIr};
+use skiff_runtime_linked_program::LinkedExecutable;
 use skiff_runtime_model::{runtime_value::RuntimeValueCarrier, type_plan::RuntimeTypePlan};
+
+mod concurrent_plan;
+mod concurrent_scheduler;
+mod lane_control;
+mod lane_state;
+mod slot_store;
+
+#[cfg(test)]
+mod concurrent_scheduler_control_tests;
+#[cfg(test)]
+mod concurrent_scheduler_plan_tests;
+#[cfg(test)]
+mod concurrent_scheduler_terminal_tests;
+#[cfg(test)]
+mod concurrent_scheduler_test_support;
+#[cfg(test)]
+mod concurrent_scheduler_tests;
+
+#[allow(unused_imports)]
+pub(crate) use concurrent_plan::{
+    project_concurrent_plan, ConcurrentPlan, ConcurrentPlanKind, LaneEvaluation, ProjectedLane,
+};
+#[allow(unused_imports)]
+pub(crate) use concurrent_scheduler::{
+    run_concurrent_scheduler, ConcurrentLaneExecutor, ConcurrentLaneFuture,
+    ConcurrentOuterExecution, ConcurrentSchedulerResult,
+};
+#[allow(unused_imports)]
+pub(crate) use lane_state::{LaneCompletion, LaneExecutionState};
+use slot_store::{program_parameter_slot, program_slot_layout, RuntimeSlotLayout};
+pub use slot_store::{SlotDebugBinding, SlotStore};
 
 #[derive(Clone, Debug)]
 pub enum Flow {
@@ -26,36 +57,6 @@ pub struct Env {
     pub response_stream_sink: Option<EvalTypedStreamSink>,
     pub current_assembly_index: usize,
     pub type_substitutions: TypeSubstitutions,
-}
-
-#[derive(Clone, Debug)]
-pub struct SlotStore {
-    values: Vec<Option<RuntimeValueCarrier>>,
-    debug_bindings: Vec<SlotDebugBinding>,
-    self_slot: Option<usize>,
-}
-
-#[derive(Clone, Debug)]
-pub struct SlotDebugBinding {
-    pub slot: usize,
-    pub name: String,
-    pub kind: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RuntimeSlotLayout {
-    count: usize,
-    bindings: Vec<RuntimeSlotBinding>,
-    self_slot: Option<usize>,
-    parameter_slots: std::collections::HashMap<String, usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RuntimeSlotBinding {
-    slot: usize,
-    name: String,
-    kind: String,
-    scope: Option<usize>,
 }
 
 impl Env {
@@ -194,105 +195,6 @@ impl Default for Env {
     }
 }
 
-impl SlotStore {
-    fn empty() -> Self {
-        Self {
-            values: Vec::new(),
-            debug_bindings: Vec::new(),
-            self_slot: None,
-        }
-    }
-
-    fn declare(
-        &mut self,
-        name: &str,
-        slot: Option<usize>,
-        value: RuntimeValueCarrier,
-    ) -> Result<()> {
-        let slot = self.required_slot(name, slot, "binding")?;
-        self.values[slot] = Some(value);
-        Ok(())
-    }
-
-    fn assign(
-        &mut self,
-        name: &str,
-        slot: Option<usize>,
-        value: RuntimeValueCarrier,
-    ) -> Result<()> {
-        let slot = self.required_slot(name, slot, "assignment target")?;
-        if self.values[slot].is_none() {
-            return Err(RuntimeError::Decode(format!("unknown variable {name}")));
-        }
-        self.values[slot] = Some(value);
-        Ok(())
-    }
-
-    fn get(&self, name: &str, slot: Option<usize>) -> Result<RuntimeValueCarrier> {
-        let slot = self.required_slot(name, slot, "identifier")?;
-        self.values[slot]
-            .clone()
-            .ok_or_else(|| RuntimeError::Decode(format!("unknown variable {name}")))
-    }
-
-    fn get_slot(&self, slot: usize) -> Result<RuntimeValueCarrier> {
-        if slot >= self.values.len() {
-            return Err(RuntimeError::InvalidArtifact(format!(
-                "slot {slot} for identifier is out of bounds{}",
-                self.debug_binding_suffix(slot)
-            )));
-        }
-        self.values[slot]
-            .clone()
-            .ok_or_else(|| RuntimeError::Decode(self.unknown_slot_message(slot)))
-    }
-
-    #[allow(dead_code)]
-    fn get_mut(&mut self, name: &str, slot: Option<usize>) -> Result<&mut RuntimeValueCarrier> {
-        let slot = self.required_slot(name, slot, "mutable target")?;
-        self.values[slot]
-            .as_mut()
-            .ok_or_else(|| RuntimeError::Decode(format!("unknown variable {name}")))
-    }
-
-    fn clear(&mut self, slots: &[usize]) {
-        for slot in slots {
-            if let Some(value) = self.values.get_mut(*slot) {
-                *value = None;
-            }
-        }
-    }
-
-    fn required_slot(&self, name: &str, slot: Option<usize>, context: &str) -> Result<usize> {
-        let slot = slot.ok_or_else(|| {
-            RuntimeError::InvalidArtifact(format!("slotted IR {context} {name} missing slot"))
-        })?;
-        if slot >= self.values.len() {
-            return Err(RuntimeError::InvalidArtifact(format!(
-                "slot {slot} for {context} {name} is out of bounds{}",
-                self.debug_binding_suffix(slot)
-            )));
-        }
-        Ok(slot)
-    }
-
-    fn debug_binding_suffix(&self, slot: usize) -> String {
-        self.debug_bindings
-            .iter()
-            .find(|binding| binding.slot == slot)
-            .map(|binding| format!("; binding {} ({})", binding.name, binding.kind))
-            .unwrap_or_default()
-    }
-
-    fn unknown_slot_message(&self, slot: usize) -> String {
-        self.debug_bindings
-            .iter()
-            .find(|binding| binding.slot == slot)
-            .map(|binding| format!("unknown variable {}", binding.name))
-            .unwrap_or_else(|| format!("unknown slot {slot}"))
-    }
-}
-
 pub fn check_cancelled(execution: &ExecutionControl<'_>, env: &Env) -> Result<()> {
     execution.check_cancelled()?;
     if env
@@ -307,104 +209,4 @@ pub fn check_cancelled(execution: &ExecutionControl<'_>, env: &Env) -> Result<()
         return Err(RuntimeError::Cancelled);
     }
     Ok(())
-}
-
-fn program_slot_layout(
-    slots: &SlotLayoutIr,
-    executable: &LinkedExecutable,
-) -> Result<RuntimeSlotLayout> {
-    let count = slots.frame_size;
-    if count == 0 && !executable.params.is_empty() {
-        return Err(RuntimeError::InvalidArtifact(format!(
-            "executable {} has parameters but an empty slot layout",
-            executable.symbol
-        )));
-    }
-
-    let bindings = slots
-        .slots
-        .iter()
-        .map(|slot| RuntimeSlotBinding {
-            slot: slot.index,
-            name: slot.name.clone(),
-            kind: slot.kind.clone(),
-            scope: None,
-        })
-        .collect::<Vec<_>>();
-
-    let mut self_slot = None;
-    let mut parameter_slots = std::collections::HashMap::new();
-    for parameter in &executable.params {
-        parameter_slots
-            .entry(parameter.name.clone())
-            .or_insert(parameter.slot);
-    }
-    for binding in &bindings {
-        if binding.name == "self" || binding.kind == "selfValue" {
-            self_slot.get_or_insert(binding.slot);
-        }
-        if binding.kind == "param" {
-            parameter_slots
-                .entry(binding.name.clone())
-                .or_insert(binding.slot);
-        }
-    }
-
-    validate_program_slots(
-        &executable.symbol,
-        count,
-        self_slot,
-        &parameter_slots,
-        &bindings,
-    )?;
-    Ok(RuntimeSlotLayout {
-        count,
-        bindings,
-        self_slot,
-        parameter_slots,
-    })
-}
-
-fn validate_program_slots(
-    executable: &str,
-    count: usize,
-    self_slot: Option<usize>,
-    parameter_slots: &std::collections::HashMap<String, usize>,
-    bindings: &[RuntimeSlotBinding],
-) -> Result<()> {
-    if let Some(slot) = self_slot {
-        validate_program_slot(executable, "self", slot, count)?;
-    }
-    for (name, slot) in parameter_slots {
-        validate_program_slot(executable, name, *slot, count)?;
-    }
-    for binding in bindings {
-        validate_program_slot(executable, &binding.name, binding.slot, count)?;
-    }
-    Ok(())
-}
-
-fn validate_program_slot(executable: &str, name: &str, slot: usize, count: usize) -> Result<()> {
-    if slot >= count {
-        return Err(RuntimeError::InvalidArtifact(format!(
-            "executable {executable} slot {slot} for {name} is out of bounds for frame size {count}"
-        )));
-    }
-    Ok(())
-}
-
-fn program_parameter_slot(executable: &LinkedExecutable, name: &str) -> Option<usize> {
-    executable
-        .params
-        .iter()
-        .find(|parameter| parameter.name == name)
-        .map(|parameter| parameter.slot)
-        .or_else(|| {
-            executable
-                .slots
-                .slots
-                .iter()
-                .find(|slot| slot.name == name && slot.kind == "param")
-                .map(|slot| slot.index)
-        })
 }
