@@ -173,7 +173,7 @@ fn package_test_entrypoint() -> CanonicalPackageTestEntrypoint {
             "contractVersion": "1.0.0",
             "deploymentRevision": "test-control",
             "deploymentArtifactIdentity": concat!(
-                "skiff-deployment-artifact-v2:sha256:",
+                "skiff-deployment-artifact-v3:sha256:",
                 "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
             ),
         }))

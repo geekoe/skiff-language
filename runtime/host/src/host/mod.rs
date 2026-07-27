@@ -9,8 +9,6 @@ pub(crate) mod http_client_runtime;
 mod http_response_ceiling;
 pub(crate) mod http_runtime;
 mod lifecycle;
-#[cfg(test)]
-mod register_mapper;
 mod request_entry;
 mod request_supervisor;
 pub(crate) mod router_session;

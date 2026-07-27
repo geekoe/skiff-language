@@ -134,7 +134,7 @@ fn typed_response(value: Value) -> OutboundResponse {
 fn activation_identity() -> ActivationIdentityControl {
     ActivationIdentityControl {
         assembly_identity: AssemblyIdentity::new(
-            "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ),
         generation: 7,
         runtime_replica_id: "runtime-replica-7".to_string(),

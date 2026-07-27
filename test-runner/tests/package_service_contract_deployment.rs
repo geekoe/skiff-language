@@ -2770,40 +2770,40 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
             "test.skiff/package-service-websocket-smoke",
             "marker: main.marker\n",
             "return marker()",
-            "skiff-package-build-v10:sha256:5ce089038445f6ea1bf05a5d8876ebb784c9193f4509ee993f0eb6b415c25880",
+            "skiff-package-build-v10:sha256:87120182c6a652e8d52fa530f0a93d86490bb02a0141d6c3924bf82bddfd50ad",
             "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
-            "skiff-deployment-artifact-v3:sha256:787c89e6ca10c1b3d29fd30ff4f6fae9791113d6a98ae5f96401940e546a71fb",
-            "skiff-runtime-assembly-v2:sha256:80d53e6b18e987a61959557b0343835b5f126366e98e27510dcc8ae0e86ec664",
+            "skiff-deployment-artifact-v3:sha256:5b6d9b945e1fbd50c50955821e9a2083633e7534f9f97d84331588152a56cf1f",
+            "skiff-runtime-assembly-v2:sha256:fe087b093fb2f2423e29d47ebb73061ad51db875f8efb60e84c5897293fbd0b5",
         ),
         (
             "package-service-websocket-generation-a",
             "test.skiff/package-service-websocket-smoke",
             "marker: main.marker\n",
             "return marker()",
-            "skiff-package-build-v10:sha256:25b98b03e66c0a7398859a6d0362dd53c20ff39f77ea36377408b74da6bfb37b",
+            "skiff-package-build-v10:sha256:c6573cdecfe1ad4e94599fa04687a487af86e8afea1f73d0fdd7f1a77e792f94",
             "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
-            "skiff-deployment-artifact-v3:sha256:bdc58ca03bb32567156582d4725e67b2efca9a8398586901360d44e0ac52fd21",
-            "skiff-runtime-assembly-v2:sha256:135a4afee48fa8c7a729ecd317620e5c4615ea08949f926aed9b7b3239becca9",
+            "skiff-deployment-artifact-v3:sha256:7aef5d6e47c990787e86c81dec0d90be4e4eb87c440e8beeb793a2d220dfd1bb",
+            "skiff-runtime-assembly-v2:sha256:c08e8c51407a5c0a86e91c82c7ed826cc6a55da03ac7d72a42366c95a588ce0a",
         ),
         (
             "package-service-websocket-generation-b",
             "test.skiff/package-service-websocket-smoke",
             "marker: main.marker\n",
             "return marker()",
-            "skiff-package-build-v10:sha256:3f42eb72f997ccf6a65b986cb49af485ae63c67db32e5b587822cfadf9c5e791",
+            "skiff-package-build-v10:sha256:b50bdc911aec6a6d32365470dd6edacb2e00a3929116591dfc10b899fa846772",
             "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
-            "skiff-deployment-artifact-v3:sha256:e9d5508571436a9b6e1516a7f662cf76b16c328422adb9b0df602fc443bfccf2",
-            "skiff-runtime-assembly-v2:sha256:5dd9eb3300f0bb95e9ceca0a59a3080f2879dbf4816f57643969bc46ab6e55ec",
+            "skiff-deployment-artifact-v3:sha256:c624240fb9b16f83c5ae8f0208fc889ee61ca4572187b29643eebd8c02f5c2c8",
+            "skiff-runtime-assembly-v2:sha256:152141386adc7d9ff278fed5556f5da9ce856cd2cf864e905985143ce75626f0",
         ),
         (
             "package-service-i02-spawn-submit",
             "test.skiff/package-service-i02-spawn-submit",
             "marker: main.submitSpawnReceipt\n",
             "return submitSpawnReceipt()",
-            "skiff-package-build-v10:sha256:6f686ba330266ad08baf8dd04baba0bfcc315ec4e0ed8308344f9f8a7f8230b8",
+            "skiff-package-build-v10:sha256:71d2738734ee702123989856a54769acfd19b51377c036f87d68111145a124fe",
             "skiff-package-local-abi-v7:sha256:3db7056f815676834489b34a069b5016f05973b3be9379eb55736a545d7dcdf9",
-            "skiff-deployment-artifact-v3:sha256:4bfe86f13a9a5622b1c323601624585e7132cb22cc6caf0b0027b73e79b3efa8",
-            "skiff-runtime-assembly-v2:sha256:b479a7b5dc4e1cb966448039dd93af20875b9c1e041e92b675cc6511869cad37",
+            "skiff-deployment-artifact-v3:sha256:7971d36aafcc10293b29761f46b3e13fb673d6b3699d0ed644fbd52dd0460796",
+            "skiff-runtime-assembly-v2:sha256:938e19fe6f44a110aa0a08f32ed772ad0c1d771e41c85825712e28a824f92654",
         ),
     ] {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2829,8 +2829,6 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
         .unwrap();
         let production =
             skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
-        assert_eq!(production.package_build_id.as_str(), expected_build);
-        assert_eq!(production.package_local_abi_identity.as_str(), expected_abi);
         let (generated_package, generated_contract, generated_deployment) =
             generate_current_websocket_service_fixture(&package, &artifacts, &std_artifact);
         assert_eq!(
@@ -2894,15 +2892,22 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
         )
         .unwrap();
         assert_eq!(
-            deployment.deployment_artifact_identity.as_str(),
-            expected_deployment
-        );
-        assert_eq!(
-            skiff_artifact_identity::runtime_assembly_ref(&assembly)
-                .unwrap()
-                .assembly_identity
-                .as_str(),
-            expected_assembly
+            (
+                production.package_build_id.as_str(),
+                production.package_local_abi_identity.as_str(),
+                deployment.deployment_artifact_identity.as_str(),
+                skiff_artifact_identity::runtime_assembly_ref(&assembly)
+                    .unwrap()
+                    .assembly_identity
+                    .as_str(),
+            ),
+            (
+                expected_build,
+                expected_abi,
+                expected_deployment,
+                expected_assembly,
+            ),
+            "{fixture_name} compiler-generated identity tuple must remain exact",
         );
         assert!(project
             .package
