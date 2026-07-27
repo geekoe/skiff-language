@@ -29,8 +29,12 @@ wire节点；Router/runtime consumer仍被wire节点阻塞。
   `runtime/{loader,linker,host}` exhaustive matches，但不得在本leaf实现connect执行。
 - `runtime/eval/src/runtime_http_gateway.rs`中因新增closed adapter kind必须更新的穷尽match及其直接
   聚焦test；这里只能让HTTP owner对`websocketConnect`显式fail closed，不得实现connect执行。
+- `runtime/request/src/http_gateway_execution.rs`与
+  `runtime/request/src/http_gateway_target.rs`中因同一closed adapter kind必须更新的HTTP-only match及
+  直接聚焦test；同样只能对`websocketConnect`显式fail closed，不得构造connect request或执行target。
 
-禁止修改Router protocol/gateway、runtime request/eval/native业务执行、test-runner fixtures、
+禁止修改Router protocol/gateway、上述精确HTTP-only mechanical match之外的runtime request/eval/native
+业务执行、test-runner fixtures、
 Internals或skiff-packages。
 
 ## 必须实现
