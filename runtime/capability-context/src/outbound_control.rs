@@ -178,8 +178,6 @@ pub struct RequestStartControl {
     pub service_protocol_identity: String,
     pub activation_identity: Option<String>,
     pub gateway_entry_identity: Option<String>,
-    pub business_identity: Option<String>,
-    pub websocket_entry_id: Option<String>,
     pub client_session: Option<RuntimeClientSessionControl>,
     pub deadline: Option<RuntimeDeadlineControl>,
     pub trace: RuntimeTraceContextControl,

@@ -229,14 +229,11 @@ fn request_start_frame_header(request: RequestStartControl) -> RequestStartFrame
         service_protocol_identity: request.service_protocol_identity,
         activation_identity: request.activation_identity,
         gateway_entry_identity: request.gateway_entry_identity,
-        business_identity: request.business_identity,
-        websocket_entry_id: request.websocket_entry_id,
         client_session: request.client_session,
         deadline: request.deadline.map(runtime_deadline_frame_header),
         trace: runtime_trace_context_frame_header(request.trace),
         http_request: None,
         http_adapter: None,
-        websocket_adapter: None,
         test_effects_enabled: request.test_effects_enabled,
         test_effect_doubles: request
             .test_effect_doubles
@@ -495,8 +492,6 @@ mod tests {
             service_protocol_identity: "service-protocol-1".to_string(),
             activation_identity: Some("activation-1".to_string()),
             gateway_entry_identity: None,
-            business_identity: Some("business-1".to_string()),
-            websocket_entry_id: None,
             client_session: None,
             deadline: None,
             trace: RuntimeTraceContextFrameHeader {
@@ -507,7 +502,6 @@ mod tests {
             },
             http_request: None,
             http_adapter: None,
-            websocket_adapter: None,
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
         };
@@ -601,8 +595,6 @@ mod tests {
                 service_protocol_identity: "service-protocol-1".to_string(),
                 activation_identity: Some("activation-1".to_string()),
                 gateway_entry_identity: Some("gateway-1".to_string()),
-                business_identity: Some("business-1".to_string()),
-                websocket_entry_id: Some("websocket-1".to_string()),
                 client_session: Some(RuntimeClientSessionControl {
                     id: "client-1".to_string(),
                 }),
@@ -636,7 +628,6 @@ mod tests {
         assert_eq!(decoded.trace.sampled, Some(true));
         assert!(decoded.http_request.is_none());
         assert!(decoded.http_adapter.is_none());
-        assert!(decoded.websocket_adapter.is_none());
         assert!(decoded.test_effects_enabled);
         assert_eq!(
             decoded.test_effect_doubles["Worker.run"][0].expect_request,

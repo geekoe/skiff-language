@@ -305,8 +305,6 @@ impl OutboundServiceContext {
             service_protocol_identity: start.service_protocol_identity,
             activation_identity: start.activation_identity,
             gateway_entry_identity: None,
-            business_identity: None,
-            websocket_entry_id: None,
             client_session: self.client_session.clone(),
             deadline: self.deadline_control(start.timeout_ms),
             trace: self.trace_control(),
