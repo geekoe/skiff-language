@@ -11,6 +11,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use skiff_artifact_identity::{service_contract_ref, service_deployment_ref};
 use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryUnavailableReason, CallableEffectSummary,
     CallableMayEffects, CallableProvenanceSummary, GatewayAdapterKind, GatewayAdapterSource,
@@ -20,7 +21,7 @@ use skiff_artifact_model::{
     ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, StateBindingKind,
 };
 use skiff_compiler::{
-    authoring::{build_authoring_object, AuthoringObject},
+    authoring::{build_authoring_object, publish_package_artifact_records, AuthoringObject},
     compile_service_package, generate_service_deployment, CompilerPlatformSources,
     GeneratedServiceDeploymentInput, ManifestOwner, ManifestProvenance, PackageCompileInput,
     PackageSourceInput, PublicationManifest, PublicationSourceGraph, SourceTree,
@@ -54,6 +55,10 @@ const EXPECTED_PRELUDE_IDENTITY: &str =
     "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699";
 const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
     "skiff-package-build-v10:sha256:0dec996a2d6388245539fb000a0284a1561dc21ac3cc6e88ed3fbe0eadfe3d43";
+const EXPECTED_RAW_HTTP_UNARY_GATEWAY_IDENTITY: &str =
+    "skiff-gateway-entry-v2:sha256:0fd289d7eec4e03b01e9e8f5633aedd7e1cc64158fa7932f99a9686e559c02f2";
+const EXPECTED_RAW_HTTP_STREAM_GATEWAY_IDENTITY: &str =
+    "skiff-gateway-entry-v2:sha256:1aef41f397b7c817110cb0cc74a7b472ba9732c5ac6bcfe6e219e3ac51ab6bd0";
 
 #[test]
 fn platform_source_context_contract() {
@@ -1190,6 +1195,568 @@ fn test_service_only_target_environment_profile_fails_without_fixed_profile() {
         error,
         "test service example.com/missing-fixed-profile-tests requires config.skiff-test.yml"
     );
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExpectedLiveHttpEntry {
+    key: &'static str,
+    method: &'static str,
+    path: &'static str,
+    handler: &'static str,
+    guard: Option<&'static str>,
+    dispatch: GatewayDispatchMode,
+}
+
+const LIVE_HTTP_MATRIX: &str = "\
+default|default.insert|POST|/encrypted-live/default/insert|internal.live.insertOne|internal.live.guard|unary
+default|default.insert-many|POST|/encrypted-live/default/insert-many|internal.live.insertMany|internal.live.guard|unary
+default|default.insert-bulk|POST|/encrypted-live/default/insert-bulk|internal.live.insertBulk|internal.live.guard|unary
+default|default.read|POST|/encrypted-live/default/read|internal.live.readOne|internal.live.guard|unary
+default|default.project|POST|/encrypted-live/default/project|internal.live.projectOne|internal.live.guard|unary
+default|default.replace-key|POST|/encrypted-live/default/replace-key|internal.live.replaceByKey|internal.live.guard|unary
+default|default.replace-query|POST|/encrypted-live/default/replace-query|internal.live.replaceByQuery|internal.live.guard|unary
+default|default.upsert|POST|/encrypted-live/default/upsert|internal.live.upsertOne|internal.live.guard|unary
+default|default.update|POST|/encrypted-live/default/update|internal.live.updateOne|internal.live.guard|unary
+default|default.scan|POST|/encrypted-live/default/scan|internal.live.scan|internal.live.guard|unary
+default|default.rewrite|POST|/encrypted-live/default/rewrite|internal.live.rewrite|internal.live.guard|unary
+default|default.rewrite-batch|POST|/encrypted-live/default/rewrite-batch|internal.live.rewriteBatch|internal.live.guard|unary
+default|default.identity-date|POST|/encrypted-live/default/identity-date|internal.live.identityDate|internal.live.guard|unary
+default|default.archive-insert|POST|/encrypted-live/default/archive-insert|internal.live.insertArchive|internal.live.guard|unary
+default|default.archive-read|POST|/encrypted-live/default/archive-read|internal.live.readArchive|internal.live.guard|unary
+default|default.archive-scan|POST|/encrypted-live/default/archive-scan|internal.live.scanArchive|internal.live.guard|unary
+default|default.archive-rewrite|POST|/encrypted-live/default/archive-rewrite|internal.live.rewriteArchive|internal.live.guard|unary
+default|default.archive-rewrite-batch|POST|/encrypted-live/default/archive-rewrite-batch|internal.live.rewriteArchiveBatch|internal.live.guard|unary
+default|default.archive-restore|POST|/encrypted-live/default/archive-restore|internal.live.restoreArchive|internal.live.guard|unary
+default|default.barrier|POST|/encrypted-live/default/barrier|internal.live.activateBarrier|internal.live.guard|unary
+default|default.barrier-status|POST|/encrypted-live/default/barrier-status|internal.live.barrierStatus|internal.live.guard|unary
+mapped|mapped.insert|POST|/encrypted-live/mapped/insert|internal.live.insertOne|internal.live.guard|unary
+mapped|mapped.read|POST|/encrypted-live/mapped/read|internal.live.readOne|internal.live.guard|unary
+mapped|mapped.scan|POST|/encrypted-live/mapped/scan|internal.live.scan|internal.live.guard|unary
+mapped|mapped.rewrite|POST|/encrypted-live/mapped/rewrite|internal.live.rewrite|internal.live.guard|unary
+mapped|mapped.rewrite-batch|POST|/encrypted-live/mapped/rewrite-batch|internal.live.rewriteBatch|internal.live.guard|unary
+mapped|mapped.service-probe-insert|POST|/encrypted-live/mapped/service-probe-insert|internal.live.insertServiceContextProbe|internal.live.guard|unary
+mapped|mapped.service-probe-read|POST|/encrypted-live/mapped/service-probe-read|internal.live.readServiceContextProbe|internal.live.guard|unary
+mapped|mapped.service-probe-scan|POST|/encrypted-live/mapped/service-probe-scan|internal.live.scanServiceContextProbe|internal.live.guard|unary
+mapped|mapped.service-probe-rewrite|POST|/encrypted-live/mapped/service-probe-rewrite|internal.live.rewriteServiceContextProbe|internal.live.guard|unary
+mapped|mapped.service-probe-rewrite-batch|POST|/encrypted-live/mapped/service-probe-rewrite-batch|internal.live.rewriteServiceContextProbeBatch|internal.live.guard|unary
+mapped|mapped.service-probe-restore|POST|/encrypted-live/mapped/service-probe-restore|internal.live.restoreServiceContextProbe|internal.live.guard|unary
+mapped|mapped.barrier|POST|/encrypted-live/mapped/barrier|internal.live.activateBarrier|internal.live.guard|unary
+mapped|mapped.barrier-status|POST|/encrypted-live/mapped/barrier-status|internal.live.barrierStatus|internal.live.guard|unary
+runtime|runtime.echo|POST|/runtime-live/echo|internal.http_adapter.rawEcho|-|unary
+runtime|runtime.json|POST|/runtime-live/json|internal.http_adapter.typedJsonEcho|-|unary
+runtime|runtime.binary|POST|/runtime-live/binary|internal.http_adapter.binaryEcho|-|unary
+runtime|runtime.guarded|GET|/runtime-live/guarded|internal.http_adapter.guardedPost|-|unary
+runtime|runtime.stream|POST|/runtime-live/stream|internal.http_adapter.streamEcho|-|serverStream
+runtime|runtime.package|POST|/runtime-live/package|internal.http_adapter.packageEcho|-|unary";
+
+fn expected_live_http_entries(service: &str) -> Vec<ExpectedLiveHttpEntry> {
+    LIVE_HTTP_MATRIX
+        .lines()
+        .filter_map(|line| {
+            let fields = line.split('|').collect::<Vec<_>>();
+            assert_eq!(fields.len(), 7, "invalid live HTTP matrix row {line}");
+            (fields[0] == service).then(|| ExpectedLiveHttpEntry {
+                key: fields[1],
+                method: fields[2],
+                path: fields[3],
+                handler: fields[4],
+                guard: (fields[5] != "-").then_some(fields[5]),
+                dispatch: match fields[6] {
+                    "unary" => GatewayDispatchMode::Unary,
+                    "serverStream" => GatewayDispatchMode::ServerStream,
+                    mode => panic!("invalid live HTTP dispatch {mode}"),
+                },
+            })
+        })
+        .collect()
+}
+
+struct CanonicalLiveServiceReceipt {
+    package: PackageArtifact,
+    contract: ServiceContract,
+    deployment: ServiceDeployment,
+}
+
+#[test]
+fn canonical_live_source_roots_compile_to_current_receipts() {
+    let repository = platform_source_root();
+    let default_service = repository.join("runtime/encrypted-storage-live/default-service");
+    let mapped_service = repository.join("runtime/encrypted-storage-live/mapped-service");
+    let runtime_live = repository.join("runtime/live-tests");
+
+    for (root, profile) in [
+        (&default_service, "config.dev.yml"),
+        (&mapped_service, "config.dev.yml"),
+        (&runtime_live, "config.skiff-test.yml"),
+    ] {
+        for control in ["package.yml", "api.yml", "service.yml", "http.yml", profile] {
+            assert!(
+                root.join(control).is_file(),
+                "canonical live source root {} must own {control}",
+                root.display()
+            );
+        }
+        assert!(!root.join("websocket.yml").exists());
+        read_user_package_manifest(&root.join("package.yml")).unwrap();
+    }
+    assert!(!runtime_live.join("config.dev.yml").exists());
+
+    let test_root = TestRoot::new("canonical-live-source-roots");
+    let artifacts = test_root.child("artifacts");
+    create_store(&artifacts);
+    seed_canonical_std(&platform_sources(), &artifacts).unwrap();
+
+    let encrypted_store = repository.join(
+        "runtime/encrypted-storage-live/package-store/example~com~~encrypted-live-store/1.0.0",
+    );
+    let runtime_kit = runtime_live.join(".skiff-packages/example~com~~runtime-live-kit/1.0.0");
+    let encrypted_store_ref = publish_package(&encrypted_store, &artifacts);
+    let runtime_kit_ref = publish_package(&runtime_kit, &artifacts);
+    let store = CanonicalArtifactStore::open(&artifacts).unwrap();
+    let encrypted_store_record = store.read_package_artifact(&encrypted_store_ref).unwrap();
+    assert_eq!(
+        (
+            encrypted_store_record.package_id.as_str(),
+            encrypted_store_record.package_version.as_str(),
+        ),
+        ("example.com/encrypted-live-store", "1.0.0")
+    );
+    assert_eq!(
+        encrypted_store_record.runtime_requirements.state[0].key,
+        "encrypted-live-store"
+    );
+    let runtime_kit_record = store.read_package_artifact(&runtime_kit_ref).unwrap();
+    assert_eq!(
+        (
+            runtime_kit_record.package_id.as_str(),
+            runtime_kit_record.package_version.as_str(),
+        ),
+        ("example.com/runtime-live-kit", "1.0.0")
+    );
+    assert!(runtime_kit_record
+        .package_local_abi
+        .public_symbols
+        .contains_key("packageEcho"));
+
+    let default_receipt = author_ordinary_live_service(&default_service, &artifacts);
+    let mapped_receipt = author_ordinary_live_service(&mapped_service, &artifacts);
+    let runtime_receipt = author_test_live_service(&runtime_live, &artifacts);
+    let default_project =
+        compile_package_project_for_test(&platform_sources(), &default_service, &artifacts)
+            .expect("default live service production package must support its test overlay");
+    let default_cases = discover_package_test_cases(
+        &default_service.join("internal/encrypted.live.test.skiff"),
+        &default_service,
+        true,
+    )
+    .unwrap();
+    assert_eq!(default_cases.len(), 1);
+    compile_package_test_overlay(
+        &platform_sources(),
+        &default_service,
+        &artifacts,
+        &default_project,
+        &default_cases,
+    )
+    .expect("default encrypted live test must consume the normal private config owner");
+
+    assert_eq!(
+        default_receipt
+            .package
+            .runtime_requirements
+            .config
+            .iter()
+            .map(|requirement| requirement.path.as_str())
+            .collect::<Vec<_>>(),
+        ["encryptedLive.testRunnerSecret"]
+    );
+    assert_eq!(default_receipt.deployment.config_literals.len(), 1);
+    assert_eq!(default_receipt.deployment.state_bindings.len(), 1);
+    assert_eq!(mapped_receipt.deployment.state_bindings.len(), 2);
+    assert!(mapped_receipt
+        .deployment
+        .state_bindings
+        .iter()
+        .all(|binding| binding.namespace == "encrypted-live-mapped"));
+    assert_eq!(
+        runtime_receipt
+            .package
+            .runtime_requirements
+            .config
+            .iter()
+            .map(|requirement| requirement.path.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "runtimeLive.db",
+            "runtimeLive.file",
+            "runtimeLive.httpAdapter",
+            "runtimeLive.operation",
+        ]
+    );
+    assert_eq!(runtime_receipt.deployment.config_literals.len(), 4);
+    assert_eq!(runtime_receipt.deployment.state_bindings.len(), 1);
+
+    let default_entries = expected_live_http_entries("default");
+    let mapped_entries = expected_live_http_entries("mapped");
+    let runtime_entries = expected_live_http_entries("runtime");
+    let mut identities = Vec::new();
+    identities.extend(assert_live_service_receipt(
+        &default_receipt,
+        "example.com/encrypted-live-default",
+        "0.1.0",
+        &default_entries,
+    ));
+    identities.extend(assert_live_service_receipt(
+        &mapped_receipt,
+        "example.com/encrypted-live-mapped",
+        "0.1.0",
+        &mapped_entries,
+    ));
+    identities.extend(assert_live_service_receipt(
+        &runtime_receipt,
+        "skiff.run/runtime-live",
+        "0.1.0",
+        &runtime_entries,
+    ));
+
+    assert_eq!(identities.len(), 40);
+    assert_eq!(
+        identities
+            .iter()
+            .filter(|(mode, _)| *mode == GatewayDispatchMode::Unary)
+            .count(),
+        39
+    );
+    assert_eq!(
+        identities
+            .iter()
+            .filter(|(mode, _)| *mode == GatewayDispatchMode::ServerStream)
+            .count(),
+        1
+    );
+    let unary_identities = identities
+        .iter()
+        .filter(|(mode, _)| *mode == GatewayDispatchMode::Unary)
+        .map(|(_, identity)| identity.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let stream_identities = identities
+        .iter()
+        .filter(|(mode, _)| *mode == GatewayDispatchMode::ServerStream)
+        .map(|(_, identity)| identity.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(unary_identities.len(), 1);
+    assert_eq!(stream_identities.len(), 1);
+    assert_ne!(unary_identities, stream_identities);
+    assert_eq!(
+        unary_identities,
+        std::collections::BTreeSet::from([EXPECTED_RAW_HTTP_UNARY_GATEWAY_IDENTITY])
+    );
+    assert_eq!(
+        stream_identities,
+        std::collections::BTreeSet::from([EXPECTED_RAW_HTTP_STREAM_GATEWAY_IDENTITY])
+    );
+    assert!(
+        identities
+            .iter()
+            .all(|(_, identity)| identity.starts_with("skiff-gateway-entry-v2:sha256:")),
+        "all gateway identities must be current v2 producer values: {identities:?}"
+    );
+
+    let mapped_requirement = mapped_receipt
+        .package
+        .package_requirements
+        .iter()
+        .find(|requirement| requirement.alias == "encryptedStore")
+        .expect("mapped package must retain its exact dependency edge");
+    assert_eq!(
+        mapped_requirement.collection_name_mapping,
+        BTreeMap::from([(
+            "package_secret".to_string(),
+            "mapped_package_secret".to_string(),
+        )])
+    );
+    let mapped_binding = mapped_receipt
+        .deployment
+        .package_bindings
+        .iter()
+        .find(|binding| binding.key.package_requirement_alias == "encryptedStore")
+        .expect("mapped deployment must bind the exact dependency edge");
+    assert_eq!(
+        mapped_binding.collection_name_mapping,
+        mapped_requirement.collection_name_mapping
+    );
+    assert_eq!(
+        runtime_receipt.deployment.diagnostic_text.display_name,
+        "skiff.run/runtime-live@0.1.0 (skiff-test)"
+    );
+}
+
+fn author_ordinary_live_service(root: &Path, artifacts: &Path) -> CanonicalLiveServiceReceipt {
+    let output = build_authoring_object(
+        &platform_sources(),
+        AuthoringObject::Package,
+        root,
+        artifacts,
+        "dev",
+        false,
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "ordinary canonical live source root {} must compile: {error}",
+            root.display()
+        )
+    });
+    let package_ref: PackageArtifactRef =
+        serde_json::from_value(output["packageArtifactReceipt"]["artifact"].clone()).unwrap();
+    let contract_ref: ServiceContractRef =
+        serde_json::from_value(output["serviceContractReceipt"]["contract"].clone()).unwrap();
+    let deployment_ref: ServiceDeploymentRef =
+        serde_json::from_value(output["serviceDeploymentReceipt"]["deployment"].clone()).unwrap();
+    let store = CanonicalArtifactStore::open(artifacts).unwrap();
+    CanonicalLiveServiceReceipt {
+        package: store
+            .read_package_artifact(&package_ref)
+            .unwrap()
+            .as_ref()
+            .clone(),
+        contract: store
+            .read_service_contract(&contract_ref)
+            .unwrap()
+            .as_ref()
+            .clone(),
+        deployment: store
+            .read_service_deployment(&deployment_ref)
+            .unwrap()
+            .as_ref()
+            .clone(),
+    }
+}
+
+fn author_test_live_service(root: &Path, artifacts: &Path) -> CanonicalLiveServiceReceipt {
+    let platform_sources = platform_sources();
+    let project = compile_package_project_for_test(&platform_sources, root, artifacts)
+        .expect("runtime-live test service must compile through the fixed test workflow");
+    let profile = project
+        .test_service_profile
+        .as_ref()
+        .expect("runtime-live must remain a kind:test service");
+    assert_eq!(profile.profile_name, "skiff-test");
+    let mut case_count = 0;
+    for source in [
+        "internal/db_live.live.test.skiff",
+        "internal/file_live.live.test.skiff",
+        "internal/http_adapter.live.test.skiff",
+    ] {
+        let cases = discover_package_test_cases(&root.join(source), root, true)
+            .unwrap_or_else(|error| panic!("runtime-live {source} discovery failed: {error}"));
+        case_count += cases.len();
+        compile_package_test_overlay(&platform_sources, root, artifacts, &project, &cases)
+            .unwrap_or_else(|error| panic!("runtime-live {source} compile failed: {error}"));
+    }
+    assert_eq!(case_count, 12);
+    let operation_cases =
+        discover_package_test_cases(&root.join("internal/operation.live.test.skiff"), root, true)
+            .expect("operation live tests must remain discoverable");
+    assert_eq!(
+        operation_cases.len(),
+        2,
+        "__skiffPayload lowering remains owned by the later execution leaf"
+    );
+
+    let manifest = read_user_package_manifest(&root.join("package.yml")).unwrap();
+    let raw_sources = read_package_sources(&manifest, root).unwrap();
+    let source_tree = raw_sources.source_tree();
+    let source_graph =
+        PublicationSourceGraph::parse_raw_publication_sources(&raw_sources.into_source_graph())
+            .unwrap();
+    let resources = read_publication_resources(root, &manifest.resources).unwrap();
+    let source = PackageSourceInput::new(
+        manifest.publication.clone(),
+        source_tree,
+        source_graph,
+        resources,
+    );
+    let direct_dependencies = manifest
+        .dependencies
+        .iter()
+        .map(|dependency| {
+            project
+                .dependency_packages
+                .iter()
+                .find(|artifact| {
+                    artifact.package_id == dependency.id
+                        && artifact.package_version == dependency.version
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "missing direct dependency {}@{}",
+                        dependency.id, dependency.version
+                    )
+                })
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    let aliases = manifest
+        .dependencies
+        .iter()
+        .map(|dependency| {
+            let artifact = direct_dependencies
+                .iter()
+                .find(|artifact| {
+                    artifact.package_id == dependency.id
+                        && artifact.package_version == dependency.version
+                })
+                .unwrap();
+            let mut roots = artifact
+                .package_local_abi
+                .public_symbols
+                .keys()
+                .map(|path| path.split('.').take(2).collect::<Vec<_>>().join("."))
+                .collect::<Vec<_>>();
+            roots.sort();
+            roots.dedup();
+            (dependency.effective_alias().to_string(), roots)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let service = read_service_package_root(root).unwrap();
+    assert_eq!(service.service.kind, ServiceAuthoringKind::Test);
+    let store = CanonicalArtifactStore::open(artifacts).unwrap();
+    let compiled = compile_service_package(
+        PackageCompileInput::new(&platform_sources, &source, &aliases, manifest.id.as_str())
+            .with_canonical_dependencies(&direct_dependencies, &project.contract_dependencies)
+            .with_available_canonical_packages(&project.dependency_packages)
+            .with_canonical_artifact_store(&store)
+            .for_test_service(),
+        &service,
+    )
+    .expect("runtime-live test service must use the real service compiler producer");
+    assert_eq!(
+        compiled.package.artifact.package_build_id,
+        project.package.artifact.package_build_id
+    );
+    let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &service.service,
+        http: service.http.as_ref(),
+        websocket: service.websocket.as_ref(),
+        profile_name: &profile.profile_name,
+        profile: &profile.authoring,
+        service_api: &compiled.service_api,
+        implementation: &compiled.package.artifact,
+        package_closure: &project.dependency_packages,
+        package_schema_records: &compiled.package.resolved_package_schema_type_records,
+    })
+    .expect("runtime-live fixed profile must generate a real deployment");
+
+    let package_receipt = publish_package_artifact_records(&store, &compiled.package).unwrap();
+    store
+        .write_service_contract(&compiled.service_api.contract)
+        .unwrap();
+    store.write_service_deployment(&deployment).unwrap();
+    let contract_ref = service_contract_ref(&compiled.service_api.contract).unwrap();
+    let deployment_ref = service_deployment_ref(&deployment);
+    CanonicalLiveServiceReceipt {
+        package: store
+            .read_package_artifact(&package_receipt.artifact)
+            .unwrap()
+            .as_ref()
+            .clone(),
+        contract: store
+            .read_service_contract(&contract_ref)
+            .unwrap()
+            .as_ref()
+            .clone(),
+        deployment: store
+            .read_service_deployment(&deployment_ref)
+            .unwrap()
+            .as_ref()
+            .clone(),
+    }
+}
+
+fn assert_live_service_receipt(
+    receipt: &CanonicalLiveServiceReceipt,
+    service_id: &str,
+    version: &str,
+    expected: &[ExpectedLiveHttpEntry],
+) -> Vec<(GatewayDispatchMode, String)> {
+    assert_eq!(receipt.package.package_id, service_id);
+    assert_eq!(receipt.package.package_version, version);
+    assert_eq!(receipt.contract.service_id, service_id);
+    assert_eq!(receipt.contract.contract_version, version);
+    assert!(receipt.contract.operations.is_empty());
+    assert!(receipt.contract.package_type_requirements.is_empty());
+    assert_eq!(receipt.deployment.contract.service_id, service_id);
+    assert_eq!(receipt.deployment.contract.contract_version, version);
+    assert_eq!(
+        receipt.deployment.implementation.package_build_id,
+        receipt.package.package_build_id
+    );
+    assert!(receipt.deployment.operation_bindings.is_empty());
+    assert_eq!(receipt.deployment.gateway_entries.len(), expected.len());
+    assert_eq!(receipt.deployment.ingress.len(), expected.len());
+
+    expected
+        .iter()
+        .map(|expected| {
+            let key = GatewayEntryKey::parse(expected.key).unwrap();
+            let ingress = receipt
+                .deployment
+                .ingress
+                .iter()
+                .find(|binding| binding.gateway_entry_key == key)
+                .unwrap_or_else(|| panic!("missing ingress {}", expected.key));
+            assert_eq!(ingress.selector.protocol, IngressProtocol::Http);
+            assert_eq!(ingress.selector.host, "*");
+            assert_eq!(ingress.selector.method.as_deref(), Some(expected.method));
+            assert_eq!(ingress.selector.path, expected.path);
+
+            let gateway = &receipt.deployment.gateway_entries[&key];
+            let expected_handler = callable_id(&receipt.package, expected.handler);
+            assert_eq!(gateway.handler.as_ref(), Some(expected_handler));
+            assert_eq!(
+                gateway.guard.as_ref(),
+                expected
+                    .guard
+                    .map(|selector| callable_id(&receipt.package, selector))
+            );
+            assert_eq!(gateway.pre, None);
+            assert_eq!(gateway.adapter_plan.kind, GatewayAdapterKind::RawHttp);
+            assert_eq!(gateway.adapter_plan.args.len(), 1);
+            assert_eq!(gateway.adapter_plan.args[0].param, "request");
+            assert_eq!(
+                gateway.adapter_plan.args[0].source,
+                GatewayAdapterSource::HttpRequest
+            );
+            let GatewayProtocolSurface::Http(surface) = &gateway.protocol_surface.protocol else {
+                panic!("{} must remain an HTTP protocol surface", expected.key)
+            };
+            assert_eq!(surface.adapter_kind, GatewayAdapterKind::RawHttp);
+            assert_eq!(surface.dispatch_mode, expected.dispatch);
+            assert_eq!(
+                surface.external_sources,
+                vec![GatewayAdapterSource::HttpRequest]
+            );
+            (
+                surface.dispatch_mode,
+                gateway.gateway_entry_identity.as_str().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn callable_id<'a>(
+    package: &'a PackageArtifact,
+    selector: &str,
+) -> &'a skiff_artifact_model::PackageCallableId {
+    let PackageLocalAbiSymbol::Callable { callable_id, .. } = package
+        .package_local_abi
+        .implementation_symbols
+        .get(selector)
+        .unwrap_or_else(|| panic!("missing implementation callable {selector}"))
+    else {
+        panic!("implementation symbol {selector} must be callable")
+    };
+    callable_id
 }
 
 #[test]

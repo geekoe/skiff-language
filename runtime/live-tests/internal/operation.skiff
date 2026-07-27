@@ -2,6 +2,10 @@ function echo(marker: string) -> string {
   return "runtime-live:".concat(marker)
 }
 
+function marker() -> string {
+  return config.require<string>("runtimeLive.operation")
+}
+
 function payloadRoundTrip(payload: string, marker: string) -> bool {
   return payload == "runtime-live-payload:".concat(marker)
 }

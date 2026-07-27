@@ -1,0 +1,130 @@
+mapped.insert:
+  host: "*"
+  method: POST
+  path: /encrypted-live/mapped/insert
+  kind: rawHttp
+  handler: internal.live.insertOne
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+mapped.read:
+  host: "*"
+  method: POST
+  path: /encrypted-live/mapped/read
+  kind: rawHttp
+  handler: internal.live.readOne
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+mapped.scan:
+  host: "*"
+  method: POST
+  path: /encrypted-live/mapped/scan
+  kind: rawHttp
+  handler: internal.live.scan
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+mapped.rewrite:
+  host: "*"
+  method: POST
+  path: /encrypted-live/mapped/rewrite
+  kind: rawHttp
+  handler: internal.live.rewrite
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+mapped.rewrite-batch:
+  host: "*"
+  method: POST
+  path: /encrypted-live/mapped/rewrite-batch
+  kind: rawHttp
+  handler: internal.live.rewriteBatch
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+mapped.service-probe-insert:
+  host: "*"
+  method: POST
+  path: /encrypted-live/mapped/service-probe-insert
+  kind: rawHttp
+  handler: internal.live.insertServiceContextProbe
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+mapped.service-probe-read:
+  host: "*"
+  method: POST
+  path: /encrypted-live/mapped/service-probe-read
+  kind: rawHttp
+  handler: internal.live.readServiceContextProbe
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+mapped.service-probe-scan:
+  host: "*"
+  method: POST
+  path: /encrypted-live/mapped/service-probe-scan
+  kind: rawHttp
+  handler: internal.live.scanServiceContextProbe
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+mapped.service-probe-rewrite:
+  host: "*"
+  method: POST
+  path: /encrypted-live/mapped/service-probe-rewrite
+  kind: rawHttp
+  handler: internal.live.rewriteServiceContextProbe
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+mapped.service-probe-rewrite-batch:
+  host: "*"
+  method: POST
+  path: /encrypted-live/mapped/service-probe-rewrite-batch
+  kind: rawHttp
+  handler: internal.live.rewriteServiceContextProbeBatch
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+mapped.service-probe-restore:
+  host: "*"
+  method: POST
+  path: /encrypted-live/mapped/service-probe-restore
+  kind: rawHttp
+  handler: internal.live.restoreServiceContextProbe
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+mapped.barrier:
+  host: "*"
+  method: POST
+  path: /encrypted-live/mapped/barrier
+  kind: rawHttp
+  handler: internal.live.activateBarrier
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+mapped.barrier-status:
+  host: "*"
+  method: POST
+  path: /encrypted-live/mapped/barrier-status
+  kind: rawHttp
+  handler: internal.live.barrierStatus
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }

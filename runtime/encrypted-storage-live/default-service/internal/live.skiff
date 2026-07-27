@@ -121,6 +121,10 @@ function guard(request: std.http.HttpRequest) -> std.http.HttpResponse? {
   return null
 }
 
+function testRunnerSecret() -> string {
+  return config.require<string>("encryptedLive.testRunnerSecret")
+}
+
 function writerBarrier(request: std.http.HttpRequest) -> std.http.HttpResponse? {
   const barrier = db find RotationBarrier("encrypted-storage-live")
   if barrier == null || !barrier.active {

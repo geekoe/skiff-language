@@ -142,25 +142,25 @@ function restoreServiceContextProbe(request: std.http.HttpRequest) -> std.http.H
 function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
   const blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  return encryptedStore.insertOne(request)
+  return encryptedStore/insertOne(request)
 }
 
 function readOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  return encryptedStore.readOne(request)
+  return encryptedStore/readOne(request)
 }
 
 function scan(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  return encryptedStore.scan(request)
+  return encryptedStore/scan(request)
 }
 
 function rewrite(request: std.http.HttpRequest) -> std.http.HttpResponse {
   const blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  return encryptedStore.rewrite(request)
+  return encryptedStore/rewrite(request)
 }
 
 function rewriteBatch(request: std.http.HttpRequest) -> std.http.HttpResponse {
   const blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  return encryptedStore.rewriteBatch(request)
+  return encryptedStore/rewriteBatch(request)
 }

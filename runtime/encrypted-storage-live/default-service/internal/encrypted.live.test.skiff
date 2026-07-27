@@ -13,7 +13,7 @@ db object TestRunnerEncryptedDoc {
 }
 
 test "live test runner uses outer runtime keyring" {
-  const secret = config.require<string>("encryptedLive.testRunnerSecret")
+  const secret = root.internal.live.testRunnerSecret()
   const id = "encrypted-live-test-runner"
   const inserted = db insert TestRunnerEncryptedDoc { id = id secret = secret }
   assert inserted.secret == secret

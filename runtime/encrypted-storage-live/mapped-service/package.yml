@@ -1,0 +1,11 @@
+id: example.com/encrypted-live-mapped
+version: 0.1.0
+state:
+  encrypted-live-mapped-store:
+    kind: database
+packages:
+  - id: example.com/encrypted-live-store
+    version: 1.0.0
+    alias: encryptedStore
+    collection_name_mapping:
+      package_secret: mapped_package_secret

@@ -1,0 +1,68 @@
+import std
+
+type RuntimeLiveDoc {
+  id: string,
+  value: string,
+  visits: number,
+  rank: number,
+}
+
+type RuntimeLiveRollbackError {
+  message: string,
+}
+
+db object RuntimeLiveDoc {
+  name "runtime_live_doc"
+  primary key(id)
+  lease drain ttl 60000 max 1800000
+}
+
+function marker() -> string {
+  return config.require<string>("runtimeLive.db")
+}
+
+function rollbackProbe(id: string) -> bool {
+  db transaction value {
+    db update RuntimeLiveDoc(id) { visits += 100 }
+    throw RuntimeLiveRollbackError { message: "rollback" }
+    true
+  }
+}
+
+function requireLiveDbProbe(condition: bool, message: string) -> void {
+  if !condition {
+    throw std.db.DecodeError { target: "runtime.live.db", message: message }
+  }
+}
+
+function claimAndUpdateProbe(id: string) -> bool {
+  return db claim RuntimeLiveDoc(id).drain as doc {
+    const slot = db lease RuntimeLiveDoc(id).drain
+    if slot == null {
+      throw std.db.DecodeError {
+        target: "runtime.live.db",
+        message: "lease slot should be readable inside claim",
+      }
+    }
+    requireLiveDbProbe(slot.owner != "", "lease owner should be present")
+    requireLiveDbProbe(slot.requestId != "", "lease request id should be present")
+    requireLiveDbProbe(slot.expiresAt != "", "lease expiresAt should be present")
+
+    const updated = db update RuntimeLiveDoc(id) { visits += 1 }
+    if updated == null {
+      throw std.db.DecodeError {
+        target: "runtime.live.db",
+        message: "leased update should return updated row",
+      }
+    }
+    requireLiveDbProbe(updated.id == doc.id, "leased update should target claimed row")
+    requireLiveDbProbe(updated.visits == doc.visits + 1, "leased update should increment visits")
+  }
+}
+
+function dynamicTransactionClaimProbe(id: string) -> bool {
+  return db claim RuntimeLiveDoc(id).drain {
+    const updated = db update RuntimeLiveDoc(id) { visits += 1 }
+    requireLiveDbProbe(updated != null, "leased update should return updated row")
+  }
+}

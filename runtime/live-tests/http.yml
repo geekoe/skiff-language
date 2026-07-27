@@ -1,0 +1,54 @@
+runtime.echo:
+  host: "*"
+  method: POST
+  path: /runtime-live/echo
+  kind: rawHttp
+  handler: internal.http_adapter.rawEcho
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+runtime.json:
+  host: "*"
+  method: POST
+  path: /runtime-live/json
+  kind: rawHttp
+  handler: internal.http_adapter.typedJsonEcho
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+runtime.binary:
+  host: "*"
+  method: POST
+  path: /runtime-live/binary
+  kind: rawHttp
+  handler: internal.http_adapter.binaryEcho
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+runtime.guarded:
+  host: "*"
+  method: GET
+  path: /runtime-live/guarded
+  kind: rawHttp
+  handler: internal.http_adapter.guardedPost
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+runtime.stream:
+  host: "*"
+  method: POST
+  path: /runtime-live/stream
+  kind: rawHttp
+  handler: internal.http_adapter.streamEcho
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+runtime.package:
+  host: "*"
+  method: POST
+  path: /runtime-live/package
+  kind: rawHttp
+  handler: internal.http_adapter.packageEcho
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }

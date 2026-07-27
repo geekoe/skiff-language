@@ -1,0 +1,64 @@
+import std
+
+function marker() -> string {
+  return config.require<string>("runtimeLive.file")
+}
+
+function liveFileChunks(marker: string) -> Stream<bytes> {
+  emit(bytes.fromUtf8("runtime-live-file-stream:"))
+  emit(bytes.fromUtf8(marker))
+  return null
+}
+
+function liveFileDoubleBytes(value: bytes) -> bytes {
+  const parts = Array.empty<bytes>()
+  parts.push(value)
+  parts.push(value)
+  return bytes.concat(parts)
+}
+
+function liveFileOneMiBChunk() -> bytes {
+  let chunk = bytes.fromUtf8("0123456789abcdef")
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  return chunk
+}
+
+function liveFileStagedChunks(marker: string) -> Stream<bytes> {
+  const chunk = liveFileOneMiBChunk()
+  emit(chunk)
+  emit(bytes.fromUtf8(marker))
+  emit(chunk)
+  return null
+}
+
+function liveFileSixtyFourMiBChunk() -> bytes {
+  let chunk = liveFileOneMiBChunk()
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  chunk = liveFileDoubleBytes(chunk)
+  return chunk
+}
+
+function liveFileOverLimitChunks() -> Stream<bytes> {
+  emit(liveFileSixtyFourMiBChunk())
+  emit(bytes.fromUtf8("x"))
+  return null
+}
