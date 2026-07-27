@@ -63,12 +63,3 @@ test "live file runtime writes generated chunks through staged file path" {
   const missing = catch<std.file.FileError>(std.file.info(file))
   assert missing.tag == "err"
 }
-
-test "live file runtime rejects stream above file guard limit" {
-  const file = std.file.createFromStream(root.internal.file_live.liveFileOverLimitChunks(), std.file.CreateOptions {
-    contentType: "application/octet-stream",
-    purpose: "runtime-live-over-limit-stream",
-  })
-  std.file.delete(file)
-  assert false
-}

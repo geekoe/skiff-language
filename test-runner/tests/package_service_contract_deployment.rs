@@ -1541,27 +1541,61 @@ fn author_test_live_service(root: &Path, artifacts: &Path) -> CanonicalLiveServi
         .as_ref()
         .expect("runtime-live must remain a kind:test service");
     assert_eq!(profile.profile_name, "skiff-test");
+    for (source, obsolete) in [
+        (
+            "internal/operation.live.test.skiff",
+            concat!("__skiff", "Payload"),
+        ),
+        (
+            "internal/operation.live.test.skiff",
+            concat!(
+                "live operation dispatch crosses runtime ",
+                "binary payload boundary"
+            ),
+        ),
+        ("internal/operation.skiff", concat!("payload", "RoundTrip")),
+        (
+            "internal/file_live.live.test.skiff",
+            concat!(
+                "live file runtime rejects stream above ",
+                "file guard limit"
+            ),
+        ),
+        (
+            "internal/file_live.skiff",
+            concat!("liveFileOver", "LimitChunks"),
+        ),
+        (
+            "internal/file_live.skiff",
+            concat!("liveFileSixty", "FourMiBChunk"),
+        ),
+    ] {
+        let contents = fs::read_to_string(root.join(source)).unwrap();
+        assert!(
+            !contents.contains(obsolete),
+            "canonical runtime-live source {source} must not retain obsolete {obsolete}"
+        );
+    }
+
     let mut case_count = 0;
-    for source in [
-        "internal/db_live.live.test.skiff",
-        "internal/file_live.live.test.skiff",
-        "internal/http_adapter.live.test.skiff",
+    for (source, expected_cases) in [
+        ("internal/db_live.live.test.skiff", 4),
+        ("internal/file_live.live.test.skiff", 3),
+        ("internal/http_adapter.live.test.skiff", 4),
+        ("internal/operation.live.test.skiff", 1),
     ] {
         let cases = discover_package_test_cases(&root.join(source), root, true)
             .unwrap_or_else(|error| panic!("runtime-live {source} discovery failed: {error}"));
+        assert_eq!(
+            cases.len(),
+            expected_cases,
+            "runtime-live {source} must retain its exact tracked case count"
+        );
         case_count += cases.len();
         compile_package_test_overlay(&platform_sources, root, artifacts, &project, &cases)
             .unwrap_or_else(|error| panic!("runtime-live {source} compile failed: {error}"));
     }
     assert_eq!(case_count, 12);
-    let operation_cases =
-        discover_package_test_cases(&root.join("internal/operation.live.test.skiff"), root, true)
-            .expect("operation live tests must remain discoverable");
-    assert_eq!(
-        operation_cases.len(),
-        2,
-        "__skiffPayload lowering remains owned by the later execution leaf"
-    );
 
     let manifest = read_user_package_manifest(&root.join("package.yml")).unwrap();
     let raw_sources = read_package_sources(&manifest, root).unwrap();

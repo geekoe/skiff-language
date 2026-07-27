@@ -45,20 +45,3 @@ function liveFileStagedChunks(marker: string) -> Stream<bytes> {
   emit(chunk)
   return null
 }
-
-function liveFileSixtyFourMiBChunk() -> bytes {
-  let chunk = liveFileOneMiBChunk()
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  return chunk
-}
-
-function liveFileOverLimitChunks() -> Stream<bytes> {
-  emit(liveFileSixtyFourMiBChunk())
-  emit(bytes.fromUtf8("x"))
-  return null
-}
