@@ -32,6 +32,8 @@ serviceCalls:
 - dependency、public symbol、handler、route、JSON schema、artifact binding和平台limit不在本文件声明。
 - timeout、quota、state/resource binding等deployment policy/value由所选`config.<profile>.yml`提供；
   例如`timeout: 30000`投影为可选`DeploymentPolicy.timeoutMs`，不在`service.yml`声明。
+- `kind: test`的profile按testing reference固定为`skiff-test`，使用`config.skiff-test.yml`及可选的
+  ignored `config.skiff-test.secret.yml`；live target environment不改变该profile。
 
 只改变`serviceCalls`会改变ServiceContract/ServiceProtocolIdentity，但不改变PackageArtifact。HTTP或
 WebSocket文件变化不改变ServiceContract。

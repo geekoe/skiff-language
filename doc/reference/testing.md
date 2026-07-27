@@ -1,7 +1,7 @@
 # Skiff Testing Reference
 
-本文负责测试源码、测试发现、runtime 执行语义、package 测试和 production artifact 边界。本文
-不负责具体 CLI flag、测试进程编排、live secret 管理或 runner 的实现细节。
+本文负责测试源码、测试发现、runtime 执行语义、package 测试、测试service配置profile和
+production artifact 边界。本文不负责具体 CLI flag、测试进程编排、secret文件分发或runner的实现细节。
 
 ## 1. Testing Surface
 
@@ -48,10 +48,20 @@ kind: test
 - 只允许 `skiff test` 构建和运行；
 - 普通 package publish、service publish/deploy 和 production watch 拒绝 test service；
 - artifact、linker、loader 和 Runtime 使用普通格式与执行路径；
-- test service 的 config 来自普通 `config.<profile>.yml`；
+- test service 的 config profile固定为`skiff-test`，来自`config.skiff-test.yml`；
+- 本机或部署时的私密覆盖使用同profile的`config.skiff-test.secret.yml`，该文件不得提交；
 - 同一个 test service 的 cases 共享配置和 dependency graph，但每个 case 仍有独立 state
   namespace、heap、effect registry 和 execution nonce；
-- 需要不同配置时使用另一个 test service 或显式 profile，不提供 per-case config override。
+- 需要不同配置时使用另一个test service，不提供per-case config override，也不允许调用方切换
+  test service config profile。
+
+测试service配置profile与runtime目标environment是两个概念：
+
+- `skiff-test`固定选择测试service的配置和secret overlay；
+- live runner的target environment标识外部Router/Runtime中的activation generation，可能是`dev`或
+  其它部署环境；
+- target environment不得反向选择`config.<environment>.yml`。普通隔离测试中两者通常都叫
+  `skiff-test`，不能因此在实现里合并两个owner。
 
 test service dependency 可以声明：
 
@@ -124,6 +134,10 @@ Live smoke：
 
 - 同样在真实 runtime 进程中执行，但 target 由调用者显式提供和拥有，并允许显式授权的外部
   effect。
+- live只改变runtime target ownership和effect policy；test service仍固定读取
+  `config.skiff-test.yml`及可选`config.skiff-test.secret.yml`。
+- activation URL、ingress URL、artifact root、target environment与expected generation是每次运行的
+  显式target参数，不属于test service config，也不能写进secret overlay。
 - 应使用 `defaultRun false` 并通过文件路径运行。
 - 没有 live key 时应 skip，而不是失败。
 - 只验证真实外部服务的少量关键路径，不替代 unit / integration 覆盖。
@@ -255,8 +269,9 @@ AI 和 CI 不需要测试配置文件来决定默认测试。它们按改动范�
 - 改 runtime effect、config、HTTP 编码、router activation，运行相关 integration 测试。
 - live smoke 只在用户显式要求、nightly 或 release 验证流程中运行。
 
-Runner flag 只控制 runtime target ownership 和 effect policy，不改变测试源码语义，也不把
-`defaultRun false` 文件加入目录默认发现。非 live 与 live 都不切换到 compiler VM。
+Runner flag只控制runtime target ownership、target environment/generation和effect policy，不改变
+测试源码语义，不选择test service config profile，也不把`defaultRun false`文件加入目录默认发现。
+非live与live都不切换到compiler VM。
 
 ## 9. Production Artifact Boundary
 
