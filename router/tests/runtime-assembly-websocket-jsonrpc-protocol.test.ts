@@ -127,7 +127,7 @@ describe('runtimeAssembly websocketJsonRpc strict transport wire', () => {
       routing: {
         ...canonicalRequest().routing,
         gatewayEntryIdentity:
-          'skiff-gateway-entry-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+          'skiff-gateway-entry-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
         ingress: {
           ...canonicalRequest().routing.ingress,
           method: null
@@ -141,16 +141,32 @@ describe('runtimeAssembly websocketJsonRpc strict transport wire', () => {
         cookies: [],
         websocketEntryId: PHYSICAL_WEBSOCKET_ENTRY_ID,
         gatewayEntryIdentity:
-          'skiff-gateway-entry-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
+          'skiff-gateway-entry-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
       }
     } as unknown as Record<string, unknown>;
     delete connect.websocketJsonRpc;
+    expect(validateRuntimeAssemblyRequestStartFrameWireHeader(connect)).toMatchObject({
+      ok: true
+    });
     const decoded = decodeRuntimeAssemblyRequestStartFrame(
       encodeBinaryFrame(connect)
     );
     expect(decoded.header.routing.ingress.method).toBeNull();
     expect('websocketConnect' in decoded.header).toBe(true);
     expect('websocketJsonRpc' in decoded.header).toBe(false);
+
+    const connectMismatch = structuredClone(connect);
+    (
+      connectMismatch.websocketConnect as Record<string, unknown>
+    ).gatewayEntryIdentity =
+      'skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+    expect(
+      validateRuntimeAssemblyRequestStartFrameWireHeader(connectMismatch)
+    ).toEqual({
+      ok: false,
+      error:
+        'invalid request.start runtimeAssembly envelope: websocketConnect.gatewayEntryIdentity must match routing.gatewayEntryIdentity'
+    });
 
     const connectWithMethod = structuredClone(connect);
     const connectRouting = connectWithMethod.routing as Record<string, unknown>;
@@ -190,6 +206,20 @@ describe('runtimeAssembly websocketJsonRpc strict transport wire', () => {
         mutate: (header) => {
           (header.websocketJsonRpc as Record<string, unknown>).gatewayEntryIdentity =
             'skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+        }
+      },
+      {
+        name: 'stale GatewayEntry v1 routing generation',
+        mutate: (header) => {
+          (header.routing as Record<string, unknown>).gatewayEntryIdentity =
+            'skiff-gateway-entry-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+        }
+      },
+      {
+        name: 'stale GatewayEntry v1 metadata generation',
+        mutate: (header) => {
+          (header.websocketJsonRpc as Record<string, unknown>).gatewayEntryIdentity =
+            'skiff-gateway-entry-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
         }
       },
       {
@@ -265,7 +295,13 @@ describe('runtimeAssembly websocketJsonRpc strict transport wire', () => {
       ) as unknown as Record<string, unknown>;
       testCase.mutate(header);
       const validation = validateRuntimeAssemblyRequestStartFrameWireHeader(header);
-      if (
+      if (testCase.name === 'identity mismatch') {
+        expect(validation).toEqual({
+          ok: false,
+          error:
+            'invalid request.start runtimeAssembly envelope: websocketJsonRpc.gatewayEntryIdentity must match routing.gatewayEntryIdentity'
+        });
+      } else if (
         testCase.name !== 'missing payload' &&
         testCase.name !== 'payload above limit'
       ) {

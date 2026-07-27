@@ -441,6 +441,44 @@ describe('runtime protocol fixtures and schemas', () => {
       testEffectsEnabled: false
     };
     expect(matchesProtocolEnvelopeSchema(schema, websocketJsonRpc)).toBe(true);
+
+    const staleHttpRouting = structuredClone(
+      runtimeAssemblyRequestCorpus.requestStartHeaders[0]!
+    );
+    (staleHttpRouting.routing as Record<string, unknown>).gatewayEntryIdentity =
+      'skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    expect(matchesProtocolEnvelopeSchema(schema, staleHttpRouting)).toBe(false);
+
+    const staleConnectRouting = structuredClone(
+      runtimeWebSocketConnectWireCorpus.requestCases[1]!.header
+    );
+    (staleConnectRouting.routing as Record<string, unknown>).gatewayEntryIdentity =
+      'skiff-gateway-entry-v1:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936';
+    expect(matchesProtocolEnvelopeSchema(schema, staleConnectRouting)).toBe(false);
+
+    const staleConnectMetadata = structuredClone(
+      runtimeWebSocketConnectWireCorpus.requestCases[1]!.header
+    );
+    (
+      staleConnectMetadata.websocketConnect as Record<string, unknown>
+    ).gatewayEntryIdentity =
+      'skiff-gateway-entry-v1:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936';
+    expect(matchesProtocolEnvelopeSchema(schema, staleConnectMetadata)).toBe(false);
+
+    const staleJsonRpcRouting = structuredClone(websocketJsonRpc);
+    (
+      staleJsonRpcRouting.routing as Record<string, unknown>
+    ).gatewayEntryIdentity =
+      'skiff-gateway-entry-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+    expect(matchesProtocolEnvelopeSchema(schema, staleJsonRpcRouting)).toBe(false);
+
+    const staleJsonRpcMetadata = structuredClone(websocketJsonRpc);
+    (
+      staleJsonRpcMetadata.websocketJsonRpc as Record<string, unknown>
+    ).gatewayEntryIdentity =
+      'skiff-gateway-entry-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+    expect(matchesProtocolEnvelopeSchema(schema, staleJsonRpcMetadata)).toBe(false);
+
     for (const header of runtimeAssemblyRequestCorpus.legacyRequestStartHeaders) {
       expect(matchesProtocolEnvelopeSchema(schema, header), String(header.requestId)).toBe(
         true

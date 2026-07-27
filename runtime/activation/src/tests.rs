@@ -285,7 +285,7 @@ fn activation_context_websocket_entry_is_typed_optional_and_matches_all_exact_fa
     };
     let key = GatewayEntryKey::parse("websocket").unwrap();
     let gateway_identity =
-        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v1:sha256:{}", "1".repeat(64)))
+        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v2:sha256:{}", "1".repeat(64)))
             .unwrap();
     let entry_id = WebSocketEntryId::parse(format!(
         "skiff-websocket-entry-v1:sha256:{}",
@@ -315,7 +315,7 @@ fn activation_context_websocket_entry_is_typed_optional_and_matches_all_exact_fa
     };
     let wrong_key = GatewayEntryKey::parse("websocket:wrong").unwrap();
     let wrong_gateway_identity =
-        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v1:sha256:{}", "3".repeat(64)))
+        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v2:sha256:{}", "3".repeat(64)))
             .unwrap();
     let wrong_entry_id = WebSocketEntryId::parse(format!(
         "skiff-websocket-entry-v1:sha256:{}",

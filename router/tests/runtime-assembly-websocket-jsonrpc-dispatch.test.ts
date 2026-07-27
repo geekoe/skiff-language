@@ -26,7 +26,7 @@ const ASSEMBLY =
 const METHOD_GATEWAY_IDENTITY =
   `skiff-gateway-entry-v2:sha256:${'d'.repeat(64)}`;
 const CONNECT_GATEWAY_IDENTITY =
-  `skiff-gateway-entry-v1:sha256:${'b'.repeat(64)}`;
+  `skiff-gateway-entry-v2:sha256:${'b'.repeat(64)}`;
 const WEBSOCKET_ENTRY_ID =
   `skiff-websocket-entry-v1:sha256:${'e'.repeat(64)}`;
 

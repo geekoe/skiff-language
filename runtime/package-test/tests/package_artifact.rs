@@ -187,7 +187,7 @@ fn entrypoint_validation_rejects_non_exact_gateway_facts() {
 
     let mut wrong_identity = valid;
     wrong_identity.gateway_entry_identity =
-        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v1:sha256:{}", "0".repeat(64)))
+        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v2:sha256:{}", "0".repeat(64)))
             .expect("valid mismatched gateway identity");
     assert_ne!(
         wrong_identity.gateway_entry_identity,

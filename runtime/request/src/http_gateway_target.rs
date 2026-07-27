@@ -453,8 +453,8 @@ mod tests {
     use skiff_artifact_model::{
         DeploymentRevision, GatewayAdapterArg, GatewayExternalErrorProjection,
         GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayWebSocketConnectProtocolSurface,
-        GatewayWebSocketDownlinkFrame, GatewayWebSocketShapeVersion, PackageCallableParameter,
-        PackageTypeRef, TypeRefIr,
+        GatewayWebSocketDownlinkFrame, GatewayWebSocketRpcProfile, GatewayWebSocketShapeVersion,
+        PackageCallableParameter, PackageTypeRef, TypeRefIr,
     };
 
     use super::*;
@@ -489,7 +489,7 @@ mod tests {
         .expect("canonical gateway facts");
 
         let wrong_identity = GatewayEntryIdentity::parse(format!(
-            "skiff-gateway-entry-v1:sha256:{}",
+            "skiff-gateway-entry-v2:sha256:{}",
             "0".repeat(64)
         ))
         .unwrap();
@@ -622,7 +622,7 @@ mod tests {
                         GatewayWebSocketDownlinkFrame::Binary,
                         GatewayWebSocketDownlinkFrame::Text,
                     ],
-                    rpc_profiles: Vec::new(),
+                    rpc_profiles: vec![GatewayWebSocketRpcProfile::JsonRpc2_0Text],
                 },
             ),
             external_error_projection: GatewayExternalErrorProjection::FIXED_V1,

@@ -622,7 +622,10 @@ const requestStartFrameProperties = {
       kind: { type: 'string', enum: ['runtimeAssembly'] },
       assemblyIdentity: { type: 'string' },
       assemblyGeneration: { type: 'integer' },
-      gatewayEntryIdentity: { type: 'string' },
+      gatewayEntryIdentity: {
+        type: 'string',
+        pattern: '^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$'
+      },
       ingress: {
         type: 'object',
         required: ['protocol', 'host', 'method', 'path'],
@@ -1611,7 +1614,7 @@ export const runtimeFrameHeaderSchemas = {
               },
               gatewayEntryIdentity: {
                 type: 'string',
-                pattern: '^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$'
+                pattern: '^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$'
               },
               ingress: {
                 type: 'object',
@@ -1690,7 +1693,7 @@ export const runtimeFrameHeaderSchemas = {
               },
               gatewayEntryIdentity: {
                 type: 'string',
-                pattern: '^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$'
+                pattern: '^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$'
               }
             },
             additionalProperties: false

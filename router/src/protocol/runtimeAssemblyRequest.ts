@@ -137,8 +137,6 @@ export type RuntimeAssemblyRequestStartFrameWireHeader =
 export type RuntimeAssemblyRequestStartFrameTransportWireHeader =
   RuntimeAssemblyRequestStartFrameWireHeader;
 
-const LEGACY_GATEWAY_ENTRY_IDENTITY_PATTERN =
-  /^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$/;
 const GATEWAY_ENTRY_IDENTITY_PATTERN =
   /^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$/;
 
@@ -293,13 +291,9 @@ export function validateRuntimeAssemblyRequestRouting(
   }
   if (
     typeof routing.gatewayEntryIdentity !== "string" ||
-    !(wireKind === "websocketJsonRpc"
-      ? GATEWAY_ENTRY_IDENTITY_PATTERN
-      : LEGACY_GATEWAY_ENTRY_IDENTITY_PATTERN
-    ).test(routing.gatewayEntryIdentity)
+    !GATEWAY_ENTRY_IDENTITY_PATTERN.test(routing.gatewayEntryIdentity)
   ) {
-    const version = wireKind === "websocketJsonRpc" ? "v2" : "v1";
-    return `invalid request.start envelope: routing.gatewayEntryIdentity must be skiff-gateway-entry-${version}:sha256:<64 lowercase hex>`;
+    return "invalid request.start envelope: routing.gatewayEntryIdentity must be skiff-gateway-entry-v2:sha256:<64 lowercase hex>";
   }
   return validateIngress(routing.ingress, wireKind);
 }

@@ -225,7 +225,7 @@ mod tests {
         fn new() -> Self {
             let assembly = AssemblyIdentity::new("assembly:websocket");
             let gateway_identity = GatewayEntryIdentity::parse(format!(
-                "skiff-gateway-entry-v1:sha256:{}",
+                "skiff-gateway-entry-v2:sha256:{}",
                 "1".repeat(64)
             ))
             .unwrap();
@@ -316,7 +316,7 @@ mod tests {
 
         let mut wrong_routing_identity = fixture.header.clone();
         wrong_routing_identity.routing.gateway_entry_identity = GatewayEntryIdentity::parse(
-            format!("skiff-gateway-entry-v1:sha256:{}", "3".repeat(64)),
+            format!("skiff-gateway-entry-v2:sha256:{}", "3".repeat(64)),
         )
         .unwrap();
         mutations.push(wrong_routing_identity);
@@ -325,7 +325,7 @@ mod tests {
         wrong_connect_identity
             .websocket_connect
             .gateway_entry_identity = GatewayEntryIdentity::parse(format!(
-            "skiff-gateway-entry-v1:sha256:{}",
+            "skiff-gateway-entry-v2:sha256:{}",
             "4".repeat(64)
         ))
         .unwrap();

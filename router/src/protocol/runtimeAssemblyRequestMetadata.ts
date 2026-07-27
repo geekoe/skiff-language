@@ -7,8 +7,6 @@ import type {
 class RuntimeAssemblyRequestMetadataError extends Error {}
 
 const CONNECTION_ID_PATTERN = /^(?=.{1,255}$)[A-Za-z0-9._:~-]+$/;
-const LEGACY_GATEWAY_ENTRY_IDENTITY_PATTERN =
-  /^skiff-gateway-entry-v1:sha256:[0-9a-f]{64}$/;
 const GATEWAY_ENTRY_IDENTITY_PATTERN =
   /^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$/;
 const WEBSOCKET_ENTRY_ID_PATTERN =
@@ -148,7 +146,7 @@ function validateWebSocketConnect(envelope: Record<string, unknown>): void {
     connect,
     "gatewayEntryIdentity",
     "websocketConnect.gatewayEntryIdentity",
-    LEGACY_GATEWAY_ENTRY_IDENTITY_PATTERN,
+    GATEWAY_ENTRY_IDENTITY_PATTERN,
   );
   const routing = exactObject(envelope.routing, "routing", [
     "kind",

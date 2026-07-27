@@ -12,7 +12,7 @@
         "kind": "runtimeAssembly",
         "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f",
         "assemblyGeneration": 7,
-        "gatewayEntryIdentity": "skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "ingress": {
           "protocol": "http",
           "host": "example.com",
@@ -72,7 +72,7 @@
         "kind": "runtimeAssembly",
         "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "assemblyGeneration": 0,
-        "gatewayEntryIdentity": "skiff-gateway-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "ingress": {
           "protocol": "http",
           "host": "example.com",
@@ -104,7 +104,7 @@
         "kind": "runtimeAssembly",
         "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "assemblyGeneration": 9007199254740991,
-        "gatewayEntryIdentity": "skiff-gateway-entry-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "ingress": {
           "protocol": "http",
           "host": "stream.example.com",
@@ -183,8 +183,9 @@
     { "name": "assembly generation null", "baseIndex": 0, "setPath": "routing.assemblyGeneration", "value": null },
     { "name": "gateway identity legacy prefix", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-gateway-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
     { "name": "gateway identity operation prefix", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-contract-operation-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
-    { "name": "gateway identity uppercase", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-gateway-entry-v1:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
-    { "name": "gateway identity short", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-gateway-entry-v1:sha256:aaaa" },
+    { "name": "stale GatewayEntry v1 generation", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    { "name": "gateway identity uppercase", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-gateway-entry-v2:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+    { "name": "gateway identity short", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-gateway-entry-v2:sha256:aaaa" },
     { "name": "gateway identity null", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": null },
     { "name": "legacy contract operation routing", "baseIndex": 0, "setPath": "routing.contractOperationId", "value": "skiff-contract-operation-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
     { "name": "gateway entry key routing", "baseIndex": 0, "setPath": "routing.gatewayEntryKey", "value": "items" },
@@ -276,22 +277,22 @@
     {
       "name": "raw assembly generation negative zero",
       "outcome": "reject",
-      "headerText": "{\"schemaVersion\":\"skiff-runtime-frame-v1\",\"type\":\"request.start\",\"requestId\":\"raw-negative-zero\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyGeneration\":-0,\"gatewayEntryIdentity\":\"skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ingress\":{\"protocol\":\"http\",\"host\":\"example.com\",\"method\":\"GET\",\"path\":\"/\"}},\"trace\":{\"traceId\":\"trace\",\"spanId\":\"span\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]}}"
+      "headerText": "{\"schemaVersion\":\"skiff-runtime-frame-v1\",\"type\":\"request.start\",\"requestId\":\"raw-negative-zero\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyGeneration\":-0,\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ingress\":{\"protocol\":\"http\",\"host\":\"example.com\",\"method\":\"GET\",\"path\":\"/\"}},\"trace\":{\"traceId\":\"trace\",\"spanId\":\"span\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]}}"
     },
     {
       "name": "raw deadline negative zero",
       "outcome": "reject",
-      "headerText": "{\"schemaVersion\":\"skiff-runtime-frame-v1\",\"type\":\"request.start\",\"requestId\":\"raw-deadline-negative-zero\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyGeneration\":0,\"gatewayEntryIdentity\":\"skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ingress\":{\"protocol\":\"http\",\"host\":\"example.com\",\"method\":\"GET\",\"path\":\"/\"}},\"deadline\":{\"timeoutMs\":-0,\"expiresAt\":\"2030-01-01T00:00:00Z\"},\"trace\":{\"traceId\":\"trace\",\"spanId\":\"span\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]}}"
+      "headerText": "{\"schemaVersion\":\"skiff-runtime-frame-v1\",\"type\":\"request.start\",\"requestId\":\"raw-deadline-negative-zero\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyGeneration\":0,\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ingress\":{\"protocol\":\"http\",\"host\":\"example.com\",\"method\":\"GET\",\"path\":\"/\"}},\"deadline\":{\"timeoutMs\":-0,\"expiresAt\":\"2030-01-01T00:00:00Z\"},\"trace\":{\"traceId\":\"trace\",\"spanId\":\"span\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]}}"
     },
     {
       "name": "raw unsafe integer",
       "outcome": "reject",
-      "headerText": "{\"schemaVersion\":\"skiff-runtime-frame-v1\",\"type\":\"request.start\",\"requestId\":\"raw-unsafe\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyGeneration\":9007199254740992,\"gatewayEntryIdentity\":\"skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ingress\":{\"protocol\":\"http\",\"host\":\"example.com\",\"method\":\"GET\",\"path\":\"/\"}},\"trace\":{\"traceId\":\"trace\",\"spanId\":\"span\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]}}"
+      "headerText": "{\"schemaVersion\":\"skiff-runtime-frame-v1\",\"type\":\"request.start\",\"requestId\":\"raw-unsafe\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyGeneration\":9007199254740992,\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ingress\":{\"protocol\":\"http\",\"host\":\"example.com\",\"method\":\"GET\",\"path\":\"/\"}},\"trace\":{\"traceId\":\"trace\",\"spanId\":\"span\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]}}"
     },
     {
       "name": "raw assembly v1 identity",
       "outcome": "reject",
-      "headerText": "{\"schemaVersion\":\"skiff-runtime-frame-v1\",\"type\":\"request.start\",\"requestId\":\"raw-v1\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyGeneration\":0,\"gatewayEntryIdentity\":\"skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ingress\":{\"protocol\":\"http\",\"host\":\"example.com\",\"method\":\"GET\",\"path\":\"/\"}},\"trace\":{\"traceId\":\"trace\",\"spanId\":\"span\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]}}"
+      "headerText": "{\"schemaVersion\":\"skiff-runtime-frame-v1\",\"type\":\"request.start\",\"requestId\":\"raw-v1\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyGeneration\":0,\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ingress\":{\"protocol\":\"http\",\"host\":\"example.com\",\"method\":\"GET\",\"path\":\"/\"}},\"trace\":{\"traceId\":\"trace\",\"spanId\":\"span\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]}}"
     },
     {
       "name": "raw invalid UTF-8",

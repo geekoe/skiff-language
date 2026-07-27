@@ -21,8 +21,8 @@ import {
 const ASSEMBLY_A = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 const ASSEMBLY_B = `skiff-runtime-assembly-v2:sha256:${'b'.repeat(64)}`;
 const PROTOCOL = `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`;
-const LEGACY_HTTP_WIRE_GATEWAY_ENTRY_IDENTITY =
-  `skiff-gateway-entry-v1:sha256:${'e'.repeat(64)}`;
+const CURRENT_GATEWAY_ENTRY_IDENTITY =
+  `skiff-gateway-entry-v2:sha256:${'e'.repeat(64)}`;
 const binding: RuntimeAssemblyIngressBinding = {
   selector: { protocol: 'http', host: 'api.localhost', method: 'GET', path: '/v1/models' },
   deployment: {
@@ -32,7 +32,7 @@ const binding: RuntimeAssemblyIngressBinding = {
       deploymentArtifactIdentity: `skiff-deployment-artifact-v3:sha256:${'d'.repeat(64)}`
   },
   gatewayEntryKey: 'listModels',
-  gatewayEntryIdentity: LEGACY_HTTP_WIRE_GATEWAY_ENTRY_IDENTITY,
+  gatewayEntryIdentity: CURRENT_GATEWAY_ENTRY_IDENTITY,
   adapterKind: 'typedJson',
   operationMode: 'unary',
 };

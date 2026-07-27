@@ -172,7 +172,7 @@ fn assembly_identity(digest: char) -> AssemblyIdentity {
 
 fn gateway_entry_identity(digest: char) -> GatewayEntryIdentity {
     GatewayEntryIdentity::parse(format!(
-        "skiff-gateway-entry-v1:sha256:{}",
+        "skiff-gateway-entry-v2:sha256:{}",
         digest.to_string().repeat(64)
     ))
     .expect("fixture gateway entry identity")

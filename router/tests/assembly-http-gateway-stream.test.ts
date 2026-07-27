@@ -30,7 +30,7 @@ import {
 
 const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 const GATEWAY_ENTRY_IDENTITY =
-  `skiff-gateway-entry-v1:sha256:${'b'.repeat(64)}`;
+  `skiff-gateway-entry-v2:sha256:${'b'.repeat(64)}`;
 const RUNTIME_ID = 'runtime-assembly-stream';
 const HOST = 'stream.example.test';
 const PATH = '/events';

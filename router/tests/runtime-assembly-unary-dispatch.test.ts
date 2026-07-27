@@ -41,7 +41,7 @@ import {
 
 const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 const GATEWAY_ENTRY_IDENTITY =
-  `skiff-gateway-entry-v1:sha256:${'b'.repeat(64)}`;
+  `skiff-gateway-entry-v2:sha256:${'b'.repeat(64)}`;
 const RUNTIME_ID = 'runtime-unary-a';
 const HOST = 'api.localhost';
 const PATH = '/v1/invoke';
@@ -721,7 +721,7 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       }),
       mutate(valid, (header) => {
         header.routing.gatewayEntryIdentity =
-          `skiff-gateway-entry-v1:sha256:${'f'.repeat(64)}`;
+          `skiff-gateway-entry-v2:sha256:${'f'.repeat(64)}`;
       }),
       mutate(valid, (header) => {
         header.routing.ingress.method = 'GET';
@@ -1113,7 +1113,7 @@ const TYPED_BINDING: RuntimeAssemblyIngressBinding = {
   ...BINDING,
   gatewayEntryKey: 'typedInvoke',
   gatewayEntryIdentity:
-    `skiff-gateway-entry-v1:sha256:${'e'.repeat(64)}`,
+    `skiff-gateway-entry-v2:sha256:${'e'.repeat(64)}`,
   adapterKind: 'typedJson'
 };
 

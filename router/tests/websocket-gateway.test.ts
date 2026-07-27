@@ -36,7 +36,7 @@ const SERVICE_ID = 'example.com/chat';
 const ENTRY_ID =
   `skiff-websocket-entry-v1:sha256:${'e'.repeat(64)}`;
 const GATEWAY_ID =
-  `skiff-gateway-entry-v1:sha256:${'b'.repeat(64)}`;
+  `skiff-gateway-entry-v2:sha256:${'b'.repeat(64)}`;
 const ASSEMBLY_ONE =
   `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 const ASSEMBLY_TWO =

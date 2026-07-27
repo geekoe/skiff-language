@@ -1139,7 +1139,7 @@ mod websocket_admission_tests {
             .next()
             .unwrap()
             .gateway_entry_identity = skiff_artifact_model::GatewayEntryIdentity::parse(format!(
-            "skiff-gateway-entry-v1:sha256:{}",
+            "skiff-gateway-entry-v2:sha256:{}",
             "0".repeat(64)
         ))
         .unwrap();
