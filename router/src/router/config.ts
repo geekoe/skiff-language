@@ -12,6 +12,7 @@ import {
   type TelemetryControlConfig,
   type TelemetryTopic
 } from '../protocol/envelope.js';
+import { DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS } from './activationTimeout.js';
 import { readRewriteRules, type RouterRewriteRule } from './rewrite.js';
 
 const DEFAULT_TELEMETRY_QUEUE_MAX_EVENTS = 10000;
@@ -24,6 +25,7 @@ const IDENTITY_CLI_BINARY = process.platform === 'win32'
   : 'skiff-artifact-identity';
 
 export interface RouterConfig {
+  activationPrepareTimeoutMs: number;
   artifactsPath: string;
   devReload?: boolean;
   environment?: string;
@@ -46,6 +48,7 @@ export interface RouterConfig {
 }
 
 export interface RouterConfigOverrides {
+  activationPrepareTimeoutMs?: string;
   artifactsPath?: string;
   devReload?: boolean;
   environment?: string;
@@ -74,6 +77,7 @@ export function runtimeBootstrapForRouterConfig(
 }
 
 interface RawRouterConfig {
+  activation?: unknown;
   artifactsPath?: unknown;
   artifactRoots?: unknown;
   devReload?: unknown;
@@ -162,6 +166,10 @@ export async function loadRouterConfig(
   rejectRemovedHosts(raw.hosts);
 
   const config: RouterConfig = {
+    activationPrepareTimeoutMs: readActivationPrepareTimeout(
+      raw.activation,
+      overrides.activationPrepareTimeoutMs
+    ),
     artifactsPath,
     host: readString(overrides.host ?? raw.host, 'host', '127.0.0.1'),
     httpMaxRequestBytes: readRequiredPositiveInteger(
@@ -603,6 +611,40 @@ function readRequiredPositiveInteger(value: unknown, name: string): number {
     throw new Error(`router config ${name} must be a positive integer`);
   }
   return Number(numberValue);
+}
+
+function readActivationPrepareTimeout(
+  value: unknown,
+  override: string | undefined
+): number {
+  if (override !== undefined) {
+    return readRequiredPositiveInteger(
+      override,
+      'activation.prepareTimeoutMs'
+    );
+  }
+  if (value === undefined || value === null) {
+    return DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS;
+  }
+  if (!isRecord(value)) {
+    throw new Error(
+      'router config activation.prepareTimeoutMs must be a positive integer'
+    );
+  }
+  const prepareTimeoutMs = value.prepareTimeoutMs;
+  if (prepareTimeoutMs === undefined || prepareTimeoutMs === null) {
+    return DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS;
+  }
+  if (
+    typeof prepareTimeoutMs !== 'number' ||
+    !Number.isSafeInteger(prepareTimeoutMs) ||
+    prepareTimeoutMs <= 0
+  ) {
+    throw new Error(
+      'router config activation.prepareTimeoutMs must be a positive integer'
+    );
+  }
+  return prepareTimeoutMs;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

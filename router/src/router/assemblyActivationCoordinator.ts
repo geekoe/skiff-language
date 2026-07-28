@@ -8,6 +8,7 @@ import type {
 } from '../protocol/assemblyActivationProtocol.js';
 import type { AssemblyActivationStateStore } from './assemblyActivationStateStore.js';
 import type { AssemblyRuntimeRegistry } from './assemblyRuntimeRegistry.js';
+import { DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS } from './activationTimeout.js';
 import {
   RouterActiveAssemblySnapshotStore,
   RuntimeAssemblyIngressIndex,
@@ -246,7 +247,7 @@ export class AssemblyActivationCoordinator {
             );
           }
         });
-      }, this.options.prepareTimeoutMs ?? 20_000)
+      }, this.options.prepareTimeoutMs ?? DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS)
     };
     this.transaction = transaction;
     return transaction;

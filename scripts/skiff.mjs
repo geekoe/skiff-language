@@ -19,6 +19,7 @@ import {
   readProjectPackageDirs,
 } from './lib/project-config.mjs';
 import { renderRouterConfig, renderRuntimeConfig, renderTelemetryConfig } from './lib/runtime-stack-config.mjs';
+import { DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS } from './lib/activation-timeout.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = dirname(scriptDir);
@@ -34,7 +35,7 @@ const usage = `usage:
   skiff test <package-root-or-file> --artifact-root <dir> [--base-assembly <identity>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]
   skiff project init [root] [--force]
   skiff project paths [root] [--json]
-  skiff dev init --http-max-request-bytes <bytes> --http-max-response-bytes <bytes> [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
+  skiff dev init --http-max-request-bytes <bytes> --http-max-response-bytes <bytes> [--activation-prepare-timeout-ms <ms>] [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
   skiff dev paths [--dev-home <dir>] [--json]
   skiff dev status [--config <path>] [--control-url <url>]
   skiff dev sync [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--build-only] [--json]
@@ -329,6 +330,10 @@ async function devInit(rawArgs) {
     args.options.httpMaxResponseBytes,
     '--http-max-response-bytes',
   );
+  const activationPrepareTimeoutMs = readOptionalPositiveSafeInteger(
+    args.options.activationPrepareTimeoutMs,
+    '--activation-prepare-timeout-ms',
+  ) ?? DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS;
 
   await mkdir(artifactRoot, { recursive: true });
   await mkdir(runtimeHome, { recursive: true });
@@ -342,6 +347,7 @@ async function devInit(rawArgs) {
     serviceDbMongoUrl,
     httpMaxRequestBytes,
     httpMaxResponseBytes,
+    activationPrepareTimeoutMs,
   }), force));
   writes.push(await writeDevInitFile(join(devHome, 'runtime.yml'), runtimeDevConfig({
     runtimeHome,
@@ -568,6 +574,7 @@ function parseDevInitArgs(rawArgs) {
     flags: new Set(['--force', '--no-bin']),
     optionsWithValues: new Set([
       '--bin-dir',
+      '--activation-prepare-timeout-ms',
       '--dev-home',
       '--http-max-request-bytes',
       '--http-max-response-bytes',
@@ -707,6 +714,7 @@ function routerDevConfig(options) {
     identityCliPath: options.identityCliPath,
     devReload: true,
     requestTimeoutMs: 20000,
+    activationPrepareTimeoutMs: options.activationPrepareTimeoutMs,
     httpPort: 4000,
     httpMaxRequestBytes: options.httpMaxRequestBytes,
     httpMaxResponseBytes: options.httpMaxResponseBytes,
@@ -723,6 +731,13 @@ function readRequiredPositiveSafeInteger(value, option) {
     throw new Error(`${option} must be a positive safe integer`);
   }
   return integer;
+}
+
+function readOptionalPositiveSafeInteger(value, option) {
+  if (value === undefined) {
+    return undefined;
+  }
+  return readRequiredPositiveSafeInteger(value, option);
 }
 
 function runtimeDevConfig(options) {

@@ -10,6 +10,7 @@ export function renderRouterConfig({
   devReload,
   releaseMode,
   requestTimeoutMs = 20000,
+  activationPrepareTimeoutMs,
   httpPort,
   httpMaxRequestBytes,
   httpMaxResponseBytes,
@@ -37,6 +38,10 @@ export function renderRouterConfig({
   }
   requirePositiveSafeInteger(httpMaxRequestBytes, 'router http.maxRequestBytes');
   requirePositiveSafeInteger(httpMaxResponseBytes, 'router http.maxResponseBytes');
+  requirePositiveSafeInteger(
+    activationPrepareTimeoutMs,
+    'router activation.prepareTimeoutMs',
+  );
   const lines = [
     `profile: ${profile}`,
     `host: ${host}`,
@@ -51,6 +56,8 @@ export function renderRouterConfig({
   lines.push(
     `devReload: ${devReload ? 'true' : 'false'}`,
     `requestTimeoutMs: ${requestTimeoutMs}`,
+    'activation:',
+    `  prepareTimeoutMs: ${activationPrepareTimeoutMs}`,
     '',
     'http:',
     `  port: ${httpPort}`,

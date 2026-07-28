@@ -132,6 +132,35 @@ test('deploy CLI requires explicit positive HTTP byte ceilings', async () => {
   }
 });
 
+test('deploy CLI renders an independent activation prepare timeout', async () => {
+  const result = await runDeploy({
+    only: 'router',
+    args: ['--activation-prepare-timeout-ms', '130000'],
+  });
+  try {
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.routerConfig, /^activation:\n  prepareTimeoutMs: 130000$/m);
+    assert.match(result.routerConfig, /^requestTimeoutMs: 20000$/m);
+  } finally {
+    await result.cleanup();
+  }
+
+  const invalid = await runDeploy({
+    only: 'router',
+    args: ['--activation-prepare-timeout-ms', '0'],
+  });
+  try {
+    assert.notEqual(invalid.code, 0);
+    assert.match(
+      invalid.stderr,
+      /--activation-prepare-timeout-ms must be a positive safe integer/,
+    );
+    assert.equal(invalid.commandLog, '');
+  } finally {
+    await invalid.cleanup();
+  }
+});
+
 test('router deploy provisions the manifest compiler and writes only supported PM2 args', async () => {
   const result = await runDeploy({ only: 'router' });
   try {
@@ -144,6 +173,7 @@ test('router deploy provisions the manifest compiler and writes only supported P
     assert.match(result.routerConfig, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\/skiff"$/m);
     assert.match(result.routerConfig, /^  maxRequestBytes: 67108864$/m);
     assert.match(result.routerConfig, /^  maxResponseBytes: 8388608$/m);
+    assert.match(result.routerConfig, /^activation:\n  prepareTimeoutMs: 120000$/m);
     assert.doesNotMatch(result.routerConfig, /bodyLimitBytes/);
     assert.doesNotMatch(result.routerConfig, /^artifactRoots?:/m);
     assert.match(
@@ -236,6 +266,7 @@ async function runDeploy({
   delete childEnv.SERVICE_DB_MONGO_URL;
   delete childEnv.SKIFF_HTTP_MAX_REQUEST_BYTES;
   delete childEnv.SKIFF_HTTP_MAX_RESPONSE_BYTES;
+  delete childEnv.SKIFF_ACTIVATION_PREPARE_TIMEOUT_MS;
   Object.assign(childEnv, env);
 
   const child = await spawnCapture(process.execPath, [
