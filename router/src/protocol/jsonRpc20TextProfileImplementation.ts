@@ -40,7 +40,7 @@ export class JsonRpc20TextProfile implements WebSocketRpcProfileAdapter {
     validateLimits(limits);
     if (
       !encodedFrameFitsLimits(
-        platformErrorFrame(null, { kind: 'cancelled' }),
+        platformErrorFrame(null, { kind: 'timeout' }),
         limits
       ) ||
       Buffer.byteLength(frame, 'utf8') > limits.maxTextBytes
@@ -186,13 +186,6 @@ export class JsonRpc20TextProfile implements WebSocketRpcProfileAdapter {
     return this.assertEncodedFrame(frame);
   }
 
-  encodeCancel(id: OpaquePeerId): string {
-    return this.assertEncodedFrame(
-      '{"jsonrpc":"2.0","method":"$/cancelRequest","params":' +
-        `{"id":${encodePeerId(id)}}}`
-    );
-  }
-
   encodeResult(id: OpaquePeerId, result: OpaquePayload): string {
     return this.assertEncodedFrame(
       `{"jsonrpc":"2.0","id":${encodePeerId(id)}` +
@@ -238,19 +231,6 @@ export class JsonRpc20TextProfile implements WebSocketRpcProfileAdapter {
     }
 
     if (!hasId) {
-      if (methodNode.value === '$/cancelRequest') {
-        const cancel = classifyCancel(members.get('params'));
-        if (
-          cancel.kind === 'cancel' &&
-          !encodedFrameFitsLimits(
-            platformErrorFrame(cancel.id, { kind: 'cancelled' }),
-            limits
-          )
-        ) {
-          return profileLimitClose();
-        }
-        return cancel;
-      }
       const paramsNode = members.get('params');
       if (
         paramsNode !== undefined &&
@@ -274,7 +254,7 @@ export class JsonRpc20TextProfile implements WebSocketRpcProfileAdapter {
     }
     if (
       !encodedFrameFitsLimits(
-        platformErrorFrame(id, { kind: 'cancelled' }),
+        platformErrorFrame(id, { kind: 'timeout' }),
         limits
       )
     ) {
@@ -396,21 +376,6 @@ export class JsonRpc20TextProfile implements WebSocketRpcProfileAdapter {
     }
     return frame;
   }
-}
-
-function classifyCancel(params: LosslessJsonNode | undefined): ProfileAction {
-  if (params?.kind !== 'object') {
-    return invalidRequest();
-  }
-  const members = uniqueObjectMembers(params);
-  if (
-    members === undefined ||
-    !hasExactFields(members, new Set(['id']))
-  ) {
-    return invalidRequest();
-  }
-  const id = parsePeerId(members.get('id'));
-  return id === undefined ? invalidRequest() : { kind: 'cancel', id };
 }
 
 function parsePeerId(
@@ -617,8 +582,7 @@ const PLATFORM_ERRORS: Readonly<
   invalidParams: { code: -32602, message: 'Invalid params' },
   internal: { code: -32603, message: 'Internal error' },
   serverBusy: { code: -32000, message: 'Server busy' },
-  timeout: { code: -32001, message: 'Request timed out' },
-  cancelled: { code: -32800, message: 'Request cancelled' }
+  timeout: { code: -32001, message: 'Request timed out' }
 });
 
 const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);

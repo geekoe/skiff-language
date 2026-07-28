@@ -102,10 +102,9 @@ describe('WebSocketRpcBridge outbound runtime leg', () => {
     expectNoActive(harness.bridge);
   });
 
-  it('runtime cancel detaches, best-effort cancels the peer, and sends no response', async () => {
+  it('runtime cancel detaches without a peer write or runtime response', async () => {
     const harness = createHarness();
     await harness.request();
-    const peerId = outboundId(harness.writes[0]!);
 
     await harness.endpoint.emit(
       {
@@ -116,14 +115,13 @@ describe('WebSocketRpcBridge outbound runtime leg', () => {
     );
 
     expect(harness.writes).toEqual([
-      expect.stringContaining('"method":"status.get"'),
-      `{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":${JSON.stringify(peerId)}}}`
+      expect.stringContaining('"method":"status.get"')
     ]);
     expect(harness.endpoint.responses).toEqual([]);
     expectNoActive(harness.bridge);
   });
 
-  it('uses the earliest runtime deadline once and cancels the peer', async () => {
+  it('uses the earliest runtime deadline once without a peer cancel write', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
     const harness = createHarness();
@@ -140,7 +138,9 @@ describe('WebSocketRpcBridge outbound runtime leg', () => {
       requestId: 'runtime-request-a',
       outcome: 'deadlineExceeded'
     });
-    expect(harness.writes.at(-1)).toContain('$/cancelRequest');
+    expect(harness.writes).toEqual([
+      expect.stringContaining('"method":"status.get"')
+    ]);
     expectNoActive(harness.bridge);
   });
 
@@ -161,9 +161,7 @@ describe('WebSocketRpcBridge outbound runtime leg', () => {
     harness.endpoint.disconnect(harness.source);
 
     expect(harness.endpoint.responses).toEqual([]);
-    expect(harness.writes.filter((frame) =>
-      frame.includes('$/cancelRequest')
-    )).toHaveLength(1);
+    expect(harness.writes).toHaveLength(2);
     expect(harness.bridge.debugSnapshot()).toMatchObject({
       outboundPeerEntries: 1,
       outboundRuntimeEntries: 1,
@@ -447,7 +445,7 @@ describe('WebSocketRpcBridge inbound peer leg', () => {
     expectNoActive(harness.bridge);
   });
 
-  it('peer cancel detaches, aborts with caller_cancel, and ignores late completion', async () => {
+  it('cancel-shaped notification leaves the handler active for its normal result', async () => {
     const completion = deferred<RuntimeAssemblyWebSocketJsonRpcDispatchResponse>();
     const harness = createHarness({
       dispatch: () => completion.promise
@@ -460,13 +458,12 @@ describe('WebSocketRpcBridge inbound peer leg', () => {
     harness.handle.handlePeerText(
       '{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"peer-a"}}'
     );
-    completion.resolve(dispatchResponse('late', 'success'));
+    expect(signal.aborted).toBe(false);
+    completion.resolve(dispatchResponse('peer-a', 'success'));
     await flush();
 
-    expect(signal.aborted).toBe(true);
-    expect(signal.reason).toBe('caller_cancel');
     expect(harness.writes).toEqual([
-      '{"jsonrpc":"2.0","id":"peer-a","error":{"code":-32800,"message":"Request cancelled"}}'
+      '{"jsonrpc":"2.0","id":"peer-a","result":{"from":"runtime"}}'
     ]);
     expectNoActive(harness.bridge);
   });

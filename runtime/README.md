@@ -81,10 +81,10 @@ by the peer. A request initiated by Skiff is sent through
 `std.websocket.requestJsonToConnection<TRequest, TResponse>`; its response
 resumes the suspended call and does not invoke an ingress handler.
 
-Peer notifications are ignored without a user-code dispatch or response.
-`$/cancelRequest` is handled by the platform as best-effort cancellation for the
-matching active request in the same direction and connection generation.
-Cancellation control is not exposed as a business notification handler.
+All peer notifications are ignored without a user-code dispatch or response.
+The current peer profile has no cancellation notification or cancellation
+error. An id-bearing request is matched against the declared method table
+without reserving a control method name.
 
 The peer JSON-RPC id and Runtime frame `requestId` are internal transport
 correlation. Neither is decoded into handler parameters or otherwise visible to
@@ -95,8 +95,10 @@ Raw sends and RPC writes are separate. The ordinary direct/business
 `connection.send` downlink carries text or binary produced by the raw send
 operations. The JSON-RPC broker instead writes through the captured,
 generation-bound observed writer and owns request/response correlation,
-deadline, cancellation, and settled state. Runtime does not reinterpret a raw
-send as an RPC write or use it as an RPC fallback.
+deadlines, internal stop handling, and settled state. A Runtime stop frame only
+helps local resources converge and does not become a peer cancellation request.
+Runtime does not reinterpret a raw send as an RPC write or use it as an RPC
+fallback.
 
 The current API is defined by `std/websocket.skiff`:
 

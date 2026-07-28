@@ -116,14 +116,3 @@ export function encodeInboundTerminalFrame(input: {
     );
   }
 }
-
-export function tryEncodePeerCancelFrame(input: {
-  readonly adapter: WebSocketRpcProfileAdapter;
-  readonly id: OpaquePeerId;
-}): string | undefined {
-  try {
-    return input.adapter.encodeCancel(input.id);
-  } catch {
-    return undefined;
-  }
-}

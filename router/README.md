@@ -118,16 +118,18 @@ or a business identity, uses the direct send path. JSON-RPC requests and
 responses use the request broker's captured, generation-bound observed writer.
 These are distinct paths: neither is a fallback for the other.
 
-Peer notifications are ignored and never invoke user code, even when the method
-name is declared. `$/cancelRequest` is the exception: it is interpreted by the
-platform as best-effort cancellation for a still-active request in the same
-direction and connection generation. It is not exposed as a business handler.
+All peer notifications are ignored and never invoke user code, even when the
+method name is declared. The current profile has no peer cancellation
+notification or cancellation error. An id-bearing request is still matched
+against the declared method table without reserving a control method name.
 
 A peer JSON-RPC id and the Runtime frame `requestId` are transport-internal
 correlation values. They are owned by the profile/broker and Runtime transport,
 respectively, and are never passed to a business handler. Peer-initiated and
 Skiff-initiated requests share the frame codec but use separate pending identity
-namespaces.
+namespaces. The request broker owns deadlines, Runtime-internal stop handling,
+and settled-state fencing; this local bookkeeping never projects a stop request
+onto the peer wire.
 
 The current `std.websocket` source names are:
 

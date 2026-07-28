@@ -37,7 +37,6 @@ import {
   mapInboundDispatchResultToTerminal,
   mapPeerTerminalToRuntimeResponse,
   materializeOutboundPeerParams,
-  tryEncodePeerCancelFrame,
   type InboundTerminal
 } from './webSocketRequestBrokerWire.js';
 
@@ -100,9 +99,6 @@ interface InboundEntry {
 }
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
-const INBOUND_CALLER_CANCEL_REASON = requestCancelReasonForSituation(
-  REQUEST_CANCEL_SITUATION.callerAbort
-);
 const INBOUND_DEADLINE_REASON = requestCancelReasonForSituation(
   REQUEST_CANCEL_SITUATION.deadlineExceeded
 );
@@ -368,8 +364,7 @@ export class WebSocketRequestBroker {
           response: {
             requestId: entry.requestId,
             outcome: 'deadlineExceeded'
-          },
-          cancelPeer: true
+          }
         });
       });
       if (!this.outboundIsActive(entry)) {
@@ -398,7 +393,7 @@ export class WebSocketRequestBroker {
     if (entry === undefined) {
       return false;
     }
-    this.settleOutbound(entry, { cancelPeer: true });
+    this.detachOutbound(entry);
     return true;
   }
 
@@ -411,9 +406,6 @@ export class WebSocketRequestBroker {
     );
     for (const entry of entries) {
       this.detachOutbound(entry);
-    }
-    for (const entry of entries) {
-      this.bestEffortCancel(entry);
     }
     return entries.length;
   }
@@ -437,9 +429,6 @@ export class WebSocketRequestBroker {
         return;
       case 'response':
         this.handleOutboundResponse(state, action.id, action.terminal);
-        return;
-      case 'cancel':
-        this.handleInboundCancel(state, action.id);
         return;
       case 'ignoredNotification':
         try {
@@ -697,21 +686,6 @@ export class WebSocketRequestBroker {
     );
   }
 
-  private handleInboundCancel(
-    state: GenerationState,
-    peerId: OpaquePeerId
-  ): void {
-    const entry = this.inboundByPeer.get(this.peerKey(state, peerId));
-    if (entry === undefined) {
-      return;
-    }
-    this.finishInbound(
-      entry,
-      { kind: 'cancelled' },
-      INBOUND_CALLER_CANCEL_REASON
-    );
-  }
-
   private completeInbound(
     entry: InboundEntry,
     result: InboundDispatchResult
@@ -752,16 +726,12 @@ export class WebSocketRequestBroker {
     entry: OutboundEntry,
     terminal: {
       readonly response?: BrokerRuntimeResponse;
-      readonly cancelPeer?: boolean;
     }
   ): void {
     if (!this.outboundIsActive(entry)) {
       return;
     }
     this.detachOutbound(entry);
-    if (terminal.cancelPeer === true) {
-      this.bestEffortCancel(entry);
-    }
     if (terminal.response !== undefined) {
       this.respond(entry.source, terminal.response);
     }
@@ -832,17 +802,6 @@ export class WebSocketRequestBroker {
         // State is already detached; close failure cannot reopen it.
       }
     }
-  }
-
-  private bestEffortCancel(entry: OutboundEntry): void {
-    const frame = tryEncodePeerCancelFrame({
-      adapter: entry.generation.adapter,
-      id: entry.peerId
-    });
-    if (frame === undefined) {
-      return;
-    }
-    this.writePeer(entry.generation, frame, () => undefined);
   }
 
   private writeTerminalFrame(state: GenerationState, frame: string): void {

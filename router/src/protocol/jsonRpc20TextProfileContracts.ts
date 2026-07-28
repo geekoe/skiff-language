@@ -46,8 +46,7 @@ export type PlatformRpcError =
   | { readonly kind: 'invalidParams' }
   | { readonly kind: 'internal' }
   | { readonly kind: 'serverBusy' }
-  | { readonly kind: 'timeout' }
-  | { readonly kind: 'cancelled' };
+  | { readonly kind: 'timeout' };
 
 export type ProfileAction =
   | {
@@ -61,7 +60,6 @@ export type ProfileAction =
       readonly id: OpaquePeerId;
       readonly terminal: ProfileResponse;
     }
-  | { readonly kind: 'cancel'; readonly id: OpaquePeerId }
   | {
       readonly kind: 'ignoredNotification';
       readonly method: string;
@@ -94,7 +92,6 @@ export interface WebSocketRpcProfileAdapter {
     readonly method: string;
     readonly params: OpaquePayload;
   }): string;
-  encodeCancel(id: OpaquePeerId): string;
   encodeResult(id: OpaquePeerId, result: OpaquePayload): string;
   encodePlatformError(
     id: OpaquePeerId | null,

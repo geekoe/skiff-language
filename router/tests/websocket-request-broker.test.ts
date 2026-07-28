@@ -158,23 +158,32 @@ describe('WebSocketRequestBroker outbound core', () => {
     expectNoActive(harness.broker);
   });
 
-  it('runtime cancel detaches before a best-effort peer cancel and sends no response', async () => {
+  it('runtime cancel detaches, tombstones, and writes nothing to the peer', async () => {
     const harness = createHarness();
     const runtime = createRuntime('session-a');
     harness.request(runtime, 'runtime-a');
     const id = outboundId(harness.peer.writes[0]!);
+    const writesBeforeCancel = harness.peer.writes.length;
 
     expect(harness.broker.handleRuntimeCancel(runtime, 'runtime-a')).toBe(true);
     await flush();
 
     expect(runtime.responses).toEqual([]);
-    expect(harness.peer.writes.at(-1)).toBe(
-      `{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":${JSON.stringify(id)}}}`
+    expect(harness.peer.writes).toHaveLength(writesBeforeCancel);
+    expect(harness.broker.debugSnapshot()).toMatchObject({
+      outboundTombstones: 1,
+      timerCount: 0
+    });
+    harness.broker.handlePeerText(
+      harness.generation,
+      `{"jsonrpc":"2.0","id":${JSON.stringify(id)},"result":null}`
     );
+    expect(runtime.responses).toEqual([]);
+    expect(harness.peer.writes).toHaveLength(writesBeforeCancel);
     expectNoActive(harness.broker);
   });
 
-  it('deadline wins once, cancels the peer, and reports deadlineExceeded', async () => {
+  it('deadline wins once without a peer write and reports deadlineExceeded', async () => {
     vi.useFakeTimers();
     const harness = createHarness();
     const runtime = createRuntime('session-a');
@@ -182,6 +191,7 @@ describe('WebSocketRequestBroker outbound core', () => {
       deadlineAtMs: Date.now() + 50
     });
     const id = outboundId(harness.peer.writes[0]!);
+    const writesBeforeDeadline = harness.peer.writes.length;
 
     await vi.advanceTimersByTimeAsync(50);
 
@@ -191,7 +201,7 @@ describe('WebSocketRequestBroker outbound core', () => {
         outcome: 'deadlineExceeded'
       })
     ]);
-    expect(harness.peer.writes.at(-1)).toContain('$/cancelRequest');
+    expect(harness.peer.writes).toHaveLength(writesBeforeDeadline);
     harness.broker.handlePeerText(
       harness.generation,
       `{"jsonrpc":"2.0","id":${JSON.stringify(id)},"result":null}`
@@ -222,15 +232,17 @@ describe('WebSocketRequestBroker outbound core', () => {
     expectNoActive(harness.broker);
   });
 
-  it('runtime disconnect cancels only that captured session without a response', async () => {
+  it('runtime disconnect detaches only that captured session without a peer write', async () => {
     const harness = createHarness();
     const runtimeA = createRuntime('session-a');
     const runtimeB = createRuntime('session-b');
     harness.request(runtimeA, 'runtime-a');
     harness.request(runtimeB, 'runtime-b');
     const peerB = outboundId(harness.peer.writes[1]!);
+    const writesBeforeDisconnect = harness.peer.writes.length;
 
     expect(harness.broker.handleRuntimeDisconnect(runtimeA)).toBe(1);
+    expect(harness.peer.writes).toHaveLength(writesBeforeDisconnect);
     harness.broker.handlePeerText(
       harness.generation,
       `{"jsonrpc":"2.0","id":${JSON.stringify(peerB)},"result":true}`
@@ -513,25 +525,31 @@ describe('WebSocketRequestBroker inbound core', () => {
     expectNoActive(harness.broker);
   });
 
-  it('keeps an id-bearing reserved cancel spelling out of user dispatch', () => {
-    const harness = createHarness();
+  it('dispatches an id-bearing cancel spelling when the method is declared', async () => {
+    const harness = createHarness({
+      acceptInboundMethod: (method) => method === '$/cancelRequest'
+    });
 
     harness.broker.handlePeerText(
       harness.generation,
       '{"jsonrpc":"2.0","id":"peer-a","method":"$/cancelRequest","params":{"id":"other"}}'
     );
+    await flush();
 
-    expect(harness.dispatches).toEqual([]);
+    expect(harness.dispatches).toHaveLength(1);
+    expect(harness.dispatches[0]!.method).toBe('$/cancelRequest');
     expect(harness.peer.writes).toEqual([
-      '{"jsonrpc":"2.0","id":"peer-a","error":{"code":-32601,"message":"Method not found"}}'
+      '{"jsonrpc":"2.0","id":"peer-a","result":null}'
     ]);
     expectNoActive(harness.broker);
   });
 
-  it('peer cancel wins against completion, aborts, and writes exactly one cancellation', async () => {
+  it('cancel-shaped notifications never abort an active or settled request', async () => {
     const completion = deferred<InboundDispatchResult>();
+    const notifications: unknown[] = [];
     const harness = createHarness({
-      dispatchInbound: () => completion.promise
+      dispatchInbound: () => completion.promise,
+      observeNotification: (action) => notifications.push(action)
     });
     harness.broker.handlePeerText(
       harness.generation,
@@ -544,19 +562,40 @@ describe('WebSocketRequestBroker inbound core', () => {
     );
     harness.broker.handlePeerText(
       harness.generation,
-      '{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"peer-a"}}'
+      '{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"unknown"}}'
     );
-    expect(harness.dispatches[0]!.signal.aborted).toBe(true);
-    expect(harness.dispatches[0]!.signal.reason).toBe('caller_cancel');
+    expect(harness.dispatches[0]!.signal.aborted).toBe(false);
     completion.resolve({
       kind: 'success',
-      result: opaqueResult(harness.profile, '{"late":true}')
+      result: opaqueResult(harness.profile, '{"ok":true}')
     });
     await flush();
+    harness.broker.handlePeerText(
+      harness.generation,
+      '{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"peer-a"}}'
+    );
 
     expect(harness.peer.writes).toEqual([
-      '{"jsonrpc":"2.0","id":"peer-a","error":{"code":-32800,"message":"Request cancelled"}}'
+      '{"jsonrpc":"2.0","id":"peer-a","result":{"ok":true}}'
     ]);
+    expect(notifications).toHaveLength(3);
+    expectNoActive(harness.broker);
+  });
+
+  it('contains notification observer failures without changing broker state', () => {
+    const harness = createHarness({
+      observeNotification() {
+        throw new Error('diagnostic failed');
+      }
+    });
+
+    harness.broker.handlePeerText(
+      harness.generation,
+      '{"jsonrpc":"2.0","method":"$/cancelRequest"}'
+    );
+
+    expect(harness.dispatches).toEqual([]);
+    expect(harness.peer.writes).toEqual([]);
     expectNoActive(harness.broker);
   });
 
@@ -682,39 +721,41 @@ describe('WebSocketRequestBroker inbound core', () => {
       harness.generation,
       `{"jsonrpc":"2.0","id":${JSON.stringify(sharedId)},"result":{"outbound":true}}`
     );
+    inbound.resolve({
+      kind: 'success',
+      result: opaqueResult(harness.profile, '{"inbound":true}')
+    });
     await flush();
 
     expect(runtime.responses).toEqual([
       expect.objectContaining({ outcome: 'success' })
     ]);
-    expect(harness.peer.writes.filter((frame) =>
-      frame.includes('"Request cancelled"')
-    )).toHaveLength(1);
+    expect(harness.peer.writes.at(-1)).toBe(
+      `{"jsonrpc":"2.0","id":${JSON.stringify(sharedId)},"result":{"inbound":true}}`
+    );
     expectNoActive(harness.broker);
   });
 
   it('tombstone FIFO eviction permits id reuse while old execution tokens stay fenced', async () => {
+    vi.useFakeTimers();
     const old = deferred<InboundDispatchResult>();
     const middle = deferred<InboundDispatchResult>();
     const current = deferred<InboundDispatchResult>();
     const completions = [old, middle, current];
     const harness = createHarness({
       inboundTombstoneCapacity: 1,
+      inboundTimeoutMs: 10,
       dispatchInbound: () => completions.shift()!.promise
     });
     const request = (id: string) => harness.broker.handlePeerText(
       harness.generation,
       `{"jsonrpc":"2.0","id":${JSON.stringify(id)},"method":"status.get","params":{}}`
     );
-    const cancel = (id: string) => harness.broker.handlePeerText(
-      harness.generation,
-      `{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":${JSON.stringify(id)}}}`
-    );
 
     request('reused');
-    cancel('reused');
+    await vi.advanceTimersByTimeAsync(10);
     request('evictor');
-    cancel('evictor');
+    await vi.advanceTimersByTimeAsync(10);
     request('reused');
     const writesBeforeLate = harness.peer.writes.length;
 
@@ -812,6 +853,7 @@ interface HarnessOptions {
     action: InboundDispatchAction
   ) => InboundDispatchResult | Promise<InboundDispatchResult>;
   readonly observeNotification?: (action: unknown) => void;
+  readonly acceptInboundMethod?: (method: string) => boolean;
   readonly inboundTimeoutMs?: number;
   readonly outboundGlobalCapacity?: number;
   readonly outboundPerGenerationCapacity?: number;
@@ -867,7 +909,8 @@ function createHarness(options: HarnessOptions = {}) {
     inboundTimeoutMs: options.inboundTimeoutMs ?? 1_000,
     outboundIdPrefix: 'generation-a',
     writer: peer,
-    acceptInboundMethod: (method) => method === 'status.get'
+    acceptInboundMethod:
+      options.acceptInboundMethod ?? ((method) => method === 'status.get')
   });
   return {
     broker,

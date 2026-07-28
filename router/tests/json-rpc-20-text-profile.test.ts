@@ -107,23 +107,42 @@ describe('jsonrpc-2.0-text profile', () => {
     expect(profile.opaqueJsonText(action.params)).toBe('{"ok":true}');
   });
 
-  it('accepts only the exact cancel notification spelling', () => {
+  it('treats cancel-shaped notifications like every other notification', () => {
     const profile = new JsonRpc20TextProfile();
 
     expect(classify(
       profile,
-      '{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":4}}'
+      '{"jsonrpc":"2.0","method":"$/cancelRequest"}'
     )).toEqual({
-      kind: 'cancel',
-      id: { kind: 'safeInteger', value: 4 }
+      kind: 'ignoredNotification',
+      method: '$/cancelRequest',
+      params: undefined
     });
     expect(classify(
       profile,
       '{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":4,"reason":"x"}}'
+    )).toMatchObject({
+      kind: 'ignoredNotification',
+      method: '$/cancelRequest'
+    });
+    expect(classify(
+      profile,
+      '{"jsonrpc":"2.0","method":"$/cancelRequest","params":"bad"}'
     )).toEqual({
       kind: 'platformError',
       id: null,
       error: { kind: 'invalidRequest' }
+    });
+  });
+
+  it('treats an id-bearing cancel spelling as an ordinary request', () => {
+    expect(classify(
+      new JsonRpc20TextProfile(),
+      '{"jsonrpc":"2.0","id":"peer-a","method":"$/cancelRequest","params":{}}'
+    )).toMatchObject({
+      kind: 'request',
+      id: { kind: 'string', value: 'peer-a' },
+      method: '$/cancelRequest'
     });
   });
 
@@ -342,7 +361,7 @@ describe('jsonrpc-2.0-text profile', () => {
     ))).toBe('null');
   });
 
-  it('encodes request, cancel, result and fixed platform errors exactly', () => {
+  it('encodes request, result and fixed platform errors exactly', () => {
     const profile = new JsonRpc20TextProfile();
     const id = { kind: 'string', value: 'g:1' } satisfies OpaquePeerId;
     const params = profile.fromRuntimePayload(
@@ -357,15 +376,13 @@ describe('jsonrpc-2.0-text profile', () => {
     })).toBe(
       '{"jsonrpc":"2.0","id":"g:1","method":"status.get","params":{"large":9007199254740993}}'
     );
-    expect(profile.encodeCancel(id)).toBe(
-      '{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"g:1"}}'
-    );
     expect(profile.encodePlatformError(
       id,
       { kind: 'serverBusy' }
     )).toBe(
       '{"jsonrpc":"2.0","id":"g:1","error":{"code":-32000,"message":"Server busy"}}'
     );
+    expect('encodeCancel' in profile).toBe(false);
   });
 });
 
