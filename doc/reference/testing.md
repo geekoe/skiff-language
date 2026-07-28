@@ -70,33 +70,62 @@ packages:
   - id: example.com/widget
     version: 1.0.0
     alias: widget
-    access: topLevel
+    topLevelAlias: widgetImpl
 ```
 
-`access` 是互斥解析模式：
+同一dependency entry提供两条互不回退的名字：
 
-- 缺省 `public`：只按 dependency `api.yml` public paths 解析；
-- `topLevel`：只按精确 implementation artifact 的 source module/top-level symbol index 解析，
-  完全忽略该 dependency 的 `api.yml`；
-- 不允许 public-first、topLevel-fallback 或两套路径合并；
-- `topLevel` 仅允许出现在 `kind: test` service，且不传递到 dependency 的 dependencies。
-- 可访问的顶层名字包括同一文件中的 type、function、const、interface和附着到type的`db object`；
+- `alias`始终解析该dependency的`api.yml` public paths，测试service与普通consumer规则相同；
+- 可选`topLevelAlias`只解析同一精确implementation artifact的source module/top-level symbol index；
+- `topLevelAlias`只允许出现在`kind: test` service。它必须是合法、唯一的identifier，并且不能与当前
+  manifest中任何package/service `alias`或其它`topLevelAlias`冲突；
+- public alias与top-level alias没有public-first、top-level-first、fallback或precedence；
+- 可访问的顶层名字包括同一文件中的type、function、const、interface和附着到type的`db object`；
   DB attachment不需要、也不会因为测试访问而进入`api.yml`。
 
-topLevel 语法为：
+旧`access: topLevel`字段和“以普通alias替换public解析面”的语义均已删除；出现旧字段必须在manifest
+读取时失败，不能兼容、忽略或改写。
+
+`topLevelAlias`路径语法为：
 
 ```text
-<dependency-alias>/<source-module-path>.<top-level-name>
+<top-level-alias>/<source-module-path>.<top-level-name>
 ```
 
 `root.*` 始终表示 test service 自己。测试访问被测 package 必须写成例如
-`widget/internal.codec.decodeForTest(...)`，避免与本 service 或其他 dependency 冲突。
+`widgetImpl/internal.codec.decodeForTest(...)`；访问其公开API仍写
+`widget/<api-public-path>`。两条路径都属于同一dependency edge、`PackageRequirement`和
+`PackageBinding`，不会生成第二个requirement、code slot或collection projection。
 
-DB target使用同一语法，例如`db require widget/model.User(id)`。它只允许解析到该精确dependency
+DB target使用同一语法，例如`db require widgetImpl/model.User(id)`。它只允许解析到该精确dependency
 artifact中`model.User`的type及其同文件`db object User` attachment；所有read/write、query、
 `db claim`和`db lease` target都遵守这条规则。`db transaction`本身没有target，transaction内的每个
 DB operation分别解析。缺少type、attachment或精确artifact约束时编译/链接失败，不能按短名或其它
 dependency中同module/type的声明回退。
+
+top-level权限不传递。被测package的public ABI可以正常闭合其dependency公开类型，但这不授予test
+service对transitive dependency内部顶层符号的访问权。例如：
+
+```text
+aihub-tests -> aihub -> llm-providers
+```
+
+`aihub-tests`可以通过`aihub`的普通alias使用AIHub公开面及其ABI中引用的公开类型；若测试源码还要直接
+访问`llm-providers`的顶层符号，必须在自己的manifest中再声明一条指向`llm-providers`的direct
+dependency，并在该entry设置`topLevelAlias`。
+
+这会形成direct与transitive两条真实dependency edge。对于带state的package，activation把每条edge的
+source collection按其`collection_name_mapping`投影到当前test service的physical target。这里“一条
+active projection”只表示一个最终生效的collection映射与metadata owner，不表示创建一份额外数据库：
+
+- 两条edge解析到同一精确`PackageBuild`，且完整resolved collection projection
+  （source→target mappings及owner-relevant facts）canonical相同时，合并为一个active projection；
+- 同一build但resolved mapping不同，拒绝；
+- 不同build映射到同一physical target，拒绝；
+- dependency target与test service root自己的collection冲突，拒绝。
+
+`config.skiff-test.yml`是test activation state binding的唯一来源；direct/transitive edge相同不会创建
+第二份配置或第二个state owner。
 
 ## 4. Test Discovery
 
@@ -153,13 +182,13 @@ Live smoke：
 ## 6. Package Tests
 
 package 测试由归属该 package 仓库的 test service 承载。test service 把被测 package 声明为
-精确 dependency；需要内部顶层访问时使用 `access: topLevel`。
+精确dependency；需要内部顶层访问时在同一entry设置`topLevelAlias`，普通`alias`仍可访问公开API。
 
 规则：
 
 - test helper 只进入 test service artifact，不进入被测 package production artifact；
 - 测试通过普通 config、dependency、contract、deployment 和 assembly 机制运行；
-- package 内部测试使用 topLevel dependency call，不使用 overlay `root.*`；
+- package 内部测试使用top-level alias调用被测实现，不使用overlay `root.*`；
 - Package 仍不是远程 service；本机 Package call 不得伪装成 service-to-service RPC；
 - public API、implementation top-level、manifest 或 shared helper 变化时运行对应 test
   services。

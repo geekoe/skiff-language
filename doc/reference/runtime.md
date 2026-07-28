@@ -81,6 +81,12 @@ Skiff不提供公开的“取消请求”能力。Runtime内部仍有停止信�
 
 默认不自动 retry。只有 effect metadata 和 operation schema 明确声明幂等、可比较 target / conflict-key，并由平台策略允许时，router 才能重试。
 
+Runtime activation对stateful package diamond保留每条真实dependency edge，但不会因为同一精确build沿
+direct与transitive路径到达就创建两份数据库状态。若完整resolved collection mapping及owner facts
+canonical相同，只激活一个collection projection和metadata owner；同build不同mapping、不同build映射到
+同一physical target、或dependency/root collection冲突都fail closed。Test service的state binding只取自
+`config.skiff-test.yml`，不能从dependency path数量推导。
+
 ## 4. Runtime identities
 
 Runtime 依赖稳定 identity 做路由、drain、观测和测试替身匹配。

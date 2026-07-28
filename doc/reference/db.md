@@ -40,16 +40,16 @@ db object User {
 
 ### 1.1 Test Dependency DB Targets
 
-`kind: test` service可以对声明了`access: topLevel`的精确package dependency使用其文件顶层
-`db object`。DB target沿用测试顶层名字语法：
+`kind: test` service可以通过direct package dependency的`topLevelAlias`使用其文件顶层`db object`。
+DB target沿用测试顶层名字语法：
 
 ```skiff
-const session = db require subject/model.AdminSession(sessionId)
+const session = db require subjectImpl/model.AdminSession(sessionId)
 ```
 
-这里的`subject/model.AdminSession`同时选择provider package中的`model.AdminSession` type及同文件、
+这里的`subjectImpl/model.AdminSession`同时选择provider package中的`model.AdminSession` type及同文件、
 同名的`db object AdminSession` attachment。它不会把该attachment公开到`api.yml`，也不允许普通
-`access: public` dependency获得内部DB访问。
+alias、transitive dependency或production service获得内部DB访问。旧`access: topLevel`字段不再合法。
 
 该规则覆盖所有带target的DB语法：key/query read、insert/update/upsert/replace/delete、count/exists、
 `DbQuery`值、lease claim、lease状态读取，以及claim期间自动追加的写入guard。`db transaction`是当前
@@ -59,6 +59,11 @@ service database上的词法执行边界，本身没有target；其中每个DB o
 artifact。运行时仍写入当前test service拥有的database namespace；跨package target不是跨service
 database访问。若两个dependency的物理collection投影冲突，仍必须通过现有dependency collection
 mapping消除或在activation时失败。
+
+同一stateful package可因direct与transitive依赖形成菱形。若两条edge解析到同一精确build，且完整
+source→target collection mapping与owner-relevant facts canonical相同，activation将其合并为一个
+metadata owner；同build不同mapping、不同build指向同一physical target、或dependency与root
+collection冲突都必须失败。test state namespace只由`config.skiff-test.yml`中的对应binding提供。
 
 ## 2. Field Paths And Contextual Keywords
 

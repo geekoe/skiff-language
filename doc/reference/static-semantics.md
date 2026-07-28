@@ -210,11 +210,22 @@ Production build 的当前 source set 只包含 production source files。`*.tes
 
 外部 package 仍必须通过 import alias 访问其 published public API。`root.*` 不穿透 dependency 的 private 符号；如果某段共享代码需要被别的 package 使用，应进入该 package 的 public API，而不是依赖当前 package 的内部 root path。
 
-唯一例外是`kind: test` service中显式声明`access: topLevel`的dependency。它按
-`<dependency-alias>/<source-module-path>.<top-level-name>`解析精确implementation symbol，不先查
-public API，也不回退public path。该模式覆盖同一文件顶层type及附着到它的`db object`，因此
-`db require subject/model.User(id)`中的target与`subject/model.User`类型引用选择同一个精确provider
-type。普通dependency、dependency的transitive dependencies和production service都不能使用该例外。
+唯一例外是`kind: test` service中dependency entry声明的`topLevelAlias`。普通`alias`始终按该dependency
+的`api.yml` public path解析；`topLevelAlias`则按
+`<top-level-alias>/<source-module-path>.<top-level-name>`解析同一直接dependency的精确implementation
+symbol。两者没有fallback或precedence。该模式覆盖同一文件顶层type及附着到它的`db object`，因此
+`db require subjectImpl/model.User(id)`中的target与`subjectImpl/model.User`类型引用选择同一个精确
+provider type。
+
+`topLevelAlias`只允许出现在`kind: test` service，必须是合法唯一identifier，并与所有package/service
+alias和其它top-level alias不冲突。旧`access: topLevel`必须fail closed。top-level权限不传递：
+dependency public ABI可以闭合其dependency公开类型，但consumer不能因此直接访问transitive dependency
+top-level；需要时必须另行声明direct dependency及其`topLevelAlias`。
+
+public alias与top-level alias仍表示同一个direct dependency edge。Source resolution保留顶层路径及
+exact implementation expectation；lowering时package reference canonicalize回该entry的primary
+`alias`，绑定同一个`expectedPackageBuild`，不得生成第二个`PackageRequirement`、code slot或collection
+projection。
 
 跨package DB target的符号约束与其它topLevel symbol相同：consumer保留dependency alias、完整
 symbol path和ABI expectation；dependency requirement另行约束精确provider build。Linker必须把两者

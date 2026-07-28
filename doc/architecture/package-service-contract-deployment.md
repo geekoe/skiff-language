@@ -997,6 +997,7 @@ package dependency与service dependency是两种edge，都由`package.yml`声明
 ```text
 PackageRequirement
   alias + packageId + exactVersion + expectedLocalAbi
+  optional expectedPackageBuild for test-only top-level access
 
 ServiceRequirement
   alias + serviceId + exactVersionLabel + expectedProtocolIdentity
@@ -1011,10 +1012,23 @@ service API types和operation signatures，但不要求provider implementation�
 runtime binding slot。它不包含provider package、provider build、deployment revision或runtime route；
 最终assembly只为ServiceRequirement选择deployment。
 
-测试service的`access: topLevel` package edge是唯一需要implementation build约束的直接dependency：
-`PackageRequirement.expectedPackageBuild`选择精确provider build。Consumer File IR中的外部DB target复用
+每个package dependency entry的primary `alias`始终解析该dependency `api.yml` public paths。仅
+`kind: test` service可在同一entry增加`topLevelAlias`，按
+`<top-level-alias>/<source-module-path>.<top-level-name>`解析精确implementation source top-level。
+`topLevelAlias`必须是合法唯一identifier，并与所有package/service alias及其它`topLevelAlias`无冲突；
+两套名字没有fallback或precedence。旧`access: topLevel`字段及其互斥解析模式必须fail closed。
+
+public alias与top-level alias是同一个direct dependency edge、`PackageRequirement`与
+`PackageBinding`。Top-level source reference在lowering时canonicalize回primary alias，并由
+`PackageRequirement.expectedPackageBuild`选择精确provider build；不得产生第二个requirement、code slot或
+collection projection。Consumer File IR中的外部DB target复用
 `PackageSymbolRef { package: Dependency(alias), symbolPath, abiExpectation }`，不另造DB专用package
-reference，也不复制provider的DB metadata。普通package edge没有这项私有可见性，不能借DB target扩大权限。
+reference，也不复制provider的DB metadata。
+
+top-level权限不传递。Subject public ABI可以正常闭合其dependency public types，但test consumer不能因此
+直接使用transitive dependency top-level；确需访问时必须在test manifest中为该provider声明direct
+dependency并设置该entry的`topLevelAlias`。普通package edge和production service没有implementation
+top-level可见性，不能借DB target扩大权限。
 
 必须分开的identity：
 
@@ -1063,6 +1077,20 @@ module suffix或发现顺序lookup。Provider File IR独占collection、key、fi
 recoverable metadata；consumer、PackageArtifact和linked executable不得复制这些事实。两个dependency即使
 拥有相同module/type也因PackageArtifactRef不同而保持无冲突；物理collection映射仍由各自
 PackageRequirement/PackageBinding edge单独投影和校验。
+
+同一stateful `PackageBuild`可因direct与transitive dependency形成多条真实edge。Assembly/loader先解析每条
+edge，再按以下规则形成activation中的active collection projection与metadata owner：
+
+- exact `PackageBuild`相同，且resolved source→target collection mappings与所有owner-relevant facts的
+  canonical表示相同：合并成一个active projection与一个metadata owner；
+- exact build相同但resolved mapping不同：拒绝；
+- build不同但指向同一physical target：拒绝；
+- dependency projection与service root collection冲突：拒绝。
+
+“active projection”是一次activation内最终生效的collection mapping/metadata owner，不是另一份数据库或
+另一条package binding。合并不改变原始dependency graph，也不抹去用于诊断和identity的edge事实。
+`config.skiff-test.yml`仍是test activation state binding的唯一来源；direct/transitive菱形不能生成第二份
+config、namespace或state owner。
 
 该身份覆盖所有DB operation target、`DbQuery`、lease claim、lease state read和claim write guard。
 Transaction本身只是当前service DB上的执行边界，没有独立target；内部operation各自携带目标。缺失link/type/
