@@ -186,6 +186,7 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     expect(Object.keys(zeroValidation.envelope.routing).sort()).toEqual([
       'assemblyGeneration',
       'assemblyIdentity',
+      'deployment',
       'gatewayEntryIdentity',
       'ingress',
       'kind'
