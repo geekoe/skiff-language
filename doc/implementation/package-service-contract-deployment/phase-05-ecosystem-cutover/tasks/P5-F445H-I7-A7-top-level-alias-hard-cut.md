@@ -3,7 +3,7 @@
 状态：
 
 ```text
-IN_PROGRESS
+COMPLETE
 ```
 
 ## 1. Frozen input
