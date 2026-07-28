@@ -348,7 +348,7 @@ impl<'a> FileIngest<'a> {
         }
         let tmp_path = self.tmp_path.take();
         Ok(StagedFile {
-            sha256: hex::encode(self.hasher.finalize()),
+            sha256: hex::encode(std::mem::take(&mut self.hasher).finalize()),
             size: self.size,
             memory: if tmp_path.is_none() {
                 Some(Bytes::from(std::mem::take(&mut self.memory)))
@@ -374,6 +374,15 @@ impl<'a> FileIngest<'a> {
         self.tmp_file.take();
         if let Some(path) = self.tmp_path.take() {
             let _ = fs::remove_file(path).await;
+        }
+    }
+}
+
+impl Drop for FileIngest<'_> {
+    fn drop(&mut self) {
+        self.tmp_file.take();
+        if let Some(path) = self.tmp_path.take() {
+            let _ = std::fs::remove_file(path);
         }
     }
 }

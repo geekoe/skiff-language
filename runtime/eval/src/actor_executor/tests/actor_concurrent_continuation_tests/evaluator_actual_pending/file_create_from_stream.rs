@@ -10,6 +10,7 @@ struct RecordingFileState {
     starts: AtomicUsize,
     completions: AtomicUsize,
     drops_before_completion: AtomicUsize,
+    scope_pending: AtomicBool,
 }
 
 impl RecordingFile {
@@ -19,8 +20,13 @@ impl RecordingFile {
                 starts: AtomicUsize::new(0),
                 completions: AtomicUsize::new(0),
                 drops_before_completion: AtomicUsize::new(0),
+                scope_pending: AtomicBool::new(false),
             }),
         }
+    }
+
+    fn hold_pending_until_scope_terminal(&self) {
+        self.state.scope_pending.store(true, Ordering::Release);
     }
 
     fn starts(&self) -> usize {
@@ -138,7 +144,7 @@ impl FileCapabilityApi for RecordingFile {
         _target: &'a str,
         _options: FileCreateOptions,
         mut next_chunk: FileChunkSource<'a>,
-        _execution_control: OwnedExecutionControl,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         self.state.starts.fetch_add(1, Ordering::AcqRel);
         let state = Arc::clone(&self.state);
@@ -147,6 +153,33 @@ impl FileCapabilityApi for RecordingFile {
                 state: Arc::clone(&state),
                 completed: false,
             };
+            if state.scope_pending.load(Ordering::Acquire) {
+                let scope = execution_control.execution_scope().map_err(|error| {
+                    skiff_runtime_capability_context::FileCapabilityError::decode(error.to_string())
+                })?;
+                let (lease, _completion) = scope.acquire_lease();
+                let _terminal = lease.wait().await;
+                let error = execution_control
+                    .borrow()
+                    .poll_execution_budget()
+                    .expect_err("scope terminal must fail the post-await checkpoint");
+                assert!(
+                    matches!(
+                        error,
+                        skiff_runtime_capability_context::ExecutionControlError::BudgetExceeded(
+                            skiff_runtime_capability_context::ExecutionBudgetFailure {
+                                reason:
+                                    skiff_runtime_capability_context::ExecutionBudgetReason::DeadlineExceeded,
+                                ..
+                            }
+                        )
+                    ),
+                    "file lower owner must observe the current deadline, got {error:?}"
+                );
+                return Err(
+                    skiff_runtime_capability_context::FileCapabilityError::Execution(error),
+                );
+            }
             let mut size = 0usize;
             while let Some(chunk) = next_chunk().await? {
                 size += chunk.len();
@@ -326,4 +359,60 @@ async fn f445h_e4r_spine_create_from_stream_pending_drop_settles_once() {
     );
     drop(heap);
     drop(frame);
+}
+
+#[tokio::test]
+async fn f445h_i6_file_projection_to_pending_preserves_current_deadline_owner() {
+    let file = RecordingFile::new();
+    file.hold_pending_until_scope_terminal();
+    let fixture = create_from_stream_fixture();
+    let mut heap = RequestHeap::new(RequestHeapLimits::default());
+    let mut env = Env::new();
+    let addr = executable_addr();
+    let deadline = (tokio::time::Instant::now() + Duration::from_millis(20)).into_std();
+    let current = test_runtime::execution_control()
+        .derive_scope(deadline, site())
+        .expect("current file scope");
+    let current_scope = current.execution_scope().expect("current scope");
+    let context = program_context_with(
+        &fixture.interpreter,
+        test_runtime::actor_context(),
+        test_runtime::outbound_context(),
+        FileCapabilityContext::new(file.clone()),
+        DbCapabilityContext::unavailable(),
+    )
+    .with_execution_control(current);
+    let checkpoint_context = context.clone();
+    let mut eval = fixture.eval_context_with_unframed(context, &mut heap, &mut env, &addr);
+    let mut execution = Box::pin(eval.exec_program_executable());
+
+    assert!(matches!(first_poll(execution.as_mut()), Poll::Pending));
+    assert_eq!(file.starts(), 1);
+    assert_eq!(current_scope.lifecycle_snapshot().active_leases, 1);
+    let error = tokio::time::timeout(Duration::from_secs(1), execution)
+        .await
+        .expect("current deadline wakes")
+        .expect_err("current deadline terminates createFromStream");
+    drop(eval);
+
+    assert!(
+        matches!(error, RuntimeError::Cancelled),
+        "the native wait exposes the internal cancellation terminal, got {error:?}"
+    );
+    let checkpoint_error = checkpoint_context
+        .checkpoint(crate::program_execution::ExecutionCheckpoint::new(
+            crate::program_execution::ExecutionCheckpointKind::GeneratedChunk,
+            0,
+        ))
+        .expect_err("post-await checkpoint sees the current terminal");
+    let RuntimeError::ScopeTerminal(terminal) = checkpoint_error else {
+        panic!("expected exact checkpoint scope terminal, got {checkpoint_error:?}");
+    };
+    assert!(terminal.is_owned_by(&current_scope));
+    assert_eq!(
+        current_scope.lifecycle_snapshot(),
+        skiff_runtime_capability_context::ExecutionScopeLifecycleSnapshot::default(),
+    );
+    assert_eq!(file.completions(), 0);
+    assert_eq!(file.drops_before_completion(), 1);
 }

@@ -29,8 +29,7 @@ impl capability_contract::FileCapabilityApi for RuntimeFileCapabilityContext {
         options: FileCreateOptions,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
-        Box::pin(async move {
-            let _execution_control = execution_control;
+        scoped_file_future(execution_control, "std.file.create", async move {
             self.0
                 .create_file(target, input, options)
                 .await
@@ -44,8 +43,7 @@ impl capability_contract::FileCapabilityApi for RuntimeFileCapabilityContext {
         file: &'a ImmutableFileRef,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
-        Box::pin(async move {
-            let _execution_control = execution_control;
+        scoped_file_future(execution_control, "std.file.read", async move {
             self.0
                 .read_file_wire(target, file)
                 .await
@@ -59,8 +57,7 @@ impl capability_contract::FileCapabilityApi for RuntimeFileCapabilityContext {
         file: &'a ImmutableFileRef,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
-        Box::pin(async move {
-            let _execution_control = execution_control;
+        scoped_file_future(execution_control, "std.file.readText", async move {
             self.0
                 .read_text_file(target, file)
                 .await
@@ -74,8 +71,7 @@ impl capability_contract::FileCapabilityApi for RuntimeFileCapabilityContext {
         file: &'a ImmutableFileRef,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
-        Box::pin(async move {
-            let _execution_control = execution_control;
+        scoped_file_future(execution_control, "std.file.info", async move {
             self.0
                 .file_info(target, file)
                 .await
@@ -89,8 +85,7 @@ impl capability_contract::FileCapabilityApi for RuntimeFileCapabilityContext {
         file: &'a ImmutableFileRef,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, ()> {
-        Box::pin(async move {
-            let _execution_control = execution_control;
+        scoped_file_future(execution_control, "std.file.delete", async move {
             self.0
                 .delete_file(target, file)
                 .await
@@ -105,13 +100,91 @@ impl capability_contract::FileCapabilityApi for RuntimeFileCapabilityContext {
         mut next_chunk: capability_contract::FileChunkSource<'a>,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
-        Box::pin(async move {
-            let _execution_control = execution_control;
+        scoped_file_future(execution_control, "std.file.createFromStream", async move {
             self.0
                 .create_file_from_chunks(target, options, move || next_chunk())
                 .await
                 .map_err(root_error_into_file)
         })
+    }
+}
+
+fn scoped_file_future<'a, T, F>(
+    execution_control: capability_contract::OwnedExecutionControl,
+    operation: &'static str,
+    lower: F,
+) -> FileCapabilityFuture<'a, T>
+where
+    T: Send + 'a,
+    F: Future<Output = capability_contract::FileCapabilityResult<T>> + Send + 'a,
+{
+    Box::pin(async move {
+        let scope = execution_control.execution_scope().map_err(|error| {
+            FileCapabilityError::decode(format!(
+                "current execution scope is unavailable for {operation}: {error}"
+            ))
+        })?;
+        let (lease, completion) = scope.acquire_lease();
+        let lower = async move {
+            let output = lower.await;
+            (completion.complete(), output)
+        };
+        tokio::pin!(lower);
+        tokio::select! {
+            biased;
+            (completed, output) = &mut lower => {
+                if completed {
+                    output
+                } else {
+                    Err(current_file_scope_terminal(&execution_control, None))
+                }
+            }
+            terminal = lease.wait() => {
+                match terminal {
+                    capability_contract::ExecutionScopeLeaseTerminal::Control(terminal) => {
+                        Err(current_file_scope_terminal(
+                            &execution_control,
+                            Some(terminal),
+                        ))
+                    }
+                    capability_contract::ExecutionScopeLeaseTerminal::Completed => {
+                        unreachable!("file scope lease completion is owned by the lower future")
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn current_file_scope_terminal(
+    execution_control: &capability_contract::OwnedExecutionControl,
+    terminal: Option<capability_contract::ExecutionScopeTerminal>,
+) -> FileCapabilityError {
+    match execution_control.borrow().poll_execution_budget() {
+        Err(error) => FileCapabilityError::Execution(error),
+        Ok(()) => match terminal {
+            Some(capability_contract::ExecutionScopeTerminal::AncestorCancelled) => {
+                FileCapabilityError::Execution(
+                    capability_contract::ExecutionControlError::Cancelled,
+                )
+            }
+            Some(
+                capability_contract::ExecutionScopeTerminal::LocalDeadlineExceeded(_)
+                | capability_contract::ExecutionScopeTerminal::InheritedDeadlineExceeded(_),
+            ) => FileCapabilityError::Execution(
+                capability_contract::ExecutionControlError::BudgetExceeded(
+                    capability_contract::ExecutionBudgetFailure {
+                        reason: capability_contract::ExecutionBudgetReason::DeadlineExceeded,
+                        instruction_count: 0,
+                        limit: None,
+                        elapsed_ms: 0.0,
+                    },
+                ),
+            ),
+            None => FileCapabilityError::decode(
+                "file scope lease settled without a current execution terminal",
+            ),
+        },
     }
 }
 
@@ -375,8 +448,7 @@ impl capability_contract::FileSourceStreamApi for RuntimeOwnedFileSourceStreamCo
         stream: &'a Value,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Option<Value>> {
-        Box::pin(async move {
-            let _execution_control = execution_control;
+        scoped_file_future(execution_control, "std.file.source.next", async move {
             concrete::FileSourceStreamContext::new(
                 concrete_stream_runtime(&self.stream_runtime).clone(),
                 self.execution.borrow(),
@@ -611,6 +683,10 @@ impl capability_contract::StreamSinkApi for RuntimeStreamSink {
         ))
     }
 }
+
+#[cfg(test)]
+#[path = "file_stream_tests.rs"]
+mod file_stream_tests;
 
 #[derive(Debug)]
 pub(super) struct RuntimeStreamCancelSignal(pub(super) concrete::StreamCancelSignal);
