@@ -188,12 +188,23 @@ pub struct PublicationDbMetadata {
     pub module_path: String,
     pub type_name: String,
     pub canonical_type_name: String,
+    /// Exact consumer-side target identity for a DB attachment selected from
+    /// a direct package dependency. Local source DB objects leave this empty
+    /// and continue to derive their service-owned identity during lowering.
+    pub canonical_type_ref: Option<TypeRefIr>,
     pub collection_name: String,
     pub retention: Option<PublicationDbRetention>,
     pub leases: BTreeMap<String, PublicationDbLease>,
     pub key: PublicationDbObjectKey,
+    /// Canonical File IR type for a foreign attachment's key. This remains
+    /// empty for source-owned declarations, whose syntax type is authoritative.
+    pub canonical_key_type: Option<TypeRefIr>,
     pub fields: BTreeSet<String>,
     pub field_types: BTreeMap<String, TypeRef>,
+    /// Canonical File IR field types for a foreign attachment. Provider File
+    /// IR is the sole metadata owner; the consumer artifact never stores a
+    /// copied DB declaration.
+    pub canonical_field_types: BTreeMap<String, TypeRefIr>,
     pub field_type_texts: BTreeMap<String, String>,
     pub field_storage: BTreeMap<String, crate::shared::ast::DbStorageCodec>,
 }
@@ -308,12 +319,15 @@ fn publication_db_metadata(
         module_path: module_path.to_string(),
         type_name: db.name.clone(),
         canonical_type_name: canonical_db_type_name(module_path, &db.name),
+        canonical_type_ref: None,
         collection_name,
         retention,
         leases,
         key,
+        canonical_key_type: None,
         fields: db_field_names,
         field_types,
+        canonical_field_types: BTreeMap::new(),
         field_type_texts,
         field_storage: attachment.storage_map().clone(),
     })

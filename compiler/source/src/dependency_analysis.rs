@@ -11,6 +11,7 @@ use skiff_compiler_input::{
 use thiserror::Error;
 
 use crate::shared::ast_utils::dependency_source_address_parts;
+use crate::PublicationDbMetadataIndex;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SourceDependencyAnalysisError {
@@ -31,6 +32,7 @@ pub enum SourceDependencyAnalysisError {
 pub struct SourceDependencyAnalysisInput {
     packages: BTreeMap<String, PackageDependencyAnalysisFacts>,
     contracts: ContractDependencyIndex,
+    foreign_db_metadata: PublicationDbMetadataIndex,
 }
 
 #[derive(Debug, Clone)]
@@ -111,7 +113,19 @@ impl SourceDependencyAnalysisInput {
         Ok(Self {
             packages: package_index,
             contracts,
+            foreign_db_metadata: PublicationDbMetadataIndex::default(),
         })
+    }
+
+    /// Attaches DB facts already validated against exact direct dependency
+    /// artifacts and canonical provider File IR records.
+    pub fn with_foreign_db_metadata(mut self, metadata: PublicationDbMetadataIndex) -> Self {
+        self.foreign_db_metadata = metadata;
+        self
+    }
+
+    pub(crate) fn foreign_db_metadata(&self) -> &PublicationDbMetadataIndex {
+        &self.foreign_db_metadata
     }
 
     /// Resolves both dependency kinds through the namespace frozen by `new`.

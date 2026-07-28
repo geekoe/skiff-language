@@ -19,6 +19,7 @@ use skiff_compiler_input::{
     InputAssemblyError, ServiceSourceConfigError,
 };
 use skiff_compiler_source::SourceCompileError;
+use skiff_deployment::storage::CanonicalArtifactStore;
 use thiserror::Error;
 
 use super::package_graph::PackageGraphCompiler;
@@ -102,6 +103,8 @@ pub enum PackageProjectCompileError {
     },
     #[error("package manifest path {path} has no package root")]
     MissingPackageRoot { path: String },
+    #[error("test canonical artifact store failed: {message}")]
+    CanonicalArtifactStore { message: String },
 }
 
 /// Compiles a package project rooted at `package.yml`, using a local
@@ -133,11 +136,18 @@ pub fn compile_service_package_project(
     )?;
     let contract_dependencies = BTreeMap::new();
     let resolved_package_schemas = BTreeMap::new();
+    let artifact_store = CanonicalArtifactStore::create(
+        root.join(".skiff-compiler-test-artifacts"),
+    )
+    .map_err(|error| PackageProjectCompileError::CanonicalArtifactStore {
+        message: error.to_string(),
+    })?;
     let mut graph = PackageGraphCompiler::new(
         &platform_sources,
         manifests,
         &contract_dependencies,
         &resolved_package_schemas,
+        artifact_store,
     );
     // The compiler-owned std artifact must be available for exact source type
     // resolution. It enters the returned dependency closure only when the
@@ -224,6 +234,11 @@ fn compile_package_project_with_dirs_contract_dependencies_and_schemas(
         manifests,
         contract_dependencies,
         resolved_package_schemas,
+        CanonicalArtifactStore::create(root.join(".skiff-compiler-test-artifacts")).map_err(
+            |error| PackageProjectCompileError::CanonicalArtifactStore {
+                message: error.to_string(),
+            },
+        )?,
     );
     graph.compile_platform_std()?;
     let package = graph.compile(&root_key)?;

@@ -1,8 +1,12 @@
 mod common;
 
-use std::{fs, path::Path};
+use std::{fs, path::Path, sync::Arc};
 
-use common::{artifacts::module_artifact, package_project::compile_package_project, TestDir};
+use common::{
+    artifacts::module_artifact,
+    package_project::{compile_package_project, compile_service_package_project},
+    TestDir,
+};
 use skiff_compiler_input::package_config::read_user_package_manifest;
 use skiff_syntax::parser::parse_source;
 
@@ -462,6 +466,316 @@ function privateOnly() -> string {
         error.contains("has no callable public path `internal.codec.privateOnly`"),
         "{error}"
     );
+}
+
+#[test]
+fn test_service_top_level_alias_lowers_foreign_db_targets_to_the_primary_dependency() {
+    let temp = TestDir::new("skiff-compiler", "foreign-db-top-level-alias");
+    fs::write(
+        temp.path().join("package.yml"),
+        r#"id: example.com/provider-tests
+version: 1.0.0
+packages:
+  - id: example.com/provider
+    version: 1.0.0
+    alias: provider
+    topLevelAlias: providerImpl
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("service.yml"),
+        "id: example.com/provider-tests\nkind: test\n",
+    )
+    .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
+    fs::write(
+        temp.path().join("main.skiff"),
+        r#"
+import providerImpl
+
+function matrix(rows: Array<providerImpl/model.Session>) -> bool {
+  const inserted = db insert providerImpl/model.Session {
+    id = "one"
+    value = "first"
+    visits = 0
+  }
+  const found = db find many providerImpl/model.Session {
+    where value != null
+    order id asc
+    limit 10
+  }
+  const optional = db optional providerImpl/model.Session("one")
+  const required = db require providerImpl/model.Session("one")
+  const updated = db update providerImpl/model.Session("one") { visits += 1 }
+  const replaced = db replace providerImpl/model.Session("one") {
+    value = "replacement"
+    visits = 2
+  }
+  const upserted = db upsert providerImpl/model.Session("two") {
+    value = "created"
+    visits = 0
+  } { visits += 1 }
+  const count = db count providerImpl/model.Session { where id != null }
+  const exists = db exists providerImpl/model.Session("one")
+  const query = db query providerImpl/model.Session { where visits >= 0 }
+  const insertedMany = db insert many providerImpl/model.Session values rows
+  const updatedMany = db update many providerImpl/model.Session {
+    where visits >= 0
+  } { visits += 1 }
+  const deleted = db delete providerImpl/model.Session("two")
+  const deletedMany = db delete many providerImpl/model.Session { where visits > 10 }
+  const claimed = db claim providerImpl/model.Session("one").worker as locked {
+    db update providerImpl/model.Session("one") { visits += 1 }
+  }
+  const lease = db lease providerImpl/model.Session("one").worker
+  db transaction {
+    db update providerImpl/model.Session("one") { value = "transaction" }
+    db require providerImpl/model.Session("one")
+  }
+  return claimed
+}
+"#,
+    )
+    .unwrap();
+    let provider = temp
+        .path()
+        .join(".skiff-packages/example~com~~provider/1.0.0");
+    fs::create_dir_all(&provider).unwrap();
+    fs::write(
+        provider.join("package.yml"),
+        "id: example.com/provider\nversion: 1.0.0\nstate:\n  database:\n    kind: database\n",
+    )
+    .unwrap();
+    fs::write(provider.join("api.yml"), "Session: model.Session\n").unwrap();
+    fs::write(
+        provider.join("model.skiff"),
+        r#"
+type Session {
+  id: string,
+  value: string,
+  visits: number
+}
+
+type NotDb {
+  id: string
+}
+
+db object Session {
+  name "sessions"
+  primary key(id)
+  lease worker ttl 1000 max 5000
+  index byVisits(visits asc)
+}
+"#,
+    )
+    .unwrap();
+
+    let (project, _) =
+        compile_service_package_project(temp.path()).expect("foreign DB matrix should compile");
+    let requirement = project
+        .package
+        .artifact
+        .package_requirements
+        .iter()
+        .find(|requirement| requirement.alias == "provider")
+        .expect("one primary provider requirement");
+    assert_eq!(
+        project
+            .package
+            .artifact
+            .package_requirements
+            .iter()
+            .filter(|candidate| candidate.package_id == "example.com/provider")
+            .count(),
+        1
+    );
+    let provider_artifact = project
+        .dependency("example.com/provider", "1.0.0")
+        .expect("provider artifact belongs to the exact dependency closure");
+    assert_eq!(
+        requirement.expected_package_build.as_ref(),
+        Some(&provider_artifact.artifact.package_build_id)
+    );
+    assert!(
+        project
+            .package
+            .file_ir_units
+            .iter()
+            .all(|file| file.unit.declarations.db.is_empty()),
+        "the consumer must not copy the provider DB declaration or schema"
+    );
+    let file = module_artifact(&project.package, "main");
+    let value = file.value();
+    let mut targets = Vec::new();
+    collect_foreign_db_targets(&value, &mut targets);
+    assert!(
+        targets.len() >= 18,
+        "expected full DB target matrix: {targets:#?}"
+    );
+    for target in targets {
+        assert_eq!(target["typeRef"]["kind"], "packageSymbol");
+        assert_eq!(
+            target["typeRef"]["symbol"]["package"],
+            serde_json::json!({"kind": "dependency", "dependencyRef": "provider"})
+        );
+        assert_eq!(target["typeRef"]["symbol"]["symbolPath"], "model.Session");
+        assert_eq!(
+            target["typeRef"]["symbol"]["abiExpectation"],
+            requirement.expected_local_abi.as_str()
+        );
+    }
+
+    let packages = project.artifacts().collect::<Vec<_>>();
+    let package_links = packages
+        .iter()
+        .flat_map(|caller| {
+            caller
+                .artifact
+                .package_requirements
+                .iter()
+                .map(|requirement| {
+                    let provider = packages
+                        .iter()
+                        .find(|candidate| {
+                            candidate.artifact.package_id == requirement.package_id
+                                && candidate.artifact.package_version == requirement.exact_version
+                                && requirement.expected_package_build.as_ref().is_none_or(
+                                    |expected| &candidate.artifact.package_build_id == expected,
+                                )
+                        })
+                        .expect("every exact requirement must have one dependency artifact");
+                    skiff_artifact_model::PackageBinding {
+                        key: skiff_artifact_model::PackageRequirementKey {
+                            caller_package_build_id: caller.artifact.package_build_id.clone(),
+                            package_requirement_alias: requirement.alias.clone(),
+                        },
+                        package: skiff_artifact_identity::package_artifact_ref(&provider.artifact)
+                            .expect("provider artifact identity"),
+                        collection_name_mapping: requirement.collection_name_mapping.clone(),
+                    }
+                })
+        })
+        .collect();
+    let assembly = skiff_artifact_model::RuntimeAssembly {
+        schema_version: skiff_artifact_model::RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
+        assembly_identity: skiff_artifact_model::AssemblyIdentity::new("foreign-db-compiler-link"),
+        roots: Vec::new(),
+        resolved_deployments: Vec::new(),
+        resolved_contracts: Vec::new(),
+        resolved_packages: packages
+            .iter()
+            .map(|package| {
+                skiff_artifact_identity::package_artifact_ref(&package.artifact)
+                    .expect("compiled package identity")
+            })
+            .collect(),
+        package_link_plan: skiff_artifact_model::CanonicalPackageLinkPlan {
+            code_slots: packages
+                .iter()
+                .map(|package| skiff_artifact_model::PackageCodeSlot {
+                    package: skiff_artifact_identity::package_artifact_ref(&package.artifact)
+                        .expect("compiled package identity"),
+                })
+                .collect(),
+            package_links,
+        },
+        service_binding_templates: Vec::new(),
+        activation_templates: Vec::new(),
+        gateway_ingress: Vec::new(),
+    };
+    let image = skiff_runtime_linker::link_package_fixture_from_runtime_assembly(
+        &assembly,
+        packages.iter().map(|package| {
+            skiff_runtime_linked_program::HydratedPackageCode::new(
+                Arc::new(package.artifact.clone()),
+                package
+                    .file_ir_units
+                    .iter()
+                    .map(|file| Arc::new(file.unit.clone()))
+                    .collect(),
+                skiff_runtime_linked_program::PublicationResourceTable::default(),
+            )
+            .with_schema_index(Arc::new(package.package_schema_index.clone()))
+            .with_schema_records(
+                package
+                    .package_schema_type_records
+                    .iter()
+                    .map(|(id, record)| (id.clone(), Arc::new(record.clone())))
+                    .collect(),
+            )
+        }),
+    )
+    .expect("compiler foreign DB target should link through P3R0");
+    let linked_target = image
+        .code_by_build(&project.package.artifact.package_build_id)
+        .expect("consumer code slot")
+        .files()
+        .iter()
+        .flat_map(|file| &file.executables)
+        .flat_map(|executable| &executable.body.expressions)
+        .find_map(|expression| match expression {
+            skiff_runtime_linked_program::LinkedExprIr::DbOperation { operation } => {
+                Some(&operation.target.target_id)
+            }
+            _ => None,
+        })
+        .expect("linked consumer DB operation target");
+    assert_eq!(
+        linked_target.package_artifact_ref.package_build_id,
+        provider_artifact.artifact.package_build_id
+    );
+
+    fs::write(
+        temp.path().join("main.skiff"),
+        "import provider\nfunction bad() -> number { return db count provider/Session {} }\n",
+    )
+    .unwrap();
+    let error = compile_service_package_project(temp.path())
+        .expect_err("the public alias must not select a foreign DB attachment")
+        .to_string();
+    assert!(
+        error.contains("not a declared db object") || error.contains("has no DB metadata"),
+        "{error}"
+    );
+
+    fs::write(
+        temp.path().join("main.skiff"),
+        "import providerImpl\nfunction bad() -> number { return db count providerImpl/model.NotDb {} }\n",
+    )
+    .unwrap();
+    let error = compile_service_package_project(temp.path())
+        .expect_err("a top-level non-DB type must not become a DB target")
+        .to_string();
+    assert!(
+        error.contains("not a declared db object") || error.contains("has no DB metadata"),
+        "{error}"
+    );
+}
+
+fn collect_foreign_db_targets<'a>(
+    value: &'a serde_json::Value,
+    targets: &mut Vec<&'a serde_json::Value>,
+) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if object.contains_key("typeRef")
+                && object.contains_key("typeName")
+                && object["typeRef"]["kind"] == "packageSymbol"
+            {
+                targets.push(value);
+            }
+            for child in object.values() {
+                collect_foreign_db_targets(child, targets);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                collect_foreign_db_targets(child, targets);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[test]

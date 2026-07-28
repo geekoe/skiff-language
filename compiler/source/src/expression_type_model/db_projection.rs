@@ -66,6 +66,11 @@ impl<'a> DbProjectionTypeResolver<'a> {
         &self,
         metadata: &PublicationDbMetadata,
     ) -> Result<BTreeMap<String, TypeRefIr>, String> {
+        if let Some(key_type) = &metadata.canonical_key_type {
+            let mut fields = metadata.canonical_field_types.clone();
+            fields.insert(metadata.key.name.clone(), key_type.clone());
+            return Ok(fields);
+        }
         let context = TypeResolutionContext::source(&metadata.module_path);
         let mut seen = BTreeSet::new();
         metadata

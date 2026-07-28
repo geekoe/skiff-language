@@ -7,9 +7,9 @@ use std::{
 
 use skiff_artifact_model::PackageArtifact;
 use skiff_compiler::{
-    compile_package, compile_service_package, CompiledServicePackage, PackageCompileInput,
-    PackageContractCompileDependency, PackageSourceInput, PublishedPackageArtifact,
-    ResolvedPackageSchema,
+    authoring::publish_package_artifact_records, compile_package, compile_service_package,
+    CompiledServicePackage, PackageCompileInput, PackageContractCompileDependency,
+    PackageSourceInput, PublishedPackageArtifact, ResolvedPackageSchema,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_input::{
@@ -18,6 +18,7 @@ use skiff_compiler_input::{
     read_publication_resources, CompilerPlatformSources, ManifestOwner, ServicePackageRoot,
 };
 use skiff_compiler_source::source_graph::PublicationSourceGraph;
+use skiff_deployment::storage::CanonicalArtifactStore;
 
 use super::{
     package_project::PackageProjectCompileError, package_schemas::resolved_package_schema,
@@ -28,6 +29,7 @@ pub(super) struct PackageGraphCompiler<'a> {
     manifests: BTreeMap<PackageManifestKey, PackageManifest>,
     contract_dependencies: &'a BTreeMap<PackageManifestKey, Vec<PackageContractCompileDependency>>,
     explicit_package_schemas: &'a BTreeMap<PackageManifestKey, Vec<ResolvedPackageSchema>>,
+    artifact_store: CanonicalArtifactStore,
     published: BTreeMap<PackageManifestKey, PublishedPackageArtifact>,
     visiting: Vec<PackageManifestKey>,
     visiting_set: BTreeSet<PackageManifestKey>,
@@ -42,12 +44,14 @@ impl<'a> PackageGraphCompiler<'a> {
             Vec<PackageContractCompileDependency>,
         >,
         explicit_package_schemas: &'a BTreeMap<PackageManifestKey, Vec<ResolvedPackageSchema>>,
+        artifact_store: CanonicalArtifactStore,
     ) -> Self {
         Self {
             platform_sources,
             manifests,
             contract_dependencies,
             explicit_package_schemas,
+            artifact_store,
             published: BTreeMap::new(),
             visiting: Vec::new(),
             visiting_set: BTreeSet::new(),
@@ -99,8 +103,21 @@ impl<'a> PackageGraphCompiler<'a> {
         let result = self.compile_manifest(&manifest, None);
         self.visiting.pop();
         self.visiting_set.remove(key);
-        let (published, service_api) = result?;
+        let (mut published, service_api) = result?;
         debug_assert!(service_api.is_none());
+        let receipt = publish_package_artifact_records(&self.artifact_store, &published).map_err(
+            |error| PackageProjectCompileError::CanonicalArtifactStore {
+                message: error.to_string(),
+            },
+        )?;
+        published.artifact = self
+            .artifact_store
+            .read_package_artifact(&receipt.artifact)
+            .map_err(|error| PackageProjectCompileError::CanonicalArtifactStore {
+                message: error.to_string(),
+            })?
+            .as_ref()
+            .clone();
         self.published.insert(key.clone(), published.clone());
         Ok(published)
     }
@@ -249,7 +266,8 @@ impl<'a> PackageGraphCompiler<'a> {
             PackageCompileInput::new(self.platform_sources, &package, &aliases, &package_id)
                 .with_canonical_dependencies(&dependency_artifacts, contract_dependencies)
                 .with_available_canonical_packages(&available_artifacts)
-                .with_resolved_package_schemas(&resolved_package_schemas);
+                .with_resolved_package_schemas(&resolved_package_schemas)
+                .with_canonical_artifact_store(&self.artifact_store);
         if manifest
             .dependencies
             .iter()
