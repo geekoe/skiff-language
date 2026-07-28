@@ -7,7 +7,10 @@ import { describe, expect, it } from 'vitest';
 import { FilesystemRuntimeAssemblySnapshotLoader } from '../src/router/filesystemRuntimeAssemblySnapshotLoader.js';
 import { joinRuntimeAssemblyDeployments } from '../src/router/runtimeAssemblyDeploymentSnapshot.js';
 import type { DecodedRuntimeAssemblyRecord } from '../src/router/runtimeAssemblySnapshot.js';
-import { writeCompilerGeneratedFixtureArtifactRoot } from './helpers/compilerArtifacts.js';
+import {
+  writeCompilerGeneratedFixtureArtifactRoot,
+  writeCurrentScopeCompilerGeneratedArtifactRoot,
+} from './helpers/compilerArtifacts.js';
 
 describe('compiler generated HTTP gateway compatibility', () => {
   it(
@@ -191,6 +194,94 @@ describe('compiler generated HTTP gateway compatibility', () => {
           root
         ).load(generated.runtimeAssembly.assembly);
         expect(filesystemLoaded).toEqual(loaded);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    120_000
+  );
+
+  it(
+    'loads the exact S0 current-scope source artifact closure',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'skiff-router-current-scope-'));
+      try {
+        const generated =
+          await writeCurrentScopeCompilerGeneratedArtifactRoot(root);
+        expect(generated.receipt.baseAssembly.assemblyIdentity).toBe(
+          'skiff-runtime-assembly-v2:sha256:ec66d8a209e65198ee5b82086a365a4b3a98021ef8117e2572c66fee8eac5f6e'
+        );
+        expect(
+          generated.receipt.packages.consumer.packageBuildId
+        ).toBe(
+          'skiff-package-build-v10:sha256:9b03476e93f5ccb66dc69ff899f4a8fb9c68593e70c5aeda94d4e865aab688ad'
+        );
+        expect(
+          generated.receipt.contracts.consumer.serviceProtocolIdentity
+        ).toBe(
+          'skiff-service-protocol-v5:sha256:9ea7ac440bd594ef31632c1c1914b40f2e92957e7fb0f73f587f4cb4d8563fa5'
+        );
+        expect(
+          generated.receipt.deployments.consumer.deploymentArtifactIdentity
+        ).toBe(
+          'skiff-deployment-artifact-v3:sha256:aa74be018958d2e2375b91e500e4f73b6fea8fb97c4d694962d6745fe475791c'
+        );
+
+        const loaded = await new FilesystemRuntimeAssemblySnapshotLoader(
+          root
+        ).load(generated.receipt.baseAssembly);
+        expect(loaded.assemblyIdentity).toBe(
+          generated.receipt.baseAssembly.assemblyIdentity
+        );
+        expect(loaded.resolvedDeployments).toEqual(
+          expect.arrayContaining([
+            generated.receipt.deployments.consumer,
+            generated.receipt.deployments.provider,
+          ])
+        );
+        expect(loaded.resolvedContracts).toEqual(
+          expect.arrayContaining([
+            generated.receipt.contracts.consumer,
+            generated.receipt.contracts.payments,
+          ])
+        );
+        expect(loaded.actorMethods).toEqual([
+          expect.objectContaining({
+            declarationOwner: expect.objectContaining({
+              actorSymbol: 'Counter',
+            }),
+          }),
+        ]);
+        expect(
+          loaded.gatewayIngress.map((binding) => ({
+            protocol: binding.selector.protocol,
+            path: binding.selector.path,
+            mode: binding.operationMode,
+            gatewayEntryIdentity: binding.gatewayEntryIdentity,
+          }))
+        ).toEqual([
+          {
+            protocol: 'http',
+            path: '/current-scope/stream',
+            mode: 'serverStream',
+            gatewayEntryIdentity:
+              'skiff-gateway-entry-v2:sha256:1aef41f397b7c817110cb0cc74a7b472ba9732c5ac6bcfe6e219e3ac51ab6bd0',
+          },
+          {
+            protocol: 'http',
+            path: '/current-scope/unary',
+            mode: 'unary',
+            gatewayEntryIdentity:
+              'skiff-gateway-entry-v2:sha256:0fd289d7eec4e03b01e9e8f5633aedd7e1cc64158fa7932f99a9686e559c02f2',
+          },
+          {
+            protocol: 'webSocket',
+            path: '/current-scope/socket',
+            mode: 'unary',
+            gatewayEntryIdentity:
+              'skiff-gateway-entry-v2:sha256:f385624021966bab998385e1fd2c88804b51992f15f9c9d76c05d3e17a75018d',
+          },
+        ]);
       } finally {
         await rm(root, { recursive: true, force: true });
       }

@@ -1,9 +1,12 @@
 import { EventEmitter } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import type { ServerResponse } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import WebSocket from 'ws';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { encodeAssemblyActivationFrame } from '../src/protocol/assemblyActivationFrame.js';
 import {
@@ -22,11 +25,14 @@ import {
 } from '../src/router/runtimeDispatcher.js';
 import { RuntimeEndpoint } from '../src/router/runtimeEndpoint.js';
 import { RuntimeRegistry } from '../src/router/runtimeRegistry.js';
+import { FilesystemRuntimeAssemblySnapshotLoader } from '../src/router/filesystemRuntimeAssemblySnapshotLoader.js';
 import {
   RouterActiveAssemblySnapshotStore,
   RuntimeAssemblyIngressIndex,
+  type LoadedRuntimeAssembly,
   type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
+import { writeCurrentScopeCompilerGeneratedArtifactRoot } from './helpers/compilerArtifacts.js';
 
 const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 const GATEWAY_ENTRY_IDENTITY =
@@ -51,6 +57,23 @@ const binding: RuntimeAssemblyIngressBinding = {
 };
 
 const fixtures: StreamFixture[] = [];
+let currentScopeRoot: string;
+let currentScopeAssembly: LoadedRuntimeAssembly;
+
+beforeAll(async () => {
+  currentScopeRoot = await mkdtemp(
+    join(tmpdir(), 'skiff-router-current-scope-stream-')
+  );
+  const generated =
+    await writeCurrentScopeCompilerGeneratedArtifactRoot(currentScopeRoot);
+  currentScopeAssembly = await new FilesystemRuntimeAssemblySnapshotLoader(
+    currentScopeRoot
+  ).load(generated.receipt.baseAssembly);
+}, 120_000);
+
+afterAll(async () => {
+  await rm(currentScopeRoot, { recursive: true, force: true });
+});
 
 afterEach(async () => {
   while (fixtures.length > 0) {
@@ -59,6 +82,86 @@ afterEach(async () => {
 });
 
 describe('RuntimeAssembly HTTP serverStream ingress', () => {
+  it('dispatches the exact S0 server-stream binding to one observable terminal', async () => {
+    const exact = currentScopeAssembly.gatewayIngress.find(
+      (candidate) =>
+        candidate.selector.protocol === 'http' &&
+        candidate.selector.path === '/current-scope/stream'
+    );
+    if (exact === undefined) {
+      throw new Error('current-scope server-stream binding is missing');
+    }
+    const fixture = await createFixture({}, {
+      assemblyIdentity: currentScopeAssembly.assemblyIdentity,
+      generation: 1,
+      binding: exact
+    });
+    const response = sendHttp(
+      fixture.url,
+      Buffer.from([9, 8, 7]),
+      exact.selector
+    );
+    const requestFrame = decodeBinaryFrame(
+      await nextBinaryMessage(fixture.runtime)
+    );
+    expect(requestFrame.header).toMatchObject({
+      type: 'request.start',
+      mode: 'serverStream',
+      routing: {
+        assemblyIdentity: currentScopeAssembly.assemblyIdentity,
+        assemblyGeneration: 1,
+        gatewayEntryIdentity:
+          'skiff-gateway-entry-v2:sha256:1aef41f397b7c817110cb0cc74a7b472ba9732c5ac6bcfe6e219e3ac51ab6bd0',
+        ingress: exact.selector
+      }
+    });
+    const requestId = String(requestFrame.header.requestId);
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.start',
+      requestId,
+      httpResponse: {
+        status: 206,
+        headers: [{ name: 'x-source-receipt', value: 'current-scope' }]
+      }
+    }));
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.chunk',
+      requestId,
+      seq: 0
+    }, Buffer.from([1, 2])));
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.chunk',
+      requestId,
+      seq: 1
+    }, Buffer.from([3, 4])));
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.end',
+      requestId,
+      payloadPresent: false
+    }));
+
+    await expect(response).resolves.toEqual({
+      status: 206,
+      headers: expect.objectContaining({
+        'x-source-receipt': 'current-scope'
+      }),
+      body: Buffer.from([1, 2, 3, 4])
+    });
+    expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
+      pendingUnary: 0,
+      pendingStream: 0
+    });
+    expect(fixture.gateway.streamLifecycleCounters()).toEqual({
+      activeWriters: 0,
+      backpressureWaiters: 0,
+      backpressureCancels: 0
+    });
+  });
+
   it('selects the exact gateway binding and preserves ordered binary chunks', async () => {
     const fixture = await createFixture();
     const response = sendHttp(fixture.url, Buffer.from([9, 8, 7]));
@@ -439,14 +542,23 @@ async function createFixture(
     maxRequestBytes?: number;
     maxResponseBytes?: number;
     requestTimeoutMs?: number;
-  } = {}
+  } = {},
+  active: {
+    assemblyIdentity: string;
+    generation: number;
+    binding: RuntimeAssemblyIngressBinding;
+  } = {
+    assemblyIdentity: ASSEMBLY,
+    generation: 4,
+    binding
+  }
 ): Promise<StreamFixture> {
   const snapshots = new RouterActiveAssemblySnapshotStore();
   snapshots.replace({
     environment: 'test',
-    generation: 4,
-    assembly: { assemblyIdentity: ASSEMBLY },
-    ingress: new RuntimeAssemblyIngressIndex([binding])
+    generation: active.generation,
+    assembly: { assemblyIdentity: active.assemblyIdentity },
+    ingress: new RuntimeAssemblyIngressIndex([active.binding])
   });
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
   const endpoint = new RuntimeEndpoint({
@@ -481,8 +593,8 @@ async function createFixture(
   runtime.send(encodeAssemblyActivationFrame('runtimeToRouter', {
     type: 'register',
     environment: 'test',
-    generation: 4,
-    assembly: { assemblyIdentity: ASSEMBLY },
+    generation: active.generation,
+    assembly: { assemblyIdentity: active.assemblyIdentity },
     replicaId: RUNTIME_ID
   }));
   await until(() =>
@@ -505,18 +617,28 @@ async function createFixture(
 
 async function sendHttp(
   baseUrl: string,
-  body: Buffer
+  body: Buffer,
+  selector: {
+    host: string;
+    method: string | null;
+    path: string;
+  } = { host: HOST, method: 'POST', path: PATH }
 ): Promise<{
   status: number;
   headers: Record<string, string | string[] | undefined>;
   body: Buffer;
 }> {
-  return await startHttp(baseUrl, body).response;
+  return await startHttp(baseUrl, body, selector).response;
 }
 
 function startHttp(
   baseUrl: string,
-  body: Buffer
+  body: Buffer,
+  selector: {
+    host: string;
+    method: string | null;
+    path: string;
+  } = { host: HOST, method: 'POST', path: PATH }
 ): {
   request: ReturnType<typeof httpRequest>;
   response: Promise<{
@@ -525,7 +647,7 @@ function startHttp(
     body: Buffer;
   }>;
 } {
-  const url = new URL(PATH, baseUrl);
+  const url = new URL(selector.path, baseUrl);
   let request: ReturnType<typeof httpRequest>;
   const response = new Promise<{
     status: number;
@@ -533,9 +655,9 @@ function startHttp(
     body: Buffer;
   }>((resolve, reject) => {
     request = httpRequest(url, {
-      method: 'POST',
+      method: selector.method ?? 'POST',
       headers: {
-        Host: HOST,
+        Host: selector.host,
         'content-length': String(body.byteLength)
       }
     }, (response) => {

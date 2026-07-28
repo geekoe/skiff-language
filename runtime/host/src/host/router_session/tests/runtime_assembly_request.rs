@@ -28,6 +28,49 @@ use crate::{host::RuntimeHost, loader::assembly_admission::ActiveAssemblyRoute};
 pub(super) mod fixture;
 
 #[tokio::test]
+async fn host_current_scope_compiled_artifact_admits_exact_source_routes() {
+    let (_host, routes) = fixture::admitted_current_scope_gateway_host().await;
+    assert_eq!(routes.len(), 3);
+
+    let unary = &routes["/current-scope/unary"];
+    assert_eq!(
+        unary.assembly_identity().as_str(),
+        "skiff-runtime-assembly-v2:sha256:ec66d8a209e65198ee5b82086a365a4b3a98021ef8117e2572c66fee8eac5f6e"
+    );
+    assert_eq!(
+        unary.gateway_entry_identity().as_str(),
+        "skiff-gateway-entry-v2:sha256:0fd289d7eec4e03b01e9e8f5633aedd7e1cc64158fa7932f99a9686e559c02f2"
+    );
+    let GatewayProtocolSurface::Http(unary_surface) = &unary.protocol_surface().protocol else {
+        panic!("current-scope unary route must remain HTTP")
+    };
+    assert_eq!(unary_surface.dispatch_mode, GatewayDispatchMode::Unary);
+
+    let stream = &routes["/current-scope/stream"];
+    assert_eq!(
+        stream.gateway_entry_identity().as_str(),
+        "skiff-gateway-entry-v2:sha256:1aef41f397b7c817110cb0cc74a7b472ba9732c5ac6bcfe6e219e3ac51ab6bd0"
+    );
+    let GatewayProtocolSurface::Http(stream_surface) = &stream.protocol_surface().protocol else {
+        panic!("current-scope stream route must remain HTTP")
+    };
+    assert_eq!(
+        stream_surface.dispatch_mode,
+        GatewayDispatchMode::ServerStream
+    );
+
+    let websocket = &routes["/current-scope/socket"];
+    assert_eq!(
+        websocket.gateway_entry_identity().as_str(),
+        "skiff-gateway-entry-v2:sha256:f385624021966bab998385e1fd2c88804b51992f15f9c9d76c05d3e17a75018d"
+    );
+    assert!(matches!(
+        websocket.protocol_surface().protocol,
+        GatewayProtocolSurface::WebSocketConnect(_)
+    ));
+}
+
+#[tokio::test]
 async fn host_http_gateway_typed_raw_and_stream_execute_private_handlers() {
     let (host, routes) = fixture::admitted_gateway_host().await;
 

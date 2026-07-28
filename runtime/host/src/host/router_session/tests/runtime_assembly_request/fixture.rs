@@ -26,6 +26,7 @@ use skiff_runtime_loader::{
     RuntimeAssemblyRecordResolver,
 };
 use skiff_test_runner::canonical_std_seed::seed_canonical_std;
+use skiff_test_runner::package_service_host_fixture::prepare_package_service_host_fixture;
 
 use crate::{host::RuntimeHost, loader::assembly_admission::ActiveAssemblyRoute};
 
@@ -56,6 +57,31 @@ pub(super) async fn admitted_gateway_host() -> (RuntimeHost, HashMap<String, Act
                 binding.selector.path.clone(),
                 host.lookup_active_assembly_request_route(&binding.selector)
                     .expect("compiled HTTP gateway route"),
+            )
+        })
+        .collect();
+    (host, routes)
+}
+
+pub(super) async fn admitted_current_scope_gateway_host(
+) -> (RuntimeHost, HashMap<String, ActiveAssemblyRoute>) {
+    let fixture = compile_current_scope_fixture();
+    let resolver = FilesystemRuntimeAssemblyContentResolver::open(&fixture.artifact_root)
+        .expect("current-scope filesystem resolver");
+    let host = super::super::test_host();
+    host.assembly_admission
+        .admit(Arc::clone(&fixture.assembly), &resolver)
+        .await
+        .expect("exact current-scope source assembly should admit");
+    let routes = fixture
+        .assembly
+        .gateway_ingress
+        .iter()
+        .map(|binding| {
+            (
+                binding.selector.path.clone(),
+                host.lookup_active_assembly_request_route(&binding.selector)
+                    .expect("exact current-scope gateway route"),
             )
         })
         .collect();
@@ -328,6 +354,12 @@ struct CompiledGatewayFixture {
     _temp: TempFixture,
 }
 
+struct CurrentScopeCompiledFixture {
+    assembly: Arc<RuntimeAssembly>,
+    artifact_root: PathBuf,
+    _temp: TempFixture,
+}
+
 impl CompiledGatewayFixture {
     fn resolver(&self) -> CompiledGatewayResolver<'_> {
         CompiledGatewayResolver {
@@ -440,6 +472,50 @@ impl RuntimeAssemblyRecordResolver for CompiledGatewayResolver<'_> {
 
 fn fixture() -> &'static CompiledGatewayFixture {
     FIXTURE.get_or_init(|| compile_fixture(true))
+}
+
+fn compile_current_scope_fixture() -> CurrentScopeCompiledFixture {
+    let temp = TempFixture::new("host-current-scope-source-artifact");
+    let artifact_root = temp.child("artifacts");
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("runtime/host must live below the Skiff root")
+        .to_path_buf();
+    let platform = CompilerPlatformSources::new(&repository).expect("repository platform sources");
+    seed_canonical_std(&platform, &artifact_root).expect("canonical std seed");
+    let receipt = prepare_package_service_host_fixture(
+        &platform,
+        &repository.join("test-runner/fixtures/package-service-current-scope"),
+        &temp.child("authoring"),
+        &artifact_root,
+        "current-scope",
+    )
+    .expect("exact current-scope fixture authoring");
+    let store = CanonicalArtifactStore::open(&artifact_root).expect("current-scope artifact store");
+    let assembly = store
+        .read_runtime_assembly(&receipt.base_assembly)
+        .expect("exact current-scope RuntimeAssembly");
+    assert_eq!(
+        receipt.base_assembly.assembly_identity.as_str(),
+        "skiff-runtime-assembly-v2:sha256:ec66d8a209e65198ee5b82086a365a4b3a98021ef8117e2572c66fee8eac5f6e"
+    );
+    assert_eq!(
+        receipt.consumer_package.package_build_id.as_str(),
+        "skiff-package-build-v10:sha256:9b03476e93f5ccb66dc69ff899f4a8fb9c68593e70c5aeda94d4e865aab688ad"
+    );
+    assert_eq!(
+        receipt
+            .consumer_deployment
+            .deployment_artifact_identity
+            .as_str(),
+        "skiff-deployment-artifact-v3:sha256:aa74be018958d2e2375b91e500e4f73b6fea8fb97c4d694962d6745fe475791c"
+    );
+    CurrentScopeCompiledFixture {
+        assembly,
+        artifact_root,
+        _temp: temp,
+    }
 }
 
 fn path_only_fixture() -> &'static CompiledGatewayFixture {

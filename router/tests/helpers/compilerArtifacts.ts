@@ -8,6 +8,11 @@ const execFileAsync = promisify(execFile);
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const compilerManifestPath = join(repoRoot, 'compiler/Cargo.toml');
 const fixturePath = join(repoRoot, 'compiler/tests/fixtures/router-websocket-fixture');
+const currentScopeFixturePath = join(
+  repoRoot,
+  'test-runner/fixtures/package-service-current-scope'
+);
+const testRunnerManifestPath = join(repoRoot, 'test-runner/Cargo.toml');
 
 interface ObjectReceipt {
   recordPath: string;
@@ -42,6 +47,28 @@ export interface CompilerGeneratedArtifactRoot {
   contractValue: Record<string, unknown>;
   deploymentValue: Record<string, unknown>;
   assemblyValue: Record<string, unknown>;
+}
+
+export interface CurrentScopeCompilerGeneratedArtifactRoot {
+  root: string;
+  receipt: {
+    schemaVersion: 'skiff-package-service-host-fixture-v1';
+    environment: string;
+    contracts: {
+      payments: Record<string, string>;
+      consumer: Record<string, string>;
+    };
+    packages: {
+      helper: Record<string, string>;
+      provider: Record<string, string>;
+      consumer: Record<string, string>;
+    };
+    deployments: {
+      provider: Record<string, string>;
+      consumer: Record<string, string>;
+    };
+    baseAssembly: { assemblyIdentity: string };
+  };
 }
 
 export async function writeCompilerGeneratedFixtureArtifactRoot(
@@ -88,6 +115,66 @@ export async function writeCompilerGeneratedFixtureArtifactRoot(
     deploymentValue: await readRecord(root, serviceDeployment),
     assemblyValue: await readRecord(root, runtimeAssembly),
   };
+}
+
+export async function writeCurrentScopeCompilerGeneratedArtifactRoot(
+  root: string
+): Promise<CurrentScopeCompilerGeneratedArtifactRoot> {
+  await mkdir(root, { recursive: true });
+  const environment = 'current-scope';
+  await runPackageServiceFixture([
+    '--bootstrap-only',
+    '--artifact-root',
+    root,
+    '--environment',
+    environment,
+    '--platform-source-root',
+    repoRoot,
+  ]);
+  const workRoot = join(root, '.authoring', 'current-scope');
+  const receiptPath = join(workRoot, 'receipt.json');
+  await runPackageServiceFixture([
+    '--prepare-host-base',
+    currentScopeFixturePath,
+    '--work-root',
+    workRoot,
+    '--receipt',
+    receiptPath,
+    '--artifact-root',
+    root,
+    '--environment',
+    environment,
+    '--platform-source-root',
+    repoRoot,
+  ]);
+  const receipt = JSON.parse(await readFile(receiptPath, 'utf8')) as
+    CurrentScopeCompilerGeneratedArtifactRoot['receipt'];
+  if (
+    receipt.schemaVersion !== 'skiff-package-service-host-fixture-v1' ||
+    receipt.environment !== environment ||
+    typeof receipt.baseAssembly?.assemblyIdentity !== 'string'
+  ) {
+    throw new Error('current-scope compiler fixture returned an invalid receipt');
+  }
+  return { root, receipt };
+}
+
+async function runPackageServiceFixture(args: string[]): Promise<void> {
+  await execFileAsync(
+    'cargo',
+    [
+      'run',
+      '--quiet',
+      '--locked',
+      '--manifest-path',
+      testRunnerManifestPath,
+      '--bin',
+      'skiff-package-service-smoke-fixture',
+      '--',
+      ...args,
+    ],
+    { cwd: repoRoot }
+  );
 }
 
 async function author(
