@@ -36,7 +36,6 @@ export interface WebSocketRpcIngressCapture {
   readonly assemblyIdentity: string;
   readonly assemblyGeneration: number;
   readonly websocketEntryId: string;
-  readonly host: string;
   readonly path: string;
   readonly profile: RuntimeAssemblyWebSocketRpcProfile;
   readonly methodTable: ReadonlyMap<
@@ -75,7 +74,6 @@ export function captureWebSocketRpcIngress(input: {
     assemblyIdentity: snapshot.assembly.assemblyIdentity,
     assemblyGeneration: snapshot.generation,
     websocketEntryId: binding.websocketEntryId,
-    host: binding.selector.host,
     path: binding.selector.path,
     profile: binding.websocketRpcProfiles[0],
     methodTable,
@@ -114,7 +112,6 @@ export function attachWebSocketRpcConnection(input: {
     assemblyIdentity: capture.assemblyIdentity,
     assemblyGeneration: capture.assemblyGeneration,
     websocketEntryId: capture.websocketEntryId,
-    host: capture.host,
     path: capture.path,
     profile: capture.profile,
     profileAdapter: input.bridge.captureProfileAdapter(capture.profile),

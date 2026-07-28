@@ -20,7 +20,7 @@ import type {
 } from './runtimeRegistry.js';
 import type { RuntimeControlSource } from './actorSpawnRuntimeControl.js';
 import {
-  canonicalIngressHost,
+  canonicalHttpHost,
   RouterActiveAssemblySnapshotStore,
   runtimeAssemblyIngressKey,
   type RouterActiveAssemblySnapshot,
@@ -573,13 +573,9 @@ function validateAssemblyRequestFacts(
   try {
     canonicalIngress = {
       ...request.routing.ingress,
-      host: canonicalIngressHost(request.routing.ingress.host),
       method: request.routing.ingress.method.toUpperCase()
     };
-    if (
-      canonicalIngress.host !== request.routing.ingress.host ||
-      canonicalIngress.method !== request.routing.ingress.method
-    ) {
+    if (canonicalIngress.method !== request.routing.ingress.method) {
       throw new Error('request ingress is not canonical');
     }
     runtimeAssemblyIngressKey(canonicalIngress);
@@ -588,13 +584,16 @@ function validateAssemblyRequestFacts(
       'request does not carry canonical RuntimeAssembly ingress metadata'
     );
   }
-  const binding = active.ingress.get(canonicalIngress);
+  const binding = active.ingress.get(
+    request.routing.deployment,
+    canonicalIngress
+  );
   if (
     binding === undefined ||
     binding.selector.protocol !== request.routing.ingress.protocol ||
-    binding.selector.host !== request.routing.ingress.host ||
     binding.selector.method !== request.routing.ingress.method ||
     binding.selector.path !== request.routing.ingress.path ||
+    !sameDeployment(binding.deployment, request.routing.deployment) ||
     binding.gatewayEntryIdentity !== request.routing.gatewayEntryIdentity
   ) {
     return new ServiceProtocolBoundaryError(
@@ -631,8 +630,7 @@ function validateAssemblyHttpRequest(
       requestUrl.password !== '' ||
       requestUrl.hash !== '' ||
       requestUrl.pathname !== ingress.path ||
-      requestUrl.host !== ingress.host ||
-      canonicalIngressHost(requestUrl.host) !== ingress.host
+      canonicalHttpHost(requestUrl.host) !== requestUrl.host
     ) {
       throw new Error('HTTP request metadata does not match routing ingress');
     }
@@ -642,4 +640,16 @@ function validateAssemblyHttpRequest(
     );
   }
   return undefined;
+}
+
+function sameDeployment(
+  left: RuntimeAssemblyIngressBinding['deployment'],
+  right: RuntimeAssemblyIngressBinding['deployment']
+): boolean {
+  return (
+    left.serviceId === right.serviceId &&
+    left.contractVersion === right.contractVersion &&
+    left.deploymentRevision === right.deploymentRevision &&
+    left.deploymentArtifactIdentity === right.deploymentArtifactIdentity
+  );
 }

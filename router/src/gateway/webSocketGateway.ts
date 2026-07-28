@@ -31,11 +31,12 @@ import type {
 } from '../router/runtimeDispatcher.js';
 import type { RuntimeDispatchConnection } from '../router/runtimeRegistry.js';
 import {
-  canonicalIngressHost,
+  canonicalHttpHost,
   type RouterActiveAssemblySnapshot,
   type RouterActiveAssemblySnapshotStore,
   type RuntimeAssemblyIngressBinding
 } from '../router/runtimeAssemblySnapshot.js';
+import { readServiceDeploymentSelector } from '../router/serviceDeploymentSelection.js';
 import type {
   WebSocketGenerationLifecycleRouter
 } from '../router/webSocketGenerationLifecycleRouter.js';
@@ -697,10 +698,10 @@ export function assemblyWebSocketConnectRequestHeader(input: {
       kind: 'runtimeAssembly',
       assemblyIdentity: input.snapshot.assembly.assemblyIdentity,
       assemblyGeneration: input.snapshot.generation,
+      deployment: { ...binding.deployment },
       gatewayEntryIdentity: binding.gatewayEntryIdentity,
       ingress: {
         protocol: 'webSocket',
-        host: binding.selector.host,
         method: null,
         path: binding.selector.path
       }
@@ -857,6 +858,7 @@ function selectWebSocketIngress(
   binding: RuntimeAssemblyIngressBinding;
   url: URL;
 } {
+  const deployment = readServiceDeploymentSelector(request);
   const rawHost = request.headers.host;
   if (
     typeof rawHost !== 'string' ||
@@ -865,17 +867,17 @@ function selectWebSocketIngress(
   ) {
     throw new GatewayError(
       421,
-      'IngressHostRequired',
+      'RequestHostRequired',
       'request Host must be singular and present'
     );
   }
   let host: string;
   try {
-    host = canonicalIngressHost(rawHost);
+    host = canonicalHttpHost(rawHost);
   } catch (error) {
     throw new GatewayError(
       421,
-      'IngressHostInvalid',
+      'RequestHostInvalid',
       'request Host is invalid',
       error
     );
@@ -891,29 +893,16 @@ function selectWebSocketIngress(
       error
     );
   }
-  const exact = snapshot.ingress.get({
+  const binding = snapshot.ingress.get(deployment, {
     protocol: 'webSocket',
-    host,
     method: null,
     path: url.pathname
   });
-  const wildcard = snapshot.ingress.get({
-    protocol: 'webSocket',
-    host: '*',
-    method: null,
-    path: url.pathname
-  });
-  const binding =
-    exact?.selector.protocol === 'webSocket'
-      ? exact
-      : wildcard?.selector.protocol === 'webSocket'
-        ? wildcard
-        : undefined;
   if (binding === undefined) {
     throw new GatewayError(
       404,
       'AssemblyIngressNotFound',
-      `No committed RuntimeAssembly WebSocket ingress matches ${host} ${url.pathname}`
+      `No committed RuntimeAssembly WebSocket ingress matches ${deployment.serviceId}@${deployment.contractVersion} ${url.pathname}`
     );
   }
   return { snapshot, binding, url };

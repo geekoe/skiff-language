@@ -26,8 +26,8 @@ import {
   type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
 
-const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
-const DEPLOYMENT = `skiff-deployment-artifact-v3:sha256:${'c'.repeat(64)}`;
+const ASSEMBLY = `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
+const DEPLOYMENT = `skiff-deployment-artifact-v4:sha256:${'c'.repeat(64)}`;
 const CURRENT_HTTP_GATEWAY_ENTRY_IDENTITY =
   `skiff-gateway-entry-v2:sha256:${'e'.repeat(64)}`;
 const HTTP_HOST = 'p5-f345-http.example.test';
@@ -235,7 +235,6 @@ function binding(
   return {
     selector: {
       protocol: 'http',
-      host: HTTP_HOST,
       method: 'POST',
       path: HTTP_PATH
     },

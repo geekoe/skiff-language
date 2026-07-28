@@ -102,7 +102,7 @@ describe('Router runtime bootstrap session', () => {
 
     expect(frames).toEqual([
       {
-        schemaVersion: 'skiff-runtime-frame-v1',
+        schemaVersion: 'skiff-runtime-frame-v2',
         type: 'router.bootstrap',
         artifactsPath: '/srv/skiff/artifacts',
         serviceDb: { mongoUrl: 'mongodb://mongo.internal:27017/skiff' },
@@ -112,7 +112,7 @@ describe('Router runtime bootstrap session', () => {
 
     const manifest = loadRawHttpManifest();
     socket.send(encodeRuntimeFrame({
-      schemaVersion: 'skiff-runtime-frame-v1',
+      schemaVersion: 'skiff-runtime-frame-v2',
       type: 'runtime.register',
       runtimeId: 'runtime-bootstrap-order',
       serviceId: manifest.service.id,

@@ -28,7 +28,7 @@ import {
   RuntimeAssemblyIngressIndex
 } from '../src/router/runtimeAssemblySnapshot.js';
 
-const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+const ASSEMBLY = `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 const RUNTIME_ID = 'runtime-connection-send-a';
 const SERVICE_ID = 'example/chat';
 const WEBSOCKET_ENTRY_ID =
@@ -311,10 +311,16 @@ function websocketJsonRpcRequestHeader(): RuntimeAssemblyWebSocketJsonRpcRequest
       kind: 'runtimeAssembly',
       assemblyIdentity: ASSEMBLY,
       assemblyGeneration: 7,
+      deployment: {
+        serviceId: SERVICE_ID,
+        contractVersion: '1.0.0',
+        deploymentRevision: 'revision-a',
+        deploymentArtifactIdentity:
+          `skiff-deployment-artifact-v4:sha256:${'c'.repeat(64)}`
+      },
       gatewayEntryIdentity: METHOD_GATEWAY_ENTRY_IDENTITY,
       ingress: {
         protocol: 'webSocket',
-        host: 'chat.localhost',
         method: 'chat.send',
         path: '/v1/chat'
       }

@@ -80,7 +80,6 @@ export interface CapturedWebSocketRpcConnection {
   readonly assemblyIdentity: string;
   readonly assemblyGeneration: number;
   readonly websocketEntryId: string;
-  readonly host: string;
   readonly path: string;
   readonly profile: ProfileId;
   readonly profileAdapter: WebSocketRpcProfileAdapter;
@@ -543,10 +542,10 @@ export class WebSocketRpcBridge {
         kind: 'runtimeAssembly',
         assemblyIdentity: context.assemblyIdentity,
         assemblyGeneration: context.assemblyGeneration,
+        deployment: { ...binding.deployment },
         gatewayEntryIdentity: binding.gatewayEntryIdentity,
         ingress: {
           protocol: 'webSocket',
-          host: context.host,
           method: binding.method,
           path: context.path
         }
@@ -716,11 +715,10 @@ function validateCapturedConnection(
     throw new Error('captured WebSocket entry identity is not canonical');
   }
   if (
-    !isCanonicalBoundedString(input.host, 1024) ||
     !isCanonicalBoundedString(input.path, 4096) ||
     !input.path.startsWith('/')
   ) {
-    throw new Error('captured WebSocket host/path is not canonical');
+    throw new Error('captured WebSocket path is not canonical');
   }
   if (input.profileAdapter.profile !== input.profile) {
     throw new Error('captured profile adapter does not match its profile');

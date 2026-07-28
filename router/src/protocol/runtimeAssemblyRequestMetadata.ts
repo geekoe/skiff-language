@@ -152,6 +152,7 @@ function validateWebSocketConnect(envelope: Record<string, unknown>): void {
     "kind",
     "assemblyIdentity",
     "assemblyGeneration",
+    "deployment",
     "gatewayEntryIdentity",
     "ingress",
   ]);
@@ -204,6 +205,7 @@ function validateWebSocketJsonRpc(
     "kind",
     "assemblyIdentity",
     "assemblyGeneration",
+    "deployment",
     "gatewayEntryIdentity",
     "ingress",
   ]);

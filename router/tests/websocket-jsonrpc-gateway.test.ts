@@ -53,13 +53,13 @@ const OLD_METHOD_GATEWAY_ID =
 const NEW_METHOD_GATEWAY_ID =
   `skiff-gateway-entry-v2:sha256:${'d'.repeat(64)}`;
 const ASSEMBLY_ONE =
-  `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+  `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 const ASSEMBLY_TWO =
-  `skiff-runtime-assembly-v2:sha256:${'f'.repeat(64)}`;
+  `skiff-runtime-assembly-v3:sha256:${'f'.repeat(64)}`;
 const DEPLOYMENT_ONE =
-  `skiff-deployment-artifact-v3:sha256:${'1'.repeat(64)}`;
+  `skiff-deployment-artifact-v4:sha256:${'1'.repeat(64)}`;
 const DEPLOYMENT_TWO =
-  `skiff-deployment-artifact-v3:sha256:${'2'.repeat(64)}`;
+  `skiff-deployment-artifact-v4:sha256:${'2'.repeat(64)}`;
 
 const fixtures: JsonRpcGatewayFixture[] = [];
 
@@ -106,10 +106,15 @@ describe('AssemblyWebSocketGateway JSON-RPC bridge integration', () => {
       kind: 'runtimeAssembly',
       assemblyIdentity: ASSEMBLY_ONE,
       assemblyGeneration: 1,
+      deployment: {
+        serviceId: SERVICE_ID,
+        contractVersion: '1.0.0',
+        deploymentRevision: 'deployment-one',
+        deploymentArtifactIdentity: DEPLOYMENT_ONE
+      },
       gatewayEntryIdentity: OLD_METHOD_GATEWAY_ID,
       ingress: {
         protocol: 'webSocket',
-        host: '*',
         method: 'chat.send',
         path: '/chat'
       }
@@ -333,7 +338,13 @@ async function createFixture(input: {
     attachments,
     connect: async () => {
       const client = new WebSocket(
-        `ws://127.0.0.1:${address.port}/chat?room=old`
+        `ws://127.0.0.1:${address.port}/chat?room=old`,
+        {
+          headers: {
+            'x-skiff-service': SERVICE_ID,
+            'x-skiff-version': '1.0.0'
+          }
+        }
       );
       clients.add(client);
       await new Promise<void>((resolve, reject) => {
@@ -589,7 +600,6 @@ function snapshot(input: {
   const binding: RuntimeAssemblyIngressBinding = {
     selector: {
       protocol: 'webSocket',
-      host: '*',
       method: null,
       path: '/chat'
     },

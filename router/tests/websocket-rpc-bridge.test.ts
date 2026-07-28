@@ -35,13 +35,13 @@ import {
 } from '../src/gateway/webSocketRpcBridge.js';
 
 const ASSEMBLY_ID =
-  `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+  `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 const WEBSOCKET_ENTRY_ID =
   `skiff-websocket-entry-v1:sha256:${'b'.repeat(64)}`;
 const METHOD_GATEWAY_ENTRY_ID =
   `skiff-gateway-entry-v2:sha256:${'c'.repeat(64)}`;
 const DEPLOYMENT_ARTIFACT_ID =
-  `skiff-deployment-artifact-v3:sha256:${'d'.repeat(64)}`;
+  `skiff-deployment-artifact-v4:sha256:${'d'.repeat(64)}`;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -331,7 +331,6 @@ describe('WebSocketRpcBridge inbound peer leg', () => {
         gatewayEntryIdentity: METHOD_GATEWAY_ENTRY_ID,
         ingress: {
           protocol: 'webSocket',
-          host: 'chat.localhost',
           method: 'status.get',
           path: '/v1/chat'
         }
@@ -689,7 +688,6 @@ function createHarness(options: HarnessOptions = {}) {
     assemblyIdentity: ASSEMBLY_ID,
     assemblyGeneration: 7,
     websocketEntryId: WEBSOCKET_ENTRY_ID,
-    host: 'chat.localhost',
     path: '/v1/chat',
     profile: 'jsonrpc-2.0-text',
     profileAdapter: profile,

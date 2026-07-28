@@ -12,7 +12,7 @@ import {
 import { deriveWebSocketEntryId } from '../src/router/runtimeAssemblyWebSocketSnapshot.js';
 
 const DEPLOYMENT_IDENTITY =
-  `skiff-deployment-artifact-v3:sha256:${'a'.repeat(64)}`;
+  `skiff-deployment-artifact-v4:sha256:${'a'.repeat(64)}`;
 const PHYSICAL_IDENTITY =
   'skiff-gateway-entry-v2:sha256:f385624021966bab998385e1fd2c88804b51992f15f9c9d76c05d3e17a75018d';
 const METHOD_IDENTITY =
@@ -423,9 +423,9 @@ function currentWebSocketFixture(): Fixture {
   deploymentRef.deploymentArtifactIdentity = currentDeploymentIdentity;
   return {
     assembly: {
-      schemaVersion: 'skiff-runtime-assembly-v2',
+      schemaVersion: 'skiff-runtime-assembly-v3',
       assemblyIdentity:
-        `skiff-runtime-assembly-v2:sha256:${'e'.repeat(64)}`,
+        `skiff-runtime-assembly-v3:sha256:${'e'.repeat(64)}`,
       resolvedDeployments: [deploymentRef],
       resolvedContracts: [{
         serviceId: deploymentRef.serviceId,

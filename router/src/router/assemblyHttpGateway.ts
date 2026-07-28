@@ -28,11 +28,12 @@ import {
 } from './httpStreamResponseWriter.js';
 import { readOriginFormUrlForGatewayMetadata } from './bind.js';
 import {
-  canonicalIngressHost,
+  canonicalHttpHost,
   type RouterActiveAssemblySnapshot,
   type RouterActiveAssemblySnapshotStore,
   type RuntimeAssemblyIngressBinding
 } from './runtimeAssemblySnapshot.js';
+import { readServiceDeploymentSelector } from './serviceDeploymentSelection.js';
 
 const DEFAULT_HTTP_REQUEST_TIMEOUT_MS = 120_000;
 const MAX_JAVASCRIPT_DATE_MS = 8_640_000_000_000_000;
@@ -245,10 +246,10 @@ export function assemblyHttpRequestHeader(input: {
       kind: 'runtimeAssembly',
       assemblyIdentity: input.snapshot.assembly.assemblyIdentity,
       assemblyGeneration: input.snapshot.generation,
+      deployment: { ...input.binding.deployment },
       gatewayEntryIdentity: input.binding.gatewayEntryIdentity,
       ingress: {
         protocol: 'http',
-        host: canonicalIngressHost(selector.host),
         method: selector.method.toUpperCase(),
         path: selector.path
       }
@@ -317,9 +318,9 @@ function sameAssemblyRouting(
     left.kind === right.kind &&
     left.assemblyIdentity === right.assemblyIdentity &&
     left.assemblyGeneration === right.assemblyGeneration &&
+    sameDeployment(left.deployment, right.deployment) &&
     left.gatewayEntryIdentity === right.gatewayEntryIdentity &&
     left.ingress.protocol === right.ingress.protocol &&
-    left.ingress.host === right.ingress.host &&
     left.ingress.method === right.ingress.method &&
     left.ingress.path === right.ingress.path
   );
@@ -329,15 +330,16 @@ function selectHttpIngress(
   snapshot: RouterActiveAssemblySnapshot,
   request: IncomingMessage
 ): { binding: RuntimeAssemblyIngressBinding; url: URL } {
+  const deployment = readServiceDeploymentSelector(request);
   const rawHost = request.headers.host;
   if (typeof rawHost !== 'string' || rawHost.length === 0 || rawHost.includes(',')) {
-    throw new GatewayError(421, 'IngressHostRequired', 'request Host must be singular and present');
+    throw new GatewayError(400, 'RequestHostRequired', 'request Host must be singular and present');
   }
   let host: string;
   try {
-    host = canonicalIngressHost(rawHost);
+    host = canonicalHttpHost(rawHost);
   } catch (error) {
-    throw new GatewayError(421, 'IngressHostInvalid', 'request Host is invalid', error);
+    throw new GatewayError(400, 'RequestHostInvalid', 'request Host is invalid', error);
   }
   let url: URL;
   try {
@@ -350,9 +352,8 @@ function selectHttpIngress(
       error
     );
   }
-  const binding = snapshot.ingress.get({
+  const binding = snapshot.ingress.get(deployment, {
     protocol: 'http',
-    host,
     method: (request.method ?? 'GET').toUpperCase(),
     path: url.pathname
   });
@@ -360,7 +361,7 @@ function selectHttpIngress(
     throw new GatewayError(
       404,
       'AssemblyIngressNotFound',
-      `No committed RuntimeAssembly ingress matches ${host} ${request.method ?? 'GET'} ${url.pathname}`
+      `No committed RuntimeAssembly ingress matches ${deployment.serviceId}@${deployment.contractVersion} ${request.method ?? 'GET'} ${url.pathname}`
     );
   }
   if (
@@ -374,6 +375,18 @@ function selectHttpIngress(
     );
   }
   return { binding, url };
+}
+
+function sameDeployment(
+  left: RuntimeAssemblyIngressBinding['deployment'],
+  right: RuntimeAssemblyIngressBinding['deployment']
+): boolean {
+  return (
+    left.serviceId === right.serviceId &&
+    left.contractVersion === right.contractVersion &&
+    left.deploymentRevision === right.deploymentRevision &&
+    left.deploymentArtifactIdentity === right.deploymentArtifactIdentity
+  );
 }
 
 export function effectiveHttpRequestTimeoutMs(

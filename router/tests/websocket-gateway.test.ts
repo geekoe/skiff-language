@@ -46,11 +46,11 @@ const ENTRY_ID =
 const GATEWAY_ID =
   `skiff-gateway-entry-v2:sha256:${'b'.repeat(64)}`;
 const ASSEMBLY_ONE =
-  `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+  `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 const ASSEMBLY_TWO =
-  `skiff-runtime-assembly-v2:sha256:${'c'.repeat(64)}`;
+  `skiff-runtime-assembly-v3:sha256:${'c'.repeat(64)}`;
 const DEPLOYMENT_ID =
-  `skiff-deployment-artifact-v2:sha256:${'d'.repeat(64)}`;
+  `skiff-deployment-artifact-v4:sha256:${'d'.repeat(64)}`;
 
 const fixtures: GatewayFixture[] = [];
 
@@ -92,10 +92,15 @@ describe('current RuntimeAssembly WebSocket gateway', () => {
       kind: 'runtimeAssembly',
       assemblyIdentity: ASSEMBLY_ONE,
       assemblyGeneration: 1,
+      deployment: {
+        serviceId: SERVICE_ID,
+        contractVersion: '1.0.0',
+        deploymentRevision: 'revision-one',
+        deploymentArtifactIdentity: DEPLOYMENT_ID
+      },
       gatewayEntryIdentity: GATEWAY_ID,
       ingress: {
         protocol: 'webSocket',
-        host: '*',
         method: null,
         path: '/chat'
       }
@@ -413,7 +418,12 @@ async function createFixture(input: {
     runtime,
     otherRuntime,
     connect: async () => {
-      const client = new WebSocket(url);
+      const client = new WebSocket(url, {
+        headers: {
+          'x-skiff-service': SERVICE_ID,
+          'x-skiff-version': '1.0.0'
+        }
+      });
       clients.add(client);
       await new Promise<void>((resolve, reject) => {
         client.once('open', resolve);
@@ -422,7 +432,12 @@ async function createFixture(input: {
       return client;
     },
     rejectedStatus: async () => {
-      const client = new WebSocket(url);
+      const client = new WebSocket(url, {
+        headers: {
+          'x-skiff-service': SERVICE_ID,
+          'x-skiff-version': '1.0.0'
+        }
+      });
       clients.add(client);
       return await new Promise<number>((resolve, reject) => {
         client.once('unexpected-response', (_request, response) => {
@@ -663,7 +678,6 @@ function websocketBinding(
   return {
     selector: {
       protocol: 'webSocket',
-      host: '*',
       method: null,
       path: '/chat'
     },

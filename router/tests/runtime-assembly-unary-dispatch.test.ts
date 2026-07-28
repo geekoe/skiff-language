@@ -45,7 +45,7 @@ import {
 } from '../src/router/runtimeAssemblySnapshot.js';
 import { writeCurrentScopeCompilerGeneratedArtifactRoot } from './helpers/compilerArtifacts.js';
 
-const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+const ASSEMBLY = `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 const GATEWAY_ENTRY_IDENTITY =
   `skiff-gateway-entry-v2:sha256:${'b'.repeat(64)}`;
 const RUNTIME_ID = 'runtime-unary-a';
@@ -102,7 +102,11 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       fixture.httpUrl,
       Buffer.from('source-body', 'utf8'),
       '',
-      exact.selector
+      {
+        ...exact.selector,
+        serviceId: exact.deployment.serviceId,
+        contractVersion: exact.deployment.contractVersion
+      }
     );
     const requestFrame = decodeBinaryFrame(
       await nextBinaryMessage(fixture.runtime)
@@ -796,7 +800,7 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       }),
       mutate(valid, (header) => {
         header.routing.assemblyIdentity =
-          `skiff-runtime-assembly-v2:sha256:${'f'.repeat(64)}`;
+          `skiff-runtime-assembly-v3:sha256:${'f'.repeat(64)}`;
       }),
       mutate(valid, (header) => {
         header.routing.assemblyGeneration += 1;
@@ -1178,12 +1182,12 @@ interface UnaryFixture {
 }
 
 const BINDING: RuntimeAssemblyIngressBinding = {
-  selector: { protocol: 'http', host: HOST, method: 'POST', path: PATH },
+  selector: { protocol: 'http', method: 'POST', path: PATH },
   deployment: {
     serviceId: 'example/unary',
     contractVersion: '1.0.0',
     deploymentRevision: 'revision-a',
-      deploymentArtifactIdentity: `skiff-deployment-artifact-v2:sha256:${'c'.repeat(64)}`
+      deploymentArtifactIdentity: `skiff-deployment-artifact-v4:sha256:${'c'.repeat(64)}`
   },
   gatewayEntryKey: 'invoke',
   gatewayEntryIdentity: GATEWAY_ENTRY_IDENTITY,
@@ -1310,10 +1314,11 @@ async function sendHttp(
   body: Uint8Array,
   query = '',
   selector: {
-    host: string;
     method: string | null;
     path: string;
-  } = { host: HOST, method: 'POST', path: PATH }
+    serviceId?: string;
+    contractVersion?: string;
+  } = { method: 'POST', path: PATH }
 ): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: Buffer }> {
   return await startHttp(baseUrl, body, query, selector).response;
 }
@@ -1323,10 +1328,11 @@ function startHttp(
   body: Uint8Array,
   query = '',
   selector: {
-    host: string;
     method: string | null;
     path: string;
-  } = { host: HOST, method: 'POST', path: PATH }
+    serviceId?: string;
+    contractVersion?: string;
+  } = { method: 'POST', path: PATH }
 ): {
   request: ReturnType<typeof httpRequest>;
   response: Promise<{
@@ -1348,7 +1354,11 @@ function startHttp(
       path: `${selector.path}${query}`,
       method: selector.method ?? 'POST',
       headers: {
-        host: selector.host,
+        host: HOST,
+        'x-skiff-service':
+          selector.serviceId ?? BINDING.deployment.serviceId,
+        'x-skiff-version':
+          selector.contractVersion ?? BINDING.deployment.contractVersion,
         'content-length': String(body.byteLength)
       }
     }, (response) => {
