@@ -439,6 +439,157 @@ fn foreign_db_target_without_provider_attachment_fails_closed() {
 }
 
 #[test]
+fn foreign_db_target_accepts_compiler_qualified_declaration_shape() {
+    let caller_file = file("file:caller-real-db", "caller");
+    let mut dependency_file = file("file:dependency-real-db", "model");
+    add_compiler_shaped_db_declaration(&mut dependency_file, "Session");
+
+    let mut caller = artifact("caller", "caller-real-db", "caller-abi", &caller_file);
+    let mut dependency = artifact(
+        "dependency",
+        "dependency-real-db",
+        "dependency-abi",
+        &dependency_file,
+    );
+    add_db_export(
+        &mut dependency,
+        &dependency_file,
+        "model.Session",
+        "Session",
+    );
+    let mut requirement = package_requirement("model", "dependency", "dependency-abi");
+    requirement.expected_package_build = Some(dependency.package_build_id.clone());
+    caller.package_requirements.push(requirement);
+    let assembly = assembly(
+        vec![artifact_ref(&caller), artifact_ref(&dependency)],
+        vec![package_binding(&caller, "model", &dependency)],
+    );
+    let image = SharedPackageLinkedImage::from_runtime_assembly(
+        &assembly,
+        vec![
+            hydration(caller, caller_file),
+            hydration(dependency, dependency_file),
+        ],
+    )
+    .unwrap();
+
+    let target = image
+        .resolve_package_db_object_target(
+            &build_id("caller-real-db"),
+            &PackageSymbolRef {
+                package: PackageRefIr::Dependency {
+                    dependency_ref: "model".to_string(),
+                },
+                symbol_path: "model.Session".to_string(),
+                abi_expectation: Some("dependency-abi".to_string()),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(target.type_index, 0);
+    image.validate_db_object_target_id(&target).unwrap();
+}
+
+#[test]
+fn compiler_shaped_db_attachment_rejects_symbol_and_attachment_tampering() {
+    let package_build_id = build_id("dependency-real-db");
+    let mut file = file("file:dependency-real-db", "model");
+    add_compiler_shaped_db_declaration(&mut file, "Session");
+
+    validate_db_attachment(
+        &package_build_id,
+        &file,
+        0,
+        Some("model.Session"),
+        Some("Session"),
+    )
+    .unwrap();
+
+    for (target_symbol, link_symbol) in [("wrong.Session", "Session"), ("model.Session", "Wrong")] {
+        let error = validate_db_attachment(
+            &package_build_id,
+            &file,
+            0,
+            Some(target_symbol),
+            Some(link_symbol),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            SharedPackageImageError::DbTargetCanonicalSymbolMismatch { .. }
+        ));
+    }
+
+    let mut wrong_declaration = file.clone();
+    wrong_declaration
+        .declarations
+        .types
+        .get_mut("Session")
+        .unwrap()
+        .symbol = "wrong.Session".to_string();
+    assert!(matches!(
+        validate_db_attachment(
+            &package_build_id,
+            &wrong_declaration,
+            0,
+            Some("model.Session"),
+            Some("Session"),
+        )
+        .unwrap_err(),
+        SharedPackageImageError::DbTargetCanonicalSymbolMismatch { .. }
+    ));
+
+    for symbol in [
+        skiff_artifact_model::ServiceSymbolRef {
+            module_path: "wrong".to_string(),
+            symbol: "Session".to_string(),
+        },
+        skiff_artifact_model::ServiceSymbolRef {
+            module_path: "model".to_string(),
+            symbol: "Wrong".to_string(),
+        },
+    ] {
+        let mut wrong_attachment = file.clone();
+        wrong_attachment
+            .declarations
+            .db
+            .get_mut("Session")
+            .unwrap()
+            .type_ref = TypeRefIr::DbObjectSymbol { symbol };
+        assert!(matches!(
+            validate_db_attachment(
+                &package_build_id,
+                &wrong_attachment,
+                0,
+                Some("model.Session"),
+                Some("Session"),
+            )
+            .unwrap_err(),
+            SharedPackageImageError::DbTargetAttachmentTypeMismatch { .. }
+        ));
+    }
+
+    let mut wrong_local_index = file;
+    wrong_local_index
+        .declarations
+        .db
+        .get_mut("Session")
+        .unwrap()
+        .type_ref = TypeRefIr::LocalType { type_index: 1 };
+    assert!(matches!(
+        validate_db_attachment(
+            &package_build_id,
+            &wrong_local_index,
+            0,
+            Some("model.Session"),
+            Some("Session"),
+        )
+        .unwrap_err(),
+        SharedPackageImageError::DbTargetAttachmentTypeMismatch { .. }
+    ));
+}
+
+#[test]
 fn assembly_execution_service_calls_keep_caller_relative_tuple_and_never_select_provider_code() {
     let service_call = ServiceCallRef {
         service_requirement_slot: 0,
@@ -1022,6 +1173,51 @@ fn add_db_declaration(file: &mut FileIrUnit, symbol: &str) {
         symbol.to_string(),
         DbDeclarationIr {
             type_ref: TypeRefIr::LocalType { type_index },
+            type_name: symbol.to_string(),
+            collection_name: symbol.to_ascii_lowercase(),
+            kind: DbObjectKindIr::Object,
+            key: DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            },
+            fields: Vec::new(),
+            retention: None,
+            leases: Vec::new(),
+            indexes: Vec::new(),
+            source_span: None,
+        },
+    );
+}
+
+fn add_compiler_shaped_db_declaration(file: &mut FileIrUnit, symbol: &str) {
+    let type_index = file.type_table.len() as u32;
+    let qualified = format!("{}.{}", file.module_path, symbol);
+    file.type_table.push(TypeDeclIr {
+        name: symbol.to_string(),
+        descriptor: TypeDescriptorIr::Record {
+            fields: BTreeMap::new(),
+        },
+        type_params: Vec::new(),
+        implements: Vec::new(),
+        source_span: None,
+    });
+    file.declarations.types.insert(
+        symbol.to_string(),
+        TypeDeclarationIr {
+            type_index,
+            symbol: qualified,
+            source_span: None,
+        },
+    );
+    file.declarations.db.insert(
+        symbol.to_string(),
+        DbDeclarationIr {
+            type_ref: TypeRefIr::DbObjectSymbol {
+                symbol: skiff_artifact_model::ServiceSymbolRef {
+                    module_path: file.module_path.clone(),
+                    symbol: symbol.to_string(),
+                },
+            },
             type_name: symbol.to_string(),
             collection_name: symbol.to_ascii_lowercase(),
             kind: DbObjectKindIr::Object,

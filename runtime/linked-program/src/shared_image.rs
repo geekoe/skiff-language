@@ -473,6 +473,7 @@ impl SharedPackageLinkedImage {
             dependency.package_build_id(),
             file,
             export.type_index as usize,
+            Some(symbol.symbol_path.as_str()),
             Some(export.symbol.as_str()),
         )?;
         Ok(DbObjectTargetId {
@@ -526,7 +527,13 @@ impl SharedPackageLinkedImage {
                 file_ir_identity: file_ref.file_ir_identity.clone(),
             }
         })?;
-        validate_db_attachment(dependency.package_build_id(), file, target.type_index, None)
+        validate_db_attachment(
+            dependency.package_build_id(),
+            file,
+            target.type_index,
+            None,
+            None,
+        )
     }
 
     fn resolve_local_db_object_target(
@@ -563,11 +570,13 @@ impl SharedPackageLinkedImage {
                 symbol: symbol.symbol.clone(),
             });
         }
+        let symbol_path = symbol.symbol_path();
         validate_db_attachment(
             caller.package_build_id(),
             file,
             declaration.type_index as usize,
-            Some(symbol.symbol.as_str()),
+            Some(symbol_path.as_str()),
+            None,
         )?;
         Ok(DbObjectTargetId {
             package_artifact_ref: caller.artifact_ref().clone(),
@@ -930,7 +939,8 @@ fn validate_db_attachment(
     package_build_id: &PackageBuildId,
     file: &FileIrUnit,
     type_index: usize,
-    expected_symbol: Option<&str>,
+    expected_symbol_path: Option<&str>,
+    implementation_link_symbol: Option<&str>,
 ) -> SharedPackageImageResult<()> {
     if type_index >= file.type_table.len() {
         return Err(SharedPackageImageError::DbTargetTypeOutOfBounds {
@@ -944,12 +954,7 @@ fn validate_db_attachment(
         .declarations
         .types
         .iter()
-        .filter(|(symbol, declaration)| {
-            declaration.type_index as usize == type_index
-                && expected_symbol.is_none_or(|expected| {
-                    symbol.as_str() == expected && declaration.symbol == expected
-                })
-        });
+        .filter(|(_, declaration)| declaration.type_index as usize == type_index);
     let (symbol, declaration) = declarations.next().ok_or_else(|| {
         SharedPackageImageError::MissingDbTargetTypeDeclaration {
             dependency_package_build_id: package_build_id.clone(),
@@ -957,11 +962,38 @@ fn validate_db_attachment(
             type_index,
         }
     })?;
-    if declarations.next().is_some() || declaration.symbol != *symbol {
+    if declarations.next().is_some() {
         return Err(SharedPackageImageError::AmbiguousDbTargetTypeDeclaration {
             dependency_package_build_id: package_build_id.clone(),
             file_ir_identity: file.file_ir_identity.clone(),
             type_index,
+        });
+    }
+    let canonical_symbol_path = if file.module_path.is_empty() {
+        symbol.clone()
+    } else {
+        format!("{}.{}", file.module_path, symbol)
+    };
+    let declaration_symbol_is_canonical =
+        declaration.symbol == *symbol || declaration.symbol == canonical_symbol_path;
+    let target_symbol_is_canonical =
+        expected_symbol_path.is_none_or(|expected| expected == canonical_symbol_path);
+    let link_symbol_is_canonical = implementation_link_symbol
+        .is_none_or(|linked| linked == symbol || linked == canonical_symbol_path);
+    if !declaration_symbol_is_canonical || !target_symbol_is_canonical || !link_symbol_is_canonical
+    {
+        let actual = format!(
+            "mapKey={symbol}, declaration={}, target={}, implementationLink={}",
+            declaration.symbol,
+            expected_symbol_path.unwrap_or("<none>"),
+            implementation_link_symbol.unwrap_or("<none>")
+        );
+        return Err(SharedPackageImageError::DbTargetCanonicalSymbolMismatch {
+            dependency_package_build_id: package_build_id.clone(),
+            file_ir_identity: file.file_ir_identity.clone(),
+            type_index,
+            expected: canonical_symbol_path,
+            actual,
         });
     }
     let db = file.declarations.db.get(symbol).ok_or_else(|| {
@@ -971,11 +1003,16 @@ fn validate_db_attachment(
             type_index,
         }
     })?;
-    if db.type_ref
-        != (skiff_artifact_model::TypeRefIr::LocalType {
-            type_index: type_index as u32,
-        })
-    {
+    let attachment_matches = match &db.type_ref {
+        skiff_artifact_model::TypeRefIr::LocalType {
+            type_index: attached,
+        } => *attached as usize == type_index,
+        skiff_artifact_model::TypeRefIr::DbObjectSymbol { symbol: attached } => {
+            attached.module_path == file.module_path && attached.symbol == *symbol
+        }
+        _ => false,
+    };
+    if !attachment_matches {
         return Err(SharedPackageImageError::DbTargetAttachmentTypeMismatch {
             dependency_package_build_id: package_build_id.clone(),
             file_ir_identity: file.file_ir_identity.clone(),
@@ -1393,6 +1430,13 @@ pub enum SharedPackageImageError {
         dependency_package_build_id: PackageBuildId,
         file_ir_identity: String,
         type_index: usize,
+    },
+    DbTargetCanonicalSymbolMismatch {
+        dependency_package_build_id: PackageBuildId,
+        file_ir_identity: String,
+        type_index: usize,
+        expected: String,
+        actual: String,
     },
     MissingDbTargetAttachment {
         dependency_package_build_id: PackageBuildId,
