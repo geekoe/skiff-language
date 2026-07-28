@@ -640,6 +640,37 @@ fn base_assembly_supplies_provider_selectors_and_real_owner_bindings() {
         .deployments
         .first()
         .expect("test-owned deployment");
+    let subject_requirements = project
+        .package
+        .artifact
+        .package_requirements
+        .iter()
+        .filter(|requirement| requirement.package_id == "example.com/consumer")
+        .collect::<Vec<_>>();
+    let [subject_requirement] = subject_requirements.as_slice() else {
+        panic!(
+            "public alias plus topLevelAlias must produce exactly one subject requirement, found {}",
+            subject_requirements.len()
+        )
+    };
+    assert_eq!(subject_requirement.alias, "subject");
+    assert_eq!(
+        subject_requirement.expected_package_build.as_ref(),
+        Some(&subject.package_build_id)
+    );
+    assert_eq!(
+        test_deployment
+            .package_bindings
+            .iter()
+            .filter(|binding| {
+                binding.key.caller_package_build_id
+                    == project.package.artifact.package_build_id
+                    && binding.key.package_requirement_alias == "subject"
+            })
+            .count(),
+        1,
+        "the second local alias must not create another binding or collection projection"
+    );
     let production_deployment = CanonicalArtifactStore::open(&artifacts)
         .unwrap()
         .read_service_deployment(&consumer_deployment)
@@ -987,7 +1018,7 @@ packages:
   - id: example.com/test-subject
     version: 1.0.0
     alias: subject
-    access: topLevel
+    topLevelAlias: subjectImpl
 "#,
         Some("{}\n"),
         Some(

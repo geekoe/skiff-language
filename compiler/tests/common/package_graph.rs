@@ -250,9 +250,11 @@ impl<'a> PackageGraphCompiler<'a> {
                 .with_canonical_dependencies(&dependency_artifacts, contract_dependencies)
                 .with_available_canonical_packages(&available_artifacts)
                 .with_resolved_package_schemas(&resolved_package_schemas);
-        if manifest.dependencies.iter().any(|dependency| {
-            dependency.access == skiff_compiler_input::PackageDependencyAccess::TopLevel
-        }) {
+        if manifest
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.top_level_alias.is_some())
+        {
             input = input.for_test_service();
         }
         match service_root {

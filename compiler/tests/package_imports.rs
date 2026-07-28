@@ -218,8 +218,8 @@ packages:
 }
 
 #[test]
-fn top_level_access_ignores_api_paths_instead_of_merging_surfaces() {
-    let temp = TestDir::new("skiff-compiler", "top-level-exclusive");
+fn top_level_alias_keeps_public_and_source_views_explicit_on_one_dependency() {
+    let temp = TestDir::new("skiff-compiler", "top-level-alias-explicit-views");
     fs::write(
         temp.path().join("package.yml"),
         r#"id: example.com/widget-tests
@@ -228,7 +228,7 @@ packages:
   - id: example.com/widget
     version: 1.0.0
     alias: widget
-    access: topLevel
+    topLevelAlias: widgetImpl
 "#,
     )
     .unwrap();
@@ -237,16 +237,18 @@ packages:
         temp.path().join("main.skiff"),
         r#"
 import widget
+import widgetImpl
 
 function run() -> string {
-  const seed: widget/internal.codec.PrivateValue = widget/internal.codec.PRIVATE_VALUE
-  const revealed: widget/internal.codec.PrivateValue = widget/internal.codec.reveal(seed)
-  const contextual: widget/internal.codec.PrivateValue = widget/internal.codec.reveal({ value: "contextual" })
-  return revealed.value + contextual.value
+  const publicValue = widget/internal.codec.reveal()
+  const seed: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.PRIVATE_VALUE
+  const revealed: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.reveal(seed)
+  const contextual: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.reveal({ value: "contextual" })
+  return publicValue + revealed.value + contextual.value
 }
 
-function construct() -> widget/internal.codec.PrivateValue {
-  return widget/internal.codec.PrivateValue { value: "constructed" }
+function construct() -> widgetImpl/internal.codec.PrivateValue {
+  return widgetImpl/internal.codec.PrivateValue { value: "constructed" }
 }
 "#,
     )
@@ -319,6 +321,17 @@ function privateOnly() -> string {
         .find(|requirement| requirement.alias == "widget")
         .expect("top-level dependency requirement should exist");
     assert_eq!(
+        project
+            .package
+            .artifact
+            .package_requirements
+            .iter()
+            .filter(|requirement| requirement.package_id == "example.com/widget")
+            .count(),
+        1,
+        "the second local alias must not create another package requirement"
+    );
+    assert_eq!(
         requirement.expected_package_build.as_ref(),
         Some(&dependency_artifact.artifact.package_build_id)
     );
@@ -331,6 +344,15 @@ function privateOnly() -> string {
         .any(|callable| {
             callable.package_callable_id.as_str()
                 == "pkg-callable:example.com/widget:top-level:internal.codec.reveal"
+        }));
+    assert!(file
+        .unit
+        .external_refs
+        .package_callables
+        .iter()
+        .any(|callable| {
+            callable.package_callable_id.as_str()
+                == "pkg-callable:example.com/widget:internal.codec.reveal"
         }));
     assert!(file.unit.executables.iter().any(|executable| {
         executable.body.expressions.iter().any(|expression| {
@@ -404,11 +426,11 @@ function privateOnly() -> string {
 
     fs::write(
         temp.path().join("main.skiff"),
-        "import widget\nfunction run() -> string { return widget/publicOnly() }\n",
+        "import widgetImpl\nfunction run() -> string { return widgetImpl/publicOnly() }\n",
     )
     .unwrap();
     let error = compile_package_project(temp.path())
-        .expect_err("top-level mode must not fall back to api.yml")
+        .expect_err("top-level alias must not fall back to api.yml")
         .to_string();
     assert!(
         error.contains("has no callable public path `publicOnly`"),
@@ -417,28 +439,19 @@ function privateOnly() -> string {
 
     fs::write(
         temp.path().join("main.skiff"),
-        "import widget\nfunction bad(value: widget.internal.codec.PrivateValue) -> string { return value.value }\n",
+        "import widgetImpl\nfunction bad(value: widgetImpl.internal.codec.PrivateValue) -> string { return value.value }\n",
     )
     .unwrap();
     let error = compile_package_project(temp.path())
         .expect_err("top-level type access must require slash syntax")
         .to_string();
     assert!(
-        error.contains("uses top-level type syntax `widget/<source-module>.<name>`"),
+        error.contains(
+            "uses top-level type syntax `widgetImpl/<source-module>.<name>`"
+        ),
         "{error}"
     );
 
-    fs::write(
-        temp.path().join("package.yml"),
-        r#"id: example.com/widget-tests
-version: 1.0.0
-packages:
-  - id: example.com/widget
-    version: 1.0.0
-    alias: widget
-"#,
-    )
-    .unwrap();
     fs::write(
         temp.path().join("main.skiff"),
         "import widget\nfunction bad() -> string { return widget/internal.codec.privateOnly() }\n",
@@ -454,7 +467,7 @@ packages:
 }
 
 #[test]
-fn top_level_access_accepts_canonically_equivalent_public_and_source_type_descriptors() {
+fn top_level_alias_accepts_canonically_equivalent_public_and_source_type_descriptors() {
     let temp = TestDir::new("skiff-compiler", "top-level-canonical-type-descriptor");
     fs::write(
         temp.path().join("package.yml"),
@@ -464,11 +477,11 @@ packages:
   - id: example.com/subject
     version: 1.0.0
     alias: subject
-    access: topLevel
+    topLevelAlias: subjectImpl
   - id: example.com/agent
     version: 1.0.0
     alias: agent
-    access: topLevel
+    topLevelAlias: agentImpl
 "#,
     )
     .unwrap();
@@ -476,18 +489,18 @@ packages:
     fs::write(
         temp.path().join("main.skiff"),
         r#"
-import agent
-import subject
+import agentImpl
+import subjectImpl
 
-function pointId(value: agent/canonical.CanonicalMessagePointView) -> string {
+function pointId(value: agentImpl/canonical.CanonicalMessagePointView) -> string {
   return value.point.id
 }
 
-function bindings(value: agent/canonical.AgentRuntimeBindings) -> agent/canonical.AgentRuntimeBindings {
+function bindings(value: agentImpl/canonical.AgentRuntimeBindings) -> agentImpl/canonical.AgentRuntimeBindings {
   return value
 }
 
-function subjectId(value: subject/internal.SubjectState) -> string {
+function subjectId(value: subjectImpl/internal.SubjectState) -> string {
   return value.id
 }
 "#,

@@ -4,7 +4,7 @@ packages:
   - id: example.com/consumer
     version: 1.0.0
     alias: subject
-    access: topLevel
+    topLevelAlias: subjectImpl
   - id: example.com/helper
     version: 1.0.0
     alias: helper
