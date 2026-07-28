@@ -177,10 +177,10 @@ describe('RuntimeAssembly HTTP serverStream ingress', () => {
         kind: 'runtimeAssembly',
         assemblyIdentity: ASSEMBLY,
         assemblyGeneration: 4,
+        deployment: binding.deployment,
         gatewayEntryIdentity: GATEWAY_ENTRY_IDENTITY,
         ingress: {
           protocol: 'http',
-          host: HOST,
           method: 'POST',
           path: PATH
         }

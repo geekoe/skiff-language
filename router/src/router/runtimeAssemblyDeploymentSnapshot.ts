@@ -378,8 +378,8 @@ function decodeServiceDeployment(
     'policy',
     'diagnosticText'
   ], label);
-  if (value.schemaVersion !== 'skiff-service-deployment-v3') {
-    throw new Error(`${label}.schemaVersion must be skiff-service-deployment-v3`);
+  if (value.schemaVersion !== 'skiff-service-deployment-v4') {
+    throw new Error(`${label}.schemaVersion must be skiff-service-deployment-v4`);
   }
   const contract = decodeContractRef(value.contract, `${label}.contract`);
   const deploymentRevision = requiredString(value, 'deploymentRevision');

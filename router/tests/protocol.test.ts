@@ -416,11 +416,17 @@ describe('runtime protocol fixtures and schemas', () => {
         assemblyIdentity:
           'skiff-runtime-assembly-v3:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
         assemblyGeneration: 11,
+        deployment: {
+          serviceId: 'example.com/chat',
+          contractVersion: '1.0.0',
+          deploymentRevision: 'chat-current',
+          deploymentArtifactIdentity:
+            'skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
+        },
         gatewayEntryIdentity:
           'skiff-gateway-entry-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
         ingress: {
           protocol: 'webSocket',
-          host: 'socket.example.com',
           method: 'status.get',
           path: '/chat'
         }

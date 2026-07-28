@@ -50,6 +50,14 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
         serviceId: 'skiff.run/echo',
         contractVersion: '1.0.0',
         serviceProtocolIdentity: SERVICE_PROTOCOL_IDENTITY
+      }, {
+        serviceId: 'skiff.run/echo',
+        contractVersion: '1.1.0',
+        serviceProtocolIdentity: SERVICE_PROTOCOL_IDENTITY
+      }, {
+        serviceId: 'skiff.run/echo',
+        contractVersion: '1.2.0',
+        serviceProtocolIdentity: SERVICE_PROTOCOL_IDENTITY
       }],
       gatewayIngress: [
         {
@@ -100,7 +108,6 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     expect(binding).toMatchObject({
       selector: {
         protocol: 'webSocket',
-        host: '*',
         method: null,
         path: '/chat'
       },
@@ -193,7 +200,6 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
         const deploymentIngress = {
           selector: {
             protocol: 'http',
-            host: '*',
             method: 'GET',
             path: '/chat-http'
           },
@@ -232,10 +238,10 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
 
   it.each([
     {
-      name: 'ServiceDeployment v2 schema',
+      name: 'ServiceDeployment v3 schema',
       mutate: (fixture: Fixture) => {
         fixture.deployments[0]!.schemaVersion =
-          'skiff-service-deployment-v2';
+          'skiff-service-deployment-v3';
       }
     },
     {
@@ -598,11 +604,11 @@ function canonicalFixture(): Fixture {
       assemblyIdentity: ASSEMBLY_IDENTITY,
       roots: references,
       resolvedDeployments: references,
-      resolvedContracts: [{
-        serviceId: 'skiff.run/echo',
-        contractVersion: '1.0.0',
-        serviceProtocolIdentity: SERVICE_PROTOCOL_IDENTITY
-      }],
+      resolvedContracts: deployments.map((value) => ({
+        serviceId: value.contract.serviceId,
+        contractVersion: value.contract.contractVersion,
+        serviceProtocolIdentity: value.contract.serviceProtocolIdentity
+      })),
       resolvedPackages: [],
       packageLinkPlan: { codeSlots: [], packageLinks: [] },
       serviceBindingTemplates: [],
@@ -664,7 +670,6 @@ function websocketFixture(handler: string | null): Fixture {
   deployment.ingress = [{
     selector: {
       protocol: 'webSocket',
-      host: '*',
       method: null,
       path: '/chat'
     },
@@ -695,7 +700,6 @@ function websocketRpcFixture(): Fixture {
   const deployment = fixture.deployments[0]!;
   const selector = {
     protocol: 'webSocket',
-    host: '*',
     method: 'status',
     path: '/chat'
   };
@@ -770,10 +774,15 @@ function deployment(
   const typed = options.adapterKind === 'typedJson';
   const stream = options.operationMode === 'serverStream';
   const record = {
-    schemaVersion: 'skiff-service-deployment-v3',
+    schemaVersion: 'skiff-service-deployment-v4',
     contract: {
       serviceId: 'skiff.run/echo',
-      contractVersion: '1.0.0',
+      contractVersion:
+        gatewayEntryKey === 'rawUnary'
+          ? '1.0.0'
+          : gatewayEntryKey === 'rawStream'
+            ? '1.1.0'
+            : '1.2.0',
       serviceProtocolIdentity: SERVICE_PROTOCOL_IDENTITY
     },
     deploymentRevision: revision,
@@ -829,7 +838,6 @@ function deployment(
     ingress: [{
       selector: {
         protocol: 'http',
-        host: 'echo.example.test',
         method: 'POST',
         path: options.path
       },

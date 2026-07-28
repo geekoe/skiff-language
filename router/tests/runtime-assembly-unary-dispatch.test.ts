@@ -164,7 +164,7 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
         assemblyIdentity: ASSEMBLY,
         assemblyGeneration: 7,
         gatewayEntryIdentity: GATEWAY_ENTRY_IDENTITY,
-        ingress: { protocol: 'http', host: HOST, method: 'POST', path: PATH }
+        ingress: { protocol: 'http', method: 'POST', path: PATH }
       },
       httpRequest: {
         method: 'POST',

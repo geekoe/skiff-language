@@ -78,7 +78,7 @@ describe('compiler generated HTTP gateway compatibility', () => {
         expect(generated.serviceContract.contract.serviceProtocolIdentity).toMatch(
           /^skiff-service-protocol-v5:sha256:[0-9a-f]{64}$/
         );
-        expect(generated.deploymentValue.schemaVersion).toBe('skiff-service-deployment-v3');
+        expect(generated.deploymentValue.schemaVersion).toBe('skiff-service-deployment-v4');
         expect(
           generated.serviceDeployment.deployment.deploymentArtifactIdentity
         ).toMatch(
@@ -128,7 +128,6 @@ describe('compiler generated HTTP gateway compatibility', () => {
           {
             selector: {
               protocol: 'http',
-              host: 'websocket-fixture.skiff.localhost',
               method: 'GET',
               path: '/ping',
             },
@@ -153,7 +152,6 @@ describe('compiler generated HTTP gateway compatibility', () => {
           {
             selector: {
               protocol: 'http',
-              host: 'websocket-fixture.skiff.localhost',
               method: 'GET',
               path: '/ping',
             },
@@ -177,7 +175,6 @@ describe('compiler generated HTTP gateway compatibility', () => {
           {
             selector: {
               protocol: 'http',
-              host: 'websocket-fixture.skiff.localhost',
               method: 'GET',
               path: '/ping',
             },

@@ -75,6 +75,49 @@ describe('current RuntimeAssembly WebSocket gateway', () => {
     await until(() => fixture.generation.releaseCount === 1);
   });
 
+  it.each([
+    {
+      name: 'missing service',
+      headers: { 'x-skiff-version': '1.0.0' },
+      status: 400
+    },
+    {
+      name: 'missing version',
+      headers: { 'x-skiff-service': SERVICE_ID },
+      status: 400
+    },
+    {
+      name: 'ambiguous service',
+      headers: {
+        'x-skiff-service': `${SERVICE_ID},example.com/other`,
+        'x-skiff-version': '1.0.0'
+      },
+      status: 400
+    },
+    {
+      name: 'unknown service',
+      headers: {
+        'x-skiff-service': 'example.com/unknown',
+        'x-skiff-version': '1.0.0'
+      },
+      status: 404
+    },
+    {
+      name: 'unknown version',
+      headers: {
+        'x-skiff-service': SERVICE_ID,
+        'x-skiff-version': '2.0.0'
+      },
+      status: 404
+    }
+  ])('rejects $name before WebSocket admission', async ({ headers, status }) => {
+    const fixture = await createFixture({});
+
+    expect(await fixture.rejectedStatus(headers)).toBe(status);
+    expect(fixture.dispatcher.requests).toHaveLength(0);
+    expect(fixture.generation.expectCount).toBe(0);
+  });
+
   it('dispatches one exact connect, admits accept, and releases the pin once', async () => {
     const fixture = await createFixture({ handler: 'package-callable-connect' });
     fixture.dispatcher.respond = (header) => ({
@@ -336,7 +379,7 @@ interface GatewayFixture {
   runtime: WebSocket;
   otherRuntime: WebSocket;
   connect(): Promise<WebSocket>;
-  rejectedStatus(): Promise<number>;
+  rejectedStatus(headers?: Record<string, string>): Promise<number>;
   setCurrentOwner(owner: WebSocketRuntimeOwner): void;
   close(): Promise<void>;
 }
@@ -431,12 +474,12 @@ async function createFixture(input: {
       });
       return client;
     },
-    rejectedStatus: async () => {
+    rejectedStatus: async (headers = {
+      'x-skiff-service': SERVICE_ID,
+      'x-skiff-version': '1.0.0'
+    }) => {
       const client = new WebSocket(url, {
-        headers: {
-          'x-skiff-service': SERVICE_ID,
-          'x-skiff-version': '1.0.0'
-        }
+        headers
       });
       clients.add(client);
       return await new Promise<number>((resolve, reject) => {

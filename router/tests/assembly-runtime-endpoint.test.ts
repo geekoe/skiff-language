@@ -1040,10 +1040,10 @@ function testDispatchBody() {
       kind: 'runtimeAssembly',
       assemblyIdentity: ASSEMBLY_A,
       assemblyGeneration: 1,
+      deployment: deploymentRef(deploymentRevision(ASSEMBLY_A)),
       gatewayEntryIdentity: CURRENT_TEST_GATEWAY_ENTRY_IDENTITY,
       ingress: {
         protocol: 'http',
-        host: TEST_HOST,
         method: 'POST',
         path: TEST_PATH
       }

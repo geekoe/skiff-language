@@ -262,6 +262,8 @@ async function sendHttp(baseUrl: string): Promise<{ status: number; body: string
         method: 'POST',
         headers: {
           host: HTTP_HOST,
+          'x-skiff-service': scenario.hops[2]!.serviceId,
+          'x-skiff-version': '1.0.0',
           'content-length': '0'
         }
       },

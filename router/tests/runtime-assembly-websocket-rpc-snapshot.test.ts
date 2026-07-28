@@ -196,9 +196,9 @@ describe('RuntimeAssembly WebSocket RPC snapshot', () => {
 
   it.each([
     {
-      name: 'ServiceDeployment v2',
+      name: 'ServiceDeployment v3',
       mutate: (fixture: Fixture) => {
-        fixture.deployment.schemaVersion = 'skiff-service-deployment-v2';
+        fixture.deployment.schemaVersion = 'skiff-service-deployment-v3';
       }
     },
     {
@@ -287,13 +287,11 @@ function currentWebSocketFixture(): Fixture {
   };
   const physicalSelector = {
     protocol: 'webSocket',
-    host: 'chat.example.test',
     method: null,
     path: '/chat'
   };
   const methodSelector = {
     protocol: 'webSocket',
-    host: 'chat.example.test',
     method: 'status',
     path: '/chat'
   };
@@ -377,7 +375,7 @@ function currentWebSocketFixture(): Fixture {
     }
   };
   const deployment = {
-    schemaVersion: 'skiff-service-deployment-v3',
+    schemaVersion: 'skiff-service-deployment-v4',
     contract: {
       serviceId: deploymentRef.serviceId,
       contractVersion: deploymentRef.contractVersion,
@@ -470,7 +468,6 @@ function addMethod(
   fixture.deployment.gatewayEntries[gatewayEntryKey] = entry;
   const selector = {
     protocol: 'webSocket',
-    host: 'chat.example.test',
     method: externalMethod,
     path: '/chat'
   };

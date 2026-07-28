@@ -131,11 +131,6 @@ function compareIngressBindings(left: unknown, right: unknown): number {
   const protocolOrder =
     ingressProtocolRank(leftProtocol) - ingressProtocolRank(rightProtocol);
   if (protocolOrder !== 0) return protocolOrder;
-  const hostOrder = compareStrings(
-    recordString(leftSelector, 'host'),
-    recordString(rightSelector, 'host')
-  );
-  if (hostOrder !== 0) return hostOrder;
   const methodOrder = compareOptionalStrings(
     leftSelector.method,
     rightSelector.method
