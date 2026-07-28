@@ -751,7 +751,6 @@ async fn websocket_jsonrpc_target_matches_websocket_jsonrpc_execution_route_for_
             lookup_a.assembly_identity,
             lookup_a.assembly_generation,
             lookup_a.websocket_entry_id,
-            lookup_a.host,
             lookup_a.path,
             lookup_a.method,
             lookup_a.gateway_entry_identity,

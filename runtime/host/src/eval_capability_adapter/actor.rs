@@ -1235,7 +1235,7 @@ mod tests {
             build_id: Some(BUILD_ID.to_string()),
             activation_identity: ActivationIdentityControl {
                 assembly_identity: AssemblyIdentity::new(
-                    "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 generation: 7,
                 runtime_replica_id: "runtime-replica-7".to_string(),

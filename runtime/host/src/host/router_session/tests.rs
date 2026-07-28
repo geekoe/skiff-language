@@ -645,7 +645,7 @@ fn assembly_activation_control(
         "expectedGeneration": 41,
         "candidateGeneration": 42,
         "assembly": {
-            "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
         "replicaId": "runtime-base"
     }))
