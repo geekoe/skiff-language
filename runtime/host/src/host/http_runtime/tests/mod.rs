@@ -1,3 +1,4 @@
+pub(super) mod current_scope;
 pub(super) mod egress;
 pub(super) mod helpers;
 pub(super) mod input;
