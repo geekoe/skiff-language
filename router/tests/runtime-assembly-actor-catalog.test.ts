@@ -26,7 +26,7 @@ describe('RuntimeAssembly Actor method catalog', () => {
     snapshots.replace({
       environment: 'test',
       generation: 1,
-      assembly: { assemblyIdentity: identity('skiff-runtime-assembly-v2:sha256', 'd') },
+      assembly: { assemblyIdentity: identity('skiff-runtime-assembly-v3:sha256', 'd') },
       ingress: new RuntimeAssemblyIngressIndex([]),
       actorMethods: [method],
     });
@@ -36,7 +36,7 @@ describe('RuntimeAssembly Actor method catalog', () => {
     snapshots.replace({
       environment: 'test',
       generation: 2,
-      assembly: { assemblyIdentity: identity('skiff-runtime-assembly-v2:sha256', 'f') },
+      assembly: { assemblyIdentity: identity('skiff-runtime-assembly-v3:sha256', 'f') },
       ingress: new RuntimeAssemblyIngressIndex([]),
       actorMethods: [],
     });

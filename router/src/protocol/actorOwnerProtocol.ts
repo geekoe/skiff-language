@@ -21,7 +21,7 @@ export type ActorOwnerControlOperation =
   | 'idleEvict';
 
 export interface ActorOwnerControlFrameHeader {
-  schemaVersion: 'skiff-runtime-frame-v1';
+  schemaVersion: 'skiff-runtime-frame-v2';
   type: typeof ACTOR_OWNER_CONTROL;
   targetRuntimeId: string;
   requestId: string;
@@ -31,7 +31,7 @@ export interface ActorOwnerControlFrameHeader {
 }
 
 export interface ActorOwnerControlAckFrameHeader {
-  schemaVersion: 'skiff-runtime-frame-v1';
+  schemaVersion: 'skiff-runtime-frame-v2';
   type: typeof ACTOR_OWNER_CONTROL_ACK;
   runtimeId: string;
   requestId: string;
@@ -40,7 +40,7 @@ export interface ActorOwnerControlAckFrameHeader {
 }
 
 export interface ActorOwnerFailureFrameHeader {
-  schemaVersion: 'skiff-runtime-frame-v1';
+  schemaVersion: 'skiff-runtime-frame-v2';
   type: typeof ACTOR_OWNER_FAILURE;
   invocationId: string;
   ownerRuntimeId: string;
@@ -83,7 +83,7 @@ export function decodeActorOwnerControlAckFrame(
   if (
     Object.keys(header).sort().join(',') !==
       'accepted,operation,requestId,runtimeId,schemaVersion,type' ||
-    header.schemaVersion !== 'skiff-runtime-frame-v1' ||
+    header.schemaVersion !== 'skiff-runtime-frame-v2' ||
     header.type !== ACTOR_OWNER_CONTROL_ACK ||
     !canonicalToken(header.runtimeId) ||
     !canonicalToken(header.requestId) ||
@@ -126,7 +126,7 @@ function validateActorOwnerFailureFrame(
   if (
     Object.keys(header).sort().join(',') !==
       'actorImplementationIdentity,epoch,invocationId,ownerLeaseId,ownerRuntimeId,reason,schemaVersion,type' ||
-    header.schemaVersion !== 'skiff-runtime-frame-v1' ||
+    header.schemaVersion !== 'skiff-runtime-frame-v2' ||
     header.type !== ACTOR_OWNER_FAILURE ||
     !canonicalToken(header.invocationId) ||
     !canonicalToken(header.ownerRuntimeId) ||
@@ -162,7 +162,7 @@ function validateActorOwnerControlFrame(
     : 'fence,operation,requestId,schemaVersion,targetRuntimeId,transition,type';
   if (
     Object.keys(header).sort().join(',') !== expected ||
-    header.schemaVersion !== 'skiff-runtime-frame-v1' ||
+    header.schemaVersion !== 'skiff-runtime-frame-v2' ||
     header.type !== ACTOR_OWNER_CONTROL ||
     !canonicalToken(header.targetRuntimeId) ||
     !canonicalToken(header.requestId) ||
@@ -248,7 +248,7 @@ function controlOperation(value: unknown): value is ActorOwnerControlOperation {
 }
 
 export interface ActorOwnerInvokeFrameHeader {
-  schemaVersion: 'skiff-runtime-frame-v1';
+  schemaVersion: 'skiff-runtime-frame-v2';
   type: typeof ACTOR_OWNER_INVOKE;
   targetRuntimeId: string;
   ownerFence: ActorOwnerFenceFrameHeader;
@@ -298,7 +298,7 @@ export function validateActorOwnerInvokeFrame(
     throw new Error('invalid actor owner invoke frame fields');
   }
   if (
-    header.schemaVersion !== 'skiff-runtime-frame-v1' ||
+    header.schemaVersion !== 'skiff-runtime-frame-v2' ||
     header.type !== ACTOR_OWNER_INVOKE ||
     !canonicalToken(header.targetRuntimeId)
   ) {

@@ -185,7 +185,7 @@ export class ProductionActorMethodRouter implements RuntimeActorMethodRouter {
         this.options.send(
           pending.owner,
           encodeActorMethodFrame({
-            schemaVersion: 'skiff-runtime-frame-v1',
+            schemaVersion: 'skiff-runtime-frame-v2',
             type: 'actor.method.cancel',
             invocationId,
             cancellationCorrelation: pending.cancellationCorrelation,
@@ -199,7 +199,7 @@ export class ProductionActorMethodRouter implements RuntimeActorMethodRouter {
         this.options.send(
           pending.caller,
           encodeActorOwnerFailureFrame({
-            schemaVersion: 'skiff-runtime-frame-v1',
+            schemaVersion: 'skiff-runtime-frame-v2',
             type: 'actor.owner.failure',
             invocationId,
             ownerRuntimeId: pending.invocation.ownerRuntimeId,
@@ -287,7 +287,7 @@ export class ProductionActorMethodRouter implements RuntimeActorMethodRouter {
       this.options.send(
         pending.owner,
         encodeActorMethodFrame({
-          schemaVersion: 'skiff-runtime-frame-v1',
+          schemaVersion: 'skiff-runtime-frame-v2',
           type: 'actor.method.cancel',
           invocationId: header.invocationId,
           cancellationCorrelation: header.cancellationCorrelation,
@@ -370,7 +370,7 @@ export class ProductionActorMethodRouter implements RuntimeActorMethodRouter {
           owner.ws,
           encodeActorOwnerInvokeFrame(
             {
-              schemaVersion: 'skiff-runtime-frame-v1',
+              schemaVersion: 'skiff-runtime-frame-v2',
               type: 'actor.owner.invoke',
               targetRuntimeId: ownerFence.ownerRuntimeId,
               ownerFence: {
@@ -479,7 +479,7 @@ export class ProductionActorMethodRouter implements RuntimeActorMethodRouter {
     this.options.send(
       runtime.ws,
       encodeActorOwnerControlFrame({
-        schemaVersion: 'skiff-runtime-frame-v1',
+        schemaVersion: 'skiff-runtime-frame-v2',
         type: 'actor.owner.control',
         targetRuntimeId: runtimeId,
         requestId,

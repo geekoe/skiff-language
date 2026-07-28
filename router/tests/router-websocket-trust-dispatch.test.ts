@@ -15,7 +15,7 @@ import {
   type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
 
-const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+const ASSEMBLY = `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 const GATEWAY_ENTRY_IDENTITY =
   `skiff-gateway-entry-v2:sha256:${'b'.repeat(64)}`;
 const WEBSOCKET_ENTRY_ID =
@@ -24,15 +24,13 @@ const WEBSOCKET_ENTRY_ID =
 describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
   it('indexes WebSocket selectors independently from HTTP methods', () => {
     const index = new RuntimeAssemblyIngressIndex([websocketBinding()]);
-    expect(index.get({
+    expect(index.get(websocketBinding().deployment, {
       protocol: 'webSocket',
-      host: 'chat.localhost',
       method: null,
       path: '/v1/chat'
     })).toEqual(websocketBinding());
-    expect(index.get({
+    expect(index.get(websocketBinding().deployment, {
       protocol: 'http',
-      host: 'chat.localhost',
       method: 'GET',
       path: '/v1/chat'
     })).toBeUndefined();
@@ -144,10 +142,10 @@ function connectHeader(): RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
       kind: 'runtimeAssembly',
       assemblyIdentity: ASSEMBLY,
       assemblyGeneration: 7,
+      deployment: { ...websocketBinding().deployment },
       gatewayEntryIdentity: GATEWAY_ENTRY_IDENTITY,
       ingress: {
         protocol: 'webSocket',
-        host: 'chat.localhost',
         method: null,
         path: '/v1/chat'
       }
@@ -170,7 +168,6 @@ function websocketBinding(): RuntimeAssemblyIngressBinding {
   return {
     selector: {
       protocol: 'webSocket',
-      host: 'chat.localhost',
       method: null,
       path: '/v1/chat'
     },
@@ -179,7 +176,7 @@ function websocketBinding(): RuntimeAssemblyIngressBinding {
       contractVersion: '1.0.0',
       deploymentRevision: 'revision-a',
       deploymentArtifactIdentity:
-        `skiff-deployment-artifact-v2:sha256:${'c'.repeat(64)}`
+        `skiff-deployment-artifact-v4:sha256:${'c'.repeat(64)}`
     },
     gatewayEntryKey: 'websocket',
     gatewayEntryIdentity: GATEWAY_ENTRY_IDENTITY,

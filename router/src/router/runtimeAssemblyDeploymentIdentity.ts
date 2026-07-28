@@ -18,7 +18,7 @@ export function deriveCurrentRuntimeAssemblyServiceDeploymentIdentity(
 ): string {
   const value = exactObject(input, 'ServiceDeployment identity input');
   const projection = {
-    schema: 'skiff-deployment-artifact-identity-v3',
+    schema: 'skiff-deployment-artifact-identity-v4',
     contract: withoutHumanVersionLabels(value.contract),
     deploymentRevision: value.deploymentRevision,
     implementation: withoutHumanVersionLabels(value.implementation),
@@ -80,7 +80,7 @@ export function deriveCurrentRuntimeAssemblyServiceDeploymentIdentity(
     ),
     policy: value.policy
   };
-  return `skiff-deployment-artifact-v3:sha256:${createHash('sha256')
+  return `skiff-deployment-artifact-v4:sha256:${createHash('sha256')
     .update(stableStringify(projection))
     .digest('hex')}`;
 }
@@ -131,11 +131,6 @@ function compareIngressBindings(left: unknown, right: unknown): number {
   const protocolOrder =
     ingressProtocolRank(leftProtocol) - ingressProtocolRank(rightProtocol);
   if (protocolOrder !== 0) return protocolOrder;
-  const hostOrder = compareStrings(
-    recordString(leftSelector, 'host'),
-    recordString(rightSelector, 'host')
-  );
-  if (hostOrder !== 0) return hostOrder;
   const methodOrder = compareOptionalStrings(
     leftSelector.method,
     rightSelector.method

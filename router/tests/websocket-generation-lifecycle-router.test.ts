@@ -13,7 +13,7 @@ import type {
 } from '../src/router/runtimeDispatcher.js';
 import { WebSocketGenerationLifecycleRouter } from '../src/router/webSocketGenerationLifecycleRouter.js';
 
-const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+const ASSEMBLY = `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 const ENTRY = `skiff-websocket-entry-v1:sha256:${'b'.repeat(64)}`;
 
 describe('Router WebSocket generation lifecycle consumer', () => {

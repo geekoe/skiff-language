@@ -22,7 +22,7 @@ import {
 } from '../src/router/runtimeDispatcher.js';
 
 const ASSEMBLY =
-  `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+  `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 const METHOD_GATEWAY_IDENTITY =
   `skiff-gateway-entry-v2:sha256:${'d'.repeat(64)}`;
 const CONNECT_GATEWAY_IDENTITY =
@@ -741,10 +741,16 @@ function connectHeader(
       kind: 'runtimeAssembly',
       assemblyIdentity: ASSEMBLY,
       assemblyGeneration: 7,
+      deployment: {
+        serviceId: 'example.com/chat',
+        contractVersion: '1.0.0',
+        deploymentRevision: 'revision-a',
+        deploymentArtifactIdentity:
+          `skiff-deployment-artifact-v4:sha256:${'c'.repeat(64)}`
+      },
       gatewayEntryIdentity: CONNECT_GATEWAY_IDENTITY,
       ingress: {
         protocol: 'webSocket',
-        host: 'chat.localhost',
         method: null,
         path: '/v1/chat'
       }
@@ -776,10 +782,16 @@ function jsonRpcHeader(
       kind: 'runtimeAssembly',
       assemblyIdentity: ASSEMBLY,
       assemblyGeneration: 7,
+      deployment: {
+        serviceId: 'example.com/chat',
+        contractVersion: '1.0.0',
+        deploymentRevision: 'revision-a',
+        deploymentArtifactIdentity:
+          `skiff-deployment-artifact-v4:sha256:${'c'.repeat(64)}`
+      },
       gatewayEntryIdentity: METHOD_GATEWAY_IDENTITY,
       ingress: {
         protocol: 'webSocket',
-        host: 'chat.localhost',
         method: 'status.get',
         path: '/v1/chat'
       }
