@@ -28,7 +28,7 @@ IN_PROGRESS
 
 ## 2. Scope
 
-本任务只迁移`test-runner`拥有的测试夹具、golden和控制请求编码：
+本任务迁移`test-runner`拥有的测试夹具、golden和控制请求编码：
 
 - 删除`IngressSelector.host`构造与旧Host authoring fixture；
 - package-test control request使用service-local selector，并携带精确
@@ -36,6 +36,15 @@ IN_PROGRESS
 - HTTP URL只保留合法request authority，不把authority当作路由身份；
 - 将当前正向fixture更新到DeploymentArtifact v4、RuntimeAssembly v3和runtime frame v2；
 - 保留明确用于验证旧代际拒绝的previous/legacy负例。
+
+聚焦source-receipt测试还直接编译以下非live示例service source fixture，因此同一机械hard cut允许只从
+这些`http.yml`删除旧Host字段，不修改其handler、method、path或运行逻辑：
+
+```text
+runtime/encrypted-storage-live/default-service/http.yml
+runtime/encrypted-storage-live/mapped-service/http.yml
+runtime/live-tests/http.yml
+```
 
 首要编译断点：
 
@@ -45,7 +54,7 @@ test-runner/src/package_test_assembly.rs
 test-runner/src/runtime_execution.rs
 ```
 
-允许关闭同一`test-runner` owner内的同类旧fixture。禁止修改compiler生产代码、
+允许关闭同一`test-runner` owner内的同类旧fixture和上述直接消费的示例source fixture。禁止修改compiler生产代码、
 Router、Runtime Host、assembly resolver/loader/linker或其他consumer生产实现。
 
 ## 3. Required evidence

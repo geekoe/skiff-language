@@ -7,6 +7,8 @@ use skiff_deployment::storage::{
 
 use crate::canonical_fixture::CanonicalFixtureError;
 
+const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v2";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ActivationReceipt {
     pub(super) environment: String,
@@ -94,9 +96,11 @@ fn decode_package_test_dispatch_response_inner(body: &str) -> Result<(), String>
         header,
         "schemaVersion",
         "runtime test dispatch response.header",
-    )? != "skiff-runtime-frame-v1"
+    )? != RUNTIME_FRAME_SCHEMA_VERSION
     {
-        return Err("header.schemaVersion must be skiff-runtime-frame-v1".to_string());
+        return Err(format!(
+            "header.schemaVersion must be {RUNTIME_FRAME_SCHEMA_VERSION}"
+        ));
     }
     if string_field(header, "type", "runtime test dispatch response.header")? != "response.end" {
         return Err("header.type must be response.end".to_string());

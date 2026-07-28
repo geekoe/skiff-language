@@ -2,11 +2,11 @@ use serde_json::Value;
 
 pub(super) const ENVIRONMENT: &str = "package-tests";
 pub(super) const ASSEMBLY_A: &str = concat!(
-    "skiff-runtime-assembly-v2:sha256:",
+    "skiff-runtime-assembly-v3:sha256:",
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 );
 pub(super) const ASSEMBLY_B: &str = concat!(
-    "skiff-runtime-assembly-v2:sha256:",
+    "skiff-runtime-assembly-v3:sha256:",
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 );
 pub(super) const REPLICA: &str = "runtime-two";
