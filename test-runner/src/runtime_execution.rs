@@ -25,7 +25,8 @@ mod http;
 mod readiness;
 mod wire;
 
-const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const ACTIVATION_HTTP_TIMEOUT: Duration = Duration::from_secs(150);
+const BUSINESS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
 const HEALTH_PATH: &str = "/__router/health";
@@ -84,7 +85,7 @@ pub fn run_package_cases(
         "POST",
         None,
         &activation_body,
-        deadline_after(HTTP_TIMEOUT)?,
+        deadline_after(ACTIVATION_HTTP_TIMEOUT)?,
         MAX_HTTP_RESPONSE_BYTES,
     )?;
     if !(200..300).contains(&activation.response.status) {
@@ -205,7 +206,7 @@ fn execute_control_test_dispatch(
         "POST",
         None,
         &body,
-        deadline_after(HTTP_TIMEOUT)?,
+        deadline_after(BUSINESS_HTTP_TIMEOUT)?,
         MAX_HTTP_RESPONSE_BYTES,
     )?;
     if (200..300).contains(&connected.response.status) {
@@ -274,7 +275,14 @@ fn execute_business_request_once(
 }
 
 fn deadline_after(duration: Duration) -> Result<Instant, CanonicalFixtureError> {
-    Instant::now()
+    deadline_after_from(Instant::now(), duration)
+}
+
+fn deadline_after_from(
+    start: Instant,
+    duration: Duration,
+) -> Result<Instant, CanonicalFixtureError> {
+    start
         .checked_add(duration)
         .ok_or_else(|| CanonicalFixtureError::InvalidInput("HTTP deadline overflow".to_string()))
 }
