@@ -1,9 +1,6 @@
 use std::{
     pin::Pin,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
 
@@ -269,8 +266,10 @@ async fn f445h_e4r_stream_provider_item_publication_observes_lease_child_signal(
 
 #[tokio::test]
 async fn f445h_e4r_stream_provider_task_runs_real_terminal_publication_path() {
-    let (task, _generation, stream_runtime, stream_value, _) =
+    let (mut task, _generation, stream_runtime, stream_value, _) =
         super::tests::provider_stream_failure_task();
+    let activity_probe = Arc::new(ProviderStreamTaskActivityProbe::default());
+    task.activity_probe = Some(Arc::clone(&activity_probe));
     run_provider_stream(task).await;
     let error = stream_runtime
         .next(&stream_value)
@@ -278,8 +277,13 @@ async fn f445h_e4r_stream_provider_task_runs_real_terminal_publication_path() {
         .expect_err("provider task publishes its typed failure");
     assert!(error.fixed_service_failure_parts().is_some());
     assert_eq!(
-        PROVIDER_STREAM_TASKS_ACTIVE.load(Ordering::Acquire),
+        activity_probe.entered(),
+        1,
+        "direct task execution enters its provider task owner exactly once"
+    );
+    assert_eq!(
+        activity_probe.active(),
         0,
-        "direct task execution leaves no provider task counter behind"
+        "direct task execution leaves no provider task owner behind"
     );
 }

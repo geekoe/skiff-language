@@ -288,6 +288,8 @@ fn start_provider_stream(
         execution,
         request,
         _stream_runtime_owner: provider_stream_runtime_owner,
+        #[cfg(test)]
+        activity_probe: None,
     };
     spawn_provider_stream(producer);
     Ok(receiver_value)
@@ -346,16 +348,18 @@ struct ProviderStreamTask {
     execution: OwnedExecutionControl,
     request: skiff_runtime_activation::RequestActivationContext,
     _stream_runtime_owner: Option<StreamRuntimeOwner>,
+    #[cfg(test)]
+    activity_probe: Option<Arc<ProviderStreamTaskActivityProbe>>,
 }
 
 fn spawn_provider_stream(producer: ProviderStreamTask) {
     tokio::spawn(async move {
-        let _active = ProviderStreamTaskGuard::new();
         run_provider_stream(producer).await;
     });
 }
 
 async fn run_provider_stream(mut producer: ProviderStreamTask) {
+    let _active = ProviderStreamTaskGuard::for_task(&producer);
     let args = std::mem::take(&mut producer.args);
     let terminal = {
         let provider_context = producer.provider_context.borrow();
@@ -955,17 +959,55 @@ impl StreamSinkApi for BoundaryStreamSink {
     }
 }
 
-struct ProviderStreamTaskGuard;
+#[cfg(test)]
+#[derive(Default)]
+struct ProviderStreamTaskActivityProbe {
+    entered: AtomicUsize,
+    active: AtomicUsize,
+}
+
+#[cfg(test)]
+impl ProviderStreamTaskActivityProbe {
+    fn entered(&self) -> usize {
+        self.entered.load(Ordering::Acquire)
+    }
+
+    fn active(&self) -> usize {
+        self.active.load(Ordering::Acquire)
+    }
+}
+
+struct ProviderStreamTaskGuard {
+    #[cfg(test)]
+    activity_probe: Option<Arc<ProviderStreamTaskActivityProbe>>,
+}
 
 impl ProviderStreamTaskGuard {
-    fn new() -> Self {
+    fn for_task(task: &ProviderStreamTask) -> Self {
         PROVIDER_STREAM_TASKS_ACTIVE.fetch_add(1, Ordering::AcqRel);
-        Self
+        #[cfg(test)]
+        {
+            let activity_probe = task.activity_probe.clone();
+            if let Some(probe) = &activity_probe {
+                probe.entered.fetch_add(1, Ordering::AcqRel);
+                probe.active.fetch_add(1, Ordering::AcqRel);
+            }
+            Self { activity_probe }
+        }
+        #[cfg(not(test))]
+        {
+            let _ = task;
+            Self {}
+        }
     }
 }
 
 impl Drop for ProviderStreamTaskGuard {
     fn drop(&mut self) {
+        #[cfg(test)]
+        if let Some(probe) = &self.activity_probe {
+            probe.active.fetch_sub(1, Ordering::AcqRel);
+        }
         PROVIDER_STREAM_TASKS_ACTIVE.fetch_sub(1, Ordering::AcqRel);
     }
 }
@@ -1749,23 +1791,21 @@ mod tests {
             execution,
             request: target.provider_request().clone(),
             _stream_runtime_owner: provider_stream_owner,
+            activity_probe: None,
         };
         (task, generation, stream_runtime, stream_value, cancellation)
     }
 
     #[test]
-    fn in_process_stream_task_counter_returns_to_baseline_exactly_once() {
-        let baseline = PROVIDER_STREAM_TASKS_ACTIVE.load(Ordering::Acquire);
-        let guard = ProviderStreamTaskGuard::new();
-        assert_eq!(
-            PROVIDER_STREAM_TASKS_ACTIVE.load(Ordering::Acquire),
-            baseline + 1
-        );
+    fn in_process_stream_task_probe_returns_to_zero_exactly_once() {
+        let activity_probe = Arc::new(ProviderStreamTaskActivityProbe::default());
+        let mut task = provider_stream_failure_task().0;
+        task.activity_probe = Some(Arc::clone(&activity_probe));
+        let guard = ProviderStreamTaskGuard::for_task(&task);
+        assert_eq!(activity_probe.entered(), 1);
+        assert_eq!(activity_probe.active(), 1);
         drop(guard);
-        assert_eq!(
-            PROVIDER_STREAM_TASKS_ACTIVE.load(Ordering::Acquire),
-            baseline
-        );
+        assert_eq!(activity_probe.active(), 0);
     }
 
     #[tokio::test]
