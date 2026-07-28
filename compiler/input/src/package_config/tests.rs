@@ -860,6 +860,125 @@ services:
 }
 
 #[test]
+fn package_dependency_parses_distinct_top_level_alias() {
+    let manifest = read_temp_manifest(
+        "top-level-alias",
+        r#"
+id: example.com/app-tests
+version: 1.0.0
+packages:
+  - id: example.com/library
+    version: 1.0.0
+    alias: library
+    topLevelAlias: libraryImpl
+"#,
+    )
+    .unwrap();
+
+    let dependency = &manifest.dependencies[0];
+    assert_eq!(dependency.effective_alias(), "library");
+    assert_eq!(dependency.top_level_alias.as_deref(), Some("libraryImpl"));
+}
+
+#[test]
+fn package_dependency_rejects_legacy_access_field() {
+    let error = read_temp_manifest(
+        "legacy-package-access",
+        r#"
+id: example.com/app-tests
+version: 1.0.0
+packages:
+  - id: example.com/library
+    version: 1.0.0
+    alias: library
+    access: topLevel
+"#,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("unknown field `access`"), "{error}");
+}
+
+#[test]
+fn top_level_alias_shares_the_dependency_alias_namespace() {
+    for (name, dependencies, expected) in [
+        (
+            "same-entry-alias",
+            "packages:\n  - id: example.com/library\n    version: 1.0.0\n    alias: library\n    topLevelAlias: library",
+            "topLevelAlias library is assigned to more than one dependency name",
+        ),
+        (
+            "duplicate-top-level-alias",
+            "packages:\n  - id: example.com/library\n    version: 1.0.0\n    alias: library\n    topLevelAlias: sharedImpl\n  - id: example.com/other\n    version: 1.0.0\n    alias: other\n    topLevelAlias: sharedImpl",
+            "topLevelAlias sharedImpl is assigned to more than one dependency name",
+        ),
+        (
+            "primary-top-level-collision",
+            "packages:\n  - id: example.com/library\n    version: 1.0.0\n    alias: library\n    topLevelAlias: payment\nservices:\n  - id: example.com/payment\n    version: 1.0.0\n    alias: payment",
+            "services alias payment is assigned to more than one dependency name",
+        ),
+    ] {
+        let error = read_temp_manifest(
+            name,
+            &format!("id: example.com/app-tests\nversion: 1.0.0\n{dependencies}\n"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(expected), "{name}: {error}");
+    }
+}
+
+#[test]
+fn top_level_alias_must_be_a_non_reserved_identifier() {
+    for (name, alias, expected) in [
+        (
+            "invalid-top-level-alias",
+            "Library",
+            "must match [a-z][A-Za-z0-9_]*",
+        ),
+        (
+            "reserved-top-level-alias",
+            "root",
+            "uses a reserved package name",
+        ),
+    ] {
+        let error = read_temp_manifest(
+            name,
+            &format!(
+                "id: example.com/app-tests\nversion: 1.0.0\npackages:\n  - id: example.com/library\n    version: 1.0.0\n    alias: library\n    topLevelAlias: {alias}\n"
+            ),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(expected), "{name}: {error}");
+    }
+}
+
+#[test]
+fn service_dependencies_cannot_declare_top_level_alias() {
+    let error = read_temp_manifest(
+        "service-top-level-alias",
+        r#"
+id: example.com/app-tests
+version: 1.0.0
+services:
+  - id: example.com/payment
+    version: 1.0.0
+    alias: payment
+    topLevelAlias: paymentImpl
+"#,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        error.contains("available only for package dependencies of test services"),
+        "{error}"
+    );
+}
+
+#[test]
 fn package_manifest_rejects_contracts_and_non_exact_dependency_versions() {
     for (name, field) in [
         (
@@ -996,7 +1115,7 @@ fn package_dependency(id: &str, version: &str) -> PackageDependency {
         id: id.to_string(),
         version: version.to_string(),
         alias: Some("pkg".to_string()),
-        access: crate::PackageDependencyAccess::Public,
+        top_level_alias: None,
         config: empty_dependency_config(),
         collection_name_mapping: BTreeMap::new(),
     }

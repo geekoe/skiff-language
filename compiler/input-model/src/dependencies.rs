@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{de, Deserialize, Deserializer, Serialize};
+use serde::{de, Deserialize, Deserializer};
 use serde_json::{Map, Value};
 use skiff_compiler_core::id::{PublicationId, SKIFF_STD_PUBLICATION_ID};
 
@@ -8,20 +8,12 @@ pub use skiff_compiler_core::path_safety::{
     is_safe_publication_artifact_id_component, is_safe_publication_artifact_path_segment,
 };
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PackageDependencyAccess {
-    #[default]
-    Public,
-    TopLevel,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageDependency {
     pub id: String,
     pub version: String,
     pub alias: Option<String>,
-    pub access: PackageDependencyAccess,
+    pub top_level_alias: Option<String>,
     pub config: Value,
     pub collection_name_mapping: BTreeMap<String, String>,
 }
@@ -32,7 +24,7 @@ impl PackageDependency {
             id: id.into(),
             version: "1.0.0".to_string(),
             alias: None,
-            access: PackageDependencyAccess::Public,
+            top_level_alias: None,
             config: empty_dependency_config(),
             collection_name_mapping: BTreeMap::new(),
         }
@@ -60,7 +52,8 @@ impl<'de> Deserialize<'de> for PackageDependency {
             id: Option<String>,
             version: Option<String>,
             alias: Option<String>,
-            access: Option<PackageDependencyAccess>,
+            #[serde(rename = "topLevelAlias")]
+            top_level_alias: Option<String>,
             collection_name_mapping: Option<BTreeMap<String, String>>,
         }
 
@@ -75,7 +68,7 @@ impl<'de> Deserialize<'de> for PackageDependency {
             id,
             version,
             alias: dependency.alias,
-            access: dependency.access.unwrap_or_default(),
+            top_level_alias: dependency.top_level_alias,
             config: empty_dependency_config(),
             collection_name_mapping: dependency.collection_name_mapping.unwrap_or_default(),
         })
@@ -152,19 +145,37 @@ pub fn collect_package_dependency_violations(
         ));
     }
     if let Some(alias) = &dependency.alias {
-        if !is_valid_source_import_alias(alias) {
+        collect_dependency_alias_violations(
+            dependency,
+            field_label,
+            "alias",
+            alias,
+            aliases,
+            violations,
+        );
+    } else {
+        let effective_alias = dependency.effective_alias();
+        if !aliases.insert(effective_alias.to_string()) {
             violations.push(format!(
-                "{field_label} entry {} alias {alias} must match [a-z][A-Za-z0-9_]*",
-                dependency.id
+                "{field_label} alias {effective_alias} is assigned to more than one dependency name"
             ));
-        } else if is_reserved_source_import_alias(alias)
-            && !(alias == "std" && is_standard_package_id(&dependency.id))
-        {
+        }
+    }
+    if let Some(top_level_alias) = &dependency.top_level_alias {
+        if field_label != "packages" {
             violations.push(format!(
-                "{field_label} entry {} alias {alias} uses a reserved package name",
+                "{field_label} entry {} cannot declare topLevelAlias; it is available only for package dependencies of test services",
                 dependency.id
             ));
         }
+        collect_dependency_alias_violations(
+            dependency,
+            field_label,
+            "topLevelAlias",
+            top_level_alias,
+            aliases,
+            violations,
+        );
     }
     if let Err(message) = skiff_artifact_model::validate_dependency_collection_name_mapping(
         &dependency.collection_name_mapping,
@@ -174,10 +185,32 @@ pub fn collect_package_dependency_violations(
             dependency.id
         ));
     }
-    let effective_alias = dependency.effective_alias();
-    if !aliases.insert(effective_alias.to_string()) {
+}
+
+fn collect_dependency_alias_violations(
+    dependency: &PackageDependency,
+    field_label: &str,
+    key: &str,
+    alias: &str,
+    aliases: &mut BTreeSet<String>,
+    violations: &mut Vec<String>,
+) {
+    if !is_valid_source_import_alias(alias) {
         violations.push(format!(
-            "{field_label} alias {effective_alias} is assigned to more than one package"
+            "{field_label} entry {} {key} {alias} must match [a-z][A-Za-z0-9_]*",
+            dependency.id
+        ));
+    } else if is_reserved_source_import_alias(alias)
+        && !(key == "alias" && alias == "std" && is_standard_package_id(&dependency.id))
+    {
+        violations.push(format!(
+            "{field_label} entry {} {key} {alias} uses a reserved package name",
+            dependency.id
+        ));
+    }
+    if !aliases.insert(alias.to_string()) {
+        violations.push(format!(
+            "{field_label} {key} {alias} is assigned to more than one dependency name"
         ));
     }
 }
