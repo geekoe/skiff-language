@@ -35,6 +35,7 @@ pub struct SourceDependencyAnalysisInput {
 
 #[derive(Debug, Clone)]
 pub struct PackageDependencyAnalysisFacts {
+    canonical_alias: Option<String>,
     package_build_id: PackageBuildId,
     expected_local_abi: PackageLocalAbiIdentity,
     compiler_owned: bool,
@@ -137,7 +138,10 @@ impl SourceDependencyAnalysisInput {
         if let Some(facts) = self.packages.get(alias) {
             return match facts.callables.get(callable_path) {
                 Some(callable) => ResolvedDependencyAnalysisTarget::Package {
-                    alias: alias.to_string(),
+                    alias: facts
+                        .canonical_alias
+                        .clone()
+                        .unwrap_or_else(|| alias.to_string()),
                     package_build_id: &facts.package_build_id,
                     expected_local_abi: &facts.expected_local_abi,
                     compiler_owned: facts.compiler_owned,
@@ -260,13 +264,18 @@ impl SourceDependencyAnalysisInput {
         expected_local_abi: &PackageLocalAbiIdentity,
         callable_id: &PackageCallableId,
     ) -> Option<&PackageDependencyCallableAnalysis> {
-        let facts = self.packages.get(alias)?;
-        if &facts.expected_local_abi != expected_local_abi {
-            return None;
-        }
-        let mut matches = facts
-            .callables
-            .values()
+        let mut matches = self
+            .packages
+            .iter()
+            .filter(|(view_alias, facts)| {
+                facts
+                    .canonical_alias
+                    .as_deref()
+                    .unwrap_or(view_alias.as_str())
+                    == alias
+                    && &facts.expected_local_abi == expected_local_abi
+            })
+            .flat_map(|(_, facts)| facts.callables.values())
             .filter(|callable| &callable.callable_id == callable_id);
         let callable = matches.next()?;
         matches.next().is_none().then_some(callable)
@@ -292,7 +301,7 @@ impl SourceDependencyAnalysisInput {
         let (alias, source_path) = dependency_source_address_parts(path)?;
         let (alias, facts) = self.packages.get_key_value(alias)?;
         Some((
-            alias.as_str(),
+            facts.canonical_alias.as_deref().unwrap_or(alias.as_str()),
             &facts.expected_local_abi,
             facts.constants.get(source_path)?,
         ))
@@ -328,6 +337,7 @@ impl PackageDependencyAnalysisFacts {
         callables: BTreeMap<String, PackageDependencyCallableAnalysis>,
     ) -> Self {
         Self {
+            canonical_alias: None,
             package_build_id,
             expected_local_abi,
             compiler_owned: false,
@@ -335,6 +345,13 @@ impl PackageDependencyAnalysisFacts {
             constants: BTreeMap::new(),
             schema_records: BTreeMap::new(),
         }
+    }
+
+    /// Makes a source-only view lower through the manifest dependency's
+    /// primary alias. Multiple views still describe one requirement.
+    pub fn with_canonical_alias(mut self, alias: impl Into<String>) -> Self {
+        self.canonical_alias = Some(alias.into());
+        self
     }
 
     /// Marks facts selected from a compiler-owned package graph entry rather
@@ -440,6 +457,63 @@ mod tests {
                 resolved_call_targets: BTreeMap::new(),
             },
         )
+    }
+
+    #[test]
+    fn source_only_view_resolves_independently_but_lowers_to_the_primary_alias() {
+        let public = PackageDependencyAnalysisFacts::new(
+            PackageBuildId::new("build:widget"),
+            PackageLocalAbiIdentity::new("abi:widget"),
+            BTreeMap::from([("api.run".to_string(), package_callable("callable:public"))]),
+        )
+        .with_canonical_alias("widget");
+        let implementation = PackageDependencyAnalysisFacts::new(
+            PackageBuildId::new("build:widget"),
+            PackageLocalAbiIdentity::new("abi:widget"),
+            BTreeMap::from([(
+                "internal.run".to_string(),
+                package_callable("callable:implementation"),
+            )]),
+        )
+        .with_canonical_alias("widget");
+        let input = SourceDependencyAnalysisInput::new(
+            [
+                ("widget".to_string(), public),
+                ("widgetImpl".to_string(), implementation),
+            ],
+            [],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            input.resolve_path("widget/api.run"),
+            ResolvedDependencyAnalysisTarget::Package { alias, callable, .. }
+                if alias == "widget" && callable.callable_id().as_str() == "callable:public"
+        ));
+        assert!(matches!(
+            input.resolve_path("widgetImpl/internal.run"),
+            ResolvedDependencyAnalysisTarget::Package { alias, callable, .. }
+                if alias == "widget"
+                    && callable.callable_id().as_str() == "callable:implementation"
+        ));
+        assert!(matches!(
+            input.resolve_path("widget/internal.run"),
+            ResolvedDependencyAnalysisTarget::MissingMember
+        ));
+        assert!(matches!(
+            input.resolve_path("widgetImpl/api.run"),
+            ResolvedDependencyAnalysisTarget::MissingMember
+        ));
+        assert!(
+            input
+                .package_callable(
+                    "widget",
+                    &PackageLocalAbiIdentity::new("abi:widget"),
+                    &PackageCallableId::new("callable:implementation"),
+                )
+                .is_some(),
+            "canonical requirement lookup must recover a callable selected through the source-only view"
+        );
     }
 
     #[test]

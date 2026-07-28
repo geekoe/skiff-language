@@ -478,13 +478,29 @@ impl TypeResolutionModel {
                     .filter(|(_, dependency_package_id)| {
                         dependency_package_id.as_str() == package_id
                     })
-                    .find_map(|(alias, _)| {
-                        self.package_type_slots.get(&(
+                    .filter_map(|(alias, _)| {
+                        let path = self.package_type_slots.get(&(
                             alias.clone(),
                             module_path.to_string(),
                             type_index,
-                        ))
+                        ))?;
+                        let view = self
+                            .package_dependency_views
+                            .get(alias)
+                            .copied()
+                            .unwrap_or(PackageDependencyView::Public);
+                        Some((view, alias, path))
                     })
+                    .min_by_key(|(view, alias, _)| {
+                        (
+                            match view {
+                                PackageDependencyView::TopLevel => 0,
+                                PackageDependencyView::Public => 1,
+                            },
+                            alias.as_str(),
+                        )
+                    })
+                    .map(|(_, _, path)| path)
             })?;
         Some(TypeRefIr::PackageSymbol {
             symbol: PackageSymbolRef {
@@ -1037,12 +1053,7 @@ impl TypeResolutionModel {
                 let (module_path, source_symbol) =
                     source_path.rsplit_once('.').unwrap_or(("", source_path));
                 let linked_public_path = self
-                    .package_type_source_paths
-                    .get(&(
-                        dependency_ref.to_string(),
-                        module_path.to_string(),
-                        source_symbol.to_string(),
-                    ))
+                    .package_type_source_path(dependency_ref, module_path, source_symbol)
                     .cloned();
                 let public_path = if package_id_owner {
                     // Package-id refs in the provider signature name the source
@@ -1154,11 +1165,8 @@ impl TypeResolutionModel {
             .module_path
             .strip_prefix("root.")
             .unwrap_or(&symbol.module_path);
-        let public_path = self.package_type_source_paths.get(&(
-            dependency_ref.to_string(),
-            module_path.to_string(),
-            symbol.symbol.clone(),
-        ))?;
+        let public_path =
+            self.package_type_source_path(dependency_ref, module_path, &symbol.symbol)?;
         self.package_type_resolution(dependency_ref, public_path)?;
         Some(TypeRefIr::PackageSymbol {
             symbol: PackageSymbolRef {
@@ -1288,7 +1296,8 @@ impl TypeResolutionModel {
                 let package_root = package_root_for_symbol(
                     symbol,
                     &self.package_dependencies,
-                    &self.package_dependency_access,
+                    &self.package_dependency_views,
+                    &self.package_dependency_canonical_refs,
                 );
                 self.package_type_resolution(dependency_ref, &symbol.symbol_path)
                     .and_then(|resolution| {
@@ -1669,7 +1678,8 @@ impl TypeResolutionModel {
                 let package_root = package_root_for_symbol(
                     symbol,
                     &self.package_dependencies,
-                    &self.package_dependency_access,
+                    &self.package_dependency_views,
+                    &self.package_dependency_canonical_refs,
                 );
                 self.package_type_resolution(dependency_ref, &symbol.symbol_path)
                     .and_then(|resolution| {

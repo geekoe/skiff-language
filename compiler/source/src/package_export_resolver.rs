@@ -77,7 +77,9 @@ pub fn declared_import_dependency_id<'a>(
 ) -> Option<&'a str> {
     let full = import.join(".");
     dependencies.iter().find_map(|dependency| {
-        if dependency.effective_alias() == full {
+        if dependency.effective_alias() == full
+            || dependency.top_level_alias.as_deref() == Some(full.as_str())
+        {
             Some(dependency.id.as_str())
         } else if dependency.alias.is_none() && can_import_package_without_alias(&dependency.id) {
             package_id_matches_import(&dependency.id, import).then_some(dependency.id.as_str())
@@ -93,7 +95,10 @@ pub fn complex_dependency_requiring_alias_for_import<'a>(
 ) -> Option<&'a str> {
     let import_root = import.first()?;
     dependencies.iter().find_map(|dependency| {
-        if !is_complex_package_id(&dependency.id) || dependency.alias.is_some() {
+        if !is_complex_package_id(&dependency.id)
+            || dependency.alias.is_some()
+            || dependency.top_level_alias.as_deref() == Some(import_root.as_str())
+        {
             return None;
         }
         let package_root = dependency.id.rsplit('/').next()?;
