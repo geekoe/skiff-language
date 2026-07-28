@@ -472,6 +472,29 @@ fn pre_source_schema_binding_rejects_duplicate_owner_version_and_artifact() {
     assert!(duplicate_std.contains("duplicate exact canonical artifacts"));
 }
 
+#[test]
+fn top_level_alias_keeps_one_primary_requirement_and_pins_the_exact_build() {
+    let artifact = canonical_artifact("example.widget", "1.0.0");
+    let mut dependency = PackageDependency::id("example.widget");
+    dependency.version = "1.0.0".to_string();
+    dependency.alias = Some("widget".to_string());
+    dependency.top_level_alias = Some("widgetImpl".to_string());
+
+    let requirements = package_requirements_for_dependencies(
+        "example.tests",
+        std::slice::from_ref(&dependency),
+        std::slice::from_ref(&artifact),
+    )
+    .unwrap();
+
+    assert_eq!(requirements.len(), 1);
+    assert_eq!(requirements[0].alias, "widget");
+    assert_eq!(
+        requirements[0].expected_package_build,
+        Some(artifact.package_build_id)
+    );
+}
+
 fn canonical_artifact(package_id: &str, version: &str) -> PackageArtifact {
     let empty_schema_types = BTreeMap::new();
     let mut artifact = PackageArtifact {

@@ -3,14 +3,14 @@ use std::{cell::Cell, collections::BTreeMap, fs, path::PathBuf};
 use serde_json::json;
 use skiff_artifact_identity::package_schema_index_identity;
 use skiff_artifact_model::{PackageArtifact, PackageLocalAbiIdentity, PackageRequirement};
-use skiff_compiler_input::CompilerPlatformSources;
+use skiff_compiler_input::{package_config::read_user_package_manifest, CompilerPlatformSources};
 use skiff_compiler_source::prelude_registry::{
     prelude_registry, PreludeRegistryInitializationError,
 };
 
 use super::{
-    build_authoring_object, resolve_reachable_package_closure, run_after_platform_context_guard,
-    AuthoringObject,
+    build_authoring_object, reject_top_level_aliases_outside_test_service,
+    resolve_reachable_package_closure, run_after_platform_context_guard, AuthoringObject,
 };
 
 #[test]
@@ -139,6 +139,35 @@ fn p5_f149_reachable_package_closure_fails_closed_on_each_exact_edge() {
     })
     .unwrap_err();
     assert!(error.to_string().contains("missing pointer/record"));
+}
+
+#[test]
+fn ordinary_package_authoring_rejects_top_level_alias_before_dependency_resolution() {
+    let root = std::env::temp_dir().join(format!(
+        "skiff-top-level-alias-ordinary-package-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("package.yml"),
+        "id: example.com/widget-tests\nversion: 1.0.0\npackages:\n  - id: example.com/widget\n    version: 1.0.0\n    alias: widget\n    topLevelAlias: widgetImpl\n",
+    )
+    .unwrap();
+    fs::write(root.join("api.yml"), "{}\n").unwrap();
+    let manifest = read_user_package_manifest(&root.join("package.yml")).unwrap();
+
+    let error = reject_top_level_aliases_outside_test_service(&root, &manifest)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("declares topLevelAlias outside service.yml kind: test"),
+        "{error}"
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 fn package(

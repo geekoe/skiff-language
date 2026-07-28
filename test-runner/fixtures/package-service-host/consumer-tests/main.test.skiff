@@ -1,7 +1,7 @@
-import subject
+import subjectImpl
 
 test "provider observes helper mutation" {
-  assert subject/main.run() == "provider-observed-helper-mutated"
+  assert subjectImpl/main.run() == "provider-observed-helper-mutated"
 }
 
 test "inline package effect sequence uses typed setup and request subset" effects {
@@ -23,9 +23,9 @@ test "inline package effect sequence uses typed setup and request subset" effect
     ],
   }
 } {
-  assert subject/main.effectLookup("https://example.test/usercode", "first-extra-detail") == "first"
-  assert subject/main.effectLookup("https://example.test/deviceauth/token", "second-extra-detail") == "second"
-  assert subject/main.effectLookup("https://example.test/oauth/token", "third-extra-detail") == "third"
+  assert subjectImpl/main.effectLookup("https://example.test/usercode", "first-extra-detail") == "first"
+  assert subjectImpl/main.effectLookup("https://example.test/deviceauth/token", "second-extra-detail") == "second"
+  assert subjectImpl/main.effectLookup("https://example.test/oauth/token", "third-extra-detail") == "third"
 }
 
 test "inline package effect sequence materializes stream outcomes" effects {
@@ -48,8 +48,8 @@ test "inline package effect sequence materializes stream outcomes" effects {
     ],
   }
 } {
-  assert subject/main.effectEvents("https://example.test/events/first") == "first:second", "first stream sequence outcome mismatch"
-  assert subject/main.effectEvents("https://example.test/events/third") == "third", "second stream sequence outcome mismatch"
+  assert subjectImpl/main.effectEvents("https://example.test/events/first") == "first:second", "first stream sequence outcome mismatch"
+  assert subjectImpl/main.effectEvents("https://example.test/events/third") == "third", "second stream sequence outcome mismatch"
 }
 
 test "inline service effect bypasses the bound provider by exact contract operation" effects {
@@ -58,5 +58,5 @@ test "inline service effect bypasses the bound provider by exact contract operat
     respond: "service-effect-response",
   }
 } {
-  assert subject/main.serviceEffect("service-request") == "service-effect-response"
+  assert subjectImpl/main.serviceEffect("service-request") == "service-effect-response"
 }

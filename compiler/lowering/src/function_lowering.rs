@@ -1591,7 +1591,9 @@ impl<'a> FunctionLowerer<'a> {
                     ),
                 ));
             }
-            if root != package_requirement_alias {
+            if self.type_resolution.canonical_package_dependency_ref(root)
+                != package_requirement_alias
+            {
                 return Err(package_call_resolution_error(
                     expression_key,
                     path,

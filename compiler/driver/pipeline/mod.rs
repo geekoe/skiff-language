@@ -433,12 +433,21 @@ pub fn compile_contract(
 fn package_requirements(
     input: &PackageCompileInput<'_>,
 ) -> Result<Vec<PackageRequirement>, PackageCompileError> {
-    input
-        .package_dependencies
+    package_requirements_for_dependencies(
+        input.package_id,
+        input.package_dependencies,
+        input.dependency_packages,
+    )
+}
+
+fn package_requirements_for_dependencies(
+    package_id: &str,
+    dependencies: &[PackageDependency],
+    dependency_packages: &[PackageArtifact],
+) -> Result<Vec<PackageRequirement>, PackageCompileError> {
+    dependencies
         .iter()
-        .map(|dependency| {
-            package_requirement(input.package_id, dependency, input.dependency_packages)
-        })
+        .map(|dependency| package_requirement(package_id, dependency, dependency_packages))
         .collect()
 }
 
@@ -589,9 +598,10 @@ fn package_requirement(
         exact_version: dependency.version.clone(),
         expected_local_abi: artifact.package_local_abi.local_abi_identity.clone(),
         collection_name_mapping: dependency.collection_name_mapping.clone(),
-        expected_package_build: (dependency.access
-            == skiff_compiler_input::PackageDependencyAccess::TopLevel)
-            .then(|| artifact.package_build_id.clone()),
+        expected_package_build: dependency
+            .top_level_alias
+            .as_ref()
+            .map(|_| artifact.package_build_id.clone()),
     })
 }
 

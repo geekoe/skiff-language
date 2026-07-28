@@ -130,6 +130,7 @@ pub(super) fn validate_package_manifest(
             .cmp(&right.id)
             .then_with(|| left.version.cmp(&right.version))
             .then_with(|| left.alias.cmp(&right.alias))
+            .then_with(|| left.top_level_alias.cmp(&right.top_level_alias))
     });
     dependencies.dedup();
     let mut dependency_aliases = BTreeSet::new();
@@ -147,6 +148,7 @@ pub(super) fn validate_package_manifest(
             .cmp(&right.id)
             .then_with(|| left.version.cmp(&right.version))
             .then_with(|| left.alias.cmp(&right.alias))
+            .then_with(|| left.top_level_alias.cmp(&right.top_level_alias))
     });
     services.dedup();
     for dependency in &services {

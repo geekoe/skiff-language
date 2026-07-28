@@ -228,9 +228,14 @@ fn package_name_resolution_aliases(
 ) -> BTreeMap<String, Vec<String>> {
     dependencies
         .iter()
-        .map(|dependency| {
+        .flat_map(|dependency| {
             let alias = dependency.effective_alias().to_string();
-            (alias.clone(), vec![alias])
+            std::iter::once((alias.clone(), vec![alias])).chain(
+                dependency
+                    .top_level_alias
+                    .iter()
+                    .map(|alias| (alias.clone(), Vec::new())),
+            )
         })
         .collect()
 }

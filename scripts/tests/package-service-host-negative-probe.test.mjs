@@ -229,7 +229,7 @@ async function makeCheckout() {
       '  - id: example.com/consumer',
       '    version: 1.0.0',
       '    alias: subject',
-      '    access: topLevel',
+      '    topLevelAlias: subjectImpl',
       '',
     ].join('\n'),
   );
@@ -245,7 +245,7 @@ async function makeCheckout() {
   );
   await writeFile(
     join(tests, 'main.test.skiff'),
-    'import subject\n\ntest "positive" {\n  assert subject/main.run() == "ok"\n}\n',
+    'import subjectImpl\n\ntest "positive" {\n  assert subjectImpl/main.run() == "ok"\n}\n',
   );
   return root;
 }

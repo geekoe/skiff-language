@@ -17,7 +17,6 @@ pub use dependencies::{
     is_publication_dependency_id, is_reserved_source_import_alias,
     is_safe_publication_artifact_id_component, is_safe_publication_artifact_path_segment,
     is_standard_package_id, is_valid_source_import_alias, PackageDependency,
-    PackageDependencyAccess,
 };
 pub use manifest::{
     parse_publication_id_field, validate_publication_version_field, ManifestOwner,

@@ -6,7 +6,7 @@ use skiff_artifact_model::{
     PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
-use skiff_compiler_input::{PackageDependencyAccess, ResolvedContractDependency};
+use skiff_compiler_input::ResolvedContractDependency;
 use skiff_compiler_projection_input::ResolvedPackageSchema;
 use skiff_compiler_source::{
     PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis,
@@ -14,8 +14,7 @@ use skiff_compiler_source::{
 };
 
 use crate::{
-    input::{compile_input::PackageCompileInput, PackageDependency},
-    shared::package_compile_error::PackageCompileError,
+    input::compile_input::PackageCompileInput, shared::package_compile_error::PackageCompileError,
 };
 
 pub(super) struct CanonicalSourceDependencies {
@@ -101,10 +100,10 @@ fn package_analysis(
         if let Some(dependency) = input
             .package_dependencies
             .iter()
-            .find(|dependency| dependency.access == PackageDependencyAccess::TopLevel)
+            .find(|dependency| dependency.top_level_alias.is_some())
         {
             return Err(validation_error(format!(
-                "package dependency {} uses access: topLevel outside a test service",
+                "package dependency {} declares topLevelAlias outside a test service",
                 dependency.effective_alias()
             )));
         }
@@ -171,13 +170,21 @@ fn package_analysis(
             ))
         })?;
         let alias = dependency.effective_alias().to_string();
-        let callables = package_callable_analysis(dependency, artifact)?;
+        let callables = package_callable_analysis(
+            &alias,
+            &artifact.package_local_abi.public_symbols,
+            artifact,
+        )?;
         let mut analysis = PackageDependencyAnalysisFacts::new(
             artifact.package_build_id.clone(),
             artifact.package_local_abi.local_abi_identity.clone(),
             callables,
         )
-        .with_constants(package_constant_analysis(dependency, artifact));
+        .with_canonical_alias(alias.clone())
+        .with_constants(package_constant_analysis(
+            &artifact.package_local_abi.public_symbols,
+            artifact,
+        ));
         if let Some(schema) = resolved_package_schemas.iter().find(|schema| {
             schema.alias() == alias
                 && schema.package_id() == dependency.id
@@ -196,23 +203,40 @@ fn package_analysis(
                 },
             ));
         }
-        facts.push((alias, analysis));
+        facts.push((alias.clone(), analysis));
+        if let Some(top_level_alias) = &dependency.top_level_alias {
+            let analysis = PackageDependencyAnalysisFacts::new(
+                artifact.package_build_id.clone(),
+                artifact.package_local_abi.local_abi_identity.clone(),
+                package_callable_analysis(
+                    top_level_alias,
+                    &artifact.package_local_abi.implementation_symbols,
+                    artifact,
+                )?,
+            )
+            .with_canonical_alias(alias.clone())
+            .with_constants(package_constant_analysis(
+                &artifact.package_local_abi.implementation_symbols,
+                artifact,
+            ));
+            facts.push((top_level_alias.clone(), analysis));
+        }
     }
     Ok(facts)
 }
 
 fn package_constant_analysis(
-    dependency: &PackageDependency,
+    symbols: &BTreeMap<String, PackageLocalAbiSymbol>,
     artifact: &PackageArtifact,
 ) -> BTreeMap<String, PackageDependencyConstantAnalysis> {
-    selected_package_symbols(dependency, artifact)
+    symbols
         .iter()
         .filter_map(|(selected_path, symbol)| {
             let PackageLocalAbiSymbol::Constant { const_id, ty } = symbol else {
                 return None;
             };
             Some((
-                dependency_member_path(dependency, selected_path),
+                dependency_member_path(&artifact.package_id, selected_path),
                 PackageDependencyConstantAnalysis::new(
                     const_id.clone(),
                     bind_package_type_identity(ty, artifact),
@@ -223,15 +247,13 @@ fn package_constant_analysis(
 }
 
 fn package_callable_analysis(
-    dependency: &PackageDependency,
+    dependency_label: &str,
+    symbols: &BTreeMap<String, PackageLocalAbiSymbol>,
     artifact: &PackageArtifact,
 ) -> Result<BTreeMap<String, PackageDependencyCallableAnalysis>, PackageCompileError> {
-    package_callable_analysis_from_symbols(
-        dependency.effective_alias(),
-        selected_package_symbols(dependency, artifact),
-        artifact,
-        |path| dependency_member_path(dependency, path),
-    )
+    package_callable_analysis_from_symbols(dependency_label, symbols, artifact, |path| {
+        dependency_member_path(&artifact.package_id, path)
+    })
 }
 
 fn package_callable_analysis_from_symbols(
@@ -412,18 +434,8 @@ fn bind_nominal_base_identity(
     NominalTypeRefBaseIr::PackageSymbol { symbol }
 }
 
-fn selected_package_symbols<'a>(
-    dependency: &PackageDependency,
-    artifact: &'a PackageArtifact,
-) -> &'a BTreeMap<String, PackageLocalAbiSymbol> {
-    match dependency.access {
-        PackageDependencyAccess::Public => &artifact.package_local_abi.public_symbols,
-        PackageDependencyAccess::TopLevel => &artifact.package_local_abi.implementation_symbols,
-    }
-}
-
-fn dependency_member_path(dependency: &PackageDependency, public_path: &str) -> String {
-    if dependency.id == skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID {
+fn dependency_member_path(package_id: &str, public_path: &str) -> String {
+    if package_id == skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID {
         std_dependency_member_path(public_path)
     } else {
         public_path.to_string()

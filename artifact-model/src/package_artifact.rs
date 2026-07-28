@@ -78,8 +78,8 @@ pub enum PackageLocalAbiSymbol {
 pub struct PackageLocalAbi {
     pub local_abi_identity: PackageLocalAbiIdentity,
     pub public_symbols: BTreeMap<String, PackageLocalAbiSymbol>,
-    /// Exact implementation source addresses available only to test-service
-    /// dependencies declared with `access: topLevel`.
+    /// Exact implementation source addresses available only through a
+    /// test-service dependency's `topLevelAlias`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub implementation_symbols: BTreeMap<String, PackageLocalAbiSymbol>,
 }

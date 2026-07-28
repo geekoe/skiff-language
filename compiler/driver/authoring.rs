@@ -118,6 +118,10 @@ fn build_package_after_platform_context_guard(
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
     reject_legacy_service_authoring(root)?;
+    let service_root = root.join(SERVICE_CONFIG_FILE).is_file();
+    if !service_root {
+        reject_top_level_aliases_outside_test_service(root, manifest)?;
+    }
     let dependencies = read_package_dependencies(store, &manifest)?;
     let contracts = read_contract_dependencies(store, &manifest)?;
     let aliases = package_aliases(&manifest, &dependencies);
@@ -130,7 +134,6 @@ fn build_package_after_platform_context_guard(
         .with_canonical_dependencies(&dependencies, &contracts)
         .with_available_canonical_packages(&available)
         .with_canonical_artifact_store(store);
-    let service_root = root.join("service.yml").is_file();
     let (published, service_data, service_api_receipt) = if service_root {
         let service = read_service_package_root(root)?;
         if service.service.kind == ServiceAuthoringKind::Test {
@@ -151,15 +154,6 @@ fn build_package_after_platform_context_guard(
             Some(receipt),
         )
     } else {
-        if let Some(dependency) = manifest.dependencies.iter().find(|dependency| {
-            dependency.access == skiff_compiler_input::PackageDependencyAccess::TopLevel
-        }) {
-            return Err(invalid_input(format!(
-                "package {} dependency {} uses access: topLevel, which is allowed only for service.yml kind: test",
-                root.display(),
-                dependency.effective_alias()
-            )));
-        }
         let published = compile_package(input)?;
         (published, None, None)
     };
@@ -685,6 +679,25 @@ fn reject_legacy_service_authoring(root: &Path) -> AuthoringResult<()> {
         }
     }
     Ok(())
+}
+
+fn reject_top_level_aliases_outside_test_service(
+    root: &Path,
+    manifest: &PackageManifest,
+) -> AuthoringResult<()> {
+    let aliases = manifest
+        .dependencies
+        .iter()
+        .filter_map(|dependency| dependency.top_level_alias.as_deref())
+        .collect::<Vec<_>>();
+    if aliases.is_empty() {
+        return Ok(());
+    }
+    Err(invalid_input(format!(
+        "package {} declares topLevelAlias outside service.yml kind: test (aliases: {})",
+        root.display(),
+        aliases.join(", ")
+    )))
 }
 
 fn validate_external_manifest_inventory(root: &Path) -> AuthoringResult<()> {

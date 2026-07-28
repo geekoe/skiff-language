@@ -36,7 +36,7 @@ use crate::{
         type_syntax::generic_parts,
     },
 };
-use compiler_input_model::{PackageDependency, PackageDependencyAccess};
+use compiler_input_model::PackageDependency;
 
 use super::{
     api::PublicTypeKind, type_indices, type_text_with_args, LocalDbObjectIndex,
@@ -69,7 +69,8 @@ pub struct TypeResolutionModel {
     /// This keeps source `ServiceSymbol` recovery owner-aware without a short-name lookup.
     package_type_source_paths: BTreeMap<(String, String, String), String>,
     package_dependencies: BTreeMap<String, String>,
-    package_dependency_access: BTreeMap<String, PackageDependencyAccess>,
+    package_dependency_views: BTreeMap<String, PackageDependencyView>,
+    package_dependency_canonical_refs: BTreeMap<String, String>,
     package_artifact_identities: BTreeMap<String, (PackageLocalAbiIdentity, PackageBuildId)>,
     package_aliases: BTreeMap<String, Vec<String>>,
     external_type_symbols: PublicationTypeSymbolIndex,
@@ -83,6 +84,12 @@ pub struct TypeResolutionModel {
     /// public and internal references otherwise produce non-matching `TypeRefIr`s.
     package_public_to_internal: BTreeMap<String, String>,
     service_api_schemas: BTreeMap<String, BTreeMap<String, PackageSchemaTypeRecord>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PackageDependencyView {
+    Public,
+    TopLevel,
 }
 
 #[derive(Clone, Debug)]
@@ -411,20 +418,23 @@ impl TypeResolutionModel {
             index_source_interfaces(&module_path, ast, &mut source_interfaces);
         }
 
-        let mut package_dependency_access = package_dependencies
-            .iter()
-            .map(|dependency| (dependency.effective_alias().to_string(), dependency.access))
-            .collect::<BTreeMap<_, _>>();
         let package_dependency_declarations = package_dependencies;
-        let mut package_dependencies = package_dependency_declarations
-            .iter()
-            .map(|dependency| {
-                (
-                    dependency.effective_alias().to_string(),
-                    dependency.id.clone(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
+        let mut package_dependency_views = BTreeMap::new();
+        let mut package_dependency_canonical_refs = BTreeMap::new();
+        let mut package_dependencies = BTreeMap::new();
+        for dependency in package_dependency_declarations {
+            let primary_alias = dependency.effective_alias().to_string();
+            package_dependency_views.insert(primary_alias.clone(), PackageDependencyView::Public);
+            package_dependency_canonical_refs.insert(primary_alias.clone(), primary_alias.clone());
+            package_dependencies.insert(primary_alias.clone(), dependency.id.clone());
+            if let Some(top_level_alias) = &dependency.top_level_alias {
+                package_dependency_views
+                    .insert(top_level_alias.clone(), PackageDependencyView::TopLevel);
+                package_dependency_canonical_refs
+                    .insert(top_level_alias.clone(), primary_alias.clone());
+                package_dependencies.insert(top_level_alias.clone(), dependency.id.clone());
+            }
+        }
         let mut package_types = BTreeMap::new();
         let mut package_callables = BTreeMap::new();
         let mut package_constants = BTreeMap::new();
@@ -454,7 +464,7 @@ impl TypeResolutionModel {
                 index_artifact_package_types(
                     artifact,
                     dependency_ref,
-                    dependency.access,
+                    PackageDependencyView::Public,
                     ArtifactPackageTypePathMode::DeclaredPublic,
                     &mut package_types,
                     &mut package_interfaces,
@@ -463,13 +473,14 @@ impl TypeResolutionModel {
                 index_artifact_package_type_source_paths(
                     artifact,
                     dependency_ref,
-                    dependency.access,
+                    PackageDependencyView::Public,
                     &mut package_type_source_paths,
                 )?;
                 index_artifact_package_constants(
                     artifact,
                     dependency_ref,
-                    dependency.access,
+                    dependency_ref,
+                    PackageDependencyView::Public,
                     &mut package_constants,
                 )?;
                 package_artifact_identities.insert(
@@ -479,6 +490,37 @@ impl TypeResolutionModel {
                         artifact.package_build_id.clone(),
                     ),
                 );
+                if let Some(top_level_alias) = &dependency.top_level_alias {
+                    index_artifact_package_types(
+                        artifact,
+                        top_level_alias,
+                        PackageDependencyView::TopLevel,
+                        ArtifactPackageTypePathMode::DeclaredPublic,
+                        &mut package_types,
+                        &mut package_interfaces,
+                        &mut package_type_slots,
+                    )?;
+                    index_artifact_package_type_source_paths(
+                        artifact,
+                        top_level_alias,
+                        PackageDependencyView::TopLevel,
+                        &mut package_type_source_paths,
+                    )?;
+                    index_artifact_package_constants(
+                        artifact,
+                        top_level_alias,
+                        dependency_ref,
+                        PackageDependencyView::TopLevel,
+                        &mut package_constants,
+                    )?;
+                    package_artifact_identities.insert(
+                        top_level_alias.clone(),
+                        (
+                            artifact.package_local_abi.local_abi_identity.clone(),
+                            artifact.package_build_id.clone(),
+                        ),
+                    );
+                }
             }
         }
         if let Some(dependencies) = compiler_owned_dependencies {
@@ -491,7 +533,8 @@ impl TypeResolutionModel {
                 &mut package_type_source_paths,
                 &mut package_constants,
                 &mut package_dependencies,
-                &mut package_dependency_access,
+                &mut package_dependency_views,
+                &mut package_dependency_canonical_refs,
                 &mut package_artifact_identities,
             )?;
         }
@@ -510,7 +553,8 @@ impl TypeResolutionModel {
             package_type_slots,
             package_type_source_paths,
             package_dependencies,
-            package_dependency_access,
+            package_dependency_views,
+            package_dependency_canonical_refs,
             package_artifact_identities,
             package_aliases: package_aliases.clone(),
             external_type_symbols: external_type_symbols.clone(),
@@ -531,7 +575,10 @@ impl TypeResolutionModel {
     pub fn package_dependency_abi_expectations(&self) -> BTreeMap<String, String> {
         self.package_artifact_identities
             .iter()
-            .map(|(dependency_ref, (abi, _))| (dependency_ref.clone(), abi.as_str().to_string()))
+            .filter_map(|(dependency_ref, (abi, _))| {
+                (self.canonical_package_dependency_ref(dependency_ref) == dependency_ref)
+                    .then(|| (dependency_ref.clone(), abi.as_str().to_string()))
+            })
             .collect()
     }
 
@@ -1526,10 +1573,15 @@ impl TypeResolutionModel {
 
     pub fn resolve_package_interface(&self, path: &str) -> Option<PackageInterfaceResolution> {
         let package_symbol = self.resolve_package_type_symbol_path(path)?;
-        let fact = self
-            .package_interface_fact(&package_symbol.dependency_ref, &package_symbol.symbol_path)?;
+        let fact = self.package_interface_fact_for_view(
+            &package_symbol.dependency_ref,
+            &package_symbol.symbol_path,
+        )?;
         let public_path = self
-            .package_type_resolution(&package_symbol.dependency_ref, &package_symbol.symbol_path)?
+            .package_type_resolution_for_view(
+                &package_symbol.dependency_ref,
+                &package_symbol.symbol_path,
+            )?
             .public_path
             .as_ref()?
             .clone();
@@ -1558,16 +1610,19 @@ impl TypeResolutionModel {
     fn resolve_package_type_symbol_path(&self, path: &str) -> Option<ResolvedPackageSymbol> {
         let resolved =
             PackageExportResolver::new(&self.package_aliases).resolve_package_symbol_path(path)?;
-        let access = self
-            .package_dependency_access
+        let view = self
+            .package_dependency_views
             .get(&resolved.dependency_ref)
             .copied()
-            .unwrap_or(PackageDependencyAccess::Public);
-        match access {
-            PackageDependencyAccess::Public if path.contains('/') => None,
-            PackageDependencyAccess::TopLevel if !path.contains('/') => None,
-            PackageDependencyAccess::Public | PackageDependencyAccess::TopLevel => Some(resolved),
+            .unwrap_or(PackageDependencyView::Public);
+        let syntax_matches = match view {
+            PackageDependencyView::Public => !path.contains('/'),
+            PackageDependencyView::TopLevel => path.contains('/'),
+        };
+        if !syntax_matches {
+            return None;
         }
+        Some(resolved)
     }
 
     pub fn package_interface_for_type_ref(
@@ -1828,7 +1883,11 @@ impl TypeResolutionModel {
                     PackageRefIr::PackageId { package_id } => self
                         .package_dependencies
                         .iter()
-                        .find_map(|(alias, id)| (id == package_id).then_some(alias.as_str()))
+                        .find_map(|(alias, id)| {
+                            (id == package_id
+                                && self.canonical_package_dependency_ref(alias) == alias)
+                                .then_some(alias.as_str())
+                        })
                         .unwrap_or(package_id.as_str()),
                 };
                 let package_id = self
@@ -2029,7 +2088,7 @@ impl TypeResolutionModel {
                 .ok_or_else(|| format!("unresolved representation target `{type_name}`"))?;
             return self.representation_shape_from_resolution(resolved, context);
         } else if let Some(package_symbol) = self.resolve_package_type_symbol_path(name) {
-            if let Some(resolved) = self.package_type_resolution(
+            if let Some(resolved) = self.package_type_resolution_for_view(
                 &package_symbol.dependency_ref,
                 &package_symbol.symbol_path,
             ) {
@@ -2107,7 +2166,7 @@ impl TypeResolutionModel {
                     }
                     if let Some(package_symbol) = self.resolve_package_type_symbol_path(name) {
                         if self
-                            .package_type_resolution(
+                            .package_type_resolution_for_view(
                                 &package_symbol.dependency_ref,
                                 &package_symbol.symbol_path,
                             )
@@ -2256,7 +2315,7 @@ impl TypeResolutionModel {
                     args,
                 });
             }
-            let resolution = self.package_type_resolution(
+            let resolution = self.package_type_resolution_for_view(
                 &package_symbol.dependency_ref,
                 &package_symbol.symbol_path,
             );
@@ -2265,17 +2324,17 @@ impl TypeResolutionModel {
                 .contains_key(&package_symbol.dependency_ref)
                 && resolution.is_none()
             {
-                let access = self
-                    .package_dependency_access
+                let view = self
+                    .package_dependency_views
                     .get(&package_symbol.dependency_ref)
                     .copied()
-                    .unwrap_or(PackageDependencyAccess::Public);
+                    .unwrap_or(PackageDependencyView::Public);
                 return Err(format!(
                     "package dependency `{}` has no {} type path `{}`",
                     package_symbol.dependency_ref,
-                    match access {
-                        PackageDependencyAccess::Public => "public",
-                        PackageDependencyAccess::TopLevel => "top-level source",
+                    match view {
+                        PackageDependencyView::Public => "public",
+                        PackageDependencyView::TopLevel => "top-level source",
                     },
                     package_symbol.symbol_path
                 ));
@@ -2715,7 +2774,7 @@ impl TypeResolutionModel {
             );
         }
         if let Some(package_symbol) = self.resolve_package_type_symbol_path(name) {
-            let resolution = self.package_type_resolution(
+            let resolution = self.package_type_resolution_for_view(
                 &package_symbol.dependency_ref,
                 &package_symbol.symbol_path,
             );
@@ -2755,7 +2814,9 @@ impl TypeResolutionModel {
                 TypeRefIr::PackageSymbol {
                     symbol: PackageSymbolRef {
                         package: PackageRefIr::Dependency {
-                            dependency_ref: package_symbol.dependency_ref,
+                            dependency_ref: self
+                                .canonical_package_dependency_ref(&package_symbol.dependency_ref)
+                                .to_string(),
                         },
                         symbol_path: package_symbol.symbol_path,
                         abi_expectation,
@@ -2768,14 +2829,14 @@ impl TypeResolutionModel {
             .split_once('/')
             .map(|(root, _)| root)
             .or_else(|| name.split_once('.').map(|(root, _)| root));
-        if let Some((dependency_ref, access)) =
-            dependency_root.and_then(|root| self.package_dependency_access.get_key_value(root))
+        if let Some((dependency_ref, view)) =
+            dependency_root.and_then(|root| self.package_dependency_views.get_key_value(root))
         {
-            return Err(match access {
-                PackageDependencyAccess::Public => format!(
+            return Err(match view {
+                PackageDependencyView::Public => format!(
                     "package dependency `{dependency_ref}` uses public type syntax `{dependency_ref}.<public-path>`; source-path slash syntax is unavailable"
                 ),
-                PackageDependencyAccess::TopLevel => format!(
+                PackageDependencyView::TopLevel => format!(
                     "package dependency `{dependency_ref}` uses top-level type syntax `{dependency_ref}/<source-module>.<name>`; dotted public syntax is unavailable"
                 ),
             });
@@ -2892,6 +2953,18 @@ impl TypeResolutionModel {
         self.package_types
             .get(&direct_key)
             .or_else(|| {
+                let canonical = self.canonical_package_dependency_ref(dependency_ref);
+                self.package_dependency_canonical_refs
+                    .iter()
+                    .filter(|(_, candidate)| candidate.as_str() == canonical)
+                    .find_map(|(alias, _)| {
+                        self.package_types.get(&PackageSymbolKey {
+                            dependency_ref: alias.clone(),
+                            symbol_path: symbol_path.to_string(),
+                        })
+                    })
+            })
+            .or_else(|| {
                 let package_id = self.package_dependencies.get(dependency_ref)?;
                 let package_key = PackageSymbolKey {
                     dependency_ref: package_id.clone(),
@@ -2909,6 +2982,58 @@ impl TypeResolutionModel {
                             symbol_path: symbol_path.to_string(),
                         })
                     })
+            })
+    }
+
+    fn package_type_resolution_for_view(
+        &self,
+        dependency_ref: &str,
+        symbol_path: &str,
+    ) -> Option<&SourceTypeResolution> {
+        let direct = PackageSymbolKey {
+            dependency_ref: dependency_ref.to_string(),
+            symbol_path: symbol_path.to_string(),
+        };
+        self.package_types.get(&direct).or_else(|| {
+            let package_id = self.package_dependencies.get(dependency_ref)?;
+            self.package_types.get(&PackageSymbolKey {
+                dependency_ref: package_id.clone(),
+                symbol_path: symbol_path.to_string(),
+            })
+        })
+    }
+
+    /// Returns the manifest dependency's primary alias for either of its
+    /// source-visible views. Lowering uses this to validate a source-only
+    /// callee root without leaking that view into File IR.
+    pub fn canonical_package_dependency_ref<'a>(&'a self, dependency_ref: &'a str) -> &'a str {
+        self.package_dependency_canonical_refs
+            .get(dependency_ref)
+            .map(String::as_str)
+            .unwrap_or(dependency_ref)
+    }
+
+    fn package_type_source_path(
+        &self,
+        dependency_ref: &str,
+        module_path: &str,
+        source_symbol: &str,
+    ) -> Option<&String> {
+        let key = |alias: &str| {
+            (
+                alias.to_string(),
+                module_path.to_string(),
+                source_symbol.to_string(),
+            )
+        };
+        self.package_type_source_paths
+            .get(&key(dependency_ref))
+            .or_else(|| {
+                let canonical = self.canonical_package_dependency_ref(dependency_ref);
+                self.package_dependency_canonical_refs
+                    .iter()
+                    .filter(|(_, candidate)| candidate.as_str() == canonical)
+                    .find_map(|(alias, _)| self.package_type_source_paths.get(&key(alias)))
             })
     }
 
@@ -2953,6 +3078,18 @@ impl TypeResolutionModel {
         self.package_interfaces
             .get(&direct_key)
             .or_else(|| {
+                let canonical = self.canonical_package_dependency_ref(dependency_ref);
+                self.package_dependency_canonical_refs
+                    .iter()
+                    .filter(|(_, candidate)| candidate.as_str() == canonical)
+                    .find_map(|(alias, _)| {
+                        self.package_interfaces.get(&PackageSymbolKey {
+                            dependency_ref: alias.clone(),
+                            symbol_path: symbol_path.to_string(),
+                        })
+                    })
+            })
+            .or_else(|| {
                 let package_id = self.package_dependencies.get(dependency_ref)?;
                 let package_key = PackageSymbolKey {
                     dependency_ref: package_id.clone(),
@@ -2971,6 +3108,24 @@ impl TypeResolutionModel {
                         })
                     })
             })
+    }
+
+    fn package_interface_fact_for_view(
+        &self,
+        dependency_ref: &str,
+        symbol_path: &str,
+    ) -> Option<&PackageInterfaceFact> {
+        let direct = PackageSymbolKey {
+            dependency_ref: dependency_ref.to_string(),
+            symbol_path: symbol_path.to_string(),
+        };
+        self.package_interfaces.get(&direct).or_else(|| {
+            let package_id = self.package_dependencies.get(dependency_ref)?;
+            self.package_interfaces.get(&PackageSymbolKey {
+                dependency_ref: package_id.clone(),
+                symbol_path: symbol_path.to_string(),
+            })
+        })
     }
 
     pub(crate) fn resolve_source_type_key(
@@ -3054,7 +3209,8 @@ impl TypeResolutionModel {
                     package_root: package_root_for_symbol(
                         symbol,
                         &self.package_dependencies,
-                        &self.package_dependency_access,
+                        &self.package_dependency_views,
+                        &self.package_dependency_canonical_refs,
                     ),
                     visit_key: InterfaceTypeVisitKey::Package(PackageSymbolKey {
                         dependency_ref: package_id.to_string(),
@@ -3461,7 +3617,8 @@ fn index_compiler_owned_package_artifacts(
     package_type_source_paths: &mut BTreeMap<(String, String, String), String>,
     package_constants: &mut BTreeMap<PackageSymbolKey, PackageConstantResolution>,
     package_dependencies: &mut BTreeMap<String, String>,
-    package_dependency_access: &mut BTreeMap<String, PackageDependencyAccess>,
+    package_dependency_views: &mut BTreeMap<String, PackageDependencyView>,
+    package_dependency_canonical_refs: &mut BTreeMap<String, String>,
     package_artifact_identities: &mut BTreeMap<String, (PackageLocalAbiIdentity, PackageBuildId)>,
 ) -> Result<(), String> {
     for (alias, expected_build_id, expected_local_abi) in
@@ -3488,25 +3645,21 @@ fn index_compiler_owned_package_artifacts(
                 "compiler-owned dependency alias `{alias}` conflicts with a declared package owner"
             ));
         }
-        let access = PackageDependencyAccess::Public;
+        let view = PackageDependencyView::Public;
         index_artifact_package_types(
             artifact,
             alias,
-            access,
+            view,
             ArtifactPackageTypePathMode::CompilerOwnedExact,
             package_types,
             package_interfaces,
             package_type_slots,
         )?;
-        index_artifact_package_type_source_paths(
-            artifact,
-            alias,
-            access,
-            package_type_source_paths,
-        )?;
-        index_artifact_package_constants(artifact, alias, access, package_constants)?;
+        index_artifact_package_type_source_paths(artifact, alias, view, package_type_source_paths)?;
+        index_artifact_package_constants(artifact, alias, alias, view, package_constants)?;
         package_dependencies.insert(alias.to_string(), artifact.package_id.clone());
-        package_dependency_access.insert(alias.to_string(), access);
+        package_dependency_views.insert(alias.to_string(), view);
+        package_dependency_canonical_refs.insert(alias.to_string(), alias.to_string());
         package_artifact_identities.insert(
             alias.to_string(),
             (expected_local_abi.clone(), expected_build_id.clone()),
@@ -3524,15 +3677,15 @@ enum ArtifactPackageTypePathMode {
 fn index_artifact_package_types(
     artifact: &PackageArtifact,
     dependency_ref: &str,
-    access: PackageDependencyAccess,
+    view: PackageDependencyView,
     path_mode: ArtifactPackageTypePathMode,
     package_types: &mut BTreeMap<PackageSymbolKey, SourceTypeResolution>,
     package_interfaces: &mut BTreeMap<PackageSymbolKey, PackageInterfaceFact>,
     package_type_slots: &mut BTreeMap<(String, String, u32), String>,
 ) -> Result<(), String> {
-    let symbols = match access {
-        PackageDependencyAccess::Public => &artifact.package_local_abi.public_symbols,
-        PackageDependencyAccess::TopLevel => &artifact.package_local_abi.implementation_symbols,
+    let symbols = match view {
+        PackageDependencyView::Public => &artifact.package_local_abi.public_symbols,
+        PackageDependencyView::TopLevel => &artifact.package_local_abi.implementation_symbols,
     };
     let type_symbols = artifact_package_type_symbol_index(artifact, symbols)?;
     let symbolic_types = artifact_symbolic_type_index(artifact, symbols, &type_symbols)?;
@@ -3580,9 +3733,9 @@ fn index_artifact_package_types(
         else {
             continue;
         };
-        let expected_type_id = match access {
-            PackageDependencyAccess::Public => format!("type:{selected_path}"),
-            PackageDependencyAccess::TopLevel => {
+        let expected_type_id = match view {
+            PackageDependencyView::Public => format!("type:{selected_path}"),
+            PackageDependencyView::TopLevel => {
                 format!("type:{}:top-level:{selected_path}", artifact.package_id)
             }
         };
@@ -3624,12 +3777,12 @@ fn index_artifact_package_types(
             module_path: module_path.to_string(),
             public_path: Some(selected_path.clone()),
         };
-        let indexed_paths = match (access, path_mode) {
-            (PackageDependencyAccess::Public, ArtifactPackageTypePathMode::DeclaredPublic) => {
+        let indexed_paths = match (view, path_mode) {
+            (PackageDependencyView::Public, ArtifactPackageTypePathMode::DeclaredPublic) => {
                 vec![selected_path.as_str(), name]
             }
-            (PackageDependencyAccess::Public, ArtifactPackageTypePathMode::CompilerOwnedExact)
-            | (PackageDependencyAccess::TopLevel, _) => vec![selected_path.as_str()],
+            (PackageDependencyView::Public, ArtifactPackageTypePathMode::CompilerOwnedExact)
+            | (PackageDependencyView::TopLevel, _) => vec![selected_path.as_str()],
         };
         for path in indexed_paths.into_iter().collect::<BTreeSet<_>>() {
             let key = PackageSymbolKey {
@@ -3676,12 +3829,12 @@ fn index_artifact_package_types(
 fn index_artifact_package_type_source_paths(
     artifact: &PackageArtifact,
     dependency_ref: &str,
-    access: PackageDependencyAccess,
+    view: PackageDependencyView,
     source_paths: &mut BTreeMap<(String, String, String), String>,
 ) -> Result<(), String> {
-    let symbols = match access {
-        PackageDependencyAccess::Public => &artifact.package_local_abi.public_symbols,
-        PackageDependencyAccess::TopLevel => &artifact.package_local_abi.implementation_symbols,
+    let symbols = match view {
+        PackageDependencyView::Public => &artifact.package_local_abi.public_symbols,
+        PackageDependencyView::TopLevel => &artifact.package_local_abi.implementation_symbols,
     };
     for (public_path, symbol) in symbols {
         if !matches!(symbol, PackageLocalAbiSymbol::Type { .. }) {
@@ -3715,12 +3868,13 @@ fn index_artifact_package_type_source_paths(
 fn index_artifact_package_constants(
     artifact: &PackageArtifact,
     dependency_ref: &str,
-    access: PackageDependencyAccess,
+    canonical_dependency_ref: &str,
+    view: PackageDependencyView,
     package_constants: &mut BTreeMap<PackageSymbolKey, PackageConstantResolution>,
 ) -> Result<(), String> {
-    let symbols = match access {
-        PackageDependencyAccess::Public => &artifact.package_local_abi.public_symbols,
-        PackageDependencyAccess::TopLevel => &artifact.package_local_abi.implementation_symbols,
+    let symbols = match view {
+        PackageDependencyView::Public => &artifact.package_local_abi.public_symbols,
+        PackageDependencyView::TopLevel => &artifact.package_local_abi.implementation_symbols,
     };
     for (selected_path, symbol) in symbols {
         let PackageLocalAbiSymbol::Constant { ty, .. } = symbol else {
@@ -3743,7 +3897,7 @@ fn index_artifact_package_constants(
         let resolution = PackageConstantResolution {
             symbol: PackageSymbolRef {
                 package: PackageRefIr::Dependency {
-                    dependency_ref: dependency_ref.to_string(),
+                    dependency_ref: canonical_dependency_ref.to_string(),
                 },
                 symbol_path: selected_path.clone(),
                 abi_expectation: Some(
@@ -5483,22 +5637,29 @@ fn package_root_for_module(module_path: &str) -> Option<&str> {
 fn package_root_for_symbol(
     symbol: &PackageSymbolRef,
     package_dependencies: &BTreeMap<String, String>,
-    package_dependency_access: &BTreeMap<String, PackageDependencyAccess>,
+    package_dependency_views: &BTreeMap<String, PackageDependencyView>,
+    package_dependency_canonical_refs: &BTreeMap<String, String>,
 ) -> Option<String> {
     let dependency_ref = match &symbol.package {
         PackageRefIr::Dependency { dependency_ref } => dependency_ref.as_str(),
         PackageRefIr::PackageId { package_id } => package_dependencies
             .iter()
-            .find_map(|(alias, id)| (id == package_id).then_some(alias.as_str()))
+            .find_map(|(alias, id)| {
+                (id == package_id
+                    && package_dependency_canonical_refs
+                        .get(alias)
+                        .is_none_or(|canonical| canonical == alias))
+                .then_some(alias.as_str())
+            })
             .unwrap_or(package_id),
     };
-    let access = package_dependency_access
+    let view = package_dependency_views
         .get(dependency_ref)
         .copied()
-        .unwrap_or(PackageDependencyAccess::Public);
-    Some(match access {
-        PackageDependencyAccess::Public => dependency_ref.to_string(),
-        PackageDependencyAccess::TopLevel => format!("{dependency_ref}/"),
+        .unwrap_or(PackageDependencyView::Public);
+    Some(match view {
+        PackageDependencyView::Public => dependency_ref.to_string(),
+        PackageDependencyView::TopLevel => format!("{dependency_ref}/"),
     })
 }
 
@@ -6777,6 +6938,102 @@ mod tests {
             boundary_projections: BTreeMap::new(),
             service_call_refs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn public_and_top_level_views_are_isolated_and_emit_one_canonical_dependency_ref() {
+        initialize_test_prelude();
+        let parsed_sources = parsed_sources("function noop() -> void {}");
+        let mut dependency = PackageDependency::id("example.com/provider");
+        dependency.alias = Some("provider".to_string());
+        dependency.top_level_alias = Some("providerImpl".to_string());
+        let mut artifact = signature_rehydration_artifact();
+        let descriptor = TypeDescriptorIr::Record {
+            fields: BTreeMap::new(),
+        };
+        artifact.package_local_abi.implementation_symbols = BTreeMap::from([
+            (
+                "Bindings".to_string(),
+                PackageLocalAbiSymbol::Type {
+                    local_type_id: "type:example.com/provider:top-level:Bindings".to_string(),
+                    descriptor: descriptor.clone(),
+                    is_alias: false,
+                    is_interface: false,
+                    type_params: Vec::new(),
+                    interface_methods: Vec::new(),
+                },
+            ),
+            (
+                "internal.Private".to_string(),
+                PackageLocalAbiSymbol::Type {
+                    local_type_id: "type:example.com/provider:top-level:internal.Private"
+                        .to_string(),
+                    descriptor: descriptor.clone(),
+                    is_alias: false,
+                    is_interface: false,
+                    type_params: Vec::new(),
+                    interface_methods: Vec::new(),
+                },
+            ),
+        ]);
+        artifact.implementation_links.types.insert(
+            "internal.Private".to_string(),
+            skiff_artifact_model::TypeExport {
+                file: artifact.files[0].clone(),
+                type_index: 2,
+                symbol: "Private".to_string(),
+                is_interface: false,
+                descriptor: Some(descriptor),
+                type_params: Vec::new(),
+                interface_methods: Vec::new(),
+            },
+        );
+        let model = TypeResolutionModel::build(
+            &parsed_sources,
+            &BTreeMap::from([
+                ("provider".to_string(), vec![String::new()]),
+                ("providerImpl".to_string(), Vec::new()),
+            ]),
+            &[dependency],
+            None,
+            Some(std::slice::from_ref(&artifact)),
+            &PublicationTypeSymbolIndex::default(),
+        )
+        .expect("the two source views should index one exact artifact");
+
+        let public = model
+            .resolve_type_text("provider.Bindings", &context())
+            .expect("primary alias should resolve public symbols");
+        let top_level = model
+            .resolve_type_text("providerImpl/Bindings", &context())
+            .expect("top-level alias should resolve implementation symbols");
+        assert_eq!(public.ir, top_level.ir);
+        assert!(matches!(
+            top_level.ir,
+            TypeRefIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::Dependency { ref dependency_ref },
+                    ..
+                },
+            } if dependency_ref == "provider"
+        ));
+        assert!(
+            model
+                .package_type_resolution_for_view("provider", "internal.Private")
+                .is_none(),
+            "primary alias must not fall back to implementation symbols"
+        );
+        assert!(
+            model
+                .package_type_resolution_for_view("providerImpl", "Result")
+                .is_none(),
+            "top-level alias must not fall back to public symbols"
+        );
+        assert_eq!(
+            model.package_dependency_abi_expectations(),
+            BTreeMap::from([("provider".to_string(), "provider-abi".to_string())]),
+            "lowering must see one canonical dependency ref"
+        );
     }
 
     #[test]
@@ -8326,7 +8583,7 @@ mod tests {
         index_artifact_package_types(
             &artifact,
             "llm-api",
-            PackageDependencyAccess::Public,
+            PackageDependencyView::Public,
             ArtifactPackageTypePathMode::DeclaredPublic,
             &mut package_types,
             &mut package_interfaces,
@@ -8440,7 +8697,7 @@ mod tests {
         let error = index_artifact_package_types(
             &tampered_method,
             "llm-api",
-            PackageDependencyAccess::Public,
+            PackageDependencyView::Public,
             ArtifactPackageTypePathMode::DeclaredPublic,
             &mut BTreeMap::new(),
             &mut BTreeMap::new(),
@@ -8468,7 +8725,7 @@ mod tests {
         let error = index_artifact_package_types(
             &tampered_nested_path,
             "llm-api",
-            PackageDependencyAccess::Public,
+            PackageDependencyView::Public,
             ArtifactPackageTypePathMode::DeclaredPublic,
             &mut BTreeMap::new(),
             &mut BTreeMap::new(),
@@ -8498,7 +8755,7 @@ mod tests {
         let error = index_artifact_package_types(
             &tampered_nested_owner,
             "llm-api",
-            PackageDependencyAccess::Public,
+            PackageDependencyView::Public,
             ArtifactPackageTypePathMode::DeclaredPublic,
             &mut BTreeMap::new(),
             &mut BTreeMap::new(),
@@ -8526,7 +8783,7 @@ mod tests {
         let error = index_artifact_package_types(
             &tampered_nested_abi,
             "llm-api",
-            PackageDependencyAccess::Public,
+            PackageDependencyView::Public,
             ArtifactPackageTypePathMode::DeclaredPublic,
             &mut BTreeMap::new(),
             &mut BTreeMap::new(),
@@ -8545,7 +8802,7 @@ mod tests {
         let error = index_artifact_package_types(
             &tampered_slot,
             "llm-api",
-            PackageDependencyAccess::Public,
+            PackageDependencyView::Public,
             ArtifactPackageTypePathMode::DeclaredPublic,
             &mut BTreeMap::new(),
             &mut BTreeMap::new(),

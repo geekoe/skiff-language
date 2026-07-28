@@ -673,6 +673,39 @@ fn base_assembly_supplies_provider_selectors_and_real_owner_bindings() {
         .deployments
         .first()
         .expect("test-owned deployment");
+    let subject_requirements = project
+        .package
+        .artifact
+        .package_requirements
+        .iter()
+        .filter(|requirement| requirement.package_id == "example.com/consumer")
+        .collect::<Vec<_>>();
+    let [subject_requirement] = subject_requirements.as_slice() else {
+        panic!(
+            "public alias plus topLevelAlias must produce exactly one subject requirement, found {}",
+            subject_requirements.len()
+        )
+    };
+    assert_eq!(subject_requirement.alias, "subject");
+    assert_eq!(
+        subject_requirement.expected_package_build.as_ref(),
+        Some(&subject.package_build_id)
+    );
+    let subject_bindings = test_deployment
+        .package_bindings
+        .iter()
+        .filter(|binding| binding.key.package_requirement_alias == "subject")
+        .collect::<Vec<_>>();
+    let [subject_binding] = subject_bindings.as_slice() else {
+        panic!(
+            "the second local alias must leave exactly one subject binding and collection projection, found {}",
+            subject_bindings.len()
+        )
+    };
+    assert_eq!(
+        subject_binding.package,
+        skiff_artifact_identity::package_artifact_ref(subject).unwrap()
+    );
     let production_deployment = CanonicalArtifactStore::open(&artifacts)
         .unwrap()
         .read_service_deployment(&consumer_deployment)
@@ -1020,7 +1053,7 @@ packages:
   - id: example.com/test-subject
     version: 1.0.0
     alias: subject
-    access: topLevel
+    topLevelAlias: subjectImpl
 "#,
         Some("{}\n"),
         Some(

@@ -71,7 +71,7 @@ pub fn read_service_package_root(
     let service = read_service_manifest(&service_path)?;
     let http = read_optional_http_gateway_document(&root.join(HTTP_CONFIG_FILE))?;
     let websocket = read_optional_websocket_gateway_document(&root.join(WEBSOCKET_CONFIG_FILE))?;
-    validate_dependency_access(&package, service.kind, &package_path)?;
+    validate_top_level_aliases(&package, service.kind, &package_path)?;
     let config_profiles = read_config_profiles(root)?;
     Ok(ServicePackageRoot {
         package,
@@ -83,7 +83,7 @@ pub fn read_service_package_root(
     })
 }
 
-fn validate_dependency_access(
+fn validate_top_level_aliases(
     package: &PackageManifest,
     service_kind: ServiceAuthoringKind,
     package_path: &Path,
@@ -94,15 +94,14 @@ fn validate_dependency_access(
     let top_level = package
         .dependencies
         .iter()
-        .filter(|dependency| dependency.access == crate::PackageDependencyAccess::TopLevel)
-        .map(|dependency| dependency.effective_alias())
+        .filter_map(|dependency| dependency.top_level_alias.as_deref())
         .collect::<Vec<_>>();
     if top_level.is_empty() {
         return Ok(());
     }
     Err(ServiceSourceConfigError::Validation {
         message: format!(
-            "- {}: packages access topLevel is allowed only when service.yml declares kind: test (dependencies: {})",
+            "- {}: packages topLevelAlias is allowed only when service.yml declares kind: test (aliases: {})",
             package_path.display(),
             top_level.join(", ")
         ),
@@ -634,8 +633,8 @@ jsonRpc:
     }
 
     #[test]
-    fn top_level_dependency_access_is_exclusive_to_test_services() {
-        let package = "id: example.com/widget-tests\nversion: 1.0.0\npackages:\n  - id: example.com/widget\n    version: 1.0.0\n    alias: widget\n    access: topLevel\n";
+    fn top_level_alias_is_exclusive_to_test_services() {
+        let package = "id: example.com/widget-tests\nversion: 1.0.0\npackages:\n  - id: example.com/widget\n    version: 1.0.0\n    alias: widget\n    topLevelAlias: widgetImpl\n";
         let test_root = fixture_root("test-top-level");
         write(&test_root, "package.yml", package);
         write(&test_root, "api.yml", "{}\n");
@@ -647,8 +646,8 @@ jsonRpc:
         let source = read_service_package_root(&test_root).unwrap();
         assert_eq!(source.service.kind, ServiceAuthoringKind::Test);
         assert_eq!(
-            source.package.dependencies[0].access,
-            crate::PackageDependencyAccess::TopLevel
+            source.package.dependencies[0].top_level_alias.as_deref(),
+            Some("widgetImpl")
         );
         fs::remove_dir_all(test_root).unwrap();
 
@@ -665,6 +664,25 @@ jsonRpc:
             .to_string()
             .contains("allowed only when service.yml declares kind: test"));
         fs::remove_dir_all(production_root).unwrap();
+    }
+
+    #[test]
+    fn legacy_dependency_access_fails_during_manifest_parsing() {
+        let root = fixture_root("legacy-top-level-access");
+        write(
+            &root,
+            "package.yml",
+            "id: example.com/widget-tests\nversion: 1.0.0\npackages:\n  - id: example.com/widget\n    version: 1.0.0\n    alias: widget\n    access: topLevel\n",
+        );
+        write(&root, "api.yml", "{}\n");
+        write(
+            &root,
+            "service.yml",
+            "id: example.com/widget-tests\nkind: test\n",
+        );
+        let error = read_service_package_root(&root).unwrap_err().to_string();
+        assert!(error.contains("unknown field `access`"), "{error}");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
