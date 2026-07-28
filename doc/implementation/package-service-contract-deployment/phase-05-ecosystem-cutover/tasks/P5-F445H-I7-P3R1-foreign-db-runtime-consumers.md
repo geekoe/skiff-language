@@ -82,4 +82,3 @@ linked-model schema、D7 projection规则、artifact generation或service bounda
 - exact lookup、substitution rejection、lease guard isolation与assembly resolver direct tests转GREEN；
 - capability-context、service-db、Eval、Host locked full suites通过；
 - 四包locked check、workspace rustfmt check、`git diff --check`和禁止fallback反向搜索通过。
-
