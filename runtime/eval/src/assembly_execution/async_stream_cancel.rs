@@ -972,7 +972,10 @@ impl Drop for ProviderStreamTaskGuard {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::{
+        collections::BTreeSet,
+        task::{Context, Poll, Wake, Waker},
+    };
 
     use skiff_artifact_model::{
         ActivationPolicy, AssemblyIdentity, BoundaryFeatureUnavailableReason,
@@ -984,7 +987,10 @@ mod tests {
         ActivationContext, ActivationIdentity, ActivationOwnedBindings, RequestActivationContext,
     };
     use skiff_runtime_boundary::service_linkable::FailClosedServiceLinkableCapabilityHooks;
-    use skiff_runtime_capability_context::{StreamCancelSignalApi, StreamRuntime};
+    use skiff_runtime_capability_context::{
+        ExecutionDeadlineSource, ExecutionScope, ExecutionScopeTerminal, StreamCancelSignalApi,
+        StreamPoll, StreamRuntime,
+    };
     use skiff_runtime_linked_program::{LinkedCallTarget, LinkedExprIr};
     use skiff_runtime_model::{
         runtime_value::{HeapNode, RuntimeObject, RuntimeObjectFields},
@@ -1030,6 +1036,42 @@ mod tests {
     }
 
     impl StreamLifetimeGuardApi for TestLifetimeDrop {}
+
+    struct NoopWake;
+
+    impl Wake for NoopWake {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    fn first_poll<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
+        let waker = Waker::from(Arc::new(NoopWake));
+        future.poll(&mut Context::from_waker(&waker))
+    }
+
+    fn assert_inherited_request_deadline(
+        error: &RuntimeError,
+        request_scope: &ExecutionScope,
+        expected_deadline: Instant,
+    ) {
+        let RuntimeError::ScopeTerminal(carrier) = error else {
+            panic!("request deadline must remain an internal scope terminal, got {error:?}");
+        };
+        let ExecutionScopeTerminal::InheritedDeadlineExceeded(deadline) = carrier.terminal() else {
+            panic!(
+                "request deadline must remain inherited rather than locally owned, got {:?}",
+                carrier.terminal()
+            );
+        };
+        assert_eq!(deadline.at(), expected_deadline);
+        assert_eq!(deadline.source(), &ExecutionDeadlineSource::Request);
+        assert_eq!(deadline.nesting(), 0);
+        assert_eq!(request_scope.nesting(), 0);
+        assert_eq!(request_scope.effective_deadline(), Some(deadline));
+        assert!(
+            !carrier.is_owned_by(request_scope),
+            "a request deadline is not owned by a lexical timeout scope"
+        );
+    }
 
     fn test_stream_cancel() -> (CancellationToken, StreamCancelSignal) {
         let token = CancellationToken::new();
@@ -1127,23 +1169,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_provider_unary_wakes_from_deadline_and_cancels_provider_request() {
-        let execution = test_runtime::execution_control_with_deadline(Some(
-            Instant::now() - std::time::Duration::from_millis(1),
-        ));
+    async fn f445h_e4r7_stream_deadline_pending_unary_preserves_inherited_request_carrier() {
+        let request_deadline = Instant::now() - std::time::Duration::from_millis(1);
+        let execution = test_runtime::execution_control_with_deadline(Some(request_deadline));
+        let request_scope = execution
+            .execution_scope()
+            .expect("test execution exposes its current request scope");
         let request =
             RequestActivationContext::begin(activation("deadline", "deadline-build")).unwrap();
         let error = await_provider_unary(&execution, &request, std::future::pending())
             .await
             .into_result()
             .expect_err("expired deadline should wake the pending provider");
-        assert!(matches!(
-            error,
-            RuntimeError::ExecutionBudgetExceeded {
-                reason: crate::error::BudgetReason::DeadlineExceeded,
-                ..
-            }
-        ));
+        assert_inherited_request_deadline(&error, &request_scope, request_deadline);
         assert!(
             request.open_stream().is_none(),
             "deadline must emit the provider request cancellation signal"
@@ -1263,11 +1301,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_terminal_item_and_publication_deadlines_remain_typed() {
-        let execution = test_runtime::execution_control_with_deadline(Some(
-            Instant::now() - std::time::Duration::from_millis(1),
-        ))
-        .owned();
+    async fn f445h_e4r7_stream_deadline_helper_matrix_preserves_carrier_before_raw_boundary() {
+        let request_deadline = Instant::now() - std::time::Duration::from_millis(1);
+        let execution =
+            test_runtime::execution_control_with_deadline(Some(request_deadline)).owned();
+        let request_scope = execution
+            .execution_scope()
+            .expect("test execution exposes its current request scope");
         let item_request =
             RequestActivationContext::begin(activation("stream-deadline", "stream-build")).unwrap();
         let (_consumer_cancel, stream_cancel) = test_stream_cancel();
@@ -1275,13 +1315,10 @@ mod tests {
         let terminal =
             await_provider_stream_terminal(&execution, &stream_cancel, std::future::pending())
                 .await;
-        assert!(matches!(
-            terminal,
-            ProviderTerminal::DeadlineExceeded(RuntimeError::ExecutionBudgetExceeded {
-                reason: crate::error::BudgetReason::DeadlineExceeded,
-                ..
-            })
-        ));
+        let ProviderTerminal::DeadlineExceeded(error) = terminal else {
+            panic!("provider terminal must preserve the request deadline carrier");
+        };
+        assert_inherited_request_deadline(&error, &request_scope, request_deadline);
 
         let item_error = await_stream_item_publication(
             &execution,
@@ -1290,13 +1327,7 @@ mod tests {
         )
         .await
         .expect_err("stream item publication must wake on deadline");
-        assert!(matches!(
-            RuntimeError::from(item_error),
-            RuntimeError::ExecutionBudgetExceeded {
-                reason: crate::error::BudgetReason::DeadlineExceeded,
-                ..
-            }
-        ));
+        assert!(matches!(item_error, StreamRuntimeError::Cancelled));
         assert!(
             item_request.open_stream().is_none(),
             "stream item deadline must cancel the provider request"
@@ -1312,13 +1343,10 @@ mod tests {
             std::future::pending(),
         )
         .await;
-        assert!(matches!(
-            publication,
-            ProviderPublication::DeadlineExceeded(RuntimeError::ExecutionBudgetExceeded {
-                reason: crate::error::BudgetReason::DeadlineExceeded,
-                ..
-            })
-        ));
+        let ProviderPublication::DeadlineExceeded(error) = publication else {
+            panic!("terminal publication must preserve the request deadline carrier");
+        };
+        assert_inherited_request_deadline(&error, &request_scope, request_deadline);
         assert!(
             publication_request.open_stream().is_none(),
             "stream terminal publication deadline must cancel the provider request"
@@ -1371,7 +1399,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_stream_deadline_terminal_reaches_pending_consumer_as_typed_timeout() {
+    async fn f445h_e4r7_stream_deadline_provider_terminal_reaches_raw_consumer_as_cancelled() {
         let (mut task, _, stream_runtime, stream_value, _) = provider_stream_failure_task();
         stream_runtime.cancel(&stream_value);
         let lifetime_drops = Arc::new(AtomicUsize::new(0));
@@ -1381,16 +1409,19 @@ mod tests {
         task.stream_value = stream_value.clone();
         task.stream_cancel = sink.cancel_signal();
         task.sink = sink;
-        task.execution = test_runtime::execution_control_with_deadline(Some(
-            Instant::now() - std::time::Duration::from_millis(1),
-        ))
-        .owned();
+        let request_deadline = Instant::now() - std::time::Duration::from_millis(1);
+        task.execution =
+            test_runtime::execution_control_with_deadline(Some(request_deadline)).owned();
+        let request_scope = task
+            .execution
+            .execution_scope()
+            .expect("test execution exposes its current request scope");
         let provider_request = task.request.clone();
-        let consumer = tokio::spawn({
-            let stream_runtime = stream_runtime.clone();
-            let stream_value = stream_value.clone();
-            async move { stream_runtime.next(&stream_value).await }
-        });
+        let mut consumer = Box::pin(stream_runtime.next(&stream_value));
+        assert!(
+            matches!(first_poll(consumer.as_mut()), Poll::Pending),
+            "raw consumer must attach and enter a real Pending poll before the terminal"
+        );
 
         let terminal = await_provider_stream_terminal(
             &task.execution,
@@ -1398,23 +1429,17 @@ mod tests {
             std::future::pending(),
         )
         .await;
+        let ProviderTerminal::DeadlineExceeded(error) = &terminal else {
+            panic!("provider wait must preserve the request deadline carrier");
+        };
+        assert_inherited_request_deadline(error, &request_scope, request_deadline);
         finish_provider_stream(task, terminal).await;
 
-        let consumer_result = tokio::time::timeout(std::time::Duration::from_secs(1), consumer)
+        let error = consumer
             .await
-            .expect("deadline terminal must wake the pending stream consumer")
-            .expect("pending stream consumer must not panic");
-        let error = RuntimeError::from(
-            consumer_result.expect_err("deadline terminal must remain a typed error"),
-        );
+            .expect_err("raw stream boundary must project the deadline carrier to cancellation");
         assert!(
-            matches!(
-                &error,
-                RuntimeError::ExecutionBudgetExceeded {
-                    reason: crate::error::BudgetReason::DeadlineExceeded,
-                    ..
-                }
-            ),
+            matches!(error, StreamRuntimeError::Cancelled),
             "unexpected stream terminal: {error:?}"
         );
         assert!(
@@ -1424,30 +1449,33 @@ mod tests {
         assert_eq!(
             lifetime_drops.load(Ordering::Acquire),
             1,
-            "typed deadline consumption must release the stream lifetime exactly once"
+            "raw cancellation consumption must release the stream lifetime exactly once"
         );
     }
 
     #[tokio::test]
-    async fn stream_item_deadline_remains_typed_through_provider_terminal() {
+    async fn f445h_e4r7_stream_deadline_item_publication_reaches_attached_raw_consumer_as_cancelled(
+    ) {
         let (mut task, _, stream_runtime, stream_value, _) = provider_stream_failure_task();
+        let provider_request = task.request.clone();
+        let mut consumer = Box::pin(stream_runtime.next(&stream_value));
+        assert!(
+            matches!(first_poll(consumer.as_mut()), Poll::Pending),
+            "raw consumer must attach and enter a real Pending poll before the deadline"
+        );
+
         task.execution = test_runtime::execution_control_with_deadline(Some(
             Instant::now() - std::time::Duration::from_millis(1),
         ))
         .owned();
-        let provider_request = task.request.clone();
         let item_error = await_stream_item_publication(
             &task.execution,
             &provider_request,
             std::future::pending::<StreamRuntimeResult<()>>(),
         )
         .await
-        .expect_err("item publication must return its deadline terminal");
-        let consumer = tokio::spawn({
-            let stream_runtime = stream_runtime.clone();
-            let stream_value = stream_value.clone();
-            async move { stream_runtime.next(&stream_value).await }
-        });
+        .expect_err("item publication must project its request deadline to raw cancellation");
+        assert!(matches!(item_error, StreamRuntimeError::Cancelled));
 
         finish_provider_stream(
             task,
@@ -1455,18 +1483,10 @@ mod tests {
         )
         .await;
 
-        let error = tokio::time::timeout(std::time::Duration::from_secs(1), consumer)
+        let error = consumer
             .await
-            .expect("item deadline terminal must wake the pending consumer")
-            .expect("pending stream consumer must not panic")
-            .expect_err("item deadline must remain a typed terminal");
-        assert!(matches!(
-            RuntimeError::from(error),
-            RuntimeError::ExecutionBudgetExceeded {
-                reason: crate::error::BudgetReason::DeadlineExceeded,
-                ..
-            }
-        ));
+            .expect_err("attached raw consumer must observe internal cancellation");
+        assert!(matches!(error, StreamRuntimeError::Cancelled));
         assert!(
             provider_request.open_stream().is_none(),
             "item deadline must cancel the provider request"
@@ -1474,47 +1494,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_publication_deadline_replaces_blocked_terminal_with_typed_timeout() {
+    async fn f445h_e4r7_stream_deadline_blocked_terminal_preserves_buffered_item_then_cancelled() {
         let (mut task, _, stream_runtime, stream_value, _) = provider_stream_failure_task();
+        stream_runtime.cancel(&stream_value);
+        let lifetime_drops = Arc::new(AtomicUsize::new(0));
+        let (stream_value, sink) = stream_runtime.channel_stream_with_lifetime(
+            StreamLifetimeGuard::new(TestLifetimeDrop(Arc::clone(&lifetime_drops))),
+        );
+        task.stream_value = stream_value.clone();
+        task.stream_cancel = sink.cancel_signal();
+        task.sink = sink;
         task.sink
             .send(serde_json::json!("buffered-before-terminal"))
             .await
             .expect("test stream buffer must be full before terminal publication");
         task.execution = test_runtime::execution_control_with_deadline(Some(
-            Instant::now() + std::time::Duration::from_millis(20),
+            Instant::now() - std::time::Duration::from_millis(1),
         ))
         .owned();
         let provider_request = task.request.clone();
-        let consumer = async {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let first = stream_runtime
-                .next(&stream_value)
-                .await
-                .expect("buffered item must remain visible before the deadline terminal");
-            assert!(matches!(
-                first,
-                skiff_runtime_capability_context::StreamPoll::Item(value)
-                    if value == serde_json::json!("buffered-before-terminal")
-            ));
-            stream_runtime.next(&stream_value).await
-        };
-
-        let ((), consumer_result) = tokio::join!(
-            publish_provider_terminal(&task, ProviderStreamPublication::End),
-            consumer,
-        );
-        let error =
-            consumer_result.expect_err("publication deadline must replace the blocked terminal");
-        assert!(matches!(
-            RuntimeError::from(error),
-            RuntimeError::ExecutionBudgetExceeded {
-                reason: crate::error::BudgetReason::DeadlineExceeded,
-                ..
-            }
+        let mut publication = Box::pin(publish_provider_terminal(
+            &task,
+            ProviderStreamPublication::End,
         ));
+        assert!(
+            matches!(first_poll(publication.as_mut()), Poll::Pending),
+            "the raw cancellation terminal must block behind the full stream buffer"
+        );
         assert!(
             provider_request.open_stream().is_none(),
             "publication deadline must cancel the provider request"
+        );
+
+        let first = stream_runtime
+            .next(&stream_value)
+            .await
+            .expect("buffered item must remain visible before the deadline terminal");
+        assert!(matches!(
+            first,
+            StreamPoll::Item(value)
+                if value == serde_json::json!("buffered-before-terminal")
+        ));
+        publication.await;
+
+        let error = stream_runtime
+            .next(&stream_value)
+            .await
+            .expect_err("deadline must replace the blocked End with raw cancellation");
+        assert!(matches!(error, StreamRuntimeError::Cancelled));
+        assert_eq!(
+            lifetime_drops.load(Ordering::Acquire),
+            1,
+            "raw cancellation consumption must release the stream lifetime exactly once"
         );
     }
 
