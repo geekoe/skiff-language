@@ -594,9 +594,19 @@ pub fn runtime_member_access(
                 "{} does not support ordinary member access",
                 value.diagnostic_label()
             ))),
-            HeapNode::Exception(_) => Err(RuntimeError::Decode(
-                "request-local exception does not support ordinary member access".to_string(),
-            )),
+            HeapNode::Exception(exception) => match field {
+                "error" => exception
+                    .local_value()
+                    .map(|payload| payload.value().clone())
+                    .ok_or_else(|| {
+                        RuntimeError::Decode(
+                            "request-local Exception.error has no caller-local payload".to_string(),
+                        )
+                    }),
+                _ => Err(RuntimeError::Decode(format!(
+                    "unknown request-local Exception member `{field}`"
+                ))),
+            },
             _ => Ok(RuntimeValue::Null),
         },
         _ => Ok(RuntimeValue::Null),
@@ -611,10 +621,17 @@ pub fn runtime_member_access_carrier(
     let RuntimeValue::Heap(handle) = value.value() else {
         return Ok(RuntimeValue::Null.into());
     };
-    if matches!(heap.get(*handle)?, HeapNode::Exception(_)) {
-        return Err(RuntimeError::Decode(
-            "request-local exception does not support ordinary member access".to_string(),
-        ));
+    if let HeapNode::Exception(exception) = heap.get(*handle)? {
+        return match field {
+            "error" => exception.local_value().cloned().ok_or_else(|| {
+                RuntimeError::Decode(
+                    "request-local Exception.error has no caller-local payload".to_string(),
+                )
+            }),
+            _ => Err(RuntimeError::Decode(format!(
+                "unknown request-local Exception member `{field}`"
+            ))),
+        };
     }
     Ok(heap
         .object_field_carrier(*handle, field)?
@@ -753,9 +770,14 @@ fn stringify_number(value: f64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use skiff_artifact_model::{InstructionSourceSite, SourcePosition, SourceSpanRef};
     use skiff_runtime_model::{
         addr::{FileAddr, TypeAddr, UnitAddr},
-        service_error::{CatchIdentity, LocalExecutionTypeIdentity, NominalTypeIdentity},
+        service_error::{
+            CatchIdentity, ErrorCorrelation, ExceptionStackFrame, InternalErrorPayload,
+            LocalExecutionTypeIdentity, NominalTypeIdentity, OpaqueServiceError, RequestException,
+            ServiceErrorEnvelope,
+        },
         type_plan::{RuntimeRecordFieldPlan, RuntimeTypeIdentityPlan},
     };
 
@@ -784,6 +806,143 @@ mod tests {
             },
             node: RuntimeTypeNode::String,
         }
+    }
+
+    fn exception_with_payload(payload: RuntimeValueCarrier) -> RequestException {
+        RequestException::local(
+            payload,
+            InstructionSourceSite::Source {
+                span: SourceSpanRef {
+                    source_id: 1,
+                    start: SourcePosition::new(2, 3),
+                    end: SourcePosition::new(2, 8),
+                },
+            },
+            vec![ExceptionStackFrame::Local {
+                site: InstructionSourceSite::Source {
+                    span: SourceSpanRef {
+                        source_id: 1,
+                        start: SourcePosition::new(2, 3),
+                        end: SourcePosition::new(2, 8),
+                    },
+                },
+            }],
+            ErrorCorrelation {
+                trace_id: "trace:exception-member".to_string(),
+                error_id: "error:exception-member".to_string(),
+            },
+        )
+        .expect("request-local exception")
+    }
+
+    fn exception_without_local_payload() -> RequestException {
+        let envelope = ServiceErrorEnvelope::InternalError {
+            payload: InternalErrorPayload {
+                message: "Internal service error".to_string(),
+                trace_id: "trace:opaque-exception-member".to_string(),
+                error_id: "error:opaque-exception-member".to_string(),
+            },
+        };
+        let opaque = OpaqueServiceError::decode(
+            serde_json::to_vec(&envelope).expect("fixed service error bytes"),
+        )
+        .expect("fixed service error");
+        RequestException::imported(
+            opaque,
+            None,
+            InstructionSourceSite::Source {
+                span: SourceSpanRef {
+                    source_id: 2,
+                    start: SourcePosition::new(4, 1),
+                    end: SourcePosition::new(4, 6),
+                },
+            },
+            vec![ExceptionStackFrame::RemoteBoundary {
+                service_id: "example.service".to_string(),
+                operation_id: "operation:call".to_string(),
+                error_id: "error:opaque-exception-member".to_string(),
+            }],
+        )
+        .expect("opaque request-local exception")
+    }
+
+    #[test]
+    fn exception_error_member_returns_the_exact_local_payload_carrier() {
+        let identity = local_identity(7);
+        let mut heap = RequestHeap::default();
+        let payload_handle = heap
+            .alloc_object_carriers(BTreeMap::from([(
+                "reason".to_string(),
+                RuntimeValueCarrier::unidentified(RuntimeValue::from("denied")),
+            )]))
+            .expect("nominal record payload");
+        let payload =
+            RuntimeValueCarrier::identified(RuntimeValue::Heap(payload_handle), identity.clone());
+        let exception = heap
+            .alloc_exception(exception_with_payload(payload.clone()))
+            .expect("exception node");
+
+        let actual = runtime_member_access_carrier(
+            &RuntimeValueCarrier::unidentified(RuntimeValue::Heap(exception)),
+            "error",
+            &heap,
+        )
+        .expect("Exception.error");
+
+        assert_eq!(actual, payload);
+        assert_eq!(actual.catch_identity(), Some(&identity));
+        assert_eq!(
+            runtime_member_access_carrier(&actual, "reason", &heap)
+                .expect("nominal payload field")
+                .value(),
+            &RuntimeValue::from("denied")
+        );
+        assert_eq!(
+            crate::exceptions::request_exception_for_rethrow(
+                &RuntimeValueCarrier::unidentified(RuntimeValue::Heap(exception)),
+                &heap,
+            )
+            .expect("rethrow reads the unchanged exception"),
+            exception_with_payload(payload)
+        );
+    }
+
+    #[test]
+    fn exception_unknown_member_fails_closed() {
+        let payload =
+            RuntimeValueCarrier::identified(RuntimeValue::from("denied"), local_identity(8));
+        let mut heap = RequestHeap::default();
+        let exception = heap
+            .alloc_exception(exception_with_payload(payload))
+            .expect("exception node");
+
+        let error = runtime_member_access_carrier(
+            &RuntimeValueCarrier::unidentified(RuntimeValue::Heap(exception)),
+            "stack",
+            &heap,
+        )
+        .expect_err("unknown Exception member must fail closed");
+
+        assert!(matches!(error, RuntimeError::Decode(message) if
+            message.contains("unknown request-local Exception member")));
+    }
+
+    #[test]
+    fn exception_error_member_without_a_local_payload_fails_closed() {
+        let mut heap = RequestHeap::default();
+        let exception = heap
+            .alloc_exception(exception_without_local_payload())
+            .expect("exception node");
+
+        let error = runtime_member_access_carrier(
+            &RuntimeValueCarrier::unidentified(RuntimeValue::Heap(exception)),
+            "error",
+            &heap,
+        )
+        .expect_err("opaque Exception.error must not expose encoded or redacted payload");
+
+        assert!(matches!(error, RuntimeError::Decode(message) if
+            message.contains("has no caller-local payload")));
     }
 
     #[test]
