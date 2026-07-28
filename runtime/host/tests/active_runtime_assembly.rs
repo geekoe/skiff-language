@@ -316,7 +316,7 @@ async fn rejected_exact_ref_preserves_committed_generation_and_two_replicas_are_
 
     let unknown = RuntimeAssemblyRef {
         assembly_identity: AssemblyIdentity::new(format!(
-            "skiff-runtime-assembly-v1:sha256:{}",
+            "skiff-runtime-assembly-v2:sha256:{}",
             "b".repeat(64)
         )),
     };
