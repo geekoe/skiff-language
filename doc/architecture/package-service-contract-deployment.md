@@ -332,6 +332,11 @@ provider concrete `maySuspend`，也不得保留由该位机械映射出的`NotC
 caller停止等待后provider是否、何时观察internal stop hint是runtime/deployment执行机制，不承诺callee
 业务工作已经停止。Stream关闭等已由stream contract定义的内部停止语义不依赖callee内部summary。
 
+第一版不另外定义consumer dependency timeout或callee operation timeout。Service call的可见deadline
+就是调用点current execution deadline，已经包含caller request deadline和外层`timeout(...)`的收紧；
+需要更短调用预算时由caller显式使用`timeout(...)`。Deployment `policy.timeoutMs`只属于external
+ingress/request policy，不复用为内部service call的callee默认值。
+
 具体config/state/native capability requirement和完整may-effect（包括concrete suspension summary）属于
 `BoundaryImplementationRequirements`或由deployment从PackageArtifact形成的implementation metadata，
 不能泄漏进ServiceProtocolIdentity。External gateway的deadline与consumer-disconnect处理归gateway

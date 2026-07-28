@@ -178,7 +178,11 @@ Ingress decode在进入external handler前失败时，业务代码尚未运行�
 
 每次 request 在一个有效 deadline 下执行。`timeout(...)` block 只能收紧当前代码块和其中远程 / host 调用的有效 deadline。
 
-一次远程调用或 host operation 的可见 deadline 是 caller request deadline、外层 `timeout(...)` deadline、consumer dependency timeout、callee operation timeout 和 primitive operation timeout 中最先到达者。
+一次远程调用或host operation的可见deadline，是调用点current execution deadline与该operation已有的
+primitive operation timeout中最先到达者；current execution deadline已经包含caller request deadline
+和外层`timeout(...)`的收紧。第一版service call不另外定义consumer dependency timeout或callee
+operation timeout；需要更短调用预算时由caller显式使用`timeout(...)`。Deployment
+`policy.timeoutMs`只属于external ingress/request policy，不作为内部service call的callee默认值。
 
 Runtime 使用单调时钟计算内部 absolute deadline。该 absolute deadline 不暴露给用户代码；用户可见的是 `TimeoutError` 的 budget / source 语义。
 
