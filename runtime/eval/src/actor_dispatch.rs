@@ -100,12 +100,7 @@ pub(crate) fn prepare_actor_method(
         &method.return_type,
         projection.type_view(),
     )?;
-    let timeout_ms = context
-        .context
-        .outbound_context()
-        .effective_timeout_ms(None)
-        .unwrap_or(30_000)
-        .max(1);
+    let timeout_ms = 30_000;
     let invocation_id = format!("actor-method:{}", uuid::Uuid::new_v4());
     let cancellation_correlation = format!("{invocation_id}:cancel");
     let request = ActorInvocationRequest {
