@@ -1,6 +1,6 @@
 # P5-F445H-I7-C Compiler ingress consumer
 
-状态：`IMPLEMENTED_PENDING_RESULT`。
+状态：`COMPLETE`。
 
 ## 1. Parent chain and baseline
 
