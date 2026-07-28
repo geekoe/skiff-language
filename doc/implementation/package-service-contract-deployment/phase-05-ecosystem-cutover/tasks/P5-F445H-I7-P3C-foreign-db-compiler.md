@@ -1,6 +1,6 @@
 # P5-F445H-I7-P3C Foreign DB compiler/source/lowering
 
-状态：`IMPLEMENTATION_BLOCKED_ON_P3R0_CONTINUATION`。
+状态：`COMPLETE`。
 
 ## 1. Parent and baseline
 
@@ -45,6 +45,5 @@
 
 ## 4. Scope-expansion stop
 
-若真实full-chain暴露的问题只能通过新增artifact字段、修改artifact generation或修改P3R0/P3R1
-runtime写集解决，本节点必须停止并上报，不得越界修复。上游修复合流后，由本节点在新exact baseline的
-临时join上复跑full-chain，再完成result。
+真实full-chain曾暴露P3R0 declaration匹配问题；本节点按约定停止并上报，没有越界修改runtime。
+P3R0B修复后已在临时exact join上复跑full-chain与Relay真实test service编译，结果通过。
