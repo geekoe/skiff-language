@@ -46,7 +46,8 @@ impl EvalContext<'_> {
             Ok(result) => return result.map(Into::into),
             Err(operation) => operation,
         };
-        let completed = self.await_actual_pending(operation.wait()).await?;
+        let wait = Box::pin(operation.wait());
+        let completed = self.await_actual_pending(wait).await?;
         completed.finalize(self).map(Into::into)
     }
 }
