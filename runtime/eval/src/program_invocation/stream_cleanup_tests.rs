@@ -92,3 +92,12 @@ fn program_invocation_external_response_rejects_internal_item_and_cancels_stream
     drop(cleanup);
     assert_eq!(cancellations.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn f445h_e4r_stream_invocation_logical_end_is_non_natural_and_cleans_once() {
+    assert_eq!(
+        super::current_scope_tests::logical_end_cleanup_count().await,
+        1,
+        "only the runtime's natural End may disarm response-stream cleanup"
+    );
+}

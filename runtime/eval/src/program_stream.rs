@@ -25,7 +25,7 @@ use skiff_runtime_model::{
 use super::type_descriptor::TypeSubstitutions;
 use super::{
     capabilities::{StreamCancelSignal, StreamPoll, StreamRuntime, StreamSink},
-    env::{check_cancelled, Env, Flow},
+    env::{Env, Flow},
     program_execution::{OwnedProgramExecutionContext, ProgramExecutionContext},
     program_ir::{program_call_target_kind, program_expression_ref},
     runtime_ops::{
@@ -39,10 +39,19 @@ use crate::{
         RuntimeExecutionProjection,
     },
     capabilities::StreamConsumerCleanup,
-    error::{materialize_stream_runtime_error, RequestHeapOwnedStreamError, Result, RuntimeError},
+    error::{
+        materialize_stream_runtime_error, stream_runtime_error_from_eval,
+        RequestHeapOwnedStreamError, Result, RuntimeError,
+    },
     test_effect_registry::TestEffectTarget,
     type_projection::EvalTypeProjection,
 };
+
+mod current_scope;
+
+#[cfg(test)]
+#[path = "program_stream/current_scope_tests.rs"]
+mod current_scope_tests;
 
 impl Interpreter {
     #[allow(clippy::too_many_arguments)]
@@ -60,22 +69,18 @@ impl Interpreter {
         item_type: Option<RuntimeTypePlan>,
         cancel_signals: &[StreamCancelSignal],
     ) -> Result<Flow> {
-        let execution = context.execution();
         let stream_runtime = context.stream_runtime();
         let mut cleanup = StreamConsumerCleanup::new(stream_runtime.clone(), &stream_value);
         loop {
-            execution.add_instruction_units(1)?;
-            check_cancelled(&execution, env)?;
-            let actor_frame = context.actor_execution_frame().cloned();
-            let next = stream_runtime.next_with_cancellation(
+            let item = current_scope::next_with_actor(
+                &context,
+                heap,
+                &stream_runtime,
                 &stream_value,
                 cancel_signals,
-                [execution.cancellation_token()],
-            );
-            let item = match actor_frame {
-                Some(frame) => frame.await_if_pending(heap, &execution, next).await?,
-                None => next.await,
-            };
+                1,
+            )
+            .await?;
             let item = match item {
                 Ok(item) => item,
                 Err(error) => {
@@ -429,16 +434,17 @@ impl Interpreter {
         cancel_signal: &StreamCancelSignal,
         consumption: &SupervisedStreamConsumptionLease,
     ) -> StreamRuntimeResult<()> {
-        let execution = context.execution();
         loop {
-            match stream_runtime
-                .next_with_cancellation(
-                    stream_value,
-                    std::slice::from_ref(cancel_signal),
-                    [execution.cancellation_token()],
-                )
-                .await
-            {
+            let item = current_scope::next(
+                &context,
+                stream_runtime,
+                stream_value,
+                std::slice::from_ref(cancel_signal),
+                0,
+            )
+            .await
+            .map_err(stream_runtime_error_from_eval)?;
+            match item {
                 Ok(StreamPoll::Item(_) | StreamPoll::InternalItem(_)) => continue,
                 Ok(StreamPoll::End) => {
                     consumption.observe_end();
