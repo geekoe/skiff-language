@@ -36,10 +36,25 @@ impl LeaseRenewOwner {
                         }
                     }
                     _ = interval.tick() => {
-                        if !handle_renew_result(
-                            store.renew_lease(&hold).await,
-                            request_cancelled.as_ref(),
-                        ) {
+                        let renew = store.renew_lease(&hold);
+                        tokio::pin!(renew);
+                        let keep_running = loop {
+                            tokio::select! {
+                                biased;
+                                changed = stopped.changed() => {
+                                    if changed.is_err() || *stopped.borrow() {
+                                        break false;
+                                    }
+                                }
+                                result = &mut renew => {
+                                    break handle_renew_result(
+                                        result,
+                                        request_cancelled.as_ref(),
+                                    );
+                                }
+                            }
+                        };
+                        if !keep_running {
                             break;
                         }
                     }
