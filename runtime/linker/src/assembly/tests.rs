@@ -572,6 +572,121 @@ fn link_identity_valid_execution_image(
     Ok(Arc::clone(candidate.execution_image()))
 }
 
+#[test]
+fn assembly_linker_attaches_exact_identity_to_local_db_target() {
+    let image = link_identity_valid_execution_image(|file| {
+        attach_local_db_target(file, true);
+    })
+    .unwrap();
+    let code = image
+        .code_slots()
+        .iter()
+        .find(|code| {
+            code.files()
+                .iter()
+                .any(|file| file.module_path == "shared.main")
+        })
+        .unwrap();
+    let file = code
+        .files()
+        .iter()
+        .find(|file| file.module_path == "shared.main")
+        .unwrap();
+    let skiff_runtime_linked_program::LinkedExprIr::DbOperation { operation } =
+        file.executables[0].body.expressions.last().unwrap()
+    else {
+        panic!("fixture must end in a linked DB operation")
+    };
+
+    assert_eq!(
+        operation
+            .target
+            .target_id
+            .package_artifact_ref
+            .package_build_id,
+        *code.package_build_id()
+    );
+    assert_eq!(
+        operation.target.target_id.file_ir_ref.file_ir_identity,
+        file.file_ir_identity
+    );
+    assert_eq!(operation.target.target_id.type_index, 0);
+    assert!(matches!(
+        operation.target.type_ref,
+        skiff_runtime_linked_program::LinkedTypeRef::Address { .. }
+    ));
+}
+
+#[test]
+fn assembly_linker_rejects_db_target_without_provider_attachment() {
+    let error = link_identity_valid_execution_image(|file| {
+        attach_local_db_target(file, false);
+    })
+    .unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("MissingDbTargetAttachment"),
+        "unexpected error: {error:#}"
+    );
+}
+
+fn attach_local_db_target(file: &mut FileIrUnit, include_attachment: bool) {
+    file.declarations.types.insert(
+        "LocalRecord".to_string(),
+        skiff_artifact_model::TypeDeclarationIr {
+            type_index: 0,
+            symbol: "LocalRecord".to_string(),
+            source_span: None,
+        },
+    );
+    if include_attachment {
+        file.declarations.db.insert(
+            "LocalRecord".to_string(),
+            skiff_artifact_model::DbDeclarationIr {
+                type_ref: skiff_artifact_model::TypeRefIr::LocalType { type_index: 0 },
+                type_name: "LocalRecord".to_string(),
+                collection_name: "local_record".to_string(),
+                kind: skiff_artifact_model::DbObjectKindIr::Object,
+                key: skiff_artifact_model::DbObjectKeyIr {
+                    name: "id".to_string(),
+                    ty: skiff_artifact_model::TypeRefIr::builtin("string"),
+                },
+                fields: Vec::new(),
+                retention: None,
+                leases: Vec::new(),
+                indexes: Vec::new(),
+                source_span: None,
+            },
+        );
+    }
+    file.executables[0]
+        .body
+        .expressions
+        .push(skiff_artifact_model::ExprIr::DbOperation {
+            operation: skiff_artifact_model::DbOperationIr {
+                op: skiff_artifact_model::DbOpKindIr::Count,
+                many: false,
+                target: skiff_artifact_model::DbTargetIr {
+                    type_ref: skiff_artifact_model::TypeRefIr::DbObjectSymbol {
+                        symbol: skiff_artifact_model::ServiceSymbolRef {
+                            module_path: file.module_path.clone(),
+                            symbol: "LocalRecord".to_string(),
+                        },
+                    },
+                    type_name: "LocalRecord".to_string(),
+                },
+                selector: None,
+                query: None,
+                projection: None,
+                body: None,
+                insert_body: None,
+                change: None,
+                result_type: skiff_artifact_model::TypeRefIr::builtin("number"),
+                source_span: None,
+            },
+        });
+}
+
 fn linked_call(
     target: skiff_runtime_linked_program::LinkedCallTarget,
     arg_count: usize,

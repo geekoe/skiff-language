@@ -5,8 +5,9 @@ use serde_json::Value;
 pub use skiff_artifact_model::{
     ActorAbiIdentity, ActorFieldEncodingIr, ActorImplementationIdentity, ActorMethodIdentity,
     BuiltinReceiverOp, FileIrRef, InstructionSourceSite, LiteralIr, MetadataValue, NativeTarget,
-    OperationAbiRef, PackageRefIr, PackageSymbolRef, ReceiverCallAbi, ServiceDependencySymbolRef,
-    ServiceSymbolRef, SourcePosition, SourceSpanRef, RECEIVER_BUILTIN_CAPABILITY_VERSION,
+    OperationAbiRef, PackageArtifactRef, PackageRefIr, PackageSymbolRef, ReceiverCallAbi,
+    ServiceDependencySymbolRef, ServiceSymbolRef, SourcePosition, SourceSpanRef,
+    RECEIVER_BUILTIN_CAPABILITY_VERSION,
 };
 
 use super::addr::{
@@ -1043,8 +1044,17 @@ pub enum DbOpKindIr {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DbTargetIr {
+    pub target_id: DbObjectTargetId,
     pub type_ref: LinkedTypeRef,
     pub type_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbObjectTargetId {
+    pub package_artifact_ref: PackageArtifactRef,
+    pub file_ir_ref: FileIrRef,
+    pub type_index: TypeIndex,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

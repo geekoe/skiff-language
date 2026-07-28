@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use skiff_artifact_model::{PackageBuildId, PackageRefIr};
 use skiff_runtime_linked_program::{
-    ConstAddr, ExecutableAddr, FileAddr, LinkedActorDeclaration, LinkedActorDeclarationOwner,
-    LinkedFileUnit, PackageCodeSlotIndex, ServiceSymbolRef, TypeAddr, UnitAddr,
+    ConstAddr, DbObjectTargetId, ExecutableAddr, FileAddr, LinkedActorDeclaration,
+    LinkedActorDeclarationOwner, LinkedFileUnit, PackageCodeSlotIndex, ServiceSymbolRef, TypeAddr,
+    UnitAddr,
 };
 
 pub(super) struct AssemblyAddressResolver<'a> {
@@ -227,6 +228,44 @@ impl<'a> AssemblyAddressResolver<'a> {
                 anyhow::anyhow!("package type {} is not exported", symbol.symbol_path)
             })?;
         self.type_export_addr(dependency_slot, &export.file, export.type_index as usize)
+    }
+
+    pub(super) fn db_target_addr(&self, target: &DbObjectTargetId) -> anyhow::Result<TypeAddr> {
+        self.shared
+            .validate_db_object_target_id(target)
+            .map_err(anyhow::Error::new)?;
+        let mut packages = self
+            .shared
+            .code_slots()
+            .iter()
+            .enumerate()
+            .filter(|(_, code)| code.artifact_ref() == &target.package_artifact_ref);
+        let (code_slot, _) = packages
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("DB target package artifact is not loaded"))?;
+        if packages.next().is_some() {
+            anyhow::bail!("DB target package artifact is loaded more than once");
+        }
+        let mut files = self
+            .package_files(code_slot)?
+            .iter()
+            .enumerate()
+            .filter(|(_, file)| {
+                file.file_ir_identity == target.file_ir_ref.file_ir_identity
+                    && file.module_path == target.file_ir_ref.module_path
+                    && target
+                        .file_ir_ref
+                        .source_ast_hash
+                        .as_deref()
+                        .is_none_or(|hash| hash == file.source_ast_hash)
+            });
+        let (file_index, _) = files
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("DB target File IR is not loaded"))?;
+        if files.next().is_some() {
+            anyhow::bail!("DB target File IR is ambiguous");
+        }
+        self.type_addr(code_slot, file_index, target.type_index)
     }
 
     pub(super) fn package_symbol_const_addr(
