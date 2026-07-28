@@ -27,8 +27,9 @@ use crate::{
         ast::{AliasDecl, FunctionDecl, InterfaceOperation, SourceFile, TypeDecl, TypeRef},
         id::SKIFF_STD_PUBLICATION_ID,
         package_interface_methods::{
-            instantiate_interface_method_signatures, normalize_package_interface_type_ref,
-            package_interface_method_signatures, InterfaceMethodSignature, PackageTypeSymbolIndex,
+            instantiate_interface_method_signatures, normalize_package_interface_method_signatures,
+            normalize_package_interface_type_ref, package_interface_method_signatures,
+            InterfaceMethodSignature, PackageTypeSymbolIndex,
         },
         prelude_registry::prelude_registry,
         type_expr::TypeExpr,
@@ -3533,8 +3534,8 @@ fn index_artifact_package_types(
         PackageDependencyAccess::Public => &artifact.package_local_abi.public_symbols,
         PackageDependencyAccess::TopLevel => &artifact.package_local_abi.implementation_symbols,
     };
-    let symbolic_types = artifact_symbolic_type_index(artifact, symbols)?;
-    let type_symbols = artifact_package_type_symbol_index(artifact);
+    let type_symbols = artifact_package_type_symbol_index(artifact, symbols)?;
+    let symbolic_types = artifact_symbolic_type_index(artifact, symbols, &type_symbols)?;
     for (selected_path, symbol) in symbols {
         if !matches!(symbol, PackageLocalAbiSymbol::Type { .. }) {
             continue;
@@ -3855,11 +3856,38 @@ struct ArtifactSymbolicTypeIndex {
     by_slot: BTreeMap<(String, u32), String>,
 }
 
-fn artifact_package_type_symbol_index(artifact: &PackageArtifact) -> PackageTypeSymbolIndex {
+fn artifact_package_type_symbol_index(
+    artifact: &PackageArtifact,
+    selected_symbols: &BTreeMap<String, PackageLocalAbiSymbol>,
+) -> Result<PackageTypeSymbolIndex, String> {
     let mut index = PackageTypeSymbolIndex::default();
     for requirement in &artifact.package_requirements {
         index.insert_dependency(&requirement.alias, &requirement.package_id);
         index.insert_dependency(&requirement.package_id, &requirement.package_id);
+    }
+    // The selected ABI surface owns the canonical path. This is observable for
+    // top-level access when a source type is also exported under an API alias:
+    // source-only selection must not be rebound to that unrelated public path.
+    for (selected_path, symbol) in selected_symbols {
+        if !matches!(symbol, PackageLocalAbiSymbol::Type { .. }) {
+            continue;
+        }
+        let export = artifact
+            .implementation_links
+            .types
+            .get(selected_path)
+            .ok_or_else(|| {
+                format!(
+                    "package {} selected type {} has no exact implementation link",
+                    artifact.package_id, selected_path
+                )
+            })?;
+        index.insert_type(
+            &export.file.module_path,
+            export.type_index,
+            &export.symbol,
+            selected_path,
+        );
     }
     for (public_path, export) in &artifact.implementation_links.types {
         index.insert_type(
@@ -3869,12 +3897,13 @@ fn artifact_package_type_symbol_index(artifact: &PackageArtifact) -> PackageType
             public_path,
         );
     }
-    index
+    Ok(index)
 }
 
 fn artifact_symbolic_type_index(
     artifact: &PackageArtifact,
     symbols: &BTreeMap<String, PackageLocalAbiSymbol>,
+    type_symbols: &PackageTypeSymbolIndex,
 ) -> Result<ArtifactSymbolicTypeIndex, String> {
     let mut index = ArtifactSymbolicTypeIndex::default();
     for (selected_path, symbol) in symbols {
@@ -3898,15 +3927,49 @@ fn artifact_symbolic_type_index(
                     artifact.package_id, selected_path
                 )
             })?;
-        if export.descriptor.as_ref() != Some(descriptor) {
+        let implementation_descriptor = normalize_artifact_type_descriptor(
+            &artifact.package_id,
+            type_symbols,
+            &export.file.module_path,
+            selected_path,
+            descriptor,
+        )?;
+        let linked_descriptor = export
+            .descriptor
+            .as_ref()
+            .map(|descriptor| {
+                normalize_artifact_type_descriptor(
+                    &artifact.package_id,
+                    type_symbols,
+                    &export.file.module_path,
+                    selected_path,
+                    descriptor,
+                )
+            })
+            .transpose()?;
+        if linked_descriptor.as_ref() != Some(&implementation_descriptor) {
             return Err(format!(
                 "package {} selected type {} descriptor disagrees with its implementation link",
                 artifact.package_id, selected_path
             ));
         }
+        let implementation_methods = normalize_artifact_interface_methods(
+            &artifact.package_id,
+            type_symbols,
+            &export.file.module_path,
+            selected_path,
+            interface_methods,
+        )?;
+        let linked_methods = normalize_artifact_interface_methods(
+            &artifact.package_id,
+            type_symbols,
+            &export.file.module_path,
+            selected_path,
+            &export.interface_methods,
+        )?;
         if export.is_interface != *is_interface
             || export.type_params != *type_params
-            || export.interface_methods != *interface_methods
+            || linked_methods != implementation_methods
         {
             return Err(format!(
                 "package {} selected type {} interface facts disagree with its implementation link",
@@ -3946,6 +4009,213 @@ fn artifact_symbolic_type_index(
         }
     }
     Ok(index)
+}
+
+fn normalize_artifact_type_descriptor(
+    package_id: &str,
+    type_symbols: &PackageTypeSymbolIndex,
+    module_path: &str,
+    selected_path: &str,
+    descriptor: &TypeDescriptorIr,
+) -> Result<TypeDescriptorIr, String> {
+    let normalize = |ty: &TypeRefIr, context: &str| {
+        let context = format!("type {selected_path} {context}");
+        let normalized = normalize_package_interface_type_ref(
+            package_id,
+            type_symbols,
+            module_path,
+            ty,
+            &context,
+        )?;
+        normalize_artifact_interface_identities(
+            package_id,
+            type_symbols,
+            module_path,
+            normalized,
+            &context,
+        )
+    };
+    match descriptor {
+        TypeDescriptorIr::Record { fields } => Ok(TypeDescriptorIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| Ok((name.clone(), normalize(ty, &format!("field {name}"))?)))
+                .collect::<Result<_, String>>()?,
+        }),
+        TypeDescriptorIr::Representation { representation } => {
+            Ok(TypeDescriptorIr::Representation {
+                representation: normalize(representation, "representation")?,
+            })
+        }
+        TypeDescriptorIr::Union { branches } => Ok(TypeDescriptorIr::Union {
+            branches: branches
+                .iter()
+                .map(|branch| match branch {
+                    NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                        Ok(NamedUnionBranchIr::ConcreteNominal {
+                            nominal_type: normalize(nominal_type, "union branch")?,
+                        })
+                    }
+                    NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type,
+                        discriminator_field,
+                        discriminator_value,
+                    } => Ok(NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type: normalize(payload_type, "union payload")?,
+                        discriminator_field: discriminator_field.clone(),
+                        discriminator_value: discriminator_value.clone(),
+                    }),
+                    NamedUnionBranchIr::Literal { value } => Ok(NamedUnionBranchIr::Literal {
+                        value: value.clone(),
+                    }),
+                })
+                .collect::<Result<_, String>>()?,
+        }),
+        TypeDescriptorIr::Alias { target } => Ok(TypeDescriptorIr::Alias {
+            target: normalize(target, "alias target")?,
+        }),
+        TypeDescriptorIr::Interface => Ok(TypeDescriptorIr::Interface),
+    }
+}
+
+fn normalize_artifact_interface_methods(
+    package_id: &str,
+    type_symbols: &PackageTypeSymbolIndex,
+    module_path: &str,
+    interface_name: &str,
+    methods: &[InterfaceMethodSignature],
+) -> Result<Vec<InterfaceMethodSignature>, String> {
+    let mut methods = normalize_package_interface_method_signatures(
+        package_id,
+        type_symbols,
+        module_path,
+        interface_name,
+        methods,
+    )?;
+    for method in &mut methods {
+        let context = format!("{module_path}.{interface_name}.{}", method.name);
+        for param in &mut method.params {
+            param.ty = normalize_artifact_interface_identities(
+                package_id,
+                type_symbols,
+                module_path,
+                param.ty.clone(),
+                &context,
+            )?;
+        }
+        method.return_type = normalize_artifact_interface_identities(
+            package_id,
+            type_symbols,
+            module_path,
+            method.return_type.clone(),
+            &context,
+        )?;
+        method.implicit_self = method
+            .implicit_self
+            .clone()
+            .map(|ty| {
+                normalize_artifact_interface_identities(
+                    package_id,
+                    type_symbols,
+                    module_path,
+                    ty,
+                    &context,
+                )
+            })
+            .transpose()?;
+    }
+    Ok(methods)
+}
+
+fn normalize_artifact_interface_identities(
+    package_id: &str,
+    type_symbols: &PackageTypeSymbolIndex,
+    module_path: &str,
+    ty: TypeRefIr,
+    context: &str,
+) -> Result<TypeRefIr, String> {
+    let recurse = |ty| {
+        normalize_artifact_interface_identities(package_id, type_symbols, module_path, ty, context)
+    };
+    match ty {
+        TypeRefIr::Builtin { name, args } => Ok(TypeRefIr::Builtin {
+            name,
+            args: args.into_iter().map(recurse).collect::<Result<_, _>>()?,
+        }),
+        TypeRefIr::AppliedNominal { base, arguments } => Ok(TypeRefIr::AppliedNominal {
+            base,
+            arguments: arguments
+                .into_iter()
+                .map(recurse)
+                .collect::<Result<_, _>>()?,
+        }),
+        TypeRefIr::Record { fields } => Ok(TypeRefIr::Record {
+            fields: fields
+                .into_iter()
+                .map(|(name, ty)| Ok((name, recurse(ty)?)))
+                .collect::<Result<_, String>>()?,
+        }),
+        TypeRefIr::Union { items } => Ok(TypeRefIr::Union {
+            items: items.into_iter().map(recurse).collect::<Result<_, _>>()?,
+        }),
+        TypeRefIr::Nullable { inner } => Ok(TypeRefIr::Nullable {
+            inner: Box::new(recurse(*inner)?),
+        }),
+        TypeRefIr::AnyInterface { interface } => {
+            let identity = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).map_err(
+                |error| {
+                    format!(
+                        "package {package_id} {context} has invalid interface ABI identity: {error}"
+                    )
+                },
+            )?;
+            let identity = normalize_package_interface_type_ref(
+                package_id,
+                type_symbols,
+                module_path,
+                &identity,
+                context,
+            )?;
+            let identity = recurse(identity)?;
+            Ok(TypeRefIr::AnyInterface {
+                interface: InterfaceInstantiationRef {
+                    interface_abi_id: serde_json::to_string(&identity).map_err(|error| {
+                        format!(
+                            "package {package_id} {context} cannot encode interface ABI identity: {error}"
+                        )
+                    })?,
+                    canonical_type_args: interface
+                        .canonical_type_args
+                        .into_iter()
+                        .map(recurse)
+                        .collect::<Result<_, _>>()?,
+                },
+            })
+        }
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => Ok(TypeRefIr::Function {
+            params: params
+                .into_iter()
+                .map(|param| {
+                    Ok(FunctionTypeParamIr {
+                        name: param.name,
+                        ty: recurse(param.ty)?,
+                    })
+                })
+                .collect::<Result<_, String>>()?,
+            return_type: Box::new(recurse(*return_type)?),
+        }),
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => Ok(ty),
+    }
 }
 
 fn artifact_type_kind(
@@ -7849,6 +8119,35 @@ mod tests {
             is_static: false,
             implicit_self: None,
         };
+        let mut linked_method = method.clone();
+        linked_method.params[1].ty = TypeRefIr::Builtin {
+            name: "Array".to_string(),
+            args: vec![TypeRefIr::Nullable {
+                inner: Box::new(TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: "llm-api".to_string(),
+                        },
+                        symbol_path: "tools.ToolDeclaration".to_string(),
+                        abi_expectation: None,
+                    },
+                }),
+            }],
+        };
+        linked_method.return_type = TypeRefIr::Union {
+            items: vec![
+                TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: "llm-api".to_string(),
+                        },
+                        symbol_path: "tools.ToolDeclaration".to_string(),
+                        abi_expectation: None,
+                    },
+                },
+                TypeRefIr::builtin("null"),
+            ],
+        };
         let descriptor = TypeDescriptorIr::Interface;
         let tool_descriptor = TypeDescriptorIr::Record {
             fields: BTreeMap::from([("name".to_string(), TypeRefIr::builtin("string"))]),
@@ -7953,7 +8252,7 @@ mod tests {
                             is_interface: true,
                             descriptor: Some(descriptor),
                             type_params: Vec::new(),
-                            interface_methods: vec![method],
+                            interface_methods: vec![linked_method],
                         },
                     ),
                     (
@@ -7987,7 +8286,20 @@ mod tests {
                             type_index: 9,
                             symbol: "LlmMessage".to_string(),
                             is_interface: false,
-                            descriptor: Some(message_descriptor),
+                            descriptor: Some(TypeDescriptorIr::Record {
+                                fields: BTreeMap::from([(
+                                    "role".to_string(),
+                                    TypeRefIr::PackageSymbol {
+                                        symbol: PackageSymbolRef {
+                                            package: PackageRefIr::PackageId {
+                                                package_id: "llm-api".to_string(),
+                                            },
+                                            symbol_path: "LlmRole".to_string(),
+                                            abi_expectation: None,
+                                        },
+                                    },
+                                )]),
+                            }),
                             type_params: Vec::new(),
                             interface_methods: Vec::new(),
                         },
@@ -8117,8 +8429,8 @@ mod tests {
         );
         assert_eq!(symbol.symbol_path, "types.LlmClient");
 
-        let mut tampered = artifact;
-        tampered
+        let mut tampered_method = artifact.clone();
+        tampered_method
             .implementation_links
             .types
             .get_mut("types.LlmClient")
@@ -8126,7 +8438,7 @@ mod tests {
             .interface_methods
             .clear();
         let error = index_artifact_package_types(
-            &tampered,
+            &tampered_method,
             "llm-api",
             PackageDependencyAccess::Public,
             ArtifactPackageTypePathMode::DeclaredPublic,
@@ -8136,6 +8448,111 @@ mod tests {
         )
         .expect_err("mismatched artifact interface facts must fail closed");
         assert!(error.contains("interface facts disagree"));
+
+        let mut tampered_nested_path = artifact.clone();
+        let TypeDescriptorIr::Record { fields } = tampered_nested_path
+            .implementation_links
+            .types
+            .get_mut("LlmMessage")
+            .unwrap()
+            .descriptor
+            .as_mut()
+            .unwrap()
+        else {
+            panic!("message descriptor must remain a record")
+        };
+        let TypeRefIr::PackageSymbol { symbol } = fields.get_mut("role").unwrap() else {
+            panic!("role must remain a package symbol")
+        };
+        symbol.symbol_path = "WrongRole".to_string();
+        let error = index_artifact_package_types(
+            &tampered_nested_path,
+            "llm-api",
+            PackageDependencyAccess::Public,
+            ArtifactPackageTypePathMode::DeclaredPublic,
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .expect_err("a different nested package path must fail closed");
+        assert!(error.contains("descriptor disagrees"));
+
+        let mut tampered_nested_owner = artifact.clone();
+        let TypeDescriptorIr::Record { fields } = tampered_nested_owner
+            .implementation_links
+            .types
+            .get_mut("LlmMessage")
+            .unwrap()
+            .descriptor
+            .as_mut()
+            .unwrap()
+        else {
+            panic!("message descriptor must remain a record")
+        };
+        let TypeRefIr::PackageSymbol { symbol } = fields.get_mut("role").unwrap() else {
+            panic!("role must remain a package symbol")
+        };
+        symbol.package = PackageRefIr::PackageId {
+            package_id: "other.example/llm-api".to_string(),
+        };
+        let error = index_artifact_package_types(
+            &tampered_nested_owner,
+            "llm-api",
+            PackageDependencyAccess::Public,
+            ArtifactPackageTypePathMode::DeclaredPublic,
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .expect_err("a different nested package owner must fail closed");
+        assert!(error.contains("descriptor disagrees"));
+
+        let mut tampered_nested_abi = artifact.clone();
+        let TypeDescriptorIr::Record { fields } = tampered_nested_abi
+            .implementation_links
+            .types
+            .get_mut("LlmMessage")
+            .unwrap()
+            .descriptor
+            .as_mut()
+            .unwrap()
+        else {
+            panic!("message descriptor must remain a record")
+        };
+        let TypeRefIr::PackageSymbol { symbol } = fields.get_mut("role").unwrap() else {
+            panic!("role must remain a package symbol")
+        };
+        symbol.abi_expectation = Some("wrong-abi".to_string());
+        let error = index_artifact_package_types(
+            &tampered_nested_abi,
+            "llm-api",
+            PackageDependencyAccess::Public,
+            ArtifactPackageTypePathMode::DeclaredPublic,
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .expect_err("a different nested package ABI must fail closed");
+        assert!(error.contains("descriptor disagrees"));
+
+        let mut tampered_slot = artifact;
+        tampered_slot
+            .implementation_links
+            .types
+            .get_mut("types.LlmClient")
+            .unwrap()
+            .type_index = 7;
+        let error = index_artifact_package_types(
+            &tampered_slot,
+            "llm-api",
+            PackageDependencyAccess::Public,
+            ArtifactPackageTypePathMode::DeclaredPublic,
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .expect_err("two selected types sharing one file/type slot must fail closed");
+        assert!(error.contains("ambiguously identify"), "{error}");
     }
 
     #[test]
