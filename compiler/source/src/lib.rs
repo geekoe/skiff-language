@@ -14,6 +14,7 @@ pub mod entity;
 mod execution_semantics;
 pub(crate) mod expression_model;
 pub(crate) mod expression_type_model;
+mod foreign_db_targets;
 mod linked_facts;
 pub(crate) mod linked_publication;
 mod name_resolution_model;
@@ -98,6 +99,7 @@ pub use expression_type_model::{
     MissingConstructorField, ObjectFieldValueSource, ObjectMaterializationKind,
     RepresentationConstructorValidation, TargetTypedObjectMaterialization, UnknownConstructorField,
 };
+pub use foreign_db_targets::{foreign_package_db_metadata_index, ForeignPackageDbDependency};
 pub use linked_facts::{SourceCompileLinkedFacts, SourceCompileLinkedFactsInput};
 pub use linked_publication::CompileParsedPackageSourcesInput;
 pub use name_resolution_model::{validate_source_name_resolution_from_model, NameResolutionModel};
@@ -109,7 +111,8 @@ pub use semantics::PackageCompilePlan;
 pub use shared::publication_error::PublicationError as SourceCompileError;
 pub use source_file_facts::{
     publication_db_metadata_index, type_indices, type_text_with_args, LocalDbObjectIndex,
-    PackageInterfaceMethodIndex, PublicationDbMetadata, PublicationDbMetadataIndex,
+    PackageInterfaceMethodIndex, PublicationDbLease, PublicationDbMetadata,
+    PublicationDbMetadataIndex, PublicationDbObjectKey, PublicationDbRetention,
 };
 pub use type_resolution_model::{
     AnyInterfaceMethodResolution, CatchLeafIdentity, CatchLeaves, ConstructorTargetResolution,
@@ -163,8 +166,10 @@ fn build_from_linked(
     package_db_schema::validate_package_db_schema(&parsed_sources)?;
     let dependency_package_config_facts = linked.package_facts.map(dependency_package_config_facts);
     let type_resolution_package_facts = linked.package_facts.map(type_resolution_package_facts);
-    let package_db_metadata_index =
-        package_db_metadata_index(linked.package_facts, linked.package_dependencies);
+    let mut package_db_metadata_index =
+        package_db_metadata_index(linked.package_facts, linked.package_dependencies)
+            .unwrap_or_default();
+    package_db_metadata_index.extend(dependency_analysis.foreign_db_metadata().clone());
     let source_identity = source_identity::source_identity(&parsed_sources);
     let declaration_anchors = source_identity::PublicationDeclarationAnchors::build(
         &parsed_sources,
@@ -216,7 +221,7 @@ fn build_from_linked(
         diagnostic_root: linked.diagnostic_root,
         package_aliases: &package_aliases,
         package_dependencies: linked.package_dependencies,
-        package_db_metadata_index,
+        package_db_metadata_index: Some(package_db_metadata_index),
         type_resolution_package_facts: type_resolution_package_facts.as_deref(),
         type_resolution_package_artifacts: linked.package_artifacts,
         entity_model,

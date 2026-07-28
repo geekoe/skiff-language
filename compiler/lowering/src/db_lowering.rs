@@ -198,35 +198,21 @@ fn lower_publication_db_metadata(
     package_aliases: &BTreeMap<String, Vec<String>>,
     external_type_symbols: &PublicationTypeSymbolIndex,
 ) -> Result<DbMetadataIr> {
-    let type_ref = db_object_type_ref(ServiceSymbolRef {
-        module_path: metadata.module_path.clone(),
-        symbol: metadata.type_name.clone(),
+    let type_ref = metadata.canonical_type_ref.clone().unwrap_or_else(|| {
+        db_object_type_ref(ServiceSymbolRef {
+            module_path: metadata.module_path.clone(),
+            symbol: metadata.type_name.clone(),
+        })
     });
     let empty_local_db_objects = LocalDbObjectIndex::default();
     let empty_publication_db_metadata = PublicationDbMetadataIndex::default();
     let source_alias_targets = BTreeMap::new();
     let key = DbObjectKeyIr {
         name: metadata.key.name.clone(),
-        ty: lower_type_ref(
-            &metadata.key.ty,
-            &BTreeMap::new(),
-            &empty_local_db_objects,
-            &empty_publication_db_metadata,
-            package_aliases,
-            external_type_symbols,
-            &source_alias_targets,
-            TypeLoweringContext::value(),
-        )?,
-    };
-    let mut field_types = BTreeMap::new();
-    let mut field_type_texts = BTreeMap::new();
-    field_types.insert(key.name.clone(), key.ty.clone());
-    field_type_texts.insert(metadata.key.name.clone(), metadata.key.ty.name.clone());
-    for (field_name, field_ty) in &metadata.field_types {
-        field_types.insert(
-            field_name.clone(),
-            lower_type_ref(
-                field_ty,
+        ty: match &metadata.canonical_key_type {
+            Some(ty) => ty.clone(),
+            None => lower_type_ref(
+                &metadata.key.ty,
                 &BTreeMap::new(),
                 &empty_local_db_objects,
                 &empty_publication_db_metadata,
@@ -235,6 +221,28 @@ fn lower_publication_db_metadata(
                 &source_alias_targets,
                 TypeLoweringContext::value(),
             )?,
+        },
+    };
+    let mut field_types = BTreeMap::new();
+    let mut field_type_texts = BTreeMap::new();
+    field_types.insert(key.name.clone(), key.ty.clone());
+    field_type_texts.insert(metadata.key.name.clone(), metadata.key.ty.name.clone());
+    for (field_name, field_ty) in &metadata.field_types {
+        field_types.insert(
+            field_name.clone(),
+            match metadata.canonical_field_types.get(field_name) {
+                Some(ty) => ty.clone(),
+                None => lower_type_ref(
+                    field_ty,
+                    &BTreeMap::new(),
+                    &empty_local_db_objects,
+                    &empty_publication_db_metadata,
+                    package_aliases,
+                    external_type_symbols,
+                    &source_alias_targets,
+                    TypeLoweringContext::value(),
+                )?,
+            },
         );
         field_type_texts.insert(field_name.clone(), field_ty.name.clone());
     }
@@ -927,16 +935,8 @@ impl<'a> FunctionLowerer<'a> {
             .resolve_db_operation_target(&operation.target.name)?
             .clone();
         self.validate_db_operation_semantics(operation, &db_metadata)?;
-        let target_type_ref = lower_type_ref(
-            &operation.target,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
-            self.db_target_type_context(),
-        )?;
+        let target_type_ref =
+            self.lower_resolved_db_target_type(&operation.target, &db_metadata)?;
         let target = DbTargetIr {
             type_ref: target_type_ref.clone(),
             type_name: db_metadata.canonical_type_name.clone(),
@@ -1008,16 +1008,7 @@ impl<'a> FunctionLowerer<'a> {
         let db_metadata = self
             .resolve_db_operation_target(&query.target.name)?
             .clone();
-        let target_type_ref = lower_type_ref(
-            &query.target,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
-            self.db_target_type_context(),
-        )?;
+        let target_type_ref = self.lower_resolved_db_target_type(&query.target, &db_metadata)?;
         let target = DbTargetIr {
             type_ref: target_type_ref.clone(),
             type_name: db_metadata.canonical_type_name.clone(),
@@ -1048,16 +1039,7 @@ impl<'a> FunctionLowerer<'a> {
             .resolve_db_operation_target(&claim.target.name)?
             .clone();
         validate_db_lease_slot(&db_metadata, &claim.slot)?;
-        let target_type_ref = lower_type_ref(
-            &claim.target,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
-            self.db_target_type_context(),
-        )?;
+        let target_type_ref = self.lower_resolved_db_target_type(&claim.target, &db_metadata)?;
         let target_type_text = type_ref_ir_type_text(&target_type_ref);
         let target = DbTargetIr {
             type_ref: target_type_ref,
@@ -1096,16 +1078,7 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn lower_db_lease_read(&mut self, read: &DbLeaseRead) -> Result<ExprIr> {
         let db_metadata = self.resolve_db_operation_target(&read.target.name)?.clone();
         validate_db_lease_slot(&db_metadata, &read.slot)?;
-        let target_type_ref = lower_type_ref(
-            &read.target,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
-            self.db_target_type_context(),
-        )?;
+        let target_type_ref = self.lower_resolved_db_target_type(&read.target, &db_metadata)?;
         let target = DbTargetIr {
             type_ref: target_type_ref,
             type_name: db_metadata.canonical_type_name.clone(),
@@ -1148,6 +1121,26 @@ impl<'a> FunctionLowerer<'a> {
         Err(CompileError::Semantic(format!(
             "db operation target `{target_name}` is not a declared db object in File IR unit expression"
         )))
+    }
+
+    fn lower_resolved_db_target_type(
+        &self,
+        target: &skiff_syntax::ast::TypeRef,
+        metadata: &DbMetadataIr,
+    ) -> Result<TypeRefIr> {
+        if matches!(metadata.type_ref, TypeRefIr::PackageSymbol { .. }) {
+            return Ok(metadata.type_ref.clone());
+        }
+        lower_type_ref(
+            target,
+            self.type_indices,
+            self.local_db_objects,
+            self.publication_db_metadata,
+            self.package_aliases,
+            self.external_type_symbols,
+            self.source_alias_targets,
+            self.db_target_type_context(),
+        )
     }
 
     pub(super) fn validate_db_operation_semantics(

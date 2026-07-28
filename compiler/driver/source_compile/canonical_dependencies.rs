@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_identity::validate_package_artifact_identities;
+use skiff_artifact_identity::{package_artifact_ref, validate_package_artifact_identities};
 use skiff_artifact_model::{
     InterfaceInstantiationRef, NominalTypeRefBaseIr, PackageArtifact, PackageCallableSignature,
     PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef, TypeRefIr,
@@ -9,8 +9,9 @@ use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_input::ResolvedContractDependency;
 use skiff_compiler_projection_input::ResolvedPackageSchema;
 use skiff_compiler_source::{
-    PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis,
-    PackageDependencyConstantAnalysis, SourceDependencyAnalysisInput,
+    foreign_package_db_metadata_index, ForeignPackageDbDependency, PackageDependencyAnalysisFacts,
+    PackageDependencyCallableAnalysis, PackageDependencyConstantAnalysis,
+    PublicationDbMetadataIndex, SourceDependencyAnalysisInput,
 };
 
 use crate::{
@@ -34,7 +35,8 @@ pub(super) fn source_dependencies(
         package_analysis(input, resolved_package_schemas, compiler_owned_std)?,
         validated_contract_dependencies(input, resolved_package_schemas)?,
     )
-    .map_err(dependency_analysis_error)?;
+    .map_err(dependency_analysis_error)?
+    .with_foreign_db_metadata(foreign_db_metadata(input)?);
     let mut type_resolution_artifacts = input.dependency_packages.to_vec();
     if let Some(artifact) = compiler_owned_std {
         type_resolution_artifacts.push(artifact.clone());
@@ -43,6 +45,81 @@ pub(super) fn source_dependencies(
         analysis,
         type_resolution_artifacts,
     })
+}
+
+fn foreign_db_metadata(
+    input: &PackageCompileInput<'_>,
+) -> Result<PublicationDbMetadataIndex, PackageCompileError> {
+    if !input.is_test_service() {
+        return Ok(PublicationDbMetadataIndex::default());
+    }
+    let Some(store) = input.canonical_artifact_store() else {
+        // In-memory compiler unit fixtures may omit a store. A source DB
+        // target still fails closed because no foreign attachment is indexed.
+        return Ok(PublicationDbMetadataIndex::default());
+    };
+    let mut index = PublicationDbMetadataIndex::default();
+    for dependency in input
+        .package_dependencies
+        .iter()
+        .filter(|dependency| dependency.top_level_alias.is_some())
+    {
+        let matches = input
+            .dependency_packages
+            .iter()
+            .filter(|artifact| {
+                artifact.package_id == dependency.id
+                    && artifact.package_version == dependency.version
+            })
+            .collect::<Vec<_>>();
+        let [artifact] = matches.as_slice() else {
+            return Err(validation_error(format!(
+                "foreign DB dependency {}@{} requires one exact direct PackageArtifact, found {}",
+                dependency.id,
+                dependency.version,
+                matches.len()
+            )));
+        };
+        validate_package_artifact_identities(artifact).map_err(|error| {
+            validation_error(format!(
+                "foreign DB dependency {}@{} PackageArtifact identity validation failed: {error}",
+                dependency.id, dependency.version
+            ))
+        })?;
+        let reference = package_artifact_ref(artifact).map_err(|error| {
+            validation_error(format!(
+                "foreign DB dependency {}@{} PackageArtifact reference failed: {error}",
+                dependency.id, dependency.version
+            ))
+        })?;
+        let files = artifact
+            .files
+            .iter()
+            .map(|file_ref| {
+                store
+                    .read_file_ir(&reference, file_ref)
+                    .map(|file| file.as_ref().clone())
+                    .map_err(|error| {
+                        validation_error(format!(
+                            "foreign DB dependency {}@{} canonical File IR {} load failed: {error}",
+                            dependency.id, dependency.version, file_ref.file_ir_identity
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let metadata = foreign_package_db_metadata_index(&[ForeignPackageDbDependency {
+            primary_alias: dependency.effective_alias(),
+            top_level_alias: dependency
+                .top_level_alias
+                .as_deref()
+                .expect("filtered dependency has a topLevelAlias"),
+            artifact,
+            files: &files,
+        }])
+        .map_err(validation_error)?;
+        index.extend(metadata);
+    }
+    Ok(index)
 }
 
 fn compiler_owned_std_artifact<'a>(
