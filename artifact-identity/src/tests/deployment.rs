@@ -158,13 +158,12 @@ fn websocket_json_rpc_gateway_entry(
     }
 }
 
-fn selector(host: &str, key: GatewayEntryKey) -> DeploymentIngressBinding {
+fn selector(path: &str, key: GatewayEntryKey) -> DeploymentIngressBinding {
     DeploymentIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::Http,
-            host: host.to_string(),
             method: Some("POST".to_string()),
-            path: "/gateway".to_string(),
+            path: path.to_string(),
         },
         gateway_entry_key: key,
     }
@@ -191,7 +190,7 @@ fn deployment_with(kind: GatewayAdapterKind) -> ServiceDeployment {
         package_bindings: Vec::new(),
         service_selectors: Vec::new(),
         gateway_entries: BTreeMap::from([(key.clone(), gateway_entry(kind))]),
-        ingress: vec![selector("api.example.test", key)],
+        ingress: vec![selector("/gateway", key)],
         config_literals: Vec::new(),
         secret_refs: Vec::new(),
         state_bindings: Vec::new(),
@@ -232,7 +231,6 @@ fn websocket_deployment(
     deployment.ingress.push(DeploymentIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::WebSocket,
-            host: "*".to_string(),
             method: None,
             path: "/chat".to_string(),
         },
@@ -274,7 +272,6 @@ fn websocket_json_rpc_deployment() -> ServiceDeployment {
     deployment.ingress.push(DeploymentIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::WebSocket,
-            host: "*".to_string(),
             method: Some("status.get".to_string()),
             path: "/chat".to_string(),
         },
@@ -310,7 +307,7 @@ fn deployment_gateway_validation_accepts_typed_raw_multiple_selectors_and_zero()
     for kind in [GatewayAdapterKind::TypedJson, GatewayAdapterKind::RawHttp] {
         let mut deployment = deployment_with(kind);
         let key = deployment.ingress[0].gateway_entry_key.clone();
-        deployment.ingress.push(selector("alias.example.test", key));
+        deployment.ingress.push(selector("/gateway-alias", key));
         validate_service_deployment_surface(&deployment).unwrap();
         validate_service_deployment_input(&input_from(&deployment)).unwrap();
     }
@@ -350,9 +347,8 @@ fn deployment_gateway_validation_accepts_websocket_with_or_without_connect_handl
     aliased.ingress.push(DeploymentIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::WebSocket,
-            host: "chat.example.test".to_string(),
             method: None,
-            path: "/chat".to_string(),
+            path: "/chat-alias".to_string(),
         },
         gateway_entry_key: GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap(),
     });
@@ -377,7 +373,6 @@ fn deployment_gateway_validation_accepts_linked_websocket_json_rpc_methods() {
         .unwrap();
     assert_eq!(physical.selector.method, None);
     assert_eq!(method.selector.method.as_deref(), Some("status.get"));
-    assert_eq!(method.selector.host, physical.selector.host);
     assert_eq!(method.selector.path, physical.selector.path);
 }
 
@@ -522,10 +517,8 @@ fn deployment_websocket_json_rpc_association_and_tamper_fail_closed() {
         .method = Some("status.get".to_string());
     assert_invalid(&physical_with_method);
 
-    let mutations: [fn(&mut IngressSelector); 2] = [
-        |selector: &mut IngressSelector| selector.host = "other.example.test".to_string(),
-        |selector: &mut IngressSelector| selector.path = "/other".to_string(),
-    ];
+    let mutations: [fn(&mut IngressSelector); 1] =
+        [|selector: &mut IngressSelector| selector.path = "/other".to_string()];
     for mutate in mutations {
         let mut mismatched = baseline.clone();
         mutate(
@@ -595,7 +588,6 @@ fn deployment_websocket_json_rpc_association_and_tamper_fail_closed() {
     duplicate_method.ingress.push(DeploymentIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::WebSocket,
-            host: "*".to_string(),
             method: Some("status.get".to_string()),
             path: "/chat".to_string(),
         },
@@ -788,40 +780,40 @@ fn deployment_gateway_validation_rejects_cross_field_mismatches() {
 fn deployment_identity_is_stable_under_reorder_and_rejects_stale_generation() {
     let mut deployment = deployment_with(GatewayAdapterKind::TypedJson);
     let key = deployment.ingress[0].gateway_entry_key.clone();
-    deployment.ingress.push(selector("alias.example.test", key));
+    deployment.ingress.push(selector("/gateway-alias", key));
     let expected = service_deployment_identity(&deployment).unwrap();
     deployment.ingress.reverse();
     assert_eq!(service_deployment_identity(&deployment).unwrap(), expected);
 
     let mut stale_input = input_from(&deployment);
-    stale_input.schema_version = "skiff-service-deployment-input-v3".to_string();
+    stale_input.schema_version = "skiff-service-deployment-input-v4".to_string();
     assert!(validate_service_deployment_input(&stale_input).is_err());
 
     let mut stale_schema = deployment.clone();
-    stale_schema.schema_version = "skiff-service-deployment-v2".to_string();
+    stale_schema.schema_version = "skiff-service-deployment-v3".to_string();
     assert!(service_deployment_identity(&stale_schema).is_err());
 
     let mut stale_identity = deployment;
     stale_identity.deployment_artifact_identity = DeploymentArtifactIdentity::new(format!(
-        "skiff-deployment-artifact-v2:sha256:{}",
+        "skiff-deployment-artifact-v3:sha256:{}",
         "a".repeat(64)
     ));
     assert!(super::validate_service_deployment_identity(&stale_identity).is_err());
     assert_eq!(
         SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
-        "skiff-service-deployment-input-v4"
+        "skiff-service-deployment-input-v5"
     );
     assert_eq!(
         SERVICE_DEPLOYMENT_SCHEMA_VERSION,
-        "skiff-service-deployment-v3"
+        "skiff-service-deployment-v4"
     );
     assert_eq!(
         DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
-        "skiff-deployment-artifact-v3:sha256"
+        "skiff-deployment-artifact-v4:sha256"
     );
     assert_eq!(
         DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER,
-        "skiff-deployment-artifact-identity-v3"
+        "skiff-deployment-artifact-identity-v4"
     );
     assert_eq!(
         GATEWAY_ENTRY_IDENTITY_PREFIX,

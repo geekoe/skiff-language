@@ -29,7 +29,6 @@ pub fn ingress_selector_from_start_frame(
             }
             Ok(IngressSelector {
                 protocol: IngressProtocol::Http,
-                host: canonical_host(&url)?,
                 method: Some(method.to_ascii_uppercase()),
                 path: path.to_string(),
             })
@@ -49,17 +48,6 @@ fn parse_route_url(raw: &str, accepted_schemes: &[&str]) -> Result<Url, String> 
         return Err(MISSING_SELECTOR.to_string());
     }
     Ok(url)
-}
-
-fn canonical_host(url: &Url) -> Result<String, String> {
-    let host = url
-        .host_str()
-        .filter(|host| !host.is_empty())
-        .ok_or_else(|| MISSING_SELECTOR.to_string())?;
-    Ok(match url.port() {
-        Some(port) => format!("{host}:{port}"),
-        None => host.to_string(),
-    })
 }
 
 fn canonical_path(path: &str) -> Result<&str, String> {
@@ -101,7 +89,6 @@ mod tests {
             ingress_selector_from_start_frame(&header).expect("HTTP selector should project"),
             IngressSelector {
                 protocol: IngressProtocol::Http,
-                host: "example.com:8443".to_string(),
                 method: Some("GET".to_string()),
                 path: "/items".to_string(),
             }

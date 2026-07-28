@@ -45,12 +45,11 @@ fn validate_deployments(
         let coordinate = (
             reference.service_id.as_str(),
             reference.contract_version.as_str(),
-            reference.deployment_revision.as_str(),
         );
         if let Some(existing) = coordinates.insert(coordinate, reference) {
             if existing != reference {
                 return invalid_assembly(format!(
-                    "deployment coordinate {coordinate:?} resolves to multiple identities"
+                    "active assembly service coordinate {coordinate:?} resolves to multiple deployments"
                 ));
             }
         }
@@ -325,12 +324,12 @@ fn validate_gateway_ingress(
     bindings: &[GatewayIngressBinding],
     deployments: &BTreeSet<ServiceDeploymentRef>,
 ) -> Result<()> {
-    let mut selectors = BTreeSet::new();
+    let mut scoped_selectors = BTreeSet::new();
     for binding in bindings {
-        if !selectors.insert(binding.selector.clone()) {
+        if !scoped_selectors.insert(binding.service_ingress_key()) {
             return invalid_assembly(format!(
                 "gateway ingress collision for {:?}",
-                binding.selector
+                binding.service_ingress_key()
             ));
         }
         if !deployments.contains(&binding.deployment) {

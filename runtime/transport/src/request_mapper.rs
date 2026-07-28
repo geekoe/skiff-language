@@ -322,7 +322,6 @@ mod tests {
             .as_ref()
             .expect("HTTP metadata should project a canonical ingress selector");
         assert_eq!(ingress.protocol, IngressProtocol::Http);
-        assert_eq!(ingress.host, "example.com");
         assert_eq!(ingress.method.as_deref(), Some("POST"));
         assert_eq!(ingress.path, "/path");
 

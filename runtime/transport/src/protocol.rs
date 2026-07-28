@@ -13,7 +13,7 @@ use skiff_runtime_request_contract::RuntimeClientSessionControl;
 pub const BINARY_FRAME_MAGIC: [u8; 4] = *b"SKBF";
 pub const BINARY_FRAME_VERSION: u8 = 1;
 pub const BINARY_FRAME_HEADER_ENCODING_JSON: u8 = 1;
-pub const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v1";
+pub const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v2";
 pub const RESPONSE_ERROR_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v2";
 
 const BINARY_FRAME_FIXED_HEADER_BYTES: usize = 14;
