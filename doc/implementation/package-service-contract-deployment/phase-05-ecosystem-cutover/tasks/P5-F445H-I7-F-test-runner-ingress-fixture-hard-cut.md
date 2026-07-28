@@ -3,7 +3,7 @@
 状态：
 
 ```text
-IN_PROGRESS
+PASS
 ```
 
 ## 1. Parent and baseline
