@@ -43,6 +43,7 @@ pub trait WebsocketRequestCapabilityApi: Send + Sync {
         connection_id: String,
         method: String,
         payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
     ) -> EvalCapabilityFuture<'a, ConnectionRequestTerminal>;
 }
 
@@ -54,6 +55,7 @@ impl WebsocketRequestCapabilityApi for UnsupportedWebsocketRequestCapability {
         _connection_id: String,
         _method: String,
         _payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
     ) -> EvalCapabilityFuture<'a, ConnectionRequestTerminal> {
         Box::pin(async {
             Err(RuntimeError::Unsupported(
@@ -118,9 +120,10 @@ impl<'a> WebsocketCapabilityContext<'a> {
         connection_id: String,
         method: String,
         payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
     ) -> EvalCapabilityFuture<'b, ConnectionRequestTerminal> {
         self.request
-            .request_json_to_connection(connection_id, method, payload)
+            .request_json_to_connection(connection_id, method, payload, execution_control)
     }
 
     pub fn send_connection_text_to_business_identity(
@@ -928,7 +931,11 @@ impl NativeActorCapability for RuntimeNativeActorCapabilityContext<'_> {
     ) -> NativeCapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
             ActorClient::new(self.0.clone())
-                .get_or_create_actor(request, bootstrap_payload)
+                .get_or_create_actor(
+                    request,
+                    bootstrap_payload,
+                    self.1.execution_control().clone(),
+                )
                 .await
                 .map_err(|error| eval_error_to_native(RuntimeError::from(error)))
         })
@@ -941,7 +948,11 @@ impl NativeActorCapability for RuntimeNativeActorCapabilityContext<'_> {
     ) -> NativeCapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
             ActorClient::new(self.0.clone())
-                .replace_actor(request, bootstrap_payload)
+                .replace_actor(
+                    request,
+                    bootstrap_payload,
+                    self.1.execution_control().clone(),
+                )
                 .await
                 .map_err(|error| eval_error_to_native(RuntimeError::from(error)))
         })
@@ -953,7 +964,7 @@ impl NativeActorCapability for RuntimeNativeActorCapabilityContext<'_> {
     ) -> NativeCapabilityFuture<'a, Option<ActorRef>> {
         Box::pin(async move {
             ActorClient::new(self.0.clone())
-                .find_actor(request)
+                .find_actor(request, self.1.execution_control().clone())
                 .await
                 .map_err(|error| eval_error_to_native(RuntimeError::from(error)))
         })
@@ -965,7 +976,7 @@ impl NativeActorCapability for RuntimeNativeActorCapabilityContext<'_> {
     ) -> NativeCapabilityFuture<'a, bool> {
         Box::pin(async move {
             ActorClient::new(self.0.clone())
-                .remove_actor(request)
+                .remove_actor(request, self.1.execution_control().clone())
                 .await
                 .map_err(|error| eval_error_to_native(RuntimeError::from(error)))
         })
@@ -989,9 +1000,15 @@ impl NativeFileCapability for RuntimeNativeFileCapability {
         options: FileCreateOptions,
     ) -> NativeCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            FileCapabilityContext::create_file(&self.0, target, input, options)
-                .await
-                .map_err(NativeRuntimeError::from)
+            FileCapabilityContext::create_file(
+                &self.0,
+                target,
+                input,
+                options,
+                self.1.execution_control().clone(),
+            )
+            .await
+            .map_err(NativeRuntimeError::from)
         })
     }
 
@@ -1001,9 +1018,14 @@ impl NativeFileCapability for RuntimeNativeFileCapability {
         file: &'a ImmutableFileRef,
     ) -> NativeCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            FileCapabilityContext::read_file_wire(&self.0, target, file)
-                .await
-                .map_err(NativeRuntimeError::from)
+            FileCapabilityContext::read_file_wire(
+                &self.0,
+                target,
+                file,
+                self.1.execution_control().clone(),
+            )
+            .await
+            .map_err(NativeRuntimeError::from)
         })
     }
 
@@ -1013,9 +1035,14 @@ impl NativeFileCapability for RuntimeNativeFileCapability {
         file: &'a ImmutableFileRef,
     ) -> NativeCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            FileCapabilityContext::read_text_file(&self.0, target, file)
-                .await
-                .map_err(NativeRuntimeError::from)
+            FileCapabilityContext::read_text_file(
+                &self.0,
+                target,
+                file,
+                self.1.execution_control().clone(),
+            )
+            .await
+            .map_err(NativeRuntimeError::from)
         })
     }
 
@@ -1025,9 +1052,14 @@ impl NativeFileCapability for RuntimeNativeFileCapability {
         file: &'a ImmutableFileRef,
     ) -> NativeCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            FileCapabilityContext::file_info(&self.0, target, file)
-                .await
-                .map_err(NativeRuntimeError::from)
+            FileCapabilityContext::file_info(
+                &self.0,
+                target,
+                file,
+                self.1.execution_control().clone(),
+            )
+            .await
+            .map_err(NativeRuntimeError::from)
         })
     }
 
@@ -1037,9 +1069,14 @@ impl NativeFileCapability for RuntimeNativeFileCapability {
         file: &'a ImmutableFileRef,
     ) -> NativeCapabilityFuture<'a, ()> {
         Box::pin(async move {
-            FileCapabilityContext::delete_file(&self.0, target, file)
-                .await
-                .map_err(NativeRuntimeError::from)
+            FileCapabilityContext::delete_file(
+                &self.0,
+                target,
+                file,
+                self.1.execution_control().clone(),
+            )
+            .await
+            .map_err(NativeRuntimeError::from)
         })
     }
 
@@ -1050,9 +1087,15 @@ impl NativeFileCapability for RuntimeNativeFileCapability {
         next_chunk: NativeFileChunkSource<'a>,
     ) -> NativeCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            FileCapabilityContext::create_file_from_chunks(&self.0, target, options, next_chunk)
-                .await
-                .map_err(NativeRuntimeError::from)
+            FileCapabilityContext::create_file_from_chunks(
+                &self.0,
+                target,
+                options,
+                next_chunk,
+                self.1.execution_control().clone(),
+            )
+            .await
+            .map_err(NativeRuntimeError::from)
         })
     }
 }
@@ -1070,7 +1113,13 @@ impl NativeFileSourceStreamCapability for RuntimeNativeFileSourceStreamCapabilit
         stream: &'a Value,
     ) -> FileCapabilityFuture<'a, Option<Value>> {
         Box::pin(async move {
-            let result = self.context.next_file_source_stream_item(stream).await;
+            let result = self
+                .context
+                .next_file_source_stream_item(
+                    stream,
+                    self.invocation_execution.execution_control().clone(),
+                )
+                .await;
             if let Some(supervision) = &self.supervision {
                 match &result {
                     Ok(None) => {
@@ -1088,6 +1137,10 @@ impl NativeFileSourceStreamCapability for RuntimeNativeFileSourceStreamCapabilit
 }
 
 impl NativeTimeCapability for RuntimeNativeTimeCapabilityContext<'_> {
+    fn execution_control(&self) -> OwnedExecutionControl {
+        self.1.execution_control().clone()
+    }
+
     fn poll_execution_budget(&self) -> skiff_runtime_native::error::Result<()> {
         self.0
             .execution_control()
@@ -1112,9 +1165,10 @@ impl NativeHttpClientCapability for RuntimeNativeHttpClientCapabilityContext {
 
     fn dispatch_http_request<'a>(&'a self, input: &'a Value) -> NativeCapabilityFuture<'a, Value> {
         let context = self.context.clone().into_effect_context();
+        let execution_control = self.invocation_execution.execution_control().clone();
         Box::pin(async move {
             context
-                .dispatch_http_request(input)
+                .dispatch_http_request(input, execution_control)
                 .await
                 .map_err(|error| eval_error_to_native(RuntimeError::from(error)))
         })
@@ -1126,9 +1180,10 @@ impl NativeHttpClientCapability for RuntimeNativeHttpClientCapabilityContext {
         expected_body_item_type: Option<&'a RuntimeTypePlan>,
     ) -> NativeCapabilityFuture<'a, Value> {
         let context = self.context.clone().into_effect_context();
+        let execution_control = self.invocation_execution.execution_control().clone();
         Box::pin(async move {
             context
-                .dispatch_http_stream(input, expected_body_item_type)
+                .dispatch_http_stream(input, expected_body_item_type, execution_control)
                 .await
                 .map_err(|error| eval_error_to_native(RuntimeError::from(error)))
         })
@@ -1140,9 +1195,10 @@ impl NativeHttpClientCapability for RuntimeNativeHttpClientCapabilityContext {
         expected_item_type: Option<&'a RuntimeTypePlan>,
     ) -> NativeCapabilityFuture<'a, Value> {
         let context = self.context.clone().into_effect_context();
+        let execution_control = self.invocation_execution.execution_control().clone();
         Box::pin(async move {
             context
-                .dispatch_http_sse(input, expected_item_type)
+                .dispatch_http_sse(input, expected_item_type, execution_control)
                 .await
                 .map_err(|error| eval_error_to_native(RuntimeError::from(error)))
         })
@@ -1187,7 +1243,12 @@ impl NativeWebsocketCapability for RuntimeNativeWebsocketCapabilityContext<'_> {
     {
         Box::pin(async move {
             self.0
-                .request_json_to_connection(connection_id, method, payload)
+                .request_json_to_connection(
+                    connection_id,
+                    method,
+                    payload,
+                    self.1.execution_control().clone(),
+                )
                 .await
                 .map_err(eval_error_to_native)
         })

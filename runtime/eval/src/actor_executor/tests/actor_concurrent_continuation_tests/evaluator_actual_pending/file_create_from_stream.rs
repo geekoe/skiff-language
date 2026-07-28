@@ -1,4 +1,5 @@
 use super::*;
+use skiff_runtime_capability_context::OwnedExecutionControl;
 
 #[derive(Clone)]
 struct RecordingFile {
@@ -71,6 +72,7 @@ impl FileCapabilityApi for RecordingFile {
         _target: &'a str,
         _input: Bytes,
         _options: FileCreateOptions,
+        _execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         Box::pin(async {
             Err(skiff_runtime_capability_context::FileCapabilityError::file(
@@ -83,6 +85,7 @@ impl FileCapabilityApi for RecordingFile {
         &'a self,
         _target: &'a str,
         _file: &'a ImmutableFileRef,
+        _execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         Box::pin(async {
             Err(skiff_runtime_capability_context::FileCapabilityError::file(
@@ -95,6 +98,7 @@ impl FileCapabilityApi for RecordingFile {
         &'a self,
         _target: &'a str,
         _file: &'a ImmutableFileRef,
+        _execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         Box::pin(async {
             Err(skiff_runtime_capability_context::FileCapabilityError::file(
@@ -107,6 +111,7 @@ impl FileCapabilityApi for RecordingFile {
         &'a self,
         _target: &'a str,
         _file: &'a ImmutableFileRef,
+        _execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         Box::pin(async {
             Err(skiff_runtime_capability_context::FileCapabilityError::file(
@@ -119,6 +124,7 @@ impl FileCapabilityApi for RecordingFile {
         &'a self,
         _target: &'a str,
         _file: &'a ImmutableFileRef,
+        _execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, ()> {
         Box::pin(async {
             Err(skiff_runtime_capability_context::FileCapabilityError::file(
@@ -132,6 +138,7 @@ impl FileCapabilityApi for RecordingFile {
         _target: &'a str,
         _options: FileCreateOptions,
         mut next_chunk: FileChunkSource<'a>,
+        _execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         self.state.starts.fetch_add(1, Ordering::AcqRel);
         let state = Arc::clone(&self.state);

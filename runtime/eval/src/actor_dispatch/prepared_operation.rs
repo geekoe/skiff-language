@@ -4,6 +4,7 @@ use serde_json::Value;
 use skiff_runtime_boundary::{json::RuntimeBoundaryCodec, plan::BoundaryUse};
 use skiff_runtime_capability_context::{
     ActorInvocationOutcome, ActorInvocationRequest, CapabilityResult, OwnedActorCapabilityContext,
+    OwnedExecutionControl,
 };
 use skiff_runtime_model::{
     request_heap::RequestHeap, runtime_value::RuntimeValueCarrier, type_plan::RuntimeTypePlan,
@@ -21,6 +22,7 @@ pub(crate) struct PreparedActorMethodInvocation {
     return_plan: RuntimeTypePlan,
     method_name: String,
     timeout_ms: u64,
+    execution_control: OwnedExecutionControl,
 }
 
 pub(crate) struct ActorMethodInvocationCompletion {
@@ -37,6 +39,7 @@ impl PreparedActorMethodInvocation {
         return_plan: RuntimeTypePlan,
         method_name: String,
         timeout_ms: u64,
+        execution_control: OwnedExecutionControl,
     ) -> Self {
         Self {
             context,
@@ -44,6 +47,7 @@ impl PreparedActorMethodInvocation {
             return_plan,
             method_name,
             timeout_ms,
+            execution_control,
         }
     }
 
@@ -57,8 +61,9 @@ impl PreparedActorMethodInvocation {
                 return_plan,
                 method_name,
                 timeout_ms,
+                execution_control,
             } = self;
-            let outcome = context.invoke_actor(request).await;
+            let outcome = context.invoke_actor(request, execution_control).await;
             ActorMethodInvocationCompletion {
                 outcome,
                 return_plan,

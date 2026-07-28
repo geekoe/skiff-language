@@ -26,6 +26,7 @@ use skiff_runtime_capability_context::{
     NativeHttpClientCapabilityContext as ContractNativeHttpClientCapabilityContext,
     NativeHttpResponseStreamCapabilityContext as ContractNativeHttpResponseStreamCapabilityContext,
     NativeTelemetryCapabilityContext as ContractNativeTelemetryCapabilityContext,
+    OwnedExecutionControl,
 };
 use skiff_runtime_model::{
     addr::ExecutableAddr,
@@ -361,6 +362,10 @@ impl<'execution> NativeFileSourceStreamCapability for FileSourceStreamContext<'e
 }
 
 impl<'execution> NativeTimeCapability for RuntimeNativeTimeCapabilityContext<'execution> {
+    fn execution_control(&self) -> OwnedExecutionControl {
+        self.0.execution_control().owned()
+    }
+
     fn poll_execution_budget(&self) -> Result<()> {
         self.0
             .execution_control()

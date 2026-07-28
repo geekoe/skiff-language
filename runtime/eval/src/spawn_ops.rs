@@ -37,6 +37,7 @@ pub async fn submit_spawn_statement(
 
     let projection = context.execution_projection().clone();
     let spawn_context = context.context.spawn_context();
+    let execution_control = context.execution.owned();
     let invocation = encode_spawn_request_payload(context, call, projection).await?;
 
     ActorClient::new(spawn_context.clone())
@@ -62,6 +63,7 @@ pub async fn submit_spawn_statement(
                 max_queue_wait_ms: None,
             },
             invocation.args_payload,
+            execution_control,
         )
         .await?;
     Ok(())

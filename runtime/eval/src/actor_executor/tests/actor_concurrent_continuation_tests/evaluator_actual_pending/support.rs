@@ -1,4 +1,5 @@
 use super::*;
+use skiff_runtime_capability_context::OwnedExecutionControl;
 
 pub(super) struct EvaluatorFixture {
     pub(super) actor: Fixture,
@@ -165,6 +166,7 @@ impl FileSourceStreamApi for RuntimeFileSourceStream {
     fn next_file_source_stream_item<'a>(
         &'a self,
         stream: &'a Value,
+        _execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Option<Value>> {
         Box::pin(async move {
             match self.stream_runtime.next(stream).await? {

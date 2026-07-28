@@ -27,8 +27,10 @@ impl capability_contract::FileCapabilityApi for RuntimeFileCapabilityContext {
         target: &'a str,
         input: Bytes,
         options: FileCreateOptions,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             self.0
                 .create_file(target, input, options)
                 .await
@@ -40,8 +42,10 @@ impl capability_contract::FileCapabilityApi for RuntimeFileCapabilityContext {
         &'a self,
         target: &'a str,
         file: &'a ImmutableFileRef,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             self.0
                 .read_file_wire(target, file)
                 .await
@@ -53,8 +57,10 @@ impl capability_contract::FileCapabilityApi for RuntimeFileCapabilityContext {
         &'a self,
         target: &'a str,
         file: &'a ImmutableFileRef,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             self.0
                 .read_text_file(target, file)
                 .await
@@ -66,8 +72,10 @@ impl capability_contract::FileCapabilityApi for RuntimeFileCapabilityContext {
         &'a self,
         target: &'a str,
         file: &'a ImmutableFileRef,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             self.0
                 .file_info(target, file)
                 .await
@@ -79,8 +87,10 @@ impl capability_contract::FileCapabilityApi for RuntimeFileCapabilityContext {
         &'a self,
         target: &'a str,
         file: &'a ImmutableFileRef,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, ()> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             self.0
                 .delete_file(target, file)
                 .await
@@ -93,8 +103,10 @@ impl capability_contract::FileCapabilityApi for RuntimeFileCapabilityContext {
         target: &'a str,
         options: FileCreateOptions,
         mut next_chunk: capability_contract::FileChunkSource<'a>,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             self.0
                 .create_file_from_chunks(target, options, move || next_chunk())
                 .await
@@ -361,8 +373,10 @@ impl capability_contract::FileSourceStreamApi for RuntimeOwnedFileSourceStreamCo
     fn next_file_source_stream_item<'a>(
         &'a self,
         stream: &'a Value,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Option<Value>> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             concrete::FileSourceStreamContext::new(
                 concrete_stream_runtime(&self.stream_runtime).clone(),
                 self.execution.borrow(),

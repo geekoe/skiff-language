@@ -132,6 +132,7 @@ pub(crate) fn prepare_actor_method(
         return_plan,
         method.name.clone(),
         timeout_ms,
+        context.execution.owned(),
     ))
 }
 

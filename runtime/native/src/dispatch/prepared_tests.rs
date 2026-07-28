@@ -2,7 +2,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     task::{Context, Poll, Wake, Waker},
@@ -14,8 +14,10 @@ use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
-    ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestTerminal,
-    FileCapabilityFuture, NativeCapabilityContexts, StreamConsumerCleanup,
+    ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationToken,
+    ConnectionRequestTerminal, ExecutionControl, ExecutionControlApi, ExecutionControlResult,
+    FileCapabilityFuture, FileSourceStreamContext, NativeCapabilityContexts, OwnedExecutionControl,
+    OwnedExecutionControlApi, StreamConsumerCleanup, StreamRuntime,
 };
 use skiff_runtime_model::{
     addr::{FileAddr, TypeAddr, UnitAddr},
@@ -50,9 +52,84 @@ use crate::{
 #[derive(Clone)]
 struct CountingTimeContext {
     polls: Arc<AtomicUsize>,
+    execution_control: OwnedExecutionControl,
+}
+
+#[derive(Clone)]
+struct PreparedTestExecutionControl {
+    cancelled: Arc<AtomicBool>,
+    cancellation: CancellationToken,
+}
+
+impl PreparedTestExecutionControl {
+    fn owned() -> OwnedExecutionControl {
+        OwnedExecutionControl::new(Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            cancellation: CancellationToken::new(),
+        })
+    }
+}
+
+impl ExecutionControlApi for PreparedTestExecutionControl {
+    fn owned(&self) -> OwnedExecutionControl {
+        OwnedExecutionControl::new(self.clone())
+    }
+
+    fn cancel_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancelled)
+    }
+
+    fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
+    fn deadline(&self) -> Option<std::time::Instant> {
+        None
+    }
+
+    fn check_cancelled(&self) -> ExecutionControlResult<()> {
+        Ok(())
+    }
+
+    fn add_instruction_units(&self, _units: u64) -> ExecutionControlResult<()> {
+        Ok(())
+    }
+
+    fn poll_execution_budget(&self) -> ExecutionControlResult<()> {
+        Ok(())
+    }
+
+    fn file_source_stream_context(
+        &self,
+        _stream_runtime: StreamRuntime,
+    ) -> FileSourceStreamContext<'static> {
+        panic!("prepared time tests do not create file source streams")
+    }
+}
+
+impl OwnedExecutionControlApi for PreparedTestExecutionControl {
+    fn borrow(&self) -> ExecutionControl<'_> {
+        ExecutionControl::new(self.clone())
+    }
+
+    fn cancelled(&self) -> &AtomicBool {
+        self.cancelled.as_ref()
+    }
+
+    fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
+    fn deadline(&self) -> Option<std::time::Instant> {
+        None
+    }
 }
 
 impl NativeTimeCapability for CountingTimeContext {
+    fn execution_control(&self) -> OwnedExecutionControl {
+        self.execution_control.clone()
+    }
+
     fn poll_execution_budget(&self) -> crate::error::Result<()> {
         self.polls.fetch_add(1, Ordering::AcqRel);
         Ok(())
@@ -141,6 +218,7 @@ async fn prepared_time_wait_does_not_borrow_caller_heap_and_observes_actual_pend
     let polls = Arc::new(AtomicUsize::new(0));
     let context = CountingTimeContext {
         polls: Arc::clone(&polls),
+        execution_control: PreparedTestExecutionControl::owned(),
     };
     let mut heap = RequestHeap::default();
     let prepared = TimeNativeDispatch::prepare(
@@ -172,6 +250,7 @@ async fn prepared_zero_time_wait_is_ready_on_its_real_first_poll() {
     let prepared = TimeNativeDispatch::prepare(
         CountingTimeContext {
             polls: Arc::clone(&polls),
+            execution_control: PreparedTestExecutionControl::owned(),
         },
         sleep_invocation(),
         "std.time.sleep".to_string(),

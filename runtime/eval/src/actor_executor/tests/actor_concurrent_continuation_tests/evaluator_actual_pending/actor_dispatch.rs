@@ -1,4 +1,5 @@
 use super::*;
+use skiff_runtime_capability_context::OwnedExecutionControl;
 
 enum ActorReply {
     Ready(CapabilityResult<ActorInvocationOutcome>),
@@ -121,6 +122,7 @@ impl ActorCapabilityApi for RecordingActor {
         &'a self,
         _request: ActorGetOrCreateControlRequest,
         _bootstrap_payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ActorRef> {
         Box::pin(async { Err(CapabilityError::unsupported("not used")) })
     }
@@ -129,6 +131,7 @@ impl ActorCapabilityApi for RecordingActor {
         &'a self,
         _request: ActorReplaceControlRequest,
         _bootstrap_payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ActorRef> {
         Box::pin(async { Err(CapabilityError::unsupported("not used")) })
     }
@@ -136,6 +139,7 @@ impl ActorCapabilityApi for RecordingActor {
     fn find_actor<'a>(
         &'a self,
         _request: ActorFindControlRequest,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, Option<ActorRef>> {
         Box::pin(async { Err(CapabilityError::unsupported("not used")) })
     }
@@ -143,6 +147,7 @@ impl ActorCapabilityApi for RecordingActor {
     fn remove_actor<'a>(
         &'a self,
         _request: ActorRemoveControlRequest,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, bool> {
         Box::pin(async { Err(CapabilityError::unsupported("not used")) })
     }
@@ -151,6 +156,7 @@ impl ActorCapabilityApi for RecordingActor {
         &'a self,
         _request: SpawnSubmitControlRequest,
         _args_payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ()> {
         Box::pin(async { Err(CapabilityError::unsupported("not used")) })
     }
@@ -158,6 +164,7 @@ impl ActorCapabilityApi for RecordingActor {
     fn invoke_actor<'a>(
         &'a self,
         _request: ActorInvocationRequest,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ActorInvocationOutcome> {
         self.state.starts.fetch_add(1, Ordering::AcqRel);
         let reply = self

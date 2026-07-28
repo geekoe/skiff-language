@@ -18,8 +18,10 @@ impl capability_contract::HttpClientCapabilityApi for RuntimeHttpClientCapabilit
     fn dispatch_http_request<'a>(
         &'a self,
         input: &'a Value,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::HttpCapabilityFuture<'a, Value> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             root_result_into_capability(self.0.dispatch_http_request(input).await).await
         })
     }
@@ -28,8 +30,10 @@ impl capability_contract::HttpClientCapabilityApi for RuntimeHttpClientCapabilit
         &'a self,
         input: &'a Value,
         expected_body_item_type: Option<&'a RuntimeTypePlan>,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::HttpCapabilityFuture<'a, Value> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             root_result_into_capability(
                 self.0
                     .dispatch_http_stream(input, expected_body_item_type)
@@ -43,8 +47,10 @@ impl capability_contract::HttpClientCapabilityApi for RuntimeHttpClientCapabilit
         &'a self,
         input: &'a Value,
         expected_item_type: Option<&'a RuntimeTypePlan>,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::HttpCapabilityFuture<'a, Value> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             root_result_into_capability(self.0.dispatch_http_sse(input, expected_item_type).await)
                 .await
         })
