@@ -90,6 +90,26 @@ fn cas_blob_key_is_sha256_size_filename() {
     assert!(!key.contains('/'), "blob key should not create directories");
 }
 
+#[tokio::test]
+async fn f445h_i6_file_scope_ingest_drop_removes_spilled_temp_path() {
+    let temp = TempDir::new("scope-drop-cleanup");
+    let tmp_root = temp.path.join("tmp");
+    let mut ingest = FileIngest::new(&tmp_root);
+    ingest
+        .push(&vec![7_u8; FILE_MEMORY_FAST_PATH_BYTES + 1])
+        .await
+        .expect("spill file");
+    let tmp_path = ingest.tmp_path.clone().expect("spill path");
+    assert!(tmp_path.exists(), "ingest owns a live spill path");
+
+    drop(ingest);
+
+    assert!(
+        !tmp_path.exists(),
+        "dropping a scope-losing ingest removes its spill path"
+    );
+}
+
 fn unused_store() -> ServiceDbCapabilityStore {
     let service_db = Arc::new(
         ServiceDbRuntime::new_with_config(

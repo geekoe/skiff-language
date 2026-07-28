@@ -85,6 +85,25 @@ impl EvaluatorFixture {
         )
         .expect("evaluator context")
     }
+
+    pub(super) fn eval_context_with_unframed<'a>(
+        &'a self,
+        context: ProgramExecutionContext<'static>,
+        heap: &'a mut RequestHeap,
+        env: &'a mut Env,
+        addr: &'a ExecutableAddr,
+    ) -> EvalContext<'a> {
+        EvalContext::new(
+            &self.interpreter,
+            context,
+            heap,
+            env,
+            addr,
+            &self.file,
+            self.executable(),
+        )
+        .expect("unframed evaluator context")
+    }
 }
 
 pub(super) fn program_context_with(
