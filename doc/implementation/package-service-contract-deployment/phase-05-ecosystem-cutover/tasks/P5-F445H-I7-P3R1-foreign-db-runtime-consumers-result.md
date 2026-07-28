@@ -71,7 +71,23 @@ cargo test -p skiff-runtime-service-db --locked \
 同一Host full suite单独执行为`331/331`，两个失败项随后顺序重跑均通过。因此该并发抖动不构成
 P3R1回归。
 
-## 4. Scope and handoff
+## 4. P3R0B temporary join
+
+将P3R0B validator closure implementation
+`0e66bfaf14a2658eb36e28083dda68a231d2a0e1`临时叠加在P3R1结果之上，未混入P3R1正式分支。
+该组合验证结果：
+
+- linked-program full suite：unit `38/38`、integration `1/1`；
+- linked-program、capability-context、service-db、Eval、Host五包locked check通过；
+- Eval exact target resolver：`1/1`；
+- service-db exact lookup、同名target isolation、lease guard isolation：`3/3`；
+- Host exact collection mapping：`1/1`；
+- Host identical/conflicting stateful diamond：`2/2`。
+
+因此P3R0B支持真实compiler-qualified DB declaration shape后，P3R1 consumers仍保持exact且fail
+closed。
+
+## 5. Scope and handoff
 
 没有修改compiler、manifest、linker、linked-program schema、D7 projection、artifact generation或
 service boundary。没有运行stable/live/network/Mongo/OAuth/browser，也没有push。
