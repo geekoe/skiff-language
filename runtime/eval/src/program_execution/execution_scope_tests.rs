@@ -14,10 +14,14 @@ use skiff_runtime_capability_context::{
     ExecutionControl, ExecutionControlApi, ExecutionControlError, ExecutionControlResult,
     ExecutionDeadlineSource, ExecutionScope, ExecutionScopeAccessError, ExecutionScopeDeriveError,
     ExecutionScopeTerminal, FileSourceStreamContext, OwnedExecutionControl,
-    OwnedExecutionControlApi, StreamRuntime,
+    OwnedExecutionControlApi, StreamRuntime, SupervisedStreamConsumptionLease,
 };
-use skiff_runtime_linked_program::ServiceMeta;
+use skiff_runtime_linked_program::{
+    LinkOverlay, PublicationResourceTable, RuntimeTypeContext, ServiceMeta,
+};
 use skiff_runtime_model::request_heap::RequestHeapLimits;
+use skiff_runtime_native::capability::NativeFileCapabilityBundle;
+use skiff_runtime_native_contract::NativeRequiredContext;
 
 use super::{
     execution_scope::{
@@ -28,8 +32,16 @@ use super::{
 };
 use crate::{
     actor_executor_test_runtime as test_runtime,
-    capabilities::{HttpRuntimeOptions, TimeCapabilityContext},
+    assembly_execution::RuntimeExecutionProjection,
+    capabilities::{
+        HttpRuntimeOptions, RuntimeNativeInvocationExecutionControl, StreamCapabilityContext,
+        TimeCapabilityContext,
+    },
     error::{BudgetReason, RuntimeError},
+    native_capability::{
+        project_runtime_execution_native_capability_context_supervised,
+        project_runtime_native_capability_context,
+    },
 };
 
 mod evaluator_checkpoint;
@@ -235,6 +247,148 @@ fn root_scope(deadline: Option<Instant>) -> (CancellationSource, ExecutionScope)
     let cancellation = CancellationSource::new();
     let scope = ExecutionScope::request(cancellation.token(), deadline);
     (cancellation, scope)
+}
+
+fn assert_native_invocation_scope(
+    invocation: &RuntimeNativeInvocationExecutionControl,
+    expected: &ExecutionScope,
+) {
+    let actual = invocation
+        .execution_control()
+        .execution_scope()
+        .expect("native invocation retains the current execution scope");
+    assert_eq!(actual.nesting(), expected.nesting());
+    assert_eq!(actual.effective_deadline(), expected.effective_deadline());
+    assert_eq!(
+        actual.lifecycle_snapshot(),
+        expected.lifecycle_snapshot(),
+        "carrier retains the existing scope lifecycle"
+    );
+}
+
+#[test]
+fn f445h_i6_native_invocation_scope_projects_current_control_once_for_all_consumers() {
+    let base = Instant::now();
+    let (request_cancellation, root) = root_scope(None);
+    let outer = root
+        .derive(base + Duration::from_secs(10), site())
+        .expect("outer scope");
+    let outer_control = ScopeAwareControl::available(outer.clone(), request_cancellation.token());
+    let frozen_context = context(outer_control.clone());
+    let current =
+        ExecutionControlApi::derive_scope(&outer_control, base + Duration::from_secs(5), site())
+            .expect("inner scope");
+    let expected = current.execution_scope().expect("inner execution scope");
+    let current_context = frozen_context.with_execution_control(current);
+
+    let program = crate::EvalRuntimeProgram::new(
+        "skiff.run/f445h-i6-native-invocation-scope",
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        PublicationResourceTable::default(),
+        Vec::new(),
+        HashMap::new(),
+        LinkOverlay::default(),
+        RuntimeTypeContext::default(),
+    );
+    let projection = program.projection();
+    let stream_context = StreamCapabilityContext::default();
+
+    for required_context in [
+        NativeRequiredContext::Actor,
+        NativeRequiredContext::Time,
+        NativeRequiredContext::HttpClient,
+        NativeRequiredContext::HttpResponseStream,
+        NativeRequiredContext::Websocket,
+    ] {
+        let projected = project_runtime_native_capability_context(
+            &current_context,
+            projection,
+            stream_context.clone(),
+            required_context,
+        );
+        let invocation = match &projected {
+            skiff_runtime_capability_context::NativeCapabilityContexts::Actor(context) => {
+                context.invocation_execution()
+            }
+            skiff_runtime_capability_context::NativeCapabilityContexts::Time(context) => {
+                context.invocation_execution()
+            }
+            skiff_runtime_capability_context::NativeCapabilityContexts::HttpClient(context) => {
+                context.invocation_execution()
+            }
+            skiff_runtime_capability_context::NativeCapabilityContexts::HttpResponseStream(
+                context,
+            ) => context.invocation_execution(),
+            skiff_runtime_capability_context::NativeCapabilityContexts::Websocket(context) => {
+                context.invocation_execution()
+            }
+            _ => panic!("unexpected native capability projection"),
+        };
+        assert_native_invocation_scope(invocation, &expected);
+    }
+
+    let projected = project_runtime_native_capability_context(
+        &current_context,
+        projection,
+        stream_context,
+        NativeRequiredContext::File,
+    );
+    let skiff_runtime_capability_context::NativeCapabilityContexts::File(context) = projected
+    else {
+        panic!("file projection expected");
+    };
+    let (file, source_stream, _) = context.into_native_file_parts();
+    assert!(
+        file.invocation_execution()
+            .is_same_invocation(source_stream.invocation_execution()),
+        "file and source-stream consumers share one invocation carrier"
+    );
+    assert_native_invocation_scope(file.invocation_execution(), &expected);
+    assert_native_invocation_scope(source_stream.invocation_execution(), &expected);
+
+    let supervised_stream = serde_json::Value::Null;
+    let supervision = SupervisedStreamConsumptionLease::from_cancel(&supervised_stream, |_| {});
+    let supervised = project_runtime_execution_native_capability_context_supervised(
+        &current_context,
+        RuntimeExecutionProjection::Legacy(projection),
+        StreamCapabilityContext::default(),
+        NativeRequiredContext::File,
+        supervision.child(),
+    );
+    let skiff_runtime_capability_context::NativeCapabilityContexts::File(supervised) = supervised
+    else {
+        panic!("supervised file projection expected");
+    };
+    let (supervised_file, supervised_source_stream, _) = supervised.into_native_file_parts();
+    assert!(
+        supervised_file
+            .invocation_execution()
+            .is_same_invocation(supervised_source_stream.invocation_execution()),
+        "supervised file consumers share one invocation carrier"
+    );
+    assert_native_invocation_scope(supervised_file.invocation_execution(), &expected);
+    assert_native_invocation_scope(supervised_source_stream.invocation_execution(), &expected);
+    assert_eq!(
+        expected.lifecycle_snapshot(),
+        Default::default(),
+        "projection and Ready consumers do not manufacture suspension lifecycle state"
+    );
+
+    assert!(matches!(
+        expected.terminal_at(base + Duration::from_secs(5)),
+        Some(ExecutionScopeTerminal::LocalDeadlineExceeded(_))
+    ));
+    assert!(
+        file.invocation_execution()
+            .execution_control()
+            .execution_scope()
+            .expect("file invocation scope")
+            .cancellation_signals()
+            .is_cancelled(),
+        "carrier retains the child-local cancellation signal"
+    );
 }
 
 #[derive(Clone)]

@@ -561,42 +561,84 @@ pub struct RuntimeNativeFileCapabilityContext<'execution>(
 );
 
 #[derive(Clone)]
-pub struct RuntimeNativeFileCapability(FileCapabilityContext);
+pub struct RuntimeNativeFileCapability(
+    FileCapabilityContext,
+    RuntimeNativeInvocationExecutionControl,
+);
 
 #[derive(Clone)]
 pub struct RuntimeNativeFileSourceStreamCapability<'execution> {
     context: FileSourceStreamContext<'execution>,
     supervision: Option<SupervisedStreamConsumptionChild>,
+    invocation_execution: RuntimeNativeInvocationExecutionControl,
 }
 
 #[derive(Clone)]
 pub struct RuntimeNativeConfigCapabilityContext<'execution>(ConfigCapabilityContext<'execution>);
 
+#[derive(Clone)]
+pub(crate) struct RuntimeNativeInvocationExecutionControl {
+    execution: Arc<OwnedExecutionControl>,
+}
+
+impl RuntimeNativeInvocationExecutionControl {
+    pub(crate) fn new(execution: OwnedExecutionControl) -> Self {
+        Self {
+            execution: Arc::new(execution),
+        }
+    }
+
+    pub(crate) fn execution_control(&self) -> &OwnedExecutionControl {
+        self.execution.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_same_invocation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.execution, &other.execution)
+    }
+}
+
+impl RuntimeNativeFileCapability {
+    pub(crate) fn invocation_execution(&self) -> &RuntimeNativeInvocationExecutionControl {
+        &self.1
+    }
+}
+
+impl RuntimeNativeFileSourceStreamCapability<'_> {
+    pub(crate) fn invocation_execution(&self) -> &RuntimeNativeInvocationExecutionControl {
+        &self.invocation_execution
+    }
+}
+
 impl<'execution> RuntimeNativeFileCapabilityContext<'execution> {
-    pub fn new(
+    pub(crate) fn new(
         file_context: FileCapabilityContext,
         file_source_stream_context: FileSourceStreamContext<'execution>,
         request_heap_limits: RequestHeapLimits,
+        invocation_execution: RuntimeNativeInvocationExecutionControl,
     ) -> Self {
         Self::new_with_stream_supervision(
             file_context,
             file_source_stream_context,
             request_heap_limits,
             None,
+            invocation_execution,
         )
     }
 
-    pub fn new_supervised(
+    pub(crate) fn new_supervised(
         file_context: FileCapabilityContext,
         file_source_stream_context: FileSourceStreamContext<'execution>,
         request_heap_limits: RequestHeapLimits,
         supervision: SupervisedStreamConsumptionChild,
+        invocation_execution: RuntimeNativeInvocationExecutionControl,
     ) -> Self {
         Self::new_with_stream_supervision(
             file_context,
             file_source_stream_context,
             request_heap_limits,
             Some(supervision),
+            invocation_execution,
         )
     }
 
@@ -605,13 +647,15 @@ impl<'execution> RuntimeNativeFileCapabilityContext<'execution> {
         file_source_stream_context: FileSourceStreamContext<'execution>,
         request_heap_limits: RequestHeapLimits,
         supervision: Option<SupervisedStreamConsumptionChild>,
+        invocation_execution: RuntimeNativeInvocationExecutionControl,
     ) -> Self {
         Self(
             skiff_runtime_capability_context::NativeFileCapabilityContext::new(
-                RuntimeNativeFileCapability(file_context),
+                RuntimeNativeFileCapability(file_context, invocation_execution.clone()),
                 RuntimeNativeFileSourceStreamCapability {
                     context: file_source_stream_context,
                     supervision,
+                    invocation_execution,
                 },
                 request_heap_limits,
             ),
@@ -626,20 +670,40 @@ impl<'execution> RuntimeNativeConfigCapabilityContext<'execution> {
 }
 
 #[derive(Clone)]
-pub struct RuntimeNativeActorCapabilityContext<'execution>(ActorCapabilityContext<'execution>);
+pub struct RuntimeNativeActorCapabilityContext<'execution>(
+    ActorCapabilityContext<'execution>,
+    RuntimeNativeInvocationExecutionControl,
+);
 
 impl<'execution> RuntimeNativeActorCapabilityContext<'execution> {
-    pub fn new(context: ActorCapabilityContext<'execution>) -> Self {
-        Self(context)
+    pub(crate) fn new(
+        context: ActorCapabilityContext<'execution>,
+        invocation_execution: RuntimeNativeInvocationExecutionControl,
+    ) -> Self {
+        Self(context, invocation_execution)
+    }
+
+    pub(crate) fn invocation_execution(&self) -> &RuntimeNativeInvocationExecutionControl {
+        &self.1
     }
 }
 
 #[derive(Clone)]
-pub struct RuntimeNativeTimeCapabilityContext<'execution>(TimeCapabilityContext<'execution>);
+pub struct RuntimeNativeTimeCapabilityContext<'execution>(
+    TimeCapabilityContext<'execution>,
+    RuntimeNativeInvocationExecutionControl,
+);
 
 impl<'execution> RuntimeNativeTimeCapabilityContext<'execution> {
-    pub fn new(context: TimeCapabilityContext<'execution>) -> Self {
-        Self(context)
+    pub(crate) fn new(
+        context: TimeCapabilityContext<'execution>,
+        invocation_execution: RuntimeNativeInvocationExecutionControl,
+    ) -> Self {
+        Self(context, invocation_execution)
+    }
+
+    pub(crate) fn invocation_execution(&self) -> &RuntimeNativeInvocationExecutionControl {
+        &self.1
     }
 }
 
@@ -649,19 +713,26 @@ pub struct RuntimeNativeHttpClientCapabilityContext {
         HttpClientCapabilityContext,
     >,
     test_effect_doubles: TestEffectDoubleContext,
+    invocation_execution: RuntimeNativeInvocationExecutionControl,
 }
 
 impl RuntimeNativeHttpClientCapabilityContext {
-    pub fn new(
+    pub(crate) fn new(
         context: HttpClientCapabilityContext,
         test_effect_doubles: TestEffectDoubleContext,
+        invocation_execution: RuntimeNativeInvocationExecutionControl,
     ) -> Self {
         Self {
             context: skiff_runtime_capability_context::NativeHttpClientCapabilityContext::new(
                 context,
             ),
             test_effect_doubles,
+            invocation_execution,
         }
+    }
+
+    pub(crate) fn invocation_execution(&self) -> &RuntimeNativeInvocationExecutionControl {
+        &self.invocation_execution
     }
 }
 
@@ -670,26 +741,43 @@ pub struct RuntimeNativeHttpResponseStreamCapabilityContext<'execution>(
     skiff_runtime_capability_context::NativeHttpResponseStreamCapabilityContext<
         HttpResponseStreamCapabilityContext<'execution>,
     >,
+    RuntimeNativeInvocationExecutionControl,
 );
 
 impl<'execution> RuntimeNativeHttpResponseStreamCapabilityContext<'execution> {
-    pub fn new(context: HttpResponseStreamCapabilityContext<'execution>) -> Self {
+    pub(crate) fn new(
+        context: HttpResponseStreamCapabilityContext<'execution>,
+        invocation_execution: RuntimeNativeInvocationExecutionControl,
+    ) -> Self {
         Self(
             skiff_runtime_capability_context::NativeHttpResponseStreamCapabilityContext::new(
                 context,
             ),
+            invocation_execution,
         )
+    }
+
+    pub(crate) fn invocation_execution(&self) -> &RuntimeNativeInvocationExecutionControl {
+        &self.1
     }
 }
 
 #[derive(Clone)]
 pub struct RuntimeNativeWebsocketCapabilityContext<'execution>(
     WebsocketCapabilityContext<'execution>,
+    RuntimeNativeInvocationExecutionControl,
 );
 
 impl<'execution> RuntimeNativeWebsocketCapabilityContext<'execution> {
-    pub fn new(context: WebsocketCapabilityContext<'execution>) -> Self {
-        Self(context)
+    pub(crate) fn new(
+        context: WebsocketCapabilityContext<'execution>,
+        invocation_execution: RuntimeNativeInvocationExecutionControl,
+    ) -> Self {
+        Self(context, invocation_execution)
+    }
+
+    pub(crate) fn invocation_execution(&self) -> &RuntimeNativeInvocationExecutionControl {
+        &self.1
     }
 }
 
