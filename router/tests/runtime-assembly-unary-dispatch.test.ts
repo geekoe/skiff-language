@@ -147,6 +147,79 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     });
   });
 
+  it('selects same-Host same-path services by trusted headers and frames exact deployments', async () => {
+    const selector = {
+      protocol: 'http' as const,
+      method: 'GET',
+      path: '/v1/models'
+    };
+    const relay: RuntimeAssemblyIngressBinding = {
+      ...BINDING,
+      selector,
+      deployment: {
+        serviceId: 'skiff.run/codex-relay',
+        contractVersion: '1.0.0',
+        deploymentRevision: 'relay-revision',
+        deploymentArtifactIdentity:
+          `skiff-deployment-artifact-v4:sha256:${'1'.repeat(64)}`
+      },
+      gatewayEntryKey: 'relayModels',
+      gatewayEntryIdentity:
+        `skiff-gateway-entry-v2:sha256:${'2'.repeat(64)}`
+    };
+    const aihub: RuntimeAssemblyIngressBinding = {
+      ...relay,
+      deployment: {
+        serviceId: 'skiff.run/aihub',
+        contractVersion: '1.0.0',
+        deploymentRevision: 'aihub-revision',
+        deploymentArtifactIdentity:
+          `skiff-deployment-artifact-v4:sha256:${'3'.repeat(64)}`
+      },
+      gatewayEntryKey: 'aihubModels',
+      gatewayEntryIdentity:
+        `skiff-gateway-entry-v2:sha256:${'4'.repeat(64)}`
+    };
+    const fixture = await createFixture({
+      binding: relay,
+      bindings: [relay, aihub]
+    });
+
+    for (const [binding, responseBody] of [
+      [relay, 'relay'],
+      [aihub, 'aihub']
+    ] as const) {
+      const response = sendHttp(fixture.httpUrl, new Uint8Array(), '', {
+        ...selector,
+        serviceId: binding.deployment.serviceId,
+        contractVersion: binding.deployment.contractVersion
+      });
+      const frame = decodeBinaryFrame(await nextBinaryMessage(fixture.runtime));
+      const validation =
+        validateRuntimeAssemblyRequestStartFrameHeader(frame.header);
+      expect(validation).toMatchObject({ ok: true });
+      if (!validation.ok) throw new Error(validation.error);
+      expect(validation.envelope.routing).toMatchObject({
+        deployment: binding.deployment,
+        gatewayEntryIdentity: binding.gatewayEntryIdentity,
+        ingress: selector
+      });
+      expect(new URL(validation.envelope.httpRequest!.url).host).toBe(HOST);
+
+      fixture.runtime.send(encodeRuntimeFrame({
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.end',
+        requestId: validation.envelope.requestId,
+        payloadPresent: true,
+        httpResponse: { status: 200, headers: [] }
+      }, Buffer.from(responseBody)));
+      await expect(response).resolves.toMatchObject({
+        status: 200,
+        body: Buffer.from(responseBody)
+      });
+    }
+  });
+
   it('writes validator-accepted nested headers and preserves zero and opaque payloads', async () => {
     const fixture = await createFixture();
 
@@ -1208,6 +1281,7 @@ async function createFixture(
   limits: {
     assemblyIdentity?: string;
     binding?: RuntimeAssemblyIngressBinding;
+    bindings?: RuntimeAssemblyIngressBinding[];
     generation?: number;
     maxRequestBytes?: number;
     maxResponseBytes?: number;
@@ -1222,7 +1296,9 @@ async function createFixture(
     environment: 'test',
     generation,
     assembly: { assemblyIdentity },
-    ingress: new RuntimeAssemblyIngressIndex([selectedBinding])
+    ingress: new RuntimeAssemblyIngressIndex(
+      limits.bindings ?? [selectedBinding]
+    )
   });
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
   const runtimeRegistry = new RuntimeRegistry();
