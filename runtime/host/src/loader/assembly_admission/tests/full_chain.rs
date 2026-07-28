@@ -338,7 +338,14 @@ struct CollectionMappingFixture {
 
 impl CollectionMappingFixture {
     fn new(mapping: BTreeMap<String, String>, root_collection: Option<&str>) -> Self {
-        Self::build(mapping, root_collection, false)
+        Self::build(mapping, root_collection, false, None)
+    }
+
+    fn with_stateful_diamond(
+        direct_mapping: BTreeMap<String, String>,
+        transitive_mapping: BTreeMap<String, String>,
+    ) -> Self {
+        Self::build(direct_mapping, None, false, Some(transitive_mapping))
     }
 
     fn with_dependency_target_collision() -> Self {
@@ -349,6 +356,7 @@ impl CollectionMappingFixture {
             )]),
             None,
             true,
+            None,
         )
     }
 
@@ -356,6 +364,7 @@ impl CollectionMappingFixture {
         mapping: BTreeMap<String, String>,
         root_collection: Option<&str>,
         include_colliding_dependency: bool,
+        diamond_mapping: Option<BTreeMap<String, String>>,
     ) -> Self {
         let base = FullChainFixture::new();
         let consumer_deployment = base
@@ -444,6 +453,32 @@ impl CollectionMappingFixture {
             .unwrap();
         let dependency_ref = package_ref(&dependency_package);
 
+        let diamond_subject = diamond_mapping.as_ref().map(|mapping| {
+            let file = implementation_file("mapping.subject", "noop", None);
+            let callable = PackageCallableId::new("pkg-callable:example.mapping-subject:noop");
+            let mut package = implementation_package(
+                "example.mapping-subject",
+                "noop",
+                callable,
+                &file,
+                operation_contract(),
+                None,
+            );
+            package.package_requirements.push(PackageRequirement {
+                alias: "store".to_string(),
+                package_id: dependency_package.package_id.clone(),
+                exact_version: dependency_package.package_version.clone(),
+                expected_local_abi: dependency_package
+                    .package_local_abi
+                    .local_abi_identity
+                    .clone(),
+                collection_name_mapping: mapping.clone(),
+                expected_package_build: Some(dependency_package.package_build_id.clone()),
+            });
+            skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
+            (file, package)
+        });
+
         let colliding_dependency = include_colliding_dependency.then(|| {
             let mut file = implementation_file("mapping.cache", "noop", None);
             insert_db_collection(&mut file, "CacheSecret", "cache_secret");
@@ -480,6 +515,18 @@ impl CollectionMappingFixture {
                 collection_name_mapping: mapping.clone(),
                 expected_package_build: None,
             });
+        if let Some((_, package)) = &diamond_subject {
+            consumer_package
+                .package_requirements
+                .push(PackageRequirement {
+                    alias: "subject".to_string(),
+                    package_id: package.package_id.clone(),
+                    exact_version: package.package_version.clone(),
+                    expected_local_abi: package.package_local_abi.local_abi_identity.clone(),
+                    collection_name_mapping: BTreeMap::new(),
+                    expected_package_build: Some(package.package_build_id.clone()),
+                });
+        }
         if let Some((_, package)) = &colliding_dependency {
             consumer_package
                 .package_requirements
@@ -511,6 +558,28 @@ impl CollectionMappingFixture {
             package: dependency_ref.clone(),
             collection_name_mapping: mapping,
         }];
+        if let Some((_, package)) = &diamond_subject {
+            package_bindings.extend([
+                PackageBinding {
+                    key: PackageRequirementKey {
+                        caller_package_build_id: consumer_package_ref.package_build_id.clone(),
+                        package_requirement_alias: "subject".to_string(),
+                    },
+                    package: package_ref(package),
+                    collection_name_mapping: BTreeMap::new(),
+                },
+                PackageBinding {
+                    key: PackageRequirementKey {
+                        caller_package_build_id: package.package_build_id.clone(),
+                        package_requirement_alias: "store".to_string(),
+                    },
+                    package: dependency_ref.clone(),
+                    collection_name_mapping: diamond_mapping
+                        .clone()
+                        .expect("diamond subject has a mapping"),
+                },
+            ]);
+        }
         if let Some((_, package)) = &colliding_dependency {
             package_bindings.push(PackageBinding {
                 key: PackageRequirementKey {
@@ -551,6 +620,9 @@ impl CollectionMappingFixture {
         if let Some((_, package)) = &colliding_dependency {
             packages.push(package.clone());
         }
+        if let Some((_, package)) = &diamond_subject {
+            packages.push(package.clone());
+        }
         let assembly = resolve_runtime_assembly(
             std::slice::from_ref(&consumer_deployment_ref),
             &[consumer_deployment.clone(), provider_deployment.clone()],
@@ -581,6 +653,11 @@ impl CollectionMappingFixture {
             ),
         ];
         if let Some((file, package)) = colliding_dependency {
+            let reference = package_ref(&package);
+            resolver_packages.push((reference.clone(), Arc::new(package)));
+            resolver_files.push((reference, file_ref(&file), Arc::new(file)));
+        }
+        if let Some((file, package)) = diamond_subject {
             let reference = package_ref(&package);
             resolver_packages.push((reference.clone(), Arc::new(package)));
             resolver_files.push((reference, file_ref(&file), Arc::new(file)));
@@ -899,6 +976,102 @@ async fn collection_mapping_reaches_db_provider_exactly_and_survives_reload() {
             "package_audit".to_string(),
         ]
     );
+}
+
+#[tokio::test]
+async fn identical_stateful_diamond_has_one_effective_projection_in_any_edge_order() {
+    for (label, mapping, expected_collections) in [
+        (
+            "empty",
+            BTreeMap::new(),
+            vec!["package_audit", "package_secret"],
+        ),
+        (
+            "mapped",
+            BTreeMap::from([(
+                "package_secret".to_string(),
+                "mapped_package_secret".to_string(),
+            )]),
+            vec!["mapped_package_secret", "package_audit"],
+        ),
+    ] {
+        for reverse_links in [false, true] {
+            let mut fixture =
+                CollectionMappingFixture::with_stateful_diamond(mapping.clone(), mapping.clone());
+            if reverse_links {
+                fixture.assembly.package_link_plan.package_links.reverse();
+                skiff_artifact_identity::assign_runtime_assembly_identity(&mut fixture.assembly)
+                    .unwrap();
+                fixture.resolver.assembly = Arc::new(fixture.assembly.clone());
+            }
+            let reference =
+                skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+            let provider = CapturingDbProvider::default();
+            let controller = AssemblyAdmissionController::new(
+                format!("runtime-diamond-{label}-{reverse_links}"),
+                skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
+            );
+
+            controller
+                .recover_committed(
+                    "fixture",
+                    7,
+                    &reference,
+                    &fixture.resolver,
+                    Some(&mapping_service_db()),
+                )
+                .await
+                .expect("identical stateful diamond must admit");
+
+            let inputs = provider.inputs.lock().unwrap();
+            assert_eq!(inputs.len(), 1);
+            assert_eq!(inputs[0].state_namespace, "collection-mapping-fixture");
+            let mut collections = inputs[0]
+                .runtime_program_db
+                .iter()
+                .filter(|metadata| metadata.package_id.as_deref() == Some("example.mapping-store"))
+                .map(|metadata| metadata.collection_name.as_str())
+                .collect::<Vec<_>>();
+            collections.sort_unstable();
+            let mut expected = expected_collections.clone();
+            expected.sort_unstable();
+            assert_eq!(collections, expected);
+        }
+    }
+}
+
+#[tokio::test]
+async fn same_build_stateful_diamond_with_different_projection_fails_closed() {
+    let fixture = CollectionMappingFixture::with_stateful_diamond(
+        BTreeMap::new(),
+        BTreeMap::from([(
+            "package_secret".to_string(),
+            "mapped_package_secret".to_string(),
+        )]),
+    );
+    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let provider = CapturingDbProvider::default();
+    let controller = AssemblyAdmissionController::new(
+        "runtime-diamond-drift",
+        skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
+    );
+
+    let error = controller
+        .recover_committed(
+            "fixture",
+            7,
+            &reference,
+            &fixture.resolver,
+            Some(&mapping_service_db()),
+        )
+        .await
+        .expect_err("same build with different resolved projection must fail closed");
+    let error = format!("{error:#}");
+    assert!(
+        error.contains("different active collection projections"),
+        "{error}"
+    );
+    assert!(provider.inputs.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
