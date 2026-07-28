@@ -86,7 +86,7 @@ fn service_db_is_strict_and_only_allowed_on_router_provisioning_controls() {
         "expectedGeneration": 0,
         "candidateGeneration": 1,
         "assembly": {
-            "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
         "replicaId": "runtime-a",
         "serviceDb": { "mongoUrl": "mongodb://127.0.0.1:45123/test?replicaSet=rs0" }
@@ -138,7 +138,7 @@ fn public_activation_request_cannot_supply_service_db() {
         "activationId": "activation-1",
         "expectedGeneration": 0,
         "assembly": {
-            "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
         "serviceDb": { "mongoUrl": "mongodb://127.0.0.1:45123/test" }
     });

@@ -119,17 +119,17 @@ fn suspension_generations_are_atomic_and_unrelated_domains_remain_stable() {
     );
     assert_eq!(
         DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER,
-        "skiff-deployment-artifact-identity-v3"
+        "skiff-deployment-artifact-identity-v4"
     );
     assert_eq!(
         DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
-        "skiff-deployment-artifact-v3:sha256"
+        "skiff-deployment-artifact-v4:sha256"
     );
     assert_eq!(
         ASSEMBLY_IDENTITY_SCHEMA_MARKER,
-        "skiff-runtime-assembly-identity-v2"
+        "skiff-runtime-assembly-identity-v3"
     );
-    assert_eq!(ASSEMBLY_IDENTITY_PREFIX, "skiff-runtime-assembly-v2:sha256");
+    assert_eq!(ASSEMBLY_IDENTITY_PREFIX, "skiff-runtime-assembly-v3:sha256");
 }
 
 #[test]

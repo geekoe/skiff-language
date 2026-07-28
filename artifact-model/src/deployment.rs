@@ -96,12 +96,11 @@ pub enum IngressProtocol {
     WebSocket,
 }
 
-/// Global external selector. It points to a contract operation, never a package path.
+/// Service-local ingress selector. It points to a gateway entry, never a package path.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IngressSelector {
     pub protocol: IngressProtocol,
-    pub host: String,
     pub method: Option<String>,
     pub path: String,
 }

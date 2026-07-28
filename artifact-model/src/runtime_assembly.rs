@@ -86,6 +86,24 @@ pub struct GatewayIngressBinding {
     pub gateway_entry_identity: GatewayEntryIdentity,
 }
 
+/// Canonical assembly-scoped ingress identity.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceIngressKey {
+    pub deployment: ServiceDeploymentRef,
+    pub selector: IngressSelector,
+}
+
+impl GatewayIngressBinding {
+    #[must_use]
+    pub fn service_ingress_key(&self) -> ServiceIngressKey {
+        ServiceIngressKey {
+            deployment: self.deployment.clone(),
+            selector: self.selector.clone(),
+        }
+    }
+}
+
 /// Canonical resolved deployment/package graph loaded identically by every replica.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -134,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_assembly_v2_wire_requires_gateway_ingress_and_rejects_legacy_fields() {
+    fn runtime_assembly_v3_wire_requires_gateway_ingress_and_rejects_legacy_fields() {
         let assembly = empty_runtime_assembly();
         let value = serde_json::to_value(&assembly).unwrap();
         assert_eq!(
@@ -162,7 +180,6 @@ mod tests {
         let binding = GatewayIngressBinding {
             selector: IngressSelector {
                 protocol: crate::IngressProtocol::Http,
-                host: "api.example.test".to_string(),
                 method: Some("POST".to_string()),
                 path: "/users".to_string(),
             },
@@ -199,5 +216,19 @@ mod tests {
                 "{legacy_field}"
             );
         }
+    }
+
+    #[test]
+    fn ingress_selector_rejects_legacy_host_wire() {
+        let current = json!({
+            "protocol": "http",
+            "method": "GET",
+            "path": "/items"
+        });
+        assert!(serde_json::from_value::<IngressSelector>(current.clone()).is_ok());
+
+        let mut legacy = current;
+        legacy["host"] = json!("api.example.test");
+        assert!(serde_json::from_value::<IngressSelector>(legacy).is_err());
     }
 }

@@ -201,6 +201,7 @@ pub use resources::PublicationResourceRef;
 pub use runtime_assembly::{
     ActivationTemplate, CanonicalPackageLinkPlan, GatewayIngressBinding, PackageCodeSlot,
     ResolvedServiceBinding, RuntimeAssembly, RuntimeAssemblyRef, ServiceBindingTemplate,
+    ServiceIngressKey,
 };
 pub use schema::{
     ARTIFACT_INDEX_SCHEMA_VERSION, BUNDLE_SCHEMA_VERSION, CONTRACT_SCHEMA_ARTIFACT_VERSION,

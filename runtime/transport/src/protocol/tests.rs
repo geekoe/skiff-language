@@ -91,7 +91,7 @@ fn router_bootstrap_shared_corpus_has_strict_parity() {
 fn activation_identity() -> ActivationIdentityFrameMetadata {
     ActivationIdentityFrameMetadata {
         assembly_identity:
-            "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_string(),
         generation: 7,
         runtime_replica_id: "runtime-replica-7".to_string(),
@@ -1343,7 +1343,23 @@ fn service_error_response_v2_shared_corpus_is_strict_and_byte_preserving() {
         RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
         "skiff-runtime-frame-v2"
     );
-    assert_eq!(RUNTIME_FRAME_SCHEMA_VERSION, "skiff-runtime-frame-v1");
+    assert_eq!(RUNTIME_FRAME_SCHEMA_VERSION, "skiff-runtime-frame-v2");
+}
+
+#[test]
+fn router_bootstrap_rejects_previous_runtime_frame_generation() {
+    let stale = json!({
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/tmp/skiff-artifacts",
+        "serviceDb": {
+            "mongoUrl": "mongodb://127.0.0.1:27017/?replicaSet=rs0"
+        },
+        "http": {
+            "maxResponseBytes": 1024
+        }
+    });
+    assert!(decode_router_bootstrap_frame_header(stale).is_err());
 }
 
 #[test]

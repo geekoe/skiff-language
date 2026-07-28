@@ -217,10 +217,7 @@ fn validate_ingress_bindings(
                 None,
                 GatewayProtocolSurface::WebSocketConnect(_),
             ) => {
-                physical_selectors.push((
-                    binding.selector.host.as_str(),
-                    binding.selector.path.as_str(),
-                ));
+                physical_selectors.push(binding.selector.path.as_str());
             }
             (
                 skiff_artifact_model::IngressProtocol::WebSocket,
@@ -240,7 +237,6 @@ fn validate_ingress_bindings(
                 }
                 method_selectors.push((
                     binding.gateway_entry_key.clone(),
-                    binding.selector.host.as_str(),
                     binding.selector.path.as_str(),
                 ));
             }
@@ -272,13 +268,10 @@ fn validate_ingress_bindings(
             "WebSocket JSON-RPC methods require the compiler-owned physical WebSocket entry",
         );
     }
-    for (key, host, path) in method_selectors {
-        if !physical_selectors
-            .iter()
-            .any(|(physical_host, physical_path)| host == *physical_host && path == *physical_path)
-        {
+    for (key, path) in method_selectors {
+        if !physical_selectors.contains(&path) {
             return invalid_deployment(format!(
-                "WebSocket JSON-RPC gateway entry {key} host/path must match the physical WebSocket entry"
+                "WebSocket JSON-RPC gateway entry {key} path must match the physical WebSocket entry"
             ));
         }
     }
@@ -544,7 +537,6 @@ fn insert_package_coordinate<'a>(
 }
 
 fn validate_ingress(binding: &DeploymentIngressBinding) -> Result<()> {
-    require_non_empty("ingress host", &binding.selector.host)?;
     require_non_empty("ingress path", &binding.selector.path)?;
     if !binding.selector.path.starts_with('/') {
         return invalid_deployment(format!(

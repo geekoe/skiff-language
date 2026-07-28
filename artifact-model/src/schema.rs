@@ -16,9 +16,9 @@ pub const SERVICE_UNIT_SCHEMA_VERSION: &str = "skiff-service-unit-v1";
 pub const PACKAGE_ARTIFACT_SCHEMA_VERSION: &str = "skiff-package-artifact-v9";
 pub const SERVICE_CONTRACT_SCHEMA_VERSION: &str = "skiff-service-contract-v5";
 pub const SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION: &str = "skiff-service-contract-definition-v4";
-pub const SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION: &str = "skiff-service-deployment-input-v4";
-pub const SERVICE_DEPLOYMENT_SCHEMA_VERSION: &str = "skiff-service-deployment-v3";
-pub const RUNTIME_ASSEMBLY_SCHEMA_VERSION: &str = "skiff-runtime-assembly-v2";
+pub const SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION: &str = "skiff-service-deployment-input-v5";
+pub const SERVICE_DEPLOYMENT_SCHEMA_VERSION: &str = "skiff-service-deployment-v4";
+pub const RUNTIME_ASSEMBLY_SCHEMA_VERSION: &str = "skiff-runtime-assembly-v3";
 pub const SERVICE_VERSION_POINTER_SCHEMA_VERSION: &str = "skiff-service-version-pointer-v1";
 pub const SERVICE_BUILD_SCHEMA_VERSION: &str = "skiff-service-build-v1";
 
@@ -44,13 +44,13 @@ mod tests {
         );
         assert_eq!(
             SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
-            "skiff-service-deployment-input-v4"
+            "skiff-service-deployment-input-v5"
         );
         assert_eq!(
             SERVICE_DEPLOYMENT_SCHEMA_VERSION,
-            "skiff-service-deployment-v3"
+            "skiff-service-deployment-v4"
         );
-        assert_eq!(RUNTIME_ASSEMBLY_SCHEMA_VERSION, "skiff-runtime-assembly-v2");
+        assert_eq!(RUNTIME_ASSEMBLY_SCHEMA_VERSION, "skiff-runtime-assembly-v3");
 
         for legacy in [
             "skiff-file-ir-v8",
@@ -72,7 +72,10 @@ mod tests {
             "skiff-service-contract-definition-v2",
             "skiff-service-deployment-input-v2",
             "skiff-service-deployment-input-v3",
+            "skiff-service-deployment-input-v4",
             "skiff-service-deployment-v2",
+            "skiff-service-deployment-v3",
+            "skiff-runtime-assembly-v2",
         ] {
             assert!(![
                 FILE_IR_SCHEMA_VERSION,

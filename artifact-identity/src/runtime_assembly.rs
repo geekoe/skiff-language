@@ -143,7 +143,6 @@ mod tests {
         let binding = |path: &str| GatewayIngressBinding {
             selector: IngressSelector {
                 protocol: IngressProtocol::Http,
-                host: "api.example.test".to_string(),
                 method: Some("POST".to_string()),
                 path: path.to_string(),
             },
@@ -193,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_assembly_v2_identity_covers_gateway_binding_and_normalizes_order() {
+    fn runtime_assembly_v3_identity_covers_gateway_binding_and_normalizes_order() {
         let assembly = runtime_assembly_fixture();
         let expected = runtime_assembly_identity(&assembly).unwrap();
 
@@ -229,19 +228,60 @@ mod tests {
     }
 
     #[test]
-    fn runtime_assembly_v1_schema_and_identity_prefix_are_rejected() {
-        let assembly = runtime_assembly_fixture();
-        let mut stale_schema = assembly.clone();
-        stale_schema.schema_version = "skiff-runtime-assembly-v1".to_string();
-        assert!(validate_runtime_assembly_surface(&stale_schema).is_err());
+    fn runtime_assembly_ingress_collision_is_scoped_to_exact_deployment() {
+        let mut assembly = runtime_assembly_fixture();
+        let second = deployment("example.other", "revision-1");
+        assembly.roots.push(second.clone());
+        assembly.resolved_deployments.push(second.clone());
+        assembly
+            .service_binding_templates
+            .push(ServiceBindingTemplate {
+                activation: second.clone(),
+                bindings: Vec::new(),
+            });
+        let mut activation = assembly.activation_templates[0].clone();
+        activation.deployment = second.clone();
+        assembly.activation_templates.push(activation);
+        let mut shared_selector = assembly.gateway_ingress[0].clone();
+        shared_selector.deployment = second;
+        shared_selector.gateway_entry_key = GatewayEntryKey::parse("other-create-user").unwrap();
+        assembly.gateway_ingress.push(shared_selector);
 
-        let stale_ref = json!({
-            "assemblyIdentity": format!("skiff-runtime-assembly-v1:sha256:{}", "a".repeat(64))
-        });
-        assert!(serde_json::from_value::<RuntimeAssemblyRef>(stale_ref).is_err());
+        validate_runtime_assembly_surface(&assembly)
+            .expect("different services may share the same service-local selector");
+
+        let mut duplicate = assembly;
+        duplicate
+            .gateway_ingress
+            .push(duplicate.gateway_ingress[0].clone());
+        assert!(validate_runtime_assembly_surface(&duplicate).is_err());
+    }
+
+    #[test]
+    fn runtime_assembly_rejects_multiple_deployments_for_one_service_coordinate() {
+        let mut assembly = runtime_assembly_fixture();
+        assembly
+            .resolved_deployments
+            .push(deployment("example.gateway", "revision-2"));
+        assert!(validate_runtime_assembly_surface(&assembly).is_err());
+    }
+
+    #[test]
+    fn runtime_assembly_old_schemas_and_identity_prefixes_are_rejected() {
+        let assembly = runtime_assembly_fixture();
+        for legacy in ["skiff-runtime-assembly-v1", "skiff-runtime-assembly-v2"] {
+            let mut stale_schema = assembly.clone();
+            stale_schema.schema_version = legacy.to_string();
+            assert!(validate_runtime_assembly_surface(&stale_schema).is_err());
+
+            let stale_ref = json!({
+                "assemblyIdentity": format!("{legacy}:sha256:{}", "a".repeat(64))
+            });
+            assert!(serde_json::from_value::<RuntimeAssemblyRef>(stale_ref).is_err());
+        }
         assert!(assembly
             .assembly_identity
             .as_str()
-            .starts_with("skiff-runtime-assembly-v2:sha256:"));
+            .starts_with("skiff-runtime-assembly-v3:sha256:"));
     }
 }
