@@ -61,6 +61,13 @@ Router与Runtime通过共享artifact filesystem装载immutable records，不依�
 - Runtime读取选定RuntimeAssembly及其精确PackageArtifact/ServiceDeployment闭包，完成link与加载；
 - immutable record先完整写入并校验identity，再原子更新pointer；reload不接受半写入record。
 
+Runtime loader保留真实dependency graph，但activation中的stateful package metadata按resolved projection
+去重。同一精确`PackageBuild`经direct/transitive多条edge到达，且每条edge的完整source→target collection
+mapping与owner-relevant facts canonical相同时，只建立一个active projection与一个metadata owner。相同
+build但mapping不同、不同build落到同一physical target、或dependency target与service root collection冲突
+均拒绝activation。该合并不创建或推断state binding；test service的binding仍只来自
+`config.skiff-test.yml`。
+
 `artifactsPath`和`serviceDb.mongoUrl`是部署拓扑配置，不进入PackageArtifact、ServiceContract、
 ServiceDeployment或RuntimeAssembly identity。Runtime不为二者另设文件配置、环境变量或默认值。
 

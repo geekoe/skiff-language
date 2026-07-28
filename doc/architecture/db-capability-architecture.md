@@ -95,9 +95,12 @@ for diagnostics, but it is never a lookup key.
 ### Package Link And Provider Metadata
 
 The consumer's `PackageRequirement.expectedPackageBuild` constrains a test-only
-`access: topLevel` edge to one immutable implementation artifact. Assembly
-resolution produces a `PackageBinding`; linker resolution then follows one
-fail-closed chain:
+dependency entry with `topLevelAlias` to one immutable implementation artifact.
+The entry's ordinary `alias` still resolves its `api.yml` public paths. Source
+resolution through `topLevelAlias` canonicalizes back to that primary alias, so
+both names produce one dependency edge, one requirement and one binding.
+Assembly resolution produces a `PackageBinding`; linker resolution then
+follows one fail-closed chain:
 
 ```text
 consumer DbTargetIr.PackageSymbol
@@ -124,6 +127,16 @@ Two dependencies may contain the same module path and type name. Their exact
 PackageArtifactRef keeps their DB target identities distinct; name collision is
 not a link error. Physical collection projection remains service-owned and is
 validated separately through each dependency edge's collection-name mapping.
+
+A test can directly depend on a stateful provider that is also reachable through
+the subject package. These are two real graph edges, not two spellings of one
+entry. Runtime admission merges them into one active collection projection and
+one metadata owner only when they select the exact same PackageBuild and their
+fully resolved source-to-target mappings and owner-relevant facts are
+canonically equal. The same build with different mappings, different builds
+targeting one physical collection, and dependency/root collection collisions
+all fail closed. `config.skiff-test.yml` remains the sole test-activation state
+binding owner.
 
 ### Linked DB Target Identity
 
@@ -201,7 +214,7 @@ Core runtime tests should not depend on a user service example. User service exa
 This architecture does not add:
 
 - cross-service DB access;
-- top-level DB visibility for ordinary package dependencies or production services;
+- top-level DB visibility for ordinary package dependencies, transitive dependencies or production services;
 - relation / load semantics;
 - cursor / continuation semantics;
 - schema migration workflow;

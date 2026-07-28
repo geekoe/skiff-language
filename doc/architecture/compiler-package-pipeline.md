@@ -84,7 +84,9 @@ PackageCompileInput
 职责固定为：
 
 - `package.yml`：Package id/version、package dependencies、service dependencies，以及
-  config/state/resource/runtime capability requirements 的声明入口；
+  config/state/resource/runtime capability requirements 的声明入口。每个package dependency的`alias`
+  永远表示`api.yml` public paths；仅`kind: test` service可在同一entry增加唯一
+  `topLevelAlias`，用于精确implementation source top-level；
 - `api.yml`：Package public source graph；
 - `service.yml`：service id与`serviceCalls` public-path选择；
 - `http.yml`/`websocket.yml`：external ingress、handler/pre/guard selector、adapter source与外部协议
@@ -99,8 +101,10 @@ Dependency source text 不属于当前 Package source set。Package compile 只�
 ```text
 ResolvedPackageDependency
   alias
+  optional test-only topLevelAlias
   exact package coordinate
   expected PackageLocalAbiIdentity
+  optional expected PackageBuildId for top-level access
   PackageArtifact
 
 ResolvedServiceDependency
@@ -112,6 +116,12 @@ ResolvedServiceDependency
 
 两个 alias 集合共享 namespace。Compiler 不得从调用拼写、当前 deployment、display name 或源码目录猜
 dependency kind。
+
+`topLevelAlias`也在同一namespace中，必须与所有package/service alias及其它`topLevelAlias`唯一。普通
+alias与top-level alias是同一个resolved dependency，不是两条dependency。Source resolution可使用
+`topLevelAlias`定位精确source symbol；进入typed dependency reference/lowering时必须canonicalize回primary
+`alias`并携带同一`expectedPackageBuild`。不得因此复制requirement、code slot、PackageBinding或state
+collection projection。旧`access: topLevel`输入严格拒绝，不增加compatibility reader。
 
 ## PackageSourceModel
 

@@ -90,17 +90,17 @@ consumer并做聚焦验收。
 
 ### 2026-07-28 test-only foreign DB target correction
 
-I7 M把Relay、AIHub和Agine测试迁移为ordinary `kind: test` service，并以
-`access: topLevel`依赖production subject。真实compile证明普通function/type顶层访问已闭合，但带target的
-DB lowering仍无法把subject DB attachment精确交给link/runtime；按module/type全图扫描或把metadata复制进
-consumer都会破坏artifact身份与单一事实源。P3D
+I7 M把Relay、AIHub和Agine测试迁移为ordinary `kind: test` service，并依赖production subject。真实compile
+证明精确implementation function/type顶层访问已闭合，但带target的DB lowering仍无法把subject DB attachment
+精确交给link/runtime；按module/type全图扫描或把metadata复制进consumer都会破坏artifact身份与单一事实源。
+P3D
 `P5-F445H-I7-P3D-test-only-foreign-db-target-authority.md`先冻结权威边界，P3再实现compiler/linker/runtime
 闭包并恢复I7 M三组真实isolated matrix。
 
 冻结规则：
 
-- 仅`kind: test` service的`access: topLevel` subject可以访问精确provider文件顶层`db object`，不扩张
-  普通dependency、transitive dependency或production service权限；
+- 仅`kind: test` service通过D6定义的direct dependency `topLevelAlias`访问精确provider文件顶层
+  `db object`，不扩张普通alias、transitive dependency或production service权限；
 - consumer `DbTargetIr`复用`PackageSymbolRef(alias, symbolPath, abiExpectation)`；
   `PackageRequirement.expectedPackageBuild`约束精确implementation artifact；
 - linker经`PackageBinding`选择exact `PackageArtifactRef`，再由
@@ -118,6 +118,33 @@ consumer都会破坏artifact身份与单一事实源。P3D
 | --- | --- | --- | --- |
 | P3D | [Test-only foreign DB target authority](tasks/P5-F445H-I7-P3D-test-only-foreign-db-target-authority.md) | P3只读preflight + I7 M checkpoint | docs-only；只解除P3实现 |
 | P3D result | [Test-only foreign DB target authority result](tasks/P5-F445H-I7-P3D-test-only-foreign-db-target-authority-result.md) | P3D exact candidate | PASS后P3可执行 |
+
+### 2026-07-28 test alias and stateful diamond correction
+
+I7 M2后的AIHub真实activation证明测试需要同时表达subject公开API与精确implementation顶层访问；旧
+`access: topLevel`把两者错误地做成互斥解析面。`aihub-tests`为直接访问`llm-providers`顶层符号声明的
+direct dependency又与`aihub -> llm-providers`形成stateful diamond，现有loader把同build、同mapping也
+一律拒绝。
+
+D6冻结：
+
+- 删除`access: topLevel`，旧key hard fail；
+- dependency普通`alias`始终解析`api.yml`；同一entry可选test-only `topLevelAlias`；
+- 两套alias没有fallback/precedence，仍是同一edge/requirement/binding；top-level ref lowering时
+  canonicalize回primary alias并绑定`expectedPackageBuild`；
+- 顶层权限不传递；直接使用transitive provider顶层时必须声明direct dependency及其`topLevelAlias`；
+- direct/transitive两条真实edge若exact build及完整resolved collection projection canonical相同，合并为
+  一个active projection与metadata owner；
+- 同build不同mapping、不同build同physical target、dependency/root collision全部拒绝；
+- `config.skiff-test.yml`是test activation唯一state binding；
+- 不升级artifact/wire schema。
+
+本规则取代F415 result中“一stateful build经多个active edge到达一律拒绝”的过度约束；历史result不改写。
+
+| 节点 | Task / result | 输入 | 结论 |
+| --- | --- | --- | --- |
+| D6 | [Test alias and stateful diamond authority](tasks/P5-F445H-I7-D6-test-alias-diamond-authority.md) | I7 M2 blocker + P3D/F415 current facts | docs-only；解除manifest/resolver/loader实现 |
+| D6 result | [Test alias and stateful diamond authority result](tasks/P5-F445H-I7-D6-test-alias-diamond-authority-result.md) | D6 exact candidate | PASS后实现与M复验可执行 |
 
 ## 1. 基线与已关闭的实现决策
 

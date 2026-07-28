@@ -15,6 +15,11 @@ topLevel dependency的DB target仍依赖consumer复制/全图名字查找。P3D�
 PackageBinding → provider File IR DB declaration链；P3实现必须让所有DB operation、`DbQuery`与lease路径
 使用`DbObjectTargetId`，不得扩大普通dependency权限或复制provider metadata。
 
+2026-07-28修正：AIHub测试既要使用subject公开API又要访问精确implementation顶层，旧
+`access: topLevel`互斥模式表达错误；测试对transitive `llm-providers`的直接顶层访问还形成合法stateful
+diamond。D6硬切为同一entry的`alias` + test-only `topLevelAlias`，并规定same-build、
+canonical-same-mapping合并为一个active projection；其余collection冲突继续失败。
+
 ## 输入
 
 - PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly 和完整 InProcessBoundary 生产路径。
@@ -42,8 +47,10 @@ PackageBinding → provider File IR DB declaration链；P3实现必须让所有D
 - `skiff-packages` 和 `internals` 的registry/platform、packages、contracts、deployments、actual
   services、clients 全部切换，provider/list 和 chat smoke 到达真实业务结果。
 - 三个repo分别提交并合入各自 `main`；不push；所有已合并临时worktree/分支清理。
-- `kind: test` service可对`access: topLevel`的精确subject artifact使用其文件顶层DB attachment；
-  consumer不复制schema/collection/recoverable metadata，linked/runtime按artifact+file+type index精确选择。
+- `kind: test` service可在direct dependency entry设置`topLevelAlias`，同时保留普通`alias`访问公开API；
+  顶层权限不传递，consumer不复制DB metadata，linked/runtime按artifact+file+type index精确选择。
+- 同一stateful package的direct/transitive diamond在exact build与完整resolved mapping canonical相同时只
+  激活一个collection projection/metadata owner；其它mapping/build/root冲突失败。
 
 ## 实现批次
 
