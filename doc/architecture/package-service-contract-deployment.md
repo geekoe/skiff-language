@@ -449,7 +449,8 @@ ServiceDeployment
   ingress: serviceLocalIngressSelector -> gatewayEntryKey
   config/secrets bindings
   state/DB/actor/queue ownership
-  timeout/resource/activation policy
+  external request timeout/resource policy
+  activation lifecycle bindings
 ```
 
 operation mapping由同一service package的ServiceContract projection与PackageArtifact public callable
@@ -1059,6 +1060,11 @@ deadline；生成的`DeploymentPolicy`不包含`timeoutMs`。只有显式的正�
 request deadline；Host从已admit activation读取同一policy并再次收紧、执行。Deployment override只能
 缩短平台/外层deadline，不能放宽，也不能因wire遗漏或伪造而失效。
 
+Router实例的`requestTimeoutMs`同样只定义external business request的平台上限。它和deployment
+`policy.timeoutMs`都不得参与RuntimeAssembly resolve/load/link/admit、participant prepare ACK、
+activation commit/abort或WebSocket generation release。Assembly activation是控制面事务，不是一个
+service request；把业务request deadline复用为activation deadline会让部署耗时被service policy意外改变。
+
 tooling把所选profile与精确PackageArtifact、生成的ServiceContract及闭合dependency resolution投影为
 ServiceDeployment。profile不得增加/删除`package.yml`中的package或service dependency。
 
@@ -1148,6 +1154,20 @@ Router coordinator仍是environment activation prepare/commit/abort的唯一事�
 语言实现而要求外部activation backend executable、子进程或NDJSON transport。registry service不能直接写
 prepared/connected集合、伪造participant ACK或维护第二份activation state；它与Router activation state通过
 明确的collection/schema owner隔离。
+
+Activation prepare使用Router operator配置`activation.prepareTimeoutMs`，默认`120000`毫秒。该值必须是
+正safe integer；缺失时使用默认值，其它值在Router配置边界fail closed。预算覆盖一次prepare控制事务等待
+participants完成resolve/load/link/admit并返回ACK的时间；只有该预算到期时，coordinator才为timeout原因
+abort pending activation，并由control endpoint返回504。它不进入任何ServiceDeployment、
+DeploymentPolicy、RuntimeAssembly或artifact identity。
+
+调用activation control endpoint的test-runner/client必须使用独立client deadline，且严格大于Router
+prepare budget；默认prepare budget下建议使用`150000`毫秒client deadline。WebSocket旧generation release
+另有自己的release timeout；它也不得读取`requestTimeoutMs`或deployment `policy.timeoutMs`。是否公开
+release timeout配置不由本契约决定，但该预算必须与business request和activation prepare三者解耦。
+
+这是未发布系统的hard cut：删除把`requestTimeoutMs`或deployment timeout绑定到activation/release的旧
+错误路径，不保留alias、fallback或dual-read。
 
 `publish`是操作：校验typed artifact、写入不可变内容、更新允许更新的pointer。它不产生
 `Publication`对象，也不要求四类artifact实现共同kind enum。registry可以在一个事务/workflow中发布

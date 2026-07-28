@@ -64,6 +64,30 @@ participant、generation pin等非selector事实也必须在新的RuntimeAssembl
 受影响回归，不能沿用其总体ledger。S1 exact artifact receipt所记录的旧v3/v2/v1 identity tuple同样随K
 失效，但其canonical source→artifact→Host/Router测试结构可以迁移复用。
 
+### 2026-07-28 activation prepare timeout correction
+
+I7真实隔离执行证明现有Router把`requestTimeoutMs`同时用于external request和assembly activation prepare。
+这不是参数偏小，而是两个生命周期的owner混淆。P1D
+`P5-F445H-I7-P1D-activation-prepare-timeout-authority.md`先冻结权威边界，P1再修改Router/config/test-runner
+consumer并做聚焦验收。
+
+冻结规则：
+
+- `requestTimeoutMs`只属于external business request的平台cap；
+- deployment `policy.timeoutMs`只进一步收紧单个external request的effective deadline；
+- assembly activation prepare是控制面事务，只使用operator配置
+  `activation.prepareTimeoutMs`，默认`120000`，且必须是正safe integer；
+- 只有prepare budget到期时coordinator才以timeout原因abort pending并返回504；
+- test-runner activation client使用独立deadline，必须严格大于prepare budget；默认组合为
+  `120000 / 建议150000`；
+- WebSocket generation release保留独立release timeout，不从上述任一预算派生；
+- 普通dispatch deadline不变；旧cross-wiring删除，不做兼容。
+
+| 节点 | Task / result | 输入 | 结论 |
+| --- | --- | --- | --- |
+| P1D | [Activation prepare timeout authority](tasks/P5-F445H-I7-P1D-activation-prepare-timeout-authority.md) | P1只读preflight + I7 isolation finding | docs-only；只解除P1实现 |
+| P1D result | [Activation prepare timeout authority result](tasks/P5-F445H-I7-P1D-activation-prepare-timeout-authority-result.md) | P1D exact candidate | PASS后P1可执行 |
+
 ## 1. 基线与已关闭的实现决策
 
 - Skiff基线：`5c3322ac3116ac98c4407de4396562ff632ed7b5` / tree `60321ab8c4fa11e6877a94d44b3e2d078fd428ac`。
@@ -93,6 +117,9 @@ participant、generation pin等非selector事实也必须在新的RuntimeAssembl
   selector，同service重复失败。ServiceDeploymentInput v5、ServiceDeployment/DeploymentArtifact v4、
   RuntimeAssembly v3与runtime frame v2作为同一canonical checkpoint实现，不兼容读取旧Host route或裸
   全局ingress。
+- Router的external request、activation prepare与WebSocket generation release预算互相独立。
+  `requestTimeoutMs`和deployment `policy.timeoutMs`都不能触发assembly activation abort；
+  prepare只使用operator-owned `activation.prepareTimeoutMs`。
 - publish只是四种typed artifact的immutable write + typed pointer CAS操作；不产生Publication、
   common artifact kind或archive shim。历史本地/registry数据不兼容读取，也不在本阶段破坏性删除。
 - canonical local CLI拼写冻结为 `package|contract|deployment|assembly build <root>

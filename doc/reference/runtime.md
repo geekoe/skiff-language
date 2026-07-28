@@ -198,6 +198,12 @@ primitive operation timeout中最先到达者；current execution deadline已经
 operation timeout；需要更短调用预算时由caller显式使用`timeout(...)`。Deployment
 `policy.timeoutMs`只属于external ingress/request policy，不作为内部service call的callee默认值。
 
+Router `requestTimeoutMs`是external business request的平台上限，不是所有Router工作的通用timeout。
+RuntimeAssembly activation prepare/commit/abort是控制面事务，使用独立的operator prepare budget；
+WebSocket generation release也使用自己的release budget。二者都不能继承或覆盖
+`requestTimeoutMs`、deployment `policy.timeoutMs`或用户代码`timeout(...)`。反过来，控制面预算也不能
+改变普通dispatch deadline。
+
 Runtime 使用单调时钟计算内部 absolute deadline。该 absolute deadline 不暴露给用户代码；用户可见的是 `TimeoutError` 的 budget / source 语义。
 
 Deadline 到达且 block / request 尚未结束时，对应语义结果立即固定为 `TimeoutError` 或平台 timeout error，未完成 work item 收到runtime内部停止信号。外层代码不等待尽力清理完成，清理或底层operation晚到的值、错误和 Skiff 可见写入被丢弃。“立即”表示语义结果立即确定，不表示 OS socket、数据库请求或纯 CPU 指令在同一个机器指令内物理停止。
@@ -322,7 +328,8 @@ WebSocket连接按已冻结的connection protocol identity和deployment/activati
 request/response不能跨connection或generation恢复。第一版不接受peer request cancellation；
 peer disconnect表示该socket上没有response consumer，runtime内部停止仍在执行的inbound handler并失败
 outbound pending。既有socket继续绑定旧generation，直到
-drain或断开。
+drain或断开。Generation release的等待预算属于Router lifecycle owner，不能被external request
+`requestTimeoutMs`或deployment `policy.timeoutMs`覆盖。
 
 ## 12. Effect metadata at runtime
 
