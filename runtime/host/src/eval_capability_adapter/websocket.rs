@@ -99,10 +99,12 @@ impl eval_capabilities::WebsocketRequestCapabilityApi for RuntimeWebsocketReques
         connection_id: String,
         method: String,
         payload: Vec<u8>,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> eval_capabilities::EvalCapabilityFuture<'a, capability_contract::ConnectionRequestTerminal>
     {
         let owned = self.0.clone();
         Box::pin(async move {
+            let _execution_control = execution_control;
             let transport = owned.request_transport.as_ref().ok_or_else(|| {
                 RuntimeError::Unsupported(
                     "std.websocket.requestJsonToConnection execution is not attached".to_string(),

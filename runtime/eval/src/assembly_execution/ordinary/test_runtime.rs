@@ -660,6 +660,7 @@ impl FileCapabilityApi for TestFile {
         _target: &'a str,
         _input: Bytes,
         _options: FileCreateOptions,
+        _execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         Box::pin(async {
             Err(skiff_runtime_capability_context::FileCapabilityError::file(
@@ -672,6 +673,7 @@ impl FileCapabilityApi for TestFile {
         &'a self,
         _target: &'a str,
         _file: &'a ImmutableFileRef,
+        _execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         Box::pin(async {
             Err(skiff_runtime_capability_context::FileCapabilityError::file(
@@ -684,6 +686,7 @@ impl FileCapabilityApi for TestFile {
         &'a self,
         _target: &'a str,
         _file: &'a ImmutableFileRef,
+        _execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         Box::pin(async {
             Err(skiff_runtime_capability_context::FileCapabilityError::file(
@@ -696,6 +699,7 @@ impl FileCapabilityApi for TestFile {
         &'a self,
         _target: &'a str,
         _file: &'a ImmutableFileRef,
+        _execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         Box::pin(async {
             Err(skiff_runtime_capability_context::FileCapabilityError::file(
@@ -708,6 +712,7 @@ impl FileCapabilityApi for TestFile {
         &'a self,
         _target: &'a str,
         _file: &'a ImmutableFileRef,
+        _execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, ()> {
         Box::pin(async {
             Err(skiff_runtime_capability_context::FileCapabilityError::file(
@@ -721,6 +726,7 @@ impl FileCapabilityApi for TestFile {
         _target: &'a str,
         _options: FileCreateOptions,
         _next_chunk: FileChunkSource<'a>,
+        _execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value> {
         Box::pin(async {
             Err(skiff_runtime_capability_context::FileCapabilityError::file(
@@ -742,6 +748,7 @@ impl FileSourceStreamApi for TestFileSourceStream {
     fn next_file_source_stream_item<'a>(
         &'a self,
         _stream: &'a Value,
+        _execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Option<Value>> {
         Box::pin(async {
             Err(skiff_runtime_capability_context::FileCapabilityError::file(
@@ -803,6 +810,7 @@ impl ActorCapabilityApi for TestActor {
         &'a self,
         _request: ActorGetOrCreateControlRequest,
         _bootstrap_payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ActorRef> {
         Box::pin(async {
             Err(CapabilityError::unsupported(
@@ -815,6 +823,7 @@ impl ActorCapabilityApi for TestActor {
         &'a self,
         _request: ActorReplaceControlRequest,
         _bootstrap_payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ActorRef> {
         Box::pin(async {
             Err(CapabilityError::unsupported(
@@ -826,6 +835,7 @@ impl ActorCapabilityApi for TestActor {
     fn find_actor<'a>(
         &'a self,
         _request: ActorFindControlRequest,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, Option<ActorRef>> {
         Box::pin(async {
             Err(CapabilityError::unsupported(
@@ -837,6 +847,7 @@ impl ActorCapabilityApi for TestActor {
     fn remove_actor<'a>(
         &'a self,
         _request: ActorRemoveControlRequest,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, bool> {
         Box::pin(async {
             Err(CapabilityError::unsupported(
@@ -849,6 +860,7 @@ impl ActorCapabilityApi for TestActor {
         &'a self,
         _request: SpawnSubmitControlRequest,
         _args_payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ()> {
         Box::pin(async {
             Err(CapabilityError::unsupported(
@@ -860,6 +872,7 @@ impl ActorCapabilityApi for TestActor {
     fn invoke_actor<'a>(
         &'a self,
         _request: skiff_runtime_capability_context::ActorInvocationRequest,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, skiff_runtime_capability_context::ActorInvocationOutcome> {
         Box::pin(async {
             Err(CapabilityError::unsupported(
@@ -968,7 +981,11 @@ impl HttpClientCapabilityApi for TestHttp {
         HttpClientCapabilityContext::new(Self)
     }
 
-    fn dispatch_http_request<'a>(&'a self, _input: &'a Value) -> HttpCapabilityFuture<'a, Value> {
+    fn dispatch_http_request<'a>(
+        &'a self,
+        _input: &'a Value,
+        _execution_control: OwnedExecutionControl,
+    ) -> HttpCapabilityFuture<'a, Value> {
         Box::pin(async {
             Err(CapabilityError::unsupported(
                 "test http capability is unavailable",
@@ -980,6 +997,7 @@ impl HttpClientCapabilityApi for TestHttp {
         &'a self,
         _input: &'a Value,
         _expected_body_item_type: Option<&'a RuntimeTypePlan>,
+        _execution_control: OwnedExecutionControl,
     ) -> HttpCapabilityFuture<'a, Value> {
         Box::pin(async {
             Err(CapabilityError::unsupported(
@@ -992,6 +1010,7 @@ impl HttpClientCapabilityApi for TestHttp {
         &'a self,
         _input: &'a Value,
         _expected_item_type: Option<&'a RuntimeTypePlan>,
+        _execution_control: OwnedExecutionControl,
     ) -> HttpCapabilityFuture<'a, Value> {
         Box::pin(async {
             Err(CapabilityError::unsupported(

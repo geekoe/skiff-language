@@ -10,7 +10,8 @@ use skiff_runtime_model::{
 };
 
 use crate::{
-    DbCapabilityContext, ExecutionControl, ExecutionControlError, StreamRuntime, StreamRuntimeError,
+    DbCapabilityContext, ExecutionControl, ExecutionControlError, OwnedExecutionControl,
+    StreamRuntime, StreamRuntimeError,
 };
 
 #[derive(Debug)]
@@ -236,30 +237,35 @@ pub trait FileCapabilityApi: Send + Sync {
         target: &'a str,
         input: Bytes,
         options: FileCreateOptions,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value>;
 
     fn read_file_wire<'a>(
         &'a self,
         target: &'a str,
         file: &'a ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value>;
 
     fn read_text_file<'a>(
         &'a self,
         target: &'a str,
         file: &'a ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value>;
 
     fn file_info<'a>(
         &'a self,
         target: &'a str,
         file: &'a ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value>;
 
     fn delete_file<'a>(
         &'a self,
         target: &'a str,
         file: &'a ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, ()>;
 
     fn create_file_from_chunks<'a>(
@@ -267,6 +273,7 @@ pub trait FileCapabilityApi: Send + Sync {
         target: &'a str,
         options: FileCreateOptions,
         next_chunk: FileChunkSource<'a>,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value>;
 }
 
@@ -294,40 +301,53 @@ impl FileCapabilityContext {
         target: &str,
         input: Bytes,
         options: FileCreateOptions,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityResult<Value> {
-        self.inner.create_file(target, input, options).await
+        self.inner
+            .create_file(target, input, options, execution_control)
+            .await
     }
 
     pub async fn read_file_wire(
         &self,
         target: &str,
         file: &ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityResult<Value> {
-        self.inner.read_file_wire(target, file).await
+        self.inner
+            .read_file_wire(target, file, execution_control)
+            .await
     }
 
     pub async fn read_text_file(
         &self,
         target: &str,
         file: &ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityResult<Value> {
-        self.inner.read_text_file(target, file).await
+        self.inner
+            .read_text_file(target, file, execution_control)
+            .await
     }
 
     pub async fn file_info(
         &self,
         target: &str,
         file: &ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityResult<Value> {
-        self.inner.file_info(target, file).await
+        self.inner.file_info(target, file, execution_control).await
     }
 
     pub async fn delete_file(
         &self,
         target: &str,
         file: &ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityResult<()> {
-        self.inner.delete_file(target, file).await
+        self.inner
+            .delete_file(target, file, execution_control)
+            .await
     }
 
     pub async fn create_file_from_chunks<'a>(
@@ -335,9 +355,10 @@ impl FileCapabilityContext {
         target: &'a str,
         options: FileCreateOptions,
         next_chunk: FileChunkSource<'a>,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityResult<Value> {
         self.inner
-            .create_file_from_chunks(target, options, next_chunk)
+            .create_file_from_chunks(target, options, next_chunk, execution_control)
             .await
     }
 }
@@ -347,6 +368,7 @@ pub trait FileSourceStreamApi: Send + Sync {
     fn next_file_source_stream_item<'a>(
         &'a self,
         stream: &'a Value,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Option<Value>>;
 }
 
@@ -378,7 +400,9 @@ impl<'a> FileSourceStreamContext<'a> {
     pub fn next_file_source_stream_item<'b>(
         &'b self,
         stream: &'b Value,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'b, Option<Value>> {
-        self.inner.next_file_source_stream_item(stream)
+        self.inner
+            .next_file_source_stream_item(stream, execution_control)
     }
 }

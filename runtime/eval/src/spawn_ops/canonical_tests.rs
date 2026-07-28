@@ -20,7 +20,8 @@ use skiff_runtime_activation::{
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorCapabilityApi, ActorCapabilityContext, ActorFindControlRequest,
     ActorGetOrCreateControlRequest, ActorRemoveControlRequest, ActorReplaceControlRequest,
-    CapabilityError, CapabilityFuture, OwnedActorCapabilityContext, SpawnSubmitControlRequest,
+    CapabilityError, CapabilityFuture, OwnedActorCapabilityContext, OwnedExecutionControl,
+    SpawnSubmitControlRequest,
 };
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
@@ -101,6 +102,7 @@ impl ActorCapabilityApi for RecordingActor {
         &'a self,
         _request: ActorGetOrCreateControlRequest,
         _bootstrap_payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ActorRef> {
         Box::pin(async {
             Err(CapabilityError::unsupported(
@@ -113,6 +115,7 @@ impl ActorCapabilityApi for RecordingActor {
         &'a self,
         _request: ActorReplaceControlRequest,
         _bootstrap_payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ActorRef> {
         Box::pin(async {
             Err(CapabilityError::unsupported(
@@ -124,6 +127,7 @@ impl ActorCapabilityApi for RecordingActor {
     fn find_actor<'a>(
         &'a self,
         _request: ActorFindControlRequest,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, Option<ActorRef>> {
         Box::pin(async { Err(CapabilityError::unsupported("actor find is not under test")) })
     }
@@ -131,6 +135,7 @@ impl ActorCapabilityApi for RecordingActor {
     fn remove_actor<'a>(
         &'a self,
         _request: ActorRemoveControlRequest,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, bool> {
         Box::pin(async {
             Err(CapabilityError::unsupported(
@@ -143,6 +148,7 @@ impl ActorCapabilityApi for RecordingActor {
         &'a self,
         request: SpawnSubmitControlRequest,
         args_payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ()> {
         let submissions = Arc::clone(&self.submissions);
         Box::pin(async move {
@@ -157,6 +163,7 @@ impl ActorCapabilityApi for RecordingActor {
     fn invoke_actor<'a>(
         &'a self,
         _request: skiff_runtime_capability_context::ActorInvocationRequest,
+        _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, skiff_runtime_capability_context::ActorInvocationOutcome> {
         Box::pin(async {
             Err(CapabilityError::unsupported(

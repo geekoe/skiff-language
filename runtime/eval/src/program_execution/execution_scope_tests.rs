@@ -7,20 +7,35 @@ use std::{
     time::{Duration, Instant},
 };
 
-use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
+use bytes::Bytes;
+use skiff_artifact_model::{
+    AssemblyIdentity, DeploymentRevision, InstructionSourceSite, SyntheticInstructionSiteReason,
+};
 use skiff_runtime_activation::RuntimeActivation;
+use skiff_runtime_boundary::file::FileCreateOptions;
 use skiff_runtime_capability_context::{
-    CancellationSource, CancellationToken, ExecutionBudgetFailure, ExecutionBudgetReason,
+    ActivationIdentityControl, ActorCapabilityApi, ActorFindControlRequest,
+    ActorGetOrCreateControlRequest, ActorKeyControlMetadata, ActorRemoveControlRequest,
+    ActorReplaceControlRequest, CancellationSource, CancellationToken, CapabilityError,
+    CapabilityFuture, ConnectionRequestTerminal, ExecutionBudgetFailure, ExecutionBudgetReason,
     ExecutionControl, ExecutionControlApi, ExecutionControlError, ExecutionControlResult,
     ExecutionDeadlineSource, ExecutionScope, ExecutionScopeAccessError, ExecutionScopeDeriveError,
-    ExecutionScopeTerminal, FileSourceStreamContext, OwnedExecutionControl,
-    OwnedExecutionControlApi, StreamRuntime, SupervisedStreamConsumptionLease,
+    ExecutionScopeTerminal, FileCapabilityApi, FileCapabilityFuture, FileCapabilitySource,
+    FileCapabilitySourceApi, FileChunkSource, FileSourceStreamContext, HttpCapabilityFuture,
+    HttpClientCapabilityApi, HttpClientCapabilityContext, OwnedActorCapabilityContext,
+    OwnedExecutionControl, OwnedExecutionControlApi, SpawnSubmitControlRequest, StreamRuntime,
+    SupervisedStreamConsumptionLease,
 };
 use skiff_runtime_linked_program::{
     LinkOverlay, PublicationResourceTable, RuntimeTypeContext, ServiceMeta,
 };
-use skiff_runtime_model::request_heap::RequestHeapLimits;
-use skiff_runtime_native::capability::NativeFileCapabilityBundle;
+use skiff_runtime_model::{
+    request_heap::RequestHeapLimits, runtime_value::ActorRef, type_plan::RuntimeTypePlan,
+};
+use skiff_runtime_native::capability::{
+    NativeActorCapability, NativeFileCapability, NativeFileCapabilityBundle,
+    NativeHttpClientCapability, NativeTimeCapability, NativeWebsocketCapability,
+};
 use skiff_runtime_native_contract::NativeRequiredContext;
 
 use super::{
@@ -34,8 +49,9 @@ use crate::{
     actor_executor_test_runtime as test_runtime,
     assembly_execution::RuntimeExecutionProjection,
     capabilities::{
-        HttpRuntimeOptions, RuntimeNativeInvocationExecutionControl, StreamCapabilityContext,
-        TimeCapabilityContext,
+        ActorCapabilityContext, FileCapabilityContext, HttpRuntimeOptions,
+        RuntimeNativeInvocationExecutionControl, StreamCapabilityContext, TimeCapabilityContext,
+        WebsocketCapabilityContext, WebsocketRequestCapabilityApi,
     },
     error::{BudgetReason, RuntimeError},
     native_capability::{
@@ -199,27 +215,49 @@ impl OwnedExecutionControlApi for ScopeAwareControl {
 }
 
 fn context(control: ScopeAwareControl) -> ProgramExecutionContext<'static> {
+    context_with_overrides(control, ContextOverrides::default())
+}
+
+#[derive(Default)]
+struct ContextOverrides {
+    http_client: Option<HttpClientCapabilityContext>,
+    file: Option<FileCapabilityContext>,
+    file_source_stream: Option<FileSourceStreamContext<'static>>,
+    websocket: Option<WebsocketCapabilityContext<'static>>,
+    actor: Option<ActorCapabilityContext<'static>>,
+}
+
+fn context_with_overrides(
+    control: ScopeAwareControl,
+    overrides: ContextOverrides,
+) -> ProgramExecutionContext<'static> {
     let execution = ExecutionControl::new(control);
     let runtime_factory = test_runtime::runtime_factory();
     let stream_runtime = runtime_factory.stream_runtime();
     let test_effect_doubles =
         runtime_factory.reusable_test_effect_doubles(HashMap::new(), &stream_runtime, false);
     let effects = test_runtime::effects_context();
-    let actor = test_runtime::actor_context();
+    let actor = overrides.actor.unwrap_or_else(test_runtime::actor_context);
     ProgramExecutionContext::new(ProgramExecutionInput {
         execution: execution.clone(),
         config: test_runtime::config_context(),
         db: skiff_runtime_capability_context::DbCapabilityContext::unavailable(),
-        file: test_runtime::file_context(),
-        file_source_stream: test_runtime::file_source_stream_context(stream_runtime.clone()),
+        file: overrides.file.unwrap_or_else(test_runtime::file_context),
+        file_source_stream: overrides
+            .file_source_stream
+            .unwrap_or_else(|| test_runtime::file_source_stream_context(stream_runtime.clone())),
         time: TimeCapabilityContext::new(execution),
-        websocket: test_runtime::websocket_context(),
+        websocket: overrides
+            .websocket
+            .unwrap_or_else(test_runtime::websocket_context),
         effects: effects.clone(),
-        http_client: effects.http_client_context(
-            HttpRuntimeOptions::explicit(false),
-            stream_runtime,
-            test_effect_doubles.clone(),
-        ),
+        http_client: overrides.http_client.unwrap_or_else(|| {
+            effects.http_client_context(
+                HttpRuntimeOptions::explicit(false),
+                stream_runtime,
+                test_effect_doubles.clone(),
+            )
+        }),
         test_effect_doubles,
         runtime_activation: Arc::new(RuntimeActivation {
             service: ServiceMeta {
@@ -243,10 +281,446 @@ fn context(control: ScopeAwareControl) -> ProgramExecutionContext<'static> {
     })
 }
 
+#[derive(Clone)]
+struct CarrierReceiptHttp {
+    receipts: Arc<Mutex<Vec<OwnedExecutionControl>>>,
+}
+
+impl HttpClientCapabilityApi for CarrierReceiptHttp {
+    fn with_stream_runtime(&self, _stream_runtime: StreamRuntime) -> HttpClientCapabilityContext {
+        HttpClientCapabilityContext::new(self.clone())
+    }
+
+    fn dispatch_http_request<'a>(
+        &'a self,
+        _input: &'a serde_json::Value,
+        execution_control: OwnedExecutionControl,
+    ) -> HttpCapabilityFuture<'a, serde_json::Value> {
+        self.receipts
+            .lock()
+            .expect("HTTP receipt lock")
+            .push(execution_control);
+        Box::pin(async { Ok(serde_json::Value::Null) })
+    }
+
+    fn dispatch_http_stream<'a>(
+        &'a self,
+        _input: &'a serde_json::Value,
+        _expected_body_item_type: Option<&'a RuntimeTypePlan>,
+        execution_control: OwnedExecutionControl,
+    ) -> HttpCapabilityFuture<'a, serde_json::Value> {
+        self.receipts
+            .lock()
+            .expect("HTTP receipt lock")
+            .push(execution_control);
+        Box::pin(async { Ok(serde_json::Value::Null) })
+    }
+
+    fn dispatch_http_sse<'a>(
+        &'a self,
+        _input: &'a serde_json::Value,
+        _expected_item_type: Option<&'a RuntimeTypePlan>,
+        execution_control: OwnedExecutionControl,
+    ) -> HttpCapabilityFuture<'a, serde_json::Value> {
+        self.receipts
+            .lock()
+            .expect("HTTP receipt lock")
+            .push(execution_control);
+        Box::pin(async { Ok(serde_json::Value::Null) })
+    }
+}
+
+#[derive(Clone)]
+struct CarrierReceiptFile {
+    receipts: Arc<Mutex<Vec<OwnedExecutionControl>>>,
+}
+
+#[derive(Clone)]
+struct CarrierReceiptFileSource {
+    receipts: Arc<Mutex<Vec<OwnedExecutionControl>>>,
+}
+
+impl FileCapabilitySourceApi for CarrierReceiptFileSource {
+    fn context_for_request(
+        &self,
+        _db_context: skiff_runtime_capability_context::DbCapabilityContext,
+    ) -> FileCapabilityContext {
+        FileCapabilityContext::new(CarrierReceiptFile {
+            receipts: Arc::clone(&self.receipts),
+        })
+    }
+}
+
+impl FileCapabilityApi for CarrierReceiptFile {
+    fn source(&self) -> FileCapabilitySource {
+        FileCapabilitySource::new(CarrierReceiptFileSource {
+            receipts: Arc::clone(&self.receipts),
+        })
+    }
+
+    fn create_file<'a>(
+        &'a self,
+        _target: &'a str,
+        _input: Bytes,
+        _options: FileCreateOptions,
+        execution_control: OwnedExecutionControl,
+    ) -> FileCapabilityFuture<'a, serde_json::Value> {
+        self.receipts
+            .lock()
+            .expect("file receipt lock")
+            .push(execution_control);
+        Box::pin(async { Ok(serde_json::Value::Null) })
+    }
+
+    fn read_file_wire<'a>(
+        &'a self,
+        _target: &'a str,
+        _file: &'a skiff_runtime_boundary::file::ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
+    ) -> FileCapabilityFuture<'a, serde_json::Value> {
+        self.receipts
+            .lock()
+            .expect("file receipt lock")
+            .push(execution_control);
+        Box::pin(async { Ok(serde_json::Value::Null) })
+    }
+
+    fn read_text_file<'a>(
+        &'a self,
+        _target: &'a str,
+        _file: &'a skiff_runtime_boundary::file::ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
+    ) -> FileCapabilityFuture<'a, serde_json::Value> {
+        self.receipts
+            .lock()
+            .expect("file receipt lock")
+            .push(execution_control);
+        Box::pin(async { Ok(serde_json::Value::Null) })
+    }
+
+    fn file_info<'a>(
+        &'a self,
+        _target: &'a str,
+        _file: &'a skiff_runtime_boundary::file::ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
+    ) -> FileCapabilityFuture<'a, serde_json::Value> {
+        self.receipts
+            .lock()
+            .expect("file receipt lock")
+            .push(execution_control);
+        Box::pin(async { Ok(serde_json::Value::Null) })
+    }
+
+    fn delete_file<'a>(
+        &'a self,
+        _target: &'a str,
+        _file: &'a skiff_runtime_boundary::file::ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
+    ) -> FileCapabilityFuture<'a, ()> {
+        self.receipts
+            .lock()
+            .expect("file receipt lock")
+            .push(execution_control);
+        Box::pin(async { Ok(()) })
+    }
+
+    fn create_file_from_chunks<'a>(
+        &'a self,
+        _target: &'a str,
+        _options: FileCreateOptions,
+        _next_chunk: FileChunkSource<'a>,
+        execution_control: OwnedExecutionControl,
+    ) -> FileCapabilityFuture<'a, serde_json::Value> {
+        self.receipts
+            .lock()
+            .expect("file receipt lock")
+            .push(execution_control);
+        Box::pin(async { Ok(serde_json::Value::Null) })
+    }
+}
+
+#[derive(Clone)]
+struct CarrierReceiptWebsocketShared;
+
+impl skiff_runtime_capability_context::WebsocketCapabilityApi for CarrierReceiptWebsocketShared {
+    fn owned(&self) -> skiff_runtime_capability_context::OwnedWebsocketCapabilityContext {
+        skiff_runtime_capability_context::WebsocketCapabilityContext::new(self.clone())
+    }
+
+    fn borrow(&self) -> skiff_runtime_capability_context::WebsocketCapabilityContext<'_> {
+        skiff_runtime_capability_context::WebsocketCapabilityContext::new(self.clone())
+    }
+
+    fn service_id(&self) -> &str {
+        "skiff.run/f445h-i6-receipt"
+    }
+
+    fn websocket_entry_id(&self) -> Option<&str> {
+        Some("receipt")
+    }
+
+    fn send_connection_text_to_business_identity(
+        &self,
+        _business_identity: String,
+        _text: String,
+    ) -> skiff_runtime_capability_context::CapabilityResult<()> {
+        Err(CapabilityError::unsupported("send is not under test"))
+    }
+
+    fn send_connection_binary_to_business_identity(
+        &self,
+        _business_identity: String,
+        _payload: Vec<u8>,
+    ) -> skiff_runtime_capability_context::CapabilityResult<()> {
+        Err(CapabilityError::unsupported("send is not under test"))
+    }
+
+    fn send_connection_text_to_connection(
+        &self,
+        _connection_id: String,
+        _text: String,
+    ) -> skiff_runtime_capability_context::CapabilityResult<()> {
+        Err(CapabilityError::unsupported("send is not under test"))
+    }
+
+    fn send_connection_binary_to_connection(
+        &self,
+        _connection_id: String,
+        _payload: Vec<u8>,
+    ) -> skiff_runtime_capability_context::CapabilityResult<()> {
+        Err(CapabilityError::unsupported("send is not under test"))
+    }
+}
+
+#[derive(Clone)]
+struct CarrierReceiptWebsocketRequest {
+    receipts: Arc<Mutex<Vec<OwnedExecutionControl>>>,
+}
+
+impl WebsocketRequestCapabilityApi for CarrierReceiptWebsocketRequest {
+    fn request_json_to_connection<'a>(
+        &'a self,
+        _connection_id: String,
+        _method: String,
+        _payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
+    ) -> crate::capabilities::EvalCapabilityFuture<'a, ConnectionRequestTerminal> {
+        self.receipts
+            .lock()
+            .expect("WebSocket receipt lock")
+            .push(execution_control);
+        Box::pin(async { Ok(ConnectionRequestTerminal::Success(b"null".to_vec())) })
+    }
+}
+
+#[derive(Clone)]
+struct CarrierReceiptActor {
+    receipts: Arc<Mutex<Vec<OwnedExecutionControl>>>,
+}
+
+impl CarrierReceiptActor {
+    fn record(&self, execution_control: OwnedExecutionControl) {
+        self.receipts
+            .lock()
+            .expect("Actor receipt lock")
+            .push(execution_control);
+    }
+}
+
+impl ActorCapabilityApi for CarrierReceiptActor {
+    fn owned(&self) -> OwnedActorCapabilityContext {
+        ActorCapabilityContext::new(self.clone())
+    }
+
+    fn borrow(&self) -> ActorCapabilityContext<'_> {
+        ActorCapabilityContext::new(self.clone())
+    }
+
+    fn runtime_id(&self) -> &str {
+        "runtime:f445h-i6-receipt"
+    }
+
+    fn service_id(&self) -> &str {
+        "skiff.run/f445h-i6-receipt"
+    }
+
+    fn service_version(&self) -> &str {
+        "1.0.0"
+    }
+
+    fn request_id(&self) -> &str {
+        "request:f445h-i6-receipt"
+    }
+
+    fn request_target(&self) -> &str {
+        "receipt"
+    }
+
+    fn request_build_id(&self) -> &str {
+        "build:f445h-i6-receipt"
+    }
+
+    fn spawn_service_protocol_identity(&self) -> &str {
+        "protocol:f445h-i6-receipt"
+    }
+
+    fn request_service_protocol_identity(&self) -> &str {
+        "protocol:f445h-i6-receipt"
+    }
+
+    fn operation_service_protocol_identity(&self) -> Option<&str> {
+        Some("protocol:f445h-i6-receipt")
+    }
+
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
+        None
+    }
+
+    fn trace_id(&self) -> Option<&str> {
+        Some("trace:f445h-i6-receipt")
+    }
+
+    fn get_or_create_actor<'a>(
+        &'a self,
+        _request: ActorGetOrCreateControlRequest,
+        _bootstrap_payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, ActorRef> {
+        self.record(execution_control);
+        Box::pin(async { Err(CapabilityError::unsupported("result is not under test")) })
+    }
+
+    fn replace_actor<'a>(
+        &'a self,
+        _request: ActorReplaceControlRequest,
+        _bootstrap_payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, ActorRef> {
+        self.record(execution_control);
+        Box::pin(async { Err(CapabilityError::unsupported("result is not under test")) })
+    }
+
+    fn find_actor<'a>(
+        &'a self,
+        _request: ActorFindControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, Option<ActorRef>> {
+        self.record(execution_control);
+        Box::pin(async { Ok(None) })
+    }
+
+    fn remove_actor<'a>(
+        &'a self,
+        _request: ActorRemoveControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, bool> {
+        self.record(execution_control);
+        Box::pin(async { Ok(false) })
+    }
+
+    fn submit_spawn<'a>(
+        &'a self,
+        _request: SpawnSubmitControlRequest,
+        _args_payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, ()> {
+        self.record(execution_control);
+        Box::pin(async { Ok(()) })
+    }
+
+    fn invoke_actor<'a>(
+        &'a self,
+        _request: skiff_runtime_capability_context::ActorInvocationRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, skiff_runtime_capability_context::ActorInvocationOutcome> {
+        self.record(execution_control);
+        Box::pin(async {
+            Ok(
+                skiff_runtime_capability_context::ActorInvocationOutcome::Returned(
+                    b"null".to_vec(),
+                ),
+            )
+        })
+    }
+}
+
 fn root_scope(deadline: Option<Instant>) -> (CancellationSource, ExecutionScope) {
     let cancellation = CancellationSource::new();
     let scope = ExecutionScope::request(cancellation.token(), deadline);
     (cancellation, scope)
+}
+
+fn carrier_receipt_context(
+    overrides: ContextOverrides,
+) -> (ProgramExecutionContext<'static>, ExecutionScope) {
+    let base = Instant::now();
+    let (request_cancellation, root) = root_scope(None);
+    let outer = root
+        .derive(base + Duration::from_secs(10), site())
+        .expect("outer scope");
+    let outer_control = ScopeAwareControl::available(outer, request_cancellation.token());
+    let current =
+        ExecutionControlApi::derive_scope(&outer_control, base + Duration::from_secs(5), site())
+            .expect("inner scope");
+    let expected = current.execution_scope().expect("inner execution scope");
+    (
+        context_with_overrides(outer_control, overrides).with_execution_control(current),
+        expected,
+    )
+}
+
+fn carrier_receipt_program() -> crate::EvalRuntimeProgram {
+    crate::EvalRuntimeProgram::new(
+        "skiff.run/f445h-i6-carrier-delivery-receipt",
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        PublicationResourceTable::default(),
+        Vec::new(),
+        HashMap::new(),
+        LinkOverlay::default(),
+        RuntimeTypeContext::default(),
+    )
+}
+
+fn take_carrier_receipt(
+    receipts: &Arc<Mutex<Vec<OwnedExecutionControl>>>,
+) -> OwnedExecutionControl {
+    let mut receipts = receipts.lock().expect("carrier receipt lock");
+    assert_eq!(receipts.len(), 1, "exactly one lower receipt expected");
+    receipts.pop().expect("carrier receipt")
+}
+
+fn assert_carrier_receipt(receipt: &OwnedExecutionControl, expected: &ExecutionScope) {
+    let actual = receipt
+        .execution_scope()
+        .expect("lower receipt retains the current execution scope");
+    assert_eq!(actual.nesting(), expected.nesting());
+    assert_eq!(actual.effective_deadline(), expected.effective_deadline());
+    assert_eq!(
+        actual.lifecycle_snapshot(),
+        Default::default(),
+        "delivery itself must not acquire a lease, timer, or waiter"
+    );
+    assert_eq!(
+        expected.lifecycle_snapshot(),
+        Default::default(),
+        "Ready operation completion must leave the invocation owner idle"
+    );
+
+    let deadline = expected
+        .effective_deadline()
+        .expect("inner scope owns an absolute deadline")
+        .at();
+    assert!(matches!(
+        actual.terminal_at(deadline),
+        Some(ExecutionScopeTerminal::LocalDeadlineExceeded(_))
+    ));
+    assert!(
+        expected.cancellation_signals().is_cancelled(),
+        "the lower receipt and current scope must share the same local signal and deadline owner"
+    );
+    assert_eq!(expected.lifecycle_snapshot(), Default::default());
 }
 
 fn assert_native_invocation_scope(
@@ -389,6 +863,164 @@ fn f445h_i6_native_invocation_scope_projects_current_control_once_for_all_consum
             .is_cancelled(),
         "carrier retains the child-local cancellation signal"
     );
+}
+
+#[tokio::test]
+async fn f445h_i6_carrier_delivery_receipt_http_unary_reaches_lower_api() {
+    let receipts = Arc::new(Mutex::new(Vec::new()));
+    let (current_context, expected) = carrier_receipt_context(ContextOverrides {
+        http_client: Some(HttpClientCapabilityContext::new(CarrierReceiptHttp {
+            receipts: Arc::clone(&receipts),
+        })),
+        ..ContextOverrides::default()
+    });
+    let program = carrier_receipt_program();
+    let projected = project_runtime_native_capability_context(
+        &current_context,
+        program.projection(),
+        StreamCapabilityContext::default(),
+        NativeRequiredContext::HttpClient,
+    );
+    let skiff_runtime_capability_context::NativeCapabilityContexts::HttpClient(http) = projected
+    else {
+        panic!("HTTP projection expected");
+    };
+
+    NativeHttpClientCapability::dispatch_http_request(&http, &serde_json::Value::Null)
+        .await
+        .expect("recording HTTP lower API returns Ready");
+
+    assert_carrier_receipt(&take_carrier_receipt(&receipts), &expected);
+}
+
+#[tokio::test]
+async fn f445h_i6_carrier_delivery_receipt_websocket_request_reaches_lower_api() {
+    let receipts = Arc::new(Mutex::new(Vec::new()));
+    let (current_context, expected) = carrier_receipt_context(ContextOverrides {
+        websocket: Some(WebsocketCapabilityContext::with_request_api(
+            CarrierReceiptWebsocketShared,
+            CarrierReceiptWebsocketRequest {
+                receipts: Arc::clone(&receipts),
+            },
+        )),
+        ..ContextOverrides::default()
+    });
+    let program = carrier_receipt_program();
+    let projected = project_runtime_native_capability_context(
+        &current_context,
+        program.projection(),
+        StreamCapabilityContext::default(),
+        NativeRequiredContext::Websocket,
+    );
+    let skiff_runtime_capability_context::NativeCapabilityContexts::Websocket(websocket) =
+        projected
+    else {
+        panic!("WebSocket projection expected");
+    };
+
+    NativeWebsocketCapability::request_json_to_connection(
+        &websocket,
+        "connection".to_string(),
+        "receipt".to_string(),
+        b"null".to_vec(),
+    )
+    .await
+    .expect("recording WebSocket lower API returns Ready");
+
+    assert_carrier_receipt(&take_carrier_receipt(&receipts), &expected);
+}
+
+#[test]
+fn f445h_i6_carrier_delivery_receipt_time_getter_returns_current_control() {
+    let (current_context, expected) = carrier_receipt_context(ContextOverrides::default());
+    let program = carrier_receipt_program();
+    let projected = project_runtime_native_capability_context(
+        &current_context,
+        program.projection(),
+        StreamCapabilityContext::default(),
+        NativeRequiredContext::Time,
+    );
+    let skiff_runtime_capability_context::NativeCapabilityContexts::Time(time) = projected else {
+        panic!("time projection expected");
+    };
+
+    assert_carrier_receipt(&NativeTimeCapability::execution_control(&time), &expected);
+}
+
+#[tokio::test]
+async fn f445h_i6_carrier_delivery_receipt_file_create_reaches_lower_api() {
+    let receipts = Arc::new(Mutex::new(Vec::new()));
+    let (current_context, expected) = carrier_receipt_context(ContextOverrides {
+        file: Some(FileCapabilityContext::new(CarrierReceiptFile {
+            receipts: Arc::clone(&receipts),
+        })),
+        ..ContextOverrides::default()
+    });
+    let program = carrier_receipt_program();
+    let projected = project_runtime_native_capability_context(
+        &current_context,
+        program.projection(),
+        StreamCapabilityContext::default(),
+        NativeRequiredContext::File,
+    );
+    let skiff_runtime_capability_context::NativeCapabilityContexts::File(file) = projected else {
+        panic!("file projection expected");
+    };
+    let (file, _, _) = file.into_native_file_parts();
+
+    NativeFileCapability::create_file(&file, "receipt", Bytes::new(), FileCreateOptions::default())
+        .await
+        .expect("recording file lower API returns Ready");
+
+    assert_carrier_receipt(&take_carrier_receipt(&receipts), &expected);
+}
+
+#[tokio::test]
+async fn f445h_i6_carrier_delivery_receipt_actor_find_reaches_lower_api() {
+    let receipts = Arc::new(Mutex::new(Vec::new()));
+    let (current_context, expected) = carrier_receipt_context(ContextOverrides {
+        actor: Some(ActorCapabilityContext::new(CarrierReceiptActor {
+            receipts: Arc::clone(&receipts),
+        })),
+        ..ContextOverrides::default()
+    });
+    let program = carrier_receipt_program();
+    let projected = project_runtime_native_capability_context(
+        &current_context,
+        program.projection(),
+        StreamCapabilityContext::default(),
+        NativeRequiredContext::Actor,
+    );
+    let skiff_runtime_capability_context::NativeCapabilityContexts::Actor(actor) = projected else {
+        panic!("Actor projection expected");
+    };
+
+    let result = NativeActorCapability::find_actor(
+        &actor,
+        ActorFindControlRequest {
+            rpc_id: "rpc:f445h-i6-receipt".to_string(),
+            runtime_id: "runtime:f445h-i6-receipt".to_string(),
+            activation_identity: ActivationIdentityControl {
+                assembly_identity: AssemblyIdentity::new("assembly:f445h-i6-receipt"),
+                generation: 1,
+                runtime_replica_id: "replica:f445h-i6-receipt".to_string(),
+                deployment_revision: DeploymentRevision::new("revision:f445h-i6-receipt"),
+            },
+            actor_key: ActorKeyControlMetadata {
+                service_id: "skiff.run/f445h-i6-receipt".to_string(),
+                actor_type_identity: "actor:f445h-i6-receipt".to_string(),
+                actor_id_type_identity: "actor-id:f445h-i6-receipt".to_string(),
+                actor_id_encoding_version: "1".to_string(),
+                canonical_actor_id_key_bytes_base64: "bnVsbA==".to_string(),
+                actor_id_hash: None,
+            },
+        },
+    )
+    .await
+    .expect("recording Actor lower API returns Ready");
+    assert!(result.is_none());
+
+    assert_carrier_receipt(&take_carrier_receipt(&receipts), &expected);
 }
 
 #[derive(Clone)]

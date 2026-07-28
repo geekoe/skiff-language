@@ -6,7 +6,8 @@ use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
     ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestTerminal,
-    FileCapabilityFuture, FileChunkFuture, FileChunkSource, StreamConsumerCleanup,
+    FileCapabilityFuture, FileChunkFuture, FileChunkSource, OwnedExecutionControl,
+    StreamConsumerCleanup,
 };
 use skiff_runtime_model::addr::ExecutableAddr;
 use skiff_runtime_model::{PublicationResourceTable, RuntimeProgramResourceView};
@@ -114,6 +115,8 @@ pub trait NativeFileCapabilityBundle {
 }
 
 pub trait NativeTimeCapability {
+    fn execution_control(&self) -> OwnedExecutionControl;
+
     fn poll_execution_budget(&self) -> Result<()>;
 }
 

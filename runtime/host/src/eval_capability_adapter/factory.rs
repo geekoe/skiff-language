@@ -451,6 +451,7 @@ mod websocket_rebinder_tests {
             "connection-1".to_string(),
             "status.get".to_string(),
             br#"{"include":"summary"}"#.to_vec(),
+            test_execution_control(),
         );
         tokio::pin!(request);
         let queued = tokio::select! {
@@ -504,6 +505,7 @@ mod websocket_rebinder_tests {
             "connection-remote".to_string(),
             "status.get".to_string(),
             br#"{}"#.to_vec(),
+            test_execution_control(),
         );
         tokio::pin!(request);
         let queued = tokio::select! {
@@ -542,6 +544,7 @@ mod websocket_rebinder_tests {
             "connection-cancel".to_string(),
             "status.get".to_string(),
             br#"{}"#.to_vec(),
+            test_execution_control(),
         );
         tokio::pin!(request);
         let queued = tokio::select! {
@@ -581,6 +584,7 @@ mod websocket_rebinder_tests {
             "connection-deadline".to_string(),
             "status.get".to_string(),
             br#"{}"#.to_vec(),
+            test_execution_control(),
         );
         tokio::pin!(request);
         let queued = tokio::select! {
@@ -620,6 +624,7 @@ mod websocket_rebinder_tests {
             "connection-disconnect".to_string(),
             "status.get".to_string(),
             br#"{}"#.to_vec(),
+            test_execution_control(),
         );
         tokio::pin!(request);
         let queued = tokio::select! {
@@ -655,10 +660,23 @@ mod websocket_rebinder_tests {
                 "connection-1".to_string(),
                 "status.get".to_string(),
                 br#"{}"#.to_vec(),
+                test_execution_control(),
             )
             .await
             .expect_err("unattached request capability must fail closed");
         assert!(error.to_string().contains("execution is not attached"));
         assert!(receiver.try_recv().is_err());
+    }
+
+    fn test_execution_control() -> capability_contract::OwnedExecutionControl {
+        use skiff_runtime_request::execution_budget::{ExecutionBudget, ExecutionBudgetConfig};
+
+        let budget = Arc::new(ExecutionBudget::new(
+            ExecutionBudgetConfig::disabled(),
+            None,
+        ));
+        let execution =
+            skiff_runtime_request::ExecutionControl::new(CancellationToken::new(), &budget);
+        super::execution_control(execution).owned()
     }
 }

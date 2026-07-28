@@ -81,8 +81,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         &'a self,
         request: ActorGetOrCreateControlRequest,
         bootstrap_payload: Vec<u8>,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             root_result_into_capability(
                 concrete::ActorClient::new(self.context.clone())
                     .get_or_create(request, bootstrap_payload)
@@ -96,8 +98,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         &'a self,
         request: ActorReplaceControlRequest,
         bootstrap_payload: Vec<u8>,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             root_result_into_capability(
                 concrete::ActorClient::new(self.context.clone())
                     .replace(request, bootstrap_payload)
@@ -110,8 +114,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
     fn find_actor<'a>(
         &'a self,
         request: ActorFindControlRequest,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, Option<ActorRef>> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             root_result_into_capability(
                 concrete::ActorClient::new(self.context.clone())
                     .find(request)
@@ -124,8 +130,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
     fn remove_actor<'a>(
         &'a self,
         request: ActorRemoveControlRequest,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, bool> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             root_result_into_capability(
                 concrete::ActorClient::new(self.context.clone())
                     .remove(request)
@@ -139,21 +147,28 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         &'a self,
         request: SpawnSubmitControlRequest,
         args_payload: Vec<u8>,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ()> {
         Box::pin(submit_spawn_and_wake(
             self.context.clone(),
             self.owned.spawn_workers.clone(),
             request,
             args_payload,
+            execution_control,
         ))
     }
 
     fn invoke_actor<'a>(
         &'a self,
         request: capability_contract::ActorInvocationRequest,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, capability_contract::ActorInvocationOutcome>
     {
-        Box::pin(invoke_actor_method(self.owned.clone(), request))
+        Box::pin(invoke_actor_method(
+            self.owned.clone(),
+            request,
+            execution_control,
+        ))
     }
 }
 
@@ -226,8 +241,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         &'a self,
         request: ActorGetOrCreateControlRequest,
         bootstrap_payload: Vec<u8>,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             root_result_into_capability(
                 concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
                     .get_or_create(request, bootstrap_payload)
@@ -241,8 +258,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         &'a self,
         request: ActorReplaceControlRequest,
         bootstrap_payload: Vec<u8>,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             root_result_into_capability(
                 concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
                     .replace(request, bootstrap_payload)
@@ -255,8 +274,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
     fn find_actor<'a>(
         &'a self,
         request: ActorFindControlRequest,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, Option<ActorRef>> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             root_result_into_capability(
                 concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
                     .find(request)
@@ -269,8 +290,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
     fn remove_actor<'a>(
         &'a self,
         request: ActorRemoveControlRequest,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, bool> {
         Box::pin(async move {
+            let _execution_control = execution_control;
             root_result_into_capability(
                 concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
                     .remove(request)
@@ -284,27 +307,35 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         &'a self,
         request: SpawnSubmitControlRequest,
         args_payload: Vec<u8>,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ()> {
         Box::pin(submit_spawn_and_wake(
             concrete_actor_context_from_owned(&self.0),
             self.0.spawn_workers.clone(),
             request,
             args_payload,
+            execution_control,
         ))
     }
 
     fn invoke_actor<'a>(
         &'a self,
         request: capability_contract::ActorInvocationRequest,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, capability_contract::ActorInvocationOutcome>
     {
-        Box::pin(invoke_actor_method(self.0.clone(), request))
+        Box::pin(invoke_actor_method(
+            self.0.clone(),
+            request,
+            execution_control,
+        ))
     }
 }
 
 async fn invoke_actor_method(
     parts: RuntimeOwnedActorParts,
     request: capability_contract::ActorInvocationRequest,
+    execution_control: capability_contract::OwnedExecutionControl,
 ) -> capability_contract::CapabilityResult<capability_contract::ActorInvocationOutcome> {
     use base64::Engine as _;
     use skiff_runtime_transport::actor_method::{
@@ -316,6 +347,7 @@ async fn invoke_actor_method(
     use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
     use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
+    let _execution_control = execution_control;
     let invocation_id = request.identity.invocation_id.clone();
     let cancellation_correlation = request.identity.cancellation_correlation.clone();
     let deadline_timeout_ms = request.deadline.timeout_ms;
@@ -478,7 +510,9 @@ async fn submit_spawn_and_wake(
     spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     request: SpawnSubmitControlRequest,
     args_payload: Vec<u8>,
+    execution_control: capability_contract::OwnedExecutionControl,
 ) -> capability_contract::CapabilityResult<()> {
+    let _execution_control = execution_control;
     let build_id = request.build_id.clone();
     root_result_into_capability(
         concrete::ActorClient::new(context)
@@ -520,7 +554,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let (parts, request, mut router_receiver, outbound) =
             actor_invocation_fixture(30_000, cancellation.clone(), "actor-invoke-cancel");
-        let invocation = invoke_actor_method(parts, request);
+        let invocation = invoke_actor_method(parts, request, test_execution_control());
         tokio::pin!(invocation);
 
         assert_actor_invoke_frame(&mut router_receiver, &mut invocation).await;
@@ -545,7 +579,7 @@ mod tests {
     async fn actor_method_deadline_remains_distinct_and_releases_lease() {
         let (parts, request, mut router_receiver, outbound) =
             actor_invocation_fixture(1, CancellationToken::new(), "actor-invoke-deadline");
-        let invocation = invoke_actor_method(parts, request);
+        let invocation = invoke_actor_method(parts, request, test_execution_control());
         tokio::pin!(invocation);
 
         assert_actor_invoke_frame(&mut router_receiver, &mut invocation).await;
@@ -574,7 +608,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let (parts, request, mut router_receiver, outbound) =
             actor_invocation_fixture(1, cancellation.clone(), "actor-invoke-biased");
-        let invocation = invoke_actor_method(parts, request);
+        let invocation = invoke_actor_method(parts, request, test_execution_control());
         tokio::pin!(invocation);
 
         assert_actor_invoke_frame(&mut router_receiver, &mut invocation).await;
@@ -625,8 +659,13 @@ mod tests {
             outbound_requests.as_ref(),
             CancellationToken::new(),
         );
-        let submit =
-            submit_spawn_and_wake(context, spawn_workers, spawn_submit_request(), Vec::new());
+        let submit = submit_spawn_and_wake(
+            context,
+            spawn_workers,
+            spawn_submit_request(),
+            Vec::new(),
+            test_execution_control(),
+        );
         tokio::pin!(submit);
 
         let rpc_id = tokio::select! {
@@ -685,8 +724,13 @@ mod tests {
             outbound_requests.as_ref(),
             CancellationToken::new(),
         );
-        let submit =
-            submit_spawn_and_wake(context, spawn_workers, spawn_submit_request(), Vec::new());
+        let submit = submit_spawn_and_wake(
+            context,
+            spawn_workers,
+            spawn_submit_request(),
+            Vec::new(),
+            test_execution_control(),
+        );
         tokio::pin!(submit);
 
         let rpc_id = tokio::select! {
@@ -875,5 +919,17 @@ mod tests {
             caller_target: Some("program.test".to_string()),
             max_queue_wait_ms: None,
         }
+    }
+
+    fn test_execution_control() -> capability_contract::OwnedExecutionControl {
+        use skiff_runtime_request::execution_budget::{ExecutionBudget, ExecutionBudgetConfig};
+
+        let budget = Arc::new(ExecutionBudget::new(
+            ExecutionBudgetConfig::disabled(),
+            None,
+        ));
+        let execution =
+            skiff_runtime_request::ExecutionControl::new(CancellationToken::new(), &budget);
+        super::super::execution_control(execution).owned()
     }
 }
