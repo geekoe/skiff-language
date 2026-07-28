@@ -162,10 +162,18 @@ fn string_type() -> LinkedTypeRef {
 }
 
 fn thread_type() -> LinkedTypeRef {
+    db_object_type("Thread")
+}
+
+fn raw_thread_type() -> LinkedTypeRef {
+    db_object_type("RawThread")
+}
+
+fn db_object_type(symbol: &str) -> LinkedTypeRef {
     LinkedTypeRef::DbObjectSymbol {
         symbol: ServiceSymbolRef {
             module_path: "svc.main".to_string(),
-            symbol: "Thread".to_string(),
+            symbol: symbol.to_string(),
         },
     }
 }
@@ -322,7 +330,7 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
     declarations.db.insert(
         "RawThread".to_string(),
         DbDeclarationIr {
-            type_ref: json_type(),
+            type_ref: raw_thread_type(),
             type_name: "RawThread".to_string(),
             collection_name: "RawThread".to_string(),
             kind: DbObjectKindIr::Object,

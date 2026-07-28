@@ -607,19 +607,46 @@ fn resolve_db_declaration(
         .types
         .iter()
         .filter(|(_, declaration)| declaration.type_index as usize == type_index);
-    let (symbol, declaration) = declarations.next().ok_or_else(|| {
+    let (local_symbol, declaration) = declarations.next().ok_or_else(|| {
         RuntimeError::InvalidArtifact(
             "DB target has no declaration for its exact type index".to_string(),
         )
     })?;
-    if declarations.next().is_some() || declaration.symbol != *symbol {
+    if declarations.next().is_some() {
         return Err(RuntimeError::InvalidArtifact(
             "DB target type index declaration is ambiguous".to_string(),
         ));
     }
-    let db = file.declarations.db.get(symbol).ok_or_else(|| {
+    let canonical_symbol = if file.module_path.is_empty() {
+        local_symbol.clone()
+    } else {
+        format!("{}.{}", file.module_path, local_symbol)
+    };
+    if declaration.symbol != *local_symbol && declaration.symbol != canonical_symbol {
+        return Err(RuntimeError::InvalidArtifact(
+            "DB target declaration symbol is not canonical for its exact type slot".to_string(),
+        ));
+    }
+    let db = file.declarations.db.get(local_symbol).ok_or_else(|| {
         RuntimeError::InvalidArtifact("DB target has no exact DB attachment".to_string())
     })?;
+    let attachment_matches = match &db.type_ref {
+        skiff_runtime_linked_program::LinkedTypeRef::Address { addr: attached } => {
+            attached == &addr
+        }
+        skiff_runtime_linked_program::LinkedTypeRef::LocalType {
+            type_index: attached,
+        } => *attached == type_index,
+        skiff_runtime_linked_program::LinkedTypeRef::DbObjectSymbol { symbol: attached } => {
+            attached.module_path == file.module_path && attached.symbol == *local_symbol
+        }
+        _ => false,
+    };
+    if !attachment_matches {
+        return Err(RuntimeError::InvalidArtifact(
+            "DB target attachment does not own its exact type slot".to_string(),
+        ));
+    }
     Ok(ResolvedRuntimeDbTarget {
         addr,
         declaration: db,
@@ -801,6 +828,77 @@ mod tests {
         let mut substituted_type = exact;
         substituted_type.type_index = 1;
         assert!(execution.resolve_db_target(&substituted_type).is_err());
+    }
+
+    #[test]
+    fn assembly_db_target_accepts_compiler_qualified_declaration_symbol() {
+        let (image, _) = compiler_shaped_projection_image();
+        let execution = RuntimeExecutionProjection::Assembly(
+            RuntimeAssemblyExecutionProjection::from_image(image),
+        );
+
+        let resolved = execution
+            .resolve_db_target(&projection_db_target())
+            .expect("qualified declaration symbol must resolve through its local map key");
+
+        assert_eq!(resolved.declaration.type_name, "ProjectionType");
+        assert_eq!(resolved.declaration.collection_name, "projection_type");
+    }
+
+    #[test]
+    fn db_target_declaration_alias_tampering_stays_fail_closed() {
+        let (image, _) = compiler_shaped_projection_image();
+        let projection = RuntimeAssemblyExecutionProjection::from_image(image);
+        let file = projection.storage.package_files[0][0].as_ref();
+        let addr = TypeAddr {
+            unit: UnitAddr::Package(0),
+            file: FileAddr::LoadedFileIndex(0),
+            type_index: 0,
+        };
+
+        let mut wrong_declaration = file.clone();
+        wrong_declaration
+            .declarations
+            .types
+            .get_mut("ProjectionType")
+            .expect("fixture declaration")
+            .symbol = "wrong.ProjectionType".to_string();
+        assert!(
+            resolve_db_declaration(&wrong_declaration, addr.clone(), 0).is_err(),
+            "non-canonical declaration symbol must be rejected"
+        );
+
+        let mut duplicate_slot = file.clone();
+        duplicate_slot.declarations.types.insert(
+            "ProjectionAlias".to_string(),
+            skiff_runtime_linked_program::linked::TypeDeclarationIr {
+                type_index: 0,
+                symbol: "projection.ProjectionAlias".to_string(),
+                source_span: None,
+            },
+        );
+        assert!(
+            resolve_db_declaration(&duplicate_slot, addr.clone(), 0).is_err(),
+            "two declarations claiming one exact type slot must be rejected"
+        );
+
+        let mut wrong_attachment = file.clone();
+        wrong_attachment
+            .declarations
+            .db
+            .get_mut("ProjectionType")
+            .expect("fixture DB attachment")
+            .type_ref = skiff_runtime_linked_program::LinkedTypeRef::Address {
+            addr: TypeAddr {
+                unit: UnitAddr::Package(0),
+                file: FileAddr::LoadedFileIndex(0),
+                type_index: 1,
+            },
+        };
+        assert!(
+            resolve_db_declaration(&wrong_attachment, addr, 0).is_err(),
+            "DB attachment targeting another type slot must be rejected"
+        );
     }
 
     #[test]
@@ -1037,6 +1135,25 @@ mod tests {
     }
 
     fn projection_image() -> (Arc<AssemblyExecutionImage>, String) {
+        projection_image_with_db_shape("ProjectionType", TypeRefIr::LocalType { type_index: 0 })
+    }
+
+    fn compiler_shaped_projection_image() -> (Arc<AssemblyExecutionImage>, String) {
+        projection_image_with_db_shape(
+            "projection.ProjectionType",
+            TypeRefIr::DbObjectSymbol {
+                symbol: skiff_artifact_model::ServiceSymbolRef {
+                    module_path: "projection".to_string(),
+                    symbol: "ProjectionType".to_string(),
+                },
+            },
+        )
+    }
+
+    fn projection_image_with_db_shape(
+        declaration_symbol: &str,
+        db_type_ref: TypeRefIr,
+    ) -> (Arc<AssemblyExecutionImage>, String) {
         let mut file = FileIrUnit::empty("projection", "source:projection");
         file.file_ir_identity = "file:projection".to_string();
         file.type_table.push(TypeDeclIr {
@@ -1052,14 +1169,14 @@ mod tests {
             "ProjectionType".to_string(),
             ArtifactTypeDeclarationIr {
                 type_index: 0,
-                symbol: "ProjectionType".to_string(),
+                symbol: declaration_symbol.to_string(),
                 source_span: None,
             },
         );
         file.declarations.db.insert(
             "ProjectionType".to_string(),
             ArtifactDbDeclarationIr {
-                type_ref: TypeRefIr::LocalType { type_index: 0 },
+                type_ref: db_type_ref,
                 type_name: "ProjectionType".to_string(),
                 collection_name: "projection_type".to_string(),
                 kind: ArtifactDbObjectKindIr::Object,
