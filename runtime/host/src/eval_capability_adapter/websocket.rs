@@ -12,8 +12,6 @@ pub struct RuntimeOwnedWebsocketParts {
 pub(super) struct RuntimeConnectionRequestParts {
     pub(super) registry: Arc<ConnectionRequestRegistry>,
     pub(super) session: ConnectionRequestSession,
-    pub(super) cancellation: CancellationToken,
-    pub(super) deadline: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -104,17 +102,20 @@ impl eval_capabilities::WebsocketRequestCapabilityApi for RuntimeWebsocketReques
     {
         let owned = self.0.clone();
         Box::pin(async move {
-            let _execution_control = execution_control;
             let transport = owned.request_transport.as_ref().ok_or_else(|| {
                 RuntimeError::Unsupported(
                     "std.websocket.requestJsonToConnection execution is not attached".to_string(),
                 )
             })?;
-            let deadline_control = transport
-                .deadline
+            let scope = execution_control.execution_scope().map_err(|error| {
+                RuntimeError::InvalidArtifact(format!(
+                    "WebSocket request current execution scope is unavailable: {error}"
+                ))
+            })?;
+            let deadline = scope.effective_deadline().map(|deadline| deadline.at());
+            let deadline_control = deadline
                 .map(connection_request_deadline_control)
                 .transpose()?;
-            let deadline = transport.deadline.map(tokio::time::Instant::from_std);
             let context = concrete::WebsocketCapabilityContext::with_entry_id(
                 &owned.service_id,
                 owned.websocket_entry_id.as_deref(),
@@ -123,8 +124,7 @@ impl eval_capabilities::WebsocketRequestCapabilityApi for RuntimeWebsocketReques
             .with_request_transport(
                 transport.registry.as_ref(),
                 &transport.session,
-                &transport.cancellation,
-                deadline,
+                &scope,
                 deadline_control.as_ref(),
             );
             Ok(context

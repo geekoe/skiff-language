@@ -26,14 +26,11 @@ async fn connection_request_response_demux_uses_exact_router_session() {
     )
     .expect("test session");
     let cancellation = skiff_runtime_capability_context::CancellationSource::new();
+    let scope =
+        skiff_runtime_capability_context::ExecutionScope::request(cancellation.token(), None);
     let mut pending = host
         .connection_requests
-        .install(
-            session,
-            cancellation.token(),
-            None,
-            std::sync::Arc::new(|_, _| Ok(())),
-        )
+        .install(session, scope, std::sync::Arc::new(|_, _| Ok(())))
         .expect("pending request");
     let request_id = pending.request_id().to_string();
     let frame = encode_connection_response_frame(

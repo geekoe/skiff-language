@@ -1,18 +1,17 @@
 use std::{
     collections::HashMap,
-    future,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex, Weak,
     },
 };
 
-use tokio::{
-    sync::oneshot,
-    time::{sleep_until, Instant},
-};
+use tokio::sync::oneshot;
 
-use crate::CancellationToken;
+use crate::{
+    ExecutionScope, ExecutionScopeLease, ExecutionScopeLeaseCompletion,
+    ExecutionScopeLeaseTerminal, ExecutionScopeTerminal,
+};
 
 const REQUEST_ID_PREFIX: &str = "skiff-connection-request-v1:opaque:";
 
@@ -111,14 +110,14 @@ struct PendingEntry {
     settled: AtomicBool,
     lease_active: AtomicBool,
     timer_active: AtomicBool,
+    scope_completion: ExecutionScopeLeaseCompletion,
 }
 
 pub struct PendingConnectionRequest {
     registry: Weak<RegistryInner>,
     entry: Arc<PendingEntry>,
     receiver: oneshot::Receiver<ConnectionRequestTerminal>,
-    cancellation: CancellationToken,
-    deadline: Option<Instant>,
+    scope_lease: Option<ExecutionScopeLease>,
     finished: bool,
 }
 
@@ -138,8 +137,7 @@ impl ConnectionRequestRegistry {
     pub fn install(
         &self,
         session: ConnectionRequestSession,
-        cancellation: CancellationToken,
-        deadline: Option<Instant>,
+        scope: ExecutionScope,
         cancel_sender: ConnectionRequestCancelSender,
     ) -> Result<PendingConnectionRequest, ConnectionRequestRegistryError> {
         let mut pending = lock(&self.inner.pending);
@@ -157,7 +155,8 @@ impl ConnectionRequestRegistry {
             .map_err(|_| ConnectionRequestRegistryError::CorrelationExhausted)?;
         let request_id = format!("{REQUEST_ID_PREFIX}{correlation}");
         let (sender, receiver) = oneshot::channel();
-        let timer_active = deadline.is_some();
+        let timer_active = scope.effective_deadline().is_some();
+        let (scope_lease, scope_completion) = scope.acquire_lease();
         let entry = Arc::new(PendingEntry {
             request_id: request_id.clone(),
             session,
@@ -166,6 +165,7 @@ impl ConnectionRequestRegistry {
             settled: AtomicBool::new(false),
             lease_active: AtomicBool::new(true),
             timer_active: AtomicBool::new(timer_active),
+            scope_completion,
         });
         pending.insert(request_id, entry.clone());
         self.inner.active_leases.fetch_add(1, Ordering::AcqRel);
@@ -178,8 +178,7 @@ impl ConnectionRequestRegistry {
             registry: Arc::downgrade(&self.inner),
             entry,
             receiver,
-            cancellation,
-            deadline,
+            scope_lease: Some(scope_lease),
             finished: false,
         })
     }
@@ -270,60 +269,47 @@ impl PendingConnectionRequest {
             return ConnectionRequestTerminal::ProtocolError;
         }
 
-        let deadline = self.deadline;
-        let deadline_wait = async move {
-            match deadline {
-                Some(deadline) => sleep_until(deadline).await,
-                None => future::pending().await,
-            }
-        };
-        tokio::pin!(deadline_wait);
+        let scope_lease = self
+            .scope_lease
+            .take()
+            .expect("an unfinished connection request owns one scope lease");
+        let scope_wait = scope_lease.wait();
+        tokio::pin!(scope_wait);
 
         let terminal = tokio::select! {
             biased;
-            _ = self.cancellation.wait_cancelled() => {
-                self.cancel_and_settle(
-                    ConnectionRequestCancelReason::CallerCancel,
-                    ConnectionRequestTerminal::AncestorCancelled,
-                );
-                receive_terminal(&mut self.receiver).await
-            }
-            _ = &mut deadline_wait => {
-                self.cancel_and_settle(
-                    ConnectionRequestCancelReason::DeadlineExceeded,
-                    ConnectionRequestTerminal::DeadlineExceeded,
-                );
-                receive_terminal(&mut self.receiver).await
-            }
             result = &mut self.receiver => {
                 result.unwrap_or(ConnectionRequestTerminal::TransportUnavailable)
             }
+            scope_terminal = &mut scope_wait => {
+                self.scope_terminal_and_settle(scope_terminal);
+                receive_terminal(&mut self.receiver).await
+            }
         };
         self.finished = true;
-        self.release_lease();
         terminal
     }
 
-    fn cancel_and_settle(
-        &self,
-        reason: ConnectionRequestCancelReason,
-        terminal: ConnectionRequestTerminal,
-    ) {
+    fn scope_terminal_and_settle(&self, scope_terminal: ExecutionScopeLeaseTerminal) {
+        let ExecutionScopeLeaseTerminal::Control(scope_terminal) = scope_terminal else {
+            return;
+        };
+        let (reason, terminal) = match scope_terminal {
+            ExecutionScopeTerminal::AncestorCancelled => (
+                ConnectionRequestCancelReason::CallerCancel,
+                ConnectionRequestTerminal::AncestorCancelled,
+            ),
+            ExecutionScopeTerminal::LocalDeadlineExceeded(_)
+            | ExecutionScopeTerminal::InheritedDeadlineExceeded(_) => (
+                ConnectionRequestCancelReason::DeadlineExceeded,
+                ConnectionRequestTerminal::DeadlineExceeded,
+            ),
+        };
         let Some(registry) = self.registry.upgrade() else {
             return;
         };
         if settle(&registry, &self.entry, terminal) {
-            self.release_lease();
             let _ = (self.entry.cancel_sender)(&self.entry.request_id, reason);
-        }
-    }
-
-    fn release_lease(&self) {
-        if !self.entry.lease_active.swap(false, Ordering::AcqRel) {
-            return;
-        }
-        if let Some(registry) = self.registry.upgrade() {
-            registry.active_leases.fetch_sub(1, Ordering::AcqRel);
         }
     }
 }
@@ -331,12 +317,19 @@ impl PendingConnectionRequest {
 impl Drop for PendingConnectionRequest {
     fn drop(&mut self) {
         if !self.finished {
-            self.cancel_and_settle(
-                ConnectionRequestCancelReason::CallerCancel,
-                ConnectionRequestTerminal::AncestorCancelled,
-            );
+            if let Some(registry) = self.registry.upgrade() {
+                if settle(
+                    &registry,
+                    &self.entry,
+                    ConnectionRequestTerminal::AncestorCancelled,
+                ) {
+                    let _ = (self.entry.cancel_sender)(
+                        &self.entry.request_id,
+                        ConnectionRequestCancelReason::CallerCancel,
+                    );
+                }
+            }
         }
-        self.release_lease();
     }
 }
 
@@ -364,6 +357,10 @@ fn settle(
     if entry.timer_active.swap(false, Ordering::AcqRel) {
         registry.active_timers.fetch_sub(1, Ordering::AcqRel);
     }
+    if entry.lease_active.swap(false, Ordering::AcqRel) {
+        registry.active_leases.fetch_sub(1, Ordering::AcqRel);
+    }
+    entry.scope_completion.complete();
     if let Some(sender) = lock(&entry.sender).take() {
         let _ = sender.send(terminal);
     }

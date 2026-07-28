@@ -189,8 +189,6 @@ impl RuntimeAssemblyExecutionContext {
             self.router_sender.as_ref(),
             Arc::clone(&self.connection_requests),
             self.router_session.clone(),
-            execution.cancellation_token(),
-            execution.deadline(),
         );
         let actor = actor_from_request(
             self.runtime_id.as_str(),
@@ -242,8 +240,6 @@ impl RuntimeAssemblyExecutionContext {
             self.router_sender.as_ref(),
             Arc::clone(&self.connection_requests),
             self.router_session.clone(),
-            execution.cancellation_token(),
-            execution.deadline(),
         ))
         .with_runtime_assembly_target(eval_target.clone())
     }

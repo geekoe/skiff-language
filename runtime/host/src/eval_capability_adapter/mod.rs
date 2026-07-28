@@ -44,6 +44,8 @@ mod actor;
 mod actor_method_adapter;
 mod assembly_execution_context;
 mod assembly_request_adapter;
+#[cfg(test)]
+mod carrier_delivery_tests;
 mod config;
 mod downcast;
 mod effects;

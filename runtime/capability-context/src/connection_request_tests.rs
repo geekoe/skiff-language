@@ -1,18 +1,37 @@
 use std::{sync::Arc, time::Duration};
 
+use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
 use tokio::sync::mpsc;
 
 use crate::{
     CancellationSource, ConnectionRequestCancelReason, ConnectionRequestRegistry,
-    ConnectionRequestSession, ConnectionRequestTerminal,
+    ConnectionRequestSession, ConnectionRequestTerminal, ExecutionScope,
 };
 
 fn session(value: &str) -> ConnectionRequestSession {
     ConnectionRequestSession::new(value).expect("session token")
 }
 
+fn request_scope(cancellation: &CancellationSource) -> ExecutionScope {
+    ExecutionScope::request(cancellation.token(), None)
+}
+
+fn derived_scope(
+    cancellation: &CancellationSource,
+    deadline: tokio::time::Instant,
+) -> ExecutionScope {
+    request_scope(cancellation)
+        .derive(
+            deadline.into_std(),
+            InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::RuntimeControlFlow,
+            },
+        )
+        .expect("derived request scope")
+}
+
 #[tokio::test]
-async fn connection_request_cancel_wins_and_late_response_cannot_reopen_pending() {
+async fn f445h_i6_connection_request_scope_ancestor_stop_wins_and_late_response_is_fenced() {
     let registry = Arc::new(ConnectionRequestRegistry::new(8));
     let (cancel_tx, mut cancel_rx) = mpsc::unbounded_channel();
     let cancellation = CancellationSource::new();
@@ -21,8 +40,7 @@ async fn connection_request_cancel_wins_and_late_response_cannot_reopen_pending(
     let mut pending = registry
         .install(
             session.clone(),
-            cancellation.token(),
-            None,
+            request_scope(&cancellation),
             Arc::new(move |request_id, reason| {
                 cancel_tx
                     .send((
@@ -64,16 +82,44 @@ async fn connection_request_cancel_wins_and_late_response_cannot_reopen_pending(
 }
 
 #[tokio::test]
-async fn connection_request_deadline_cleans_pending_and_emits_dedicated_cancel() {
+async fn f445h_i6_connection_request_scope_failed_hint_does_not_change_local_terminal() {
+    let registry = ConnectionRequestRegistry::new(8);
+    let cancellation = CancellationSource::new();
+    let scope = request_scope(&cancellation);
+    let scope_observer = scope.clone();
+    let session = session("session-hint-failure");
+    let mut pending = registry
+        .install(session, scope, Arc::new(|_, _| Err(())))
+        .expect("request lease");
+
+    cancellation.cancel();
+    assert_eq!(
+        pending.wait().await,
+        ConnectionRequestTerminal::AncestorCancelled
+    );
+    assert_eq!(registry.pending_count(), 0);
+    assert_eq!(registry.active_lease_count(), 0);
+    assert_eq!(registry.active_timer_count(), 0);
+    assert_eq!(
+        scope_observer.lifecycle_snapshot(),
+        crate::ExecutionScopeLifecycleSnapshot::default()
+    );
+}
+
+#[tokio::test]
+async fn f445h_i6_connection_request_scope_derived_deadline_cleans_all_owners_before_hint() {
     let registry = Arc::new(ConnectionRequestRegistry::new(8));
     let (cancel_tx, mut cancel_rx) = mpsc::unbounded_channel();
     let session = session("session-deadline");
+    let cancellation = CancellationSource::new();
     let observed_registry = registry.clone();
     let mut pending = registry
         .install(
             session,
-            CancellationSource::new().token(),
-            Some(tokio::time::Instant::now() + Duration::from_millis(1)),
+            derived_scope(
+                &cancellation,
+                tokio::time::Instant::now() + Duration::from_millis(1),
+            ),
             Arc::new(move |request_id, reason| {
                 cancel_tx
                     .send((
@@ -109,15 +155,16 @@ async fn connection_request_deadline_cleans_pending_and_emits_dedicated_cancel()
 }
 
 #[tokio::test]
-async fn connection_request_session_fence_rejects_reconnect_and_settles_disconnect() {
+async fn f445h_i6_connection_request_scope_session_fence_rejects_reconnect_and_settles_disconnect()
+{
     let registry = ConnectionRequestRegistry::new(8);
     let old_session = session("runtime-a/session-1");
     let new_session = session("runtime-a/session-2");
+    let cancellation = CancellationSource::new();
     let mut pending = registry
         .install(
             old_session.clone(),
-            CancellationSource::new().token(),
-            None,
+            request_scope(&cancellation),
             Arc::new(|_, _| Ok(())),
         )
         .expect("request lease");
@@ -148,14 +195,53 @@ async fn connection_request_session_fence_rejects_reconnect_and_settles_disconne
 }
 
 #[tokio::test]
-async fn connection_request_correlation_ids_are_never_reused_within_registry_lifetime() {
+async fn f445h_i6_connection_request_scope_response_first_beats_ready_deadline_and_duplicates() {
+    let registry = ConnectionRequestRegistry::new(8);
+    let session = session("session-response-first");
+    let cancellation = CancellationSource::new();
+    let scope = derived_scope(&cancellation, tokio::time::Instant::now());
+    let scope_observer = scope.clone();
+    let mut pending = registry
+        .install(
+            session.clone(),
+            scope,
+            Arc::new(|_, _| panic!("response winner must not emit an internal stop hint")),
+        )
+        .expect("pending request");
+    let request_id = pending.request_id().to_string();
+
+    assert!(registry.complete(
+        &session,
+        &request_id,
+        ConnectionRequestTerminal::Success(b"response".to_vec())
+    ));
+    assert!(!registry.complete(
+        &session,
+        &request_id,
+        ConnectionRequestTerminal::Success(b"duplicate".to_vec())
+    ));
+    assert_eq!(
+        pending.wait().await,
+        ConnectionRequestTerminal::Success(b"response".to_vec())
+    );
+    assert_eq!(registry.pending_count(), 0);
+    assert_eq!(registry.active_lease_count(), 0);
+    assert_eq!(registry.active_timer_count(), 0);
+    assert_eq!(
+        scope_observer.lifecycle_snapshot(),
+        crate::ExecutionScopeLifecycleSnapshot::default()
+    );
+}
+
+#[tokio::test]
+async fn f445h_i6_connection_request_scope_correlation_ids_are_never_reused() {
     let registry = ConnectionRequestRegistry::new(8);
     let session = session("session-monotonic");
+    let first_cancellation = CancellationSource::new();
     let first = registry
         .install(
             session.clone(),
-            CancellationSource::new().token(),
-            None,
+            request_scope(&first_cancellation),
             Arc::new(|_, _| Ok(())),
         )
         .expect("first request");
@@ -167,8 +253,7 @@ async fn connection_request_correlation_ids_are_never_reused_within_registry_lif
     let mut second = registry
         .install(
             session.clone(),
-            CancellationSource::new().token(),
-            None,
+            request_scope(&CancellationSource::new()),
             Arc::new(|_, _| Ok(())),
         )
         .expect("second request");
@@ -189,15 +274,13 @@ async fn connection_request_correlation_ids_are_never_reused_within_registry_lif
 }
 
 #[tokio::test]
-async fn connection_request_registry_drop_settles_accepted_waiter_as_transport_unavailable() {
+async fn f445h_i6_connection_request_scope_registry_drop_settles_waiter_and_releases_scope() {
     let registry = ConnectionRequestRegistry::new(8);
+    let cancellation = CancellationSource::new();
+    let scope = request_scope(&cancellation);
+    let scope_observer = scope.clone();
     let mut pending = registry
-        .install(
-            session("session-drop"),
-            CancellationSource::new().token(),
-            None,
-            Arc::new(|_, _| Ok(())),
-        )
+        .install(session("session-drop"), scope, Arc::new(|_, _| Ok(())))
         .expect("accepted request");
     assert_eq!(registry.pending_count(), 1);
     assert_eq!(registry.active_lease_count(), 1);
@@ -206,5 +289,9 @@ async fn connection_request_registry_drop_settles_accepted_waiter_as_transport_u
     assert_eq!(
         pending.wait().await,
         ConnectionRequestTerminal::TransportUnavailable
+    );
+    assert_eq!(
+        scope_observer.lifecycle_snapshot(),
+        crate::ExecutionScopeLifecycleSnapshot::default()
     );
 }
