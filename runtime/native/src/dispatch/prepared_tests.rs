@@ -16,8 +16,9 @@ use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
     ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationToken,
     ConnectionRequestTerminal, ExecutionControl, ExecutionControlApi, ExecutionControlResult,
-    FileCapabilityFuture, FileSourceStreamContext, NativeCapabilityContexts, OwnedExecutionControl,
-    OwnedExecutionControlApi, StreamConsumerCleanup, StreamRuntime,
+    ExecutionScope, ExecutionScopeAccessError, FileCapabilityFuture, FileSourceStreamContext,
+    NativeCapabilityContexts, OwnedExecutionControl, OwnedExecutionControlApi,
+    StreamConsumerCleanup, StreamRuntime,
 };
 use skiff_runtime_model::{
     addr::{FileAddr, TypeAddr, UnitAddr},
@@ -59,13 +60,16 @@ struct CountingTimeContext {
 struct PreparedTestExecutionControl {
     cancelled: Arc<AtomicBool>,
     cancellation: CancellationToken,
+    scope: ExecutionScope,
 }
 
 impl PreparedTestExecutionControl {
     fn owned() -> OwnedExecutionControl {
+        let cancellation = CancellationToken::new();
         OwnedExecutionControl::new(Self {
-            cancelled: Arc::new(AtomicBool::new(false)),
-            cancellation: CancellationToken::new(),
+            cancelled: cancellation.cancel_flag(),
+            scope: ExecutionScope::request(cancellation.clone(), None),
+            cancellation,
         })
     }
 }
@@ -84,7 +88,13 @@ impl ExecutionControlApi for PreparedTestExecutionControl {
     }
 
     fn deadline(&self) -> Option<std::time::Instant> {
-        None
+        self.scope
+            .effective_deadline()
+            .map(|deadline| deadline.at())
+    }
+
+    fn execution_scope(&self) -> std::result::Result<ExecutionScope, ExecutionScopeAccessError> {
+        Ok(self.scope.clone())
     }
 
     fn check_cancelled(&self) -> ExecutionControlResult<()> {
@@ -121,7 +131,11 @@ impl OwnedExecutionControlApi for PreparedTestExecutionControl {
     }
 
     fn deadline(&self) -> Option<std::time::Instant> {
-        None
+        ExecutionControlApi::deadline(self)
+    }
+
+    fn execution_scope(&self) -> std::result::Result<ExecutionScope, ExecutionScopeAccessError> {
+        Ok(self.scope.clone())
     }
 }
 
