@@ -18,7 +18,9 @@ use mongodb::{
     },
 };
 use serde_json::{json, Map, Value};
-use skiff_artifact_model::DbMetadataIr;
+use skiff_artifact_model::{
+    DbMetadataIr, FileIrRef, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
+};
 use skiff_runtime_boundary::{
     db as db_boundary,
     recoverable::{
@@ -31,9 +33,10 @@ use skiff_runtime_boundary::{
     Result as BoundaryResult,
 };
 use skiff_runtime_capability_context::{
-    DbCapabilityContext, DbCapabilityError, DbDocument, DbKey, DbOneSelector, DbOrderDirection,
-    DbOrderEntry, DbProviderBuildInput, DbProviderConfig, DbProviderFactory, DbQuery, FieldPath,
-    ServiceDbChange, ServiceDbFindOptions,
+    DbCapabilityContext, DbCapabilityError, DbCapabilityTarget, DbCapabilityTargetId, DbDocument,
+    DbKey, DbOneSelector, DbOrderDirection, DbOrderEntry, DbProviderBuildInput, DbProviderConfig,
+    DbProviderFactory, DbProviderTargetMetadata, DbQuery, FieldPath, ServiceDbChange,
+    ServiceDbFindOptions,
 };
 use skiff_runtime_model::{
     error::WirePayload,
@@ -118,6 +121,43 @@ fn db_metadata_entry(value: Value) -> DbMetadataIr {
     entries
         .pop()
         .expect("test db metadata should contain one entry")
+}
+
+fn provider_metadata(value: Value) -> Vec<DbProviderTargetMetadata> {
+    provider_metadata_from_ir(db_metadata(value))
+}
+
+fn provider_metadata_from_ir(entries: Vec<DbMetadataIr>) -> Vec<DbProviderTargetMetadata> {
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, metadata)| {
+            let module_path = metadata.module_path.clone();
+            let type_name = metadata.type_name.clone();
+            DbProviderTargetMetadata {
+                target: test_db_target(index, &module_path, &type_name),
+                metadata,
+            }
+        })
+        .collect()
+}
+
+fn test_db_target(index: usize, module_path: &str, type_name: &str) -> DbCapabilityTarget {
+    DbCapabilityTarget::new(
+        DbCapabilityTargetId {
+            package_artifact_ref: PackageArtifactRef {
+                package_id: format!("test.local/provider-{type_name}-{index}"),
+                package_version: "1.0.0".to_string(),
+                package_build_id: PackageBuildId::new(format!("test-build-{type_name}-{index}")),
+                package_local_abi_identity: PackageLocalAbiIdentity::new(format!(
+                    "test-abi-{type_name}-{index}"
+                )),
+            },
+            file_ir_ref: FileIrRef::new(format!("test-file-{type_name}-{index}"), module_path),
+            type_index: index,
+        },
+        type_name,
+    )
 }
 
 fn normalize_db_metadata_entry(entry: &mut Value) {
@@ -469,7 +509,7 @@ fn object_metadata_accepts_retention_field() {
         ServiceDbRuntime::new(
             "example.com/test".to_string(),
             "mongodb://127.0.0.1:27017".to_string(),
-            &object_metadata_with_retention(retention),
+            &provider_metadata_from_ir(object_metadata_with_retention(retention)),
         )
         .expect("object DB metadata should allow retention");
     }
@@ -648,13 +688,13 @@ fn service_db_runtime_keeps_database_name_and_metadata_isolated_when_client_cell
     let account = ServiceDbRuntime::new(
         service_id("account"),
         mongo_url.clone(),
-        &object_metadata_for_type("AccountOnly"),
+        &provider_metadata_from_ir(object_metadata_for_type("AccountOnly")),
     )
     .expect("account service DB runtime should build");
     let registry = ServiceDbRuntime::new(
         service_id("registry"),
         mongo_url,
-        &object_metadata_for_type("RegistryOnly"),
+        &provider_metadata_from_ir(object_metadata_for_type("RegistryOnly")),
     )
     .expect("registry service DB runtime should build");
 
@@ -666,25 +706,27 @@ fn service_db_runtime_keeps_database_name_and_metadata_isolated_when_client_cell
         account.database_name, registry.database_name,
         "different service ids must keep separate Mongo database names"
     );
+    let account_target = test_db_target(0, "", "AccountOnly");
+    let registry_target = test_db_target(0, "", "RegistryOnly");
     account
         .metadata
-        .collection_for_type("AccountOnly")
+        .collection_for_target(&account_target)
         .expect("account metadata should remain on account runtime");
     assert!(
         account
             .metadata
-            .collection_for_type("RegistryOnly")
+            .collection_for_target(&registry_target)
             .is_err(),
         "registry metadata must not leak into account runtime"
     );
     registry
         .metadata
-        .collection_for_type("RegistryOnly")
+        .collection_for_target(&registry_target)
         .expect("registry metadata should remain on registry runtime");
     assert!(
         registry
             .metadata
-            .collection_for_type("AccountOnly")
+            .collection_for_target(&account_target)
             .is_err(),
         "account metadata must not leak into registry runtime"
     );
@@ -788,7 +830,7 @@ fn object_metadata_uses_typed_collection_name_from_service_unit_db() {
 
 #[test]
 fn object_metadata_uses_final_collection_name_from_service_unit_db() {
-    let metadata = ServiceDbMetadata::from_runtime_program_db(&db_metadata(json!([
+    let metadata = ServiceDbMetadata::from_runtime_program_db(&provider_metadata(json!([
         {
             "modulePath": "httpSession.db",
             "kind": "object",
@@ -803,15 +845,8 @@ fn object_metadata_uses_final_collection_name_from_service_unit_db() {
 
     assert_eq!(
         metadata
-            .collection_for_type("Session")
-            .expect("Session metadata should resolve")
-            .collection_name,
-        "registry_session"
-    );
-    assert_eq!(
-        metadata
-            .collection_for_type("httpSession.db.Session")
-            .expect("canonical Session metadata should resolve")
+            .collection_for_target(&test_db_target(0, "httpSession.db", "Session"))
+            .expect("exact Session metadata should resolve")
             .collection_name,
         "registry_session"
     );
@@ -822,7 +857,7 @@ fn object_metadata_rejects_reserved_skiff_collection_name() {
     let error = ServiceDbRuntime::new(
         "example.com/test".to_string(),
         "mongodb://127.0.0.1:27017".to_string(),
-        &db_metadata(json!([
+        &provider_metadata(json!([
             {
                 "kind": "object",
                 "typeName": "File",
@@ -894,7 +929,7 @@ fn object_metadata_rejects_reserved_legacy_skiff_type_key_and_field_names() {
     let key_error = ServiceDbRuntime::new(
         "example.com/test".to_string(),
         "mongodb://127.0.0.1:27017".to_string(),
-        &db_metadata(json!([
+        &provider_metadata(json!([
             {
                 "kind": "object",
                 "typeName": "Thread",
@@ -914,7 +949,7 @@ fn object_metadata_rejects_reserved_legacy_skiff_type_key_and_field_names() {
     let field_error = ServiceDbRuntime::new(
         "example.com/test".to_string(),
         "mongodb://127.0.0.1:27017".to_string(),
-        &db_metadata(json!([
+        &provider_metadata(json!([
             {
                 "kind": "object",
                 "typeName": "Thread",
@@ -934,7 +969,7 @@ fn object_metadata_rejects_reserved_legacy_skiff_type_key_and_field_names() {
 
 #[test]
 fn object_metadata_tracks_direct_and_nullable_immutable_file_fields() {
-    let metadata = ServiceDbMetadata::from_runtime_program_db(&db_metadata(json!([
+    let metadata = ServiceDbMetadata::from_runtime_program_db(&provider_metadata(json!([
         {
             "kind": "object",
             "typeName": "Interaction",
@@ -966,7 +1001,7 @@ fn object_metadata_tracks_direct_and_nullable_immutable_file_fields() {
     .expect("metadata should parse");
 
     let binding = metadata
-        .collection_for_type("Interaction")
+        .collection_for_target(&test_db_target(0, "", "Interaction"))
         .expect("Interaction should resolve");
     assert_eq!(
         binding.immutable_file_paths,
@@ -1050,7 +1085,7 @@ fn object_metadata_builds_db_boundary_plans_for_key_and_fields() {
 
 #[test]
 fn object_metadata_parses_lease_slots() {
-    let metadata = ServiceDbMetadata::from_runtime_program_db(&db_metadata(json!([
+    let metadata = ServiceDbMetadata::from_runtime_program_db(&provider_metadata(json!([
         {
             "kind": "object",
             "typeName": "Thread",
@@ -1067,7 +1102,7 @@ fn object_metadata_parses_lease_slots() {
     .expect("db metadata should parse");
 
     let binding = metadata
-        .collection_for_type("Thread")
+        .collection_for_target(&test_db_target(0, "", "Thread"))
         .expect("Thread metadata should resolve");
     let writer = binding
         .lease("writer")
@@ -1107,8 +1142,8 @@ fn object_metadata_rejects_unsafe_lease_slot_names() {
 }
 
 #[test]
-fn metadata_lookup_supports_canonical_type_without_overwriting_bare_name() {
-    let metadata = ServiceDbMetadata::from_runtime_program_db(&db_metadata(json!([
+fn metadata_lookup_uses_exact_target_identity_instead_of_type_name() {
+    let metadata = ServiceDbMetadata::from_runtime_program_db(&provider_metadata(json!([
         {
             "modulePath": "internal.models",
             "kind": "object",
@@ -1132,27 +1167,124 @@ fn metadata_lookup_supports_canonical_type_without_overwriting_bare_name() {
 
     assert_eq!(
         metadata
-            .collection_for_type("internal.models.Thread")
-            .expect("canonical models Thread should resolve")
+            .collection_for_target(&test_db_target(0, "internal.models", "Thread"))
+            .expect("exact models Thread should resolve")
             .collection_name,
         "threads_a"
     );
     assert_eq!(
         metadata
-            .collection_for_type("internal.archive.Thread")
-            .expect("canonical archive Thread should resolve")
+            .collection_for_target(&test_db_target(1, "internal.archive", "Thread"))
+            .expect("exact archive Thread should resolve")
             .collection_name,
         "threads_b"
     );
 
     let error = metadata
-        .collection_for_type("Thread")
-        .expect_err("bare duplicate Thread lookup should be ambiguous");
+        .collection_for_target(&test_db_target(2, "internal.models", "Thread"))
+        .expect_err("substituted exact target must not resolve");
     assert!(
         error
             .to_string()
-            .contains("runtime program db metadata has ambiguous type Thread"),
+            .contains("does not declare the exact DB target"),
         "{error}"
+    );
+}
+
+#[test]
+fn metadata_keeps_identical_type_names_from_distinct_exact_targets_separate() {
+    let metadata = ServiceDbMetadata::from_runtime_program_db(&provider_metadata(json!([
+        {
+            "modulePath": "model",
+            "kind": "object",
+            "typeName": "Session",
+            "collectionName": "sessions_a",
+            "key": { "name": "id" },
+            "fields": [],
+            "indexes": []
+        },
+        {
+            "modulePath": "model",
+            "kind": "object",
+            "typeName": "Session",
+            "collectionName": "sessions_b",
+            "key": { "name": "id" },
+            "fields": [],
+            "indexes": []
+        }
+    ])))
+    .expect("distinct exact DB targets must not collide by display type name");
+
+    assert_eq!(
+        metadata
+            .collection_for_target(&test_db_target(0, "model", "Session"))
+            .expect("first exact Session target")
+            .collection_name,
+        "sessions_a"
+    );
+    assert_eq!(
+        metadata
+            .collection_for_target(&test_db_target(1, "model", "Session"))
+            .expect("second exact Session target")
+            .collection_name,
+        "sessions_b"
+    );
+}
+
+#[test]
+fn lease_guards_do_not_cross_distinct_exact_targets_with_the_same_type_name() {
+    let entries = provider_metadata(json!([
+        {
+            "modulePath": "model",
+            "kind": "object",
+            "typeName": "Session",
+            "collectionName": "sessions_a",
+            "key": { "name": "id" },
+            "fields": [],
+            "indexes": []
+        },
+        {
+            "modulePath": "model",
+            "kind": "object",
+            "typeName": "Session",
+            "collectionName": "sessions_b",
+            "key": { "name": "id" },
+            "fields": [],
+            "indexes": []
+        }
+    ]));
+    let first_target = entries[0].target.clone();
+    let second_target = entries[1].target.clone();
+    let metadata =
+        ServiceDbMetadata::from_runtime_program_db(&entries).expect("DB metadata should parse");
+    let first = metadata
+        .collection_for_target(&first_target)
+        .expect("first exact Session target");
+    let filter = doc! { "status": "open" };
+    let other_target_hold = DbLeaseHold {
+        target_key: second_target.lookup_key().to_string(),
+        type_name: "Session".to_string(),
+        key: db_key(json!("session-1")),
+        slot: "writer".to_string(),
+        token: "token-1".to_string(),
+    };
+    assert_eq!(
+        guarded_filter(first, filter.clone(), &[other_target_hold], 1000)
+            .expect("foreign exact target guard should be ignored"),
+        filter
+    );
+
+    let exact_target_hold = DbLeaseHold {
+        target_key: first_target.lookup_key().to_string(),
+        type_name: "Session".to_string(),
+        key: db_key(json!("session-1")),
+        slot: "writer".to_string(),
+        token: "token-1".to_string(),
+    };
+    assert_ne!(
+        guarded_filter(first, filter.clone(), &[exact_target_hold], 1000)
+            .expect("same exact target guard should fence"),
+        filter
     );
 }
 
@@ -1441,6 +1573,7 @@ fn guarded_filter_fences_held_lease_key() {
     let binding =
         DbCollectionMetadata::from_ir(&metadata[0], 0).expect("object metadata should parse");
     let hold = DbLeaseHold {
+        target_key: "Thread".to_string(),
         type_name: "Thread".to_string(),
         key: db_key(json!("thread-1")),
         slot: "writer".to_string(),
@@ -1514,6 +1647,7 @@ fn guarded_filter_ignores_other_type_leases() {
     let binding =
         DbCollectionMetadata::from_ir(&metadata[0], 0).expect("object metadata should parse");
     let hold = DbLeaseHold {
+        target_key: "Other".to_string(),
         type_name: "Other".to_string(),
         key: db_key(json!("thread-1")),
         slot: "writer".to_string(),
@@ -1998,7 +2132,7 @@ async fn service_db_runtime_create_and_find_runtime_roundtrips_local_interface()
     let runtime = ServiceDbRuntime::new(
         service_id,
         "mongodb://127.0.0.1:27017/?directConnection=true".to_string(),
-        &recoverable_provider_metadata_value(),
+        &provider_metadata_from_ir(recoverable_provider_metadata_value()),
     )
     .expect("service DB runtime should build");
     let database_name = runtime.database_name_for_test();
@@ -3037,7 +3171,7 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
         service_id: "example.com/credential".to_string(),
         state_namespace: "example~com~~credential".to_string(),
         config: DbProviderConfig::opaque(json!({ "mongoUrl": inert_mongo_url("encrypted") })),
-        runtime_program_db: valid.clone(),
+        runtime_program_db: provider_metadata_from_ir(valid.clone()),
     }) {
         Ok(_) => panic!("encrypted activation without keyring must fail"),
         Err(error) => error,
@@ -3052,7 +3186,7 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
             config: DbProviderConfig::opaque(
                 json!({ "mongoUrl": inert_mongo_url("encrypted-ok") }),
             ),
-            runtime_program_db: valid,
+            runtime_program_db: provider_metadata_from_ir(valid),
         })
         .expect("encrypted activation with keyring");
 }
@@ -3106,7 +3240,7 @@ fn forged_encrypted_metadata_rejects_nullable_recoverable_and_immutable_file_lan
 
 #[test]
 fn forged_encrypted_primary_key_field_fails_activation_even_with_keyring() {
-    let forged = db_metadata(json!([{
+    let forged = provider_metadata(json!([{
         "modulePath": "internal.credential",
         "kind": "object",
         "typeName": "Credential",

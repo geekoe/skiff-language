@@ -8,6 +8,7 @@ use super::metadata::DbCollectionMetadata;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DbLeaseHold {
+    pub target_key: String,
     pub type_name: String,
     pub key: DbKey,
     pub slot: String,
@@ -99,12 +100,9 @@ pub(super) fn matching_lease_guards<'a>(
     binding: &DbCollectionMetadata,
     guards: &'a [DbLeaseHold],
 ) -> Vec<&'a DbLeaseHold> {
-    let type_name = binding
-        .canonical_type_name()
-        .unwrap_or_else(|| binding.type_name.clone());
     guards
         .iter()
-        .filter(|guard| guard.type_name == type_name)
+        .filter(|guard| guard.target_key == binding.target_key)
         .collect()
 }
 

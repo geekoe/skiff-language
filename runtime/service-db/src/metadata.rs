@@ -9,7 +9,7 @@ use skiff_artifact_model::{
 use skiff_runtime_boundary::db as db_boundary;
 
 use skiff_runtime_capability_context::{
-    DbOrderDirection, DbOrderEntry, FieldPath, ServiceDbChange,
+    DbOrderDirection, DbOrderEntry, DbProviderTargetMetadata, FieldPath, ServiceDbChange,
 };
 
 use crate::{DbEncryptionCipher, Result, ServiceDbError};
@@ -17,12 +17,12 @@ use crate::{DbEncryptionCipher, Result, ServiceDbError};
 #[derive(Clone)]
 pub struct ServiceDbMetadata {
     collections: Vec<DbCollectionMetadata>,
-    collections_by_canonical_type: HashMap<String, usize>,
+    collections_by_target: HashMap<String, usize>,
 }
 
 #[derive(Clone)]
 pub struct DbCollectionMetadata {
-    pub module_path: Option<String>,
+    pub target_key: String,
     pub type_name: String,
     pub collection_name: String,
     pub key_field: String,
@@ -74,83 +74,63 @@ pub struct DbIndexMetadata {
 
 impl ServiceDbMetadata {
     #[cfg(any(test, feature = "test-support"))]
-    pub fn from_runtime_program_db(entries: &[DbMetadataIr]) -> Result<Self> {
+    pub fn from_runtime_program_db(entries: &[DbProviderTargetMetadata]) -> Result<Self> {
         Self::from_runtime_program_db_with_encryption(entries, "test.local/service", None)
     }
 
     pub fn from_runtime_program_db_with_encryption(
-        entries: &[DbMetadataIr],
+        entries: &[DbProviderTargetMetadata],
         storage_service_id: &str,
         encryption_cipher: Option<DbEncryptionCipher>,
     ) -> Result<Self> {
         let mut collections = Vec::new();
-        let mut collections_by_canonical_type = HashMap::new();
+        let mut collections_by_target = HashMap::new();
         for (index, entry) in entries.iter().enumerate() {
-            let binding = DbCollectionMetadata::from_ir_with_encryption(
-                entry,
+            let mut binding = DbCollectionMetadata::from_ir_with_encryption(
+                &entry.metadata,
                 index,
                 storage_service_id,
                 encryption_cipher.clone(),
             )?;
-            if let Some(canonical_type_name) = binding.canonical_type_name() {
-                if collections_by_canonical_type.contains_key(&canonical_type_name) {
-                    return Err(ServiceDbError::InvalidDbMetadata(format!(
-                        "runtime program db metadata has duplicate type {canonical_type_name}"
-                    )));
-                }
-                collections_by_canonical_type.insert(canonical_type_name, collections.len());
+            binding.target_key = entry.target.lookup_key().to_string();
+            if collections_by_target
+                .insert(entry.target.lookup_key().to_string(), collections.len())
+                .is_some()
+            {
+                return Err(ServiceDbError::InvalidDbMetadata(format!(
+                    "runtime program db metadata repeats exact target {}",
+                    entry.target.type_name
+                )));
             }
             collections.push(binding);
         }
         Ok(Self {
             collections,
-            collections_by_canonical_type,
+            collections_by_target,
         })
     }
 
-    pub fn collection_for_type(&self, type_name: &str) -> Result<&DbCollectionMetadata> {
-        if type_name.contains('.') {
-            if let Some(index) = self.collections_by_canonical_type.get(type_name) {
-                return Ok(&self.collections[*index]);
-            }
-            return Err(ServiceDbError::InvalidDbMetadata(format!(
-                "runtime program db metadata does not declare type {type_name}"
-            )));
-        }
-        let matches = self
-            .collections
-            .iter()
-            .filter(|binding| {
-                binding
-                    .type_name
-                    .rsplit('.')
-                    .next()
-                    .is_some_and(|short| short == type_name)
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn collection_for_target(
+        &self,
+        target: &skiff_runtime_capability_context::DbCapabilityTarget,
+    ) -> Result<&DbCollectionMetadata> {
+        self.collection_for_target_key(target.lookup_key())
+    }
+
+    pub fn collection_for_target_key(&self, target_key: &str) -> Result<&DbCollectionMetadata> {
+        self.collections_by_target
+            .get(target_key)
+            .and_then(|index| self.collections.get(*index))
+            .ok_or_else(|| {
+                ServiceDbError::InvalidDbMetadata(
+                    "runtime program db metadata does not declare the exact DB target".to_string(),
+                )
             })
-            .collect::<Vec<_>>();
-        match matches.as_slice() {
-            [binding] => Ok(binding),
-            [] => Err(ServiceDbError::InvalidDbMetadata(format!(
-                "runtime program db metadata does not declare type {type_name}"
-            ))),
-            _ => Err(ServiceDbError::InvalidDbMetadata(format!(
-                "runtime program db metadata has ambiguous type {type_name}"
-            ))),
-        }
     }
 }
 
 impl DbCollectionMetadata {
-    pub fn canonical_type_name(&self) -> Option<String> {
-        if self.type_name.contains('.') {
-            Some(self.type_name.clone())
-        } else {
-            self.module_path
-                .as_ref()
-                .map(|module_path| format!("{module_path}.{}", self.type_name))
-        }
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_ir(ir: &DbMetadataIr, index: usize) -> Result<Self> {
         Self::from_ir_with_encryption(ir, index, "test.local/service", None)
@@ -178,7 +158,10 @@ impl DbCollectionMetadata {
         let immutable_file_paths = immutable_file_paths(&fields);
         let indexes = parse_indexes(&ir.indexes, index)?;
         let metadata = Self {
-            module_path,
+            target_key: module_path
+                .as_ref()
+                .map(|module_path| format!("{module_path}.{type_name}"))
+                .unwrap_or_else(|| type_name.clone()),
             type_name,
             collection_name,
             key_field: key.name,

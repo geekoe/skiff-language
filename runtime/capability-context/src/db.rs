@@ -2,7 +2,7 @@ use std::{any::Any, collections::HashMap, error::Error, fmt, future::Future, pin
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use skiff_artifact_model::DbMetadataIr;
+use skiff_artifact_model::{DbMetadataIr, FileIrRef, PackageArtifactRef};
 use skiff_runtime_boundary::recoverable::RecoverableBehaviorHooks;
 use skiff_runtime_model::{
     error::{RuntimeErrorPayload, WirePayload},
@@ -277,7 +277,59 @@ pub struct DbProviderBuildInput {
     pub service_id: String,
     pub state_namespace: String,
     pub config: DbProviderConfig,
-    pub runtime_program_db: Vec<DbMetadataIr>,
+    pub runtime_program_db: Vec<DbProviderTargetMetadata>,
+}
+
+/// Runtime-only exact identity for one admitted DB object declaration.
+///
+/// This mirrors the already-linked `DbObjectTargetId` without becoming an artifact DTO or
+/// creating a dependency from capability-context back to linked-program.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DbCapabilityTargetId {
+    pub package_artifact_ref: PackageArtifactRef,
+    pub file_ir_ref: FileIrRef,
+    pub type_index: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DbCapabilityTarget {
+    pub target_id: DbCapabilityTargetId,
+    pub type_name: String,
+    lookup_key: String,
+}
+
+impl DbCapabilityTarget {
+    pub fn new(target_id: DbCapabilityTargetId, type_name: impl Into<String>) -> Self {
+        let type_name = type_name.into();
+        let lookup_key = exact_db_target_lookup_key(&target_id);
+        Self {
+            target_id,
+            type_name,
+            lookup_key,
+        }
+    }
+
+    pub fn lookup_key(&self) -> &str {
+        &self.lookup_key
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DbProviderTargetMetadata {
+    pub target: DbCapabilityTarget,
+    pub metadata: DbMetadataIr,
+}
+
+fn exact_db_target_lookup_key(target: &DbCapabilityTargetId) -> String {
+    let package = &target.package_artifact_ref;
+    let file = &target.file_ir_ref;
+    serde_json::to_string(&(
+        "skiff-db-object-target-v1",
+        package,
+        file,
+        target.type_index,
+    ))
+    .expect("exact DB target identity contains only serializable artifact facts")
 }
 
 #[derive(Debug)]

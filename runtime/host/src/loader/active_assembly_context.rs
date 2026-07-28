@@ -16,7 +16,8 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_activation::{ActivationContext, ActivationId};
 use skiff_runtime_capability_context::{
-    DbCapabilitySource, DbProviderBuildInput, DbProviderConfig, DbProviderSource,
+    DbCapabilitySource, DbCapabilityTarget, DbCapabilityTargetId, DbProviderBuildInput,
+    DbProviderConfig, DbProviderSource, DbProviderTargetMetadata,
 };
 use skiff_runtime_eval::{AdmittedPackageSchemaRecords, RuntimeAssemblyEvalResolver};
 use skiff_runtime_linker::{AssemblyLinkedCandidate, LinkedGatewayEntry};
@@ -619,7 +620,7 @@ fn activation_db_metadata(
     candidate: &AssemblyLinkedCandidate,
     root: &PackageBuildId,
     database_namespace: Option<&str>,
-) -> anyhow::Result<Vec<DbMetadataIr>> {
+) -> anyhow::Result<Vec<DbProviderTargetMetadata>> {
     let image = candidate.execution_image().shared_packages();
     let mut pending = vec![(root.clone(), true, None)];
     let mut visited = BTreeSet::new();
@@ -695,35 +696,106 @@ fn activation_db_metadata(
             continue;
         }
         for file in code.files() {
-            for declaration in file.declarations.db.values() {
-                metadata.push(DbMetadataIr {
-                    module_path: file.module_path.clone(),
-                    source_role: if is_root { "service" } else { "package" }.to_string(),
-                    package_id: (!is_root).then(|| code.artifact().package_id.clone()),
-                    package_version: (!is_root).then(|| code.artifact().package_version.clone()),
-                    file_ir_identity: Some(file.file_ir_identity.clone()),
-                    kind: declaration.kind,
-                    ty: declaration.type_ref.clone(),
-                    type_name: declaration.type_name.clone(),
-                    collection_name: projection
-                        .collection_names()
-                        .get(&declaration.collection_name)
-                        .expect("declared collection was projected")
-                        .clone(),
-                    key: Some(declaration.key.clone()),
-                    fields: declaration.fields.clone(),
-                    retention: declaration.retention.clone(),
-                    leases: declaration.leases.clone(),
-                    indexes: declaration
-                        .indexes
-                        .iter()
-                        .map(|index| DbMetadataIndexIr {
-                            name: index.name.clone(),
-                            unique: index.unique,
-                            fields: index.fields.clone(),
-                            where_expr: index.where_expr.clone(),
-                        })
-                        .collect(),
+            let mut file_refs = code.artifact().files.iter().filter(|reference| {
+                reference.file_ir_identity == file.file_ir_identity
+                    && reference.module_path == file.module_path
+                    && reference
+                        .source_ast_hash
+                        .as_deref()
+                        .is_none_or(|hash| hash == file.source_ast_hash)
+            });
+            let file_ir_ref = file_refs.next().cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "activation DB metadata package {build_id} file {} has no exact artifact File IR reference",
+                    file.file_ir_identity
+                )
+            })?;
+            if file_refs.next().is_some() {
+                anyhow::bail!(
+                    "activation DB metadata package {build_id} file {} has multiple exact artifact File IR references",
+                    file.file_ir_identity
+                );
+            }
+            for (symbol, declaration) in &file.declarations.db {
+                let declaration_symbol = match &declaration.type_ref {
+                    skiff_artifact_model::TypeRefIr::LocalType { .. } => symbol.as_str(),
+                    skiff_artifact_model::TypeRefIr::DbObjectSymbol { symbol: db_symbol }
+                        if db_symbol.module_path == file.module_path
+                            && db_symbol.symbol == *symbol =>
+                    {
+                        db_symbol.symbol.as_str()
+                    }
+                    _ => {
+                        anyhow::bail!(
+                            "activation DB metadata package {build_id} file {} declaration {symbol} does not name its exact local DB type",
+                            file.file_ir_identity
+                        );
+                    }
+                };
+                let Some(type_declaration) = file.declarations.types.get(declaration_symbol) else {
+                    anyhow::bail!(
+                        "activation DB metadata package {build_id} file {} declaration {symbol} has no exact local type declaration",
+                        file.file_ir_identity
+                    );
+                };
+                let type_index = type_declaration.type_index as usize;
+                let declared_type_index = match &declaration.type_ref {
+                    skiff_artifact_model::TypeRefIr::LocalType { type_index } => {
+                        Some(*type_index as usize)
+                    }
+                    _ => None,
+                };
+                if declared_type_index.is_some_and(|declared| declared != type_index)
+                    || file
+                        .type_table
+                        .get(type_index)
+                        .is_none_or(|ty| ty.name != declaration_symbol)
+                {
+                    anyhow::bail!(
+                        "activation DB metadata package {build_id} file {} declaration {symbol} has an inconsistent type index",
+                        file.file_ir_identity
+                    );
+                }
+                let target = DbCapabilityTarget::new(
+                    DbCapabilityTargetId {
+                        package_artifact_ref: code.artifact_ref().clone(),
+                        file_ir_ref: file_ir_ref.clone(),
+                        type_index,
+                    },
+                    declaration.type_name.clone(),
+                );
+                metadata.push(DbProviderTargetMetadata {
+                    target,
+                    metadata: DbMetadataIr {
+                        module_path: file.module_path.clone(),
+                        source_role: if is_root { "service" } else { "package" }.to_string(),
+                        package_id: (!is_root).then(|| code.artifact().package_id.clone()),
+                        package_version: (!is_root)
+                            .then(|| code.artifact().package_version.clone()),
+                        file_ir_identity: Some(file.file_ir_identity.clone()),
+                        kind: declaration.kind,
+                        ty: declaration.type_ref.clone(),
+                        type_name: declaration.type_name.clone(),
+                        collection_name: projection
+                            .collection_names()
+                            .get(&declaration.collection_name)
+                            .expect("declared collection was projected")
+                            .clone(),
+                        key: Some(declaration.key.clone()),
+                        fields: declaration.fields.clone(),
+                        retention: declaration.retention.clone(),
+                        leases: declaration.leases.clone(),
+                        indexes: declaration
+                            .indexes
+                            .iter()
+                            .map(|index| DbMetadataIndexIr {
+                                name: index.name.clone(),
+                                unique: index.unique,
+                                fields: index.fields.clone(),
+                                where_expr: index.where_expr.clone(),
+                            })
+                            .collect(),
+                    },
                 });
             }
         }
@@ -746,19 +818,31 @@ fn activation_db_metadata(
         }
     }
     metadata.sort_by(|left, right| {
+        let left_id = &left.target.target_id;
+        let right_id = &right.target.target_id;
         (
-            &left.source_role,
-            &left.package_id,
-            &left.package_version,
-            &left.module_path,
-            &left.type_name,
+            &left_id.package_artifact_ref.package_id,
+            &left_id.package_artifact_ref.package_version,
+            left_id.package_artifact_ref.package_build_id.as_str(),
+            left_id
+                .package_artifact_ref
+                .package_local_abi_identity
+                .as_str(),
+            &left_id.file_ir_ref.file_ir_identity,
+            &left_id.file_ir_ref.module_path,
+            left_id.type_index,
         )
             .cmp(&(
-                &right.source_role,
-                &right.package_id,
-                &right.package_version,
-                &right.module_path,
-                &right.type_name,
+                &right_id.package_artifact_ref.package_id,
+                &right_id.package_artifact_ref.package_version,
+                right_id.package_artifact_ref.package_build_id.as_str(),
+                right_id
+                    .package_artifact_ref
+                    .package_local_abi_identity
+                    .as_str(),
+                &right_id.file_ir_ref.file_ir_identity,
+                &right_id.file_ir_ref.module_path,
+                right_id.type_index,
             ))
     });
     Ok(metadata)

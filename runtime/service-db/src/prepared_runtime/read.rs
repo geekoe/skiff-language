@@ -50,7 +50,7 @@ impl ServiceDbRuntime {
         projection: Option<Vec<FieldPath>>,
         context: DbRecoverableRuntimeContext,
     ) -> Result<PreparedFindOne> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         Ok(PreparedFindOne {
             type_name: type_name.to_string(),
             collection_name: binding.collection_name.clone(),
@@ -73,7 +73,7 @@ impl ServiceDbRuntime {
         projection: Option<Vec<FieldPath>>,
         context: DbRecoverableRuntimeContext,
     ) -> Result<PreparedFindOne> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         Ok(PreparedFindOne {
             type_name: type_name.to_string(),
             collection_name: binding.collection_name.clone(),
@@ -96,7 +96,7 @@ impl ServiceDbRuntime {
         projection: Option<Vec<FieldPath>>,
         context: DbRecoverableRuntimeContext,
     ) -> Result<PreparedFindMany> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         let filter = binding.query_filter(query)?;
         let sort = binding.page_sort_document(&options)?;
         let plan = if options.limit == Some(0) {
@@ -166,7 +166,9 @@ impl CompletedFindOne {
         runtime: &ServiceDbRuntime,
         heap: &mut RequestHeap,
     ) -> Result<Option<RuntimeValue>> {
-        let binding = runtime.metadata.collection_for_type(&self.type_name)?;
+        let binding = runtime
+            .metadata
+            .collection_for_target_key(&self.type_name)?;
         let read_context = recoverable_read_context(&self.context);
         self.document
             .map(|document| {
@@ -234,7 +236,9 @@ impl CompletedFindMany {
         runtime: &ServiceDbRuntime,
         heap: &mut RequestHeap,
     ) -> Result<Vec<RuntimeValue>> {
-        let binding = runtime.metadata.collection_for_type(&self.type_name)?;
+        let binding = runtime
+            .metadata
+            .collection_for_target_key(&self.type_name)?;
         let read_context = recoverable_read_context(&self.context);
         self.documents
             .into_iter()

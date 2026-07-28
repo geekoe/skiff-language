@@ -46,7 +46,7 @@ impl ServiceDbRuntime {
         heap: &RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> Result<PreparedReplace> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         let normalized = binding.normalize_one_selector(selector)?;
         let artifact_store = CurrentRequestRecoverableArtifactStore::new(&context);
         let mut root_store = CollectedRecoverableRootStore::default();
@@ -120,7 +120,9 @@ impl PreparedReplace {
         lease_guards: &[DbLeaseHold],
         mut session: Option<&mut ClientSession>,
     ) -> Result<CompletedReplace> {
-        let binding = runtime.metadata.collection_for_type(&self.type_name)?;
+        let binding = runtime
+            .metadata
+            .collection_for_target_key(&self.type_name)?;
         runtime
             .persist_recoverable_artifact_retention_roots(&self.roots, session.as_deref_mut())
             .await?;
@@ -196,7 +198,9 @@ impl CompletedReplace {
         runtime: &ServiceDbRuntime,
         heap: &mut RequestHeap,
     ) -> Result<Option<RuntimeValue>> {
-        let binding = runtime.metadata.collection_for_type(&self.type_name)?;
+        let binding = runtime
+            .metadata
+            .collection_for_target_key(&self.type_name)?;
         let read_context = recoverable_read_context(&self.context);
         self.document
             .map(|document| {

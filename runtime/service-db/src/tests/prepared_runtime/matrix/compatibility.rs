@@ -34,7 +34,7 @@ async fn prepared_and_legacy_entries_share_the_same_six_concrete_waits() {
 
     let by_key = store
         .prepare_find_one_by_key_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             db_key(json!("item-1")),
             None,
             &mut heap,
@@ -51,7 +51,7 @@ async fn prepared_and_legacy_entries_share_the_same_six_concrete_waits() {
 
     let by_query = store
         .prepare_find_one_by_query_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             db_query(Value::Null),
             Vec::new(),
             None,
@@ -69,7 +69,7 @@ async fn prepared_and_legacy_entries_share_the_same_six_concrete_waits() {
 
     let many = store
         .prepare_find_many_page_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             db_query(Value::Null),
             ServiceDbFindOptions::default(),
             None,
@@ -86,7 +86,12 @@ async fn prepared_and_legacy_entries_share_the_same_six_concrete_waits() {
     assert_title(&many[0], &heap, "from-provider");
 
     let created = store
-        .prepare_create_runtime("PreparedItem", &value, &mut heap, context())
+        .prepare_create_runtime(
+            test_db_target(0, "", "PreparedItem").lookup_key(),
+            &value,
+            &mut heap,
+            context(),
+        )
         .expect("create prepare")
         .into_wait()
         .await
@@ -97,7 +102,7 @@ async fn prepared_and_legacy_entries_share_the_same_six_concrete_waits() {
 
     let updated = store
         .prepare_update_one_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             DbOneSelector::Key(db_key(json!("item-1"))),
             input_change(),
             &mut heap,
@@ -114,7 +119,7 @@ async fn prepared_and_legacy_entries_share_the_same_six_concrete_waits() {
 
     let replaced = store
         .prepare_replace_one_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             DbOneSelector::Key(db_key(json!("item-1"))),
             &value,
             &mut heap,
@@ -131,7 +136,7 @@ async fn prepared_and_legacy_entries_share_the_same_six_concrete_waits() {
 
     let legacy_by_key = store
         .find_one_by_key_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             db_key(json!("item-1")),
             None,
             &mut heap,
@@ -144,7 +149,7 @@ async fn prepared_and_legacy_entries_share_the_same_six_concrete_waits() {
 
     let legacy_by_query = store
         .find_one_by_query_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             db_query(Value::Null),
             Vec::new(),
             None,
@@ -158,7 +163,7 @@ async fn prepared_and_legacy_entries_share_the_same_six_concrete_waits() {
 
     let legacy_many = store
         .find_many_page_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             db_query(Value::Null),
             ServiceDbFindOptions::default(),
             None,
@@ -171,14 +176,19 @@ async fn prepared_and_legacy_entries_share_the_same_six_concrete_waits() {
     assert_title(&legacy_many[0], &heap, "from-provider");
 
     let legacy_created = store
-        .create_runtime("PreparedItem", &value, &mut heap, context())
+        .create_runtime(
+            test_db_target(0, "", "PreparedItem").lookup_key(),
+            &value,
+            &mut heap,
+            context(),
+        )
         .await
         .expect("legacy create");
     assert_title(&legacy_created, &heap, "first");
 
     let legacy_updated = store
         .update_one_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             DbOneSelector::Key(db_key(json!("item-1"))),
             input_change(),
             &mut heap,
@@ -191,7 +201,7 @@ async fn prepared_and_legacy_entries_share_the_same_six_concrete_waits() {
 
     let legacy_replaced = store
         .replace_one_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             DbOneSelector::Key(db_key(json!("item-1"))),
             &value,
             &mut heap,
@@ -227,7 +237,7 @@ async fn create_finalizer_uses_the_owned_prepare_document_not_the_input_handle()
     };
     let operation = store
         .prepare_create_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             &RuntimeValue::Heap(input_handle),
             &mut heap,
             context(),

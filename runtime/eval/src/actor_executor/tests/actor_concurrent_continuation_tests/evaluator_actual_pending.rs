@@ -10,8 +10,9 @@ use std::{
 use bytes::Bytes;
 use serde_json::{json, Value};
 use skiff_artifact_model::{
-    CanonicalPublicCallableSignature, InstructionSourceSite, InterfaceInstantiationRef, LiteralIr,
-    OperationAbiRef, PublicationAbiUnit, PublicationOperationAbi, PublicationOperationKind,
+    CanonicalPublicCallableSignature, FileIrRef, InstructionSourceSite, InterfaceInstantiationRef,
+    LiteralIr, OperationAbiRef, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
+    PublicationAbiUnit, PublicationOperationAbi, PublicationOperationKind,
     PublicationPublicInstanceExport, SourceCallMethodIndexEntry, SyntheticInstructionSiteReason,
     TypeRefIr,
 };
@@ -38,8 +39,8 @@ use skiff_runtime_capability_context::{
     StreamRuntimeError, StreamRuntimeResult, StreamSink, StreamSinkApi,
 };
 use skiff_runtime_linked_program::{
-    anonymous_type_decl, CallIr, DbQueryIr, DbTargetIr, LinkedCallTarget, LinkedExecutableBody,
-    LinkedInterfaceInstantiationRef, LinkedRemoteOperationSlotPlanIr,
+    anonymous_type_decl, CallIr, DbObjectTargetId, DbQueryIr, DbTargetIr, LinkedCallTarget,
+    LinkedExecutableBody, LinkedInterfaceInstantiationRef, LinkedRemoteOperationSlotPlanIr,
     LinkedRemoteOperationTablePlanIr, LinkedTypeDescriptor, NativeTarget, PackageSymbolKey,
     PackageUnit, ServiceDependencyConstraint, ServiceDependencySymbolRef, ServiceMeta, SlotIr,
     SlotLayoutIr, TypeAddr,

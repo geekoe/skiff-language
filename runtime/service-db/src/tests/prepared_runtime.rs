@@ -10,7 +10,7 @@ fn concrete_service_store() -> ServiceDbStore {
         ServiceDbRuntime::new(
             service_id("prepared-runtime"),
             inert_mongo_url("prepared-runtime"),
-            &object_metadata_for_type("PreparedItem"),
+            &provider_metadata_from_ir(object_metadata_for_type("PreparedItem")),
         )
         .expect("prepared runtime fixture should build"),
     );
@@ -57,7 +57,7 @@ fn concrete_provider_overrides_all_six_prepared_runtime_entries() {
     drop(
         store
             .prepare_find_one_by_key_runtime(
-                "PreparedItem",
+                test_db_target(0, "", "PreparedItem").lookup_key(),
                 db_key(json!("item-1")),
                 None,
                 &mut heap,
@@ -68,7 +68,7 @@ fn concrete_provider_overrides_all_six_prepared_runtime_entries() {
     drop(
         store
             .prepare_find_one_by_query_runtime(
-                "PreparedItem",
+                test_db_target(0, "", "PreparedItem").lookup_key(),
                 db_query(Value::Null),
                 Vec::new(),
                 None,
@@ -80,7 +80,7 @@ fn concrete_provider_overrides_all_six_prepared_runtime_entries() {
     drop(
         store
             .prepare_find_many_page_runtime(
-                "PreparedItem",
+                test_db_target(0, "", "PreparedItem").lookup_key(),
                 db_query(Value::Null),
                 ServiceDbFindOptions::default(),
                 None,
@@ -91,13 +91,18 @@ fn concrete_provider_overrides_all_six_prepared_runtime_entries() {
     );
     drop(
         store
-            .prepare_create_runtime("PreparedItem", &value, &mut heap, context())
+            .prepare_create_runtime(
+                test_db_target(0, "", "PreparedItem").lookup_key(),
+                &value,
+                &mut heap,
+                context(),
+            )
             .expect("create prepare should use the concrete provider"),
     );
     drop(
         store
             .prepare_update_one_runtime(
-                "PreparedItem",
+                test_db_target(0, "", "PreparedItem").lookup_key(),
                 DbOneSelector::Key(db_key(json!("item-1"))),
                 input_change(),
                 &mut heap,
@@ -108,7 +113,7 @@ fn concrete_provider_overrides_all_six_prepared_runtime_entries() {
     drop(
         store
             .prepare_replace_one_runtime(
-                "PreparedItem",
+                test_db_target(0, "", "PreparedItem").lookup_key(),
                 DbOneSelector::Key(db_key(json!("item-1"))),
                 &value,
                 &mut heap,
