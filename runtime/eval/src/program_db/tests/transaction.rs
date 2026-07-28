@@ -7,6 +7,32 @@ use skiff_runtime_linked_program::ExprRefIr;
 use super::fixture::{first_poll, DbActorFixture, FakeDbState};
 use crate::env::Env;
 
+#[test]
+fn db_actor_transaction_fixture_exposes_explicit_illegal_flow_case() {
+    let fixture = DbActorFixture::new(FakeDbState::new());
+    let executable = fixture.linked.executable();
+    let statement_backed_blocks = executable
+        .body
+        .blocks
+        .iter()
+        .filter(|block| !block.statements.is_empty())
+        .map(|block| block.label.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(
+        !statement_backed_blocks.is_empty(),
+        "the frozen transaction fixture exposes no statement-backed block for the required \
+         explicit illegal-flow case; blocks={:?}; statements={:?}",
+        executable
+            .body
+            .blocks
+            .iter()
+            .map(|block| (&block.label, &block.statements))
+            .collect::<Vec<_>>(),
+        executable.body.statements,
+    );
+}
+
 #[tokio::test]
 async fn db_actor_transaction_explicit_body_actual_pending_releases_actor_segment() {
     let state = FakeDbState::new();
