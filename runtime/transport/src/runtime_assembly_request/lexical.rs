@@ -2,6 +2,7 @@ use serde::{de, Deserialize, Deserializer};
 use skiff_artifact_model::{
     deserialize_activation_generation, validate_activation_generation,
     validate_runtime_assembly_identity, AssemblyIdentity, GatewayEntryIdentity,
+    ServiceDeploymentRef,
 };
 
 use crate::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
@@ -185,6 +186,37 @@ where
 {
     let value = String::deserialize(deserializer)?;
     GatewayEntryIdentity::parse(value).map_err(de::Error::custom)
+}
+
+pub(super) fn deserialize_service_deployment_ref<'de, D>(
+    deserializer: D,
+) -> Result<ServiceDeploymentRef, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = ServiceDeploymentRef::deserialize(deserializer)?;
+    if value.service_id.is_empty()
+        || value.contract_version.is_empty()
+        || value.deployment_revision.as_str().is_empty()
+    {
+        return Err(de::Error::custom(
+            "request.start routing.deployment coordinate must contain non-empty strings",
+        ));
+    }
+    let identity = value.deployment_artifact_identity.as_str();
+    let hash = identity
+        .strip_prefix("skiff-deployment-artifact-v4:sha256:")
+        .filter(|hash| hash.len() == 64)
+        .filter(|hash| {
+            hash.bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        });
+    if hash.is_none() {
+        return Err(de::Error::custom(
+            "request.start routing.deployment.deploymentArtifactIdentity must be skiff-deployment-artifact-v4:sha256:<64 lowercase hex>",
+        ));
+    }
+    Ok(value)
 }
 
 fn deserialize_exact_string<'de, D>(

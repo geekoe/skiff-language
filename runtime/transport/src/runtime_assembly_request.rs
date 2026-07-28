@@ -1,7 +1,9 @@
 use std::num::NonZeroU32;
 
 use serde::{de, Deserialize, Deserializer, Serialize};
-use skiff_artifact_model::{AssemblyIdentity, GatewayEntryIdentity, WebSocketEntryId};
+use skiff_artifact_model::{
+    AssemblyIdentity, GatewayEntryIdentity, ServiceDeploymentRef, WebSocketEntryId,
+};
 
 use crate::connection_protocol::CONNECTION_REQUEST_MAX_PAYLOAD_BYTES;
 use crate::{BinaryFrameError, TransportError};
@@ -19,7 +21,8 @@ use lexical::{
     deserialize_runtime_assembly_websocket_jsonrpc_method,
     deserialize_runtime_assembly_websocket_jsonrpc_request_id,
     deserialize_runtime_frame_schema_version, deserialize_safe_activation_generation,
-    deserialize_unary_dispatch_mode, deserialize_websocket_jsonrpc_unary_dispatch_mode,
+    deserialize_service_deployment_ref, deserialize_unary_dispatch_mode,
+    deserialize_websocket_jsonrpc_unary_dispatch_mode,
 };
 use metadata::deserialize_present_option;
 pub use metadata::*;
@@ -179,6 +182,8 @@ pub struct RuntimeAssemblyRequestRoutingFrameHeader {
     pub assembly_identity: AssemblyIdentity,
     #[serde(deserialize_with = "deserialize_safe_activation_generation")]
     pub assembly_generation: u64,
+    #[serde(deserialize_with = "deserialize_service_deployment_ref")]
+    pub deployment: ServiceDeploymentRef,
     #[serde(deserialize_with = "deserialize_gateway_entry_identity")]
     pub gateway_entry_identity: GatewayEntryIdentity,
     pub ingress: RuntimeAssemblyRequestIngressFrameHeader,
@@ -193,6 +198,8 @@ pub struct RuntimeAssemblyWebSocketConnectRoutingFrameHeader {
     pub assembly_identity: AssemblyIdentity,
     #[serde(deserialize_with = "deserialize_safe_activation_generation")]
     pub assembly_generation: u64,
+    #[serde(deserialize_with = "deserialize_service_deployment_ref")]
+    pub deployment: ServiceDeploymentRef,
     #[serde(deserialize_with = "deserialize_gateway_entry_identity")]
     pub gateway_entry_identity: GatewayEntryIdentity,
     pub ingress: RuntimeAssemblyWebSocketConnectIngressFrameHeader,
@@ -207,6 +214,8 @@ pub struct RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader {
     pub assembly_identity: AssemblyIdentity,
     #[serde(deserialize_with = "deserialize_safe_activation_generation")]
     pub assembly_generation: u64,
+    #[serde(deserialize_with = "deserialize_service_deployment_ref")]
+    pub deployment: ServiceDeploymentRef,
     #[serde(deserialize_with = "deserialize_gateway_entry_identity")]
     pub gateway_entry_identity: GatewayEntryIdentity,
     pub ingress: RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader,
@@ -216,7 +225,6 @@ pub struct RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeAssemblyRequestIngressFrameHeader {
     pub protocol: RuntimeAssemblyRequestIngressProtocol,
-    pub host: String,
     pub method: String,
     pub path: String,
 }
@@ -237,7 +245,6 @@ pub enum RuntimeAssemblyWebSocketConnectIngressProtocol {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeAssemblyWebSocketConnectIngressFrameHeader {
     pub protocol: RuntimeAssemblyWebSocketConnectIngressProtocol,
-    pub host: String,
     pub method: (),
     pub path: String,
 }
@@ -246,7 +253,6 @@ pub struct RuntimeAssemblyWebSocketConnectIngressFrameHeader {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
     pub protocol: RuntimeAssemblyWebSocketConnectIngressProtocol,
-    pub host: String,
     pub method: String,
     pub path: String,
 }
@@ -255,7 +261,6 @@ pub struct RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawRuntimeAssemblyWebSocketConnectIngressFrameHeader {
     protocol: RuntimeAssemblyWebSocketConnectIngressProtocol,
-    host: String,
     method: (),
     path: String,
 }
@@ -266,11 +271,6 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketConnectIngressFrameHeader
         D: Deserializer<'de>,
     {
         let raw = RawRuntimeAssemblyWebSocketConnectIngressFrameHeader::deserialize(deserializer)?;
-        if raw.host.is_empty() {
-            return Err(de::Error::custom(
-                "routing.ingress.host must be a non-empty string",
-            ));
-        }
         if !raw.path.starts_with('/') {
             return Err(de::Error::custom(
                 "routing.ingress.path must be an absolute path",
@@ -278,7 +278,6 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketConnectIngressFrameHeader
         }
         Ok(Self {
             protocol: raw.protocol,
-            host: raw.host,
             method: raw.method,
             path: raw.path,
         })
@@ -289,7 +288,6 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketConnectIngressFrameHeader
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawRuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
     protocol: RuntimeAssemblyWebSocketConnectIngressProtocol,
-    host: String,
     #[serde(deserialize_with = "deserialize_runtime_assembly_websocket_jsonrpc_method")]
     method: String,
     path: String,
@@ -301,11 +299,6 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader
         D: Deserializer<'de>,
     {
         let raw = RawRuntimeAssemblyWebSocketJsonRpcIngressFrameHeader::deserialize(deserializer)?;
-        if raw.host.is_empty() {
-            return Err(de::Error::custom(
-                "routing.ingress.host must be a non-empty string",
-            ));
-        }
         if !raw.path.starts_with('/') {
             return Err(de::Error::custom(
                 "routing.ingress.path must be an absolute path",
@@ -313,7 +306,6 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader
         }
         Ok(Self {
             protocol: raw.protocol,
-            host: raw.host,
             method: raw.method,
             path: raw.path,
         })
@@ -324,7 +316,6 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawRuntimeAssemblyRequestIngressFrameHeader {
     protocol: RuntimeAssemblyRequestIngressProtocol,
-    host: String,
     method: String,
     path: String,
 }
@@ -335,11 +326,6 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyRequestIngressFrameHeader {
         D: Deserializer<'de>,
     {
         let raw = RawRuntimeAssemblyRequestIngressFrameHeader::deserialize(deserializer)?;
-        if raw.host.is_empty() {
-            return Err(de::Error::custom(
-                "routing.ingress.host must be a non-empty string",
-            ));
-        }
         if raw.method.is_empty() {
             return Err(de::Error::custom(
                 "routing.ingress.method must be a non-empty string",
@@ -352,7 +338,6 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyRequestIngressFrameHeader {
         }
         Ok(Self {
             protocol: raw.protocol,
-            host: raw.host,
             method: raw.method,
             path: raw.path,
         })

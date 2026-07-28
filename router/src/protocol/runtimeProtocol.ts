@@ -615,6 +615,7 @@ const requestStartFrameProperties = {
       'kind',
       'assemblyIdentity',
       'assemblyGeneration',
+      'deployment',
       'gatewayEntryIdentity',
       'ingress'
     ],
@@ -622,16 +623,34 @@ const requestStartFrameProperties = {
       kind: { type: 'string', enum: ['runtimeAssembly'] },
       assemblyIdentity: { type: 'string' },
       assemblyGeneration: { type: 'integer' },
+      deployment: {
+        type: 'object',
+        required: [
+          'serviceId',
+          'contractVersion',
+          'deploymentRevision',
+          'deploymentArtifactIdentity'
+        ],
+        properties: {
+          serviceId: { type: 'string', minLength: 1 },
+          contractVersion: { type: 'string', minLength: 1 },
+          deploymentRevision: { type: 'string', minLength: 1 },
+          deploymentArtifactIdentity: {
+            type: 'string',
+            pattern: '^skiff-deployment-artifact-v4:sha256:[0-9a-f]{64}$'
+          }
+        },
+        additionalProperties: false
+      },
       gatewayEntryIdentity: {
         type: 'string',
         pattern: '^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$'
       },
       ingress: {
         type: 'object',
-        required: ['protocol', 'host', 'method', 'path'],
+        required: ['protocol', 'method', 'path'],
         properties: {
           protocol: { type: 'string', enum: ['http'] },
-          host: { type: 'string' },
           method: { type: 'string' },
           path: { type: 'string' }
         },
@@ -1598,6 +1617,7 @@ export const runtimeFrameHeaderSchemas = {
               'kind',
               'assemblyIdentity',
               'assemblyGeneration',
+              'deployment',
               'gatewayEntryIdentity',
               'ingress'
             ],
@@ -1605,23 +1625,23 @@ export const runtimeFrameHeaderSchemas = {
               kind: { type: 'string', enum: ['runtimeAssembly'] },
               assemblyIdentity: {
                 type: 'string',
-                pattern: '^skiff-runtime-assembly-v2:sha256:[0-9a-f]{64}$'
+                pattern: '^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$'
               },
               assemblyGeneration: {
                 type: 'integer',
                 minimum: 0,
                 maximum: Number.MAX_SAFE_INTEGER
               },
+              deployment: requestStartFrameProperties.routing.properties.deployment,
               gatewayEntryIdentity: {
                 type: 'string',
                 pattern: '^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$'
               },
               ingress: {
                 type: 'object',
-                required: ['protocol', 'host', 'method', 'path'],
+                required: ['protocol', 'method', 'path'],
                 properties: {
                   protocol: { type: 'string', enum: ['webSocket'] },
-                  host: { type: 'string', minLength: 1 },
                   method: { type: 'null' },
                   path: { type: 'string', pattern: '^/' }
                 },
@@ -1733,6 +1753,7 @@ export const runtimeFrameHeaderSchemas = {
               'kind',
               'assemblyIdentity',
               'assemblyGeneration',
+              'deployment',
               'gatewayEntryIdentity',
               'ingress'
             ],
@@ -1740,23 +1761,23 @@ export const runtimeFrameHeaderSchemas = {
               kind: { type: 'string', enum: ['runtimeAssembly'] },
               assemblyIdentity: {
                 type: 'string',
-                pattern: '^skiff-runtime-assembly-v2:sha256:[0-9a-f]{64}$'
+                pattern: '^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$'
               },
               assemblyGeneration: {
                 type: 'integer',
                 minimum: 0,
                 maximum: Number.MAX_SAFE_INTEGER
               },
+              deployment: requestStartFrameProperties.routing.properties.deployment,
               gatewayEntryIdentity: {
                 type: 'string',
                 pattern: '^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$'
               },
               ingress: {
                 type: 'object',
-                required: ['protocol', 'host', 'method', 'path'],
+                required: ['protocol', 'method', 'path'],
                 properties: {
                   protocol: { type: 'string', enum: ['webSocket'] },
-                  host: { type: 'string', minLength: 1 },
                   method: { type: 'string', minLength: 1 },
                   path: { type: 'string', pattern: '^/' }
                 },
