@@ -18,7 +18,10 @@ use skiff_runtime_model::{
     type_plan::RuntimeTypePlan,
 };
 
-use crate::{CancellationToken, ExecutionControl, OwnedExecutionControl};
+use crate::{
+    CancellationToken, ExecutionControl, ExecutionScope, ExecutionScopeAccessError,
+    ExecutionScopeLeaseTerminal, OwnedExecutionControl,
+};
 
 pub type StreamRuntimeResult<T> = Result<T, StreamRuntimeError>;
 
@@ -857,6 +860,13 @@ impl HttpResponseStreamExecution<'_> {
             Self::Owned(execution) => execution.cancellation_token(),
         }
     }
+
+    fn execution_scope(&self) -> Result<ExecutionScope, ExecutionScopeAccessError> {
+        match self {
+            Self::Borrowed(execution) => execution.execution_scope(),
+            Self::Owned(execution) => execution.execution_scope(),
+        }
+    }
 }
 
 impl<'execution> HttpResponseStreamCapabilityContext<'execution> {
@@ -876,16 +886,47 @@ impl<'execution> HttpResponseStreamCapabilityContext<'execution> {
 
     pub async fn send_response_event(&self, target: &str, event: Value) -> StreamRuntimeResult<()> {
         let typed_sink = self.response_stream_sink(target)?;
+        let scope = self.execution.execution_scope().map_err(|error| {
+            StreamRuntimeError::decode(format!(
+                "current execution scope is unavailable for {target}: {error}"
+            ))
+        })?;
+        let (lease, completion) = scope.acquire_lease();
+        let child_cancellation = lease.child_cancellation_token();
         let mut signals = Vec::new();
         if let Some(inner_sink) = self.stream_context.current_stream_sink.as_ref() {
             if !inner_sink.is_same_stream(&typed_sink.sink) {
                 signals.push(inner_sink.cancel_signal());
             }
         }
-        typed_sink
-            .sink
-            .send_with_cancellation(event, &signals, [self.execution.cancellation_token()])
-            .await
+        let send = async {
+            let output = typed_sink
+                .sink
+                .send_with_cancellation(
+                    event,
+                    &signals,
+                    [self.execution.cancellation_token(), child_cancellation],
+                )
+                .await;
+            (completion.complete(), output)
+        };
+        tokio::pin!(send);
+        tokio::select! {
+            biased;
+            terminal = lease.wait() => match terminal {
+                ExecutionScopeLeaseTerminal::Control(_) => Err(StreamRuntimeError::cancelled()),
+                ExecutionScopeLeaseTerminal::Completed => {
+                    unreachable!("response sink scope lease completion is owned by the send branch")
+                }
+            },
+            (completed, output) = &mut send => {
+                if completed {
+                    output
+                } else {
+                    Err(StreamRuntimeError::cancelled())
+                }
+            }
+        }
     }
 
     fn response_stream_sink(&self, target: &str) -> StreamRuntimeResult<&TypedStreamSink> {
@@ -909,5 +950,428 @@ impl HttpResponseStreamCapabilityContext<'static> {
             execution: HttpResponseStreamExecution::Owned(execution),
             stream_context,
         }
+    }
+}
+
+#[cfg(test)]
+mod f445h_i6_response_sink_scope_tests {
+    use std::{
+        future,
+        sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
+
+    use serde_json::json;
+    use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
+    use tokio::sync::Notify;
+
+    use super::*;
+    use crate::{
+        CancellationSignals, CancellationSource, ExecutionControlApi, ExecutionControlResult,
+        ExecutionScope, ExecutionScopeAccessError, FileSourceStreamContext,
+        OwnedExecutionControlApi, StreamConsumerCleanup,
+    };
+
+    #[derive(Clone)]
+    struct TestControlState {
+        scope: ExecutionScope,
+        root_token: CancellationToken,
+        root_flag: Arc<AtomicBool>,
+    }
+
+    impl TestControlState {
+        fn owned(&self) -> OwnedExecutionControl {
+            OwnedExecutionControl::new(TestOwnedControl(self.clone()))
+        }
+    }
+
+    struct TestBorrowedControl(TestControlState);
+
+    impl ExecutionControlApi for TestBorrowedControl {
+        fn owned(&self) -> OwnedExecutionControl {
+            self.0.owned()
+        }
+
+        fn cancel_flag(&self) -> Arc<AtomicBool> {
+            self.0.root_flag.clone()
+        }
+
+        fn cancellation_token(&self) -> CancellationToken {
+            self.0.root_token.clone()
+        }
+
+        fn deadline(&self) -> Option<std::time::Instant> {
+            self.0
+                .scope
+                .effective_deadline()
+                .map(|deadline| deadline.at())
+        }
+
+        fn execution_scope(&self) -> Result<ExecutionScope, ExecutionScopeAccessError> {
+            Ok(self.0.scope.clone())
+        }
+
+        fn derive_scope(
+            &self,
+            local_deadline: std::time::Instant,
+            site: InstructionSourceSite,
+        ) -> Result<OwnedExecutionControl, ExecutionScopeAccessError> {
+            Ok(TestControlState {
+                scope: self
+                    .0
+                    .scope
+                    .derive(local_deadline, site)
+                    .map_err(ExecutionScopeAccessError::from)?,
+                root_token: self.0.root_token.clone(),
+                root_flag: self.0.root_flag.clone(),
+            }
+            .owned())
+        }
+
+        fn check_cancelled(&self) -> ExecutionControlResult<()> {
+            Ok(())
+        }
+
+        fn add_instruction_units(&self, _units: u64) -> ExecutionControlResult<()> {
+            Ok(())
+        }
+
+        fn poll_execution_budget(&self) -> ExecutionControlResult<()> {
+            Ok(())
+        }
+
+        fn file_source_stream_context(
+            &self,
+            _stream_runtime: StreamRuntime,
+        ) -> FileSourceStreamContext<'static> {
+            unreachable!("response sink scope test does not use file streams")
+        }
+    }
+
+    struct TestOwnedControl(TestControlState);
+
+    impl OwnedExecutionControlApi for TestOwnedControl {
+        fn borrow(&self) -> ExecutionControl<'_> {
+            ExecutionControl::new(TestBorrowedControl(self.0.clone()))
+        }
+
+        fn cancelled(&self) -> &AtomicBool {
+            self.0.root_flag.as_ref()
+        }
+
+        fn cancellation_token(&self) -> CancellationToken {
+            self.0.root_token.clone()
+        }
+
+        fn deadline(&self) -> Option<std::time::Instant> {
+            self.0
+                .scope
+                .effective_deadline()
+                .map(|deadline| deadline.at())
+        }
+
+        fn execution_scope(&self) -> Result<ExecutionScope, ExecutionScopeAccessError> {
+            Ok(self.0.scope.clone())
+        }
+
+        fn derive_scope(
+            &self,
+            local_deadline: std::time::Instant,
+            site: InstructionSourceSite,
+        ) -> Result<OwnedExecutionControl, ExecutionScopeAccessError> {
+            self.borrow().derive_scope(local_deadline, site)
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct CapacitySinkState {
+        capacity: Notify,
+        pending: AtomicUsize,
+        writes: AtomicUsize,
+        ends: AtomicUsize,
+        failures: AtomicUsize,
+    }
+
+    #[derive(Clone, Debug)]
+    struct CapacitySink {
+        state: Arc<CapacitySinkState>,
+    }
+
+    struct PendingSendGuard(Arc<CapacitySinkState>);
+
+    impl Drop for PendingSendGuard {
+        fn drop(&mut self) {
+            self.0.pending.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    #[derive(Debug)]
+    struct NeverCancelled;
+
+    impl StreamCancelSignalApi for NeverCancelled {
+        fn wait_cancelled<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            Box::pin(future::pending())
+        }
+    }
+
+    impl StreamSinkApi for CapacitySink {
+        fn send<'a>(
+            &'a self,
+            _item: Value,
+        ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>> {
+            Box::pin(future::pending())
+        }
+
+        fn send_with_cancel<'a>(
+            &'a self,
+            _item: Value,
+            _cancel_flags: &'a [Arc<AtomicBool>],
+        ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>> {
+            Box::pin(future::pending())
+        }
+
+        fn send_with_cancellation<'a>(
+            &'a self,
+            _item: Value,
+            signals: &'a [StreamCancelSignal],
+            cancel_tokens: Vec<CancellationToken>,
+        ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>> {
+            Box::pin(async move {
+                self.state.pending.fetch_add(1, Ordering::AcqRel);
+                let _pending = PendingSendGuard(self.state.clone());
+                let signal_wait = async {
+                    match signals.first() {
+                        Some(signal) => signal.wait_cancelled().await,
+                        None => future::pending().await,
+                    }
+                };
+                let token_signals = CancellationSignals::from_tokens(cancel_tokens);
+                tokio::select! {
+                    biased;
+                    _ = signal_wait => Err(StreamRuntimeError::cancelled()),
+                    _ = token_signals.wait_cancelled() => Err(StreamRuntimeError::cancelled()),
+                    _ = self.state.capacity.notified() => {
+                        self.state.writes.fetch_add(1, Ordering::AcqRel);
+                        Ok(())
+                    }
+                }
+            })
+        }
+
+        fn end<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            Box::pin(async move {
+                self.state.ends.fetch_add(1, Ordering::AcqRel);
+            })
+        }
+
+        fn fail<'a>(
+            &'a self,
+            _error: StreamRuntimeError,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            Box::pin(async move {
+                self.state.failures.fetch_add(1, Ordering::AcqRel);
+            })
+        }
+
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+
+        fn is_same_stream(&self, other: &StreamSink) -> bool {
+            other
+                .downcast_ref::<Self>()
+                .is_some_and(|other| Arc::ptr_eq(&self.state, &other.state))
+        }
+
+        fn cancel_flag(&self) -> Arc<AtomicBool> {
+            Arc::new(AtomicBool::new(false))
+        }
+
+        fn cancel_signal(&self) -> StreamCancelSignal {
+            StreamCancelSignal::new(NeverCancelled)
+        }
+    }
+
+    fn site() -> InstructionSourceSite {
+        InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::RuntimeControlFlow,
+        }
+    }
+
+    fn context(
+        scope: ExecutionScope,
+        root_token: CancellationToken,
+        state: Arc<CapacitySinkState>,
+    ) -> HttpResponseStreamCapabilityContext<'static> {
+        let control = TestControlState {
+            root_flag: root_token.cancel_flag(),
+            root_token,
+            scope,
+        }
+        .owned();
+        HttpResponseStreamCapabilityContext::from_owned_execution(
+            control,
+            StreamCapabilityContext::new(
+                None,
+                Some(TypedStreamSink {
+                    sink: StreamSink::new(CapacitySink { state }),
+                    item_type: RuntimeTypePlan::json_value_plan(),
+                }),
+            ),
+        )
+    }
+
+    async fn wait_for_pending(state: &CapacitySinkState) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.pending.load(Ordering::Acquire) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("response sink should reach the capacity wait");
+    }
+
+    fn assert_no_sink_terminal_side_effects(state: &CapacitySinkState) {
+        assert_eq!(state.writes.load(Ordering::Acquire), 0);
+        assert_eq!(state.pending.load(Ordering::Acquire), 0);
+        assert_eq!(state.ends.load(Ordering::Acquire), 0);
+        assert_eq!(state.failures.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn f445h_i6_response_sink_scope_current_deadline_wakes_capacity_pending_and_fences_late_wake(
+    ) {
+        let root = CancellationSource::new();
+        let request_scope = ExecutionScope::request(root.token(), None);
+        let current_scope = request_scope
+            .derive(
+                tokio::time::Instant::now().into_std() + Duration::from_secs(5),
+                site(),
+            )
+            .expect("derived current scope");
+        let lifecycle = current_scope.clone();
+        let state = Arc::new(CapacitySinkState::default());
+        let response = context(current_scope, root.token(), state.clone());
+
+        let task = tokio::spawn(async move {
+            response
+                .send_response_event("std.http.stream.emitResponse", json!({"chunk": 1}))
+                .await
+        });
+        wait_for_pending(&state).await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            task.is_finished(),
+            "current absolute deadline must wake a capacity-Pending response sink"
+        );
+        let terminal = task.await.expect("response sink task should not panic");
+        assert!(matches!(terminal, Err(StreamRuntimeError::Cancelled)));
+        state.capacity.notify_waiters();
+        tokio::task::yield_now().await;
+
+        assert_no_sink_terminal_side_effects(&state);
+        assert_eq!(
+            lifecycle.lifecycle_snapshot(),
+            Default::default(),
+            "deadline winner must release the scope lease/waiter/timer"
+        );
+    }
+
+    #[tokio::test]
+    async fn f445h_i6_response_sink_scope_ancestor_stop_wakes_capacity_pending_and_fences_late_wake(
+    ) {
+        let root = CancellationSource::new();
+        let parent_scope = ExecutionScope::request(root.token(), None);
+        let (ancestor_lease, _ancestor_completion) = parent_scope.acquire_lease();
+        let current_scope = ancestor_lease.child_execution_scope();
+        let lifecycle = current_scope.clone();
+        let state = Arc::new(CapacitySinkState::default());
+        let response = context(current_scope, root.token(), state.clone());
+
+        let task = tokio::spawn(async move {
+            response
+                .send_response_event("std.http.stream.emitResponse", json!({"chunk": 1}))
+                .await
+        });
+        wait_for_pending(&state).await;
+        drop(ancestor_lease);
+        tokio::task::yield_now().await;
+
+        assert!(
+            task.is_finished(),
+            "current ancestor stop must wake a capacity-Pending response sink"
+        );
+        let terminal = task.await.expect("response sink task should not panic");
+        assert!(matches!(terminal, Err(StreamRuntimeError::Cancelled)));
+        state.capacity.notify_waiters();
+        tokio::task::yield_now().await;
+
+        assert_no_sink_terminal_side_effects(&state);
+        assert_eq!(
+            lifecycle.lifecycle_snapshot(),
+            Default::default(),
+            "ancestor winner must release every scope lease/waiter"
+        );
+    }
+
+    #[tokio::test]
+    async fn f445h_i6_response_sink_scope_capacity_completion_settles_lease_and_writes_once() {
+        let root = CancellationSource::new();
+        let current_scope = ExecutionScope::request(root.token(), None);
+        let lifecycle = current_scope.clone();
+        let state = Arc::new(CapacitySinkState::default());
+        let response = context(current_scope, root.token(), state.clone());
+
+        let task = tokio::spawn(async move {
+            response
+                .send_response_event("std.http.stream.emitResponse", json!({"chunk": 1}))
+                .await
+        });
+        wait_for_pending(&state).await;
+        state.capacity.notify_waiters();
+
+        assert!(
+            task.await
+                .expect("response sink task should not panic")
+                .is_ok(),
+            "capacity completion should remain a normal response write"
+        );
+        assert_eq!(state.writes.load(Ordering::Acquire), 1);
+        assert_eq!(state.pending.load(Ordering::Acquire), 0);
+        assert_eq!(state.ends.load(Ordering::Acquire), 0);
+        assert_eq!(state.failures.load(Ordering::Acquire), 0);
+        assert_eq!(
+            lifecycle.lifecycle_snapshot(),
+            Default::default(),
+            "normal capacity completion must release the scope lease/waiter"
+        );
+    }
+
+    #[test]
+    fn f445h_i6_response_sink_scope_keeps_natural_end_and_non_end_cleanup_with_consumer_owner() {
+        let natural_end_cancels = Arc::new(AtomicUsize::new(0));
+        {
+            let cancels = natural_end_cancels.clone();
+            let mut cleanup =
+                StreamConsumerCleanup::from_cancel(&json!("natural-end"), move |_| {
+                    cancels.fetch_add(1, Ordering::AcqRel);
+                });
+            cleanup.reached_end();
+        }
+        assert_eq!(natural_end_cancels.load(Ordering::Acquire), 0);
+
+        let non_end_cancels = Arc::new(AtomicUsize::new(0));
+        {
+            let cancels = non_end_cancels.clone();
+            let _cleanup = StreamConsumerCleanup::from_cancel(&json!("non-end"), move |_| {
+                cancels.fetch_add(1, Ordering::AcqRel);
+            });
+        }
+        assert_eq!(non_end_cancels.load(Ordering::Acquire), 1);
     }
 }
