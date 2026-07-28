@@ -9,6 +9,7 @@ import {
   renderRuntimeConfig,
   renderTelemetryConfig,
 } from './lib/runtime-stack-config.mjs';
+import { DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS } from './lib/activation-timeout.mjs';
 import { runAttachedCommand } from './lib/command-execution.mjs';
 import { sourceKeyFromInputs } from './lib/source-key.mjs';
 
@@ -93,6 +94,14 @@ const httpMaxResponseBytes = readRequiredPositiveSafeInteger(
     ? '--http-max-response-bytes'
     : 'SKIFF_HTTP_MAX_RESPONSE_BYTES',
 );
+const activationPrepareTimeoutMs = readRequiredPositiveSafeInteger(
+  args.activationPrepareTimeoutMs
+    ?? process.env.SKIFF_ACTIVATION_PREPARE_TIMEOUT_MS
+    ?? String(DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS),
+  args.activationPrepareTimeoutMs !== undefined
+    ? '--activation-prepare-timeout-ms'
+    : 'SKIFF_ACTIVATION_PREPARE_TIMEOUT_MS',
+);
 const serviceDbEncryptionKeyringFile = readRemoteAbsolutePath(
   args.serviceDbEncryptionKeyringFile ||
     process.env.SKIFF_SERVICE_DB_ENCRYPTION_KEYRING_FILE,
@@ -112,6 +121,7 @@ try {
     serviceDbMongoUrl,
     httpMaxRequestBytes,
     httpMaxResponseBytes,
+    activationPrepareTimeoutMs,
   });
   await writeRuntimeConfig(path.join(configDir, 'runtime.yml'), remoteSkiff, {
     serviceDbEncryptionKeyringFile,
@@ -355,6 +365,7 @@ async function writeRouterConfig(file, remoteSkiff, options) {
     releaseMode: true,
     devReload: false,
     requestTimeoutMs: 20000,
+    activationPrepareTimeoutMs: options.activationPrepareTimeoutMs,
     httpPort: 4000,
     httpMaxRequestBytes: options.httpMaxRequestBytes,
     httpMaxResponseBytes: options.httpMaxResponseBytes,
@@ -602,6 +613,8 @@ function optionKey(arg) {
       return 'serviceDbMongoUrl';
     case '--http-max-request-bytes':
       return 'httpMaxRequestBytes';
+    case '--activation-prepare-timeout-ms':
+      return 'activationPrepareTimeoutMs';
     case '--http-max-response-bytes':
       return 'httpMaxResponseBytes';
     case '--service-db-encryption-keyring-file':

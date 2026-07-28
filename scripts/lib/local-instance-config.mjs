@@ -8,6 +8,7 @@ import {
   identityCliBinaryName,
   runtimeBinaryName,
 } from './dev-runtime-paths.mjs';
+import { DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS } from './activation-timeout.mjs';
 import { parseSimpleYamlObject, parseYamlStringScalar, yamlStringScalarHasContent } from './simple-yaml.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -24,6 +25,9 @@ export const defaultInstancePorts = {
 export const defaultInstanceHttp = {
   maxRequestBytes: 64 * 1024 * 1024,
   maxResponseBytes: 8 * 1024 * 1024,
+};
+export const defaultInstanceActivation = {
+  prepareTimeoutMs: DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS,
 };
 export function defaultInstanceConfigPath(repoRoot = skiffRoot) {
   return join(repoRoot, '.skiff-instance', 'config.yml');
@@ -54,6 +58,9 @@ export function defaultInstanceConfigText() {
     'http:',
     `  maxRequestBytes: ${defaultInstanceHttp.maxRequestBytes}`,
     `  maxResponseBytes: ${defaultInstanceHttp.maxResponseBytes}`,
+    '',
+    'activation:',
+    `  prepareTimeoutMs: ${defaultInstanceActivation.prepareTimeoutMs}`,
     '',
     'components:',
     '  telemetry: managed',
@@ -134,6 +141,7 @@ export function instanceSummary(config) {
     mongoPort: config.ports.mongo,
     httpMaxRequestBytes: config.http.maxRequestBytes,
     httpMaxResponseBytes: config.http.maxResponseBytes,
+    activationPrepareTimeoutMs: config.activation.prepareTimeoutMs,
     routerHttpUrl: config.urls.routerHttp,
     routerControlUrl: config.urls.routerControl,
     routerRuntimeUrl: config.urls.routerRuntime,
@@ -157,6 +165,7 @@ function normalizeInstanceConfig(raw, context) {
   ));
   const ports = normalizePorts(raw.ports);
   const http = normalizeHttp(raw.http);
+  const activation = normalizeActivation(raw.activation);
   const components = normalizeComponents(raw.components);
   const telemetry = normalizeTelemetry(raw.telemetry);
   const mongo = normalizeMongo(raw.mongo, devHome);
@@ -195,6 +204,7 @@ function normalizeInstanceConfig(raw, context) {
     },
     ports,
     http,
+    activation,
     components,
     packageDirs,
     telemetry,
@@ -217,6 +227,26 @@ function normalizeHttp(value) {
   return {
     maxRequestBytes: readPositiveSafeInteger(value.maxRequestBytes, 'http.maxRequestBytes'),
     maxResponseBytes: readPositiveSafeInteger(value.maxResponseBytes, 'http.maxResponseBytes'),
+  };
+}
+
+function normalizeActivation(value) {
+  if (value === undefined || value === null) {
+    return { ...defaultInstanceActivation };
+  }
+  if (!isRecord(value)) {
+    throw new Error('activation must be a mapping with explicit prepareTimeoutMs');
+  }
+  if (typeof value.prepareTimeoutMs !== 'number') {
+    throw new Error(
+      'activation.prepareTimeoutMs must be a positive safe integer'
+    );
+  }
+  return {
+    prepareTimeoutMs: readPositiveSafeInteger(
+      value.prepareTimeoutMs,
+      'activation.prepareTimeoutMs',
+    ),
   };
 }
 

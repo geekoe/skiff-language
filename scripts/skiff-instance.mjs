@@ -487,6 +487,7 @@ function routerConfigText(config) {
     identityCliPath: config.paths.identityCli,
     devReload: true,
     requestTimeoutMs: 20000,
+    activationPrepareTimeoutMs: config.activation.prepareTimeoutMs,
     httpPort: config.ports.routerHttp,
     httpMaxRequestBytes: config.http.maxRequestBytes,
     httpMaxResponseBytes: config.http.maxResponseBytes,

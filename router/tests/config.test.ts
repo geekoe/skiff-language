@@ -74,6 +74,8 @@ describe('router config', () => {
         'releaseMode: true',
         'manifest: manifests/router-manifest.json',
         'requestTimeoutMs: 7000',
+        'activation:',
+        '  prepareTimeoutMs: 120000',
         'http:',
         '  port: 5010',
         '  maxRequestBytes: 16777216',
@@ -116,6 +118,7 @@ describe('router config', () => {
       profile: 'dev',
       releaseMode: true,
       requestTimeoutMs: 7000,
+      activationPrepareTimeoutMs: 120000,
       fileBackend: {
         local: {
           root: join(dir, '..', 'var/skiff-file-blobs'),
@@ -184,6 +187,7 @@ describe('router config', () => {
         httpPort: '6010',
         manifest: 'override.json',
         requestTimeoutMs: '9000',
+        activationPrepareTimeoutMs: '150000',
         runtimePath: '/override-runtime',
         runtimePort: '6011',
         websocketPath: '/override-ws',
@@ -200,10 +204,53 @@ describe('router config', () => {
       profile: 'prod',
       releaseMode: true,
       requestTimeoutMs: 9000,
+      activationPrepareTimeoutMs: 150000,
       runtimePath: '/override-runtime',
       runtimePort: 6011,
       websocketPath: '/override-ws',
     });
+  });
+
+  it('defaults activation prepare independently from the business request timeout', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'router.yml');
+    await writeRouterConfigFixture(
+      configPath,
+      ['profile: dev', 'requestTimeoutMs: 7000', ''].join('\n')
+    );
+
+    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
+      requestTimeoutMs: 7000,
+      activationPrepareTimeoutMs: 120000,
+    });
+  });
+
+  it('fails closed on invalid activation prepare timeout values', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    for (const [index, value] of [
+      '0',
+      '-1',
+      '1.5',
+      '"120000"',
+      '{}',
+      '9007199254740992',
+    ].entries()) {
+      const configPath = join(dir, `router-${index}.yml`);
+      await writeRouterConfigFixture(
+        configPath,
+        [
+          'profile: dev',
+          'activation:',
+          `  prepareTimeoutMs: ${value}`,
+          '',
+        ].join('\n')
+      );
+      await expect(loadRouterConfig(configPath)).rejects.toThrow(
+        /activation\.prepareTimeoutMs must be a positive integer/
+      );
+    }
   });
 
   it('loads router profile from top-level profile and allows overrides', async () => {

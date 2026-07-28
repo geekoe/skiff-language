@@ -173,6 +173,31 @@ describe('Router WebSocket generation lifecycle consumer', () => {
     );
   });
 
+  it('keeps the independent 5s default release timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = lifecycleFixture({ useDefaultReleaseTimeout: true });
+      fixture.lifecycle.expectConnection(expectation());
+      fixture.lifecycle.handleRuntimeControl(
+        fixture.ws,
+        acquire(TUPLE, 'acquire-default-timeout')
+      );
+      const released = fixture.lifecycle.releaseConnection('connection-1');
+      const timeoutResult = expect(released).rejects.toThrow(/release timed out/);
+
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(fixture.ws.close).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await timeoutResult;
+      expect(fixture.ws.close).toHaveBeenCalledWith(
+        1008,
+        'websocket generation release timed out'
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('clears the per-connection ACK count on disconnect and starts a new connection at zero', async () => {
     const fixture = lifecycleFixture();
     fixture.lifecycle.expectConnection(expectation());
@@ -257,6 +282,7 @@ function lifecycleRequestId(suffix: string): string {
 
 function lifecycleFixture(options: {
   releaseTimeoutMs?: number;
+  useDefaultReleaseTimeout?: boolean;
   send?: (
     sender: WebSocket,
     control: WebSocketGenerationLifecycleControl
@@ -285,7 +311,9 @@ function lifecycleFixture(options: {
         options.send?.(sender, control);
       }
     },
-    releaseTimeoutMs: options.releaseTimeoutMs ?? 1_000
+    ...(options.useDefaultReleaseTimeout
+      ? {}
+      : { releaseTimeoutMs: options.releaseTimeoutMs ?? 1_000 })
   });
   return { dispatcher, lifecycle, receipt, sent, ws };
 }

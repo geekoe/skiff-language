@@ -68,6 +68,7 @@ test('instance init writes the configured environment and root into router/runti
     assert.match(routerConfig, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017/m);
     assert.match(routerConfig, /^  maxRequestBytes: 67108864$/m);
     assert.match(routerConfig, /^  maxResponseBytes: 8388608$/m);
+    assert.match(routerConfig, /^activation:\n  prepareTimeoutMs: 120000$/m);
     assert.doesNotMatch(routerConfig, /bodyLimitBytes/);
     assert.doesNotMatch(routerConfig, /^artifactRoots?:/m);
     const runtimeConfig = await readFile(join(devHome, 'runtime.yml'), 'utf8');
@@ -141,11 +142,57 @@ test('instance config requires explicit positive safe HTTP byte ceilings', async
   }
 });
 
+test('instance config owns an explicit positive activation prepare timeout', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-instance-invalid-activation-'));
+  try {
+    const configPath = join(root, 'custom.yml');
+    await writeFile(configPath, instanceConfigText({
+      environment: 'dev',
+      devHome: join(root, 'dev-home'),
+      activationPrepareTimeoutMs: '130000',
+    }));
+    const config = await readInstanceConfig({ configPath, repoRoot: skiffRoot });
+    assert.equal(config.activation.prepareTimeoutMs, 130000);
+    assert.equal(instanceSummary(config).activationPrepareTimeoutMs, 130000);
+
+    const oldConfigPath = join(root, 'without-activation.yml');
+    await writeFile(oldConfigPath, [
+      'environment: dev',
+      `devHome: ${JSON.stringify(join(root, 'old-home'))}`,
+      'http:',
+      '  maxRequestBytes: 67108864',
+      '  maxResponseBytes: 8388608',
+      '',
+    ].join('\n'));
+    const oldConfig = await readInstanceConfig({
+      configPath: oldConfigPath,
+      repoRoot: skiffRoot,
+    });
+    assert.equal(oldConfig.activation.prepareTimeoutMs, 120000);
+
+    for (const [index, value] of ['0', '-1', '1.5', '"120000"'].entries()) {
+      const invalidPath = join(root, `invalid-${index}.yml`);
+      await writeFile(invalidPath, instanceConfigText({
+        environment: 'dev',
+        devHome: join(root, `invalid-home-${index}`),
+        activationPrepareTimeoutMs: value,
+      }));
+      await assert.rejects(
+        readInstanceConfig({ configPath: invalidPath, repoRoot: skiffRoot }),
+        /activation\.prepareTimeoutMs must be a positive safe integer/,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function instanceConfigText({
   environment,
   devHome,
   maxRequestBytes = '67108864',
   maxResponseBytes = '8388608',
+  activationPrepareTimeoutMs = '120000',
 }) {
   return [
     `environment: ${environment}`,
@@ -154,6 +201,8 @@ function instanceConfigText({
     'http:',
     `  maxRequestBytes: ${maxRequestBytes}`,
     `  maxResponseBytes: ${maxResponseBytes}`,
+    'activation:',
+    `  prepareTimeoutMs: ${activationPrepareTimeoutMs}`,
     'components:',
     '  telemetry: disabled',
     '  mongo: disabled',

@@ -8,6 +8,8 @@ serviceDb:
 # artifactsPath. Activation state and audit are stored transactionally in the
 # configured MongoDB. globalIngress is the sole public selector.
 requestTimeoutMs: 20000
+activation:
+  prepareTimeoutMs: 120000
 
 http:
   port: 4000

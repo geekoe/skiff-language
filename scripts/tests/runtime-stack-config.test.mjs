@@ -23,6 +23,7 @@ const routerConfig = {
   identityCliPath: '/tmp/skiff/bin/artifact-identity',
   devReload: true,
   releaseMode: false,
+  activationPrepareTimeoutMs: 120000,
   httpPort: 4100,
   httpMaxRequestBytes: 67108864,
   httpMaxResponseBytes: 8388608,
@@ -49,8 +50,23 @@ test('router config renders an explicit environment', () => {
   assert.match(rendered, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\/skiff"$/m);
   assert.match(rendered, /^  maxRequestBytes: 67108864$/m);
   assert.match(rendered, /^  maxResponseBytes: 8388608$/m);
+  assert.match(rendered, /^activation:\n  prepareTimeoutMs: 120000$/m);
   assert.doesNotMatch(rendered, /bodyLimitBytes/);
   assert.doesNotMatch(rendered, /^artifactRoots?:/m);
+});
+
+test('router config requires an explicit positive activation prepare budget', () => {
+  const { activationPrepareTimeoutMs: _value, ...missing } = routerConfig;
+  assert.throws(
+    () => renderRouterConfig(missing),
+    /router activation\.prepareTimeoutMs must be a positive safe integer/,
+  );
+  for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '120000']) {
+    assert.throws(
+      () => renderRouterConfig({ ...routerConfig, activationPrepareTimeoutMs: value }),
+      /router activation\.prepareTimeoutMs must be a positive safe integer/,
+    );
+  }
 });
 
 test('router config requires explicit positive safe HTTP byte ceilings', () => {
@@ -160,6 +176,8 @@ test('local dev config writes bootstrap ownership only to router', async () => {
       '67108864',
       '--http-max-response-bytes',
       '8388608',
+      '--activation-prepare-timeout-ms',
+      '130000',
       '--no-bin',
     ]);
     const rendered = await readFile(join(devHome, 'runtime.yml'), 'utf8');
@@ -172,6 +190,7 @@ test('local dev config writes bootstrap ownership only to router', async () => {
     assert.match(router, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\//m);
     assert.match(router, /^  maxRequestBytes: 67108864$/m);
     assert.match(router, /^  maxResponseBytes: 8388608$/m);
+    assert.match(router, /^activation:\n  prepareTimeoutMs: 130000$/m);
     assert.doesNotMatch(router, /bodyLimitBytes/);
     assert.doesNotMatch(router, /^artifactRoots?:/m);
     assert.match(

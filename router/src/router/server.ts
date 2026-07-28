@@ -26,6 +26,7 @@ import { WebSocketRpcBridge } from '../gateway/webSocketRpcBridge.js';
 const args = parseArgs({
   options: {
     config: { type: 'string', default: 'router.yml' },
+    'activation-prepare-timeout-ms': { type: 'string' },
     'artifacts-path': { type: 'string' },
     environment: { type: 'string' },
     host: { type: 'string' },
@@ -39,6 +40,10 @@ const args = parseArgs({
 });
 
 const overrides: RouterConfigOverrides = {};
+if (args.values['activation-prepare-timeout-ms'] !== undefined) {
+  overrides.activationPrepareTimeoutMs =
+    args.values['activation-prepare-timeout-ms'];
+}
 if (args.values['artifacts-path'] !== undefined) {
   overrides.artifactsPath = args.values['artifacts-path'];
 }
@@ -140,7 +145,7 @@ const coordinator = new AssemblyActivationCoordinator({
   registry,
   participants: runtimeRegistry,
   controlSender: runtimeEndpoint,
-  prepareTimeoutMs: config.requestTimeoutMs
+  prepareTimeoutMs: config.activationPrepareTimeoutMs
 });
 runtimeEndpoint.setCoordinator(coordinator);
 await coordinator.initialize();
@@ -153,8 +158,7 @@ const webSocketRpcBridge = new WebSocketRpcBridge({
 });
 const generationLifecycle = new WebSocketGenerationLifecycleRouter({
   dispatcher,
-  sender: runtimeEndpoint,
-  releaseTimeoutMs: config.requestTimeoutMs
+  sender: runtimeEndpoint
 });
 runtimeEndpoint.setWebSocketGenerationLifecycle(generationLifecycle);
 registry.setConnectionPinCounter(generationLifecycle);

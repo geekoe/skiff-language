@@ -20,6 +20,67 @@ const ASSEMBLY_B = identity('b');
 const ASSEMBLY_C = identity('c');
 
 describe('active RuntimeAssembly activation transaction', () => {
+  it('keeps preparing beyond a 7s request budget and aborts only at the activation budget', async () => {
+    vi.useFakeTimers();
+    try {
+      const snapshots = new RouterActiveAssemblySnapshotStore();
+      const registry = new AssemblyRuntimeRegistry(snapshots);
+      const stateStore = new MemoryAssemblyActivationStateStore(
+        initialActivationState({
+          environment: 'test',
+          generation: 1,
+          assemblyIdentity: ASSEMBLY_A
+        })
+      );
+      const controls: AssemblyActivationControl[] = [];
+      const coordinator = new AssemblyActivationCoordinator({
+        environment: 'test',
+        stateStore,
+        assemblyLoader: new MemoryRuntimeAssemblySnapshotLoader([
+          assembly(ASSEMBLY_A),
+          assembly(ASSEMBLY_B)
+        ]),
+        snapshots,
+        registry,
+        participants: registry,
+        controlSender: {
+          sendAssemblyControl: (_ws, control) => controls.push(control)
+        },
+        prepareTimeoutMs: 120_000
+      });
+      await coordinator.initialize();
+      const runtime = fakeSocket();
+      register(registry, runtime, 'replica-a', 1, ASSEMBLY_A);
+
+      let settled = false;
+      const activation = coordinator.activate({
+        schemaVersion: 'skiff-assembly-activation-request-v1',
+        environment: 'test',
+        activationId: 'activation-independent-budget',
+        expectedGeneration: 1,
+        assembly: { assemblyIdentity: ASSEMBLY_B }
+      }).finally(() => {
+        settled = true;
+      });
+      const timeoutResult = expect(activation).rejects.toThrow(
+        /assembly activation prepare timed out/
+      );
+      await vi.advanceTimersByTimeAsync(20_001);
+      expect(controlsOfType(controls, 'prepare')).toHaveLength(1);
+      expect(settled).toBe(false);
+      expect(coordinator.activationState().pending).not.toBeNull();
+
+      await vi.advanceTimersByTimeAsync(99_998);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await timeoutResult;
+      expect(controlsOfType(controls, 'abort')).toHaveLength(1);
+      expect((await stateStore.read('test')).pending).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('commits only after every frozen connected replica returns the exact staged ACK', async () => {
     const fixture = await coordinatorFixture();
     const runtimeA = fakeSocket();
