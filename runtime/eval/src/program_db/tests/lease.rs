@@ -7,6 +7,27 @@ use crate::env::Env;
 
 use super::fixture::{first_poll, DbActorFixture, DbPhase, FakeDbState, OperationMetrics};
 
+#[test]
+fn db_actor_lease_fixture_exposes_required_binding_variant() {
+    let fixture = DbActorFixture::new(FakeDbState::new());
+    let claim = fixture
+        .linked
+        .executable()
+        .body
+        .expressions
+        .iter()
+        .find_map(|expression| match expression {
+            LinkedExprIr::DbLeaseClaim { claim } => Some(claim),
+            _ => None,
+        })
+        .expect("shared fixture claim expression");
+
+    assert!(
+        claim.binding_slot.is_some(),
+        "TASK_NOT_EXECUTABLE: frozen expression fixture has no lease binding variant"
+    );
+}
+
 #[tokio::test]
 async fn db_actor_lease_claim_pending_uses_one_actor_segment() {
     let state = FakeDbState::new();
