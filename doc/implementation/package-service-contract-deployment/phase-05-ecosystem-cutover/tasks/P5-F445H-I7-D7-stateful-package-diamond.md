@@ -38,4 +38,3 @@ consumer、Internals或外部package。
 
 若实现需要新增公开artifact DTO、改变schema generation，或不能从exact build、resolved map与activation
 namespace判断canonical equality，返回`TASK_SCOPE_EXPANDED`。
-
