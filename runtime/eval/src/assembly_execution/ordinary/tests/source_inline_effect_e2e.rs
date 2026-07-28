@@ -1457,7 +1457,7 @@ function exercise() -> string {
   if first.tag == "ok" {
     return "typed-throw-was-not-caught"
   }
-  return payments/echo("second")
+  return first.exception.error.message + ":" + payments/echo("second")
 }
 "#,
     )
@@ -1480,7 +1480,7 @@ test "typed service throw is caught before sequence response" effects {
     ],
   }
 } {
-  assert root.main.exercise() == "accepted"
+  assert root.main.exercise() == "denied:accepted"
 }
 "#,
     )
