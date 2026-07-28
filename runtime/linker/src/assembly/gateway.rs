@@ -5,8 +5,8 @@ use std::{
 
 use skiff_artifact_model::{
     GatewayAdapterPlan, GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
-    IngressSelector, OperationTargetRef, PackageCallableId, PackageCallableSignature,
-    ServiceDeploymentRef,
+    OperationTargetRef, PackageCallableId, PackageCallableSignature, ServiceDeploymentRef,
+    ServiceIngressKey,
 };
 use skiff_runtime_linked_program::SharedPackageLinkedImage;
 use skiff_runtime_loader::{
@@ -121,7 +121,7 @@ pub(super) fn link_gateway_ingress(
     image: &SharedPackageLinkedImage,
 ) -> anyhow::Result<(
     BTreeMap<(ServiceDeploymentRef, GatewayEntryKey), Arc<LinkedGatewayEntry>>,
-    BTreeMap<IngressSelector, Arc<LinkedGatewayEntry>>,
+    BTreeMap<ServiceIngressKey, Arc<LinkedGatewayEntry>>,
 )> {
     let mut entries = BTreeMap::new();
     for ((owner, key), source) in hydrated.gateway_entries() {
@@ -160,23 +160,25 @@ pub(super) fn link_gateway_ingress(
     }
 
     let mut ingress = BTreeMap::new();
-    for (selector, source) in hydrated.gateway_ingress() {
+    for (service_ingress_key, source) in hydrated.gateway_ingress() {
         let key = (source.owner().clone(), source.gateway_entry_key().clone());
         let entry = entries.get(&key).ok_or_else(|| {
             anyhow::anyhow!(
-                "gateway selector {selector:?} targets missing linked entry {:?}/{}",
+                "gateway ingress key {service_ingress_key:?} targets missing linked entry {:?}/{}",
                 key.0,
                 key.1
             )
         })?;
         if entry.gateway_entry_identity() != source.gateway_entry_identity() {
-            anyhow::bail!("gateway selector {selector:?} linked entry identity mismatch");
+            anyhow::bail!(
+                "gateway ingress key {service_ingress_key:?} linked entry identity mismatch"
+            );
         }
         if ingress
-            .insert(selector.clone(), Arc::clone(entry))
+            .insert(service_ingress_key.clone(), Arc::clone(entry))
             .is_some()
         {
-            anyhow::bail!("linked gateway selector {selector:?} is duplicated");
+            anyhow::bail!("linked gateway ingress key {service_ingress_key:?} is duplicated");
         }
     }
 
@@ -184,7 +186,7 @@ pub(super) fn link_gateway_ingress(
         .assembly()
         .gateway_ingress
         .iter()
-        .map(|binding| binding.selector.clone())
+        .map(|binding| binding.service_ingress_key())
         .collect::<BTreeSet<_>>();
     if declared.len() != hydrated.assembly().gateway_ingress.len()
         || declared != ingress.keys().cloned().collect()

@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use skiff_artifact_model::{
     ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, GatewayIngressBinding,
-    IngressSelector, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
-    PackageCodeSlot, PackageRequirement, PackageRequirementKey, ResolvedServiceBinding,
-    RuntimeAssembly, ServiceBindingTemplate, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, ServiceRequirementKey, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageCodeSlot,
+    PackageRequirement, PackageRequirementKey, ResolvedServiceBinding, RuntimeAssembly,
+    ServiceBindingTemplate, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceIngressKey, ServiceRequirementKey, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 
 use super::{AssemblyResolutionError, AssemblyResult, CandidateIndex};
@@ -19,7 +19,7 @@ pub(super) struct Resolver<'a, 'c> {
     package_links: BTreeMap<PackageRequirementKey, PackageBinding>,
     service_templates: BTreeMap<ServiceDeploymentRef, ServiceBindingTemplate>,
     activation_templates: BTreeMap<ServiceDeploymentRef, ActivationTemplate>,
-    gateway_ingress: BTreeMap<IngressSelector, GatewayIngressBinding>,
+    gateway_ingress: BTreeMap<ServiceIngressKey, GatewayIngressBinding>,
 }
 
 impl<'a, 'c> Resolver<'a, 'c> {
@@ -195,12 +195,10 @@ impl<'a, 'c> Resolver<'a, 'c> {
                 gateway_entry_key: source.gateway_entry_key.clone(),
                 gateway_entry_identity: entry.gateway_entry_identity.clone(),
             };
-            if let Some(first) = self
-                .gateway_ingress
-                .insert(source.selector.clone(), binding)
-            {
+            let key = binding.service_ingress_key();
+            if let Some(first) = self.gateway_ingress.insert(key.clone(), binding) {
                 return Err(AssemblyResolutionError::GatewayIngressCollision {
-                    selector: source.selector.clone(),
+                    key,
                     first: first.deployment,
                     second: reference.clone(),
                 });

@@ -205,11 +205,10 @@ fn gateway_ingress_projects_exact_entries_and_is_canonical_across_deployments() 
         Vec::new(),
         Vec::new(),
     );
-    add_http_ingress(&mut deployment_a, &contract_a, "a.example.test", "/primary");
+    add_http_ingress(&mut deployment_a, &contract_a, "/primary");
     let alias = DeploymentIngressBinding {
         selector: skiff_artifact_model::IngressSelector {
             protocol: skiff_artifact_model::IngressProtocol::Http,
-            host: "a.example.test".to_string(),
             method: Some("POST".to_string()),
             path: "/alias".to_string(),
         },
@@ -217,7 +216,7 @@ fn gateway_ingress_projects_exact_entries_and_is_canonical_across_deployments() 
     };
     deployment_a.ingress.push(alias);
     assign_service_deployment_identity(&mut deployment_a).unwrap();
-    add_http_ingress(&mut deployment_b, &contract_b, "b.example.test", "/call");
+    add_http_ingress(&mut deployment_b, &contract_b, "/call");
 
     let assembly = resolve_runtime_assembly(
         &[deployment_ref(&deployment_b), deployment_ref(&deployment_a)],

@@ -3,7 +3,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use skiff_artifact_model::{
     AssemblyIdentity, CanonicalPackageLinkPlan, FileIrRef, FileIrUnit, PackageArtifact,
     PackageArtifactRef, PublicationResourceRef, RuntimeAssembly, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceIngressKey,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::{RuntimeAssemblyContentResolver, RuntimeAssemblyLoader};
 
@@ -247,8 +248,8 @@ fn candidate_keeps_code_shared_and_service_bindings_activation_relative() {
         .resolve_activation_relative_service_call(&fixture.activation_b, &service_call)
         .unwrap();
     assert_eq!(binding_a.provider(), &fixture.activation_b);
-    assert_eq!(binding_b.provider(), &fixture.activation_a);
-    assert_ne!(binding_a.provider(), binding_b.provider());
+    assert_eq!(binding_b.provider(), &fixture.activation_b);
+    assert_eq!(binding_a.provider(), binding_b.provider());
 
     let provider_operation = candidate
         .activation(binding_a.provider())
@@ -354,7 +355,7 @@ fn assembly_execution_image_keeps_code_shared_and_call_kinds_distinct() {
     let binding_b = candidate
         .resolve_activation_relative_service_call(&fixture.activation_b, instruction)
         .unwrap();
-    assert_ne!(binding_a.provider(), binding_b.provider());
+    assert_eq!(binding_a.provider(), binding_b.provider());
 
     let LinkedExprIr::Call { call: local } = &expressions[1] else {
         panic!("second expression must be the local executable call")
@@ -425,8 +426,18 @@ fn assembly_candidate_retains_internal_operation_and_exact_linked_gateway_entry(
         .operation(&fixture.operation_id)
         .is_some());
 
-    let ingress = candidate.ingress(&fixture.ingress_selector).unwrap();
-    let alias = candidate.ingress(&fixture.ingress_alias_selector).unwrap();
+    let ingress = candidate
+        .ingress(&ServiceIngressKey {
+            deployment: fixture.activation_a.clone(),
+            selector: fixture.ingress_selector.clone(),
+        })
+        .unwrap();
+    let alias = candidate
+        .ingress(&ServiceIngressKey {
+            deployment: fixture.activation_a.clone(),
+            selector: fixture.ingress_alias_selector.clone(),
+        })
+        .unwrap();
     assert!(Arc::ptr_eq(ingress, alias));
     assert_eq!(ingress.owner(), &fixture.activation_a);
     assert_eq!(ingress.gateway_entry_key(), &fixture.gateway_entry_key);

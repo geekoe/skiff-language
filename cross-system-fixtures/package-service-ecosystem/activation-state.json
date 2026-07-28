@@ -4,7 +4,7 @@
   "committed": {
     "generation": 41,
     "assembly": {
-      "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     }
   },
   "pending": {
@@ -12,7 +12,7 @@
     "expectedGeneration": 41,
     "candidateGeneration": 42,
     "assembly": {
-      "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     },
     "participantReplicaIds": ["runtime-a", "runtime-b"]
   }

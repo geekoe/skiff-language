@@ -7,11 +7,11 @@ use anyhow::Context;
 use skiff_artifact_model::{
     package_schema_descriptor_refs, BoundaryCallbackContract, BoundaryOperationDescriptor,
     BoundaryStreamContract, ContractOperationId, ContractTypeDescriptor, ContractTypeRef,
-    FileIrRef, FileIrUnit, GatewayEntryKey, IngressSelector, PackageArtifact, PackageArtifactRef,
-    PackageBuildId, PackageSchemaIndex, PackageSchemaIndexRef, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssembly,
-    RuntimeAssemblyRef, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef,
+    FileIrRef, FileIrUnit, GatewayEntryKey, PackageArtifact, PackageArtifactRef, PackageBuildId,
+    PackageSchemaIndex, PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssembly, RuntimeAssemblyRef,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceIngressKey,
 };
 
 mod content_validation;
@@ -257,7 +257,7 @@ pub struct HydratedRuntimeAssembly {
     code_slots: Vec<HydratedPackageCodeSlot>,
     code_slots_by_build: BTreeMap<PackageBuildId, usize>,
     gateway_entries: BTreeMap<(ServiceDeploymentRef, GatewayEntryKey), Arc<HydratedGatewayEntry>>,
-    gateway_ingress: BTreeMap<IngressSelector, Arc<HydratedGatewayEntry>>,
+    gateway_ingress: BTreeMap<ServiceIngressKey, Arc<HydratedGatewayEntry>>,
 }
 
 impl HydratedRuntimeAssembly {
@@ -319,7 +319,7 @@ impl HydratedRuntimeAssembly {
 
     pub fn gateway_ingress(
         &self,
-    ) -> impl ExactSizeIterator<Item = (&IngressSelector, &Arc<HydratedGatewayEntry>)> {
+    ) -> impl ExactSizeIterator<Item = (&ServiceIngressKey, &Arc<HydratedGatewayEntry>)> {
         self.gateway_ingress.iter()
     }
 }

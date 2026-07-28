@@ -2,9 +2,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
     GatewayAdapterPlan, GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
-    GatewayIngressBinding, IngressSelector, OperationCallableKind, OperationTargetRef,
-    PackageArtifact, PackageCallableId, PackageCallableSignature, PackageLocalAbiSymbol,
-    ServiceDeployment, ServiceDeploymentRef,
+    GatewayIngressBinding, OperationCallableKind, OperationTargetRef, PackageArtifact,
+    PackageCallableId, PackageCallableSignature, PackageLocalAbiSymbol, ServiceDeployment,
+    ServiceDeploymentRef, ServiceIngressKey,
 };
 
 use super::HydratedPackageCodeSlot;
@@ -79,7 +79,7 @@ impl HydratedGatewayEntry {
 pub(super) struct HydratedGatewayIngress {
     pub(super) entries:
         BTreeMap<(ServiceDeploymentRef, GatewayEntryKey), Arc<HydratedGatewayEntry>>,
-    pub(super) selectors: BTreeMap<IngressSelector, Arc<HydratedGatewayEntry>>,
+    pub(super) selectors: BTreeMap<ServiceIngressKey, Arc<HydratedGatewayEntry>>,
 }
 
 pub(super) fn hydrate_gateway_ingress(
@@ -163,10 +163,10 @@ pub(super) fn hydrate_gateway_ingress(
                 gateway_entry_key: binding.gateway_entry_key.clone(),
                 gateway_entry_identity: entry.gateway_entry_identity.clone(),
             };
-            if let Some(first) = expected_bindings.insert(binding.selector.clone(), expected) {
+            let key = expected.service_ingress_key();
+            if let Some(first) = expected_bindings.insert(key.clone(), expected) {
                 anyhow::bail!(
-                    "gateway selector {:?} is declared by both {:?} and {owner:?}",
-                    binding.selector,
+                    "gateway ingress key {key:?} is declared by both {:?} and {owner:?}",
                     first.deployment
                 );
             }
@@ -175,14 +175,12 @@ pub(super) fn hydrate_gateway_ingress(
 
     let mut declared_bindings = BTreeMap::new();
     for binding in assembly_bindings {
+        let key = binding.service_ingress_key();
         if declared_bindings
-            .insert(binding.selector.clone(), binding.clone())
+            .insert(key.clone(), binding.clone())
             .is_some()
         {
-            anyhow::bail!(
-                "RuntimeAssembly repeats gateway selector {:?}",
-                binding.selector
-            );
+            anyhow::bail!("RuntimeAssembly repeats gateway ingress key {key:?}");
         }
     }
     if declared_bindings != expected_bindings {
@@ -192,7 +190,7 @@ pub(super) fn hydrate_gateway_ingress(
     }
 
     let mut selectors = BTreeMap::new();
-    for (selector, binding) in declared_bindings {
+    for (key, binding) in declared_bindings {
         let entry = entries
             .get(&(
                 binding.deployment.clone(),
@@ -200,17 +198,17 @@ pub(super) fn hydrate_gateway_ingress(
             ))
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "RuntimeAssembly gateway selector {selector:?} targets missing entry {:?}/{}",
+                    "RuntimeAssembly gateway ingress key {key:?} targets missing entry {:?}/{}",
                     binding.deployment,
                     binding.gateway_entry_key
                 )
             })?;
         if entry.gateway_entry_identity() != &binding.gateway_entry_identity {
             anyhow::bail!(
-                "RuntimeAssembly gateway selector {selector:?} entry identity mismatches deployment"
+                "RuntimeAssembly gateway ingress key {key:?} entry identity mismatches deployment"
             );
         }
-        selectors.insert(selector, Arc::clone(entry));
+        selectors.insert(key, Arc::clone(entry));
     }
 
     Ok(HydratedGatewayIngress { entries, selectors })

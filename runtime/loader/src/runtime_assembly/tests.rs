@@ -82,6 +82,7 @@ struct FixtureResolver {
     additional_deployment: Option<(ServiceDeploymentRef, Arc<ServiceDeployment>)>,
     contract_ref: ServiceContractRef,
     contract: Arc<ServiceContract>,
+    additional_contract: Option<(ServiceContractRef, Arc<ServiceContract>)>,
     package_ref: PackageArtifactRef,
     package: Arc<PackageArtifact>,
     file_ref: FileIrRef,
@@ -115,6 +116,11 @@ impl RuntimeAssemblyContentResolver for FixtureResolver {
         reference: &ServiceContractRef,
     ) -> anyhow::Result<Arc<ServiceContract>> {
         if reference != &self.contract_ref {
+            if let Some((additional_ref, contract)) = &self.additional_contract {
+                if reference == additional_ref {
+                    return Ok(Arc::clone(contract));
+                }
+            }
             anyhow::bail!("missing contract")
         }
         Ok(Arc::clone(&self.contract))
@@ -444,6 +450,7 @@ impl Fixture {
             additional_deployment: None,
             contract_ref: contract_ref(&self.contract),
             contract: Arc::new(self.contract.clone()),
+            additional_contract: None,
             package_ref: package_ref(&self.package),
             package: Arc::new(self.package.clone()),
             file_ref: self.package.files[0].clone(),
@@ -572,7 +579,6 @@ impl Fixture {
             .map(|path| DeploymentIngressBinding {
                 selector: IngressSelector {
                     protocol: IngressProtocol::Http,
-                    host: "api.example.test".to_string(),
                     method: Some("POST".to_string()),
                     path: path.to_string(),
                 },
@@ -694,8 +700,25 @@ fn canonical_empty_assembly_hydrates_without_storage_reads() {
 #[test]
 fn typed_loader_preserves_contract_store_and_deterministic_code_lookup() {
     let mut fixture = Fixture::new();
+    let mut second_contract = fixture.contract.clone();
+    second_contract.service_id = "example.health.secondary".to_string();
+    let second_operation_id = skiff_artifact_identity::contract_operation_id(
+        &second_contract.service_id,
+        &second_contract.contract_version,
+        "health",
+    )
+    .unwrap();
+    let mut descriptor = second_contract.operations.pop_first().unwrap().1;
+    descriptor.operation_id = second_operation_id.clone();
+    second_contract
+        .operations
+        .insert(second_operation_id.clone(), descriptor);
+    skiff_artifact_identity::assign_service_contract_identities(&mut second_contract).unwrap();
+    let second_contract_ref = contract_ref(&second_contract);
     let mut second_deployment = fixture.deployment.clone();
+    second_deployment.contract = second_contract_ref.clone();
     second_deployment.deployment_revision = DeploymentRevision::new("revision-2");
+    second_deployment.operation_bindings[0].contract_operation_id = second_operation_id;
     skiff_artifact_identity::assign_service_deployment_identity(&mut second_deployment).unwrap();
     let second_ref = skiff_artifact_identity::service_deployment_ref(&second_deployment);
     fixture.assembly.roots.push(second_ref.clone());
@@ -703,6 +726,10 @@ fn typed_loader_preserves_contract_store_and_deterministic_code_lookup() {
         .assembly
         .resolved_deployments
         .push(second_ref.clone());
+    fixture
+        .assembly
+        .resolved_contracts
+        .push(second_contract_ref.clone());
     fixture
         .assembly
         .service_binding_templates
@@ -720,6 +747,7 @@ fn typed_loader_preserves_contract_store_and_deterministic_code_lookup() {
 
     let mut resolver = fixture.resolver();
     resolver.additional_deployment = Some((second_ref.clone(), Arc::new(second_deployment)));
+    resolver.additional_contract = Some((second_contract_ref, Arc::new(second_contract)));
     let contract_ref = contract_ref(&fixture.contract);
     let package_ref = package_ref(&fixture.package);
 
@@ -880,7 +908,7 @@ fn runtime_assembly_loader_rejects_gateway_union_and_callable_mismatches() {
         .load(websocket.assembly)
         .unwrap_err();
     assert!(
-        format!("{error:#}").contains("WebSocket ingress must not declare method"),
+        format!("{error:#}").contains("does not match gateway entry"),
         "unexpected error: {error:#}"
     );
 }

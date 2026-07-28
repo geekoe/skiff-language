@@ -305,7 +305,10 @@ pub(crate) fn admitted_websocket_entry(
         .gateway_entry(owner, entry_key)
         .ok_or_else(|| anyhow::anyhow!("activation {owner:?} WebSocket entry is not linked"))?;
     let selected_entry = candidate
-        .ingress(&binding.selector)
+        .ingress(&skiff_artifact_model::ServiceIngressKey {
+            deployment: owner.clone(),
+            selector: binding.selector.clone(),
+        })
         .ok_or_else(|| anyhow::anyhow!("activation {owner:?} WebSocket selector is not linked"))?;
     if !Arc::ptr_eq(linked_entry, selected_entry)
         || linked_entry.owner() != owner
@@ -335,12 +338,17 @@ pub(crate) fn admitted_websocket_entry(
                     method.method
                 )
             })?;
-        let selected_method = candidate.ingress(&method.binding.selector).ok_or_else(|| {
-            anyhow::anyhow!(
-                "activation {owner:?} WebSocket JSON-RPC selector {:?} is not linked",
-                method.binding.selector
-            )
-        })?;
+        let selected_method = candidate
+            .ingress(&skiff_artifact_model::ServiceIngressKey {
+                deployment: owner.clone(),
+                selector: method.binding.selector.clone(),
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "activation {owner:?} WebSocket JSON-RPC selector {:?} is not linked",
+                    method.binding.selector
+                )
+            })?;
         if !Arc::ptr_eq(linked_method, selected_method)
             || linked_method.owner() != owner
             || linked_method.gateway_entry_key() != method.entry_key
