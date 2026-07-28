@@ -3,6 +3,48 @@ use std::cell::Cell;
 use super::*;
 
 #[test]
+fn activation_and_business_clients_have_independent_timeout_budgets() {
+    let router_default_prepare_timeout = Duration::from_millis(120_000);
+
+    assert_eq!(ACTIVATION_HTTP_TIMEOUT, Duration::from_millis(150_000));
+    assert!(
+        ACTIVATION_HTTP_TIMEOUT > router_default_prepare_timeout,
+        "the Router must decide a default prepare timeout before the activation client disconnects"
+    );
+    assert_eq!(BUSINESS_HTTP_TIMEOUT, Duration::from_millis(30_000));
+    assert_ne!(ACTIVATION_HTTP_TIMEOUT, BUSINESS_HTTP_TIMEOUT);
+}
+
+#[test]
+fn activation_and_dispatch_call_sites_use_separate_budgets() {
+    let source = include_str!("../../runtime_execution.rs");
+
+    assert_eq!(
+        source
+            .matches("deadline_after(ACTIVATION_HTTP_TIMEOUT)?")
+            .count(),
+        1
+    );
+    assert_eq!(
+        source
+            .matches("deadline_after(BUSINESS_HTTP_TIMEOUT)?")
+            .count(),
+        1
+    );
+    assert!(!source.contains("deadline_after(HTTP_TIMEOUT)"));
+}
+
+#[test]
+fn client_deadline_overflow_fails_closed() {
+    let error = deadline_after_from(Instant::now(), Duration::MAX).unwrap_err();
+
+    assert!(matches!(
+        error,
+        CanonicalFixtureError::InvalidInput(message) if message == "HTTP deadline overflow"
+    ));
+}
+
+#[test]
 fn activation_request_preserves_dev_target_environment() {
     let assembly = RuntimeAssemblyRef {
         assembly_identity: skiff_artifact_model::AssemblyIdentity::new(test_support::ASSEMBLY_B),
