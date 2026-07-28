@@ -5,7 +5,7 @@ use skiff_runtime_model::runtime_value::RuntimeValue;
 
 use crate::env::Env;
 
-use super::fixture::{first_poll, DbActorFixture, DbPhase, FakeDbState};
+use super::fixture::{first_poll, DbActorFixture, DbPhase, FakeDbState, OperationMetrics};
 
 #[tokio::test]
 async fn db_actor_lease_claim_pending_uses_one_actor_segment() {
@@ -65,7 +65,17 @@ async fn db_actor_lease_claim_pending_uses_one_actor_segment() {
 
     assert!(matches!(value.into_value(), RuntimeValue::Bool(false)));
     frame.finish(heap).expect("Actor frame must finish");
-    state.assert_completed_once(DbPhase::Claim);
+    assert_eq!(
+        state.metrics(DbPhase::Claim),
+        OperationMetrics {
+            constructed: 1,
+            polls: 3,
+            pending_returns: 2,
+            ready_returns: 1,
+            dropped_before_terminal: 0,
+            dropped_after_terminal: 1,
+        }
+    );
     assert_eq!(state.metrics(DbPhase::Renew).constructed, 0);
     assert_eq!(state.metrics(DbPhase::LeaseLost).constructed, 0);
     assert_eq!(state.metrics(DbPhase::Release).constructed, 0);

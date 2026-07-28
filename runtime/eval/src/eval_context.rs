@@ -696,7 +696,6 @@ impl<'a> EvalContext<'a> {
                 }
             }
             LinkedExprIr::DbOperation { operation } => {
-                let frame = self.suspend_actor_segment()?;
                 let result = self
                     .interpreter
                     .eval_program_db_operation(
@@ -709,7 +708,6 @@ impl<'a> EvalContext<'a> {
                         operation,
                     )
                     .await;
-                self.resume_actor_segment(frame).await?;
                 result.map(Into::into)
             }
             LinkedExprIr::DbQuery {
@@ -718,7 +716,6 @@ impl<'a> EvalContext<'a> {
                 projection,
                 ..
             } => {
-                let frame = self.suspend_actor_segment()?;
                 let result = self
                     .interpreter
                     .eval_program_db_query_value(
@@ -733,11 +730,9 @@ impl<'a> EvalContext<'a> {
                         projection.as_ref(),
                     )
                     .await;
-                self.resume_actor_segment(frame).await?;
                 result.map(Into::into)
             }
             LinkedExprIr::DbTransaction { transaction } => {
-                let frame = self.suspend_actor_segment()?;
                 let result = self
                     .interpreter
                     .eval_program_explicit_db_transaction(
@@ -750,11 +745,9 @@ impl<'a> EvalContext<'a> {
                         transaction,
                     )
                     .await;
-                self.resume_actor_segment(frame).await?;
                 result
             }
             LinkedExprIr::DbLeaseClaim { claim } => {
-                let frame = self.suspend_actor_segment()?;
                 let result = self
                     .interpreter
                     .eval_program_db_lease_claim(
@@ -767,11 +760,9 @@ impl<'a> EvalContext<'a> {
                         claim,
                     )
                     .await;
-                self.resume_actor_segment(frame).await?;
                 result.map(Into::into)
             }
             LinkedExprIr::DbLeaseRead { read } => {
-                let frame = self.suspend_actor_segment()?;
                 let result = self
                     .interpreter
                     .eval_program_db_lease_read(
@@ -784,7 +775,6 @@ impl<'a> EvalContext<'a> {
                         read,
                     )
                     .await;
-                self.resume_actor_segment(frame).await?;
                 result.map(Into::into)
             }
             LinkedExprIr::LoadConst { const_index } => {
