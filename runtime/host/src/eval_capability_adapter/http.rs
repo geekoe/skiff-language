@@ -21,8 +21,12 @@ impl capability_contract::HttpClientCapabilityApi for RuntimeHttpClientCapabilit
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::HttpCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            let _execution_control = execution_control;
-            root_result_into_capability(self.0.dispatch_http_request(input).await).await
+            root_result_into_capability(
+                self.0
+                    .dispatch_http_request_with_current_scope(input, execution_control)
+                    .await,
+            )
+            .await
         })
     }
 
@@ -33,10 +37,13 @@ impl capability_contract::HttpClientCapabilityApi for RuntimeHttpClientCapabilit
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::HttpCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            let _execution_control = execution_control;
             root_result_into_capability(
                 self.0
-                    .dispatch_http_stream(input, expected_body_item_type)
+                    .dispatch_http_stream_with_current_scope(
+                        input,
+                        expected_body_item_type,
+                        execution_control,
+                    )
                     .await,
             )
             .await
@@ -50,9 +57,16 @@ impl capability_contract::HttpClientCapabilityApi for RuntimeHttpClientCapabilit
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::HttpCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            let _execution_control = execution_control;
-            root_result_into_capability(self.0.dispatch_http_sse(input, expected_item_type).await)
-                .await
+            root_result_into_capability(
+                self.0
+                    .dispatch_http_sse_with_current_scope(
+                        input,
+                        expected_item_type,
+                        execution_control,
+                    )
+                    .await,
+            )
+            .await
         })
     }
 }

@@ -16,7 +16,6 @@ use super::{
     cancel::{check_cancel_signals, wait_for_cancel_signals},
     egress::enforce_http_egress_guard,
     input::parse_input,
-    HTTP_REQUEST_TIMEOUT_REASON,
 };
 use crate::error::{Result, RuntimeError};
 
@@ -83,10 +82,7 @@ pub(super) async fn send_request(context: &HttpCallContext<'_, '_>) -> Result<re
 
     let timeout_ms = effective_timeout_ms(parsed.timeout_ms, context.frame_deadline_ms());
     if timeout_ms == Some(0) {
-        return Err(RuntimeError::ProviderUnavailable {
-            target: context.target().to_string(),
-            reason: HTTP_REQUEST_TIMEOUT_REASON.to_string(),
-        });
+        return Err(http_primitive_timeout_error(context.target()));
     }
 
     let body_bytes = parsed.body.clone();
@@ -217,10 +213,7 @@ fn build_http_client(target: &str, key: &HttpClientCacheKey) -> Result<Client> {
 
 pub(super) fn map_reqwest_error_for(target: &str, error: reqwest::Error) -> RuntimeError {
     if error.is_timeout() {
-        RuntimeError::ProviderUnavailable {
-            target: target.to_string(),
-            reason: HTTP_REQUEST_TIMEOUT_REASON.to_string(),
-        }
+        http_primitive_timeout_error(target)
     } else if error.is_connect() {
         RuntimeError::ProviderUnavailable {
             target: target.to_string(),
@@ -231,6 +224,18 @@ pub(super) fn map_reqwest_error_for(target: &str, error: reqwest::Error) -> Runt
             target: target.to_string(),
             reason: "request failed".to_string(),
         }
+    }
+}
+
+fn http_primitive_timeout_error(target: &str) -> RuntimeError {
+    RuntimeError::ExternalErrorPayload {
+        code: "TimeoutError".to_string(),
+        message: "HTTP request timeout exceeded".to_string(),
+        status: None,
+        details: Some(serde_json::json!({
+            "reason": "httpRequestTimeout",
+            "target": target,
+        })),
     }
 }
 
