@@ -894,6 +894,162 @@ type AgentRuntimeBindings {
 }
 
 #[test]
+fn top_level_callable_signatures_use_the_primary_alias_for_public_type_identity() {
+    let temp = TestDir::new(
+        "skiff-compiler",
+        "top-level-callable-primary-alias-signature",
+    );
+    fs::write(
+        temp.path().join("package.yml"),
+        r#"id: example.com/provider-tests
+version: 1.0.0
+packages:
+  - id: example.com/provider
+    version: 1.0.0
+    alias: provider
+    topLevelAlias: providerImpl
+"#,
+    )
+    .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
+
+    let provider = temp
+        .path()
+        .join(".skiff-packages/example~com~~provider/1.0.0");
+    fs::create_dir_all(&provider).unwrap();
+    fs::write(
+        provider.join("package.yml"),
+        "id: example.com/provider\nversion: 1.0.0\n",
+    )
+    .unwrap();
+    fs::write(
+        provider.join("api.yml"),
+        r#"PublicInput: api.PublicInput
+PublicOutput: api.PublicOutput
+PublicHandler: api.PublicHandler
+PublicEnvelope: api.PublicEnvelope
+"#,
+    )
+    .unwrap();
+    fs::write(
+        provider.join("api.skiff"),
+        r#"
+type PublicInput {
+  text: string
+}
+
+type PublicOutput {
+  text: string
+}
+
+interface PublicHandler {
+  function handle(self: Self, input: PublicInput) -> PublicOutput
+}
+
+type PublicEnvelope<T> {
+  value: T
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        provider.join("internal.skiff"),
+        r#"
+type PrivateInput {
+  text: string
+}
+
+function run(
+  input: root.api.PublicInput,
+  values: Array<root.api.PublicInput?>,
+  handler: any root.api.PublicHandler
+) -> root.api.PublicOutput {
+  return handler.handle(input)
+}
+
+function echoEnvelope(
+  value: root.api.PublicEnvelope<root.api.PublicInput>
+) -> root.api.PublicEnvelope<root.api.PublicInput> {
+  return value
+}
+
+function privateRun(input: PrivateInput) -> root.api.PublicOutput {
+  return { text: input.text }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("main.skiff"),
+        r#"
+import provider
+import providerImpl
+
+function run(
+  input: provider.PublicInput,
+  values: Array<provider.PublicInput?>,
+  handler: any provider.PublicHandler,
+  envelope: provider.PublicEnvelope<provider.PublicInput>
+) -> provider.PublicOutput {
+  const echoed: provider.PublicEnvelope<provider.PublicInput> =
+    providerImpl/internal.echoEnvelope(envelope)
+  const result: provider.PublicOutput =
+    providerImpl/internal.run(echoed.value, values, handler)
+  return result
+}
+"#,
+    )
+    .unwrap();
+
+    compile_package_project(temp.path())
+        .expect("top-level callable signatures should bind public types through the primary alias");
+
+    fs::write(
+        temp.path().join("main.skiff"),
+        r#"
+import provider
+import providerImpl
+
+function bad(input: provider.PublicInput) -> provider.PublicOutput {
+  return providerImpl/internal.privateRun(input)
+}
+"#,
+    )
+    .unwrap();
+    let error = compile_package_project(temp.path())
+        .expect_err("a private implementation type must not impersonate a public type")
+        .to_string();
+    assert!(
+        error.contains("call `providerImpl/internal.privateRun` argument 1")
+            && error.contains("type mismatch"),
+        "{error}"
+    );
+
+    fs::write(
+        temp.path().join("main.skiff"),
+        r#"
+import provider
+
+function bad(
+  input: provider.PublicInput,
+  values: Array<provider.PublicInput?>,
+  handler: any provider.PublicHandler
+) -> provider.PublicOutput {
+  return provider/internal.run(input, values, handler)
+}
+"#,
+    )
+    .unwrap();
+    let error = compile_package_project(temp.path())
+        .expect_err("the primary alias must not select a private implementation callable")
+        .to_string();
+    assert!(
+        error.contains("package dependency `provider` has no callable public path `internal.run`"),
+        "{error}"
+    );
+}
+
+#[test]
 fn package_nominal_object_literals_keep_the_exact_file_ir_construct_target() {
     let temp = TestDir::new("skiff-compiler", "package-nominal-object-lowering");
     fs::write(
