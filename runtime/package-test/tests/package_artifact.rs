@@ -237,7 +237,7 @@ fn ingress_selector_does_not_match_a_test_entrypoint_owned_by_another_deployment
 
     let error = template
         .ingress_entrypoint(&skiff_artifact_model::ServiceIngressKey {
-            deployment: provider.clone(),
+            deployment: fixture.root.clone(),
             selector: fixture.ingress.clone(),
         })
         .expect_err("root selector must not match a provider-owned test entrypoint");
