@@ -348,7 +348,6 @@ fn selector_body_shape_implementation_and_adapter_plan_obey_identity_boundaries(
         .entries
         .get_mut(&gateway_key("typed"))
         .unwrap();
-    selector.host = "api.example.com".to_string();
     selector.method = "PUT".to_string();
     selector.path = "/moved".to_string();
     let selector_deployment = base.generate_with(&selector_service, &base.project.package.artifact);

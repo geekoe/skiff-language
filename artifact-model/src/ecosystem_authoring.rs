@@ -84,15 +84,9 @@ pub enum ServiceAuthoringKind {
     Test,
 }
 
-fn default_http_host() -> String {
-    "*".to_string()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HttpGatewayEntryAuthoring {
-    #[serde(default = "default_http_host")]
-    pub host: String,
     pub method: String,
     pub path: String,
     pub kind: GatewayAdapterKind,
@@ -549,7 +543,6 @@ mod tests {
         let document = serde_yaml::from_str::<HttpGatewayDocumentAuthoring>(
             r#"
 zRaw:
-  host: api.example.com
   method: GET
   path: /raw
   kind: rawHttp
@@ -577,12 +570,8 @@ createUser:
                 .collect::<Vec<_>>(),
             vec!["createUser", "zRaw"]
         );
-        assert_eq!(
-            document.entries[&GatewayEntryKey::parse("createUser").unwrap()].host,
-            "*"
-        );
-
         let encoded = serde_json::to_string(&document).unwrap();
+        assert!(!encoded.contains("\"host\""));
         assert!(encoded.find("createUser").unwrap() < encoded.find("zRaw").unwrap());
         assert_eq!(
             serde_json::from_str::<HttpGatewayDocumentAuthoring>(&encoded).unwrap(),
@@ -635,6 +624,20 @@ createUser:
                 "{invalid}"
             );
         }
+        let legacy_host = r#"
+createUser:
+  host: api.example.com
+  method: POST
+  path: /users
+  kind: typedJson
+  handler: users.create
+"#;
+        assert!(
+            serde_yaml::from_str::<HttpGatewayDocumentAuthoring>(legacy_host)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown field `host`")
+        );
 
         let unknown_source_field = r#"
 createUser:

@@ -69,7 +69,6 @@ pub(crate) fn project_websocket_gateway(
     projected.ingress.push(DeploymentIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::WebSocket,
-            host: "*".to_string(),
             method: None,
             path: authoring.path.clone(),
         },
@@ -96,7 +95,6 @@ pub(crate) fn project_websocket_gateway(
         projected.ingress.push(DeploymentIngressBinding {
             selector: IngressSelector {
                 protocol: IngressProtocol::WebSocket,
-                host: "*".to_string(),
                 method: Some(method.method.clone()),
                 path: authoring.path.clone(),
             },
