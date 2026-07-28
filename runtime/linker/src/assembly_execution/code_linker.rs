@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use skiff_runtime_linked_program::{
-    executable_type_param_names, LinkedActorDeclaration, LinkedActorDeclarationOwner,
+    executable_type_param_names, DbTargetIr, LinkedActorDeclaration, LinkedActorDeclarationOwner,
     LinkedActorMethodDispatchPlan, LinkedActorMethodImplementation, LinkedActorNativeMetadata,
     LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
     LinkedInterfaceInstantiationRef, LinkedInterfaceMethodTablePlanIr, LinkedNamedUnionBranch,
@@ -378,6 +378,29 @@ impl<'a> AssemblyCodeLinker<'a> {
         Ok(())
     }
 
+    fn link_db_target(
+        &self,
+        code_slot: usize,
+        file_index: usize,
+        target: &mut DbTargetIr,
+    ) -> anyhow::Result<()> {
+        let expected_addr = self.addresses.db_target_addr(&target.target_id)?;
+        self.link_type_ref(code_slot, file_index, &mut target.type_ref)?;
+        let LinkedTypeRef::Address { addr } = &target.type_ref else {
+            anyhow::bail!(
+                "DB target {} did not resolve to an exact runtime type address",
+                target.type_name
+            );
+        };
+        if addr != &expected_addr {
+            anyhow::bail!(
+                "DB target {} type reference does not match its exact artifact/file/type identity",
+                target.type_name
+            );
+        }
+        Ok(())
+    }
+
     fn link_representation_target(
         &self,
         code_slot: usize,
@@ -581,7 +604,7 @@ impl<'a> AssemblyCodeLinker<'a> {
                     self.link_type_ref(code_slot, file_index, catch_type)?;
                 }
                 LinkedExprIr::DbOperation { operation } => {
-                    self.link_type_ref(code_slot, file_index, &mut operation.target.type_ref)?;
+                    self.link_db_target(code_slot, file_index, &mut operation.target)?;
                     self.link_type_ref(code_slot, file_index, &mut operation.result_type)?;
                 }
                 LinkedExprIr::DbQuery {
@@ -589,7 +612,7 @@ impl<'a> AssemblyCodeLinker<'a> {
                     result_type,
                     ..
                 } => {
-                    self.link_type_ref(code_slot, file_index, &mut target.type_ref)?;
+                    self.link_db_target(code_slot, file_index, target)?;
                     if let Some(result_type) = result_type {
                         self.link_type_ref(code_slot, file_index, result_type)?;
                     }
@@ -598,11 +621,11 @@ impl<'a> AssemblyCodeLinker<'a> {
                     self.link_type_ref(code_slot, file_index, &mut transaction.result_type)?;
                 }
                 LinkedExprIr::DbLeaseClaim { claim } => {
-                    self.link_type_ref(code_slot, file_index, &mut claim.target.type_ref)?;
+                    self.link_db_target(code_slot, file_index, &mut claim.target)?;
                     self.link_type_ref(code_slot, file_index, &mut claim.result_type)?;
                 }
                 LinkedExprIr::DbLeaseRead { read } => {
-                    self.link_type_ref(code_slot, file_index, &mut read.target.type_ref)?;
+                    self.link_db_target(code_slot, file_index, &mut read.target)?;
                     self.link_type_ref(code_slot, file_index, &mut read.result_type)?;
                 }
                 _ => {}

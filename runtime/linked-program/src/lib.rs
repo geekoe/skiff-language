@@ -27,10 +27,10 @@ pub use boundary::{LinkedProgramImage, RuntimeProgramIdentity};
 pub use file_unit::{FileIrRef, FileIrUnit as ArtifactFileIrUnit};
 pub use linked::{
     AssignTargetIr, BinaryOpIr, BlockIr, BuiltinReceiverOp, CallIr, ConstIr, DbBodyIr, DbChangeIr,
-    DbChangeOpIr, DbIndexDirectionIr, DbLeaseClaimIr, DbLeaseReadIr, DbOpKindIr, DbOperationIr,
-    DbOrderIr, DbPredicateCompareOpIr, DbPredicateIr, DbProjectionIr, DbQueryIr, DbSelectorIr,
-    DbTargetIr, DbTransactionIr, DbTransactionModeIr, DeclarationIr, ExecutableKind, ExprRefIr,
-    ExternalRefIr, ExternalRefTable, FieldPathIr, FileDeclarations, FileIrIdentity,
+    DbChangeOpIr, DbIndexDirectionIr, DbLeaseClaimIr, DbLeaseReadIr, DbObjectTargetId, DbOpKindIr,
+    DbOperationIr, DbOrderIr, DbPredicateCompareOpIr, DbPredicateIr, DbProjectionIr, DbQueryIr,
+    DbSelectorIr, DbTargetIr, DbTransactionIr, DbTransactionModeIr, DeclarationIr, ExecutableKind,
+    ExprRefIr, ExternalRefIr, ExternalRefTable, FieldPathIr, FileDeclarations, FileIrIdentity,
     FileLinkTargets, FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr,
     LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedActorField,
     LinkedActorMethodDispatchPlan, LinkedActorMethodImplementation, LinkedActorNativeMetadata,

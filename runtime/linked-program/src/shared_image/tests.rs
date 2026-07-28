@@ -5,14 +5,16 @@ use std::{
 
 use skiff_artifact_model::{
     AssemblyIdentity, CallIr, CallTargetIr, CanonicalPackageLinkPlan, ContractOperationId,
-    ContractRequirement, ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, FileIrRef,
-    FileIrUnit, InstructionSourceSite, OperationCallableKind, PackageArtifact, PackageArtifactRef,
-    PackageBinding, PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableRef,
-    PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageRefIr, PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
-    PackageSchemaIndex, PackageSchemaIndexRef, PublicationResourceRef, RuntimeAssembly,
+    ContractRequirement, DbDeclarationIr, DbObjectKeyIr, DbObjectKindIr, ExecutableBody,
+    ExecutableIr, ExecutableKind, ExprIr, FileIrRef, FileIrUnit, InstructionSourceSite,
+    OperationCallableKind, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
+    PackageCallableId, PackageCallableLinkFact, PackageCallableRef, PackageCodeSlot,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageRefIr,
+    PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndex,
+    PackageSchemaIndexRef, PackageSymbolRef, PublicationResourceRef, RuntimeAssembly,
     ServiceCallRef, ServiceProtocolIdentity, ServiceRequirement, SlotLayout,
-    SyntheticInstructionSiteReason, TypeRefIr, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    SyntheticInstructionSiteReason, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeExport,
+    TypeRefIr, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_model::resource::LoadedPublicationResource;
 
@@ -217,6 +219,223 @@ fn assembly_execution_package_diamond_has_one_dependency_code_owner() {
             .unwrap(),
     );
     assert!(Arc::ptr_eq(&by_build, &by_slot));
+}
+
+#[test]
+fn foreign_db_targets_with_identical_names_keep_exact_dependency_identity() {
+    let caller_a_file = file("file:caller-a-db", "caller.a");
+    let caller_b_file = file("file:caller-b-db", "caller.b");
+    let mut dependency_a_file = file("file:dependency-a-db", "models");
+    let mut dependency_b_file = file("file:dependency-b-db", "models");
+    add_db_declaration(&mut dependency_a_file, "User");
+    add_db_declaration(&mut dependency_b_file, "User");
+
+    let mut caller_a = artifact("caller.a", "caller-a-db", "caller-a-abi", &caller_a_file);
+    let mut caller_b = artifact("caller.b", "caller-b-db", "caller-b-abi", &caller_b_file);
+    let mut dependency_a = artifact(
+        "dependency.a",
+        "dependency-a-db",
+        "dependency-a-abi",
+        &dependency_a_file,
+    );
+    let mut dependency_b = artifact(
+        "dependency.b",
+        "dependency-b-db",
+        "dependency-b-abi",
+        &dependency_b_file,
+    );
+    add_db_export(&mut dependency_a, &dependency_a_file, "models.User", "User");
+    add_db_export(&mut dependency_b, &dependency_b_file, "models.User", "User");
+    let mut requirement_a = package_requirement("models", "dependency.a", "dependency-a-abi");
+    requirement_a.expected_package_build = Some(dependency_a.package_build_id.clone());
+    caller_a.package_requirements.push(requirement_a);
+    let mut requirement_b = package_requirement("models", "dependency.b", "dependency-b-abi");
+    requirement_b.expected_package_build = Some(dependency_b.package_build_id.clone());
+    caller_b.package_requirements.push(requirement_b);
+
+    let assembly = assembly(
+        vec![
+            artifact_ref(&caller_a),
+            artifact_ref(&caller_b),
+            artifact_ref(&dependency_a),
+            artifact_ref(&dependency_b),
+        ],
+        vec![
+            package_binding(&caller_a, "models", &dependency_a),
+            package_binding(&caller_b, "models", &dependency_b),
+        ],
+    );
+    let image = SharedPackageLinkedImage::from_runtime_assembly(
+        &assembly,
+        vec![
+            hydration(caller_a, caller_a_file),
+            hydration(caller_b, caller_b_file),
+            hydration(dependency_a, dependency_a_file),
+            hydration(dependency_b, dependency_b_file),
+        ],
+    )
+    .unwrap();
+    let symbol = PackageSymbolRef {
+        package: PackageRefIr::Dependency {
+            dependency_ref: "models".to_string(),
+        },
+        symbol_path: "models.User".to_string(),
+        abi_expectation: None,
+    };
+
+    let target_a = image
+        .resolve_package_db_object_target(&build_id("caller-a-db"), &symbol)
+        .unwrap();
+    let target_b = image
+        .resolve_package_db_object_target(&build_id("caller-b-db"), &symbol)
+        .unwrap();
+
+    assert_ne!(target_a, target_b);
+    assert_eq!(
+        target_a.package_artifact_ref,
+        artifact_ref(
+            image
+                .code_by_build(&build_id("dependency-a-db"))
+                .unwrap()
+                .artifact()
+        )
+    );
+    assert_eq!(
+        target_b.package_artifact_ref,
+        artifact_ref(
+            image
+                .code_by_build(&build_id("dependency-b-db"))
+                .unwrap()
+                .artifact()
+        )
+    );
+    assert_eq!(
+        target_a.file_ir_ref.file_ir_identity,
+        "file:dependency-a-db"
+    );
+    assert_eq!(
+        target_b.file_ir_ref.file_ir_identity,
+        "file:dependency-b-db"
+    );
+    assert_eq!(target_a.type_index, 0);
+    assert_eq!(target_b.type_index, 0);
+    image.validate_db_object_target_id(&target_a).unwrap();
+    image.validate_db_object_target_id(&target_b).unwrap();
+
+    let mut substituted = target_a.clone();
+    substituted.package_artifact_ref = target_b.package_artifact_ref.clone();
+    assert!(matches!(
+        image.validate_db_object_target_id(&substituted),
+        Err(SharedPackageImageError::DbTargetFileRefOutsideArtifact { .. })
+    ));
+
+    let wrong_abi = PackageSymbolRef {
+        abi_expectation: Some("wrong-abi".to_string()),
+        ..symbol.clone()
+    };
+    assert!(matches!(
+        image.resolve_package_db_object_target(&build_id("caller-a-db"), &wrong_abi),
+        Err(SharedPackageImageError::DbTargetAbiExpectationMismatch { .. })
+    ));
+
+    let package_id_target = PackageSymbolRef {
+        package: PackageRefIr::PackageId {
+            package_id: "dependency.a".to_string(),
+        },
+        ..symbol
+    };
+    assert!(matches!(
+        image.resolve_package_db_object_target(&build_id("caller-a-db"), &package_id_target),
+        Err(SharedPackageImageError::DbTargetRequiresDependencyAlias { .. })
+    ));
+
+    let missing_export = PackageSymbolRef {
+        symbol_path: "models.Missing".to_string(),
+        ..wrong_abi.clone()
+    };
+    let missing_export = PackageSymbolRef {
+        abi_expectation: None,
+        ..missing_export
+    };
+    assert!(matches!(
+        image.resolve_package_db_object_target(&build_id("caller-a-db"), &missing_export),
+        Err(SharedPackageImageError::MissingDbTargetTypeExport { .. })
+    ));
+
+    let missing_binding = PackageSymbolRef {
+        package: PackageRefIr::Dependency {
+            dependency_ref: "missing".to_string(),
+        },
+        symbol_path: "models.User".to_string(),
+        abi_expectation: None,
+    };
+    assert!(matches!(
+        image.resolve_package_db_object_target(&build_id("caller-a-db"), &missing_binding),
+        Err(SharedPackageImageError::MissingPackageRequirement { .. })
+    ));
+
+    let mut missing_file = target_a.clone();
+    missing_file.file_ir_ref.file_ir_identity = "file:missing".to_string();
+    assert!(matches!(
+        image.validate_db_object_target_id(&missing_file),
+        Err(SharedPackageImageError::DbTargetFileRefOutsideArtifact { .. })
+    ));
+
+    let mut missing_type = target_a;
+    missing_type.type_index = 99;
+    assert!(matches!(
+        image.validate_db_object_target_id(&missing_type),
+        Err(SharedPackageImageError::DbTargetTypeOutOfBounds { .. })
+    ));
+}
+
+#[test]
+fn foreign_db_target_without_provider_attachment_fails_closed() {
+    let caller_file = file("file:caller-db", "caller");
+    let mut dependency_file = file("file:dependency-db", "models");
+    add_db_declaration(&mut dependency_file, "User");
+    dependency_file.declarations.db.clear();
+
+    let mut caller = artifact("caller", "caller-db", "caller-abi", &caller_file);
+    let mut dependency = artifact(
+        "dependency",
+        "dependency-db",
+        "dependency-abi",
+        &dependency_file,
+    );
+    add_db_export(&mut dependency, &dependency_file, "models.User", "User");
+    let mut requirement = package_requirement("models", "dependency", "dependency-abi");
+    requirement.expected_package_build = Some(dependency.package_build_id.clone());
+    caller.package_requirements.push(requirement);
+    let assembly = assembly(
+        vec![artifact_ref(&caller), artifact_ref(&dependency)],
+        vec![package_binding(&caller, "models", &dependency)],
+    );
+    let image = SharedPackageLinkedImage::from_runtime_assembly(
+        &assembly,
+        vec![
+            hydration(caller, caller_file),
+            hydration(dependency, dependency_file),
+        ],
+    )
+    .unwrap();
+
+    let error = image
+        .resolve_package_db_object_target(
+            &build_id("caller-db"),
+            &PackageSymbolRef {
+                package: PackageRefIr::Dependency {
+                    dependency_ref: "models".to_string(),
+                },
+                symbol_path: "models.User".to_string(),
+                abi_expectation: None,
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        SharedPackageImageError::MissingDbTargetAttachment { .. }
+    ));
 }
 
 #[test]
@@ -778,6 +997,66 @@ fn add_service_requirement(artifact: &mut PackageArtifact, service_call: &Servic
         service_binding_slot: service_call.service_requirement_slot,
         used_operations: BTreeSet::from([service_call.contract_operation_id.clone()]),
     });
+}
+
+fn add_db_declaration(file: &mut FileIrUnit, symbol: &str) {
+    let type_index = file.type_table.len() as u32;
+    file.type_table.push(TypeDeclIr {
+        name: symbol.to_string(),
+        descriptor: TypeDescriptorIr::Record {
+            fields: BTreeMap::new(),
+        },
+        type_params: Vec::new(),
+        implements: Vec::new(),
+        source_span: None,
+    });
+    file.declarations.types.insert(
+        symbol.to_string(),
+        TypeDeclarationIr {
+            type_index,
+            symbol: symbol.to_string(),
+            source_span: None,
+        },
+    );
+    file.declarations.db.insert(
+        symbol.to_string(),
+        DbDeclarationIr {
+            type_ref: TypeRefIr::LocalType { type_index },
+            type_name: symbol.to_string(),
+            collection_name: symbol.to_ascii_lowercase(),
+            kind: DbObjectKindIr::Object,
+            key: DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            },
+            fields: Vec::new(),
+            retention: None,
+            leases: Vec::new(),
+            indexes: Vec::new(),
+            source_span: None,
+        },
+    );
+}
+
+fn add_db_export(
+    artifact: &mut PackageArtifact,
+    file: &FileIrUnit,
+    symbol_path: &str,
+    symbol: &str,
+) {
+    let type_index = file.declarations.types[symbol].type_index;
+    artifact.implementation_links.types.insert(
+        symbol_path.to_string(),
+        TypeExport {
+            file: file_ref(file),
+            type_index,
+            symbol: symbol.to_string(),
+            is_interface: false,
+            descriptor: Some(file.type_table[type_index as usize].descriptor.clone()),
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+        },
+    );
 }
 
 fn package_requirement(

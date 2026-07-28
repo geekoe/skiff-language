@@ -116,7 +116,7 @@ fn execution_file() -> artifact::FileIrUnit {
 }
 
 fn link(unit: &artifact::FileIrUnit) -> anyhow::Result<LinkedFileUnit> {
-    linked_file_unit_from_assembly_artifact(unit, &|_| unreachable!())
+    linked_file_unit_from_assembly_artifact(unit, &|_| unreachable!(), &|_| unreachable!())
 }
 
 fn set_source_id(site: &mut InstructionSourceSite, source_id: u64) {

@@ -15,6 +15,7 @@ mod timeout_execution_tests;
 pub(crate) fn linked_file_unit_from_assembly_artifact(
     unit: &skiff_artifact_model::FileIrUnit,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
 ) -> anyhow::Result<LinkedFileUnit> {
     validate_file_ir_execution(unit)?;
     artifact::validate_file_ir_type_refs(unit).map_err(|error| {
@@ -35,7 +36,7 @@ pub(crate) fn linked_file_unit_from_assembly_artifact(
     }
     validate_receiver_builtin_ops(unit)?;
     validate_actor_self_fields(unit)?;
-    linked_file_unit_from_artifact_with_canonical_calls(unit, canonical_call)
+    linked_file_unit_from_artifact_with_canonical_calls(unit, canonical_call, canonical_db_target)
 }
 
 fn validate_actor_self_fields(unit: &artifact::FileIrUnit) -> anyhow::Result<()> {
@@ -134,6 +135,7 @@ fn validate_actor_self_body(
 fn linked_file_unit_from_artifact_with_canonical_calls(
     unit: &skiff_artifact_model::FileIrUnit,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
 ) -> anyhow::Result<LinkedFileUnit> {
     Ok(LinkedFileUnit {
         schema_version: unit.schema_version.clone(),
@@ -150,12 +152,12 @@ fn linked_file_unit_from_artifact_with_canonical_calls(
         constants: unit
             .constants
             .iter()
-            .map(|constant| linked_const(constant, canonical_call))
+            .map(|constant| linked_const(constant, canonical_call, canonical_db_target))
             .collect::<anyhow::Result<Vec<_>>>()?,
         executables: unit
             .executables
             .iter()
-            .map(|executable| linked_executable(executable, canonical_call))
+            .map(|executable| linked_executable(executable, canonical_call, canonical_db_target))
             .collect::<anyhow::Result<Vec<_>>>()?,
         external_refs: linked_external_refs(&unit.external_refs),
     })
@@ -573,11 +575,12 @@ fn linked_named_union_branch(branch: &artifact::NamedUnionBranchIr) -> LinkedNam
 fn linked_const(
     constant: &artifact::ConstIr,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
 ) -> anyhow::Result<ConstIr> {
     Ok(ConstIr {
         name: constant.name.clone(),
         ty: linked_type_ref(&constant.ty),
-        body: linked_body(&constant.body, canonical_call)?,
+        body: linked_body(&constant.body, canonical_call, canonical_db_target)?,
         source_span: constant.source_span.clone(),
     })
 }
@@ -595,6 +598,7 @@ fn linked_external_refs(external_refs: &artifact::ExternalRefTable) -> ExternalR
 fn linked_executable(
     executable: &artifact::ExecutableIr,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
 ) -> anyhow::Result<LinkedExecutable> {
     Ok(LinkedExecutable {
         kind: match executable.kind {
@@ -628,7 +632,7 @@ fn linked_executable(
             frame_size: executable.slots.frame_size as usize,
         },
         may_suspend: executable.may_suspend,
-        body: linked_body(&executable.body, canonical_call)?,
+        body: linked_body(&executable.body, canonical_call, canonical_db_target)?,
     })
 }
 
@@ -645,6 +649,7 @@ fn linked_slot_kind(kind: artifact::SlotKind) -> &'static str {
 fn linked_body(
     body: &artifact::ExecutableBody,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
 ) -> anyhow::Result<LinkedExecutableBody> {
     Ok(LinkedExecutableBody {
         blocks: body
@@ -663,7 +668,7 @@ fn linked_body(
         expressions: body
             .expressions
             .iter()
-            .map(|expression| linked_expr(expression, canonical_call))
+            .map(|expression| linked_expr(expression, canonical_call, canonical_db_target))
             .collect::<anyhow::Result<Vec<_>>>()?,
     })
 }
@@ -862,6 +867,7 @@ fn linked_pattern(pattern: &artifact::PatternIr) -> PatternIr {
 fn linked_expr(
     expression: &artifact::ExprIr,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
 ) -> anyhow::Result<LinkedExprIr> {
     Ok(match expression {
         artifact::ExprIr::Literal { value } => LinkedExprIr::Literal {
@@ -959,10 +965,10 @@ fn linked_expr(
             plan: linked_concurrent_plan(plan),
         },
         artifact::ExprIr::DbOperation { operation } => LinkedExprIr::DbOperation {
-            operation: linked_db_operation(operation),
+            operation: linked_db_operation(operation, canonical_db_target)?,
         },
         artifact::ExprIr::DbQuery { query } => LinkedExprIr::DbQuery {
-            target: linked_db_target(&query.target),
+            target: linked_db_target(&query.target, canonical_db_target)?,
             query: linked_db_query(&query.query),
             projection: None,
             result_type: Some(linked_type_ref(&query.result_type)),
@@ -971,10 +977,10 @@ fn linked_expr(
             transaction: linked_db_transaction(transaction),
         },
         artifact::ExprIr::DbLeaseClaim { claim } => LinkedExprIr::DbLeaseClaim {
-            claim: linked_db_lease_claim(claim),
+            claim: linked_db_lease_claim(claim, canonical_db_target)?,
         },
         artifact::ExprIr::DbLeaseRead { read } => LinkedExprIr::DbLeaseRead {
-            read: linked_db_lease_read(read),
+            read: linked_db_lease_read(read, canonical_db_target)?,
         },
     })
 }
@@ -1030,11 +1036,14 @@ fn linked_expr_ref_map(map: &BTreeMap<String, artifact::ExprRefIr>) -> BTreeMap<
         .collect()
 }
 
-fn linked_db_operation(operation: &artifact::DbOperationIr) -> DbOperationIr {
-    DbOperationIr {
+fn linked_db_operation(
+    operation: &artifact::DbOperationIr,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
+) -> anyhow::Result<DbOperationIr> {
+    Ok(DbOperationIr {
         op: linked_db_op_kind(operation.op),
         many: operation.many,
-        target: linked_db_target(&operation.target),
+        target: linked_db_target(&operation.target, canonical_db_target)?,
         selector: operation.selector.as_ref().map(linked_db_selector),
         query: operation.query.as_ref().map(linked_db_query),
         projection: operation.projection.as_ref().map(linked_db_projection),
@@ -1043,7 +1052,7 @@ fn linked_db_operation(operation: &artifact::DbOperationIr) -> DbOperationIr {
         change: operation.change.as_ref().map(linked_db_change),
         result_type: linked_type_ref(&operation.result_type),
         source_span: operation.source_span.clone(),
-    }
+    })
 }
 
 fn linked_db_op_kind(kind: artifact::DbOpKindIr) -> DbOpKindIr {
@@ -1061,11 +1070,15 @@ fn linked_db_op_kind(kind: artifact::DbOpKindIr) -> DbOpKindIr {
     }
 }
 
-fn linked_db_target(target: &artifact::DbTargetIr) -> DbTargetIr {
-    DbTargetIr {
+fn linked_db_target(
+    target: &artifact::DbTargetIr,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
+) -> anyhow::Result<DbTargetIr> {
+    Ok(DbTargetIr {
+        target_id: canonical_db_target(target)?,
         type_ref: linked_type_ref(&target.type_ref),
         type_name: target.type_name.clone(),
-    }
+    })
 }
 
 fn linked_db_selector(selector: &artifact::DbSelectorIr) -> DbSelectorIr {
@@ -1205,26 +1218,32 @@ fn linked_db_transaction(transaction: &artifact::DbTransactionIr) -> DbTransacti
     }
 }
 
-fn linked_db_lease_claim(claim: &artifact::DbLeaseClaimIr) -> DbLeaseClaimIr {
-    DbLeaseClaimIr {
-        target: linked_db_target(&claim.target),
+fn linked_db_lease_claim(
+    claim: &artifact::DbLeaseClaimIr,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
+) -> anyhow::Result<DbLeaseClaimIr> {
+    Ok(DbLeaseClaimIr {
+        target: linked_db_target(&claim.target, canonical_db_target)?,
         key: linked_expr_ref(&claim.key),
         slot: claim.slot.clone(),
         binding_slot: claim.binding_slot,
         body: claim.body.clone(),
         result_type: linked_type_ref(&claim.result_type),
         source_span: claim.source_span.clone(),
-    }
+    })
 }
 
-fn linked_db_lease_read(read: &artifact::DbLeaseReadIr) -> DbLeaseReadIr {
-    DbLeaseReadIr {
-        target: linked_db_target(&read.target),
+fn linked_db_lease_read(
+    read: &artifact::DbLeaseReadIr,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
+) -> anyhow::Result<DbLeaseReadIr> {
+    Ok(DbLeaseReadIr {
+        target: linked_db_target(&read.target, canonical_db_target)?,
         key: linked_expr_ref(&read.key),
         slot: read.slot.clone(),
         result_type: linked_type_ref(&read.result_type),
         source_span: read.source_span.clone(),
-    }
+    })
 }
 
 fn linked_unary_op(op: artifact::UnaryOpIr) -> UnaryOpIr {
@@ -1552,6 +1571,39 @@ fn linked_interface_method_slot_plan(
 mod tests {
     use super::*;
 
+    fn db_target_id() -> DbObjectTargetId {
+        DbObjectTargetId {
+            package_artifact_ref: artifact::PackageArtifactRef {
+                package_id: "example.models".to_string(),
+                package_version: "1.0.0".to_string(),
+                package_build_id: artifact::PackageBuildId::new("build:models"),
+                package_local_abi_identity: artifact::PackageLocalAbiIdentity::new("abi:models"),
+            },
+            file_ir_ref: artifact::FileIrRef {
+                file_ir_identity: "file:models".to_string(),
+                module_path: "models".to_string(),
+                artifact_path: None,
+                source_ast_hash: Some("source:models".to_string()),
+            },
+            type_index: 7,
+        }
+    }
+
+    fn artifact_db_target() -> artifact::DbTargetIr {
+        artifact::DbTargetIr {
+            type_ref: artifact::TypeRefIr::PackageSymbol {
+                symbol: artifact::PackageSymbolRef {
+                    package: artifact::PackageRefIr::Dependency {
+                        dependency_ref: "models".to_string(),
+                    },
+                    symbol_path: "models.User".to_string(),
+                    abi_expectation: Some("abi:models".to_string()),
+                },
+            },
+            type_name: "User".to_string(),
+        }
+    }
+
     fn source_site(seed: u32) -> artifact::InstructionSourceSite {
         artifact::InstructionSourceSite::Source {
             span: artifact::SourceSpanRef {
@@ -1568,6 +1620,62 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn linked_db_target_carriers_preserve_one_exact_runtime_identity() {
+        let target_id = db_target_id();
+        let resolve = |target: &artifact::DbTargetIr| {
+            assert_eq!(target, &artifact_db_target());
+            Ok(target_id.clone())
+        };
+        let operation = linked_db_operation(
+            &artifact::DbOperationIr {
+                op: artifact::DbOpKindIr::Count,
+                many: false,
+                target: artifact_db_target(),
+                selector: None,
+                query: None,
+                projection: None,
+                body: None,
+                insert_body: None,
+                change: None,
+                result_type: artifact::TypeRefIr::builtin("number"),
+                source_span: None,
+            },
+            &resolve,
+        )
+        .unwrap();
+        let query_target = linked_db_target(&artifact_db_target(), &resolve).unwrap();
+        let claim = linked_db_lease_claim(
+            &artifact::DbLeaseClaimIr {
+                target: artifact_db_target(),
+                key: artifact::ExprRefIr { expression: 0 },
+                slot: "lease".to_string(),
+                binding_slot: Some(0),
+                body: "claimBody".to_string(),
+                result_type: artifact::TypeRefIr::builtin("bool"),
+                source_span: None,
+            },
+            &resolve,
+        )
+        .unwrap();
+        let read = linked_db_lease_read(
+            &artifact::DbLeaseReadIr {
+                target: artifact_db_target(),
+                key: artifact::ExprRefIr { expression: 0 },
+                slot: "lease".to_string(),
+                result_type: artifact::TypeRefIr::builtin("bool"),
+                source_span: None,
+            },
+            &resolve,
+        )
+        .unwrap();
+
+        assert_eq!(operation.target.target_id, target_id);
+        assert_eq!(query_target.target_id, target_id);
+        assert_eq!(claim.target.target_id, target_id);
+        assert_eq!(read.target.target_id, target_id);
     }
 
     fn artifact_call(
@@ -1608,6 +1716,7 @@ mod tests {
                 site: expression_site.clone(),
             },
             &|_| unreachable!(),
+            &|_| unreachable!(),
         )
         .unwrap();
         assert!(matches!(
@@ -1627,6 +1736,7 @@ mod tests {
                 payload_type: artifact::TypeRefIr::builtin("unknown"),
                 site: expected.clone(),
             },
+            &|_| unreachable!(),
             &|_| unreachable!(),
         )
         .unwrap();
@@ -1722,6 +1832,7 @@ mod tests {
                 body: artifact::ExprRefIr { expression: 3 },
             },
             &|_| unreachable!(),
+            &|_| unreachable!(),
         )
         .unwrap();
         assert!(matches!(
@@ -1746,6 +1857,7 @@ mod tests {
                 value: artifact::ExprRefIr { expression: 11 },
                 type_ref: artifact::TypeRefIr::LocalType { type_index: 3 },
             },
+            &|_| unreachable!(),
             &|_| unreachable!(),
         )
         .unwrap();
@@ -1780,6 +1892,7 @@ mod tests {
                     }],
                 },
             },
+            &|_| unreachable!(),
             &|_| unreachable!(),
         )
         .unwrap();
@@ -1846,9 +1959,12 @@ mod tests {
 
     #[test]
     fn linked_file_conversion_preserves_applied_nominal_wrapper_and_arguments() {
-        let linked =
-            linked_file_unit_from_assembly_artifact(&generic_type_file(), &|_| unreachable!())
-                .unwrap();
+        let linked = linked_file_unit_from_assembly_artifact(
+            &generic_type_file(),
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap();
         let LinkedTypeDescriptor::Record { fields } = &linked.types[1].descriptor else {
             panic!("holder must remain a record")
         };
@@ -1878,8 +1994,12 @@ mod tests {
         };
         arguments.push(artifact::TypeRefIr::builtin("number"));
 
-        let error =
-            linked_file_unit_from_assembly_artifact(&file, &|_| unreachable!()).unwrap_err();
+        let error = linked_file_unit_from_assembly_artifact(
+            &file,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("has arity 2, expected 1"));
     }
 
@@ -1909,9 +2029,11 @@ mod tests {
             },
         );
 
-        let linked = linked_file_unit_from_assembly_artifact(&artifact, &|target| {
-            anyhow::bail!("unexpected canonical call target {target:?}")
-        })
+        let linked = linked_file_unit_from_assembly_artifact(
+            &artifact,
+            &|target| anyhow::bail!("unexpected canonical call target {target:?}"),
+            &|target| anyhow::bail!("unexpected canonical DB target {target:?}"),
+        )
         .unwrap();
         assert_eq!(
             linked.declarations.db["Credential"].fields[0].storage,
@@ -1985,9 +2107,11 @@ mod tests {
     #[test]
     fn linked_file_conversion_preserves_actor_declaration_owner_and_encoding() {
         let artifact = actor_file();
-        let linked = linked_file_unit_from_assembly_artifact(&artifact, &|target| {
-            anyhow::bail!("unexpected canonical call target {target:?}")
-        })
+        let linked = linked_file_unit_from_assembly_artifact(
+            &artifact,
+            &|target| anyhow::bail!("unexpected canonical call target {target:?}"),
+            &|target| anyhow::bail!("unexpected canonical DB target {target:?}"),
+        )
         .unwrap();
         let actor = &linked.actor_declarations[0];
         assert_eq!(actor.actor_type.module_path, "actors");
@@ -2003,7 +2127,12 @@ mod tests {
     #[test]
     fn linked_file_conversion_preserves_validated_actor_self_field() {
         let file = actor_file_with_method();
-        let linked = linked_file_unit_from_assembly_artifact(&file, &|_| unreachable!()).unwrap();
+        let linked = linked_file_unit_from_assembly_artifact(
+            &file,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap();
         assert!(matches!(
             &linked.executables[0].body.expressions[0],
             LinkedExprIr::ActorSelfField { field, field_type }
@@ -2027,12 +2156,14 @@ mod tests {
             },
             source_span: None,
         });
-        assert!(
-            linked_file_unit_from_assembly_artifact(&file, &|_| unreachable!())
-                .unwrap_err()
-                .to_string()
-                .contains("outside an Actor method")
-        );
+        assert!(linked_file_unit_from_assembly_artifact(
+            &file,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("outside an Actor method"));
     }
 
     #[test]
@@ -2042,12 +2173,14 @@ mod tests {
             field: "nextSeq".to_string(),
             field_type: artifact::TypeRefIr::builtin("string"),
         };
-        assert!(
-            linked_file_unit_from_assembly_artifact(&file, &|_| unreachable!())
-                .unwrap_err()
-                .to_string()
-                .contains("type does not match")
-        );
+        assert!(linked_file_unit_from_assembly_artifact(
+            &file,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("type does not match"));
     }
 
     #[test]
@@ -2056,12 +2189,14 @@ mod tests {
         duplicate
             .actor_declarations
             .push(duplicate.actor_declarations[0].clone());
-        assert!(
-            linked_file_unit_from_assembly_artifact(&duplicate, &|_| unreachable!())
-                .unwrap_err()
-                .to_string()
-                .contains("duplicate actor declaration")
-        );
+        assert!(linked_file_unit_from_assembly_artifact(
+            &duplicate,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("duplicate actor declaration"));
     }
 
     #[test]
@@ -2121,12 +2256,14 @@ mod tests {
         file.actor_declarations[0].actor_abi_identity =
             skiff_artifact_identity::actor_abi_identity(&file.actor_declarations[0].abi).unwrap();
 
-        assert!(
-            linked_file_unit_from_assembly_artifact(&file, &|_| unreachable!())
-                .unwrap_err()
-                .to_string()
-                .contains("implementation index 0 is out of bounds")
-        );
+        assert!(linked_file_unit_from_assembly_artifact(
+            &file,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("implementation index 0 is out of bounds"));
     }
 
     #[test]
@@ -2134,11 +2271,13 @@ mod tests {
         let mut artifact = actor_file();
         artifact.actor_declarations[0].actor_abi_identity =
             artifact::ActorAbiIdentity::new("tampered");
-        assert!(
-            linked_file_unit_from_assembly_artifact(&artifact, &|_| unreachable!())
-                .unwrap_err()
-                .to_string()
-                .contains("ABI identity does not match")
-        );
+        assert!(linked_file_unit_from_assembly_artifact(
+            &artifact,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("ABI identity does not match"));
     }
 }

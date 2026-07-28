@@ -46,8 +46,9 @@ fn convert_canonical_files(
             code.files()
                 .iter()
                 .map(|file| {
-                    let linked =
-                        linked_file_unit_from_assembly_artifact(file, &|target| match target {
+                    let linked = linked_file_unit_from_assembly_artifact(
+                        file,
+                        &|target| match target {
                             skiff_artifact_model::CallTargetIr::PackageCallable {
                                 package_ref,
                                 package_callable_id,
@@ -74,14 +75,20 @@ fn convert_canonical_files(
                             _ => anyhow::bail!(
                                 "non-canonical call target reached canonical resolver"
                             ),
-                        })
-                        .with_context(|| {
-                            format!(
-                                "failed to convert assembly File IR {} from package {}",
-                                file.file_ir_identity,
-                                code.package_build_id()
-                            )
-                        })?;
+                        },
+                        &|target| {
+                            shared
+                                .resolve_db_object_target(code.package_build_id(), &target.type_ref)
+                                .map_err(anyhow::Error::new)
+                        },
+                    )
+                    .with_context(|| {
+                        format!(
+                            "failed to convert assembly File IR {} from package {}",
+                            file.file_ir_identity,
+                            code.package_build_id()
+                        )
+                    })?;
                     Ok(Arc::new(linked))
                 })
                 .collect::<anyhow::Result<Vec<_>>>()
