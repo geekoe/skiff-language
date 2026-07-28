@@ -2326,7 +2326,7 @@ const actorRefFixture = {
 
 const actorControlActivationIdentityFixture = {
   assemblyIdentity:
-    'skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   generation: 7,
   runtimeReplicaId: 'runtime-replica-7',
   deploymentRevision: 'deployment-revision-7'

@@ -272,13 +272,16 @@ function exactTestDispatchBinding(
       'runtime assembly test dispatch does not match the exact active assembly generation'
     );
   }
-  const binding = snapshot.ingress.get(body.routing.ingress);
+  const binding = snapshot.ingress.get(
+    body.routing.deployment,
+    body.routing.ingress
+  );
   if (
     binding === undefined ||
     binding.selector.protocol !== body.routing.ingress.protocol ||
-    binding.selector.host !== body.routing.ingress.host ||
     binding.selector.method !== body.routing.ingress.method ||
     binding.selector.path !== body.routing.ingress.path ||
+    !sameDeployment(binding.deployment, body.routing.deployment) ||
     binding.gatewayEntryIdentity !== body.routing.gatewayEntryIdentity ||
     binding.operationMode !== body.mode
   ) {
@@ -287,6 +290,18 @@ function exactTestDispatchBinding(
     );
   }
   return binding;
+}
+
+function sameDeployment(
+  left: RuntimeAssemblyIngressBinding['deployment'],
+  right: RuntimeAssemblyIngressBinding['deployment']
+): boolean {
+  return (
+    left.serviceId === right.serviceId &&
+    left.contractVersion === right.contractVersion &&
+    left.deploymentRevision === right.deploymentRevision &&
+    left.deploymentArtifactIdentity === right.deploymentArtifactIdentity
+  );
 }
 
 async function readBody(request: IncomingMessage): Promise<Buffer> {

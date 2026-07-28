@@ -29,6 +29,7 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
 const HEALTH_PATH: &str = "/__router/health";
+const PACKAGE_TEST_REQUEST_AUTHORITY: &str = "localhost";
 static PACKAGE_TEST_RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub fn run_package_cases(
@@ -229,8 +230,8 @@ fn package_test_dispatch_body(
         )
     })?;
     let url = format!(
-        "http://{}{}",
-        entrypoint.selector.host, entrypoint.selector.path
+        "http://{PACKAGE_TEST_REQUEST_AUTHORITY}{}",
+        entrypoint.selector.path
     );
     serde_json::to_vec(&serde_json::json!({
         "kind": "test",
@@ -238,6 +239,7 @@ fn package_test_dispatch_body(
             "kind": "runtimeAssembly",
             "assemblyIdentity": assembly.assembly_identity,
             "assemblyGeneration": generation,
+            "deployment": entrypoint.deployment,
             "gatewayEntryIdentity": entrypoint.gateway_entry_identity,
             "ingress": entrypoint.selector,
         },

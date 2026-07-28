@@ -1,6 +1,6 @@
 # P5-F445H-I7-R Router service-scoped ingress consumer
 
-状态：`IN_PROGRESS`。
+状态：`COMPLETE`。
 
 ## 1. Parent and baseline
 

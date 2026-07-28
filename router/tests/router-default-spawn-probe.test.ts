@@ -31,7 +31,7 @@ import {
 const runtimeId = 'runtime-default-spawn-probe';
 const serviceId = 'example.com/default-spawn-probe';
 const buildId = `skiff-service-build-v1:sha256:${'b'.repeat(64)}`;
-const assemblyIdentity = `skiff-runtime-assembly-v2:sha256:${'d'.repeat(64)}`;
+const assemblyIdentity = `skiff-runtime-assembly-v3:sha256:${'d'.repeat(64)}`;
 const deploymentRevision = 'deployment-revision-default-spawn-probe';
 const activationIdentity = {
   assemblyIdentity,
@@ -128,7 +128,7 @@ async function openRuntime(
       contractVersion: serviceVersion,
       deploymentRevision,
       deploymentArtifactIdentity:
-        `skiff-deployment-artifact-v3:sha256:${'e'.repeat(64)}`,
+        `skiff-deployment-artifact-v4:sha256:${'e'.repeat(64)}`,
     }],
     resolvedContracts: [{
       serviceId,

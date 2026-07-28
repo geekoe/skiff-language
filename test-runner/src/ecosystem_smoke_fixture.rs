@@ -31,7 +31,6 @@ use crate::{
 
 const SMOKE_SERVICE_ID: &str = "test.skiff/ecosystem-smoke";
 const SMOKE_CONTRACT_VERSION: &str = "1.0.0";
-const SMOKE_HOST: &str = "ecosystem-smoke.skiff.localhost";
 const SMOKE_PROBE_PATH: &str = "/probe";
 const SMOKE_PROBE_KEY: &str = "probe";
 const SMOKE_PROBE_HANDLER: &str = "main.__skiffHttpProbe";
@@ -81,7 +80,6 @@ pub fn assemble_ecosystem_smoke_fixture(
     }
     let selector = IngressSelector {
         protocol: IngressProtocol::Http,
-        host: SMOKE_HOST.to_string(),
         method: Some("POST".to_string()),
         path: SMOKE_PROBE_PATH.to_string(),
     };

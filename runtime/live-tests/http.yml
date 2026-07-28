@@ -1,5 +1,4 @@
 runtime.echo:
-  host: "*"
   method: POST
   path: /runtime-live/echo
   kind: rawHttp
@@ -8,7 +7,6 @@ runtime.echo:
     - param: request
       source: { kind: http.request }
 runtime.json:
-  host: "*"
   method: POST
   path: /runtime-live/json
   kind: rawHttp
@@ -17,7 +15,6 @@ runtime.json:
     - param: request
       source: { kind: http.request }
 runtime.binary:
-  host: "*"
   method: POST
   path: /runtime-live/binary
   kind: rawHttp
@@ -26,7 +23,6 @@ runtime.binary:
     - param: request
       source: { kind: http.request }
 runtime.guarded:
-  host: "*"
   method: GET
   path: /runtime-live/guarded
   kind: rawHttp
@@ -35,7 +31,6 @@ runtime.guarded:
     - param: request
       source: { kind: http.request }
 runtime.stream:
-  host: "*"
   method: POST
   path: /runtime-live/stream
   kind: rawHttp
@@ -44,7 +39,6 @@ runtime.stream:
     - param: request
       source: { kind: http.request }
 runtime.package:
-  host: "*"
   method: POST
   path: /runtime-live/package
   kind: rawHttp

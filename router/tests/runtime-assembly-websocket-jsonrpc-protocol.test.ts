@@ -40,12 +40,18 @@ function canonicalRequest(): RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHea
     routing: {
       kind: 'runtimeAssembly',
       assemblyIdentity:
-        'skiff-runtime-assembly-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+        'skiff-runtime-assembly-v3:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
       assemblyGeneration: 11,
+      deployment: {
+        serviceId: 'example.com/socket',
+        contractVersion: '1.0.0',
+        deploymentRevision: 'revision-a',
+        deploymentArtifactIdentity:
+          `skiff-deployment-artifact-v4:sha256:${'c'.repeat(64)}`
+      },
       gatewayEntryIdentity: METHOD_GATEWAY_IDENTITY,
       ingress: {
         protocol: 'webSocket',
-        host: 'socket.example.com',
         method: 'status.get',
         path: '/chat'
       }

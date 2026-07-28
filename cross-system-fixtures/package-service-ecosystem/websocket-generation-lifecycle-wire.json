@@ -4,7 +4,7 @@
       "name": "runtime acquires generation pin",
       "direction": "runtimeToRouter",
       "control": {
-        "schemaVersion": "skiff-runtime-frame-v1",
+        "schemaVersion": "skiff-runtime-frame-v2",
         "type": "websocket.generation.lifecycle",
         "action": "acquire",
         "requestId": "skiff-websocket-lifecycle-request-v1:opaque:acquire-1",
@@ -12,7 +12,7 @@
         "tuple": {
           "routerSessionId": "skiff-router-session-v1:opaque:router-1",
           "serviceId": "example.com/chat",
-          "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "assemblyGeneration": 7,
           "websocketEntryId": "skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "connectionId": "connection-1"
@@ -23,7 +23,7 @@
       "name": "router acknowledges generation acquire",
       "direction": "routerToRuntime",
       "control": {
-        "schemaVersion": "skiff-runtime-frame-v1",
+        "schemaVersion": "skiff-runtime-frame-v2",
         "type": "websocket.generation.lifecycle",
         "action": "ack",
         "operation": "acquire",
@@ -32,7 +32,7 @@
         "tuple": {
           "routerSessionId": "skiff-router-session-v1:opaque:router-1",
           "serviceId": "example.com/chat",
-          "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "assemblyGeneration": 7,
           "websocketEntryId": "skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "connectionId": "connection-1"
@@ -43,7 +43,7 @@
       "name": "router rejects generation acquire",
       "direction": "routerToRuntime",
       "control": {
-        "schemaVersion": "skiff-runtime-frame-v1",
+        "schemaVersion": "skiff-runtime-frame-v2",
         "type": "websocket.generation.lifecycle",
         "action": "reject",
         "operation": "acquire",
@@ -52,7 +52,7 @@
         "tuple": {
           "routerSessionId": "skiff-router-session-v1:opaque:router-1",
           "serviceId": "example.com/chat",
-          "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "assemblyGeneration": 7,
           "websocketEntryId": "skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "connectionId": "connection-1"
@@ -65,7 +65,7 @@
       "name": "router releases generation pin",
       "direction": "routerToRuntime",
       "control": {
-        "schemaVersion": "skiff-runtime-frame-v1",
+        "schemaVersion": "skiff-runtime-frame-v2",
         "type": "websocket.generation.lifecycle",
         "action": "release",
         "requestId": "skiff-websocket-lifecycle-request-v1:opaque:release-1",
@@ -73,7 +73,7 @@
         "tuple": {
           "routerSessionId": "skiff-router-session-v1:opaque:router-1",
           "serviceId": "example.com/chat",
-          "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "assemblyGeneration": 7,
           "websocketEntryId": "skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "connectionId": "connection-1"
@@ -84,7 +84,7 @@
       "name": "runtime acknowledges generation release",
       "direction": "runtimeToRouter",
       "control": {
-        "schemaVersion": "skiff-runtime-frame-v1",
+        "schemaVersion": "skiff-runtime-frame-v2",
         "type": "websocket.generation.lifecycle",
         "action": "ack",
         "operation": "release",
@@ -93,7 +93,7 @@
         "tuple": {
           "routerSessionId": "skiff-router-session-v1:opaque:router-1",
           "serviceId": "example.com/chat",
-          "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "assemblyGeneration": 7,
           "websocketEntryId": "skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "connectionId": "connection-1"
@@ -104,7 +104,7 @@
       "name": "runtime rejects generation release",
       "direction": "runtimeToRouter",
       "control": {
-        "schemaVersion": "skiff-runtime-frame-v1",
+        "schemaVersion": "skiff-runtime-frame-v2",
         "type": "websocket.generation.lifecycle",
         "action": "reject",
         "operation": "release",
@@ -113,7 +113,7 @@
         "tuple": {
           "routerSessionId": "skiff-router-session-v1:opaque:router-1",
           "serviceId": "example.com/chat",
-          "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "assemblyGeneration": 7,
           "websocketEntryId": "skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "connectionId": "connection-1"
@@ -126,7 +126,7 @@
       "name": "duplicate release request is the same idempotency key",
       "direction": "routerToRuntime",
       "control": {
-        "schemaVersion": "skiff-runtime-frame-v1",
+        "schemaVersion": "skiff-runtime-frame-v2",
         "type": "websocket.generation.lifecycle",
         "action": "release",
         "requestId": "skiff-websocket-lifecycle-request-v1:opaque:release-1",
@@ -134,7 +134,7 @@
         "tuple": {
           "routerSessionId": "skiff-router-session-v1:opaque:router-1",
           "serviceId": "example.com/chat",
-          "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "assemblyGeneration": 7,
           "websocketEntryId": "skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "connectionId": "connection-1"
@@ -235,7 +235,7 @@
       "baseIndex": 0,
       "direction": "runtimeToRouter",
       "setPath": "tuple.assemblyIdentity",
-      "value": "skiff-runtime-assembly-v2:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      "value": "skiff-runtime-assembly-v3:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     },
     {
       "name": "negative assembly generation",
@@ -311,12 +311,12 @@
     {
       "name": "duplicate request id",
       "direction": "runtimeToRouter",
-      "rawJson": "{\"schemaVersion\":\"skiff-runtime-frame-v1\",\"type\":\"websocket.generation.lifecycle\",\"action\":\"acquire\",\"requestId\":\"skiff-websocket-lifecycle-request-v1:opaque:acquire-1\",\"requestId\":\"skiff-websocket-lifecycle-request-v1:opaque:acquire-2\",\"sender\":\"runtime\",\"tuple\":{\"routerSessionId\":\"skiff-router-session-v1:opaque:router-1\",\"serviceId\":\"example.com/chat\",\"assemblyIdentity\":\"skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyGeneration\":7,\"websocketEntryId\":\"skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"connectionId\":\"connection-1\"}}"
+      "rawJson": "{\"schemaVersion\":\"skiff-runtime-frame-v2\",\"type\":\"websocket.generation.lifecycle\",\"action\":\"acquire\",\"requestId\":\"skiff-websocket-lifecycle-request-v1:opaque:acquire-1\",\"requestId\":\"skiff-websocket-lifecycle-request-v1:opaque:acquire-2\",\"sender\":\"runtime\",\"tuple\":{\"routerSessionId\":\"skiff-router-session-v1:opaque:router-1\",\"serviceId\":\"example.com/chat\",\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyGeneration\":7,\"websocketEntryId\":\"skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"connectionId\":\"connection-1\"}}"
     },
     {
       "name": "duplicate tuple identity",
       "direction": "runtimeToRouter",
-      "rawJson": "{\"schemaVersion\":\"skiff-runtime-frame-v1\",\"type\":\"websocket.generation.lifecycle\",\"action\":\"acquire\",\"requestId\":\"skiff-websocket-lifecycle-request-v1:opaque:acquire-1\",\"sender\":\"runtime\",\"tuple\":{\"routerSessionId\":\"skiff-router-session-v1:opaque:router-1\",\"serviceId\":\"example.com/chat\",\"assemblyIdentity\":\"skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyIdentity\":\"skiff-runtime-assembly-v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"assemblyGeneration\":7,\"websocketEntryId\":\"skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"connectionId\":\"connection-1\"}}"
+      "rawJson": "{\"schemaVersion\":\"skiff-runtime-frame-v2\",\"type\":\"websocket.generation.lifecycle\",\"action\":\"acquire\",\"requestId\":\"skiff-websocket-lifecycle-request-v1:opaque:acquire-1\",\"sender\":\"runtime\",\"tuple\":{\"routerSessionId\":\"skiff-router-session-v1:opaque:router-1\",\"serviceId\":\"example.com/chat\",\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"assemblyGeneration\":7,\"websocketEntryId\":\"skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"connectionId\":\"connection-1\"}}"
     }
   ],
   "responseCorrelations": [

@@ -8,24 +8,22 @@ import type {
 } from './runtimeAssemblyWebSocketSnapshot.js';
 
 const DEPLOYMENT_ARTIFACT_IDENTITY_PATTERN =
-  /^skiff-deployment-artifact-v3:sha256:[0-9a-f]{64}$/;
+  /^skiff-deployment-artifact-v4:sha256:[0-9a-f]{64}$/;
 const GATEWAY_ENTRY_IDENTITY_PATTERN =
   /^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$/;
 const RUNTIME_ASSEMBLY_IDENTITY_PATTERN =
-  /^skiff-runtime-assembly-v2:sha256:[0-9a-f]{64}$/;
+  /^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$/;
 const SERVICE_PROTOCOL_IDENTITY_PATTERN =
   /^skiff-service-protocol-v5:sha256:[0-9a-f]{64}$/;
 
 export interface RuntimeAssemblyHttpIngressSelector {
   protocol: 'http';
-  host: string;
   method: string;
   path: string;
 }
 
 export interface RuntimeAssemblyWebSocketIngressSelector {
   protocol: 'webSocket';
-  host: string;
   method: string | null;
   path: string;
 }
@@ -71,7 +69,7 @@ export interface RuntimeAssemblyIngressBinding {
 }
 
 export interface LoadedRuntimeAssembly {
-  schemaVersion: 'skiff-runtime-assembly-v2';
+  schemaVersion: 'skiff-runtime-assembly-v3';
   assemblyIdentity: string;
   resolvedDeployments?: readonly RuntimeAssemblyDeploymentRef[];
   resolvedContracts?: readonly RuntimeAssemblyContractRef[];
@@ -80,7 +78,7 @@ export interface LoadedRuntimeAssembly {
 }
 
 export interface DecodedRuntimeAssemblyRecord {
-  schemaVersion: 'skiff-runtime-assembly-v2';
+  schemaVersion: 'skiff-runtime-assembly-v3';
   assemblyIdentity: string;
   resolvedDeployments: readonly RuntimeAssemblyDeploymentRef[];
   resolvedContracts: readonly RuntimeAssemblyContractRef[];
@@ -117,10 +115,10 @@ export class MemoryRuntimeAssemblySnapshotLoader implements RuntimeAssemblySnaps
   constructor(assemblies: readonly LoadedRuntimeAssembly[]) {
     for (const assembly of assemblies) {
       if (
-        assembly.schemaVersion !== 'skiff-runtime-assembly-v2' ||
+        assembly.schemaVersion !== 'skiff-runtime-assembly-v3' ||
         !RUNTIME_ASSEMBLY_IDENTITY_PATTERN.test(assembly.assemblyIdentity)
       ) {
-        throw new Error('memory RuntimeAssembly loader accepts only canonical v2 records');
+        throw new Error('memory RuntimeAssembly loader accepts only canonical v3 records');
       }
       if (this.byIdentity.has(assembly.assemblyIdentity)) {
         throw new Error(`duplicate RuntimeAssembly ${assembly.assemblyIdentity}`);
@@ -175,6 +173,7 @@ export class RouterActiveAssemblySnapshotStore {
 
 export class RuntimeAssemblyIngressIndex {
   private readonly bindings = new Map<string, RuntimeAssemblyIngressBinding>();
+  private readonly deployments = new Map<string, RuntimeAssemblyDeploymentRef>();
 
   constructor(bindings: readonly RuntimeAssemblyIngressBinding[]) {
     for (const binding of bindings) {
@@ -186,7 +185,18 @@ export class RuntimeAssemblyIngressIndex {
           'WebSocket attach ingress method must be null; methods belong to the captured table'
         );
       }
-      const key = runtimeAssemblyIngressKey(binding.selector);
+      const coordinate = runtimeAssemblyDeploymentCoordinateKey(binding.deployment);
+      const current = this.deployments.get(coordinate);
+      if (current !== undefined && !sameDeployment(current, binding.deployment)) {
+        throw new Error(
+          `RuntimeAssembly contains multiple deployments for ${coordinate}`
+        );
+      }
+      this.deployments.set(coordinate, binding.deployment);
+      const key = scopedRuntimeAssemblyIngressKey(
+        binding.deployment,
+        binding.selector
+      );
       if (this.bindings.has(key)) {
         throw new Error(`RuntimeAssembly contains duplicate gateway ingress ${key}`);
       }
@@ -194,8 +204,11 @@ export class RuntimeAssemblyIngressIndex {
     }
   }
 
-  get(input: RuntimeAssemblyIngressSelector): RuntimeAssemblyIngressBinding | undefined {
-    return this.bindings.get(runtimeAssemblyIngressKey(input));
+  get(
+    deployment: Pick<RuntimeAssemblyDeploymentRef, 'serviceId' | 'contractVersion'>,
+    input: RuntimeAssemblyIngressSelector
+  ): RuntimeAssemblyIngressBinding | undefined {
+    return this.bindings.get(scopedRuntimeAssemblyIngressKey(deployment, input));
   }
 
   values(): readonly RuntimeAssemblyIngressBinding[] {
@@ -231,7 +244,6 @@ export async function snapshotFromCommittedActivation(
 export function runtimeAssemblyIngressKey(
   selector: RuntimeAssemblyIngressSelector
 ): string {
-  const host = canonicalIngressHost(selector.host);
   if (
     typeof selector.path !== 'string' ||
     !selector.path.startsWith('/') ||
@@ -250,20 +262,20 @@ export function runtimeAssemblyIngressKey(
       );
     }
     return selector.method === null
-      ? `webSocket\u0000${host}\u0000${selector.path}`
-      : `webSocket\u0000${host}\u0000${selector.method}\u0000${selector.path}`;
+      ? `webSocket\u0000${selector.path}`
+      : `webSocket\u0000${selector.method}\u0000${selector.path}`;
   }
   const method = selector.method.toUpperCase();
   if (method.length === 0) {
     throw new Error('HTTP RuntimeAssembly ingress requires a method');
   }
-  return `http\u0000${host}\u0000${method}\u0000${selector.path}`;
+  return `http\u0000${method}\u0000${selector.path}`;
 }
 
-export function canonicalIngressHost(host: string): string {
+export function canonicalHttpHost(host: string): string {
   const value = host.trim();
   if (value.length === 0 || value.includes('/') || value.includes('@')) {
-    throw new Error('RuntimeAssembly ingress Host is required');
+    throw new Error('HTTP Host is required');
   }
   try {
     const url = new URL(`http://${value}`);
@@ -278,8 +290,24 @@ export function canonicalIngressHost(host: string): string {
     }
     return url.host.toLowerCase();
   } catch {
-    throw new Error(`invalid RuntimeAssembly ingress Host ${value}`);
+    throw new Error(`invalid HTTP Host ${value}`);
   }
+}
+
+export function runtimeAssemblyDeploymentCoordinateKey(
+  deployment: Pick<RuntimeAssemblyDeploymentRef, 'serviceId' | 'contractVersion'>
+): string {
+  if (deployment.serviceId.length === 0 || deployment.contractVersion.length === 0) {
+    throw new Error('RuntimeAssembly deployment coordinate must be non-empty');
+  }
+  return `${deployment.serviceId}\u0000${deployment.contractVersion}`;
+}
+
+function scopedRuntimeAssemblyIngressKey(
+  deployment: Pick<RuntimeAssemblyDeploymentRef, 'serviceId' | 'contractVersion'>,
+  selector: RuntimeAssemblyIngressSelector
+): string {
+  return `${runtimeAssemblyDeploymentCoordinateKey(deployment)}\u0000${runtimeAssemblyIngressKey(selector)}`;
 }
 
 export function decodeRuntimeAssemblyRecord(
@@ -299,8 +327,8 @@ export function decodeRuntimeAssemblyRecord(
     'activationTemplates',
     'gatewayIngress'
   ], 'RuntimeAssembly');
-  if (value.schemaVersion !== 'skiff-runtime-assembly-v2') {
-    throw new Error('RuntimeAssembly schemaVersion must be skiff-runtime-assembly-v2');
+  if (value.schemaVersion !== 'skiff-runtime-assembly-v3') {
+    throw new Error('RuntimeAssembly schemaVersion must be skiff-runtime-assembly-v3');
   }
   const assemblyIdentity = requiredString(value, 'assemblyIdentity');
   if (!RUNTIME_ASSEMBLY_IDENTITY_PATTERN.test(assemblyIdentity)) {
@@ -344,7 +372,7 @@ export function decodeRuntimeAssemblyRecord(
   );
   assertUniqueSelectors(gatewayIngress, 'RuntimeAssembly.gatewayIngress');
   return {
-    schemaVersion: 'skiff-runtime-assembly-v2',
+    schemaVersion: 'skiff-runtime-assembly-v3',
     assemblyIdentity,
     resolvedDeployments,
     resolvedContracts,
@@ -392,13 +420,9 @@ export function decodeRuntimeAssemblyIngressSelector(
   label: string
 ): RuntimeAssemblyIngressSelector {
   const value = exactObject(input, label);
-  exactFields(value, ['protocol', 'host', 'method', 'path'], label);
+  exactFields(value, ['protocol', 'method', 'path'], label);
   if (value.protocol !== 'http' && value.protocol !== 'webSocket') {
     throw new Error(`${label}.protocol must be http or webSocket`);
-  }
-  const host = requiredString(value, 'host');
-  if (canonicalIngressHost(host) !== host) {
-    throw new Error(`${label}.host must be canonical lowercase Host syntax`);
   }
   const path = requiredString(value, 'path');
   if (/[\s\p{Cc}]/u.test(path)) {
@@ -416,7 +440,6 @@ export function decodeRuntimeAssemblyIngressSelector(
     }
     selector = {
       protocol: 'webSocket',
-      host,
       method: value.method,
       path
     };
@@ -428,7 +451,7 @@ export function decodeRuntimeAssemblyIngressSelector(
     ) {
       throw new Error(`${label}.method must be a canonical uppercase HTTP token`);
     }
-    selector = { protocol: 'http', host, method, path };
+    selector = { protocol: 'http', method, path };
   }
   runtimeAssemblyIngressKey(selector);
   return selector;
@@ -445,11 +468,7 @@ function assertUniqueDeploymentRefs(
       throw new Error('RuntimeAssembly contains a duplicate resolved deployment');
     }
     exact.add(key);
-    const coordinate = [
-      reference.serviceId,
-      reference.contractVersion,
-      reference.deploymentRevision
-    ].join('\u0000');
+    const coordinate = runtimeAssemblyDeploymentCoordinateKey(reference);
     const identity = coordinates.get(coordinate);
     if (
       identity !== undefined &&
@@ -479,12 +498,18 @@ function assertUniqueContractRefs(
 }
 
 function assertUniqueSelectors(
-  bindings: readonly { selector: RuntimeAssemblyIngressSelector }[],
+  bindings: readonly {
+    selector: RuntimeAssemblyIngressSelector;
+    deployment: RuntimeAssemblyDeploymentRef;
+  }[],
   label: string
 ): void {
   const selectors = new Set<string>();
   for (const binding of bindings) {
-    const key = runtimeAssemblyIngressKey(binding.selector);
+    const key = scopedRuntimeAssemblyIngressKey(
+      binding.deployment,
+      binding.selector
+    );
     if (selectors.has(key)) {
       throw new Error(`${label} contains duplicate selector ${key}`);
     }
@@ -499,6 +524,13 @@ function deploymentRefKey(reference: RuntimeAssemblyDeploymentRef): string {
     reference.deploymentRevision,
     reference.deploymentArtifactIdentity
   ].join('\u0000');
+}
+
+function sameDeployment(
+  left: RuntimeAssemblyDeploymentRef,
+  right: RuntimeAssemblyDeploymentRef
+): boolean {
+  return deploymentRefKey(left) === deploymentRefKey(right);
 }
 
 export function decodeRuntimeAssemblyGatewayEntryKey(

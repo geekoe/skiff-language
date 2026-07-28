@@ -40,7 +40,7 @@ const ASSEMBLY_A = identity('a');
 const ASSEMBLY_B = identity('b');
 const ASSEMBLY_C = identity('c');
 const EMPTY_ASSEMBLY =
-  'skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f';
+  'skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f';
 const RUNTIME_ID = 'runtime-assembly-a';
 const SERVICE_ID = 'example.com/actors';
 const SERVICE_VERSION = '1.0.0';
@@ -960,7 +960,7 @@ function assembly(
   const revision = deploymentRevision(assemblyIdentity);
   const deployment = deploymentRef(revision);
   return {
-    schemaVersion: 'skiff-runtime-assembly-v2',
+    schemaVersion: 'skiff-runtime-assembly-v3',
     assemblyIdentity,
     resolvedDeployments:
       assemblyIdentity === EMPTY_ASSEMBLY
@@ -980,7 +980,6 @@ function assembly(
         : [{
             selector: {
               protocol: 'http',
-              host: TEST_HOST,
               method: 'POST',
               path: TEST_PATH
             },
@@ -999,7 +998,7 @@ function deploymentRef(deploymentRevision: string) {
     contractVersion: SERVICE_VERSION,
     deploymentRevision,
     deploymentArtifactIdentity:
-      `skiff-deployment-artifact-v3:sha256:${'e'.repeat(64)}`
+      `skiff-deployment-artifact-v4:sha256:${'e'.repeat(64)}`
   };
 }
 
@@ -1031,7 +1030,7 @@ function actorKey() {
 }
 
 function identity(character: string): string {
-  return `skiff-runtime-assembly-v2:sha256:${character.repeat(64)}`;
+  return `skiff-runtime-assembly-v3:sha256:${character.repeat(64)}`;
 }
 
 function testDispatchBody() {
@@ -1041,10 +1040,10 @@ function testDispatchBody() {
       kind: 'runtimeAssembly',
       assemblyIdentity: ASSEMBLY_A,
       assemblyGeneration: 1,
+      deployment: deploymentRef(deploymentRevision(ASSEMBLY_A)),
       gatewayEntryIdentity: CURRENT_TEST_GATEWAY_ENTRY_IDENTITY,
       ingress: {
         protocol: 'http',
-        host: TEST_HOST,
         method: 'POST',
         path: TEST_PATH
       }

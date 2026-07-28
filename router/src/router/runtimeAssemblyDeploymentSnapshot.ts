@@ -29,7 +29,7 @@ export {
 } from './runtimeAssemblyDeploymentIdentity.js';
 
 const DEPLOYMENT_ARTIFACT_IDENTITY_PATTERN =
-  /^skiff-deployment-artifact-v3:sha256:[0-9a-f]{64}$/;
+  /^skiff-deployment-artifact-v4:sha256:[0-9a-f]{64}$/;
 const GATEWAY_ENTRY_IDENTITY_PATTERN =
   /^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$/;
 const SERVICE_PROTOCOL_IDENTITY_PATTERN =
@@ -103,7 +103,10 @@ export function joinRuntimeAssemblyDeployments(
       `RouterSnapshot.serviceDeployments[${index}]`
     );
     for (const expected of buildDeploymentIngressExpectations(deployment)) {
-      const selectorKey = runtimeAssemblyIngressKey(expected.selector);
+      const selectorKey = scopedSelectorKey(
+        expected.deployment,
+        expected.selector
+      );
       if (expectedBySelector.has(selectorKey)) {
         throw new Error(
           `ServiceDeployment ingress contains duplicate selector ${selectorKey}`
@@ -115,7 +118,10 @@ export function joinRuntimeAssemblyDeployments(
 
   const gatewayIngress: RuntimeAssemblyIngressBinding[] = [];
   for (const declared of record.gatewayIngress) {
-    const selectorKey = runtimeAssemblyIngressKey(declared.selector);
+    const selectorKey = scopedSelectorKey(
+      declared.deployment,
+      declared.selector
+    );
     const expected = expectedBySelector.get(selectorKey);
     if (expected === undefined) {
       throw new Error(
@@ -269,11 +275,10 @@ function buildDeploymentIngressExpectations(
   const methodBindings = methods.map(({ binding, entry }) => {
     if (
       binding.selector.protocol !== 'webSocket' ||
-      binding.selector.host !== physicalSelector.host ||
       binding.selector.path !== physicalSelector.path
     ) {
       throw new Error(
-        `WebSocket JSON-RPC gateway entry ${binding.gatewayEntryKey} is orphaned from its physical host/path`
+        `WebSocket JSON-RPC gateway entry ${binding.gatewayEntryKey} is orphaned from its physical path`
       );
     }
     if (!physicalBinding.entry.rpcProfiles.includes(entry.profile)) {
@@ -296,7 +301,6 @@ function buildDeploymentIngressExpectations(
   const attachBinding: RuntimeAssemblyIngressBinding = {
     selector: {
       protocol: 'webSocket',
-      host: physicalSelector.host,
       method: null,
       path: physicalSelector.path
     },
@@ -374,8 +378,8 @@ function decodeServiceDeployment(
     'policy',
     'diagnosticText'
   ], label);
-  if (value.schemaVersion !== 'skiff-service-deployment-v3') {
-    throw new Error(`${label}.schemaVersion must be skiff-service-deployment-v3`);
+  if (value.schemaVersion !== 'skiff-service-deployment-v4') {
+    throw new Error(`${label}.schemaVersion must be skiff-service-deployment-v4`);
   }
   const contract = decodeContractRef(value.contract, `${label}.contract`);
   const deploymentRevision = requiredString(value, 'deploymentRevision');
@@ -750,10 +754,16 @@ function selectorEquals(
 ): boolean {
   return (
     left.protocol === right.protocol &&
-    left.host === right.host &&
     left.method === right.method &&
     left.path === right.path
   );
+}
+
+function scopedSelectorKey(
+  deployment: RuntimeAssemblyDeploymentRef,
+  selector: RuntimeAssemblyIngressSelector
+): string {
+  return `${contractCoordinate(deployment.serviceId, deployment.contractVersion)}\u0000${runtimeAssemblyIngressKey(selector)}`;
 }
 
 function exactObject(input: unknown, label: string): Record<string, unknown> {

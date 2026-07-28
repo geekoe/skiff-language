@@ -1,5 +1,4 @@
 default.insert:
-  host: "*"
   method: POST
   path: /encrypted-live/default/insert
   kind: rawHttp
@@ -9,7 +8,6 @@ default.insert:
     - param: request
       source: { kind: http.request }
 default.insert-many:
-  host: "*"
   method: POST
   path: /encrypted-live/default/insert-many
   kind: rawHttp
@@ -19,7 +17,6 @@ default.insert-many:
     - param: request
       source: { kind: http.request }
 default.insert-bulk:
-  host: "*"
   method: POST
   path: /encrypted-live/default/insert-bulk
   kind: rawHttp
@@ -29,7 +26,6 @@ default.insert-bulk:
     - param: request
       source: { kind: http.request }
 default.read:
-  host: "*"
   method: POST
   path: /encrypted-live/default/read
   kind: rawHttp
@@ -39,7 +35,6 @@ default.read:
     - param: request
       source: { kind: http.request }
 default.project:
-  host: "*"
   method: POST
   path: /encrypted-live/default/project
   kind: rawHttp
@@ -49,7 +44,6 @@ default.project:
     - param: request
       source: { kind: http.request }
 default.replace-key:
-  host: "*"
   method: POST
   path: /encrypted-live/default/replace-key
   kind: rawHttp
@@ -59,7 +53,6 @@ default.replace-key:
     - param: request
       source: { kind: http.request }
 default.replace-query:
-  host: "*"
   method: POST
   path: /encrypted-live/default/replace-query
   kind: rawHttp
@@ -69,7 +62,6 @@ default.replace-query:
     - param: request
       source: { kind: http.request }
 default.upsert:
-  host: "*"
   method: POST
   path: /encrypted-live/default/upsert
   kind: rawHttp
@@ -79,7 +71,6 @@ default.upsert:
     - param: request
       source: { kind: http.request }
 default.update:
-  host: "*"
   method: POST
   path: /encrypted-live/default/update
   kind: rawHttp
@@ -89,7 +80,6 @@ default.update:
     - param: request
       source: { kind: http.request }
 default.scan:
-  host: "*"
   method: POST
   path: /encrypted-live/default/scan
   kind: rawHttp
@@ -99,7 +89,6 @@ default.scan:
     - param: request
       source: { kind: http.request }
 default.rewrite:
-  host: "*"
   method: POST
   path: /encrypted-live/default/rewrite
   kind: rawHttp
@@ -109,7 +98,6 @@ default.rewrite:
     - param: request
       source: { kind: http.request }
 default.rewrite-batch:
-  host: "*"
   method: POST
   path: /encrypted-live/default/rewrite-batch
   kind: rawHttp
@@ -119,7 +107,6 @@ default.rewrite-batch:
     - param: request
       source: { kind: http.request }
 default.identity-date:
-  host: "*"
   method: POST
   path: /encrypted-live/default/identity-date
   kind: rawHttp
@@ -129,7 +116,6 @@ default.identity-date:
     - param: request
       source: { kind: http.request }
 default.archive-insert:
-  host: "*"
   method: POST
   path: /encrypted-live/default/archive-insert
   kind: rawHttp
@@ -139,7 +125,6 @@ default.archive-insert:
     - param: request
       source: { kind: http.request }
 default.archive-read:
-  host: "*"
   method: POST
   path: /encrypted-live/default/archive-read
   kind: rawHttp
@@ -149,7 +134,6 @@ default.archive-read:
     - param: request
       source: { kind: http.request }
 default.archive-scan:
-  host: "*"
   method: POST
   path: /encrypted-live/default/archive-scan
   kind: rawHttp
@@ -159,7 +143,6 @@ default.archive-scan:
     - param: request
       source: { kind: http.request }
 default.archive-rewrite:
-  host: "*"
   method: POST
   path: /encrypted-live/default/archive-rewrite
   kind: rawHttp
@@ -169,7 +152,6 @@ default.archive-rewrite:
     - param: request
       source: { kind: http.request }
 default.archive-rewrite-batch:
-  host: "*"
   method: POST
   path: /encrypted-live/default/archive-rewrite-batch
   kind: rawHttp
@@ -179,7 +161,6 @@ default.archive-rewrite-batch:
     - param: request
       source: { kind: http.request }
 default.archive-restore:
-  host: "*"
   method: POST
   path: /encrypted-live/default/archive-restore
   kind: rawHttp
@@ -189,7 +170,6 @@ default.archive-restore:
     - param: request
       source: { kind: http.request }
 default.barrier:
-  host: "*"
   method: POST
   path: /encrypted-live/default/barrier
   kind: rawHttp
@@ -199,7 +179,6 @@ default.barrier:
     - param: request
       source: { kind: http.request }
 default.barrier-status:
-  host: "*"
   method: POST
   path: /encrypted-live/default/barrier-status
   kind: rawHttp

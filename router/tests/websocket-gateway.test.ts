@@ -46,11 +46,11 @@ const ENTRY_ID =
 const GATEWAY_ID =
   `skiff-gateway-entry-v2:sha256:${'b'.repeat(64)}`;
 const ASSEMBLY_ONE =
-  `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+  `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 const ASSEMBLY_TWO =
-  `skiff-runtime-assembly-v2:sha256:${'c'.repeat(64)}`;
+  `skiff-runtime-assembly-v3:sha256:${'c'.repeat(64)}`;
 const DEPLOYMENT_ID =
-  `skiff-deployment-artifact-v2:sha256:${'d'.repeat(64)}`;
+  `skiff-deployment-artifact-v4:sha256:${'d'.repeat(64)}`;
 
 const fixtures: GatewayFixture[] = [];
 
@@ -75,6 +75,49 @@ describe('current RuntimeAssembly WebSocket gateway', () => {
     await until(() => fixture.generation.releaseCount === 1);
   });
 
+  it.each([
+    {
+      name: 'missing service',
+      headers: { 'x-skiff-version': '1.0.0' },
+      status: 400
+    },
+    {
+      name: 'missing version',
+      headers: { 'x-skiff-service': SERVICE_ID },
+      status: 400
+    },
+    {
+      name: 'ambiguous service',
+      headers: {
+        'x-skiff-service': `${SERVICE_ID},example.com/other`,
+        'x-skiff-version': '1.0.0'
+      },
+      status: 400
+    },
+    {
+      name: 'unknown service',
+      headers: {
+        'x-skiff-service': 'example.com/unknown',
+        'x-skiff-version': '1.0.0'
+      },
+      status: 404
+    },
+    {
+      name: 'unknown version',
+      headers: {
+        'x-skiff-service': SERVICE_ID,
+        'x-skiff-version': '2.0.0'
+      },
+      status: 404
+    }
+  ])('rejects $name before WebSocket admission', async ({ headers, status }) => {
+    const fixture = await createFixture({});
+
+    expect(await fixture.rejectedStatus(headers)).toBe(status);
+    expect(fixture.dispatcher.requests).toHaveLength(0);
+    expect(fixture.generation.expectCount).toBe(0);
+  });
+
   it('dispatches one exact connect, admits accept, and releases the pin once', async () => {
     const fixture = await createFixture({ handler: 'package-callable-connect' });
     fixture.dispatcher.respond = (header) => ({
@@ -92,10 +135,15 @@ describe('current RuntimeAssembly WebSocket gateway', () => {
       kind: 'runtimeAssembly',
       assemblyIdentity: ASSEMBLY_ONE,
       assemblyGeneration: 1,
+      deployment: {
+        serviceId: SERVICE_ID,
+        contractVersion: '1.0.0',
+        deploymentRevision: 'revision-one',
+        deploymentArtifactIdentity: DEPLOYMENT_ID
+      },
       gatewayEntryIdentity: GATEWAY_ID,
       ingress: {
         protocol: 'webSocket',
-        host: '*',
         method: null,
         path: '/chat'
       }
@@ -331,7 +379,7 @@ interface GatewayFixture {
   runtime: WebSocket;
   otherRuntime: WebSocket;
   connect(): Promise<WebSocket>;
-  rejectedStatus(): Promise<number>;
+  rejectedStatus(headers?: Record<string, string>): Promise<number>;
   setCurrentOwner(owner: WebSocketRuntimeOwner): void;
   close(): Promise<void>;
 }
@@ -413,7 +461,12 @@ async function createFixture(input: {
     runtime,
     otherRuntime,
     connect: async () => {
-      const client = new WebSocket(url);
+      const client = new WebSocket(url, {
+        headers: {
+          'x-skiff-service': SERVICE_ID,
+          'x-skiff-version': '1.0.0'
+        }
+      });
       clients.add(client);
       await new Promise<void>((resolve, reject) => {
         client.once('open', resolve);
@@ -421,8 +474,13 @@ async function createFixture(input: {
       });
       return client;
     },
-    rejectedStatus: async () => {
-      const client = new WebSocket(url);
+    rejectedStatus: async (headers = {
+      'x-skiff-service': SERVICE_ID,
+      'x-skiff-version': '1.0.0'
+    }) => {
+      const client = new WebSocket(url, {
+        headers
+      });
       clients.add(client);
       return await new Promise<number>((resolve, reject) => {
         client.once('unexpected-response', (_request, response) => {
@@ -663,7 +721,6 @@ function websocketBinding(
   return {
     selector: {
       protocol: 'webSocket',
-      host: '*',
       method: null,
       path: '/chat'
     },

@@ -1,5 +1,4 @@
 mapped.insert:
-  host: "*"
   method: POST
   path: /encrypted-live/mapped/insert
   kind: rawHttp
@@ -9,7 +8,6 @@ mapped.insert:
     - param: request
       source: { kind: http.request }
 mapped.read:
-  host: "*"
   method: POST
   path: /encrypted-live/mapped/read
   kind: rawHttp
@@ -19,7 +17,6 @@ mapped.read:
     - param: request
       source: { kind: http.request }
 mapped.scan:
-  host: "*"
   method: POST
   path: /encrypted-live/mapped/scan
   kind: rawHttp
@@ -29,7 +26,6 @@ mapped.scan:
     - param: request
       source: { kind: http.request }
 mapped.rewrite:
-  host: "*"
   method: POST
   path: /encrypted-live/mapped/rewrite
   kind: rawHttp
@@ -39,7 +35,6 @@ mapped.rewrite:
     - param: request
       source: { kind: http.request }
 mapped.rewrite-batch:
-  host: "*"
   method: POST
   path: /encrypted-live/mapped/rewrite-batch
   kind: rawHttp
@@ -49,7 +44,6 @@ mapped.rewrite-batch:
     - param: request
       source: { kind: http.request }
 mapped.service-probe-insert:
-  host: "*"
   method: POST
   path: /encrypted-live/mapped/service-probe-insert
   kind: rawHttp
@@ -59,7 +53,6 @@ mapped.service-probe-insert:
     - param: request
       source: { kind: http.request }
 mapped.service-probe-read:
-  host: "*"
   method: POST
   path: /encrypted-live/mapped/service-probe-read
   kind: rawHttp
@@ -69,7 +62,6 @@ mapped.service-probe-read:
     - param: request
       source: { kind: http.request }
 mapped.service-probe-scan:
-  host: "*"
   method: POST
   path: /encrypted-live/mapped/service-probe-scan
   kind: rawHttp
@@ -79,7 +71,6 @@ mapped.service-probe-scan:
     - param: request
       source: { kind: http.request }
 mapped.service-probe-rewrite:
-  host: "*"
   method: POST
   path: /encrypted-live/mapped/service-probe-rewrite
   kind: rawHttp
@@ -89,7 +80,6 @@ mapped.service-probe-rewrite:
     - param: request
       source: { kind: http.request }
 mapped.service-probe-rewrite-batch:
-  host: "*"
   method: POST
   path: /encrypted-live/mapped/service-probe-rewrite-batch
   kind: rawHttp
@@ -99,7 +89,6 @@ mapped.service-probe-rewrite-batch:
     - param: request
       source: { kind: http.request }
 mapped.service-probe-restore:
-  host: "*"
   method: POST
   path: /encrypted-live/mapped/service-probe-restore
   kind: rawHttp
@@ -109,7 +98,6 @@ mapped.service-probe-restore:
     - param: request
       source: { kind: http.request }
 mapped.barrier:
-  host: "*"
   method: POST
   path: /encrypted-live/mapped/barrier
   kind: rawHttp
@@ -119,7 +107,6 @@ mapped.barrier:
     - param: request
       source: { kind: http.request }
 mapped.barrier-status:
-  host: "*"
   method: POST
   path: /encrypted-live/mapped/barrier-status
   kind: rawHttp

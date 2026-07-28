@@ -6,34 +6,35 @@ import {
   type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
 
-describe('RuntimeAssembly ingress index', () => {
-  it('disambiguates the same method/path by canonical Host', () => {
-    const codex = binding('codex-relay.localhost', 'models', '1');
-    const aihub = binding('aihub.localhost', 'models', '2');
+describe('service-scoped RuntimeAssembly ingress index', () => {
+  it('allows different services to share the same method/path', () => {
+    const codex = binding('skiff.run/codex-relay', 'models', '1');
+    const aihub = binding('skiff.run/aihub', 'models', '2');
     const index = new RuntimeAssemblyIngressIndex([codex, aihub]);
+    const selector = {
+      protocol: 'http' as const,
+      method: 'GET',
+      path: '/v1/models'
+    };
 
-    expect(index.get({
-      protocol: 'http',
-      host: 'CODEX-RELAY.LOCALHOST',
-      method: 'get',
-      path: '/v1/models'
-    })).toEqual(codex);
-    expect(index.get({
-      protocol: 'http',
-      host: 'aihub.localhost',
-      method: 'GET',
-      path: '/v1/models'
-    })).toEqual(aihub);
-    expect(index.get({
-      protocol: 'http',
-      host: 'unknown.localhost',
-      method: 'GET',
-      path: '/v1/models'
-    })).toBeUndefined();
+    expect(index.get(
+      { serviceId: 'skiff.run/codex-relay', contractVersion: '1.0.0' },
+      selector
+    )).toEqual(codex);
+    expect(index.get(
+      { serviceId: 'skiff.run/aihub', contractVersion: '1.0.0' },
+      selector
+    )).toEqual(aihub);
+    expect(index.get(
+      { serviceId: 'skiff.run/unknown', contractVersion: '1.0.0' },
+      selector
+    )).toBeUndefined();
   });
 
-  it('retains only exact deployment, gateway identity, adapter, mode and timeout facts', () => {
-    const value = binding('stream.localhost', 'stream', '3', {
+  it('retains exact deployment and gateway facts', () => {
+    const value = binding('skiff.run/stream', 'stream', '3', {
+      method: 'POST',
+      path: '/stream',
       adapterKind: 'rawHttp',
       operationMode: 'serverStream',
       timeoutMs: 4_000
@@ -52,64 +53,47 @@ describe('RuntimeAssembly ingress index', () => {
     ]);
   });
 
-  it('fails closed for duplicates and keeps method declarations out of attach ingress', () => {
-    const first = binding('echo.localhost', 'echo', '4');
+  it('rejects same-service duplicates and multiple active revisions', () => {
+    const first = binding('skiff.run/echo', 'echo', '4');
     const duplicate = structuredClone(first);
-    duplicate.selector.host = 'ECHO.LOCALHOST';
     duplicate.selector.method = 'get';
-
     expect(() => new RuntimeAssemblyIngressIndex([first, duplicate])).toThrow(
       /duplicate gateway ingress/
     );
+
+    const otherRevision = binding('skiff.run/echo', 'other', '5', {
+      path: '/other'
+    });
+    expect(() => new RuntimeAssemblyIngressIndex([first, otherRevision])).toThrow(
+      /multiple deployments/
+    );
+  });
+
+  it('keeps WebSocket methods out of the physical attach index', () => {
     expect(runtimeAssemblyIngressKey({
       protocol: 'webSocket',
-      host: 'echo.localhost',
       method: null,
       path: '/echo'
-    })).toBe('webSocket\u0000echo.localhost\u0000/echo');
+    })).toBe('webSocket\u0000/echo');
     expect(runtimeAssemblyIngressKey({
       protocol: 'webSocket',
-      host: 'echo.localhost',
-      method: 'GET',
+      method: 'status.get',
       path: '/echo'
-    })).toBe('webSocket\u0000echo.localhost\u0000GET\u0000/echo');
+    })).toBe('webSocket\u0000status.get\u0000/echo');
     expect(() => new RuntimeAssemblyIngressIndex([{
-      ...first,
+      ...binding('skiff.run/echo', 'echo', '6'),
       selector: {
         protocol: 'webSocket',
-        host: 'echo.localhost',
-        method: 'GET',
+        method: 'status.get',
         path: '/echo'
       }
     } as never])).toThrow(/attach ingress method must be null/);
   });
 
   it.each([
-    {
-      host: '',
-      method: 'POST',
-      path: '/echo'
-    },
-    {
-      host: 'user@echo.localhost',
-      method: 'POST',
-      path: '/echo'
-    },
-    {
-      host: 'echo.localhost',
-      method: '',
-      path: '/echo'
-    },
-    {
-      host: 'echo.localhost',
-      method: 'POST',
-      path: 'echo'
-    },
-    {
-      host: 'echo.localhost',
-      method: 'POST',
-      path: '/echo?query=true'
-    }
+    { method: '', path: '/echo' },
+    { method: 'POST', path: 'echo' },
+    { method: 'POST', path: '/echo?query=true' }
   ])('rejects invalid canonical HTTP selector %#', (selector) => {
     expect(() => runtimeAssemblyIngressKey({
       protocol: 'http',
@@ -119,10 +103,12 @@ describe('RuntimeAssembly ingress index', () => {
 });
 
 function binding(
-  host: string,
+  serviceId: string,
   gatewayEntryKey: string,
   identityCharacter: string,
   options: {
+    method?: string;
+    path?: string;
     adapterKind?: 'rawHttp' | 'typedJson';
     operationMode?: 'unary' | 'serverStream';
     timeoutMs?: number;
@@ -131,16 +117,15 @@ function binding(
   return {
     selector: {
       protocol: 'http',
-      host,
-      method: host.includes('stream') ? 'POST' : 'GET',
-      path: host.includes('stream') ? '/stream' : '/v1/models'
+      method: options.method ?? 'GET',
+      path: options.path ?? '/v1/models'
     },
     deployment: {
-      serviceId: `service/${host}`,
+      serviceId,
       contractVersion: '1.0.0',
-      deploymentRevision: 'revision',
+      deploymentRevision: `revision-${identityCharacter}`,
       deploymentArtifactIdentity:
-        `skiff-deployment-artifact-v3:sha256:${identityCharacter.repeat(64)}`
+        `skiff-deployment-artifact-v4:sha256:${identityCharacter.repeat(64)}`
     },
     gatewayEntryKey,
     gatewayEntryIdentity:
