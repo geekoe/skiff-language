@@ -11,6 +11,7 @@ pub(super) use store::*;
 use std::{pin::pin, task::Poll};
 
 use serde_json::json;
+use skiff_runtime_linked_program::{LinkedExprIr, LinkedStmtIr};
 use skiff_runtime_model::runtime_value::{RuntimeObject, RuntimeValue};
 
 use crate::env::Env;
@@ -33,6 +34,61 @@ async fn db_actor_fixture_checkpoint() {
         })));
 
     let fixture = DbActorFixture::new(state.clone());
+    let executable = fixture.linked.executable();
+    assert_eq!(fixture.linked.program.service_files.len(), 1);
+    assert!(fixture.linked.program.packages.is_empty());
+    assert!(fixture.linked.program.package_files.is_empty());
+    assert_eq!(fixture.linked.file.executables.len(), 1);
+
+    let binding_slot = fixture
+        .linked
+        .claim
+        .binding_slot
+        .expect("canonical lease claim binding slot");
+    assert!(
+        usize::try_from(binding_slot).expect("binding slot index") < executable.slots.frame_size
+    );
+    assert!(executable
+        .slots
+        .slots
+        .iter()
+        .any(|slot| slot.index == binding_slot as usize));
+
+    let body_create = executable
+        .body
+        .blocks
+        .iter()
+        .find(|block| block.label == BODY_CREATE_BLOCK_LABEL)
+        .expect("body-create block");
+    let body_create_statement = body_create
+        .statements
+        .first()
+        .expect("body-create statement");
+    let LinkedStmtIr::Expr { value } =
+        &executable.body.statements[body_create_statement.statement as usize]
+    else {
+        panic!("body-create block must execute an expression statement");
+    };
+    assert!(matches!(
+        &executable.body.expressions[value.expression as usize],
+        LinkedExprIr::DbOperation { operation } if operation == &fixture.linked.raw_create
+    ));
+
+    let illegal_flow = executable
+        .body
+        .blocks
+        .iter()
+        .find(|block| block.label == ILLEGAL_FLOW_BLOCK_LABEL)
+        .expect("illegal-flow block");
+    let illegal_flow_statement = illegal_flow
+        .statements
+        .first()
+        .expect("illegal-flow statement");
+    assert!(matches!(
+        &executable.body.statements[illegal_flow_statement.statement as usize],
+        LinkedStmtIr::Return { .. }
+    ));
+
     let (frame, mut heap) = fixture.actor.execution_frame().await;
     let context = fixture.context(frame.clone());
 

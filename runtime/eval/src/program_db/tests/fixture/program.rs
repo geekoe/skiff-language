@@ -14,8 +14,8 @@ use skiff_runtime_linked_program::{
     ExternalRefTable, FileAddr, FileDeclarations, FileLinkTargets, LinkOverlay,
     LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedActorField, LinkedCallTarget,
     LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
-    LinkedInterfaceInstantiationRef, LinkedTypeRef, PublicationResourceTable, RuntimeTypeContext,
-    ServiceSymbolRef, SlotLayoutIr, SourceMapDto, UnitAddr,
+    LinkedInterfaceInstantiationRef, LinkedStmtIr, LinkedTypeRef, PublicationResourceTable,
+    RuntimeTypeContext, ServiceSymbolRef, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, UnitAddr,
 };
 
 use crate::{actor_executor_test_runtime as test_runtime, EvalRuntimeProgram, Interpreter};
@@ -23,6 +23,8 @@ use crate::{actor_executor_test_runtime as test_runtime, EvalRuntimeProgram, Int
 pub(in crate::program_db::tests) const FILE_ID: &str = "file:db-actor-fixture";
 pub(in crate::program_db::tests) const ACTOR_SERVICE_ID: &str = "skiff.run/db-actor-fixture";
 pub(in crate::program_db::tests) const ACTOR_TYPE_ID: &str = "svc.main.CheckpointActor";
+pub(in crate::program_db::tests) const BODY_CREATE_BLOCK_LABEL: &str = "body-create";
+pub(in crate::program_db::tests) const ILLEGAL_FLOW_BLOCK_LABEL: &str = "illegal-flow";
 
 pub(in crate::program_db::tests) struct LinkedDbActorFixture {
     pub program: Arc<EvalRuntimeProgram>,
@@ -232,7 +234,7 @@ fn lease_claim() -> DbLeaseClaimIr {
         target: thread_target(),
         key: ExprRefIr { expression: 1 },
         slot: "owner".to_string(),
-        binding_slot: None,
+        binding_slot: Some(0),
         body: "empty".to_string(),
         result_type: LinkedTypeRef::Native {
             name: "boolean".to_string(),
@@ -323,7 +325,14 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
             params: Vec::new(),
             return_type: Some(json_type()),
             self_type: None,
-            slots: SlotLayoutIr::default(),
+            slots: SlotLayoutIr {
+                slots: vec![SlotIr {
+                    index: 0,
+                    name: "lease-binding".to_string(),
+                    kind: "local".to_string(),
+                }],
+                frame_size: 1,
+            },
             may_suspend: true,
             body: LinkedExecutableBody {
                 blocks: vec![
@@ -335,8 +344,23 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
                         label: "empty".to_string(),
                         statements: Vec::new(),
                     },
+                    BlockIr {
+                        label: BODY_CREATE_BLOCK_LABEL.to_string(),
+                        statements: vec![StmtRefIr { statement: 0 }],
+                    },
+                    BlockIr {
+                        label: ILLEGAL_FLOW_BLOCK_LABEL.to_string(),
+                        statements: vec![StmtRefIr { statement: 1 }],
+                    },
                 ],
-                statements: Vec::new(),
+                statements: vec![
+                    LinkedStmtIr::Expr {
+                        value: ExprRefIr { expression: 2 },
+                    },
+                    LinkedStmtIr::Return {
+                        value: Some(ExprRefIr { expression: 0 }),
+                    },
+                ],
                 expressions: vec![
                     LinkedExprIr::Literal {
                         value: LiteralIr::Null,
