@@ -16,11 +16,11 @@ use skiff_runtime_capability_context::{
     ActorGetOrCreateControlRequest, ActorRemoveControlRequest, ActorReplaceControlRequest,
     CancellationToken, CapabilityError, CapabilityFuture, ConfigCapabilityApi,
     ConfigCapabilityContext, DbCapabilityContext, ExecutionControl, ExecutionControlApi,
-    ExecutionControlResult, FileCapabilityApi, FileCapabilityContext, FileCapabilityFuture,
-    FileCapabilitySource, FileCapabilitySourceApi, FileChunkSource, FileSourceStreamApi,
-    FileSourceStreamContext, HttpCapabilityFuture, HttpClientCapabilityApi,
-    HttpClientCapabilityContext, OwnedActorCapabilityContext, OwnedConfigCapabilityContext,
-    OwnedExecutionControl, OwnedExecutionControlApi,
+    ExecutionControlResult, ExecutionScope, ExecutionScopeAccessError, FileCapabilityApi,
+    FileCapabilityContext, FileCapabilityFuture, FileCapabilitySource, FileCapabilitySourceApi,
+    FileChunkSource, FileSourceStreamApi, FileSourceStreamContext, HttpCapabilityFuture,
+    HttpClientCapabilityApi, HttpClientCapabilityContext, OwnedActorCapabilityContext,
+    OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
     OwnedWebsocketCapabilityContext as SharedOwnedWebsocketCapabilityContext,
     SpawnSubmitControlRequest, StreamCancelSignal, StreamInternalItem, StreamLifetimeGuard,
     StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
@@ -46,6 +46,9 @@ use crate::{
     },
     error::{Result, RuntimeError},
 };
+
+#[path = "test_runtime/scoped_execution.rs"]
+mod scoped_execution;
 
 pub(crate) fn runtime_factory() -> EvalRuntimeFactory {
     EvalRuntimeFactory::new(TestRuntimeFactory)
@@ -487,6 +490,7 @@ struct TestExecutionControl {
     cancelled: Arc<AtomicBool>,
     cancellation: CancellationToken,
     deadline: Option<Instant>,
+    execution_scope: ExecutionScope,
 }
 
 impl Default for TestExecutionControl {
@@ -498,10 +502,12 @@ impl Default for TestExecutionControl {
 impl TestExecutionControl {
     fn with_deadline(deadline: Option<Instant>) -> Self {
         let cancellation = CancellationToken::new();
+        let execution_scope = scoped_execution::request_scope(cancellation.clone(), deadline);
         Self {
             cancelled: cancellation.cancel_flag(),
             cancellation,
             deadline,
+            execution_scope,
         }
     }
 }
@@ -521,6 +527,18 @@ impl ExecutionControlApi for TestExecutionControl {
 
     fn deadline(&self) -> Option<Instant> {
         self.deadline
+    }
+
+    fn execution_scope(&self) -> std::result::Result<ExecutionScope, ExecutionScopeAccessError> {
+        scoped_execution::current_scope(self)
+    }
+
+    fn derive_scope(
+        &self,
+        local_deadline: Instant,
+        site: skiff_artifact_model::InstructionSourceSite,
+    ) -> std::result::Result<OwnedExecutionControl, ExecutionScopeAccessError> {
+        scoped_execution::derive_scope(self, local_deadline, site)
     }
 
     fn check_cancelled(&self) -> ExecutionControlResult<()> {
@@ -580,6 +598,18 @@ impl OwnedExecutionControlApi for TestExecutionControl {
 
     fn deadline(&self) -> Option<Instant> {
         self.deadline
+    }
+
+    fn execution_scope(&self) -> std::result::Result<ExecutionScope, ExecutionScopeAccessError> {
+        ExecutionControlApi::execution_scope(self)
+    }
+
+    fn derive_scope(
+        &self,
+        local_deadline: Instant,
+        site: skiff_artifact_model::InstructionSourceSite,
+    ) -> std::result::Result<OwnedExecutionControl, ExecutionScopeAccessError> {
+        ExecutionControlApi::derive_scope(self, local_deadline, site)
     }
 }
 

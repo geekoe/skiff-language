@@ -26,6 +26,7 @@ use crate::{
 use service_error_channel::{CanonicalServiceErrorChannel, ServiceErrorImportContext};
 
 pub(crate) use async_stream_cancel::is_canonical_boundary_stream_sink;
+pub(crate) use callback_native::prepare_interface_call as prepare_callback_capability_call;
 #[allow(unused_imports)]
 pub(crate) use callback_native::CallbackNativeCapabilityHooks;
 pub use ingress::{dispatch_ingress_via_in_process_boundary, InProcessBoundaryIngressResponse};

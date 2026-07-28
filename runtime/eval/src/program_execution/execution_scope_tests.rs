@@ -12,8 +12,9 @@ use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_capability_context::{
     CancellationSource, CancellationToken, ExecutionBudgetFailure, ExecutionBudgetReason,
     ExecutionControl, ExecutionControlApi, ExecutionControlError, ExecutionControlResult,
-    ExecutionScope, ExecutionScopeAccessError, ExecutionScopeDeriveError, ExecutionScopeTerminal,
-    FileSourceStreamContext, OwnedExecutionControl, OwnedExecutionControlApi, StreamRuntime,
+    ExecutionDeadlineSource, ExecutionScope, ExecutionScopeAccessError, ExecutionScopeDeriveError,
+    ExecutionScopeTerminal, FileSourceStreamContext, OwnedExecutionControl,
+    OwnedExecutionControlApi, StreamRuntime,
 };
 use skiff_runtime_linked_program::ServiceMeta;
 use skiff_runtime_model::request_heap::RequestHeapLimits;
@@ -30,6 +31,9 @@ use crate::{
     capabilities::{HttpRuntimeOptions, TimeCapabilityContext},
     error::{BudgetReason, RuntimeError},
 };
+
+mod evaluator_checkpoint;
+mod evaluator_timeout;
 
 fn site() -> InstructionSourceSite {
     InstructionSourceSite::Synthetic {

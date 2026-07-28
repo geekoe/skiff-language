@@ -12,6 +12,11 @@ use std::{
 use super::*;
 use tokio::sync::oneshot;
 
+#[path = "actor_concurrent_continuation_tests/evaluator_actual_pending.rs"]
+mod evaluator_actual_pending;
+#[path = "actor_concurrent_continuation_tests/evaluator_concurrent.rs"]
+mod evaluator_concurrent;
+
 fn executable_addr() -> ExecutableAddr {
     ExecutableAddr {
         unit: UnitAddr::Service,

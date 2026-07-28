@@ -29,7 +29,7 @@ use super::{
         RuntimeExecutionProjection,
     },
     capabilities::{ExecutionControl, RuntimeNativeConfigCapabilityContext},
-    env::{check_cancelled, Env, Flow},
+    env::{Env, Flow},
     exceptions::{
         catch_err, catch_identity_matches, catch_ok, request_exception_for_catch,
         user_exception_for_catch,
@@ -68,31 +68,19 @@ use super::{
 };
 use crate::error::{materialize_request_heap_owned_runtime_error, RuntimeError, UserException};
 use promoted_runtime::dispatch::NativeDispatch;
-use skiff_artifact_model::{
-    InstructionSourceSite, SyntheticInstructionSiteReason, STD_NATIVE_CALLABLE_SEMANTICS,
-};
+use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
 use skiff_runtime_boundary::stream::is_stream_value;
 use skiff_runtime_capability_context::StreamInternalItem;
 use skiff_runtime_native as promoted_runtime;
 use skiff_runtime_native_contract::{native_target_binding_key, native_target_name};
 
-pub(crate) fn native_call_suspends(binding_key: &str) -> bool {
-    if let Some(semantics) = STD_NATIVE_CALLABLE_SEMANTICS
-        .iter()
-        .find(|semantics| semantics.binding_key == binding_key)
-    {
-        return semantics.effects.may_suspend;
-    }
-    // The callable-semantics table is intentionally sparse: it covers native
-    // detachment safety, not the complete capability route matrix. These
-    // contexts return real futures and therefore form coroutine boundaries.
-    binding_key.starts_with("std.file.")
-        || binding_key.starts_with("std.actor.")
-        || matches!(
-            binding_key,
-            "std.http.client.stream" | "std.http.client.sse" | "std.http.stream.emitResponse"
-        )
-}
+mod actual_pending;
+mod checkpoint;
+mod concurrent;
+mod timeout;
+
+#[cfg(test)]
+pub(crate) use actual_pending::tests::legacy_native_call_expected_to_suspend as native_call_suspends;
 
 pub struct EvalContext<'a> {
     pub interpreter: &'a Interpreter,
@@ -223,26 +211,6 @@ impl<'a> EvalContext<'a> {
         Err(RuntimeError::UserException(imported))
     }
 
-    fn suspend_actor_segment(
-        &mut self,
-    ) -> Result<Option<crate::actor_executor::ActorExecutionFrame>> {
-        let Some(frame) = self.context.actor_execution_frame().cloned() else {
-            return Ok(None);
-        };
-        frame.suspend(self.heap)?;
-        Ok(Some(frame))
-    }
-
-    async fn resume_actor_segment(
-        &mut self,
-        frame: Option<crate::actor_executor::ActorExecutionFrame>,
-    ) -> Result<()> {
-        if let Some(frame) = frame {
-            frame.resume(self.heap, &self.execution).await?;
-        }
-        Ok(())
-    }
-
     pub(crate) fn execution_projection(&self) -> &RuntimeExecutionProjection<'a> {
         &self.projection
     }
@@ -257,17 +225,16 @@ impl<'a> EvalContext<'a> {
     }
 
     pub async fn exec_program_executable(&mut self) -> Result<Flow> {
+        self.checkpoint_function_entry()?;
         self.exec_program_block("entry").await
     }
 
     #[async_recursion]
     pub async fn exec_program_block(&mut self, label: &str) -> Result<Flow> {
-        self.execution.add_instruction_units(1)?;
-        check_cancelled(&self.execution, self.env)?;
+        self.checkpoint_function_entry()?;
         let block = program_block(self.executable, label)?;
         self.env.push();
         for statement_ref in &block.statements {
-            self.execution.poll_execution_budget()?;
             let statement = program_statement_ref(self.executable, statement_ref)?;
             let flow = match self.exec_program_statement(statement).await {
                 Ok(flow) => flow,
@@ -289,15 +256,14 @@ impl<'a> EvalContext<'a> {
 
     #[async_recursion]
     pub async fn exec_program_statement(&mut self, statement: &LinkedStmtIr) -> Result<Flow> {
-        self.execution.add_instruction_units(1)?;
-        check_cancelled(&self.execution, self.env)?;
+        self.checkpoint_generated_chunk(1)?;
         match statement {
-            LinkedStmtIr::Timeout { .. } => Err(pending_f445h_eval_error(
-                PendingF445HEvalKind::StatementTimeout,
-            )),
-            LinkedStmtIr::Concurrent { .. } => Err(pending_f445h_eval_error(
-                PendingF445HEvalKind::StatementConcurrent,
-            )),
+            LinkedStmtIr::Timeout {
+                duration_ms,
+                body,
+                site,
+            } => self.exec_timeout_statement(*duration_ms, body, site).await,
+            LinkedStmtIr::Concurrent { plan } => self.exec_concurrent_statement(plan).await,
             LinkedStmtIr::Let { slot, value } => {
                 let value = self.eval_program_expr_ref(*value).await?;
                 self.env.declare_binding(
@@ -379,7 +345,7 @@ impl<'a> EvalContext<'a> {
             LinkedStmtIr::Match { value, arms } => {
                 let value = self.eval_program_expr_ref(*value).await?;
                 for arm in arms {
-                    self.execution.poll_execution_budget()?;
+                    self.checkpoint_generated_chunk(0)?;
                     if !program_pattern_matches(&arm.pattern, &value, self.heap)? {
                         continue;
                     }
@@ -395,66 +361,7 @@ impl<'a> EvalContext<'a> {
                 }
                 Ok(Flow::Continue)
             }
-            LinkedStmtIr::Emit { value, .. } => {
-                let value = self.eval_program_expr_ref(*value).await?;
-                let sink = self
-                    .env
-                    .stream_sink
-                    .as_ref()
-                    .ok_or_else(|| {
-                        RuntimeError::Decode(
-                            "emit used outside a stream output context".to_string(),
-                        )
-                    })?
-                    .clone();
-                if let Some(item) = sink.project_runtime_item(value.value().clone(), self.heap)? {
-                    let frame = self.suspend_actor_segment()?;
-                    let result = sink
-                        .send_internal_with_cancellation(
-                            item,
-                            &[],
-                            [self.execution.cancellation_token()],
-                        )
-                        .await;
-                    self.resume_actor_segment(frame).await?;
-                    result?;
-                    return Ok(Flow::Continue);
-                }
-                if !super::assembly_execution::is_canonical_boundary_stream_sink(&sink) {
-                    let mut item_heap = self.context.request_heap();
-                    let value = deep_clone_runtime_value_carrier_between_heaps(
-                        self.heap,
-                        &mut item_heap,
-                        &value,
-                    )?;
-                    let cell = item_heap.alloc_local_carrier_cell(value)?;
-                    let item = StreamInternalItem::new(RuntimeValue::Heap(cell), item_heap);
-                    let frame = self.suspend_actor_segment()?;
-                    let result = sink
-                        .send_internal_with_cancellation(
-                            item,
-                            &[],
-                            [self.execution.cancellation_token()],
-                        )
-                        .await;
-                    self.resume_actor_segment(frame).await?;
-                    result?;
-                    return Ok(Flow::Continue);
-                }
-                let value = runtime_to_wire_required_plan(
-                    &value,
-                    self.env.current_stream_item_type.as_ref(),
-                    "stream emit item",
-                    self.heap,
-                )?;
-                let frame = self.suspend_actor_segment()?;
-                let result = sink
-                    .send_with_cancellation(value, &[], [self.execution.cancellation_token()])
-                    .await;
-                self.resume_actor_segment(frame).await?;
-                result?;
-                Ok(Flow::Continue)
-            }
+            LinkedStmtIr::Emit { value, .. } => self.exec_emit(*value).await,
             LinkedStmtIr::TestEffectRegister {
                 target,
                 expect,
@@ -594,15 +501,17 @@ impl<'a> EvalContext<'a> {
 
     #[async_recursion]
     pub async fn eval_program_expr(&mut self, expr: &LinkedExprIr) -> Result<RuntimeValueCarrier> {
-        self.execution.add_instruction_units(1)?;
-        check_cancelled(&self.execution, self.env)?;
+        self.checkpoint_generated_chunk(1)?;
         match expr {
-            LinkedExprIr::Timeout { .. } => Err(pending_f445h_eval_error(
-                PendingF445HEvalKind::ExpressionTimeout,
-            )),
-            LinkedExprIr::ConcurrentValue { .. } => Err(pending_f445h_eval_error(
-                PendingF445HEvalKind::ExpressionConcurrent,
-            )),
+            LinkedExprIr::Timeout {
+                duration_ms,
+                value,
+                site,
+            } => {
+                self.eval_timeout_expression(*duration_ms, *value, site)
+                    .await
+            }
+            LinkedExprIr::ConcurrentValue { plan } => self.eval_concurrent_value(plan).await,
             LinkedExprIr::Literal { value } => program_literal(value).map(Into::into),
             LinkedExprIr::LoadSlot { slot } => self
                 .env
@@ -646,6 +555,7 @@ impl<'a> EvalContext<'a> {
             LinkedExprIr::ArrayLiteral { items: item_refs } => {
                 let mut items = Vec::new();
                 for item_ref in item_refs {
+                    self.checkpoint_generated_chunk(0)?;
                     items.push(self.eval_program_expr_ref(*item_ref).await?);
                 }
                 runtime_array_from_carriers(items, self.heap)
@@ -925,13 +835,15 @@ impl<'a> EvalContext<'a> {
         items: Vec<RuntimeValueCarrier>,
     ) -> Result<Flow> {
         for item_value in items {
-            self.execution.add_instruction_units(1)?;
-            check_cancelled(&self.execution, self.env)?;
+            self.checkpoint_loop_condition(1)?;
             let flow = self
                 .exec_program_for_in_body(item_slot, body, item_value)
                 .await?;
             match flow {
-                Flow::Continue | Flow::LoopContinue => continue,
+                Flow::Continue | Flow::LoopContinue => {
+                    self.checkpoint_loop_backedge(0)?;
+                    continue;
+                }
                 Flow::Break => break,
                 Flow::Return(value) => return Ok(Flow::Return(value)),
                 Flow::Parked => return Ok(Flow::Parked),
@@ -949,13 +861,15 @@ impl<'a> EvalContext<'a> {
         entries: Vec<(RuntimeValueCarrier, RuntimeValueCarrier)>,
     ) -> Result<Flow> {
         for (key_value, entry_value) in entries {
-            self.execution.add_instruction_units(1)?;
-            check_cancelled(&self.execution, self.env)?;
+            self.checkpoint_loop_condition(1)?;
             let flow = self
                 .exec_program_for_in_entry_body(item_slot, value_slot, body, key_value, entry_value)
                 .await?;
             match flow {
-                Flow::Continue | Flow::LoopContinue => continue,
+                Flow::Continue | Flow::LoopContinue => {
+                    self.checkpoint_loop_backedge(0)?;
+                    continue;
+                }
                 Flow::Break => break,
                 Flow::Return(value) => return Ok(Flow::Return(value)),
                 Flow::Parked => return Ok(Flow::Parked),
@@ -1016,6 +930,7 @@ impl<'a> EvalContext<'a> {
     ) -> Result<RuntimeValueCarrier> {
         let mut object_fields = std::collections::BTreeMap::new();
         for (field, value_ref) in field_refs {
+            self.checkpoint_generated_chunk(0)?;
             let value = self.eval_program_expr_ref(*value_ref).await?;
             object_fields.insert(field.to_string(), value);
         }
@@ -1218,43 +1133,12 @@ impl<'a> EvalContext<'a> {
                     )));
                 }
                 let operation_abi_id = remote_slot.operation_abi_id().to_string();
-                let outbound_context = self.context.outbound_context();
-                let stream_runtime = self.context.stream_runtime();
-                let frame = self.suspend_actor_segment()?;
-                let result = super::service_dispatch::call_outbound_service_operation(
-                    self.interpreter,
-                    &outbound_context,
-                    &stream_runtime,
-                    self.heap,
-                    self.env,
-                    self.addr,
-                    dependency_ref,
-                    &operation_abi_id,
-                    args.iter()
-                        .cloned()
-                        .map(RuntimeValueCarrier::into_value)
-                        .collect(),
-                )
-                .await;
-                self.resume_actor_segment(frame).await?;
-                result.map(Into::into)
+                self.eval_remote_interface_call(dependency_ref, &operation_abi_id, args)
+                    .await
             }
             InterfaceCarrier::CallbackCapability(carrier) => {
-                let frame = self.suspend_actor_segment()?;
-                let result = super::assembly_execution::dispatch_callback_capability(
-                    self,
-                    call,
-                    carrier,
-                    method_abi_id,
-                    slot,
-                    args.iter()
-                        .cloned()
-                        .map(RuntimeValueCarrier::into_value)
-                        .collect(),
-                )
-                .await;
-                self.resume_actor_segment(frame).await?;
-                result.map(Into::into)
+                self.eval_callback_interface_call(call, carrier, method_abi_id, slot, args)
+                    .await
             }
         }
     }
@@ -1285,6 +1169,7 @@ impl<'a> EvalContext<'a> {
     ) -> Result<RuntimeValueCarrier> {
         let mut entries = std::collections::BTreeMap::new();
         for (key, value_ref) in entry_refs {
+            self.checkpoint_generated_chunk(0)?;
             let value = self.eval_program_expr_ref(*value_ref).await?;
             entries.insert(RuntimeValueKey::string(key.to_string()), value);
         }
@@ -1384,38 +1269,8 @@ impl<'a> EvalContext<'a> {
                 super::assembly_execution::dispatch_package_direct(self, call, target, values).await
             }
             LinkedCallTarget::ActivationRelativeService { instruction } => {
-                if self.interpreter.test_effects_enabled {
-                    let effect_target = TestEffectTarget::contract_operation(
-                        instruction.operation_id().clone(),
-                        instruction.expected_protocol_identity().clone(),
-                    );
-                    if let Some(result) = self.interpreter.runtime_test_effects.dispatch_service(
-                        &effect_target,
-                        &values,
-                        Some(&self.interpreter.stream_runtime),
-                        self.heap,
-                    ) {
-                        return match result? {
-                            ServiceTestEffectDispatch::Complete(value) => Ok(value),
-                            ServiceTestEffectDispatch::Throw(throw) => {
-                                self.materialize_service_test_throw(call, instruction, throw)
-                            }
-                        };
-                    }
-                }
-                let frame = self.suspend_actor_segment()?;
-                let result = super::assembly_execution::dispatch_service_call(
-                    self,
-                    call,
-                    instruction,
-                    values
-                        .into_iter()
-                        .map(RuntimeValueCarrier::into_value)
-                        .collect(),
-                )
-                .await;
-                self.resume_actor_segment(frame).await?;
-                result.map(Into::into)
+                self.eval_activation_relative_service_call(call, instruction, values)
+                    .await
             }
             LinkedCallTarget::LocalExecutable { .. }
             | LinkedCallTarget::PublicationExecutable { .. }
@@ -1425,10 +1280,7 @@ impl<'a> EvalContext<'a> {
                 program_call_target_kind(&call.target)
             ))),
             LinkedCallTarget::ActorDispatch { plan } => {
-                let frame = self.suspend_actor_segment()?;
-                let result = crate::actor_dispatch::dispatch_actor_method(self, plan, values).await;
-                self.resume_actor_segment(frame).await?;
-                result
+                self.eval_actor_dispatch(plan, values).await
             }
             LinkedCallTarget::ExternalServiceSymbol { symbol } => {
                 Err(RuntimeError::InvalidArtifact(format!(
@@ -1437,27 +1289,8 @@ impl<'a> EvalContext<'a> {
                 )))
             }
             LinkedCallTarget::ServiceDependencySymbol { symbol } => {
-                self.ensure_legacy_service_path_allowed("service dependency dispatch")?;
-                let outbound_context = self.context.outbound_context();
-                let stream_runtime = self.context.stream_runtime();
-                let frame = self.suspend_actor_segment()?;
-                let result = super::service_dispatch::call_outbound_service(
-                    self.interpreter,
-                    &outbound_context,
-                    &stream_runtime,
-                    self.heap,
-                    self.env,
-                    self.addr,
-                    call,
-                    symbol,
-                    values
-                        .into_iter()
-                        .map(RuntimeValueCarrier::into_value)
-                        .collect(),
-                )
-                .await;
-                self.resume_actor_segment(frame).await?;
-                result.map(Into::into)
+                self.eval_legacy_service_dependency(call, symbol, values)
+                    .await
             }
             LinkedCallTarget::Native { target } => {
                 if is_db_builtin_op(&native_target_name(target)) {
@@ -1466,44 +1299,7 @@ impl<'a> EvalContext<'a> {
                         native_target_name(target)
                     )));
                 }
-                let native_dispatch = NativeDispatch::new();
-                let invocation = resolve_runtime_execution_native_invocation(
-                    self.interpreter,
-                    &self.projection,
-                    self.addr,
-                    self.env,
-                    call,
-                    target,
-                )?;
-                let suspends = native_call_suspends(invocation.binding_key());
-                let return_plan = invocation.return_plan()?.clone();
-                let frame = if suspends {
-                    self.suspend_actor_segment()?
-                } else {
-                    None
-                };
-                let native_capability_context = project_runtime_execution_native_capability_context(
-                    &self.context,
-                    self.projection.clone(),
-                    self.env.stream_capability_context(),
-                    invocation.required_context(),
-                );
-                let result = native_dispatch
-                    .dispatch_resolved_native_call(
-                        native_capability_context,
-                        invocation,
-                        values
-                            .into_iter()
-                            .map(RuntimeValueCarrier::into_value)
-                            .collect(),
-                        self.heap,
-                    )
-                    .await
-                    .map_err(RuntimeError::from);
-                self.resume_actor_segment(frame).await?;
-                result.and_then(|value| {
-                    runtime_carrier_for_plan(value, &return_plan, "native return", self.heap)
-                })
+                self.eval_native_prepared_call(call, target, values).await
             }
             LinkedCallTarget::Builtin { op } => {
                 if is_db_builtin_op(op) {
@@ -1818,18 +1614,34 @@ impl<'a> EvalContext<'a> {
                 invocation.required_context(),
                 prepared.consumption_child(),
             );
+        let prepared_native = native_dispatch
+            .prepare_resolved_native_call(native_capability_context, invocation, values, self.heap)
+            .map_err(RuntimeError::from)?;
         let interpreter = self.interpreter;
         let context = self.context.clone();
         let addr = self.addr;
+        let frame = self.context.actor_execution_frame().cloned();
+        let execution = self.execution.clone();
         let heap = &mut *self.heap;
         let consumer = async move {
-            native_dispatch
-                .dispatch_resolved_native_call(native_capability_context, invocation, values, heap)
-                .await
-                .map_err(RuntimeError::from)
+            match prepared_native {
+                promoted_runtime::dispatch::PreparedNativeCall::Ready(value) => Ok(value),
+                promoted_runtime::dispatch::PreparedNativeCall::ExternalWait(operation) => {
+                    let (wait, finalize) = operation.into_parts();
+                    let outcome =
+                        actual_pending::await_operation(&context, frame, heap, &execution, wait)
+                            .await??;
+                    finalize.finalize(outcome, heap).map_err(RuntimeError::from)
+                }
+            }
         };
         let result = interpreter
-            .exec_prepared_native_stream_producer_arg(context, addr, prepared, consumer)
+            .exec_prepared_native_stream_producer_arg(
+                self.context.clone(),
+                addr,
+                prepared,
+                consumer,
+            )
             .await?;
         runtime_carrier_for_plan(result, &return_plan, "native stream return", self.heap).map(Some)
     }
@@ -2101,59 +1913,5 @@ fn runtime_map_entry_snapshot(
 fn runtime_value_from_map_key(key: &RuntimeValueKey) -> RuntimeValue {
     match key {
         RuntimeValueKey::String(value) => RuntimeValue::String(value.clone()),
-    }
-}
-
-#[derive(Clone, Copy)]
-enum PendingF445HEvalKind {
-    StatementTimeout,
-    StatementConcurrent,
-    ExpressionTimeout,
-    ExpressionConcurrent,
-}
-
-fn pending_f445h_eval_error(kind: PendingF445HEvalKind) -> RuntimeError {
-    let kind = match kind {
-        PendingF445HEvalKind::StatementTimeout => "statement timeout",
-        PendingF445HEvalKind::StatementConcurrent => "statement concurrent",
-        PendingF445HEvalKind::ExpressionTimeout => "expression timeout",
-        PendingF445HEvalKind::ExpressionConcurrent => "expression concurrent",
-    };
-    RuntimeError::InvalidArtifact(format!(
-        "F445H-E4 evaluator integration is required for {kind}"
-    ))
-}
-
-#[cfg(test)]
-mod f445h_compile_bridge_tests {
-    use super::{pending_f445h_eval_error, PendingF445HEvalKind};
-    use crate::error::RuntimeError;
-
-    #[test]
-    fn four_pending_eval_kinds_fail_closed_with_stable_diagnostics() {
-        let cases = [
-            (
-                PendingF445HEvalKind::StatementTimeout,
-                "F445H-E4 evaluator integration is required for statement timeout",
-            ),
-            (
-                PendingF445HEvalKind::StatementConcurrent,
-                "F445H-E4 evaluator integration is required for statement concurrent",
-            ),
-            (
-                PendingF445HEvalKind::ExpressionTimeout,
-                "F445H-E4 evaluator integration is required for expression timeout",
-            ),
-            (
-                PendingF445HEvalKind::ExpressionConcurrent,
-                "F445H-E4 evaluator integration is required for expression concurrent",
-            ),
-        ];
-        for (kind, expected) in cases {
-            assert!(matches!(
-                pending_f445h_eval_error(kind),
-                RuntimeError::InvalidArtifact(message) if message == expected
-            ));
-        }
     }
 }
