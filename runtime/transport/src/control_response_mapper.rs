@@ -203,7 +203,7 @@ mod tests {
             build_id: "build-1".to_string(),
             activation_identity: ActivationIdentityFrameMetadata {
                 assembly_identity:
-                    "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                         .to_string(),
                 generation: 7,
                 runtime_replica_id: "runtime-replica-7".to_string(),

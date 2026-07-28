@@ -173,7 +173,7 @@ function concurrentStatement() -> number {
 fn timeout_file_ir_upgrade_does_not_change_unrelated_top_level_schemas() {
     assert_eq!(PACKAGE_ARTIFACT_SCHEMA_VERSION, "skiff-package-artifact-v9");
     assert_eq!(SERVICE_CONTRACT_SCHEMA_VERSION, "skiff-service-contract-v5");
-    assert_eq!(RUNTIME_ASSEMBLY_SCHEMA_VERSION, "skiff-runtime-assembly-v2");
+    assert_eq!(RUNTIME_ASSEMBLY_SCHEMA_VERSION, "skiff-runtime-assembly-v3");
 }
 
 #[test]

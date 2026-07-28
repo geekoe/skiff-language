@@ -373,7 +373,7 @@ mod tests {
         )
         .expect_err("wrong schema should fail");
 
-        assert!(error.contains("request.start schemaVersion must be skiff-runtime-frame-v1"));
+        assert!(error.contains("request.start schemaVersion must be skiff-runtime-frame-v2"));
     }
 
     #[test]

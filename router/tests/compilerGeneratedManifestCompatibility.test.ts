@@ -206,7 +206,7 @@ describe('compiler generated HTTP gateway compatibility', () => {
         const generated =
           await writeCurrentScopeCompilerGeneratedArtifactRoot(root);
         expect(generated.receipt.baseAssembly.assemblyIdentity).toBe(
-          'skiff-runtime-assembly-v3:sha256:ec66d8a209e65198ee5b82086a365a4b3a98021ef8117e2572c66fee8eac5f6e'
+          'skiff-runtime-assembly-v3:sha256:ce8c979de4c6786ee9c2fbf2ad01fbfa2271b33a074682e2e66f5a77654f6688'
         );
         expect(
           generated.receipt.packages.consumer.packageBuildId
@@ -221,7 +221,7 @@ describe('compiler generated HTTP gateway compatibility', () => {
         expect(
           generated.receipt.deployments.consumer.deploymentArtifactIdentity
         ).toBe(
-          'skiff-deployment-artifact-v4:sha256:aa74be018958d2e2375b91e500e4f73b6fea8fb97c4d694962d6745fe475791c'
+          'skiff-deployment-artifact-v4:sha256:bfa01d12d90d7a9e5af9da153b63862270a52eaffe59383a4563cff2a0dde2a4'
         );
 
         const loaded = await new FilesystemRuntimeAssemblySnapshotLoader(
