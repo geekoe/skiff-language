@@ -43,6 +43,7 @@ const TARGET_SYMBOL: &str = "spawn.fixture.run";
 struct RecordingActor {
     activation_identity: ActivationIdentityControl,
     submissions: Arc<Mutex<Vec<(SpawnSubmitControlRequest, Vec<u8>)>>>,
+    execution_receipts: Arc<Mutex<Vec<OwnedExecutionControl>>>,
 }
 
 impl ActorCapabilityApi for RecordingActor {
@@ -148,10 +149,15 @@ impl ActorCapabilityApi for RecordingActor {
         &'a self,
         request: SpawnSubmitControlRequest,
         args_payload: Vec<u8>,
-        _execution_control: OwnedExecutionControl,
+        execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ()> {
         let submissions = Arc::clone(&self.submissions);
+        let execution_receipts = Arc::clone(&self.execution_receipts);
         Box::pin(async move {
+            execution_receipts
+                .lock()
+                .expect("spawn execution receipts should remain available")
+                .push(execution_control);
             submissions
                 .lock()
                 .expect("spawn recorder lock should remain available")
@@ -213,10 +219,11 @@ struct CanonicalSpawnFixture {
     actor: ActorCapabilityContext<'static>,
     activation_identity: ActivationIdentityControl,
     submissions: Arc<Mutex<Vec<(SpawnSubmitControlRequest, Vec<u8>)>>>,
+    execution_receipts: Arc<Mutex<Vec<OwnedExecutionControl>>>,
 }
 
 #[tokio::test]
-async fn canonical_spawn_uses_admitted_projection_and_submits_exact_function_target() {
+async fn f445h_i6_actor_scope_spawn_uses_current_projection_and_exact_target() {
     let fixture = canonical_spawn_fixture(Some(TARGET_SYMBOL));
     let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
     let context = execution_context(&interpreter, fixture.actor, Some(fixture.eval_target));
@@ -238,6 +245,21 @@ async fn canonical_spawn_uses_admitted_projection_and_submits_exact_function_tar
     assert_eq!(request.target, format!("function:{TARGET_SYMBOL}"));
     assert_eq!(request.activation_identity, fixture.activation_identity);
     assert_eq!(&payload[..4], b"SKRE");
+    drop(submissions);
+    let receipts = fixture
+        .execution_receipts
+        .lock()
+        .expect("spawn execution receipts should be readable");
+    let [receipt] = receipts.as_slice() else {
+        panic!("canonical spawn should carry exactly one current execution control");
+    };
+    let scope = receipt
+        .execution_scope()
+        .expect("spawn receipt must retain the current execution scope");
+    assert_eq!(
+        scope.lifecycle_snapshot(),
+        skiff_runtime_capability_context::ExecutionScopeLifecycleSnapshot::default()
+    );
 }
 
 #[tokio::test]
@@ -365,9 +387,11 @@ fn canonical_spawn_fixture(metadata_symbol: Option<&str>) -> CanonicalSpawnFixtu
         deployment_revision: activation.identity().deployment.deployment_revision.clone(),
     };
     let submissions = Arc::new(Mutex::new(Vec::new()));
+    let execution_receipts = Arc::new(Mutex::new(Vec::new()));
     let actor = ActorCapabilityContext::new(RecordingActor {
         activation_identity: activation_identity.clone(),
         submissions: Arc::clone(&submissions),
+        execution_receipts: Arc::clone(&execution_receipts),
     });
     CanonicalSpawnFixture {
         eval_target,
@@ -375,6 +399,7 @@ fn canonical_spawn_fixture(metadata_symbol: Option<&str>) -> CanonicalSpawnFixtu
         actor,
         activation_identity,
         submissions,
+        execution_receipts,
     }
 }
 

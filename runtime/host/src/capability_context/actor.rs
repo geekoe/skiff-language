@@ -2,10 +2,11 @@ use serde::de::DeserializeOwned;
 use skiff_artifact_model::validate_activation_token;
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
-    ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationToken, InvocationContext,
-    OutboundControlMessage, OutboundRequestCancelSendError, OutboundRequestCancelSender,
-    OutboundRequestLease, OutboundRequestRegistry, OutboundResponse, OutboundResponseReceiver,
-    RequestCancelControl, RouterWriterMessage, SpawnSubmitControlRequest,
+    ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationToken, ExecutionScope,
+    ExecutionScopeLeaseTerminal, ExecutionScopeTerminal, InvocationContext, OutboundControlMessage,
+    OutboundRequestCancelSendError, OutboundRequestCancelSender, OutboundRequestLease,
+    OutboundRequestRegistry, OutboundResponse, OutboundResponseReceiver, RequestCancelControl,
+    RouterWriterMessage, SpawnSubmitControlRequest,
 };
 use tokio::sync::mpsc;
 
@@ -38,8 +39,28 @@ impl<'a> ActorClient<'a> {
 
     pub async fn get_or_create(
         &self,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
+    ) -> Result<ActorRef> {
+        self.get_or_create_with_scope(request, bootstrap_payload, None)
+            .await
+    }
+
+    pub(crate) async fn get_or_create_in_scope(
+        &self,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
+        scope: ExecutionScope,
+    ) -> Result<ActorRef> {
+        self.get_or_create_with_scope(request, bootstrap_payload, Some(scope))
+            .await
+    }
+
+    async fn get_or_create_with_scope(
+        &self,
         mut request: ActorGetOrCreateControlRequest,
         bootstrap_payload: Vec<u8>,
+        scope: Option<ExecutionScope>,
     ) -> Result<ActorRef> {
         request.rpc_id = self.control_rpc_id(ACTOR_GET_OR_CREATE_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
@@ -52,15 +73,35 @@ impl<'a> ActorClient<'a> {
             payload: bootstrap_payload,
         };
         let response: ActorGetOrCreateResponseFrameHeader = self
-            .send_control_request(ACTOR_GET_OR_CREATE_TARGET, &rpc_id, command)
+            .send_control_request(ACTOR_GET_OR_CREATE_TARGET, &rpc_id, command, scope)
             .await?;
         Ok(actor_ref_from_metadata(response.actor_ref)?)
     }
 
     pub async fn replace(
         &self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
+    ) -> Result<ActorRef> {
+        self.replace_with_scope(request, bootstrap_payload, None)
+            .await
+    }
+
+    pub(crate) async fn replace_in_scope(
+        &self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
+        scope: ExecutionScope,
+    ) -> Result<ActorRef> {
+        self.replace_with_scope(request, bootstrap_payload, Some(scope))
+            .await
+    }
+
+    async fn replace_with_scope(
+        &self,
         mut request: ActorReplaceControlRequest,
         bootstrap_payload: Vec<u8>,
+        scope: Option<ExecutionScope>,
     ) -> Result<ActorRef> {
         request.rpc_id = self.control_rpc_id(ACTOR_REPLACE_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
@@ -73,12 +114,28 @@ impl<'a> ActorClient<'a> {
             payload: bootstrap_payload,
         };
         let response: ActorReplaceResponseFrameHeader = self
-            .send_control_request(ACTOR_REPLACE_TARGET, &rpc_id, command)
+            .send_control_request(ACTOR_REPLACE_TARGET, &rpc_id, command, scope)
             .await?;
         Ok(actor_ref_from_metadata(response.actor_ref)?)
     }
 
-    pub async fn find(&self, mut request: ActorFindControlRequest) -> Result<Option<ActorRef>> {
+    pub async fn find(&self, request: ActorFindControlRequest) -> Result<Option<ActorRef>> {
+        self.find_with_scope(request, None).await
+    }
+
+    pub(crate) async fn find_in_scope(
+        &self,
+        request: ActorFindControlRequest,
+        scope: ExecutionScope,
+    ) -> Result<Option<ActorRef>> {
+        self.find_with_scope(request, Some(scope)).await
+    }
+
+    async fn find_with_scope(
+        &self,
+        mut request: ActorFindControlRequest,
+        scope: Option<ExecutionScope>,
+    ) -> Result<Option<ActorRef>> {
         request.rpc_id = self.control_rpc_id(ACTOR_FIND_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
         request.activation_identity = self
@@ -87,7 +144,7 @@ impl<'a> ActorClient<'a> {
         let rpc_id = request.rpc_id.clone();
         let command = OutboundControlMessage::ActorFind { request };
         let response: ActorFindResponseFrameHeader = self
-            .send_control_request(ACTOR_FIND_TARGET, &rpc_id, command)
+            .send_control_request(ACTOR_FIND_TARGET, &rpc_id, command, scope)
             .await?;
         if !response.found {
             return Ok(None);
@@ -99,7 +156,23 @@ impl<'a> ActorClient<'a> {
         Ok(Some(actor_ref_from_metadata(actor_ref)?))
     }
 
-    pub async fn remove(&self, mut request: ActorRemoveControlRequest) -> Result<bool> {
+    pub async fn remove(&self, request: ActorRemoveControlRequest) -> Result<bool> {
+        self.remove_with_scope(request, None).await
+    }
+
+    pub(crate) async fn remove_in_scope(
+        &self,
+        request: ActorRemoveControlRequest,
+        scope: ExecutionScope,
+    ) -> Result<bool> {
+        self.remove_with_scope(request, Some(scope)).await
+    }
+
+    async fn remove_with_scope(
+        &self,
+        mut request: ActorRemoveControlRequest,
+        scope: Option<ExecutionScope>,
+    ) -> Result<bool> {
         request.rpc_id = self.control_rpc_id(ACTOR_REMOVE_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
         request.activation_identity = self
@@ -108,15 +181,35 @@ impl<'a> ActorClient<'a> {
         let rpc_id = request.rpc_id.clone();
         let command = OutboundControlMessage::ActorRemove { request };
         let response: ActorRemoveResponseFrameHeader = self
-            .send_control_request(ACTOR_REMOVE_TARGET, &rpc_id, command)
+            .send_control_request(ACTOR_REMOVE_TARGET, &rpc_id, command, scope)
             .await?;
         Ok(response.removed)
     }
 
     pub async fn submit_spawn(
         &self,
+        request: SpawnSubmitControlRequest,
+        args_payload: Vec<u8>,
+    ) -> Result<SpawnSubmitResponseFrameHeader> {
+        self.submit_spawn_with_scope(request, args_payload, None)
+            .await
+    }
+
+    pub(crate) async fn submit_spawn_in_scope(
+        &self,
+        request: SpawnSubmitControlRequest,
+        args_payload: Vec<u8>,
+        scope: ExecutionScope,
+    ) -> Result<SpawnSubmitResponseFrameHeader> {
+        self.submit_spawn_with_scope(request, args_payload, Some(scope))
+            .await
+    }
+
+    async fn submit_spawn_with_scope(
+        &self,
         mut request: SpawnSubmitControlRequest,
         args_payload: Vec<u8>,
+        scope: Option<ExecutionScope>,
     ) -> Result<SpawnSubmitResponseFrameHeader> {
         request.rpc_id = self.control_rpc_id(SPAWN_SUBMIT_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
@@ -129,7 +222,7 @@ impl<'a> ActorClient<'a> {
             payload: args_payload,
         };
         let response: SpawnSubmitResponseFrameHeader = self
-            .send_control_request(SPAWN_SUBMIT_TARGET, &rpc_id, command)
+            .send_control_request(SPAWN_SUBMIT_TARGET, &rpc_id, command, scope)
             .await?;
         validate_spawn_submit_response(&response, &rpc_id)?;
         Ok(response)
@@ -140,12 +233,13 @@ impl<'a> ActorClient<'a> {
         target: &str,
         rpc_id: &str,
         command: OutboundControlMessage,
+        scope: Option<ExecutionScope>,
     ) -> Result<TResponse>
     where
         TResponse: DeserializeOwned,
     {
         let payload = self
-            .send_raw_control_request(target, rpc_id, command)
+            .send_raw_control_request(target, rpc_id, command, scope)
             .await?;
         serde_json::from_slice(&payload).map_err(|error| {
             RuntimeError::decode_target(
@@ -160,14 +254,28 @@ impl<'a> ActorClient<'a> {
         target: &str,
         rpc_id: &str,
         command: OutboundControlMessage,
+        scope: Option<ExecutionScope>,
     ) -> Result<Vec<u8>> {
+        if scope
+            .as_ref()
+            .and_then(|scope| scope.terminal_at(std::time::Instant::now()))
+            .is_some()
+        {
+            return Err(RuntimeError::cancelled());
+        }
         let (response_rx, lease) = self.context.open_outbound_response_lease(rpc_id)?;
         if let Err(error) = self.context.send_outbound_request(rpc_id, command) {
             lease.cancel("runtime_disconnect");
             return Err(error);
         }
 
-        await_control_response(&self.context, target, lease, response_rx).await
+        match scope {
+            Some(scope) => {
+                await_control_response_in_scope(&self.context, target, lease, response_rx, scope)
+                    .await
+            }
+            None => await_control_response(&self.context, target, lease, response_rx).await,
+        }
     }
 
     fn control_rpc_id(&self, target: &str) -> String {
@@ -366,38 +474,84 @@ async fn await_control_response(
 ) -> Result<Vec<u8>> {
     tokio::select! {
         result = receiver.recv() => {
-            match result {
-                Some(OutboundResponse::End { payload }) => {
-                    lease.complete();
-                    Ok(payload)
-                }
-                Some(OutboundResponse::Error(error)) => {
-                    lease.complete();
-                    Err(RuntimeError::ProviderUnavailable {
-                        target: target.to_string(),
-                        reason: error.message,
-                    })
-                }
-                Some(other) => {
-                    lease.cancel("unexpected_control_response");
-                    Err(RuntimeError::ProviderUnavailable {
-                        target: target.to_string(),
-                        reason: format!("control RPC received {}", other.kind()),
-                    })
-                }
-                None => {
-                    lease.cancel("response_channel_closed");
-                    Err(RuntimeError::ProviderUnavailable {
-                        target: target.to_string(),
-                        reason: "control response channel closed".to_string(),
-                    })
-                }
-            }
+            finish_control_response(target, &lease, result)
         }
         _ = wait_request_cancelled(context) => {
             lease.cancel("caller_cancel");
             Err(RuntimeError::cancelled())
         }
+    }
+}
+
+async fn await_control_response_in_scope(
+    context: &ActorClientContext<'_>,
+    target: &str,
+    lease: OutboundRequestLease,
+    mut receiver: OutboundResponseReceiver,
+    scope: ExecutionScope,
+) -> Result<Vec<u8>> {
+    let response_committed = lease.terminal_signal();
+    let (scope_lease, scope_completion) = scope.acquire_lease();
+    tokio::select! {
+        biased;
+        _ = response_committed.wait_terminal() => {
+            let result = finish_control_response(target, &lease, receiver.recv().await);
+            let _ = scope_completion.complete();
+            result
+        }
+        terminal = scope_lease.wait() => {
+            let ExecutionScopeLeaseTerminal::Control(terminal) = terminal else {
+                unreachable!("scope completion is owned by the response branch")
+            };
+            lease.cancel(scope_cancel_reason(&terminal));
+            Err(RuntimeError::cancelled())
+        }
+        _ = wait_request_cancelled(context) => {
+            lease.cancel("caller_cancel");
+            Err(RuntimeError::cancelled())
+        }
+    }
+}
+
+fn finish_control_response(
+    target: &str,
+    lease: &OutboundRequestLease,
+    result: Option<OutboundResponse>,
+) -> Result<Vec<u8>> {
+    match result {
+        Some(OutboundResponse::End { payload }) => {
+            lease.complete();
+            Ok(payload)
+        }
+        Some(OutboundResponse::Error(error)) => {
+            lease.complete();
+            Err(RuntimeError::ProviderUnavailable {
+                target: target.to_string(),
+                reason: error.message,
+            })
+        }
+        Some(other) => {
+            lease.cancel("unexpected_control_response");
+            Err(RuntimeError::ProviderUnavailable {
+                target: target.to_string(),
+                reason: format!("control RPC received {}", other.kind()),
+            })
+        }
+        None => {
+            lease.cancel("response_channel_closed");
+            Err(RuntimeError::ProviderUnavailable {
+                target: target.to_string(),
+                reason: "control response channel closed".to_string(),
+            })
+        }
+    }
+}
+
+fn scope_cancel_reason(terminal: &ExecutionScopeTerminal) -> &'static str {
+    match terminal {
+        ExecutionScopeTerminal::AncestorCancelled => "caller_cancel",
+        ExecutionScopeTerminal::LocalDeadlineExceeded(_)
+        | ExecutionScopeTerminal::InheritedDeadlineExceeded(_) => "deadline_exceeded",
     }
 }
 

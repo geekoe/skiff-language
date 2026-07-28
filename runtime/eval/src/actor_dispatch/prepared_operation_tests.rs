@@ -296,7 +296,7 @@ fn returned(value: serde_json::Value) -> ActorInvocationOutcome {
 }
 
 #[tokio::test]
-async fn actor_ready_invocation_wait_is_static_and_starts_once() {
+async fn f445h_i6_actor_scope_method_ready_preserves_prepared_segment_and_starts_once() {
     let actor = RecordingActor::ready(Ok(returned(json!("ready"))));
     let wait = prepared(actor.clone(), string_plan()).into_wait();
     assert_heap_free_wait(&wait);
@@ -312,7 +312,7 @@ async fn actor_ready_invocation_wait_is_static_and_starts_once() {
 }
 
 #[tokio::test]
-async fn actor_pending_wait_does_not_borrow_or_write_the_caller_heap() {
+async fn f445h_i6_actor_scope_method_pending_preserves_continuation_heap_boundary() {
     let (actor, sender) = RecordingActor::pending();
     let mut wait = Box::pin(prepared(actor.clone(), string_plan()).into_wait());
     assert!(poll_once(wait.as_mut()).await.is_none());
@@ -392,7 +392,7 @@ async fn actor_cancel_error_and_replacement_are_finalized_after_the_wait() {
 }
 
 #[tokio::test]
-async fn dropping_pending_actor_wait_cancels_the_single_invocation_owner() {
+async fn f445h_i6_actor_scope_method_drop_releases_the_single_invocation_owner() {
     let (actor, sender) = RecordingActor::pending();
     let mut wait = Box::pin(prepared(actor.clone(), string_plan()).into_wait());
     assert!(poll_once(wait.as_mut()).await.is_none());

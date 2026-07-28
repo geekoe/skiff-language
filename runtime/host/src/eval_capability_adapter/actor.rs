@@ -84,10 +84,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
-            let _execution_control = execution_control;
+            let scope = actor_execution_scope(&execution_control)?;
             root_result_into_capability(
                 concrete::ActorClient::new(self.context.clone())
-                    .get_or_create(request, bootstrap_payload)
+                    .get_or_create_in_scope(request, bootstrap_payload, scope)
                     .await,
             )
             .await
@@ -101,10 +101,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
-            let _execution_control = execution_control;
+            let scope = actor_execution_scope(&execution_control)?;
             root_result_into_capability(
                 concrete::ActorClient::new(self.context.clone())
-                    .replace(request, bootstrap_payload)
+                    .replace_in_scope(request, bootstrap_payload, scope)
                     .await,
             )
             .await
@@ -117,10 +117,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, Option<ActorRef>> {
         Box::pin(async move {
-            let _execution_control = execution_control;
+            let scope = actor_execution_scope(&execution_control)?;
             root_result_into_capability(
                 concrete::ActorClient::new(self.context.clone())
-                    .find(request)
+                    .find_in_scope(request, scope)
                     .await,
             )
             .await
@@ -133,10 +133,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, bool> {
         Box::pin(async move {
-            let _execution_control = execution_control;
+            let scope = actor_execution_scope(&execution_control)?;
             root_result_into_capability(
                 concrete::ActorClient::new(self.context.clone())
-                    .remove(request)
+                    .remove_in_scope(request, scope)
                     .await,
             )
             .await
@@ -244,10 +244,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
-            let _execution_control = execution_control;
+            let scope = actor_execution_scope(&execution_control)?;
             root_result_into_capability(
                 concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
-                    .get_or_create(request, bootstrap_payload)
+                    .get_or_create_in_scope(request, bootstrap_payload, scope)
                     .await,
             )
             .await
@@ -261,10 +261,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
-            let _execution_control = execution_control;
+            let scope = actor_execution_scope(&execution_control)?;
             root_result_into_capability(
                 concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
-                    .replace(request, bootstrap_payload)
+                    .replace_in_scope(request, bootstrap_payload, scope)
                     .await,
             )
             .await
@@ -277,10 +277,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, Option<ActorRef>> {
         Box::pin(async move {
-            let _execution_control = execution_control;
+            let scope = actor_execution_scope(&execution_control)?;
             root_result_into_capability(
                 concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
-                    .find(request)
+                    .find_in_scope(request, scope)
                     .await,
             )
             .await
@@ -293,10 +293,10 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, bool> {
         Box::pin(async move {
-            let _execution_control = execution_control;
+            let scope = actor_execution_scope(&execution_control)?;
             root_result_into_capability(
                 concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
-                    .remove(request)
+                    .remove_in_scope(request, scope)
                     .await,
             )
             .await
@@ -347,10 +347,16 @@ async fn invoke_actor_method(
     use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
     use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
-    let _execution_control = execution_control;
+    let scope = actor_execution_scope(&execution_control)?;
+    if scope.terminal_at(std::time::Instant::now()).is_some() {
+        return std::future::pending().await;
+    }
+    let (scope_lease, scope_completion) = scope.acquire_lease();
     let invocation_id = request.identity.invocation_id.clone();
     let cancellation_correlation = request.identity.cancellation_correlation.clone();
-    let deadline_timeout_ms = request.deadline.timeout_ms;
+    let primitive_timeout_ms = request.deadline.timeout_ms;
+    let wire_timeout_ms =
+        actor_method_wire_timeout_ms(&scope, primitive_timeout_ms, std::time::Instant::now());
     let sender = parts.router_sender.clone().ok_or_else(|| {
         capability_contract::CapabilityError::provider_unavailable(
             "actor.method.invoke",
@@ -399,7 +405,7 @@ async fn invoke_actor_method(
         },
         actor_symbol: request.declaration_owner.actor_symbol,
     };
-    let timeout_ms = i64::try_from(request.deadline.timeout_ms).map_err(|_| {
+    let timeout_ms = i64::try_from(wire_timeout_ms).map_err(|_| {
         capability_contract::CapabilityError::protocol(
             "actor.method.invoke",
             "Actor invocation timeout exceeds the supported range",
@@ -437,7 +443,7 @@ async fn invoke_actor_method(
             method_identity: request.identity.method_identity,
             arguments_encoding_version: ACTOR_ARGUMENTS_ENCODING_V1.to_string(),
             deadline: ActorMethodDeadlineFrameHeader {
-                timeout_ms: request.deadline.timeout_ms,
+                timeout_ms: wire_timeout_ms,
                 expires_at,
             },
             cancellation_correlation: cancellation_correlation.clone(),
@@ -459,50 +465,96 @@ async fn invoke_actor_method(
             )
         })?;
 
+    let response_committed = lease.response_committed();
+    let send_cancel = |reason| {
+        let cancel = ActorMethodFrame::Cancel(ActorMethodCancelFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "actor.method.cancel".to_string(),
+            invocation_id: invocation_id.clone(),
+            cancellation_correlation: cancellation_correlation.clone(),
+            reason,
+        });
+        if let Ok(wire) = encode_actor_method_frame(&cancel) {
+            let _ = sender.send(concrete::RouterWriterMessage::Binary(wire));
+        }
+    };
     tokio::select! {
         biased;
-        _ = parts.cancellation.wait_cancelled() => {
-            let cancel = ActorMethodFrame::Cancel(ActorMethodCancelFrameHeader {
-                schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-                envelope_type: "actor.method.cancel".to_string(),
-                invocation_id,
-                cancellation_correlation,
-                reason: ActorMethodCancelReason::Cancelled,
-            });
-            if let Ok(wire) = encode_actor_method_frame(&cancel) {
-                let _ = sender.send(concrete::RouterWriterMessage::Binary(wire));
+        outcome = lease.receive() => {
+            let _ = scope_completion.complete();
+            match outcome {
+                Ok(Ok(outcome)) => Ok(outcome),
+                Ok(Err(error)) => Err(capability_contract::CapabilityError::protocol(
+                    "actor.method.invoke",
+                    format!("Actor owner transport failure {}: {}", error.code, error.message),
+                )),
+                Err(_) => Err(capability_contract::CapabilityError::provider_unavailable(
+                    "actor.method.invoke",
+                    "Actor invocation response channel closed",
+                )),
             }
+        },
+        _ = response_committed.wait() => {
+            let outcome = lease.receive().await;
+            let _ = scope_completion.complete();
+            match outcome {
+                Ok(Ok(outcome)) => Ok(outcome),
+                Ok(Err(error)) => Err(capability_contract::CapabilityError::protocol(
+                    "actor.method.invoke",
+                    format!("Actor owner transport failure {}: {}", error.code, error.message),
+                )),
+                Err(_) => Err(capability_contract::CapabilityError::provider_unavailable(
+                    "actor.method.invoke",
+                    "Actor invocation response channel closed",
+                )),
+            }
+        }
+        terminal = scope_lease.wait() => {
+            let capability_contract::ExecutionScopeLeaseTerminal::Control(terminal) = terminal else {
+                unreachable!("scope completion is owned by the Actor response branch")
+            };
+            let reason = match terminal {
+                capability_contract::ExecutionScopeTerminal::AncestorCancelled => {
+                    ActorMethodCancelReason::Cancelled
+                }
+                capability_contract::ExecutionScopeTerminal::LocalDeadlineExceeded(_)
+                | capability_contract::ExecutionScopeTerminal::InheritedDeadlineExceeded(_) => {
+                    ActorMethodCancelReason::DeadlineExceeded
+                }
+            };
+            send_cancel(reason);
+            drop(lease);
+            std::future::pending().await
+        }
+        _ = parts.cancellation.wait_cancelled() => {
+            send_cancel(ActorMethodCancelReason::Cancelled);
             Ok(capability_contract::ActorInvocationOutcome::Cancelled(
                 capability_contract::ActorInvocationCancellation::Cancelled,
             ))
         }
-        outcome = lease.receive() => match outcome {
-            Ok(Ok(outcome)) => Ok(outcome),
-            Ok(Err(error)) => Err(capability_contract::CapabilityError::protocol(
-                "actor.method.invoke",
-                format!("Actor owner transport failure {}: {}", error.code, error.message),
-            )),
-            Err(_) => Err(capability_contract::CapabilityError::provider_unavailable(
-                "actor.method.invoke",
-                "Actor invocation response channel closed",
-            )),
-        },
-        _ = tokio::time::sleep(tokio::time::Duration::from_millis(deadline_timeout_ms)) => {
-            let cancel = ActorMethodFrame::Cancel(ActorMethodCancelFrameHeader {
-                schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-                envelope_type: "actor.method.cancel".to_string(),
-                invocation_id,
-                cancellation_correlation,
-                reason: ActorMethodCancelReason::DeadlineExceeded,
-            });
-            if let Ok(wire) = encode_actor_method_frame(&cancel) {
-                let _ = sender.send(concrete::RouterWriterMessage::Binary(wire));
-            }
+        _ = tokio::time::sleep(tokio::time::Duration::from_millis(primitive_timeout_ms)) => {
+            send_cancel(ActorMethodCancelReason::DeadlineExceeded);
             Ok(capability_contract::ActorInvocationOutcome::Cancelled(
                 capability_contract::ActorInvocationCancellation::DeadlineExceeded,
             ))
         }
     }
+}
+
+fn actor_method_wire_timeout_ms(
+    scope: &capability_contract::ExecutionScope,
+    primitive_timeout_ms: u64,
+    now: std::time::Instant,
+) -> u64 {
+    let Some(deadline) = scope.effective_deadline() else {
+        return primitive_timeout_ms;
+    };
+    let remaining = deadline.at().saturating_duration_since(now);
+    let remaining_ms = u64::try_from(remaining.as_millis())
+        .unwrap_or(u64::MAX)
+        .saturating_add(u64::from(remaining.subsec_nanos() % 1_000_000 != 0))
+        .max(1);
+    primitive_timeout_ms.min(remaining_ms)
 }
 
 async fn submit_spawn_and_wake(
@@ -512,11 +564,11 @@ async fn submit_spawn_and_wake(
     args_payload: Vec<u8>,
     execution_control: capability_contract::OwnedExecutionControl,
 ) -> capability_contract::CapabilityResult<()> {
-    let _execution_control = execution_control;
+    let scope = actor_execution_scope(&execution_control)?;
     let build_id = request.build_id.clone();
     root_result_into_capability(
         concrete::ActorClient::new(context)
-            .submit_spawn(request, args_payload)
+            .submit_spawn_in_scope(request, args_payload, scope)
             .await,
     )
     .await?;
@@ -524,6 +576,17 @@ async fn submit_spawn_and_wake(
         spawn_workers.wake_build(&build_id);
     }
     Ok(())
+}
+
+fn actor_execution_scope(
+    execution_control: &capability_contract::OwnedExecutionControl,
+) -> capability_contract::CapabilityResult<capability_contract::ExecutionScope> {
+    execution_control.execution_scope().map_err(|error| {
+        capability_contract::CapabilityError::protocol(
+            "actor.current-scope",
+            format!("current execution scope is unavailable: {error}"),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -550,7 +613,7 @@ mod tests {
         "skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     #[tokio::test]
-    async fn actor_method_cancel_wakes_pending_invocation_and_releases_lease() {
+    async fn f445h_i6_actor_scope_method_request_cancel_releases_lease() {
         let cancellation = CancellationToken::new();
         let (parts, request, mut router_receiver, outbound) =
             actor_invocation_fixture(30_000, cancellation.clone(), "actor-invoke-cancel");
@@ -576,7 +639,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn actor_method_deadline_remains_distinct_and_releases_lease() {
+    async fn f445h_i6_actor_scope_method_primitive_deadline_remains_distinct() {
         let (parts, request, mut router_receiver, outbound) =
             actor_invocation_fixture(1, CancellationToken::new(), "actor-invoke-deadline");
         let invocation = invoke_actor_method(parts, request, test_execution_control());
@@ -604,7 +667,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn actor_method_cancel_beats_simultaneously_ready_deadline() {
+    async fn f445h_i6_actor_scope_method_request_cancel_beats_primitive_deadline() {
         let cancellation = CancellationToken::new();
         let (parts, request, mut router_receiver, outbound) =
             actor_invocation_fixture(1, cancellation.clone(), "actor-invoke-biased");
@@ -635,7 +698,159 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn successful_spawn_submit_wakes_the_target_build() {
+    async fn f445h_i6_actor_scope_method_current_deadline_drops_waiter_and_fences_late_outcome() {
+        let (execution, _ancestor, scope) =
+            scoped_test_execution_control(Duration::from_millis(50));
+        let lifecycle = scope.clone();
+        let (parts, request, mut router_receiver, outbound) = actor_invocation_fixture(
+            30_000,
+            CancellationToken::new(),
+            "actor-invoke-current-deadline",
+        );
+        let invocation = invoke_actor_method(parts, request, execution);
+        tokio::pin!(invocation);
+
+        let wire_timeout_ms =
+            assert_actor_invoke_frame(&mut router_receiver, &mut invocation).await;
+        assert!(
+            (1..=50).contains(&wire_timeout_ms),
+            "wire hint must use min(current remaining, 30s primitive), got {wire_timeout_ms}"
+        );
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_actor_cancel_frame_while_pending(
+            &mut router_receiver,
+            &mut invocation,
+            ActorMethodCancelReason::DeadlineExceeded,
+        )
+        .await;
+
+        assert_eq!(outbound.pending_count(), 0);
+        assert_eq!(
+            lifecycle.lifecycle_snapshot(),
+            capability_contract::ExecutionScopeLifecycleSnapshot::default()
+        );
+        assert!(
+            !outbound.complete(
+                "actor-invoke-current-deadline",
+                ActorInvocationOutcome::Returned(vec![1])
+            ),
+            "late and duplicate Actor outcomes must remain fenced"
+        );
+        assert!(
+            timeout(Duration::from_millis(1), &mut invocation)
+                .await
+                .is_err(),
+            "current scope terminal must stay on the internal control lane"
+        );
+    }
+
+    #[tokio::test]
+    async fn f445h_i6_actor_scope_method_committed_outcome_beats_ready_scope_deadline() {
+        let (execution, _ancestor, scope) =
+            scoped_test_execution_control(Duration::from_millis(50));
+        let lifecycle = scope.clone();
+        let (parts, request, mut router_receiver, outbound) = actor_invocation_fixture(
+            30_000,
+            CancellationToken::new(),
+            "actor-invoke-response-first",
+        );
+        let invocation = invoke_actor_method(parts, request, execution);
+        tokio::pin!(invocation);
+        assert_actor_invoke_frame(&mut router_receiver, &mut invocation).await;
+
+        assert!(outbound.complete(
+            "actor-invoke-response-first",
+            ActorInvocationOutcome::Returned(vec![7])
+        ));
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(
+            invocation.await.expect("committed Actor outcome must win"),
+            ActorInvocationOutcome::Returned(vec![7])
+        );
+        assert_eq!(outbound.pending_count(), 0);
+        assert_eq!(
+            lifecycle.lifecycle_snapshot(),
+            capability_contract::ExecutionScopeLifecycleSnapshot::default()
+        );
+        assert!(
+            router_receiver.try_recv().is_err(),
+            "winning response must not emit a cancellation hint"
+        );
+    }
+
+    #[tokio::test]
+    async fn f445h_i6_actor_scope_method_ancestor_stop_is_internal_and_releases_owners() {
+        let (execution, ancestor, scope) = scoped_test_execution_control(Duration::from_secs(30));
+        let lifecycle = scope.clone();
+        let (parts, request, mut router_receiver, outbound) = actor_invocation_fixture(
+            30_000,
+            CancellationToken::new(),
+            "actor-invoke-ancestor-stop",
+        );
+        let invocation = invoke_actor_method(parts, request, execution);
+        tokio::pin!(invocation);
+        assert_actor_invoke_frame(&mut router_receiver, &mut invocation).await;
+
+        ancestor.cancel();
+        assert_actor_cancel_frame_while_pending(
+            &mut router_receiver,
+            &mut invocation,
+            ActorMethodCancelReason::Cancelled,
+        )
+        .await;
+        assert_eq!(outbound.pending_count(), 0);
+        assert_eq!(
+            lifecycle.lifecycle_snapshot(),
+            capability_contract::ExecutionScopeLifecycleSnapshot::default()
+        );
+        assert!(
+            timeout(Duration::from_millis(5), &mut invocation)
+                .await
+                .is_err(),
+            "ancestor stop must not materialize through the ordinary Actor result"
+        );
+    }
+
+    #[tokio::test]
+    async fn f445h_i6_actor_scope_method_outer_deadline_keeps_post_await_owner() {
+        let (execution, scope) = scoped_test_execution_with_outer_deadline(
+            Duration::from_millis(50),
+            Duration::from_secs(30),
+        );
+        let lifecycle = scope.clone();
+        let (parts, request, mut router_receiver, outbound) = actor_invocation_fixture(
+            30_000,
+            CancellationToken::new(),
+            "actor-invoke-outer-deadline",
+        );
+        let invocation = invoke_actor_method(parts, request, execution);
+        tokio::pin!(invocation);
+
+        let wire_timeout_ms =
+            assert_actor_invoke_frame(&mut router_receiver, &mut invocation).await;
+        assert!((1..=50).contains(&wire_timeout_ms));
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_actor_cancel_frame_while_pending(
+            &mut router_receiver,
+            &mut invocation,
+            ActorMethodCancelReason::DeadlineExceeded,
+        )
+        .await;
+        assert_eq!(outbound.pending_count(), 0);
+        assert_eq!(
+            lifecycle.lifecycle_snapshot(),
+            capability_contract::ExecutionScopeLifecycleSnapshot::default()
+        );
+        assert!(
+            timeout(Duration::from_millis(5), &mut invocation)
+                .await
+                .is_err(),
+            "outer deadline must be projected by the existing post-await checkpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn f445h_i6_actor_scope_spawn_valid_receipt_wakes_the_target_build() {
         let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
         let outbound_requests = Arc::new(OutboundRequestRegistry::default());
         let spawn_workers = Arc::new(crate::host::spawn_worker::SpawnWorkerRegistry::default());
@@ -700,7 +915,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejected_spawn_submit_receipt_does_not_wake_the_target_build() {
+    async fn f445h_i6_actor_scope_spawn_rejected_receipt_does_not_wake_target_build() {
         let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
         let outbound_requests = Arc::new(OutboundRequestRegistry::default());
         let spawn_workers = Arc::new(crate::host::spawn_worker::SpawnWorkerRegistry::default());
@@ -766,6 +981,93 @@ mod tests {
                 .await
                 .is_err(),
             "failed submit receipt must not wake a spawn worker"
+        );
+    }
+
+    #[tokio::test]
+    async fn f445h_i6_actor_scope_spawn_deadline_fences_late_receipt_and_worker_wake() {
+        let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
+        let outbound_requests = Arc::new(OutboundRequestRegistry::default());
+        let spawn_workers = Arc::new(crate::host::spawn_worker::SpawnWorkerRegistry::default());
+        let registration = spawn_workers.registration_for_test();
+        let wake = spawn_workers
+            .wake_signal_for_test(&registration, BUILD_ID)
+            .expect("test registration should exist");
+        let activation_identity = spawn_submit_request().activation_identity;
+        let context = concrete::ActorClientContext::from_parts(
+            "runtime-test",
+            "service-test",
+            "v1",
+            "request-test",
+            "program.test",
+            BUILD_ID,
+            "protocol-test",
+            Some("protocol-test"),
+            Some(&activation_identity),
+            None,
+            Some(&router_sender),
+            outbound_requests.as_ref(),
+            CancellationToken::new(),
+        );
+        let (execution, _ancestor, scope) =
+            scoped_test_execution_control(Duration::from_millis(50));
+        let lifecycle = scope.clone();
+        let submit = submit_spawn_and_wake(
+            context,
+            spawn_workers,
+            spawn_submit_request(),
+            Vec::new(),
+            execution,
+        );
+        tokio::pin!(submit);
+
+        let rpc_id = tokio::select! {
+            result = &mut submit => panic!("spawn submit completed before its request: {result:?}"),
+            message = router_receiver.recv() => match message.expect("spawn.submit request should be sent") {
+                concrete::RouterWriterMessage::Control(
+                    capability_contract::OutboundControlMessage::SpawnSubmit { request, .. }
+                ) => request.rpc_id,
+                other => panic!("unexpected router message: {other:?}"),
+            }
+        };
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let cancel = tokio::select! {
+            result = &mut submit => {
+                panic!("scope-terminal spawn must remain pending, got {result:?}")
+            }
+            message = router_receiver.recv() => {
+                message.expect("router writer should remain open")
+            }
+        };
+        let concrete::RouterWriterMessage::Control(
+            capability_contract::OutboundControlMessage::RequestCancel { request },
+        ) = cancel
+        else {
+            panic!("scope deadline must emit request.cancel")
+        };
+        assert_eq!(request.request_id, rpc_id);
+        assert_eq!(request.reason, "deadline_exceeded");
+        assert_eq!(outbound_requests.pending_count(), 0);
+        assert_eq!(outbound_requests.active_lease_count(), 0);
+        assert_eq!(
+            lifecycle.lifecycle_snapshot(),
+            capability_contract::ExecutionScopeLifecycleSnapshot::default()
+        );
+        assert!(
+            outbound_requests.complete_for_test(&rpc_id).is_none(),
+            "late spawn receipt must be fenced after scope terminal"
+        );
+        assert!(
+            timeout(Duration::from_millis(1), wake.notified())
+                .await
+                .is_err(),
+            "scope-terminal spawn must not wake a worker"
+        );
+        assert!(
+            timeout(Duration::from_millis(1), &mut submit)
+                .await
+                .is_err(),
+            "scope terminal must remain on the internal control lane"
         );
     }
 
@@ -840,7 +1142,8 @@ mod tests {
     async fn assert_actor_invoke_frame<F>(
         router_receiver: &mut mpsc::UnboundedReceiver<concrete::RouterWriterMessage>,
         invocation: &mut Pin<&mut F>,
-    ) where
+    ) -> u64
+    where
         F: Future<
             Output = capability_contract::CapabilityResult<
                 capability_contract::ActorInvocationOutcome,
@@ -852,9 +1155,9 @@ mod tests {
                 panic!("actor invocation completed before its invoke frame: {result:?}")
             }
             message = router_receiver.recv() => {
-                assert_actor_invoke_message(
+                actor_invoke_timeout_ms(
                     message.expect("actor method invoke frame must be sent")
-                );
+                )
             }
         }
     }
@@ -870,14 +1173,38 @@ mod tests {
         assert_actor_cancel_message(message, expected_reason);
     }
 
-    fn assert_actor_invoke_message(message: concrete::RouterWriterMessage) {
+    async fn assert_actor_cancel_frame_while_pending<F>(
+        router_receiver: &mut mpsc::UnboundedReceiver<concrete::RouterWriterMessage>,
+        invocation: &mut Pin<&mut F>,
+        expected_reason: ActorMethodCancelReason,
+    ) where
+        F: Future<
+            Output = capability_contract::CapabilityResult<
+                capability_contract::ActorInvocationOutcome,
+            >,
+        >,
+    {
+        let message = tokio::select! {
+            result = invocation.as_mut() => {
+                panic!("scope-terminal Actor invocation must remain pending, got {result:?}")
+            }
+            message = router_receiver.recv() => {
+                message.expect("router writer must remain open")
+            }
+        };
+        assert_actor_cancel_message(message, expected_reason);
+    }
+
+    fn actor_invoke_timeout_ms(message: concrete::RouterWriterMessage) -> u64 {
         let concrete::RouterWriterMessage::Binary(frame) = message else {
             panic!("actor invocation must use a binary frame")
         };
-        assert!(matches!(
-            decode_actor_method_frame(&frame).expect("actor invoke frame must decode"),
-            ActorMethodFrame::Invoke(_, _)
-        ));
+        let ActorMethodFrame::Invoke(header, _) =
+            decode_actor_method_frame(&frame).expect("actor invoke frame must decode")
+        else {
+            panic!("expected Actor method invoke frame")
+        };
+        header.deadline.timeout_ms
     }
 
     fn assert_actor_cancel_message(
@@ -931,5 +1258,68 @@ mod tests {
         let execution =
             skiff_runtime_request::ExecutionControl::new(CancellationToken::new(), &budget);
         super::super::execution_control(execution).owned()
+    }
+
+    fn scoped_test_execution_control(
+        deadline_after: Duration,
+    ) -> (
+        capability_contract::OwnedExecutionControl,
+        capability_contract::CancellationSource,
+        capability_contract::ExecutionScope,
+    ) {
+        use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
+        use skiff_runtime_request::execution_budget::{ExecutionBudget, ExecutionBudgetConfig};
+
+        let cancellation = capability_contract::CancellationSource::new();
+        let budget = Arc::new(ExecutionBudget::new(
+            ExecutionBudgetConfig::disabled(),
+            None,
+        ));
+        let execution = skiff_runtime_request::ExecutionControl::new(cancellation.token(), &budget);
+        let owned = super::super::execution_control(execution).owned();
+        let current = owned
+            .derive_scope(
+                tokio::time::Instant::now().into_std() + deadline_after,
+                InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                },
+            )
+            .expect("test current scope should derive");
+        let scope = current
+            .execution_scope()
+            .expect("derived test control must expose its current scope");
+        (current, cancellation, scope)
+    }
+
+    fn scoped_test_execution_with_outer_deadline(
+        outer_deadline_after: Duration,
+        local_deadline_after: Duration,
+    ) -> (
+        capability_contract::OwnedExecutionControl,
+        capability_contract::ExecutionScope,
+    ) {
+        use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
+        use skiff_runtime_request::execution_budget::{ExecutionBudget, ExecutionBudgetConfig};
+
+        let now = tokio::time::Instant::now().into_std();
+        let budget = Arc::new(ExecutionBudget::new(
+            ExecutionBudgetConfig::disabled(),
+            Some(now + outer_deadline_after),
+        ));
+        let execution =
+            skiff_runtime_request::ExecutionControl::new(CancellationToken::new(), &budget);
+        let owned = super::super::execution_control(execution).owned();
+        let current = owned
+            .derive_scope(
+                now + local_deadline_after,
+                InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                },
+            )
+            .expect("test current scope should derive under the outer deadline");
+        let scope = current
+            .execution_scope()
+            .expect("derived test control must expose its current scope");
+        (current, scope)
     }
 }
