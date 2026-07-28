@@ -1,6 +1,6 @@
 # P5-F445H-I7-P3X Foreign DB exact identity acceptance
 
-状态：`RED_FROZEN_AWAITING_REPAIR`。
+状态：`ACCEPTED`。
 
 ## 1. Purpose
 
@@ -61,7 +61,7 @@ test service source
 - compiler、linker、capability-context、service-db、Eval、Host locked suites通过；
 - locked checks、rustfmt和`git diff --check`通过。
 
-## 5. Frozen RED
+## 5. Historical frozen RED
 
 真实链路已经到达Host activation，且两份`DbProviderTargetMetadata`具有不同的exact
 package/file identity、相同的local `typeIndex = 0`，collection分别为
@@ -82,5 +82,4 @@ typeIndex: 0
 
 Eval `resolve_db_declaration`把未限定的map key和限定的declaration symbol直接比较，
 将这个合法形状误判为歧义。该production repair不属于本验收节点；P3X保留RED测试，
-等待repair commit后临时join并完成独立GREEN验收，届时再写最终result。
-
+等待repair commit后临时join并完成独立GREEN验收。
