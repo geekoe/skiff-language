@@ -1,9 +1,12 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
+    future::Future,
+    pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
+    task::{Context, Poll, Wake, Waker},
     time::{Duration, Instant},
 };
 
@@ -30,13 +33,16 @@ use skiff_runtime_linked_program::{
     LinkOverlay, PublicationResourceTable, RuntimeTypeContext, ServiceMeta,
 };
 use skiff_runtime_model::{
-    request_heap::RequestHeapLimits, runtime_value::ActorRef, type_plan::RuntimeTypePlan,
+    request_heap::{RequestHeap, RequestHeapLimits},
+    runtime_value::{ActorRef, RuntimeValue},
+    type_plan::{RuntimeTypeNode, RuntimeTypePlan},
 };
 use skiff_runtime_native::capability::{
     NativeActorCapability, NativeFileCapability, NativeFileCapabilityBundle,
     NativeHttpClientCapability, NativeTimeCapability, NativeWebsocketCapability,
 };
-use skiff_runtime_native_contract::NativeRequiredContext;
+use skiff_runtime_native::dispatch::{NativeDispatch, PreparedNativeCall, RuntimeNativeInvocation};
+use skiff_runtime_native_contract::{NativeBindingKey, NativeCallPlan, NativeRequiredContext};
 
 use super::{
     execution_scope::{
@@ -945,6 +951,96 @@ fn f445h_i6_carrier_delivery_receipt_time_getter_returns_current_control() {
     };
 
     assert_carrier_receipt(&NativeTimeCapability::execution_control(&time), &expected);
+}
+
+struct TimePendingNoopWake;
+
+impl Wake for TimePendingNoopWake {
+    fn wake(self: Arc<Self>) {}
+}
+
+fn poll_time_pending<F: Future + ?Sized>(future: Pin<&mut F>) -> Poll<F::Output> {
+    let waker = Waker::from(Arc::new(TimePendingNoopWake));
+    future.poll(&mut Context::from_waker(&waker))
+}
+
+fn time_sleep_invocation() -> RuntimeNativeInvocation {
+    RuntimeNativeInvocation::new(
+        "std.time.sleep".to_string(),
+        "std.time.sleep",
+        Some(NativeCallPlan::new(
+            NativeBindingKey::from_static("std.time.sleep"),
+            vec![RuntimeTypePlan::new(
+                "number",
+                None,
+                RuntimeTypeNode::Number,
+            )],
+            RuntimeTypePlan::new("null", None, RuntimeTypeNode::Null),
+            NativeRequiredContext::Time,
+        )),
+        None,
+        None,
+    )
+}
+
+#[tokio::test]
+async fn f445h_i6_time_projection_to_pending_reaches_real_sleep_owner() {
+    let base = tokio::time::Instant::now().into_std();
+    let (request_cancellation, root) = root_scope(None);
+    let outer = root
+        .derive(base + Duration::from_millis(50), site())
+        .expect("outer scope");
+    let outer_control = ScopeAwareControl::available(outer, request_cancellation.token());
+    let current =
+        ExecutionControlApi::derive_scope(&outer_control, base + Duration::from_millis(5), site())
+            .expect("current scope");
+    let expected = current.execution_scope().expect("current execution scope");
+    let current_context = context(outer_control).with_execution_control(current);
+    let program = carrier_receipt_program();
+    let projected = project_runtime_native_capability_context(
+        &current_context,
+        program.projection(),
+        StreamCapabilityContext::default(),
+        NativeRequiredContext::Time,
+    );
+    let mut heap = RequestHeap::default();
+    let prepared = NativeDispatch::new()
+        .prepare_resolved_native_call(
+            projected,
+            time_sleep_invocation(),
+            vec![RuntimeValue::Number(1_000.0)],
+            &mut heap,
+        )
+        .expect("time sleep prepares through the native projection");
+    let PreparedNativeCall::ExternalWait(operation) = prepared else {
+        panic!("positive sleep must expose a real external wait");
+    };
+    let (mut wait, _finalize) = operation.into_parts();
+
+    assert!(matches!(poll_time_pending(wait.as_mut()), Poll::Pending));
+    assert_eq!(
+        expected.lifecycle_snapshot(),
+        skiff_runtime_capability_context::ExecutionScopeLifecycleSnapshot {
+            active_leases: 1,
+            active_waiters: 1,
+            active_timers: 1,
+        },
+        "the projected current scope must own the real sleep pending lifecycle"
+    );
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let Poll::Ready(outcome) = poll_time_pending(wait.as_mut()) else {
+        panic!("current scope deadline must wake the real sleep future");
+    };
+    assert!(matches!(
+        outcome,
+        Err(skiff_runtime_native::error::RuntimeError::Cancelled)
+    ));
+    assert!(matches!(
+        expected.terminal_at(tokio::time::Instant::now().into_std()),
+        Some(ExecutionScopeTerminal::LocalDeadlineExceeded(_))
+    ));
+    assert_eq!(expected.lifecycle_snapshot(), Default::default());
 }
 
 #[tokio::test]
