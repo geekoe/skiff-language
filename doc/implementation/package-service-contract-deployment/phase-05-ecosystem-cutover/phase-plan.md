@@ -50,6 +50,20 @@ single-generation smoke代替最终验收。
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
 ownership和验收证据，不改变四对象、两类调用或InProcessBoundary语义。
 
+### 2026-07-28 service-scoped ingress correction
+
+I7真实Relay/AIHub组合assembly证明旧裸全局route key错误地把两个不同service都声明的
+`GET /v1/models`判为collision。用户已冻结HTTP Host不参与Skiff Router路由；D0
+`P5-F445H-I7-D0-service-scoped-ingress-design.md`先更新权威文档，K再实现canonical
+model/schema/identity/wire checkpoint，之后compiler、assembly、Router/Runtime consumer并行迁移，最后恢复C
+combined validation。
+
+旧P5-T03与P5-F03B中“Host直接选择global ingress、service/version header无选择语义”的完成态和测试
+oracle已撤回。相关历史commit/test count仍可解释当时实现，但不能证明新契约；F03B的activation store、
+participant、generation pin等非selector事实也必须在新的RuntimeAssembly/deployment/frame代际合流后做
+受影响回归，不能沿用其总体ledger。S1 exact artifact receipt所记录的旧v3/v2/v1 identity tuple同样随K
+失效，但其canonical source→artifact→Host/Router测试结构可以迁移复用。
+
 ## 1. 基线与已关闭的实现决策
 
 - Skiff基线：`5c3322ac3116ac98c4407de4396562ff632ed7b5` / tree `60321ab8c4fa11e6877a94d44b3e2d078fd428ac`。
@@ -72,9 +86,13 @@ ownership和验收证据，不改变四对象、两类调用或InProcessBoundary
 - router control wire只有`prepare/prepared|reject/commit/abort/register`，携带environment、activation id、
   expected/candidate generation、exact assembly ref与replica id；runtime只在committed generation激活并注册。
   新请求在同一committed assembly的healthy replicas间调度，不按service/build/target分开注册。
-- ingress selector保持设计已有 `(protocol, host, method?, path)`；外部service使用唯一Host。
-  `X-Skiff-Service` / `X-Skiff-Version` / query selector / rewrite-to-service在production选择路径删除；
-  不改RuntimeAssembly schema来容纳legacy selector。
+- external ingress按Host等平台规则注入可信`x-skiff-service`/`x-skiff-version`；Router严格解析后先选择
+  唯一精确deployment，再在该deployment内使用`(protocol, method?, path)`。HTTP Host、query、
+  rewrite-to-service、build/display name都不选择deployment或handler。
+- RuntimeAssembly ingress key硬切为`(ServiceDeploymentRef, IngressSelector)`；不同service可共享相同
+  selector，同service重复失败。ServiceDeploymentInput v5、ServiceDeployment/DeploymentArtifact v4、
+  RuntimeAssembly v3与runtime frame v2作为同一canonical checkpoint实现，不兼容读取旧Host route或裸
+  全局ingress。
 - publish只是四种typed artifact的immutable write + typed pointer CAS操作；不产生Publication、
   common artifact kind或archive shim。历史本地/registry数据不兼容读取，也不在本阶段破坏性删除。
 - canonical local CLI拼写冻结为 `package|contract|deployment|assembly build <root>
@@ -82,9 +100,9 @@ ownership和验收证据，不改变四对象、两类调用或InProcessBoundary
   `assembly activate <root> --artifact-root <dir> --expected-generation <n> --json`。旧`service`
   build/publish/dev命令不作alias。`assembly activate`只请求router coordinator执行上述transaction，不直接
   CAS committed pointer。T02负责实现这些入口，后续任务不得另造脚本级语义。
-- 本地actual service Host固定为 `account.skiff.localhost`、`registry.skiff.localhost`、
-  `codex-relay.localhost`、`aihub.localhost`、`agine.localhost`；这是现有IngressSelector字段的取值，
-  不是新schema。
+- 本地actual service可以由local ingress把`account.skiff.localhost`、`registry.skiff.localhost`、
+  `codex-relay.localhost`、`aihub.localhost`、`agine.localhost`映射为service/version header。这些域名
+  只属于Router外部映射，不进入`IngressSelector`、ServiceDeployment或RuntimeAssembly identity。
 
 T01会在上述边界内冻结精确JSON字段、目录路径、CLI命令及router↔runtime wire
 fixture；这些属于设计明确留给实现的选择。T01不得引入第五个domain object或改写
@@ -101,12 +119,14 @@ canonical artifact schema。
    不改committed active generation。
 4. router协调durable activation state，runtime通过production resolver加载/验证/链接/admit staged完整assembly；
    所有participant ACK后才commit，只有观察到committed record才原子激活并注册exact assembly generation。
-5. 两个runtime replica加载相同assembly identity；Host ingress到任一replica都得到同一业务
-   结果。pre-commit reject/abort保留旧committed generation，in-flight request/stream保持原generation pin。
+5. 两个runtime replica加载相同assembly identity；Router按精确service/version header选deployment后，
+   同一service-local route到任一replica都得到同一业务结果。pre-commit reject/abort保留旧committed
+   generation，in-flight request/stream保持原generation pin。
 6. test-runner/package-test直接编译PackageArtifact，必要service test使用canonical contract/deployment/
    assembly fixture；不再构造PackageUnit/ServiceUnit/synthetic service assembly。
 7. `skiff-packages` 使用canonical package build/test/store resolver，没有自制publication path codec；
-   `internals` registry存储四种artifact/pointer，actual services只用contract types与Host ingress。
+   `internals` registry存储四种artifact/pointer，actual services只用contract types与service-scoped
+   external ingress。
 8. production legacy DTO、reader/writer、route selector、converter、fallback及stale docs归零；结构checker
    能对rename/move/duplicate/omission/test-only camouflage做mutation。
 
@@ -122,7 +142,7 @@ Wave 1 / Batch A：shared authoring-storage-control checkpoint
 
 Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动调度）
   T02 authoring / registry client / CLI / dev sync / watch ─┐
-  T03 router active-assembly + host ingress cutover       ├─► I02 combined probe ─► R02
+  T03 router active-assembly + service-scoped ingress     ├─► I02 combined probe ─► R02
   T04 runtime resolver / admission / replica registration├
   T05 test-runner / package-test / fixtures
     └─► RECEIVE FAIL@f8ad689 ─► D04 bounded design ─► F04 partial repair
@@ -563,7 +583,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 - T02独占 `compiler/**` 的binary/authoring consumer、`scripts/skiff*.mjs`、`scripts/lib/**`中的
   build/publish/store/dev sync/watch、对应tests。不改router/runtime/test-runner，不在85k/62k旧
   大文件继续塞入新owner；新职责拆到模块。
-- T03独占 `router/**`：active assembly snapshot/reload、host ingress、assembly replica dispatch、
+- T03独占 `router/**`：active assembly snapshot/reload、service-scoped ingress、assembly replica dispatch、
   health/control protocol TS consumer。不改Rust runtime或tooling。
 - T04独占 `runtime/transport/**`、`runtime/loader/**`、`runtime/host/**`的production resolver/
   admission/generation/registration/lifecycle；不改`runtime/package-test`/test-runner/router/scripts。
@@ -686,8 +706,10 @@ isolated assembly。T13的two-replica generic lifecycle与完整selectors不重�
   generation及注册；全部participant staged ACK后才commit并原子切换。prepare/ACK/commit crash点可恢复。
 - 两个独立runtime-home的replica注册同一AssemblyIdentity，共享PackageBuildId代码但
   不共享activation mutable owner；断开一个replica后新请求继续到另一个。
-- `codex-relay.localhost` / `aihub.localhost` / `agine.localhost` 等Host可区分相同path；
-  legacy service/version header/query、rewrite-to-service及缺Host均不能选中deployment。
+- Relay与AIHub等不同service声明相同`GET /v1/models`合法；在同一Router listener上，不同精确
+  service/version header分别选中各自deployment。缺失/非法/歧义header、同service重复method/path、
+  同坐标多revision和跨deployment frame substitution都fail closed；改变HTTP Host不能覆盖已注入的
+  service/version选择。query、rewrite-to-service、build/display name不具有选择语义。
 - admission后request期间artifact resolver/filesystem spy为零；request/stream保持active generation pin。
 
 ### Tests / external consumers
@@ -775,7 +797,9 @@ test-only legacy fixture只能在checker mutation sandbox中以字符串存在�
 
 - 需要改变四对象、Package direct same-heap、Service boundary detached或callback lifetime。
 - 需要让contract引用provider package/deployment，或让deployment重读source/AST。
-- 需要保留service/version/build selector、legacy reader/writer、conversion shim、dual path或router fallback才可运行。
+- 需要用build、query、rewrite、HTTP Host、display name或fallback替代严格
+  `x-skiff-service`/`x-skiff-version`选择，或需要保留legacy reader/writer、conversion shim、dual path
+  才可运行。
 - 需要让不同replica加载不同partial assembly，或为某service实现RemoteBoundary/独立扩缩。
 - Internals contract schema需要以package-local nominal type充当ContractTypeId，且无法按设计用显式
   contract-owned schema/wrapper转换。

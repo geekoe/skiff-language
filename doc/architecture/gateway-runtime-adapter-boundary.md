@@ -38,6 +38,7 @@ Gateway 是 router 的外部协议入口。HTTP gateway 处理 HTTP socket、rou
 Gateway 可以理解平台事实：
 
 - HTTP method、path、query、headers、cookies、body bytes。
+- ingress注入并由Router严格验证的service id/version，以及解析得到的精确deployment。
 - WebSocket connection id、upgrade request、control/data frame类别和close状态。
 - 已选择WebSocket RPC编码配置的控制字段；第一版是JSON-RPC 2.0的`jsonrpc`、string/safe-integer `id`、
   `method`、`params`、`result`与`error`外形。平台自己发起请求时始终生成string id。
@@ -51,6 +52,14 @@ Gateway 不可以理解业务事实：
 - 业务 request/response record、union、map、representation 的字段布局；第一版配置adapter只把
   `method`、`params`、`result`与error `data`当作opaque JSON值转发。
 - 某个业务 cookie/header 是否表示登录身份，除非它只是原样传给业务 connect/pre handler。
+
+HTTP `Host`在这里属于外部request metadata，不是Skiff service route selector。Router外部ingress可以
+按Host等平台规则注入可信`x-skiff-service`与`x-skiff-version`；Router必须先用这两个header选出active
+assembly中的唯一精确deployment，再只在该deployment内按method/path选择entry。Skiff不在Router中重做
+Host映射。不同service可以有相同method/path，同一service内部重复selector仍失败。
+该边界随service-scoped ingress硬切到`skiff-runtime-frame-v2`；旧frame或缺少精确deployment的
+`request.start`不兼容读取。其余artifact代际由
+[`package-service-contract-deployment.md`](package-service-contract-deployment.md)统一冻结。
 
 ### Runtime Endpoint
 
@@ -88,7 +97,8 @@ Runtime endpoint 拥有物理 runtime WebSocket writer。其它模块只能通�
 
 `RuntimeDispatcher` 是 gateway 和 runtime 之间的内部路由/管理器。它负责：
 
-- 从 `RuntimeRegistry` 选择目标 runtime。
+- 接收Gateway已选择的精确deployment与generation，从`RuntimeRegistry`选择承载该exact tuple的
+  目标runtime；它不从Host或裸path重新选择deployment。
 - 发出 `request.start` frame。
 - 维护pending request、deadline与内部停止后的本地收束。
 - 处理 unary、frame unary、server stream 的 response lifecycle。
@@ -170,7 +180,9 @@ RuntimeEndpoint
 
 更具体地说：
 
-- Gateway 构造 `request.start` 的平台 header 和 opaque payload bytes。
+- Gateway 构造 `request.start` 的平台 header 和 opaque payload bytes，并写入已经严格解析的精确
+  `ServiceDeploymentRef`、assembly generation与gateway entry；不得只发送裸method/path或让Runtime
+  重新选择deployment。
 - Gateway 调 `RuntimeDispatcher.dispatch(...)`。
 - `RuntimeDispatcher` 从 `RuntimeRegistry` 选择 runtime connection。
 - `RuntimeDispatcher` 通过 `RuntimeFrameSender` 发 runtime frame。`RuntimeFrameSender` 由 runtime endpoint 实现，但 dispatcher 不依赖具体 endpoint class。
@@ -662,6 +674,9 @@ response multiplex多个独立业务请求，因此stream event也不需要trans
 ```text
 client
   -> HttpGateway
+  -> strict x-skiff-service / x-skiff-version
+  -> exact ServiceDeploymentRef
+  -> service-local (http, method, path)
   -> RuntimeDispatcher
   -> runtime HTTP adapter
   -> user handler / pre / guard
@@ -673,7 +688,8 @@ client
 
 Gateway responsibilities:
 
-- route selection。
+- 严格解析service/version header并选择唯一精确deployment。
+- 只在该deployment内按method/path选择route；HTTP Host不参与该选择。
 - request body byte limit。
 - `httpRequest` metadata。
 - deadline、trace、telemetry。
@@ -694,6 +710,8 @@ Connect：
 ```text
 client upgrade
   -> WebSocketGateway pending connection
+  -> strict service/version deployment selection
+  -> pin exact deployment + generation
   -> RuntimeDispatcher connect request
   -> runtime WebSocket adapter
   -> user connect handler
@@ -803,6 +821,10 @@ Router telemetry must not log business context fields unless a business service 
 Target-state tests must prove:
 
 - HTTP adapter args和WebSocket connect adapter args使用同一种`param + source`结构。
+- Relay与AIHub等不同service可同时声明`GET /v1/models`，不同精确service/version header分别命中各自
+  deployment；HTTP Host变化不能覆盖该选择。
+- 同一service重复method/path、缺失/非法/歧义service/version、同坐标多revision以及跨deployment
+  frame/entry substitution全部fail closed。
 - Gateway 拒绝旧 `service.yml.http/websocket`、`bind`、`handlerArgs`、`identity`和`scope` fields。
 - 用户raw `receive`、message body和transport id source不能进入新artifact；合法
   `websocket.jsonRpcParams`只能进入declared method adapter。

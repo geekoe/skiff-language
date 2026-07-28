@@ -65,7 +65,10 @@ relay:
 规则：
 
 - Mapping key是service-owner-local稳定`GatewayEntryKey`，必须唯一。
-- `method`与`path`共同形成external selector，同一service内不得重复。
+- `method`与`path`共同形成service-local external selector，同一service内不得重复；不同service可以
+  声明相同method/path。
+- `host`、`routes`与`entries`都不是合法key。HTTP Host属于Router外部ingress映射和业务request metadata，
+  不属于service route。
 - `kind`只能是`typedJson`或`rawHttp`。
 - `handler`以及可选`pre`/`guard`是当前Package source callable selector，不要求出现在`api.yml`。
 - `adapterArgs`按handler参数名绑定标准source；参数名必须唯一并与linked signature精确一致。
@@ -76,9 +79,11 @@ relay:
   `std.http.HttpRequest`并产生整个`http.context`。
 - 文件可省略；需要显式空surface时写`{}`。空文件解析为`null`，非法。
 
-Compiler把每个record拆成
-`IngressSelector -> GatewayEntryKey -> GatewayEntryIdentity`，并从linked handler生成typed adapter plan和
-entry-local external schema。作者不能手写重复schema。
+Compiler把每个record拆成由当前`ServiceDeploymentRef`定界的
+`(http, method, path) -> GatewayEntryKey -> GatewayEntryIdentity`，并从linked handler生成typed
+adapter plan和entry-local external schema。作者不能手写重复schema。Router外部ingress负责把Host等
+平台规则映射为`x-skiff-service`与`x-skiff-version`；Router严格选择精确deployment后才查询这张
+service-local mapping。原始Host仍可通过`std.http.HttpRequest`供业务读取，但不能选择handler。
 
 ## 4. websocket.yml
 
@@ -131,6 +136,10 @@ jsonRpc:
 notification handler；即使notification的`method`与已声明request method同名也不dispatch。
 第一版也不支持JSON-RPC batch、peer request cancellation或binary RPC。
 
+WebSocket upgrade与HTTP使用相同的service选择阶段：Router严格解析
+`x-skiff-service`/`x-skiff-version`，选择精确deployment，再按该deployment内的
+`(websocket, path)`选择entry并把deployment/generation固定到socket。HTTP Host不参与upgrade route选择。
+
 ## 5. 错误与内部停止
 
 Inbound JSON-RPC固定使用以下platform codes：
@@ -159,7 +168,8 @@ Invalid Request用`id: null`；其余request错误回显原string/safe-integer i
 以下情况必须在authoring/projection阶段失败：
 
 - 普通Package出现`http.yml`/`websocket.yml`，或`service.yml`仍内联HTTP/WebSocket；
-- unknown/重复top-level key、entry key、HTTP selector或JSON-RPC method；
+- unknown/重复top-level key、entry key、同service HTTP selector或JSON-RPC method，以及service route中的
+  `host`；
 - handler无法解析、generic handler、adapter source阶段非法或参数与linked signature不匹配；
 - typed JSON/JSON-RPC handler返回`Stream<T>`；
 - WebSocket method使用`$/`保留前缀、声明raw receive/notification/event fallback或试图绑定transport id；

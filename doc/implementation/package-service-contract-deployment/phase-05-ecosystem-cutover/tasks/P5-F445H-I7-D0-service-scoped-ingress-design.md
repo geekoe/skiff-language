@@ -7,6 +7,7 @@
 直接父节点：
 
 - `P5-F445H-I7R-cross-boundary-readiness-preflight-result.md`；
+- `P5-F445H-I7-S1-host-runtime-router-cross-layer-receipt-result.md`；
 - `P5-F445H-I7-C-codex-relay-aihub-current-contract.md`；
 - `P5-F445H-I7-C1-codex-relay-provider-checkpoint-result.md`。
 

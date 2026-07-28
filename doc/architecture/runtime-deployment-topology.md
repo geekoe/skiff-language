@@ -34,7 +34,7 @@ ActivationIdentity，至少包含assembly identity、generation、runtime replic
 connection state替代。
 
 `runtime.register.serviceProtocolIdentity`必须原样携带canonical
-`skiff-service-protocol-v2:sha256:<64 lowercase hex>`。Register frame不得另带`protocolVersion`：
+`skiff-service-protocol-v5:sha256:<64 lowercase hex>`。Register frame不得另带`protocolVersion`：
 transport版本只由frame `schemaVersion`表达，禁止从ServiceProtocolIdentity前缀推导或兼容读取第二份版本。
 
 Router先把frame绑定到发送者的exact assembly registration，再按active或draining generation snapshot验证
@@ -66,6 +66,33 @@ ServiceDeployment或RuntimeAssembly identity。Runtime不为二者另设文件�
 
 Runtime持有bootstrap DB transport binding不表示所有activation获得DB。只有声明并由deployment绑定DB
 requirement的ActivationContext才能得到`std.db` capability；service代码看不到provider URL。
+
+## Service-scoped External Ingress
+
+Router外部的ingress可以按HTTP Host、域名或其它平台规则选择service坐标，并注入
+`x-skiff-service`与`x-skiff-version`。该映射不属于RuntimeAssembly，也不在Skiff Router内重复实现；
+原始HTTP Host只作为request业务metadata继续传递。
+
+Router收到HTTP request或WebSocket upgrade后必须：
+
+1. 严格解析两个可信selector header；
+2. 在active RuntimeAssembly中按`serviceId + contractVersion`选择唯一精确
+   `ServiceDeploymentRef`；
+3. 在该deployment内按HTTP `(protocol, method, path)`或WebSocket `(protocol, path)`选择
+   gateway entry；
+4. 把精确deployment、assembly identity/generation和gateway entry写入Router到Runtime frame。
+
+Runtime不得从Host、path、latest pointer、service display name或ambient registration重建deployment。
+它只接受当前admitted activation中逐项匹配的精确deployment。WebSocket连接在upgrade时固定同一个
+deployment与generation；后续JSON-RPC method也只在该pin内解析。
+
+同一assembly中不同service可以共享相同method/path。相同`serviceId + contractVersion`不得同时解析为
+多个deployment revision；同一service内部重复selector、缺失/非法header、未知坐标、歧义坐标或
+跨deployment frame substitution全部fail closed。
+
+这次路由模型变化使用ServiceDeploymentInput v5、ServiceDeployment/DeploymentArtifact v4、
+RuntimeAssembly v3和runtime frame v2硬切。GatewayEntryIdentity v2、ServiceProtocol、Package identities
+与WebSocketEntryId不因路由scope变化而升级；旧Host-bearing route、裸全局ingress和旧frame不兼容读取。
 
 ## Router HTTP 实例限制
 

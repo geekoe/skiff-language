@@ -78,6 +78,21 @@ framing等叶子类型，但不能用共享DTO重新制造隐式父模型。
     callable保留该summary作为Local ABI fact；interface requirement与conformance不拥有或比较该位。
     service call自身是caller的潜在挂起点，ServiceContract不携带provider内部summary，也不从它派生
     protocol identity或operation级内部停止类别。
+15. external ingress分两阶段选择。Router外部的ingress可以按HTTP Host等平台规则映射service坐标，并向
+    Router注入可信`x-skiff-service`与`x-skiff-version`；Router必须先用这两个header选择active
+    RuntimeAssembly中的唯一精确`ServiceDeploymentRef`，再只在该deployment内按
+    `IngressSelector`选择gateway entry。
+16. HTTP Host不是`IngressSelector`字段，不参与Router中的service、deployment或handler选择。原始Host仍随
+    标准HTTP request envelope进入业务metadata，handler可以读取；这不赋予它路由语义。Skiff不拥有
+    Router外部的Host映射实现，也不在Router中重做local ingress。
+17. `IngressSelector`只在一个精确deployment范围内有意义。HTTP selector是
+    `(protocol, method, path)`，WebSocket upgrade selector是`(protocol, path)`；JSON-RPC method继续在
+    已pin的WebSocket entry/deployment generation内选择。不同service可以声明相同selector，同一service
+    内重复selector必须失败。
+18. 缺失、非法或歧义的service/version selector、同一active assembly中同一
+    `serviceId + contractVersion`的多个deployment revision、以及Router到Runtime的跨deployment替换都
+    fail closed。Router发出的request frame必须携带精确deployment；WebSocket连接同样固定精确deployment
+    与generation，不能从Host或ambient connection state重新推导。
 
 ## 3. Package 与 PackageArtifact
 
@@ -142,7 +157,8 @@ jsonRpc:
 `http.yml`与`websocket.yml`都是可选文件；文件存在时必须是非`null` mapping，显式空HTTP surface写`{}`。
 `websocket.yml`存在时`path`必填，`connect`和`jsonRpc`可分别省略；但一个既无connect也无JSON-RPC
 handler、只供Skiff主动发送的connection仍是合法entry。旧`service.yml.http`与
-`service.yml.websocket`直接报错，不提供兼容读取。
+`service.yml.websocket`直接报错，不提供兼容读取。`host`不是`http.yml`或`websocket.yml`的route字段；
+旧Host-bearing service route直接报错，不提供兼容读取。
 
 Authoring层不要求开发者分别维护entry表与route表，也没有只起分类作用的`routes`中间层。已冻结的HTTP
 写法中，`http.yml`顶层本身就是以稳定名字为key的entry mapping，不再套一层`http:`；每个value把
@@ -151,7 +167,8 @@ external selector与该entry的handler/adapter声明写在一起。Mapping key�
 这一个HTTP authoring record确定性拆成`IngressSelector -> GatewayEntryKey`和
 `GatewayEntryKey -> resolved gateway entry`两个artifact事实。第一版一个HTTP authoring route只定义
 一个entry，不提供多个selector复用同一entry定义的别名/引用语法。`guard`/`pre`属于具体HTTP entry，
-不占用顶层保留key，也没有隐式全局继承。
+不占用顶层保留key，也没有隐式全局继承。这里的`IngressSelector`是当前service deployment内部的
+`(http, method, path)`；它不是跨assembly的裸全局key。
 
 HTTP entry kind决定external response协议，不能只按handler的`Stream<T>`外形推断。`typedJson`只允许
 unary handler return；runtime wrapper把该单个值编码为一次JSON response，compiler必须拒绝
@@ -429,7 +446,7 @@ ServiceDeployment
     typed adapter plan
     external protocol metadata
   }
-  ingress: externalSelector -> gatewayEntryKey
+  ingress: serviceLocalIngressSelector -> gatewayEntryKey
   config/secrets bindings
   state/DB/actor/queue ownership
   timeout/resource/activation policy
@@ -453,6 +470,39 @@ owner-local的entry键，使同一协议identity可以绑定不同implementation
 Deployment只消费该typed projection并把external selector绑定到gateway entry；
 Router和Runtime不得按source path、display name或同名service operation猜handler。
 
+### 5.1 External ingress的两阶段选择
+
+ServiceDeployment只拥有service内部route，不拥有公网域名或HTTP Host：
+
+```text
+external ingress
+  Host / platform mapping
+  -> x-skiff-service + x-skiff-version
+
+Skiff Router
+  trusted headers
+  -> exact ServiceDeploymentRef
+  -> service-local IngressSelector
+  -> GatewayEntryKey
+  -> GatewayEntryIdentity + exact handler
+```
+
+Router必须严格解析`x-skiff-service`与`x-skiff-version`，并在当前active assembly内解析出恰好一个
+`ServiceDeploymentRef`。header缺失、重复冲突、格式非法、未知坐标或解析歧义都不能继续按Host、path、
+display name、latest pointer或其它deployment猜测。直接向Router发送这两个header的receipt就是Skiff
+生产边界证据；Host到header的映射属于Router外部ingress，不在Skiff内重复实现。
+
+选择deployment后，HTTP只按`(protocol, method, path)`，WebSocket upgrade只按
+`(protocol, path)`查询该deployment的`ingress`。因此Relay与AIHub可以同时声明
+`GET /v1/models`；它们由不同service坐标定界。同一deployment内重复selector仍是authoring/projection错误。
+请求的原始Host、URL、headers等继续作为标准HTTP envelope传给业务代码，但Host不能改变已选择的deployment
+或gateway entry。
+
+Router到Runtime的dispatch必须携带精确`ServiceDeploymentRef`、assembly generation与gateway entry事实。
+Runtime只接受当前admitted activation中逐项匹配的deployment与entry，禁止用同service的另一revision、
+同path的另一service或ambient registration替换。WebSocket upgrade先执行同一deployment选择，再把精确
+deployment与generation固定到connection；连接内JSON-RPC method只在该pin内解析。
+
 Artifact模型允许多个selector绑定同一个key，但第一版`http.yml`和`websocket.yml.jsonRpc`不暴露独立
 entry引用或复用语法：named entry同时声明唯一selector与entry definition。该限制只简化authoring，不得把selector并入
 `GatewayEntryIdentity`，也不得让Router跳过上述两步查找。
@@ -472,6 +522,19 @@ server-stream shape。WebSocket JSON-RPC handler第一版也只能unary return�
 具体handler/pre/guard callable、完整typed adapter execution plan、implementation artifact、external
 selector和policy只由ServiceDeployment及其revision覆盖。只替换实现且external protocol不变时，
 `GatewayEntryIdentity`保持不变而deployment revision改变；改变external wire surface时两者都改变。
+
+本次service-scoped ingress是未发布格式的hard cut。代际固定为：
+
+| 记录 / wire | 新代际 |
+| --- | --- |
+| ServiceDeploymentInput | `skiff-service-deployment-input-v5` |
+| ServiceDeployment schema | `skiff-service-deployment-v4` |
+| DeploymentArtifact identity marker / prefix | `skiff-deployment-artifact-identity-v4` / `skiff-deployment-artifact-v4:sha256` |
+| RuntimeAssembly schema / identity marker / prefix | `skiff-runtime-assembly-v3` / `skiff-runtime-assembly-identity-v3` / `skiff-runtime-assembly-v3:sha256` |
+| Router↔Runtime frame schema | `skiff-runtime-frame-v2` |
+
+`GatewayEntryIdentity`/GatewayEntry保持v2；ServiceContract/ServiceProtocol、Package artifact/build/local
+ABI/schema与WebSocketEntryId不变。旧Host route字段、裸全局ingress key、旧assembly/wire不得兼容读取。
 
 Package source中的service dependency alias使用现有qualified namespace，不新增另一套type/import语法：
 
@@ -670,9 +733,10 @@ service response只传输上面的错误envelope，不把callee的request-local`
 
 ### 6.4 External ingress
 
-HTTP、WebSocket及未来其它gateway entry不是service boundary call。外部请求按
-`IngressSelector -> GatewayEntryKey -> GatewayEntryIdentity`进入当前activation，再由deployment
-gateway entry binding中冻结的精确
+HTTP、WebSocket及未来其它gateway entry不是service boundary call。Router先按可信
+`x-skiff-service + x-skiff-version`选择当前active assembly中的精确`ServiceDeploymentRef`，再按
+`ServiceDeploymentRef -> IngressSelector -> GatewayEntryKey -> GatewayEntryIdentity`进入对应
+activation，并由deployment gateway entry binding中冻结的精确
 `PackageCallableId`执行handler；它不经过service dependency slot，也不伪造`ContractOperationId`。
 
 Ingress仍复用普通语言函数、Package本地链接、ActivationContext、错误通道和runtime内部停止机制，但不复用
@@ -1013,6 +1077,7 @@ RuntimeAssembly
   roots: ServiceDeployment[]
   resolvedServiceDeployments
   resolvedPackageArtifacts
+  ingressByDeployment: (ServiceDeploymentRef, IngressSelector) -> GatewayEntryKey
   linkedProgramImage
   serviceBindingTemplatesByActivation
   ActivationContext templates
@@ -1029,6 +1094,9 @@ Package link与service binding使用不同的可变性边界：
 - assembly projection为每个service requirement选择一个精确`ServiceDeployment` revision及其不可变
   implementation `PackageArtifactId`。service owner可以在protocol identity不变时发布并激活新的deployment
   revision，不要求consumer重新编译；已经生成的RuntimeAssembly仍记录原选择，不能随pointer漂移。
+- assembly projection必须保证每个`serviceId + contractVersion`在一个assembly中只解析为一个精确
+  deployment revision。相同坐标出现多个revision是歧义并失败；不同service的相同
+  `IngressSelector`合法，因为assembly ingress key由`(ServiceDeploymentRef, IngressSelector)`组成。
 
 因此“service实现可更新”表示同一service id/version label与service API identity下的active deployment
 pointer可以切换到新的deployment revision，不表示ServiceContract或任何不可变artifact可以被覆盖。
@@ -1100,6 +1168,11 @@ prepared/connected集合、伪造participant ACK或维护第二份activation sta
   未授权adapter source；
 - ingress仍指向`ContractOperationId`、要求handler先进入`api.yml`，或gateway entry identity与typed
   projection不一致；
+- HTTP/WebSocket service route仍声明Host，或assembly把不同service的相同selector作为裸全局collision；
+- 同一service deployment内selector重复，或同一assembly为相同`serviceId + contractVersion`解析出多个
+  deployment revision；
+- Router selector header缺失、重复冲突、非法、未知或歧义，或request frame中的deployment/entry与
+  admitted activation不匹配；
 - service/package dependency缺失、版本或identity不匹配；
 - assembly内同一service requirement有零个或多个provider；
 - callback/native adapter缺失或lifetime无法表达；

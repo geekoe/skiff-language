@@ -1,5 +1,10 @@
 # P5-F03B：Router Integration Repair
 
+> **部分证据被D0失效。** `P5-F445H-I7-D0-service-scoped-ingress-design.md`撤回了Host/裸全局route
+> selector与“service/version header无选择语义”。本任务的store、participant、generation pin/drain等
+> 历史实现事实没有被文档决定直接否定；但route/header/global-map、RuntimeAssembly/deployment/frame以及
+> 包含它们的总体test ledger必须在新代际上重验。本文件不得继续作为ingress契约输入。
+
 权威设计为
 `doc/architecture/package-service-contract-deployment.md` §2第4、5、6、8、9、10条，§5、§6.2、§7、§12及§14。
 Router只能从active RuntimeAssembly snapshot与typed deployment/ingress事实选择target；service call必须经dispatcher切换
@@ -30,10 +35,12 @@ ActivationContext，长连接必须固定其建立时generation并在可观测dr
    generation registration都可参加prepare，commit前仍检查连接/ACK exact tuple。全部control走binary frame。消费F23E
    release/ack，在client/policy/gateway close与runtime disconnect上幂等释放完整connection pin。
 4. HTTP gateway按snapshot中exact ServiceContract operation选择unary/serverStream，发送canonical nested
-   assembly routing；不伪造build/target/service selector。WS connect建立generation-pinned connection，receive
+   assembly routing；不得按build/target猜测。D0后Router入口必须严格使用service/version header选择精确
+   deployment，再在其中选route。WS connect建立generation-pinned connection，receive
    继续发送原assembly/generation/operation/ingress；cutover后旧连接只drain，新连接选新generation。
-5. rewrite/header/query selector仍fail closed；health同时暴露capability connection与committed registration，
-   不把连接等同于已admit registration。
+5. rewrite/query/Host selector仍fail closed；`x-skiff-service`/`x-skiff-version`则是required strict
+   deployment selector。health同时暴露capability connection与committed registration，不把连接等同于
+   已admit registration。
 
 `extra-review`约束：统一endpoint和store client是职责边界，不把逻辑重新堆进server/runtimeProtocol；新文件
 超过500行必须有单一明确职责且无重复dispatcher/validator。
@@ -61,3 +68,5 @@ actor/spawn typed response、binary prepare/ACK/commit/register、bootstrap、se
 F23E acquire/release/ack/reject、runtime-session disconnect cleanup及adapter failure rollback。提交一个clean commit及证据
 矩阵；禁止I02、R05 real transcript、full/I16/Host/stable，不merge/push。Router store/gateway/endpoint/F23E wire或
 Runtime activation schema变化会使证据失效。
+
+`host-ingress.test.ts`中的旧Host/global-selector断言已失效；文件名本身不构成新契约证据。
