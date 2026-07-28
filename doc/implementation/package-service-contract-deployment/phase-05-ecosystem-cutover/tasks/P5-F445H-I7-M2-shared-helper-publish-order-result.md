@@ -95,9 +95,42 @@ AssemblyActivationRejected
 multiple active collection projections for llmProviders
 ```
 
-AIHub test package对`llmProviders`从两个dependency package identities形成active collection
-projection歧义。这是M2之后的独立blocker，应由另案冻结identity选择与projection authority；不得回退
-publish顺序、伪造pointer、把subject普通deployment塞入base assembly，或修改业务test root绕过。
+### 5.1 Exact identity and path attribution
+
+409中的identity可以精确映射：
+
+| 角色 | identity | owner |
+| --- | --- | --- |
+| test deployment revision | `test-452788...` | test-runner在`package_test_assembly.rs:386-401`取test package implementation build digest |
+| caller | `452788...` | `agine.ai/aihub-tests` |
+| caller | `99cfd...` | `agine.ai/aihub` subject |
+| provider | `fc5c...` | `agine.ai/llm-providers` |
+
+同一`llmProviders` build在一个test deployment package closure内沿两条路径到达：
+
+1. `aihub/service-tests/package.yml`直接依赖`llmProviders`；
+2. 同一test package的`subject`指向AIHub，而AIHub的`package.yml`再次依赖`llmProviders`。
+
+物理collection是`llm-providers-store`，由`packages/llm-providers/package.yml`声明。两条edge的
+`collection_name_mapping`都使用缺省空映射。`config.skiff-test.yml`中的
+`state.llm-providers-store.namespace`只绑定物理namespace，不创建第二条package path。
+
+因此这不是helper assembly重复，也不是Relay/base provider与subject重复，而是单个test deployment
+package closure内的stateful package diamond。
+
+### 5.2 Ownership and authority gap
+
+即时最小owner可以在Internals test package或test expectations中避开其中一条dependency path，但这会
+改变测试意图，本任务不采用该绕过。系统owner位于
+`runtime/loader/src/runtime_assembly/graph_validation.rs`：当前实现对带state的同一build第二次到达
+无条件拒绝。
+
+现有authority只冻结package diamond中的单一code owner，以及每条edge独立校验collection projection；
+它没有规定`exact same build + identical mapping`应该合并还是拒绝。该选择必须由新的authority节点澄清，
+再由对应Skiff production owner实现。
+
+这是M2之后的独立blocker；M2不修改它，也不得回退publish顺序、伪造pointer、把subject ordinary
+deployment塞入base assembly，或修改业务test root绕过。
 
 ## 6. Verdict
 
