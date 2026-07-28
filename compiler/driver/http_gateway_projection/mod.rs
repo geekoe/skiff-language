@@ -83,7 +83,6 @@ pub(crate) fn project_http_gateway(
         let binding = DeploymentIngressBinding {
             selector: IngressSelector {
                 protocol: IngressProtocol::Http,
-                host: authoring.host.clone(),
                 method: Some(authoring.method.clone()),
                 path: authoring.path.clone(),
             },

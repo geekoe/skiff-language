@@ -44,7 +44,6 @@ fn connect_only_websocket_projects_exact_deployment_and_assembly_entry() {
         deployment.ingress[0].selector.protocol,
         IngressProtocol::WebSocket
     );
-    assert_eq!(deployment.ingress[0].selector.host, "*");
     assert_eq!(deployment.ingress[0].selector.path, "/chat");
     assert_eq!(deployment.ingress[0].selector.method, None);
     assert!(entry.pre.is_none());
@@ -217,7 +216,6 @@ jsonRpc:
         .find(|binding| binding.gateway_entry_key == status_key)
         .unwrap();
     assert_eq!(binding.selector.protocol, IngressProtocol::WebSocket);
-    assert_eq!(binding.selector.host, "*");
     assert_eq!(binding.selector.path, "/chat");
     assert_eq!(binding.selector.method.as_deref(), Some("status.get"));
 
