@@ -411,6 +411,9 @@ packages:
   - id: example.com/helper
     version: 1.0.0
     alias: helper
+  - id: example.com/leaf
+    version: 1.0.0
+    alias: leafDirect
 "#,
         None,
         Some(
@@ -468,6 +471,36 @@ packages:
             .len(),
         1,
         "all cross-package database calls in one case must share the caller case namespace"
+    );
+    let leaf_build = project
+        .dependency_packages
+        .iter()
+        .find(|package| package.package_id == "example.com/leaf")
+        .map(|package| &package.package_build_id)
+        .expect("leaf dependency");
+    assert_eq!(
+        fixture
+            .records
+            .assembly
+            .package_link_plan
+            .package_links
+            .iter()
+            .filter(|link| &link.package.package_build_id == leaf_build)
+            .count(),
+        2,
+        "test root direct leaf and subject helper -> leaf remain two real graph edges"
+    );
+    assert_eq!(
+        fixture
+            .records
+            .assembly
+            .package_link_plan
+            .code_slots
+            .iter()
+            .filter(|slot| &slot.package.package_build_id == leaf_build)
+            .count(),
+        1,
+        "the stateful diamond still owns one exact leaf code slot"
     );
     fixture.records.publish(&artifacts, &runtime).unwrap();
     assert_eq!(read_tree(&artifacts), source_before_publish);

@@ -84,6 +84,7 @@ pub use builtin_receiver_ops::{
 };
 pub use collection_mapping::{
     resolve_dependency_collection_names, validate_dependency_collection_name_mapping,
+    CanonicalActiveCollectionProjection,
 };
 pub use compile_identity::{
     AssemblyIdentity, ContractOperationId, DeploymentArtifactIdentity, DeploymentRevision,

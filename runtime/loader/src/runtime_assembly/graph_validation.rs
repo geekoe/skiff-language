@@ -4,8 +4,8 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    BoundaryCallableProjection, PackageBuildId, RuntimeAssembly, ServiceContractRef,
-    ServiceDeployment, ServiceDeploymentRef,
+    BoundaryCallableProjection, CanonicalActiveCollectionProjection, PackageBuildId,
+    RuntimeAssembly, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, StateBindingKind,
 };
 
 use super::{HydratedPackageCodeSlot, ServiceContractStore};
@@ -399,14 +399,10 @@ fn validate_activation_collection_names(
         );
     }
 
+    let database_namespace = activation_database_namespace(activation, deployment)?;
     let mut visited = BTreeSet::new();
-    let mut projected_collection_builds = BTreeMap::from([(
-        deployment.implementation.package_build_id.clone(),
-        format!(
-            "service package {}",
-            deployment.implementation.package_build_id
-        ),
-    )]);
+    let mut projected_collection_builds =
+        BTreeMap::<PackageBuildId, (CanonicalActiveCollectionProjection, String)>::new();
     let mut pending = vec![deployment.implementation.package_build_id.clone()];
     while let Some(caller_build) = pending.pop() {
         if !visited.insert(caller_build.clone()) {
@@ -433,26 +429,35 @@ fn validate_activation_collection_names(
                 key.package_requirement_alias,
                 binding.package.package_build_id
             );
-            if !sources.is_empty() {
-                if let Some(first_owner) = projected_collection_builds
-                    .insert(binding.package.package_build_id.clone(), owner.clone())
-                {
-                    anyhow::bail!(
-                        "activation {activation:?} package {} has multiple active collection projections from {first_owner} and {owner}",
-                        binding.package.package_build_id
-                    );
-                }
-            }
-            let projected = skiff_artifact_model::resolve_dependency_collection_names(
+            let projected = CanonicalActiveCollectionProjection::resolve(
                 &sources,
                 &binding.collection_name_mapping,
+                database_namespace,
             )
             .map_err(|message| {
                 anyhow::anyhow!(
                     "activation {activation:?} package requirement {key:?} has invalid collection mapping: {message}"
                 )
             })?;
-            for target in projected.into_values() {
+            if !sources.is_empty() {
+                if let Some((first_projection, first_owner)) =
+                    projected_collection_builds.get(&binding.package.package_build_id)
+                {
+                    if first_projection != &projected {
+                        anyhow::bail!(
+                            "activation {activation:?} package {} has different active collection projections from {first_owner} and {owner}",
+                            binding.package.package_build_id
+                        );
+                    }
+                    pending.push(binding.package.package_build_id.clone());
+                    continue;
+                }
+                projected_collection_builds.insert(
+                    binding.package.package_build_id.clone(),
+                    (projected.clone(), owner.clone()),
+                );
+            }
+            for target in projected.collection_names().values() {
                 if let Some(first_owner) = active_targets.insert(target.clone(), owner.clone()) {
                     anyhow::bail!(
                         "activation {activation:?} collection target {target:?} collides between {first_owner} and {owner}"
@@ -463,6 +468,24 @@ fn validate_activation_collection_names(
         }
     }
     Ok(())
+}
+
+fn activation_database_namespace<'a>(
+    activation: &ServiceDeploymentRef,
+    deployment: &'a ServiceDeployment,
+) -> anyhow::Result<Option<&'a str>> {
+    let namespaces = deployment
+        .state_bindings
+        .iter()
+        .filter(|binding| binding.kind == StateBindingKind::Database)
+        .map(|binding| binding.namespace.as_str())
+        .collect::<BTreeSet<_>>();
+    if namespaces.len() > 1 {
+        anyhow::bail!(
+            "activation {activation:?} has database state bindings for multiple namespaces"
+        );
+    }
+    Ok(namespaces.into_iter().next())
 }
 
 fn package_collection_names(package: &HydratedPackageCodeSlot) -> BTreeSet<String> {

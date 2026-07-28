@@ -7,11 +7,12 @@ use anyhow::Context;
 use serde_json::json;
 use skiff_artifact_identity::{gateway_entry_identity, websocket_entry_id};
 use skiff_artifact_model::{
-    AssemblyActivationServiceDb, ContractOperationId, DbMetadataIndexIr, DbMetadataIr,
-    DeploymentGatewayEntry, DeploymentIngressBinding, GatewayAdapterKind, GatewayEntryIdentity,
-    GatewayEntryKey, GatewayProtocolSurface, GatewayWebSocketRpcProfile, IngressProtocol,
-    OperationTargetRef, PackageBuildId, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, StateBindingKind, WebSocketEntryId, WEBSOCKET_GATEWAY_ENTRY_KEY,
+    AssemblyActivationServiceDb, CanonicalActiveCollectionProjection, ContractOperationId,
+    DbMetadataIndexIr, DbMetadataIr, DeploymentGatewayEntry, DeploymentIngressBinding,
+    GatewayAdapterKind, GatewayEntryIdentity, GatewayEntryKey, GatewayProtocolSurface,
+    GatewayWebSocketRpcProfile, IngressProtocol, OperationTargetRef, PackageBuildId,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, StateBindingKind,
+    WebSocketEntryId, WEBSOCKET_GATEWAY_ENTRY_KEY,
 };
 use skiff_runtime_activation::{ActivationContext, ActivationId};
 use skiff_runtime_capability_context::{
@@ -94,8 +95,11 @@ impl ActiveAssemblyContextSet {
                     deployment
                 );
             }
-            let runtime_program_db =
-                activation_db_metadata(candidate, linked.implementation_package_build_id())?;
+            let runtime_program_db = activation_db_metadata(
+                candidate,
+                linked.implementation_package_build_id(),
+                database_namespaces.iter().next().copied(),
+            )?;
             let db_source = match (database_bindings.first(), runtime_program_db.is_empty()) {
                 (None, true) => DbCapabilitySource::unavailable(),
                 (None, false) => anyhow::bail!(
@@ -614,12 +618,14 @@ fn deployment_websocket_entry<'a>(
 fn activation_db_metadata(
     candidate: &AssemblyLinkedCandidate,
     root: &PackageBuildId,
+    database_namespace: Option<&str>,
 ) -> anyhow::Result<Vec<DbMetadataIr>> {
     let image = candidate.execution_image().shared_packages();
     let mut pending = vec![(root.clone(), true, None)];
     let mut visited = BTreeSet::new();
     let mut active_collection_owners = BTreeMap::new();
-    let mut projected_collection_builds = BTreeMap::new();
+    let mut projected_collection_builds =
+        BTreeMap::<PackageBuildId, (CanonicalActiveCollectionProjection, String, bool)>::new();
     let mut metadata = Vec::new();
     while let Some((build_id, is_root, edge)) = pending.pop() {
         let code = image.code_by_build(&build_id).ok_or_else(|| {
@@ -631,37 +637,52 @@ fn activation_db_metadata(
             .flat_map(|file| file.declarations.db.values())
             .map(|declaration| declaration.collection_name.clone())
             .collect::<BTreeSet<_>>();
-        let (owner, collection_names) = match edge {
+        let (owner, projection) = match edge {
             None => (
                 format!("service package {build_id}"),
-                source_collections
-                    .iter()
-                    .map(|name| (name.clone(), name.clone()))
-                    .collect::<BTreeMap<_, _>>(),
+                CanonicalActiveCollectionProjection::resolve(
+                    &source_collections,
+                    &BTreeMap::new(),
+                    database_namespace,
+                )
+                .expect("empty root collection projection is canonical"),
             ),
             Some((owner, mapping)) => {
-                let names = skiff_artifact_model::resolve_dependency_collection_names(
+                let projection = CanonicalActiveCollectionProjection::resolve(
                     &source_collections,
                     &mapping,
+                    database_namespace,
                 )
                 .map_err(|message| {
                     anyhow::anyhow!(
                         "activation DB metadata {owner} has invalid collection mapping: {message}"
                     )
                 })?;
-                (owner, names)
+                (owner, projection)
             }
         };
         if !source_collections.is_empty() {
-            if let Some(first_owner) =
-                projected_collection_builds.insert(build_id.clone(), owner.clone())
+            if let Some((first_projection, first_owner, first_is_root)) =
+                projected_collection_builds.get(&build_id)
             {
-                anyhow::bail!(
-                    "activation DB metadata package {build_id} has multiple active collection projections from {first_owner} and {owner}"
-                );
+                if *first_is_root || is_root {
+                    anyhow::bail!(
+                        "activation DB collection owner collides between {first_owner} and {owner}"
+                    );
+                }
+                if first_projection != &projection {
+                    anyhow::bail!(
+                        "activation DB metadata package {build_id} has different active collection projections from {first_owner} and {owner}"
+                    );
+                }
+                continue;
             }
+            projected_collection_builds.insert(
+                build_id.clone(),
+                (projection.clone(), owner.clone(), is_root),
+            );
         }
-        for target in collection_names.values() {
+        for target in projection.collection_names().values() {
             if let Some(first_owner) =
                 active_collection_owners.insert(target.clone(), owner.clone())
             {
@@ -684,7 +705,8 @@ fn activation_db_metadata(
                     kind: declaration.kind,
                     ty: declaration.type_ref.clone(),
                     type_name: declaration.type_name.clone(),
-                    collection_name: collection_names
+                    collection_name: projection
+                        .collection_names()
                         .get(&declaration.collection_name)
                         .expect("declared collection was projected")
                         .clone(),
