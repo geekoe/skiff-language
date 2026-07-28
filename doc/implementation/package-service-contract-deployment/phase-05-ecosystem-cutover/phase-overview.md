@@ -10,6 +10,11 @@ K及后续consumer再实现并重验；旧T03/F03B ingress证据不再有效。
 互不替代的预算域：business request、activation prepare和WebSocket generation release；后续P1实现只按
 `activation.prepareTimeoutMs`控制prepare事务，不能再从`requestTimeoutMs`或deployment policy取值。
 
+2026-07-28修正：I7 M把Internals测试迁移为ordinary `kind: test` service后，Relay/Agine真实编译暴露
+topLevel dependency的DB target仍依赖consumer复制/全图名字查找。P3D先冻结精确package symbol →
+PackageBinding → provider File IR DB declaration链；P3实现必须让所有DB operation、`DbQuery`与lease路径
+使用`DbObjectTargetId`，不得扩大普通dependency权限或复制provider metadata。
+
 ## 输入
 
 - PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly 和完整 InProcessBoundary 生产路径。
@@ -37,6 +42,8 @@ K及后续consumer再实现并重验；旧T03/F03B ingress证据不再有效。
 - `skiff-packages` 和 `internals` 的registry/platform、packages、contracts、deployments、actual
   services、clients 全部切换，provider/list 和 chat smoke 到达真实业务结果。
 - 三个repo分别提交并合入各自 `main`；不push；所有已合并临时worktree/分支清理。
+- `kind: test` service可对`access: topLevel`的精确subject artifact使用其文件顶层DB attachment；
+  consumer不复制schema/collection/recoverable metadata，linked/runtime按artifact+file+type index精确选择。
 
 ## 实现批次
 

@@ -38,6 +38,28 @@ db object User {
 - 默认 collection name 使用 object 名称，显式 `name` 只用于物理存储映射。
 - `db object` 不生成 `Row`、`Document`、`Entity` 等额外源码名字。
 
+### 1.1 Test Dependency DB Targets
+
+`kind: test` service可以对声明了`access: topLevel`的精确package dependency使用其文件顶层
+`db object`。DB target沿用测试顶层名字语法：
+
+```skiff
+const session = db require subject/model.AdminSession(sessionId)
+```
+
+这里的`subject/model.AdminSession`同时选择provider package中的`model.AdminSession` type及同文件、
+同名的`db object AdminSession` attachment。它不会把该attachment公开到`api.yml`，也不允许普通
+`access: public` dependency获得内部DB访问。
+
+该规则覆盖所有带target的DB语法：key/query read、insert/update/upsert/replace/delete、count/exists、
+`DbQuery`值、lease claim、lease状态读取，以及claim期间自动追加的写入guard。`db transaction`是当前
+service database上的词法执行边界，本身没有target；其中每个DB operation仍独立按上述规则解析。
+
+两个dependency即使声明相同module path与type name也不会混淆：dependency alias选择精确package
+artifact。运行时仍写入当前test service拥有的database namespace；跨package target不是跨service
+database访问。若两个dependency的物理collection投影冲突，仍必须通过现有dependency collection
+mapping消除或在activation时失败。
+
 ## 2. Field Paths And Contextual Keywords
 
 DB block 内的 `fields`、`where`、`order`、`limit`、`offset`、`unset`、`add`、`remove` 等只作为上下文关键字。它们不是全局保留字段名。

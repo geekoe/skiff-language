@@ -88,6 +88,37 @@ consumer并做聚焦验收。
 | P1D | [Activation prepare timeout authority](tasks/P5-F445H-I7-P1D-activation-prepare-timeout-authority.md) | P1只读preflight + I7 isolation finding | docs-only；只解除P1实现 |
 | P1D result | [Activation prepare timeout authority result](tasks/P5-F445H-I7-P1D-activation-prepare-timeout-authority-result.md) | P1D exact candidate | PASS后P1可执行 |
 
+### 2026-07-28 test-only foreign DB target correction
+
+I7 M把Relay、AIHub和Agine测试迁移为ordinary `kind: test` service，并以
+`access: topLevel`依赖production subject。真实compile证明普通function/type顶层访问已闭合，但带target的
+DB lowering仍无法把subject DB attachment精确交给link/runtime；按module/type全图扫描或把metadata复制进
+consumer都会破坏artifact身份与单一事实源。P3D
+`P5-F445H-I7-P3D-test-only-foreign-db-target-authority.md`先冻结权威边界，P3再实现compiler/linker/runtime
+闭包并恢复I7 M三组真实isolated matrix。
+
+冻结规则：
+
+- 仅`kind: test` service的`access: topLevel` subject可以访问精确provider文件顶层`db object`，不扩张
+  普通dependency、transitive dependency或production service权限；
+- consumer `DbTargetIr`复用`PackageSymbolRef(alias, symbolPath, abiExpectation)`；
+  `PackageRequirement.expectedPackageBuild`约束精确implementation artifact；
+- linker经`PackageBinding`选择exact `PackageArtifactRef`，再由
+  `implementation_links.types[symbolPath]`解析`FileIrRef + typeIndex`并核验同type
+  `provider declarations.db`；
+- linked/runtime唯一身份是`DbObjectTargetId(PackageArtifactRef, FileIrRef, typeIndex)`；
+  `typeName`只作诊断，不参与lookup；
+- collection/schema/recoverable及其它DB declaration metadata只从provider File IR读取一次，不复制到
+  consumer；两个dependency同module/type不冲突，物理collection projection仍独立校验；
+- 上述身份覆盖全部DB operation、`DbQuery`、lease claim/read/guard；transaction自身没有target；
+- 缺link/type/DB declaration、ABI/build mismatch或cross-artifact substitution全部fail closed；
+- 本修正不改变File IR v9、PackageArtifact v9、Package local ABI v7或ServiceContract v5代际。
+
+| 节点 | Task / result | 输入 | 结论 |
+| --- | --- | --- | --- |
+| P3D | [Test-only foreign DB target authority](tasks/P5-F445H-I7-P3D-test-only-foreign-db-target-authority.md) | P3只读preflight + I7 M checkpoint | docs-only；只解除P3实现 |
+| P3D result | [Test-only foreign DB target authority result](tasks/P5-F445H-I7-P3D-test-only-foreign-db-target-authority-result.md) | P3D exact candidate | PASS后P3可执行 |
+
 ## 1. 基线与已关闭的实现决策
 
 - Skiff基线：`5c3322ac3116ac98c4407de4396562ff632ed7b5` / tree `60321ab8c4fa11e6877a94d44b3e2d078fd428ac`。

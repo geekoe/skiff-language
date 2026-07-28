@@ -80,6 +80,8 @@ packages:
   完全忽略该 dependency 的 `api.yml`；
 - 不允许 public-first、topLevel-fallback 或两套路径合并；
 - `topLevel` 仅允许出现在 `kind: test` service，且不传递到 dependency 的 dependencies。
+- 可访问的顶层名字包括同一文件中的 type、function、const、interface和附着到type的`db object`；
+  DB attachment不需要、也不会因为测试访问而进入`api.yml`。
 
 topLevel 语法为：
 
@@ -89,6 +91,12 @@ topLevel 语法为：
 
 `root.*` 始终表示 test service 自己。测试访问被测 package 必须写成例如
 `widget/internal.codec.decodeForTest(...)`，避免与本 service 或其他 dependency 冲突。
+
+DB target使用同一语法，例如`db require widget/model.User(id)`。它只允许解析到该精确dependency
+artifact中`model.User`的type及其同文件`db object User` attachment；所有read/write、query、
+`db claim`和`db lease` target都遵守这条规则。`db transaction`本身没有target，transaction内的每个
+DB operation分别解析。缺少type、attachment或精确artifact约束时编译/链接失败，不能按短名或其它
+dependency中同module/type的声明回退。
 
 ## 4. Test Discovery
 

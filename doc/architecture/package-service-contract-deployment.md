@@ -1011,6 +1011,11 @@ service API types和operation signatures，但不要求provider implementation�
 runtime binding slot。它不包含provider package、provider build、deployment revision或runtime route；
 最终assembly只为ServiceRequirement选择deployment。
 
+测试service的`access: topLevel` package edge是唯一需要implementation build约束的直接dependency：
+`PackageRequirement.expectedPackageBuild`选择精确provider build。Consumer File IR中的外部DB target复用
+`PackageSymbolRef { package: Dependency(alias), symbolPath, abiExpectation }`，不另造DB专用package
+reference，也不复制provider的DB metadata。普通package edge没有这项私有可见性，不能借DB target扩大权限。
+
 必须分开的identity：
 
 - PackageId / PackageVersion：人类可读代码发布坐标；version不参与任何identity hash。
@@ -1039,6 +1044,32 @@ suspension变化的identity边界固定如下：
 - provider build、ServiceDeployment revision/identity及包含它的RuntimeAssembly identity可以随实现变化；
   这些implementation identity不得被解释为protocol变化；
 - callback interface的`PackageSchemaTypeId`不包含implementor suspension summary。
+
+跨package DB target按以下链路解析：
+
+```text
+consumer PackageSymbolRef
+  -> PackageRequirement(expectedPackageBuild)
+  -> PackageBinding
+  -> exact PackageArtifactRef
+  -> implementation_links.types[symbolPath]
+  -> provider FileIrRef + typeIndex
+  -> provider declarations.db
+```
+
+Linker必须核验type export、provider type declaration与DB attachment指向同一File IR type。链接后的唯一
+运行时身份是`DbObjectTargetId(PackageArtifactRef, FileIrRef, typeIndex)`；`typeName`只用于诊断，禁止按名字、
+module suffix或发现顺序lookup。Provider File IR独占collection、key、field、retention、lease、index与
+recoverable metadata；consumer、PackageArtifact和linked executable不得复制这些事实。两个dependency即使
+拥有相同module/type也因PackageArtifactRef不同而保持无冲突；物理collection映射仍由各自
+PackageRequirement/PackageBinding edge单独投影和校验。
+
+该身份覆盖所有DB operation target、`DbQuery`、lease claim、lease state read和claim write guard。
+Transaction本身只是当前service DB上的执行边界，没有独立target；内部operation各自携带目标。缺失link/type/
+DB declaration、ABI或build不匹配、cross-artifact substitution都必须在link/admission阶段fail closed。
+
+这是当前未发布artifact模型内的同代hard cut，不改变File IR v9、PackageArtifact v9、Package local ABI v7
+或ServiceContract v5代际；不增加兼容reader、fallback或旧target双读。
 
 ## 11. Config、State 与 Resource Owner
 
@@ -1194,6 +1225,10 @@ release timeout配置不由本契约决定，但该预算必须与business reque
 - Router selector header缺失、重复冲突、非法、未知或歧义，或request frame中的deployment/entry与
   admitted activation不匹配；
 - service/package dependency缺失、版本或identity不匹配；
+- test-only topLevel DB target缺少expected package build、type implementation link、provider File IR type或
+  同type DB attachment，ABI/build不匹配，或被替换为其它artifact的同名type；
+- runtime DB target只能靠`typeName`、module suffix或全图扫描定位，或consumer复制的schema/collection/
+  recoverable metadata与provider File IR发生分叉；
 - assembly内同一service requirement有零个或多个provider；
 - callback/native adapter缺失或lifetime无法表达；
 - runtime需要重读源码、display name或raw JSON才能链接；
