@@ -247,7 +247,6 @@ pub fn deployment_ref(deployment: &ServiceDeployment) -> ServiceDeploymentRef {
 pub fn add_http_ingress(
     deployment: &mut ServiceDeployment,
     _contract: &ServiceContract,
-    host: &str,
     path: &str,
 ) {
     let key = GatewayEntryKey::parse("fixture-http").unwrap();
@@ -258,7 +257,6 @@ pub fn add_http_ingress(
     deployment.ingress.push(DeploymentIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::Http,
-            host: host.to_string(),
             method: Some("POST".to_string()),
             path: path.to_string(),
         },

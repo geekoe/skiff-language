@@ -7,7 +7,7 @@ use skiff_artifact_model::{
     GatewayAdapterKind, GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey,
     GatewayEntryProtocolSurface, GatewayProtocolSurface, GatewayWebSocketRpcProfile,
     IngressProtocol, IngressSelector, RuntimeAssembly, RuntimeAssemblyRef, ServiceContractRef,
-    ServiceDeploymentRef, WebSocketEntryId,
+    ServiceDeploymentRef, ServiceIngressKey, WebSocketEntryId,
 };
 use skiff_runtime_activation::{ActivationContext, RequestActivationContext};
 use skiff_runtime_eval::{RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget};
@@ -76,7 +76,7 @@ struct CommittedAssembly {
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveAssemblyRoute {
     active: Arc<ActiveAssembly>,
-    selector: IngressSelector,
+    ingress_key: ServiceIngressKey,
     entry: Arc<LinkedGatewayEntry>,
     activation: Arc<ActivationContext>,
     policy: DeploymentPolicy,
@@ -128,7 +128,11 @@ impl ActiveAssemblyRoute {
     }
 
     pub(crate) fn selector(&self) -> &IngressSelector {
-        &self.selector
+        &self.ingress_key.selector
+    }
+
+    pub(crate) fn deployment(&self) -> &ServiceDeploymentRef {
+        &self.ingress_key.deployment
     }
 
     pub(crate) fn gateway_entry_key(&self) -> &GatewayEntryKey {
@@ -186,7 +190,7 @@ impl ActiveAssemblyRoute {
         )?;
         Ok(RuntimeAssemblyWebSocketConnectTarget::new(
             eval,
-            self.selector.clone(),
+            self.ingress_key.selector.clone(),
             Arc::clone(&self.entry),
         )?)
     }
@@ -229,7 +233,10 @@ impl ActiveAssemblyRoute {
         }
         Ok(Self {
             active: Arc::clone(&self.active),
-            selector: sibling.selector.clone(),
+            ingress_key: ServiceIngressKey {
+                deployment: sibling.linked_entry.owner().clone(),
+                selector: sibling.selector.clone(),
+            },
             entry: Arc::clone(&sibling.linked_entry),
             activation: Arc::clone(&self.activation),
             policy: self.policy.clone(),
@@ -258,7 +265,7 @@ impl ActiveAssemblyRoute {
         )?;
         Ok(RuntimeAssemblyWebSocketJsonRpcTarget::new(
             eval,
-            self.selector.clone(),
+            self.ingress_key.selector.clone(),
             RuntimeAssemblyWebSocketJsonRpcPhysicalRoute::new(
                 admitted.selector.clone(),
                 admitted.gateway_entry_key.clone(),
@@ -279,7 +286,7 @@ impl ActiveAssemblyRoute {
             .ok_or_else(|| {
                 anyhow::anyhow!("active route owner has no admitted physical WebSocket entry")
             })?;
-        if admitted.selector != self.selector
+        if admitted.selector != self.ingress_key.selector
             || admitted.gateway_entry_key != *self.entry.gateway_entry_key()
             || admitted.gateway_entry_identity != *self.entry.gateway_entry_identity()
             || !Arc::ptr_eq(&admitted.linked_entry, &self.entry)
@@ -357,8 +364,8 @@ impl ActiveAssembly {
         self.candidate.activation(deployment)
     }
 
-    pub(crate) fn ingress(&self, selector: &IngressSelector) -> Option<&Arc<LinkedGatewayEntry>> {
-        self.candidate.ingress(selector)
+    pub(crate) fn ingress(&self, key: &ServiceIngressKey) -> Option<&Arc<LinkedGatewayEntry>> {
+        self.candidate.ingress(key)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -580,14 +587,17 @@ impl AssemblyAdmissionController {
 
     pub(crate) fn route(
         &self,
-        selector: &IngressSelector,
+        key: &ServiceIngressKey,
     ) -> anyhow::Result<Option<ActiveAssemblyRoute>> {
         let Some(active) = self.active()? else {
             return Ok(None);
         };
-        let Some(entry) = active.ingress(selector).cloned() else {
+        let Some(entry) = active.ingress(key).cloned() else {
             return Ok(None);
         };
+        if entry.owner() != &key.deployment {
+            anyhow::bail!("active assembly ingress key and linked entry owner disagree");
+        }
         let exact_entry = active
             .candidate
             .gateway_entry(entry.owner(), entry.gateway_entry_key())
@@ -605,7 +615,7 @@ impl AssemblyAdmissionController {
         let policy = linked_activation.deployment().policy.clone();
         Ok(Some(ActiveAssemblyRoute {
             active,
-            selector: selector.clone(),
+            ingress_key: key.clone(),
             entry,
             activation,
             policy,
@@ -778,9 +788,9 @@ impl RuntimeHost {
 
     pub(crate) fn active_runtime_assembly_route(
         &self,
-        selector: &IngressSelector,
+        key: &ServiceIngressKey,
     ) -> anyhow::Result<Option<ActiveAssemblyRoute>> {
-        self.assembly_admission.route(selector)
+        self.assembly_admission.route(key)
     }
 
     pub(crate) fn active_actor_execution_route(
@@ -955,7 +965,7 @@ fn validate_candidate(candidate: &AssemblyLinkedCandidate) -> anyhow::Result<()>
 
     for source in &assembly.gateway_ingress {
         let entry = candidate
-            .ingress(&source.selector)
+            .ingress(&source.service_ingress_key())
             .ok_or_else(|| anyhow::anyhow!("linked ingress {:?} is missing", source.selector))?;
         let exact_entry = candidate
             .gateway_entry(&source.deployment, &source.gateway_entry_key)

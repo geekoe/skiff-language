@@ -5,8 +5,8 @@ use std::{
 
 use skiff_artifact_model::{
     ActivationTemplate, BoundaryOperationDescriptor, ContractOperationId, GatewayEntryKey,
-    IngressSelector, OperationTargetRef, PackageBuildId, PackageCallableId, RuntimeAssembly,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity,
+    OperationTargetRef, PackageBuildId, PackageCallableId, RuntimeAssembly, ServiceContractRef,
+    ServiceDeployment, ServiceDeploymentRef, ServiceIngressKey, ServiceProtocolIdentity,
     ServiceRequirementKey,
 };
 use skiff_runtime_linked_program::{
@@ -151,7 +151,7 @@ pub struct AssemblyLinkedCandidate {
     pub(super) activations: BTreeMap<ServiceDeploymentRef, LinkedActivationTemplate>,
     pub(super) gateway_entries:
         BTreeMap<(ServiceDeploymentRef, GatewayEntryKey), Arc<LinkedGatewayEntry>>,
-    pub(super) ingress: BTreeMap<IngressSelector, Arc<LinkedGatewayEntry>>,
+    pub(super) ingress: BTreeMap<ServiceIngressKey, Arc<LinkedGatewayEntry>>,
 }
 
 impl AssemblyLinkedCandidate {
@@ -214,12 +214,12 @@ impl AssemblyLinkedCandidate {
 
     pub fn ingress_bindings(
         &self,
-    ) -> impl ExactSizeIterator<Item = (&IngressSelector, &Arc<LinkedGatewayEntry>)> {
+    ) -> impl ExactSizeIterator<Item = (&ServiceIngressKey, &Arc<LinkedGatewayEntry>)> {
         self.ingress.iter()
     }
 
-    pub fn ingress(&self, selector: &IngressSelector) -> Option<&Arc<LinkedGatewayEntry>> {
-        self.ingress.get(selector)
+    pub fn ingress(&self, key: &ServiceIngressKey) -> Option<&Arc<LinkedGatewayEntry>> {
+        self.ingress.get(key)
     }
 
     pub fn is_empty(&self) -> bool {

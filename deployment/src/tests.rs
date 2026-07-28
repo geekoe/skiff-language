@@ -36,7 +36,6 @@ fn runtime_assembly_ingress(assembly: &RuntimeAssembly) -> GatewayIngressBinding
     GatewayIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::Http,
-            host: "example.test".to_string(),
             method: Some("POST".to_string()),
             path: "/echo".to_string(),
         },
@@ -82,7 +81,6 @@ fn rich_deployment() -> ServiceDeployment {
     deployment.ingress.push(DeploymentIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::Http,
-            host: "example.test".to_string(),
             method: Some("GET".to_string()),
             path: "/health".to_string(),
         },
@@ -613,7 +611,7 @@ fn empty_assembly_assign_validate_and_round_trip_are_stable() {
     );
     assert_eq!(
         assembly.assembly_identity.as_str(),
-        "skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+        "skiff-runtime-assembly-v3:sha256:23c593adcf1df8a6b4ffc3fc13586b3023ed0bf2ba6d91b817f942dea02bf8ee"
     );
 }
 

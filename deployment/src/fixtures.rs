@@ -101,7 +101,6 @@ pub fn service_deployment_input_fixture() -> skiff_artifact_model::ServiceDeploy
         ingress: vec![DeploymentIngressBinding {
             selector: IngressSelector {
                 protocol: IngressProtocol::Http,
-                host: "example.test".to_string(),
                 method: Some("POST".to_string()),
                 path: "/echo".to_string(),
             },

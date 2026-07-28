@@ -2,8 +2,8 @@ use thiserror::Error;
 
 use skiff_artifact_identity::ArtifactIdentityError;
 use skiff_artifact_model::{
-    ContractOperationId, GatewayEntryKey, IngressSelector, PackageArtifactRef, PackageBuildId,
-    PackageRequirement, PackageRequirementKey, ServiceContractRef, ServiceDeploymentRef,
+    ContractOperationId, GatewayEntryKey, PackageArtifactRef, PackageBuildId, PackageRequirement,
+    PackageRequirementKey, ServiceContractRef, ServiceDeploymentRef, ServiceIngressKey,
     ServiceProtocolIdentity, ServiceRequirementKey,
 };
 
@@ -136,9 +136,9 @@ pub enum AssemblyResolutionError {
         gateway_entry_key: GatewayEntryKey,
     },
 
-    #[error("gateway ingress selector {selector:?} is declared by both {first:?} and {second:?}")]
+    #[error("gateway ingress key {key:?} is declared by both {first:?} and {second:?}")]
     GatewayIngressCollision {
-        selector: IngressSelector,
+        key: ServiceIngressKey,
         first: ServiceDeploymentRef,
         second: ServiceDeploymentRef,
     },

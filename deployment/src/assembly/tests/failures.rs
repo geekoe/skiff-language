@@ -346,7 +346,7 @@ fn selectors_and_operations_must_describe_exact_template_edges() {
 }
 
 #[test]
-fn deployment_gateway_ingress_rejects_cross_deployment_selector_collision() {
+fn deployment_gateway_ingress_allows_same_selector_for_distinct_services() {
     let contract_a = contract("service.ingress-a");
     let contract_b = contract("service.ingress-b");
     let package_a = package("package.ingress-a", &[], &[]);
@@ -365,20 +365,25 @@ fn deployment_gateway_ingress_rejects_cross_deployment_selector_collision() {
         Vec::new(),
         Vec::new(),
     );
-    add_http_ingress(&mut deployment_a, &contract_a, "api.test", "/call");
-    add_http_ingress(&mut deployment_b, &contract_b, "api.test", "/call");
+    add_http_ingress(&mut deployment_a, &contract_a, "/v1/models");
+    add_http_ingress(&mut deployment_b, &contract_b, "/v1/models");
 
-    let error = resolve_runtime_assembly(
+    let assembly = resolve_runtime_assembly(
         &[deployment_ref(&deployment_b), deployment_ref(&deployment_a)],
-        &[deployment_a, deployment_b],
+        &[deployment_a.clone(), deployment_b.clone()],
         &[contract_a, contract_b],
         &[package_b, package_a],
     )
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        AssemblyResolutionError::GatewayIngressCollision { .. }
-    ));
+    .unwrap();
+    assert_eq!(assembly.gateway_ingress.len(), 2);
+    assert_ne!(
+        assembly.gateway_ingress[0].deployment,
+        assembly.gateway_ingress[1].deployment
+    );
+    assert_eq!(
+        assembly.gateway_ingress[0].selector,
+        assembly.gateway_ingress[1].selector
+    );
 }
 
 #[test]
@@ -392,7 +397,7 @@ fn deployment_gateway_ingress_rejects_missing_key_and_wrong_identity() {
         Vec::new(),
         Vec::new(),
     );
-    add_http_ingress(&mut deployment, &contract, "invalid.example.test", "/call");
+    add_http_ingress(&mut deployment, &contract, "/call");
 
     let mut missing = deployment.clone();
     missing.gateway_entries.clear();

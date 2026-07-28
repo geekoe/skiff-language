@@ -368,10 +368,10 @@ fn projection_maps_every_operation_explicitly_and_emits_no_public_path() {
     let fixture = ProjectionFixture::new();
     assert_eq!(
         fixture.input.schema_version,
-        "skiff-service-deployment-input-v4"
+        "skiff-service-deployment-input-v5"
     );
     let deployment = fixture.project().unwrap();
-    assert_eq!(deployment.schema_version, "skiff-service-deployment-v3");
+    assert_eq!(deployment.schema_version, "skiff-service-deployment-v4");
     assert!(deployment
         .deployment_artifact_identity
         .as_str()
@@ -467,16 +467,14 @@ fn projection_preserves_validated_gateway_entries_and_selector_key_bindings() {
         DeploymentIngressBinding {
             selector: IngressSelector {
                 protocol: IngressProtocol::Http,
-                host: "api.example.test".to_string(),
                 method: Some("POST".to_string()),
-                path: "/echo".to_string(),
+                path: "/echo-alias".to_string(),
             },
             gateway_entry_key: key.clone(),
         },
         DeploymentIngressBinding {
             selector: IngressSelector {
                 protocol: IngressProtocol::Http,
-                host: "alias.example.test".to_string(),
                 method: Some("POST".to_string()),
                 path: "/echo".to_string(),
             },

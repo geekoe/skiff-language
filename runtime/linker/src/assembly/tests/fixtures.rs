@@ -93,6 +93,23 @@ impl CycleFixture {
             },
         };
         skiff_artifact_identity::assign_service_contract_identities(&mut contract).unwrap();
+        let second_operation_id = skiff_artifact_identity::contract_operation_id(
+            "example.cycle-secondary",
+            contract_version,
+            "call",
+        )
+        .unwrap();
+        let mut second_contract = contract.clone();
+        second_contract.service_id = "example.cycle-secondary".to_string();
+        let mut second_descriptor = second_contract.operations.pop_first().unwrap().1;
+        second_descriptor.operation_id = second_operation_id.clone();
+        second_contract.operations =
+            BTreeMap::from([(second_operation_id.clone(), second_descriptor)]);
+        second_contract.diagnostic_text.service = "Cycle secondary".to_string();
+        second_contract.diagnostic_text.operations =
+            BTreeMap::from([(second_operation_id.clone(), "Call".to_string())]);
+        skiff_artifact_identity::assign_service_contract_identities(&mut second_contract).unwrap();
+        let second_contract_ref = contract_ref(&second_contract);
         let contract_ref = contract_ref(&contract);
 
         let helper_callable = PackageCallableId::new("pkg-callable:example.helper:entry");
@@ -117,8 +134,8 @@ impl CycleFixture {
 
         let service_call = ServiceCallRef {
             service_requirement_slot: 0,
-            contract_operation_id: operation_id.clone(),
-            expected_protocol_identity: contract_ref.service_protocol_identity.clone(),
+            contract_operation_id: second_operation_id.clone(),
+            expected_protocol_identity: second_contract_ref.service_protocol_identity.clone(),
         };
         let service_callable = PackageCallableId::new("pkg-callable:example.shared:entry");
         let mut shared_file = file("shared.main");
@@ -242,9 +259,9 @@ impl CycleFixture {
         skiff_artifact_identity::assign_file_ir_identity(&mut shared_file).unwrap();
         let contract_requirement = ContractRequirement {
             alias: "cycle".to_string(),
-            service_id: contract_ref.service_id.clone(),
-            contract_version: contract_ref.contract_version.clone(),
-            expected_protocol_identity: contract_ref.service_protocol_identity.clone(),
+            service_id: second_contract_ref.service_id.clone(),
+            contract_version: second_contract_ref.contract_version.clone(),
+            expected_protocol_identity: second_contract_ref.service_protocol_identity.clone(),
         };
         let mut shared = package(
             "example.shared",
@@ -266,7 +283,7 @@ impl CycleFixture {
         shared.service_requirements.push(ServiceRequirement {
             contract_requirement,
             service_binding_slot: 0,
-            used_operations: BTreeSet::from([operation_id.clone()]),
+            used_operations: BTreeSet::from([second_operation_id.clone()]),
         });
         shared.service_call_refs.push(service_call);
         let gateway_handler = PackageCallableId::new("pkg-callable:gateway:handler");
@@ -284,7 +301,6 @@ impl CycleFixture {
 
         let ingress_selector = IngressSelector {
             protocol: IngressProtocol::Http,
-            host: "cycle.test".to_string(),
             method: Some("POST".to_string()),
             path: "/call".to_string(),
         };
@@ -310,13 +326,14 @@ impl CycleFixture {
         let mut deployment_b = deployment(
             "revision-b",
             "b",
-            &contract_ref,
+            &second_contract_ref,
             &shared_ref,
             &helper_ref,
             &service_callable,
-            &operation_id,
+            &second_operation_id,
             None,
         );
+        deployment_a.service_selectors[0].contract = second_contract_ref.clone();
         deployment_a.ingress.push(DeploymentIngressBinding {
             selector: ingress_alias_selector.clone(),
             gateway_entry_key: deployment_a.ingress[0].gateway_entry_key.clone(),
@@ -335,7 +352,7 @@ impl CycleFixture {
             assembly_identity: skiff_artifact_model::AssemblyIdentity::new("unassigned"),
             roots: vec![activation_a.clone()],
             resolved_deployments: vec![activation_a.clone(), activation_b.clone()],
-            resolved_contracts: vec![contract_ref.clone()],
+            resolved_contracts: vec![contract_ref.clone(), second_contract_ref.clone()],
             resolved_packages: vec![shared_ref.clone(), helper_ref.clone()],
             package_link_plan: CanonicalPackageLinkPlan {
                 code_slots: vec![
@@ -360,18 +377,18 @@ impl CycleFixture {
                     activation: activation_a.clone(),
                     bindings: vec![ResolvedServiceBinding {
                         key: service_key.clone(),
-                        contract: contract_ref.clone(),
+                        contract: second_contract_ref.clone(),
                         provider: activation_b.clone(),
-                        used_operations: vec![operation_id.clone()],
+                        used_operations: vec![second_operation_id.clone()],
                     }],
                 },
                 ServiceBindingTemplate {
                     activation: activation_b.clone(),
                     bindings: vec![ResolvedServiceBinding {
                         key: service_key,
-                        contract: contract_ref.clone(),
-                        provider: activation_a.clone(),
-                        used_operations: vec![operation_id.clone()],
+                        contract: second_contract_ref.clone(),
+                        provider: activation_b.clone(),
+                        used_operations: vec![second_operation_id.clone()],
                     }],
                 },
             ],
@@ -422,7 +439,10 @@ impl CycleFixture {
                 (activation_a.clone(), Arc::new(deployment_a.clone())),
                 (activation_b.clone(), Arc::new(deployment_b)),
             ]),
-            contracts: BTreeMap::from([(contract_ref.clone(), Arc::new(contract))]),
+            contracts: BTreeMap::from([
+                (contract_ref.clone(), Arc::new(contract)),
+                (second_contract_ref, Arc::new(second_contract)),
+            ]),
             packages: BTreeMap::from([
                 (shared_ref, Arc::new(shared)),
                 (helper_ref, Arc::new(helper)),
