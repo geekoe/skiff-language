@@ -1,6 +1,6 @@
 # P5-F445H-I7-L Service-scoped assembly consumer
 
-状态：`IMPLEMENTED_PENDING_R_WIRE_JOIN`。
+状态：`PASS / L_COMPLETE`。
 
 ## 1. Parent and baseline
 
@@ -66,3 +66,16 @@ Router TypeScript、artifact-model或artifact-identity canonical owner。
 独立checkpoint只提交不依赖Router wire生产方的resolver、loader、linker与Host内部scoped-key
 迁移。Host request wire consumer等待R节点的exact deployment frame先合入integration后，再从新
 baseline做有界continuation；禁止把R提交混入本节点checkpoint。
+
+## 5. Continuation
+
+独立checkpoint完成后，L仅在R、C与F各自进入integration后做有界consumer join：
+
+- R提供runtime frame v2的精确`deployment`；
+- C删除compiler构造的旧`IngressSelector.host`；
+- F删除test-runner构造的旧`IngressSelector.host`并让package-test frame携带精确deployment；
+- L继续关闭Host wire admission、WebSocket pinned route、request执行校验与package-test裸selector
+  lookup。
+
+最终结果与完整证据见
+`P5-F445H-I7-L-service-scoped-assembly-consumer-result.md`。

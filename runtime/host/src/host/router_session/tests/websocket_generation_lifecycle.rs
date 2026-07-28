@@ -361,10 +361,10 @@ mod websocket_jsonrpc_target {
                 kind: "runtimeAssembly".to_string(),
                 assembly_identity: physical_a.assembly_identity().clone(),
                 assembly_generation: physical_a.generation(),
+                deployment: method_a.deployment().clone(),
                 gateway_entry_identity: method_a.gateway_entry_identity().clone(),
                 ingress: RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
                     protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
-                    host: selector.host.clone(),
                     method: selector.method.clone().expect("JSON-RPC method"),
                     path: selector.path.clone(),
                 },
@@ -427,7 +427,6 @@ struct JsonRpcExecutionRouteLookup<'a> {
     assembly_identity: &'a skiff_artifact_model::AssemblyIdentity,
     assembly_generation: u64,
     websocket_entry_id: &'a skiff_artifact_model::WebSocketEntryId,
-    host: &'a str,
     path: &'a str,
     method: &'a str,
     gateway_entry_identity: &'a skiff_artifact_model::GatewayEntryIdentity,
@@ -447,7 +446,6 @@ impl JsonRpcExecutionRouteLookup<'_> {
                 self.assembly_identity,
                 self.assembly_generation,
                 self.websocket_entry_id,
-                self.host,
                 self.path,
                 self.method,
                 self.gateway_entry_identity,
@@ -468,7 +466,6 @@ fn execution_route_lookup<'a>(
         assembly_identity: physical.assembly_identity(),
         assembly_generation: physical.generation(),
         websocket_entry_id,
-        host: &method.selector().host,
         path: &method.selector().path,
         method: method.selector().method.as_deref().unwrap(),
         gateway_entry_identity: method.gateway_entry_identity(),
@@ -754,7 +751,6 @@ async fn websocket_jsonrpc_target_matches_websocket_jsonrpc_execution_route_for_
             lookup_a.assembly_identity,
             lookup_a.assembly_generation,
             lookup_a.websocket_entry_id,
-            lookup_a.host,
             lookup_a.path,
             lookup_a.method,
             lookup_a.gateway_entry_identity,
@@ -787,10 +783,6 @@ async fn websocket_jsonrpc_target_matches_websocket_jsonrpc_execution_route_for_
         },
         JsonRpcExecutionRouteLookup {
             websocket_entry_id: &wrong_websocket_entry_id,
-            ..lookup_a
-        },
-        JsonRpcExecutionRouteLookup {
-            host: "wrong.test",
             ..lookup_a
         },
         JsonRpcExecutionRouteLookup {
@@ -1050,10 +1042,10 @@ fn handlerless_connect_header(
             kind: "runtimeAssembly".to_string(),
             assembly_identity: route.assembly_identity().clone(),
             assembly_generation: route.generation(),
+            deployment: route.deployment().clone(),
             gateway_entry_identity: route.gateway_entry_identity().clone(),
             ingress: RuntimeAssemblyWebSocketConnectIngressFrameHeader {
                 protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
-                host: selector.host.clone(),
                 method: (),
                 path: selector.path.clone(),
             },
@@ -1068,7 +1060,7 @@ fn handlerless_connect_header(
         },
         websocket_connect: RuntimeAssemblyWebSocketConnectRequestFrameHeader {
             connection_id: "handlerless-connection".to_string(),
-            url: format!("ws://{}{}", selector.host, selector.path),
+            url: format!("ws://websocket.test{}", selector.path),
             query: Vec::new(),
             headers: Vec::new(),
             cookies: Vec::new(),

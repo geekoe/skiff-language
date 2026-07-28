@@ -9,7 +9,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
     GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayProtocolSurface,
-    IngressSelector, OperationTargetRef, RuntimeAssembly, ServiceDeploymentRef,
+    OperationTargetRef, RuntimeAssembly, ServiceDeploymentRef, ServiceIngressKey,
 };
 use skiff_runtime_linker::{link_runtime_assembly, AssemblyLinkedCandidate};
 use skiff_runtime_loader::{RuntimeAssemblyContentResolver, RuntimeAssemblyLoader};
@@ -84,11 +84,12 @@ impl PackageTestRuntimeTemplate {
 
     pub fn ingress_entrypoint(
         &self,
-        selector: &IngressSelector,
+        key: &ServiceIngressKey,
     ) -> anyhow::Result<LoadedPackageTestRuntimeProgram> {
-        let binding = self.candidate.ingress(selector).ok_or_else(|| {
-            anyhow::anyhow!("canonical test assembly has no ingress selector {selector:?}")
-        })?;
+        let binding = self
+            .candidate
+            .ingress(key)
+            .ok_or_else(|| anyhow::anyhow!("canonical test assembly has no ingress key {key:?}"))?;
         let entrypoint = self
             .entrypoints
             .values()
@@ -98,9 +99,7 @@ impl PackageTestRuntimeTemplate {
                     && entrypoint.gateway_entry_identity == *binding.gateway_entry_identity()
             })
             .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!("ingress selector {selector:?} has no test-owned entrypoint")
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("ingress key {key:?} has no test-owned entrypoint"))?;
         Ok(LoadedPackageTestRuntimeProgram {
             candidate: Arc::clone(&self.candidate),
             entrypoint,

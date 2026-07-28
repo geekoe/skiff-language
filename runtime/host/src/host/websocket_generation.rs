@@ -432,7 +432,6 @@ impl WebSocketGenerationRegistry {
         assembly_identity: &AssemblyIdentity,
         assembly_generation: u64,
         websocket_entry_id: &WebSocketEntryId,
-        host: &str,
         path: &str,
         method: &str,
         gateway_entry_identity: &GatewayEntryIdentity,
@@ -447,7 +446,6 @@ impl WebSocketGenerationRegistry {
         )?;
         let method_route = physical_route
             .websocket_jsonrpc_method_route(
-                host,
                 path,
                 method,
                 gateway_entry_identity,
@@ -478,7 +476,6 @@ impl WebSocketGenerationRegistry {
         assembly_identity: &AssemblyIdentity,
         assembly_generation: u64,
         websocket_entry_id: &WebSocketEntryId,
-        host: &str,
         path: &str,
         method: &str,
         gateway_entry_identity: &GatewayEntryIdentity,
@@ -491,7 +488,6 @@ impl WebSocketGenerationRegistry {
                 assembly_identity,
                 assembly_generation,
                 websocket_entry_id,
-                host,
                 path,
                 method,
                 gateway_entry_identity,

@@ -35,7 +35,7 @@ async fn host_current_scope_compiled_artifact_admits_exact_source_routes() {
     let unary = &routes["/current-scope/unary"];
     assert_eq!(
         unary.assembly_identity().as_str(),
-        "skiff-runtime-assembly-v2:sha256:ec66d8a209e65198ee5b82086a365a4b3a98021ef8117e2572c66fee8eac5f6e"
+        "skiff-runtime-assembly-v3:sha256:ce8c979de4c6786ee9c2fbf2ad01fbfa2271b33a074682e2e66f5a77654f6688"
     );
     assert_eq!(
         unary.gateway_entry_identity().as_str(),
@@ -117,9 +117,16 @@ async fn host_http_gateway_exact_route_identity_generation_mode_and_http_metadat
     let exact = canonical_header(&routes["/typed"], "host-http-negative");
     let mut cases = Vec::new();
 
+    let mut different_url_host = exact.clone();
+    different_url_host.request_id = "host-http-url-host-metadata".to_string();
+    different_url_host.http_request.url = "http://other.test/typed".to_string();
+    let (response, body) = dispatch_unary(&host, different_url_host, br#""url-host""#, 1024).await;
+    assert_eq!(http_status(&response), 200);
+    assert_eq!(body, br#""url-host""#);
+
     let mut wrong_assembly = exact.clone();
     wrong_assembly.routing.assembly_identity = AssemblyIdentity::new(format!(
-        "skiff-runtime-assembly-v2:sha256:{}",
+        "skiff-runtime-assembly-v3:sha256:{}",
         "f".repeat(64)
     ));
     cases.push(("assembly", wrong_assembly));
@@ -145,19 +152,14 @@ async fn host_http_gateway_exact_route_identity_generation_mode_and_http_metadat
     wrong_path.http_request.path = "/wrong".to_string();
     cases.push(("path", wrong_path));
 
-    let mut wrong_url = exact.clone();
-    wrong_url.http_request.url = "http://other.test/typed".to_string();
-    cases.push(("url", wrong_url));
-
     let mut wrong_url_path = exact.clone();
-    wrong_url_path.http_request.url =
-        format!("http://{}/wrong", wrong_url_path.routing.ingress.host);
+    wrong_url_path.http_request.url = "http://api.example.test/wrong".to_string();
     cases.push(("url-path", wrong_url_path));
 
-    let mut wrong_selector = exact;
-    wrong_selector.routing.ingress.host = "other.test".to_string();
-    wrong_selector.http_request.url = "http://other.test/typed".to_string();
-    cases.push(("selector", wrong_selector));
+    let mut wrong_deployment = exact;
+    wrong_deployment.routing.deployment.service_id =
+        "example.com/other-host-http-gateway-service".to_string();
+    cases.push(("deployment", wrong_deployment));
 
     for (name, mut header) in cases {
         header.request_id = format!("host-http-negative-{name}");
@@ -455,10 +457,10 @@ fn canonical_header(
             kind: "runtimeAssembly".to_string(),
             assembly_identity: route.assembly_identity().clone(),
             assembly_generation: route.generation(),
+            deployment: route.deployment().clone(),
             gateway_entry_identity: route.gateway_entry_identity().clone(),
             ingress: RuntimeAssemblyRequestIngressFrameHeader {
                 protocol: RuntimeAssemblyRequestIngressProtocol::Http,
-                host: selector.host.clone(),
                 method: method.clone(),
                 path: selector.path.clone(),
             },
@@ -473,7 +475,7 @@ fn canonical_header(
         },
         http_request: RuntimeAssemblyHttpRequestFrameHeader {
             method,
-            url: format!("http://{}{}", selector.host, selector.path),
+            url: format!("http://api.example.test{}", selector.path),
             path: selector.path.clone(),
             query: Vec::new(),
             headers: Vec::new(),

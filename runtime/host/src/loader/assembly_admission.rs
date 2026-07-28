@@ -201,7 +201,6 @@ impl ActiveAssemblyRoute {
 
     pub(crate) fn websocket_jsonrpc_method_route(
         &self,
-        host: &str,
         path: &str,
         method: &str,
         gateway_entry_identity: &GatewayEntryIdentity,
@@ -217,8 +216,7 @@ impl ActiveAssemblyRoute {
         let sibling = admitted.method(method).ok_or_else(|| {
             anyhow::anyhow!("WebSocket generation pin has no admitted JSON-RPC method {method:?}")
         })?;
-        if sibling.selector.host != host
-            || sibling.selector.path != path
+        if sibling.selector.path != path
             || sibling.selector.protocol != IngressProtocol::WebSocket
             || sibling.selector.method.as_deref() != Some(method)
             || &sibling.gateway_entry_identity != gateway_entry_identity

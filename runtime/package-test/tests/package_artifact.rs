@@ -132,7 +132,10 @@ fn provider_consumer_service_call_stays_activation_relative_and_ingress_is_canon
 
     let ingress = template
         .candidate()
-        .ingress(&fixture.ingress)
+        .ingress(&skiff_artifact_model::ServiceIngressKey {
+            deployment: fixture.root.clone(),
+            selector: fixture.ingress.clone(),
+        })
         .expect("linked ingress selector");
     let owned = template
         .candidate()
@@ -140,7 +143,10 @@ fn provider_consumer_service_call_stays_activation_relative_and_ingress_is_canon
         .expect("test-owned linked gateway entry");
     assert!(Arc::ptr_eq(ingress, owned));
     let selected = template
-        .ingress_entrypoint(&fixture.ingress)
+        .ingress_entrypoint(&skiff_artifact_model::ServiceIngressKey {
+            deployment: fixture.root.clone(),
+            selector: fixture.ingress.clone(),
+        })
         .expect("Host ingress");
     assert_eq!(selected.entrypoint().deployment, fixture.root);
     assert_eq!(
@@ -230,7 +236,10 @@ fn ingress_selector_does_not_match_a_test_entrypoint_owned_by_another_deployment
         .is_some());
 
     let error = template
-        .ingress_entrypoint(&fixture.ingress)
+        .ingress_entrypoint(&skiff_artifact_model::ServiceIngressKey {
+            deployment: fixture.root.clone(),
+            selector: fixture.ingress.clone(),
+        })
         .expect_err("root selector must not match a provider-owned test entrypoint");
     assert!(error.to_string().contains("has no test-owned entrypoint"));
 }

@@ -245,10 +245,11 @@ async fn websocket_jsonrpc_host_rejects_wrong_pinned_tuple_before_eval() {
     wrong_physical.websocket_json_rpc.websocket_entry_id = wrong_websocket_entry_id;
     assert_wire_rejection(&host, wrong_physical).await;
 
-    let mut wrong_host = base.clone();
-    wrong_host.request_id = "host-jsonrpc-reject-host".to_string();
-    wrong_host.routing.ingress.host = "wrong.example.test".to_string();
-    assert_wire_rejection(&host, wrong_host).await;
+    let mut wrong_deployment = base.clone();
+    wrong_deployment.request_id = "host-jsonrpc-reject-deployment".to_string();
+    wrong_deployment.routing.deployment.service_id =
+        "example.com/other-websocket-service".to_string();
+    assert_wire_rejection(&host, wrong_deployment).await;
 
     let mut wrong_path = base.clone();
     wrong_path.request_id = "host-jsonrpc-reject-path".to_string();
@@ -496,10 +497,10 @@ fn jsonrpc_header(
             kind: "runtimeAssembly".to_string(),
             assembly_identity: physical.assembly_identity().clone(),
             assembly_generation: physical.generation(),
+            deployment: method.deployment().clone(),
             gateway_entry_identity: method.gateway_entry_identity().clone(),
             ingress: RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
                 protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
-                host: selector.host.clone(),
                 method: selector.method.clone().expect("JSON-RPC method selector"),
                 path: selector.path.clone(),
             },

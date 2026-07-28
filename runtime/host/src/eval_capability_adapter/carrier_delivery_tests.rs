@@ -47,7 +47,6 @@ fn request_envelope() -> RequestEnvelope {
         activation_identity: None,
         ingress_selector: Some(IngressSelector {
             protocol: IngressProtocol::WebSocket,
-            host: "f445h-i6.invalid".to_string(),
             method: None,
             path: "/receipt".to_string(),
         }),

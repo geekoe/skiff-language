@@ -281,7 +281,6 @@ fn validate_entry_fact_view(
         || facts.selector.method.as_deref().is_none_or(str::is_empty)
         || facts.physical_selector.protocol != IngressProtocol::WebSocket
         || facts.physical_selector.method.is_some()
-        || facts.selector.host != facts.physical_selector.host
         || facts.selector.path != facts.physical_selector.path
     {
         return Err(RuntimeAssemblyWebSocketJsonRpcTargetError::SelectorMismatch);
@@ -465,7 +464,6 @@ mod tests {
     fn selector(method: Option<&str>) -> IngressSelector {
         IngressSelector {
             protocol: IngressProtocol::WebSocket,
-            host: "websocket.test".to_string(),
             method: method.map(str::to_string),
             path: "/socket".to_string(),
         }

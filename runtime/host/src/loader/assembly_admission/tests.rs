@@ -120,11 +120,20 @@ async fn assembly_admission_canonical_empty_becomes_active_without_content_reads
     ));
     assert_eq!(resolver.reads.load(Ordering::SeqCst), 0);
     assert!(controller
-        .route(&IngressSelector {
-            protocol: skiff_artifact_model::IngressProtocol::Http,
-            host: "missing.test".to_string(),
-            method: Some("GET".to_string()),
-            path: "/missing".to_string(),
+        .route(&skiff_artifact_model::ServiceIngressKey {
+            deployment: skiff_artifact_model::ServiceDeploymentRef {
+                service_id: "service.missing".to_string(),
+                contract_version: "1.0.0".to_string(),
+                deployment_revision: skiff_artifact_model::DeploymentRevision::new("revision-1"),
+                deployment_artifact_identity: skiff_artifact_model::DeploymentArtifactIdentity::new(
+                    "missing"
+                ),
+            },
+            selector: IngressSelector {
+                protocol: skiff_artifact_model::IngressProtocol::Http,
+                method: Some("GET".to_string()),
+                path: "/missing".to_string(),
+            },
         })
         .unwrap()
         .is_none());

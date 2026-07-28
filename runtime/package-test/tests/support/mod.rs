@@ -66,11 +66,10 @@ impl CanonicalFixture {
         );
         let ingress = IngressSelector {
             protocol: IngressProtocol::Http,
-            host: "package-only.test".to_string(),
             method: Some("POST".to_string()),
             path: "/run".to_string(),
         };
-        add_http_ingress(&mut deployment, &contract, &ingress.host, &ingress.path);
+        add_http_ingress(&mut deployment, &contract, &ingress.path);
         Self::finish(
             vec![contract],
             vec![package],
@@ -104,16 +103,10 @@ impl CanonicalFixture {
         );
         let ingress = IngressSelector {
             protocol: IngressProtocol::Http,
-            host: "package-dependent.test".to_string(),
             method: Some("POST".to_string()),
             path: "/mutate".to_string(),
         };
-        add_http_ingress(
-            &mut deployment,
-            &package_contract,
-            &ingress.host,
-            &ingress.path,
-        );
+        add_http_ingress(&mut deployment, &package_contract, &ingress.path);
         let direct_caller = package_ref(&caller);
         let direct_dependency = package_ref(&helper);
         let direct_callable = Some(callable_id(&helper.package_id));
@@ -152,12 +145,7 @@ impl CanonicalFixture {
             Vec::new(),
             Vec::new(),
         );
-        add_http_ingress(
-            &mut provider_deployment,
-            &provider_contract,
-            "provider.test",
-            "/provide",
-        );
+        add_http_ingress(&mut provider_deployment, &provider_contract, "/provide");
         let provider_ref = deployment_ref(&provider_deployment);
         let mut consumer_deployment = deployment(
             &consumer_contract,
@@ -168,16 +156,10 @@ impl CanonicalFixture {
         );
         let ingress = IngressSelector {
             protocol: IngressProtocol::Http,
-            host: "consumer.test".to_string(),
             method: Some("POST".to_string()),
             path: "/consume".to_string(),
         };
-        add_http_ingress(
-            &mut consumer_deployment,
-            &consumer_contract,
-            &ingress.host,
-            &ingress.path,
-        );
+        add_http_ingress(&mut consumer_deployment, &consumer_contract, &ingress.path);
         Self::finish(
             vec![consumer_contract, provider_contract],
             vec![consumer, provider],
@@ -208,11 +190,10 @@ impl CanonicalFixture {
         );
         let ingress = IngressSelector {
             protocol: IngressProtocol::Http,
-            host: "package-stream.test".to_string(),
             method: Some("POST".to_string()),
             path: "/run".to_string(),
         };
-        add_http_ingress(&mut deployment, &contract, &ingress.host, &ingress.path);
+        add_http_ingress(&mut deployment, &contract, &ingress.path);
         let gateway_entry = deployment
             .gateway_entries
             .values_mut()
@@ -883,12 +864,7 @@ fn deployment_ref(deployment: &ServiceDeployment) -> ServiceDeploymentRef {
     skiff_artifact_identity::service_deployment_ref(deployment)
 }
 
-fn add_http_ingress(
-    deployment: &mut ServiceDeployment,
-    contract: &ServiceContract,
-    host: &str,
-    path: &str,
-) {
+fn add_http_ingress(deployment: &mut ServiceDeployment, contract: &ServiceContract, path: &str) {
     assert!(deployment
         .operation_bindings
         .iter()
@@ -903,7 +879,6 @@ fn add_http_ingress(
     deployment.ingress.push(DeploymentIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::Http,
-            host: host.to_string(),
             method: Some("POST".to_string()),
             path: path.to_string(),
         },
