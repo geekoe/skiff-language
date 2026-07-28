@@ -67,6 +67,7 @@ async fn connection_request_response_demux_uses_exact_router_session() {
     assert_eq!(host.connection_requests.active_timer_count(), 0);
 }
 
+mod foreign_db_exact_identity;
 mod runtime_assembly_request;
 mod websocket_generation_lifecycle;
 mod websocket_jsonrpc_dispatch;
