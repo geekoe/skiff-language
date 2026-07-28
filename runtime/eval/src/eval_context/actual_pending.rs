@@ -139,9 +139,8 @@ impl EvalContext<'_> {
                 .collect(),
         )?;
         let interpreter = self.interpreter.clone_for_stream_producer();
-        let completed = self
-            .await_actual_pending(prepared.wait(&interpreter))
-            .await?;
+        let wait = Box::pin(prepared.wait(&interpreter));
+        let completed = self.await_actual_pending(wait).await?;
         completed.finalize(self.heap).map(Into::into)
     }
 
