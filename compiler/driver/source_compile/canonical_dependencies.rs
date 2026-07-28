@@ -96,6 +96,18 @@ fn package_analysis(
     resolved_package_schemas: &[ResolvedPackageSchema],
     compiler_owned_std: Option<&PackageArtifact>,
 ) -> Result<Vec<(String, PackageDependencyAnalysisFacts)>, PackageCompileError> {
+    if !input.is_test_service() {
+        if let Some(dependency) = input
+            .package_dependencies
+            .iter()
+            .find(|dependency| dependency.top_level_alias.is_some())
+        {
+            return Err(validation_error(format!(
+                "package dependency {} declares topLevelAlias outside a test service",
+                dependency.effective_alias()
+            )));
+        }
+    }
     let artifacts = input
         .dependency_packages
         .iter()

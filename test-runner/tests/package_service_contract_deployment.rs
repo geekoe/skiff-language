@@ -658,18 +658,20 @@ fn base_assembly_supplies_provider_selectors_and_real_owner_bindings() {
         subject_requirement.expected_package_build.as_ref(),
         Some(&subject.package_build_id)
     );
+    let subject_bindings = test_deployment
+        .package_bindings
+        .iter()
+        .filter(|binding| binding.key.package_requirement_alias == "subject")
+        .collect::<Vec<_>>();
+    let [subject_binding] = subject_bindings.as_slice() else {
+        panic!(
+            "the second local alias must leave exactly one subject binding and collection projection, found {}",
+            subject_bindings.len()
+        )
+    };
     assert_eq!(
-        test_deployment
-            .package_bindings
-            .iter()
-            .filter(|binding| {
-                binding.key.caller_package_build_id
-                    == project.package.artifact.package_build_id
-                    && binding.key.package_requirement_alias == "subject"
-            })
-            .count(),
-        1,
-        "the second local alias must not create another binding or collection projection"
+        subject_binding.package,
+        skiff_artifact_identity::package_artifact_ref(subject).unwrap()
     );
     let production_deployment = CanonicalArtifactStore::open(&artifacts)
         .unwrap()

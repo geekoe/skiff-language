@@ -613,19 +613,19 @@ fn rewrite_type_ref(
                 index.current_package_type_location(&symbol.package, &symbol.symbol_path)
             {
                 rewrite_type_ref_to_publication_location(module_path, ty, location)
-            } else if let PackageRefIr::Dependency { dependency_ref } = &symbol.package {
+            } else if let PackageRefIr::Dependency { dependency_ref } = &mut symbol.package {
+                let mut changed = canonicalize_dependency_ref(index, dependency_ref);
                 let Some(abi_expectation) = index
                     .package_dependency_abi_expectations
                     .get(dependency_ref)
                 else {
-                    return false;
+                    return changed;
                 };
-                if symbol.abi_expectation.as_ref() == Some(abi_expectation) {
-                    false
-                } else {
+                if symbol.abi_expectation.as_ref() != Some(abi_expectation) {
                     symbol.abi_expectation = Some(abi_expectation.clone());
-                    true
+                    changed = true;
                 }
+                changed
             } else {
                 false
             }
@@ -720,19 +720,19 @@ fn rewrite_applied_nominal_base(
                     }
                 };
                 true
-            } else if let PackageRefIr::Dependency { dependency_ref } = &symbol.package {
+            } else if let PackageRefIr::Dependency { dependency_ref } = &mut symbol.package {
+                let mut changed = canonicalize_dependency_ref(index, dependency_ref);
                 let Some(abi_expectation) = index
                     .package_dependency_abi_expectations
                     .get(dependency_ref)
                 else {
-                    return false;
+                    return changed;
                 };
-                if symbol.abi_expectation.as_ref() == Some(abi_expectation) {
-                    false
-                } else {
+                if symbol.abi_expectation.as_ref() != Some(abi_expectation) {
                     symbol.abi_expectation = Some(abi_expectation.clone());
-                    true
+                    changed = true;
                 }
+                changed
             } else {
                 false
             }
@@ -741,6 +741,21 @@ fn rewrite_applied_nominal_base(
         | NominalTypeRefBaseIr::PublicationType { .. }
         | NominalTypeRefBaseIr::PackageSchema { .. } => false,
     }
+}
+
+fn canonicalize_dependency_ref(
+    index: &PublicationLocalRefIndex<'_>,
+    dependency_ref: &mut String,
+) -> bool {
+    let Some(type_resolution) = index.type_resolution else {
+        return false;
+    };
+    let canonical = type_resolution.canonical_package_dependency_ref(dependency_ref);
+    if canonical == dependency_ref {
+        return false;
+    }
+    *dependency_ref = canonical.to_string();
+    true
 }
 
 fn rewrite_type_ref_to_publication_location(

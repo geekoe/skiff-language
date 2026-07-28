@@ -446,9 +446,7 @@ function privateOnly() -> string {
         .expect_err("top-level type access must require slash syntax")
         .to_string();
     assert!(
-        error.contains(
-            "uses top-level type syntax `widgetImpl/<source-module>.<name>`"
-        ),
+        error.contains("uses top-level type syntax `widgetImpl/<source-module>.<name>`"),
         "{error}"
     );
 
@@ -1020,6 +1018,7 @@ packages:
   - id: example.com/facade
     version: 0.1.0
     alias: app
+    topLevelAlias: appImpl
 "#,
     )
     .unwrap();
@@ -1076,6 +1075,19 @@ packages:
         "app",
         "example.com/facade",
         "facade",
+    );
+
+    fs::write(
+        temp.path().join("main.skiff"),
+        "import platform\nfunction bad() -> string { return platform/storage.upload() }\n",
+    )
+    .unwrap();
+    let error = compile_package_project(temp.path())
+        .expect_err("a direct topLevelAlias must not expose its provider's dependencies")
+        .to_string();
+    assert!(
+        error.contains("import platform requires top-level packages to include platform"),
+        "{error}"
     );
 }
 
