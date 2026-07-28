@@ -290,7 +290,6 @@ fn validate_http_authoring(
         if let Some(pre) = &entry.pre {
             validate_http_selector_field(key, "pre", pre, &mut violations);
         }
-        validate_http_host(key, &mut entry.host, &mut violations);
         validate_http_path(key, &entry.path, &mut violations);
         validate_http_method(key, &mut entry.method, &mut violations);
         if matches!(
@@ -308,7 +307,7 @@ fn validate_http_authoring(
             violations.push(format!("http.{key}.adapterArgs is invalid: {error}"));
         }
 
-        let selector = (entry.host.clone(), entry.method.clone(), entry.path.clone());
+        let selector = (entry.method.clone(), entry.path.clone());
         if let Some(existing) = selectors.insert(selector, key.clone()) {
             violations.push(format!(
                 "http.{key} duplicates the selector owned by http.{existing}"
@@ -332,24 +331,6 @@ fn validate_http_selector_field(
             "http.{key}.{field} must be a current-package source selector: {message}"
         ));
     }
-}
-
-fn validate_http_host(key: &GatewayEntryKey, host: &mut String, violations: &mut Vec<String>) {
-    if host.is_empty()
-        || host.trim() != host
-        || host
-            .chars()
-            .any(|character| character.is_control() || character.is_whitespace())
-        || host
-            .chars()
-            .any(|character| matches!(character, '/' | '@' | '?' | '#'))
-    {
-        violations.push(format!(
-            "http.{key}.host must be a non-empty ingress host without whitespace, user info, path, query, or fragment"
-        ));
-        return;
-    }
-    host.make_ascii_lowercase();
 }
 
 fn validate_http_path(key: &GatewayEntryKey, path: &str, violations: &mut Vec<String>) {
@@ -596,7 +577,6 @@ mod tests {
     - param: body
       source: { kind: http.body }
 raw:
-  host: API.Example.COM
   method: GET
   path: /raw
   kind: rawHttp
@@ -636,14 +616,12 @@ jsonRpc:
         assert_eq!(source.service.kind, ServiceAuthoringKind::Service);
         let http = source.http.as_ref().unwrap();
         let typed = &http.entries[&GatewayEntryKey::parse("typed").unwrap()];
-        assert_eq!(typed.host, "*");
         assert_eq!(typed.method, "POST");
         assert_eq!(
             typed.kind,
             skiff_artifact_model::GatewayAdapterKind::TypedJson
         );
         let raw = &http.entries[&GatewayEntryKey::parse("raw").unwrap()];
-        assert_eq!(raw.host, "api.example.com");
         assert_eq!(raw.pre.as_deref(), Some("handlers.prepare"));
         let websocket = source.websocket.as_ref().unwrap();
         assert_eq!(websocket.path, "/socket");
@@ -970,8 +948,8 @@ jsonRpc:
                 "entry: { method: GET, path: /users, kind: typedJson, handler: users.read, pre: prepare }",
             ),
             (
-                "invalid-host",
-                "entry: { host: \"bad host\", method: GET, path: /users, kind: typedJson, handler: users.read }",
+                "legacy-host",
+                "entry: { host: api.example.com, method: GET, path: /users, kind: typedJson, handler: users.read }",
             ),
             (
                 "invalid-path",
@@ -1118,6 +1096,20 @@ second:
 "#;
         let error = read_http_yml("duplicate-selector", duplicate_selector).unwrap_err();
         assert!(error.to_string().contains("duplicates the selector"));
+    }
+
+    #[test]
+    fn http_routes_are_validated_per_service_root() {
+        let route = r#"
+models:
+  method: GET
+  path: /v1/models
+  kind: typedJson
+  handler: models.list
+"#;
+        let first = read_http_yml("service-one-shared-route", route).unwrap();
+        let second = read_http_yml("service-two-shared-route", route).unwrap();
+        assert_eq!(first.http.unwrap(), second.http.unwrap());
     }
 
     #[test]

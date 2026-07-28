@@ -1,5 +1,4 @@
 ping:
-  host: websocket-fixture.skiff.localhost
   method: GET
   path: /ping
   kind: typedJson
