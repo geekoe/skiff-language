@@ -3,6 +3,10 @@ use skiff_runtime_model::runtime_value::{RuntimeValue, RuntimeValueCarrier};
 
 use super::*;
 
+#[cfg(test)]
+#[path = "activation_tests.rs"]
+mod activation_tests;
+
 impl EvalContext<'_> {
     pub(in crate::eval_context) async fn eval_activation_relative_service_call(
         &mut self,
@@ -30,25 +34,19 @@ impl EvalContext<'_> {
             }
         }
 
-        // Frozen R1 handoff: R4 replaces this pre-suspend route atomically with
-        // provider unary actual-Pending while preserving serverStream setup.
-        let frame = self.context.actor_execution_frame().cloned();
-        if let Some(frame) = &frame {
-            frame.suspend(self.heap)?;
-        }
-        let result = super::super::super::assembly_execution::dispatch_service_call(
-            self,
+        let operation = self.prepare_activation_relative_service_call(
             call,
             instruction,
             values
                 .into_iter()
                 .map(RuntimeValueCarrier::into_value)
                 .collect::<Vec<RuntimeValue>>(),
-        )
-        .await;
-        if let Some(frame) = frame {
-            frame.resume(self.heap, &self.execution).await?;
-        }
-        result.map(Into::into)
+        )?;
+        let operation = match operation.ready_result(self) {
+            Ok(result) => return result.map(Into::into),
+            Err(operation) => operation,
+        };
+        let completed = self.await_actual_pending(operation.wait()).await?;
+        completed.finalize(self).map(Into::into)
     }
 }

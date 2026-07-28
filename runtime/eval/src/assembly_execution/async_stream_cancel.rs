@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::time::Instant;
 use std::{
     collections::BTreeMap,
     fmt,
@@ -7,7 +9,6 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
-    time::Instant,
 };
 
 use serde_json::Value;
@@ -27,7 +28,7 @@ use skiff_runtime_capability_context::{
     StreamInternalItem, StreamLifetimeGuard, StreamLifetimeGuardApi, StreamRuntimeError,
     StreamRuntimeResult,
 };
-use skiff_runtime_linked_program::CallIr;
+use skiff_runtime_linked_program::{ActivationRelativeServiceCall, CallIr};
 use skiff_runtime_model::{
     request_heap::RequestHeap,
     runtime_value::RuntimeValue,
@@ -40,7 +41,7 @@ use super::{
     callback_native::CallbackNativeCapabilityHooks,
     service_error_channel::{
         CanonicalServiceErrorChannel, RestrictedServiceDiagnosticExportContext,
-        ServiceErrorExportContext,
+        ServiceErrorExportContext, ServiceErrorImportContext,
     },
     AssemblyExecutionHandoffError, AssemblyExecutionLaneKind, RuntimeExecutionProjection,
 };
@@ -49,7 +50,10 @@ use crate::{
     env::Env,
     error::{stream_runtime_error_from_eval, Result, RuntimeError},
     eval_context::EvalContext,
-    program_execution::{OwnedProgramExecutionContext, ProgramExecutionContext},
+    program_execution::{
+        ExecutionCheckpoint, ExecutionCheckpointKind, OwnedProgramExecutionContext,
+        ProgramExecutionContext,
+    },
     program_stream::{executable_body_contains_emit, linked_stream_item_type},
     runtime_ops::{runtime_from_wire, runtime_from_wire_required_plan, runtime_to_wire},
     type_projection::EvalTypeProjection,
@@ -59,9 +63,44 @@ use crate::{
 mod prepared_unary;
 #[allow(unused_imports)]
 pub(crate) use prepared_unary::{execute_provider_unary, prepare_provider_unary};
+mod current_scope;
 
 static PROVIDER_STREAM_TASKS_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(test)]
+static ACTIVATION_RELATIVE_WAIT_GATE: std::sync::LazyLock<
+    std::sync::Mutex<Option<ActivationRelativeWaitGateState>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+#[cfg(test)]
+struct ActivationRelativeWaitGateState {
+    request_generation: u64,
+    started: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
+}
+
+#[cfg(test)]
+pub(crate) struct ActivationRelativeWaitGate {
+    started: tokio::sync::oneshot::Receiver<()>,
+    release: tokio::sync::oneshot::Sender<()>,
+}
+
+#[cfg(test)]
+impl ActivationRelativeWaitGate {
+    pub(crate) fn has_started(&mut self) -> bool {
+        self.started.try_recv().is_ok()
+    }
+
+    pub(crate) fn release(self) {
+        self.release
+            .send(())
+            .expect("activation-relative wait gate receiver remains installed");
+    }
+}
+
+#[cfg(test)]
+#[path = "async_stream_cancel/current_scope_tests.rs"]
+mod current_scope_tests;
 #[cfg(test)]
 mod prepared_unary_tests;
 
@@ -76,9 +115,12 @@ pub(crate) async fn execute_service_call(
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,
 ) -> Result<RuntimeValue> {
-    if let Err(error) = context.execution.poll_execution_budget() {
+    if let Err(error) = context.context.checkpoint(ExecutionCheckpoint::new(
+        ExecutionCheckpointKind::GeneratedChunk,
+        0,
+    )) {
         target.provider_request().cancel();
-        return Err(error.into());
+        return Err(error);
     }
     match AsyncStreamSpawn::for_target(&target) {
         AsyncStreamSpawn::ProviderUnary => {
@@ -92,6 +134,224 @@ pub(crate) async fn execute_service_call(
             start_provider_stream(context, call, target, args)
         }
     }
+}
+
+pub(crate) struct PreparedActivationRelativeServiceCall {
+    operation: PreparedActivationRelativeServiceOperation,
+    request_generation: u64,
+    remote_service_id: String,
+    remote_operation_id: String,
+    call_site: InstructionSourceSite,
+}
+
+enum PreparedActivationRelativeServiceOperation {
+    Ready(Result<RuntimeValue>),
+    Unary(prepared_unary::PreparedProviderUnary),
+}
+
+pub(crate) struct CompletedActivationRelativeServiceCall {
+    completed: prepared_unary::CompletedProviderUnary,
+    remote_service_id: String,
+    remote_operation_id: String,
+    call_site: InstructionSourceSite,
+}
+
+impl EvalContext<'_> {
+    #[cfg(test)]
+    pub(crate) fn install_activation_relative_wait_gate_for_test(
+        request_generation: u64,
+    ) -> ActivationRelativeWaitGate {
+        let (started, started_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        let previous = ACTIVATION_RELATIVE_WAIT_GATE
+            .lock()
+            .expect("activation-relative wait gate mutex poisoned")
+            .replace(ActivationRelativeWaitGateState {
+                request_generation,
+                started,
+                release: release_rx,
+            });
+        assert!(
+            previous.is_none(),
+            "activation-relative wait gates are installed one at a time"
+        );
+        ActivationRelativeWaitGate {
+            started: started_rx,
+            release,
+        }
+    }
+
+    pub(crate) fn prepare_activation_relative_service_call(
+        &mut self,
+        call: &CallIr,
+        instruction: &ActivationRelativeServiceCall,
+        args: Vec<RuntimeValue>,
+    ) -> Result<PreparedActivationRelativeServiceCall> {
+        self.context.checkpoint(ExecutionCheckpoint::new(
+            ExecutionCheckpointKind::GeneratedChunk,
+            0,
+        ))?;
+        let target = self
+            .context
+            .runtime_assembly_target()?
+            .resolve_service_call(instruction)?;
+        super::record_in_process_boundary_dispatch(
+            super::InProcessBoundaryDispatchOrigin::InternalServiceCall,
+            &target,
+        );
+        let request_generation = target.provider_request().generation();
+        let remote_service_id = target.contract().service_id.clone();
+        let remote_operation_id = target.descriptor().operation_id.as_str().to_string();
+        let operation = match &target.descriptor().contract.stream {
+            BoundaryStreamContract::Unsupported { reason } => {
+                return Err(super::unsupported_stream_error(
+                    &target.descriptor().operation_id,
+                    reason,
+                ));
+            }
+            BoundaryStreamContract::Unary => PreparedActivationRelativeServiceOperation::Unary(
+                prepare_provider_unary(self, call, target, args)?,
+            ),
+            BoundaryStreamContract::ServerStream { .. } => {
+                PreparedActivationRelativeServiceOperation::Ready(start_provider_stream(
+                    self, call, target, args,
+                ))
+            }
+        };
+        Ok(PreparedActivationRelativeServiceCall {
+            operation,
+            request_generation,
+            remote_service_id,
+            remote_operation_id,
+            call_site: call.site.clone(),
+        })
+    }
+}
+
+impl PreparedActivationRelativeServiceCall {
+    pub(crate) fn ready_result(
+        self,
+        context: &mut EvalContext<'_>,
+    ) -> std::result::Result<Result<RuntimeValue>, Self> {
+        let Self {
+            operation,
+            request_generation,
+            remote_service_id,
+            remote_operation_id,
+            call_site,
+        } = self;
+        match operation {
+            PreparedActivationRelativeServiceOperation::Ready(result) => {
+                Ok(finish_activation_relative_service_result(
+                    context,
+                    &remote_service_id,
+                    &remote_operation_id,
+                    &call_site,
+                    result,
+                ))
+            }
+            PreparedActivationRelativeServiceOperation::Unary(prepared) => Err(Self {
+                operation: PreparedActivationRelativeServiceOperation::Unary(prepared),
+                request_generation,
+                remote_service_id,
+                remote_operation_id,
+                call_site,
+            }),
+        }
+    }
+
+    pub(crate) fn wait(
+        self,
+    ) -> impl Future<Output = CompletedActivationRelativeServiceCall> + Send + 'static {
+        async move {
+            let PreparedActivationRelativeServiceCall {
+                operation,
+                request_generation,
+                remote_service_id,
+                remote_operation_id,
+                call_site,
+            } = self;
+            #[cfg(not(test))]
+            let _ = request_generation;
+            #[cfg(test)]
+            wait_activation_relative_gate_for_test(request_generation).await;
+            let PreparedActivationRelativeServiceOperation::Unary(prepared) = operation else {
+                unreachable!("synchronous activation-relative service calls are not awaited")
+            };
+            CompletedActivationRelativeServiceCall {
+                completed: prepared.wait().await,
+                remote_service_id,
+                remote_operation_id,
+                call_site,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+async fn wait_activation_relative_gate_for_test(request_generation: u64) {
+    let gate = {
+        let mut installed = ACTIVATION_RELATIVE_WAIT_GATE
+            .lock()
+            .expect("activation-relative wait gate mutex poisoned");
+        match installed.as_ref() {
+            Some(gate) if gate.request_generation == request_generation => installed.take(),
+            Some(_) | None => None,
+        }
+    };
+    if let Some(gate) = gate {
+        let _ = gate.started.send(());
+        let _ = gate.release.await;
+    }
+}
+
+impl CompletedActivationRelativeServiceCall {
+    pub(crate) fn finalize(self, context: &mut EvalContext<'_>) -> Result<RuntimeValue> {
+        let result = self.completed.finalize(context.heap);
+        finish_activation_relative_service_result(
+            context,
+            &self.remote_service_id,
+            &self.remote_operation_id,
+            &self.call_site,
+            result,
+        )
+    }
+}
+
+fn finish_activation_relative_service_result(
+    context: &mut EvalContext<'_>,
+    remote_service_id: &str,
+    remote_operation_id: &str,
+    call_site: &InstructionSourceSite,
+    result: Result<RuntimeValue>,
+) -> Result<RuntimeValue> {
+    let Err(RuntimeError::FixedServiceFailure(error)) = result else {
+        return result;
+    };
+    let caller_stack_at_site = context.context.exception_stack_for_site(call_site.clone());
+    let caller_target = context.context.runtime_assembly_target()?;
+    let exception = CanonicalServiceErrorChannel::import_caller_failure(
+        error,
+        ServiceErrorImportContext {
+            execution_image: caller_target.execution_image().as_ref(),
+            type_view: caller_target.execution_projection().type_view(),
+            caller_heap: context.heap,
+            caller_package_build_id: caller_target
+                .activation_context()
+                .implementation_package_build_id(),
+            caller_executable_addr: context.addr,
+            call_site,
+            caller_stack_at_site: &caller_stack_at_site,
+            remote_service_id,
+            remote_operation_id,
+        },
+    )?;
+    super::record_in_process_boundary_failure_import(
+        caller_target.request_activation().generation(),
+        caller_target.activation_context().activation_id().as_str(),
+        &exception,
+    );
+    Err(RuntimeError::UserException(exception))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -135,21 +395,23 @@ async fn await_provider_unary<F>(
 where
     F: Future<Output = Result<RuntimeValue>>,
 {
-    let cancellation = execution.cancellation_token();
-    let deadline = wait_for_deadline(execution.deadline());
-    tokio::pin!(provider_future);
-    tokio::pin!(deadline);
-    tokio::select! {
-        biased;
-        _ = cancellation.wait_cancelled() => {
+    let scope = match current_scope::from_execution(execution) {
+        Ok(scope) => scope,
+        Err(error) => {
+            provider_request.cancel();
+            return ProviderUnaryWaitTerminal::DeadlineExceeded(error);
+        }
+    };
+    match current_scope::wait(scope, provider_future).await {
+        Ok(result) => ProviderUnaryWaitTerminal::Provider(result),
+        Err(error) if error.is_cancelled() => {
             provider_request.cancel();
             ProviderUnaryWaitTerminal::CallerCancelled
         }
-        _ = &mut deadline => {
+        Err(error) => {
             provider_request.cancel();
-            ProviderUnaryWaitTerminal::DeadlineExceeded(deadline_error(execution))
+            ProviderUnaryWaitTerminal::DeadlineExceeded(error)
         }
-        result = &mut provider_future => ProviderUnaryWaitTerminal::Provider(result),
     }
 }
 
@@ -481,7 +743,8 @@ fn is_deadline_exceeded(error: &RuntimeError) -> bool {
         RuntimeError::ExecutionBudgetExceeded {
             reason: crate::error::BudgetReason::DeadlineExceeded,
             ..
-        } => true,
+        }
+        | RuntimeError::ScopeTerminal(_) => true,
         RuntimeError::WithSource { error, .. }
         | RuntimeError::WithDiagnosticFrame { error, .. } => is_deadline_exceeded(error),
         _ => false,
@@ -503,18 +766,20 @@ async fn await_provider_stream_terminal<F>(
 where
     F: Future<Output = Result<RuntimeValue>>,
 {
-    let request_cancellation = execution.cancellation_token();
-    let deadline = wait_for_deadline(execution.deadline());
-    tokio::pin!(provider_future);
-    tokio::pin!(deadline);
+    let scope = match current_scope::from_owned_execution(execution) {
+        Ok(scope) => scope,
+        Err(error) => return ProviderTerminal::DeadlineExceeded(error),
+    };
+    let provider = current_scope::wait(scope, provider_future);
+    tokio::pin!(provider);
     tokio::select! {
         biased;
         _ = stream_cancel.wait_cancelled() => ProviderTerminal::ConsumerCancelled,
-        _ = request_cancellation.wait_cancelled() => ProviderTerminal::RequestCancelled,
-        _ = &mut deadline => {
-            ProviderTerminal::DeadlineExceeded(deadline_error(&execution.borrow()))
+        result = &mut provider => match result {
+            Ok(result) => ProviderTerminal::Provider(result),
+            Err(error) if error.is_cancelled() => ProviderTerminal::RequestCancelled,
+            Err(error) => ProviderTerminal::DeadlineExceeded(error),
         }
-        result = &mut provider_future => ProviderTerminal::Provider(result),
     }
 }
 
@@ -534,22 +799,26 @@ async fn await_provider_publication<F>(
 where
     F: Future<Output = ()>,
 {
-    let request_cancellation = execution.cancellation_token();
-    let deadline = wait_for_deadline(execution.deadline());
+    let scope = match current_scope::from_owned_execution(execution) {
+        Ok(scope) => scope,
+        Err(error) => return ProviderPublication::DeadlineExceeded(error),
+    };
+    let publication = current_scope::wait(scope, publication);
     tokio::pin!(publication);
-    tokio::pin!(deadline);
     tokio::select! {
         biased;
         _ = stream_cancel.wait_cancelled() => ProviderPublication::ConsumerCancelled,
-        _ = request_cancellation.wait_cancelled() => {
-            provider_request.cancel();
-            ProviderPublication::RequestCancelled
-        },
-        _ = &mut deadline => {
-            provider_request.cancel();
-            ProviderPublication::DeadlineExceeded(deadline_error(&execution.borrow()))
+        result = &mut publication => match result {
+            Ok(()) => ProviderPublication::Published,
+            Err(error) if error.is_cancelled() => {
+                provider_request.cancel();
+                ProviderPublication::RequestCancelled
+            }
+            Err(error) => {
+                provider_request.cancel();
+                ProviderPublication::DeadlineExceeded(error)
+            }
         }
-        _ = &mut publication => ProviderPublication::Published,
     }
 }
 
@@ -571,14 +840,7 @@ fn validate_supported_callback_contract(
     Ok(())
 }
 
-async fn wait_for_deadline(deadline: Option<Instant>) {
-    if let Some(deadline) = deadline {
-        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
-    } else {
-        std::future::pending::<()>().await;
-    }
-}
-
+#[cfg(test)]
 fn deadline_error(execution: &ExecutionControl<'_>) -> RuntimeError {
     match execution.poll_execution_budget() {
         Err(
@@ -611,23 +873,14 @@ async fn await_stream_item_publication<T, F>(
 where
     F: Future<Output = StreamRuntimeResult<T>>,
 {
-    let request_cancellation = execution.cancellation_token();
-    let deadline = wait_for_deadline(execution.deadline());
-    tokio::pin!(provider_future);
-    tokio::pin!(deadline);
-    tokio::select! {
-        biased;
-        _ = request_cancellation.wait_cancelled() => {
+    let scope =
+        current_scope::from_owned_execution(execution).map_err(stream_runtime_error_from_eval)?;
+    match current_scope::wait(scope, provider_future).await {
+        Ok(result) => result,
+        Err(error) => {
             provider_request.cancel();
-            Err(StreamRuntimeError::cancelled())
+            Err(stream_runtime_error_from_eval(error))
         }
-        _ = &mut deadline => {
-            provider_request.cancel();
-            Err(stream_runtime_error_from_eval(deadline_error(
-                &execution.borrow(),
-            )))
-        }
-        result = &mut provider_future => result,
     }
 }
 
@@ -1628,7 +1881,7 @@ mod tests {
         );
     }
 
-    fn provider_stream_failure_task() -> (
+    pub(super) fn provider_stream_failure_task() -> (
         ProviderStreamTask,
         u64,
         StreamRuntime,
@@ -1951,7 +2204,7 @@ mod tests {
         .is_err());
     }
 
-    fn activation(service: &str, package_build: &str) -> Arc<ActivationContext> {
+    pub(super) fn activation(service: &str, package_build: &str) -> Arc<ActivationContext> {
         ActivationContext::new(
             ActivationIdentity {
                 assembly_identity: AssemblyIdentity::new("assembly:async-stream"),

@@ -52,6 +52,8 @@ use crate::{
     error::{stream_runtime_error_from_eval, Result, RuntimeError},
 };
 
+mod current_scope;
+
 pub struct ProgramInvocationInput<'a> {
     pub request: RequestPayloadContext<'a>,
     pub operation: &'a str,
@@ -1010,20 +1012,18 @@ impl Interpreter {
     where
         F: FnMut(Value, &RuntimeTypePlan) -> std::result::Result<(), E>,
     {
-        let execution = context.execution();
         let stream_runtime = context.stream_runtime();
         let mut cleanup = StreamConsumerCleanup::new(stream_runtime.clone(), stream_value);
         loop {
-            map_eval_error(execution.add_instruction_units(1))?;
-            let item = map_eval_error(
-                stream_runtime
-                    .next_with_cancellation(
-                        stream_value,
-                        cancel_signals,
-                        [execution.cancellation_token()],
-                    )
-                    .await,
-            )?;
+            let item = current_scope::next(
+                &context.execution_context,
+                &stream_runtime,
+                stream_value,
+                cancel_signals,
+            )
+            .await
+            .map_err(EvalStreamExecutionError::Eval)?;
+            let item = map_eval_error(item)?;
             let item = match map_eval_error(Self::external_wire_stream_item(
                 item,
                 "server-stream response",
@@ -1108,20 +1108,13 @@ impl Interpreter {
     where
         F: FnMut(HttpBoundaryResponseStreamEvent) -> std::result::Result<(), E>,
     {
-        let execution = context.execution();
         let stream_runtime = context.stream_runtime();
         let mut cleanup = StreamConsumerCleanup::new(stream_runtime.clone(), stream_value);
         loop {
-            map_eval_error(execution.add_instruction_units(1))?;
-            let item = map_eval_error(
-                stream_runtime
-                    .next_with_cancellation(
-                        stream_value,
-                        cancel_signals,
-                        [execution.cancellation_token()],
-                    )
-                    .await,
-            )?;
+            let item = current_scope::next(context, &stream_runtime, stream_value, cancel_signals)
+                .await
+                .map_err(EvalStreamExecutionError::Eval)?;
+            let item = map_eval_error(item)?;
             let mut heap = context.request_heap();
             let item = if allow_internal_items {
                 match map_eval_error(crate::program_stream::materialize_runtime_stream_item(
@@ -1610,6 +1603,10 @@ mod recoverable_spawn_payload_tests {
 
 #[cfg(test)]
 mod stream_cleanup_tests;
+
+#[cfg(test)]
+#[path = "program_invocation/current_scope_tests.rs"]
+mod current_scope_tests;
 
 #[cfg(all(test, any()))]
 mod tests {
