@@ -252,7 +252,6 @@ fn package_test_gateway_inputs(
         vec![DeploymentIngressBinding {
             selector: IngressSelector {
                 protocol: IngressProtocol::Http,
-                host: format!("case-{index}.package-test.skiff.localhost"),
                 method: Some("POST".to_string()),
                 path: format!("/__skiff/package-test/{index}"),
             },

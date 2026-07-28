@@ -43,13 +43,21 @@ fn package_test_control_body_is_the_exact_f385_http_request() {
                 "kind": "runtimeAssembly",
                 "assemblyIdentity": test_support::ASSEMBLY_B,
                 "assemblyGeneration": 7,
+                "deployment": {
+                    "serviceId": "test.skiff/package/example",
+                    "contractVersion": "1.0.0",
+                    "deploymentRevision": "test-control",
+                    "deploymentArtifactIdentity": concat!(
+                        "skiff-deployment-artifact-v4:sha256:",
+                        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                    ),
+                },
                 "gatewayEntryIdentity": concat!(
                     "skiff-gateway-entry-v2:sha256:",
                     "b97af7d9ff0b9ddbfcb6ea8b19e6173722095c99f1566ccd6b1a6fd2ead3f305"
                 ),
                 "ingress": {
                     "protocol": "http",
-                    "host": "case-0.package-test.skiff.localhost",
                     "method": "POST",
                     "path": "/__skiff/package-test/0",
                 },
@@ -57,7 +65,7 @@ fn package_test_control_body_is_the_exact_f385_http_request() {
             "mode": "unary",
             "httpRequest": {
                 "method": "POST",
-                "url": "http://case-0.package-test.skiff.localhost/__skiff/package-test/0",
+                "url": "http://localhost/__skiff/package-test/0",
                 "path": "/__skiff/package-test/0",
                 "query": [],
                 "headers": [{
@@ -72,7 +80,6 @@ fn package_test_control_body_is_the_exact_f385_http_request() {
     let encoded = serde_json::to_string(&body).unwrap();
     for retired in [
         "contractOperationId",
-        "deployment",
         "gatewayEntryKey",
         "testEffectsEnabled",
         "testEffectDoubles",
@@ -164,7 +171,6 @@ fn package_test_entrypoint() -> CanonicalPackageTestEntrypoint {
         },
         selector: skiff_artifact_model::IngressSelector {
             protocol: IngressProtocol::Http,
-            host: "case-0.package-test.skiff.localhost".to_string(),
             method: Some("POST".to_string()),
             path: "/__skiff/package-test/0".to_string(),
         },
@@ -173,7 +179,7 @@ fn package_test_entrypoint() -> CanonicalPackageTestEntrypoint {
             "contractVersion": "1.0.0",
             "deploymentRevision": "test-control",
             "deploymentArtifactIdentity": concat!(
-                "skiff-deployment-artifact-v3:sha256:",
+                "skiff-deployment-artifact-v4:sha256:",
                 "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
             ),
         }))

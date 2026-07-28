@@ -1584,8 +1584,8 @@ fn assert_current_scope_source_artifact_receipt(repository: &Path) {
     assert_eq!(main.unit.opcode_table_version, "skiff-opcode-table-v2");
     assert_eq!(package.schema_version, "skiff-package-artifact-v9");
     assert_eq!(contract.schema_version, "skiff-service-contract-v5");
-    assert_eq!(deployment.schema_version, "skiff-service-deployment-v3");
-    assert_eq!(assembly.schema_version, "skiff-runtime-assembly-v2");
+    assert_eq!(deployment.schema_version, "skiff-service-deployment-v4");
+    assert_eq!(assembly.schema_version, "skiff-runtime-assembly-v3");
     assert_eq!(
         skiff_artifact_identity::package_artifact_ref(&package).unwrap(),
         receipt.consumer_package
@@ -1698,11 +1698,11 @@ fn assert_current_scope_source_artifact_receipt(repository: &Path) {
             "skiff-package-build-v10:sha256:9b03476e93f5ccb66dc69ff899f4a8fb9c68593e70c5aeda94d4e865aab688ad",
             "skiff-package-local-abi-v7:sha256:605b18a2b130957f4b1feec499583334601b3788514ea851530b6623a017aed4",
             "skiff-service-protocol-v5:sha256:9ea7ac440bd594ef31632c1c1914b40f2e92957e7fb0f73f587f4cb4d8563fa5",
-            "skiff-deployment-artifact-v3:sha256:aa74be018958d2e2375b91e500e4f73b6fea8fb97c4d694962d6745fe475791c",
+            "skiff-deployment-artifact-v4:sha256:bfa01d12d90d7a9e5af9da153b63862270a52eaffe59383a4563cff2a0dde2a4",
             "skiff-gateway-entry-v2:sha256:0fd289d7eec4e03b01e9e8f5633aedd7e1cc64158fa7932f99a9686e559c02f2",
             "skiff-gateway-entry-v2:sha256:1aef41f397b7c817110cb0cc74a7b472ba9732c5ac6bcfe6e219e3ac51ab6bd0",
             "skiff-gateway-entry-v2:sha256:f385624021966bab998385e1fd2c88804b51992f15f9c9d76c05d3e17a75018d",
-            "skiff-runtime-assembly-v2:sha256:ec66d8a209e65198ee5b82086a365a4b3a98021ef8117e2572c66fee8eac5f6e",
+            "skiff-runtime-assembly-v3:sha256:ce8c979de4c6786ee9c2fbf2ad01fbfa2271b33a074682e2e66f5a77654f6688",
         ),
         "checked-in current-scope source must retain its exact artifact identity tuple"
     );
@@ -1778,7 +1778,7 @@ fn assert_current_scope_source_artifact_receipt(repository: &Path) {
     assert!(
         old_identity_error
             .to_string()
-            .contains("skiff-runtime-assembly-v2"),
+            .contains("skiff-runtime-assembly-v3"),
         "{old_identity_error}"
     );
 }
@@ -2032,7 +2032,6 @@ fn assert_live_service_receipt(
                 .find(|binding| binding.gateway_entry_key == key)
                 .unwrap_or_else(|| panic!("missing ingress {}", expected.key));
             assert_eq!(ingress.selector.protocol, IngressProtocol::Http);
-            assert_eq!(ingress.selector.host, "*");
             assert_eq!(ingress.selector.method.as_deref(), Some(expected.method));
             assert_eq!(ingress.selector.path, expected.path);
 
@@ -2258,10 +2257,6 @@ fn package_test_http_fixture_is_zero_operation_reference_closed_and_fail_closed(
     );
     assert_eq!(entrypoint.mode, GatewayDispatchMode::Unary);
     assert_eq!(entrypoint.selector.protocol, IngressProtocol::Http);
-    assert_eq!(
-        entrypoint.selector.host,
-        "case-0.package-test.skiff.localhost"
-    );
     assert_eq!(entrypoint.selector.method.as_deref(), Some("POST"));
     assert_eq!(entrypoint.selector.path, "/__skiff/package-test/0");
     let entry = &deployment.gateway_entries[&entrypoint.gateway_entry_key];
@@ -3062,40 +3057,40 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
             "test.skiff/package-service-websocket-smoke",
             "marker: main.marker\n",
             "return marker()",
-            "skiff-package-build-v10:sha256:87120182c6a652e8d52fa530f0a93d86490bb02a0141d6c3924bf82bddfd50ad",
+            "skiff-package-build-v10:sha256:8b2040cc626b711035fb1981698af641960a1a61eba8e4a788a1da22cc0c0c32",
             "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
-            "skiff-deployment-artifact-v3:sha256:5b6d9b945e1fbd50c50955821e9a2083633e7534f9f97d84331588152a56cf1f",
-            "skiff-runtime-assembly-v2:sha256:fe087b093fb2f2423e29d47ebb73061ad51db875f8efb60e84c5897293fbd0b5",
+            "skiff-deployment-artifact-v4:sha256:66c3b0dec0b771edf36d6f5a51e800989d2d46449722723beff128843da516e9",
+            "skiff-runtime-assembly-v3:sha256:8b2d4a7f67ac024598fca0c7e8cd8f7a06a7cb05eaf88db8509be822ecc2bbfa",
         ),
         (
             "package-service-websocket-generation-a",
             "test.skiff/package-service-websocket-smoke",
             "marker: main.marker\n",
             "return marker()",
-            "skiff-package-build-v10:sha256:c6573cdecfe1ad4e94599fa04687a487af86e8afea1f73d0fdd7f1a77e792f94",
+            "skiff-package-build-v10:sha256:edd5d2e760040d3a63ea776e461de1c62d38fe013467f9c417945d1f2a94d472",
             "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
-            "skiff-deployment-artifact-v3:sha256:7aef5d6e47c990787e86c81dec0d90be4e4eb87c440e8beeb793a2d220dfd1bb",
-            "skiff-runtime-assembly-v2:sha256:c08e8c51407a5c0a86e91c82c7ed826cc6a55da03ac7d72a42366c95a588ce0a",
+            "skiff-deployment-artifact-v4:sha256:cdca3dc670c0099ca89d94f45d2a879f8b660147a87db222cd91eb7b3b361605",
+            "skiff-runtime-assembly-v3:sha256:5f92066b34ff1eb13ada3fcf18506b9a1a622927397456ac2561dbf52c043a84",
         ),
         (
             "package-service-websocket-generation-b",
             "test.skiff/package-service-websocket-smoke",
             "marker: main.marker\n",
             "return marker()",
-            "skiff-package-build-v10:sha256:b50bdc911aec6a6d32365470dd6edacb2e00a3929116591dfc10b899fa846772",
+            "skiff-package-build-v10:sha256:1e75d027d0703be8296f8525c7d7fed60543d57c76852036e5427dbb2acc62cb",
             "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
-            "skiff-deployment-artifact-v3:sha256:c624240fb9b16f83c5ae8f0208fc889ee61ca4572187b29643eebd8c02f5c2c8",
-            "skiff-runtime-assembly-v2:sha256:152141386adc7d9ff278fed5556f5da9ce856cd2cf864e905985143ce75626f0",
+            "skiff-deployment-artifact-v4:sha256:a2fef6e0bdbb22873797b80cf81e711ed50faaa219d09d1b48d81d6bed3e9057",
+            "skiff-runtime-assembly-v3:sha256:8ba30a03d659f95ee0c6a20a1f5bccfaf3fd25068592a62fc175c4080e6174c9",
         ),
         (
             "package-service-i02-spawn-submit",
             "test.skiff/package-service-i02-spawn-submit",
             "marker: main.submitSpawnReceipt\n",
             "return submitSpawnReceipt()",
-            "skiff-package-build-v10:sha256:71d2738734ee702123989856a54769acfd19b51377c036f87d68111145a124fe",
+            "skiff-package-build-v10:sha256:66c1d911eedb821c27e4c8433189d432652ea875999ccb245dee55a20595d08d",
             "skiff-package-local-abi-v7:sha256:3db7056f815676834489b34a069b5016f05973b3be9379eb55736a545d7dcdf9",
-            "skiff-deployment-artifact-v3:sha256:7971d36aafcc10293b29761f46b3e13fb673d6b3699d0ed644fbd52dd0460796",
-            "skiff-runtime-assembly-v2:sha256:938e19fe6f44a110aa0a08f32ed772ad0c1d771e41c85825712e28a824f92654",
+            "skiff-deployment-artifact-v4:sha256:8041663d03286a3819d7d87ddff8d83f80dc8e5bbfc82ea61cf243ec05aa3690",
+            "skiff-runtime-assembly-v3:sha256:d85a50a47063508f1e90548a6b6373e49cf129ac20118a50d679c9b382548998",
         ),
     ] {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

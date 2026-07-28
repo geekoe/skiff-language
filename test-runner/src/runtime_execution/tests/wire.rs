@@ -380,7 +380,7 @@ fn valid_package_test_dispatch_response() -> Value {
     serde_json::json!({
         "ok": true,
         "header": {
-            "schemaVersion": "skiff-runtime-frame-v1",
+            "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
             "type": "response.end",
             "requestId": "package-test-request-1",
             "payloadPresent": true,
