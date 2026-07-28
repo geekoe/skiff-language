@@ -830,3 +830,6 @@ fn service_db_selector(selector: DbOneCommandSelector) -> DbOneSelector {
         DbOneCommandSelector::Query { query, order } => DbOneSelector::Query { query, order },
     }
 }
+
+#[cfg(test)]
+mod tests;
