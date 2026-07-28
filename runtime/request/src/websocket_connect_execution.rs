@@ -119,6 +119,7 @@ fn validate_request(
                 .activation_context()
                 .identity()
                 .assembly_generation,
+            deployment: target.owner(),
             gateway_entry_identity: target.gateway_entry_identity(),
             websocket_entry_id: target.websocket_entry_id(),
         },
@@ -131,6 +132,7 @@ struct RuntimeWebSocketConnectRequestTargetFacts<'a> {
     selector: &'a skiff_artifact_model::IngressSelector,
     assembly_identity: &'a skiff_artifact_model::AssemblyIdentity,
     assembly_generation: u64,
+    deployment: &'a skiff_artifact_model::ServiceDeploymentRef,
     gateway_entry_identity: &'a skiff_artifact_model::GatewayEntryIdentity,
     websocket_entry_id: &'a skiff_artifact_model::WebSocketEntryId,
 }
@@ -152,11 +154,11 @@ fn validate_request_facts(
     }
     let selector = target.selector;
     if selector.protocol != IngressProtocol::WebSocket
-        || selector.host != header.routing.ingress.host
         || selector.method.is_some()
         || selector.path != header.routing.ingress.path
         || header.routing.assembly_identity != *target.assembly_identity
         || header.routing.assembly_generation != target.assembly_generation
+        || &header.routing.deployment != target.deployment
         || header.routing.gateway_entry_identity != *target.gateway_entry_identity
         || header.websocket_connect.gateway_entry_identity != *target.gateway_entry_identity
         || header.websocket_connect.websocket_entry_id != *target.websocket_entry_id
@@ -201,7 +203,8 @@ fn name_values(
 mod tests {
     use super::*;
     use skiff_artifact_model::{
-        AssemblyIdentity, GatewayEntryIdentity, GatewayEntryKey, IngressSelector, WebSocketEntryId,
+        AssemblyIdentity, DeploymentArtifactIdentity, DeploymentRevision, GatewayEntryIdentity,
+        GatewayEntryKey, IngressSelector, ServiceDeploymentRef, WebSocketEntryId,
         WEBSOCKET_GATEWAY_ENTRY_KEY,
     };
     use skiff_runtime_transport::runtime_assembly_request::{
@@ -217,6 +220,7 @@ mod tests {
         selector: IngressSelector,
         assembly: AssemblyIdentity,
         gateway_identity: GatewayEntryIdentity,
+        deployment: ServiceDeploymentRef,
         websocket_entry_id: WebSocketEntryId,
         header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
     }
@@ -234,9 +238,17 @@ mod tests {
                 "2".repeat(64)
             ))
             .unwrap();
+            let deployment = ServiceDeploymentRef {
+                service_id: "service.websocket".to_string(),
+                contract_version: "1.0.0".to_string(),
+                deployment_revision: DeploymentRevision::new("revision-1"),
+                deployment_artifact_identity: DeploymentArtifactIdentity::new(format!(
+                    "skiff-deployment-artifact-v4:sha256:{}",
+                    "3".repeat(64)
+                )),
+            };
             let selector = IngressSelector {
                 protocol: IngressProtocol::WebSocket,
-                host: "websocket.test".to_string(),
                 method: None,
                 path: "/connect".to_string(),
             };
@@ -252,10 +264,10 @@ mod tests {
                     kind: "runtimeAssembly".to_string(),
                     assembly_identity: assembly.clone(),
                     assembly_generation: 7,
+                    deployment: deployment.clone(),
                     gateway_entry_identity: gateway_identity.clone(),
                     ingress: RuntimeAssemblyWebSocketConnectIngressFrameHeader {
                         protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
-                        host: selector.host.clone(),
                         method: (),
                         path: selector.path.clone(),
                     },
@@ -285,6 +297,7 @@ mod tests {
                 selector,
                 assembly,
                 gateway_identity,
+                deployment,
                 websocket_entry_id,
                 header,
             }
@@ -296,6 +309,7 @@ mod tests {
                 selector: &self.selector,
                 assembly_identity: &self.assembly,
                 assembly_generation: 7,
+                deployment: &self.deployment,
                 gateway_entry_identity: &self.gateway_identity,
                 websocket_entry_id: &self.websocket_entry_id,
             }
@@ -347,9 +361,9 @@ mod tests {
         stale_generation.routing.assembly_generation = 6;
         mutations.push(stale_generation);
 
-        let mut wrong_host = fixture.header.clone();
-        wrong_host.routing.ingress.host = "other.test".to_string();
-        mutations.push(wrong_host);
+        let mut wrong_deployment = fixture.header.clone();
+        wrong_deployment.routing.deployment.service_id = "service.other".to_string();
+        mutations.push(wrong_deployment);
 
         for mutation in mutations {
             assert!(validate_request_facts(fixture.facts(), &mutation).is_err());

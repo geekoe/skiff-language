@@ -256,7 +256,6 @@ mod tests {
             activation_identity: None,
             ingress_selector: Some(IngressSelector {
                 protocol: IngressProtocol::Http,
-                host: "example.test".to_string(),
                 method: Some("POST".to_string()),
                 path: "/entry".to_string(),
             }),

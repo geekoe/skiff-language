@@ -150,14 +150,13 @@ async fn host_http_gateway_exact_route_identity_generation_mode_and_http_metadat
     cases.push(("url", wrong_url));
 
     let mut wrong_url_path = exact.clone();
-    wrong_url_path.http_request.url =
-        format!("http://{}/wrong", wrong_url_path.routing.ingress.host);
+    wrong_url_path.http_request.url = "http://api.example.test/wrong".to_string();
     cases.push(("url-path", wrong_url_path));
 
-    let mut wrong_selector = exact;
-    wrong_selector.routing.ingress.host = "other.test".to_string();
-    wrong_selector.http_request.url = "http://other.test/typed".to_string();
-    cases.push(("selector", wrong_selector));
+    let mut wrong_deployment = exact;
+    wrong_deployment.routing.deployment.service_id =
+        "example.com/other-host-http-gateway-service".to_string();
+    cases.push(("deployment", wrong_deployment));
 
     for (name, mut header) in cases {
         header.request_id = format!("host-http-negative-{name}");
@@ -455,10 +454,10 @@ fn canonical_header(
             kind: "runtimeAssembly".to_string(),
             assembly_identity: route.assembly_identity().clone(),
             assembly_generation: route.generation(),
+            deployment: route.deployment().clone(),
             gateway_entry_identity: route.gateway_entry_identity().clone(),
             ingress: RuntimeAssemblyRequestIngressFrameHeader {
                 protocol: RuntimeAssemblyRequestIngressProtocol::Http,
-                host: selector.host.clone(),
                 method: method.clone(),
                 path: selector.path.clone(),
             },
@@ -473,7 +472,7 @@ fn canonical_header(
         },
         http_request: RuntimeAssemblyHttpRequestFrameHeader {
             method,
-            url: format!("http://{}{}", selector.host, selector.path),
+            url: format!("http://api.example.test{}", selector.path),
             path: selector.path.clone(),
             query: Vec::new(),
             headers: Vec::new(),

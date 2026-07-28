@@ -482,10 +482,7 @@ fn deployment_websocket_entry<'a>(
             "activation {owner:?} WebSocket selector does not join the compiler-owned {WEBSOCKET_GATEWAY_ENTRY_KEY:?} entry"
         );
     }
-    if binding.selector.method.is_some()
-        || binding.selector.host.trim().is_empty()
-        || binding.selector.path.trim().is_empty()
-    {
+    if binding.selector.method.is_some() || binding.selector.path.trim().is_empty() {
         anyhow::bail!(
             "activation {owner:?} WebSocket selector {:?} is not canonical",
             binding.selector
@@ -542,7 +539,6 @@ fn deployment_websocket_entry<'a>(
         };
         if method.is_empty()
             || method_binding.selector.protocol != IngressProtocol::WebSocket
-            || method_binding.selector.host != binding.selector.host
             || method_binding.selector.path != binding.selector.path
         {
             anyhow::bail!(
@@ -805,7 +801,6 @@ mod websocket_admission_tests {
     fn selector(path: &str) -> skiff_artifact_model::IngressSelector {
         skiff_artifact_model::IngressSelector {
             protocol: IngressProtocol::WebSocket,
-            host: "websocket.test".to_string(),
             method: None,
             path: path.to_string(),
         }
@@ -917,13 +912,7 @@ mod websocket_admission_tests {
         }
     }
 
-    fn add_jsonrpc_method(
-        deployment: &mut ServiceDeployment,
-        key: &str,
-        method: &str,
-        host: &str,
-        path: &str,
-    ) {
+    fn add_jsonrpc_method(deployment: &mut ServiceDeployment, key: &str, method: &str, path: &str) {
         let method_key = GatewayEntryKey::parse(key).unwrap();
         let method_surface = websocket_jsonrpc_surface();
         deployment.gateway_entries.insert(
@@ -948,7 +937,6 @@ mod websocket_admission_tests {
         deployment.ingress.push(DeploymentIngressBinding {
             selector: skiff_artifact_model::IngressSelector {
                 protocol: IngressProtocol::WebSocket,
-                host: host.to_string(),
                 method: Some(method.to_string()),
                 path: path.to_string(),
             },
@@ -988,13 +976,7 @@ mod websocket_admission_tests {
             .unwrap()
             .handler = None;
 
-        add_jsonrpc_method(
-            &mut deployment,
-            "status",
-            "status.get",
-            "websocket.test",
-            "/connect",
-        );
+        add_jsonrpc_method(&mut deployment, "status", "status.get", "/connect");
 
         deployment_websocket_entry(&deployment, &owner)
             .expect("handlerless physical entry and exact method sibling must be admitted")
@@ -1005,30 +987,12 @@ mod websocket_admission_tests {
     fn websocket_jsonrpc_target_admission_rejects_duplicate_or_orphan_methods() {
         let owner = owner();
         let mut duplicate = deployment();
-        add_jsonrpc_method(
-            &mut duplicate,
-            "status",
-            "status.get",
-            "websocket.test",
-            "/connect",
-        );
-        add_jsonrpc_method(
-            &mut duplicate,
-            "status-copy",
-            "status.get",
-            "websocket.test",
-            "/connect",
-        );
+        add_jsonrpc_method(&mut duplicate, "status", "status.get", "/connect");
+        add_jsonrpc_method(&mut duplicate, "status-copy", "status.get", "/connect");
         assert!(deployment_websocket_entry(&duplicate, &owner).is_err());
 
         let mut orphan = deployment();
-        add_jsonrpc_method(
-            &mut orphan,
-            "status",
-            "status.get",
-            "websocket.test",
-            "/connect",
-        );
+        add_jsonrpc_method(&mut orphan, "status", "status.get", "/connect");
         orphan
             .gateway_entries
             .remove(&GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap());
@@ -1039,26 +1003,18 @@ mod websocket_admission_tests {
     }
 
     #[test]
-    fn websocket_jsonrpc_target_admission_rejects_owner_host_path_profile_and_identity_mismatch() {
+    fn websocket_jsonrpc_target_admission_rejects_owner_path_profile_and_identity_mismatch() {
         let owner = owner();
         let mut wrong_owner = owner.clone();
         wrong_owner.service_id = "service:other".to_string();
         assert!(deployment_websocket_entry(&deployment(), &wrong_owner).is_err());
 
-        for (host, path) in [("other.test", "/connect"), ("websocket.test", "/other")] {
-            let mut mismatched = deployment();
-            add_jsonrpc_method(&mut mismatched, "status", "status.get", host, path);
-            assert!(deployment_websocket_entry(&mismatched, &owner).is_err());
-        }
+        let mut mismatched = deployment();
+        add_jsonrpc_method(&mut mismatched, "status", "status.get", "/other");
+        assert!(deployment_websocket_entry(&mismatched, &owner).is_err());
 
         let mut wrong_profile = deployment();
-        add_jsonrpc_method(
-            &mut wrong_profile,
-            "status",
-            "status.get",
-            "websocket.test",
-            "/connect",
-        );
+        add_jsonrpc_method(&mut wrong_profile, "status", "status.get", "/connect");
         let physical = wrong_profile
             .gateway_entries
             .get_mut(&GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap())
@@ -1076,7 +1032,6 @@ mod websocket_admission_tests {
             &mut wrong_method_identity,
             "status",
             "status.get",
-            "websocket.test",
             "/connect",
         );
         let physical_identity = wrong_method_identity

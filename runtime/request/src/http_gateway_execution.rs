@@ -185,6 +185,7 @@ fn validate_request(
                 .activation_context()
                 .identity()
                 .assembly_generation,
+            deployment: target.owner(),
             gateway_entry_identity: target.gateway_entry_identity(),
             dispatch_mode: http.dispatch_mode,
             surface_adapter_kind: http.adapter_kind,
@@ -198,6 +199,7 @@ struct HttpGatewayRequestValidationFacts<'a> {
     gateway_entry_key: &'a str,
     assembly_identity: &'a AssemblyIdentity,
     assembly_generation: u64,
+    deployment: &'a skiff_artifact_model::ServiceDeploymentRef,
     gateway_entry_identity: &'a GatewayEntryIdentity,
     dispatch_mode: GatewayDispatchMode,
     surface_adapter_kind: GatewayAdapterKind,
@@ -220,6 +222,7 @@ fn validate_request_facts(
     }
     if header.routing.assembly_identity != *target.assembly_identity
         || header.routing.assembly_generation != target.assembly_generation
+        || &header.routing.deployment != target.deployment
     {
         return Err(RequestError::protocol(
             target.gateway_entry_key,

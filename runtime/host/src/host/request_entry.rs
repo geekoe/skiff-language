@@ -1,4 +1,4 @@
-use skiff_artifact_model::IngressSelector;
+use skiff_artifact_model::ServiceIngressKey;
 use skiff_runtime_request::{BoundaryResponse, RequestCancel, RequestError, RouterWriterMessage};
 use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use skiff_runtime_transport::{response_mapper, TransportError};
@@ -23,15 +23,13 @@ impl RuntimeHost {
     /// `ActiveAssemblyRoute`.
     pub(crate) fn lookup_active_assembly_request_route(
         &self,
-        selector: &IngressSelector,
+        key: &ServiceIngressKey,
     ) -> Result<ActiveAssemblyRoute> {
         let route = self
-            .active_runtime_assembly_route(selector)
+            .active_runtime_assembly_route(key)
             .map_err(|error| RuntimeError::Decode(error.to_string()))?
             .ok_or_else(|| {
-                RuntimeError::Unsupported(format!(
-                    "no active assembly ingress matches {selector:?}"
-                ))
+                RuntimeError::Unsupported(format!("no active assembly ingress matches {key:?}"))
             })?;
         Ok(route)
     }

@@ -1,5 +1,6 @@
 use skiff_artifact_model::{
-    AssemblyIdentity, GatewayAdapterKind, GatewayDispatchMode, GatewayEntryIdentity,
+    AssemblyIdentity, DeploymentArtifactIdentity, DeploymentRevision, GatewayAdapterKind,
+    GatewayDispatchMode, GatewayEntryIdentity, ServiceDeploymentRef,
 };
 use skiff_runtime_transport::{
     protocol::RUNTIME_FRAME_SCHEMA_VERSION,
@@ -21,6 +22,7 @@ const GATEWAY_ENTRY_KEY: &str = "http:users.create";
 struct ValidationFixture {
     assembly_identity: AssemblyIdentity,
     gateway_entry_identity: GatewayEntryIdentity,
+    deployment: ServiceDeploymentRef,
     request_local_generation: u64,
 }
 
@@ -29,6 +31,7 @@ impl ValidationFixture {
         Self {
             assembly_identity: assembly_identity('a'),
             gateway_entry_identity: gateway_entry_identity('b'),
+            deployment: deployment("service.http", 'e'),
             request_local_generation,
         }
     }
@@ -38,6 +41,7 @@ impl ValidationFixture {
             gateway_entry_key: GATEWAY_ENTRY_KEY,
             assembly_identity: &self.assembly_identity,
             assembly_generation: ASSEMBLY_GENERATION,
+            deployment: &self.deployment,
             gateway_entry_identity: &self.gateway_entry_identity,
             dispatch_mode: GatewayDispatchMode::Unary,
             surface_adapter_kind: GatewayAdapterKind::TypedJson,
@@ -58,10 +62,10 @@ impl ValidationFixture {
                 kind: "runtimeAssembly".to_string(),
                 assembly_identity: self.assembly_identity.clone(),
                 assembly_generation: ASSEMBLY_GENERATION,
+                deployment: self.deployment.clone(),
                 gateway_entry_identity: self.gateway_entry_identity.clone(),
                 ingress: RuntimeAssemblyRequestIngressFrameHeader {
                     protocol: RuntimeAssemblyRequestIngressProtocol::Http,
-                    host: "api.example.test".to_string(),
                     method: "POST".to_string(),
                     path: "/users".to_string(),
                 },
@@ -126,12 +130,31 @@ fn runtime_http_gateway_wrong_assembly_or_gateway_identity_fails_closed() {
         "HTTP gateway request does not match the pinned assembly activation",
     );
 
+    let mut wrong_deployment = fixture.header();
+    wrong_deployment.routing.deployment = deployment("service.other", 'f');
+    assert_protocol_error(
+        validate_request_facts(fixture.target_facts(), &wrong_deployment),
+        "HTTP gateway request does not match the pinned assembly activation",
+    );
+
     let mut wrong_gateway = fixture.header();
     wrong_gateway.routing.gateway_entry_identity = gateway_entry_identity('d');
     assert_protocol_error(
         validate_request_facts(fixture.target_facts(), &wrong_gateway),
         "HTTP gateway request identity does not match the exact linked entry",
     );
+}
+
+fn deployment(service_id: &str, fill: char) -> ServiceDeploymentRef {
+    ServiceDeploymentRef {
+        service_id: service_id.to_string(),
+        contract_version: "1.0.0".to_string(),
+        deployment_revision: DeploymentRevision::new("revision-1"),
+        deployment_artifact_identity: DeploymentArtifactIdentity::new(format!(
+            "skiff-deployment-artifact-v4:sha256:{}",
+            fill.to_string().repeat(64)
+        )),
+    }
 }
 
 #[test]

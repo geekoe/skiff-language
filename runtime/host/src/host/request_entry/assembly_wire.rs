@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
     GatewayAdapterKind, GatewayDispatchMode, GatewayProtocolSurface, GatewayWebSocketRpcProfile,
-    IngressProtocol, IngressSelector,
+    IngressProtocol, IngressSelector, ServiceIngressKey,
 };
 use skiff_runtime_capability_context::ExecutionBudgetReason;
 use skiff_runtime_request::{RequestError, RouterWriterMessage};
@@ -14,7 +14,7 @@ use skiff_runtime_transport::runtime_assembly_request::{
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::mpsc;
 use tracing::error;
-use url::{Position, Url};
+use url::Url;
 
 use super::{request_error_into_runtime_error, response_event_into_transport_message};
 use crate::{
@@ -124,7 +124,11 @@ impl RuntimeHost {
     ) -> Result<AdmittedWebSocketConnectRequest> {
         validate_websocket_connect_header(&header, &body)?;
         let selector = websocket_connect_ingress_selector(&header);
-        let route = self.lookup_active_assembly_request_route(&selector)?;
+        let key = ServiceIngressKey {
+            deployment: header.routing.deployment.clone(),
+            selector: selector.clone(),
+        };
+        let route = self.lookup_active_assembly_request_route(&key)?;
         validate_websocket_connect_route(&header, &selector, &route)?;
         if route.entry().optional_handler().is_none()
             && !route
@@ -147,7 +151,11 @@ impl RuntimeHost {
     ) -> Result<AdmittedHttpGatewayRequest> {
         validate_http_header(&header)?;
         let selector = ingress_selector(&header);
-        let route = self.lookup_active_assembly_request_route(&selector)?;
+        let key = ServiceIngressKey {
+            deployment: header.routing.deployment.clone(),
+            selector: selector.clone(),
+        };
+        let route = self.lookup_active_assembly_request_route(&key)?;
         validate_route(&header, &selector, &route)?;
         header.deadline = effective_deadline(&header, &route)?;
         if header
@@ -187,7 +195,6 @@ impl RuntimeHost {
                 &routing.assembly_identity,
                 routing.assembly_generation,
                 &request.websocket_entry_id,
-                &ingress.host,
                 &ingress.path,
                 &ingress.method,
                 &routing.gateway_entry_identity,
@@ -213,7 +220,11 @@ impl RuntimeHost {
     ) -> Result<Option<RuntimeAssemblyRequestDeadlineFrameHeader>> {
         validate_http_header(header)?;
         let selector = ingress_selector(header);
-        let route = self.lookup_active_assembly_request_route(&selector)?;
+        let key = ServiceIngressKey {
+            deployment: header.routing.deployment.clone(),
+            selector: selector.clone(),
+        };
+        let route = self.lookup_active_assembly_request_route(&key)?;
         validate_route(header, &selector, &route)?;
         effective_deadline(header, &route)
     }
@@ -258,10 +269,9 @@ fn validate_http_header(header: &RuntimeAssemblyRequestStartFrameHeader) -> Resu
         || url.fragment().is_some()
         || url.host_str().is_none()
         || url.path() != ingress.path
-        || &url[Position::BeforeHost..Position::AfterPort] != ingress.host.as_str()
     {
         return Err(RuntimeError::Decode(
-            "httpRequest URL host/path does not match canonical routing ingress".to_string(),
+            "httpRequest URL path does not match canonical routing ingress".to_string(),
         ));
     }
     Ok(())
@@ -271,7 +281,6 @@ fn ingress_selector(header: &RuntimeAssemblyRequestStartFrameHeader) -> IngressS
     let ingress = &header.routing.ingress;
     IngressSelector {
         protocol: IngressProtocol::Http,
-        host: ingress.host.clone(),
         method: Some(ingress.method.clone()),
         path: ingress.path.clone(),
     }
@@ -310,10 +319,9 @@ fn validate_websocket_connect_header(
         || url.fragment().is_some()
         || url.host_str().is_none()
         || url.path() != ingress.path
-        || &url[Position::BeforeHost..Position::AfterPort] != ingress.host.as_str()
     {
         return Err(RuntimeError::Decode(
-            "websocketConnect URL host/path does not match canonical routing ingress".to_string(),
+            "websocketConnect URL path does not match canonical routing ingress".to_string(),
         ));
     }
     Ok(())
@@ -352,7 +360,7 @@ fn validate_websocket_jsonrpc_execution_route(
     let ingress = &routing.ingress;
     if route.assembly_identity() != &routing.assembly_identity
         || route.generation() != routing.assembly_generation
-        || route.selector().host != ingress.host
+        || route.deployment() != &routing.deployment
         || route.selector().path != ingress.path
         || route.selector().method.as_deref() != Some(ingress.method.as_str())
         || route.gateway_entry_identity() != &routing.gateway_entry_identity
@@ -382,7 +390,6 @@ fn websocket_connect_ingress_selector(
     let ingress = &header.routing.ingress;
     IngressSelector {
         protocol: IngressProtocol::WebSocket,
-        host: ingress.host.clone(),
         method: None,
         path: ingress.path.clone(),
     }
@@ -400,6 +407,7 @@ fn validate_websocket_connect_route(
         GatewayProtocolSurface::WebSocketConnect(_)
     ) || route.assembly_identity() != &routing.assembly_identity
         || route.generation() != routing.assembly_generation
+        || route.deployment() != &routing.deployment
         || route.selector() != selector
         || route.gateway_entry_identity() != &routing.gateway_entry_identity
         || activation_identity.assembly_identity != routing.assembly_identity
@@ -451,6 +459,7 @@ fn validate_route(
     );
     if route.assembly_identity() != &routing.assembly_identity
         || route.generation() != routing.assembly_generation
+        || route.deployment() != &routing.deployment
         || route.selector() != selector
         || route.gateway_entry_identity() != &routing.gateway_entry_identity
         || activation_identity.assembly_identity != routing.assembly_identity

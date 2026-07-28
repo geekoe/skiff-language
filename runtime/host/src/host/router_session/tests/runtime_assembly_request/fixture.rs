@@ -14,7 +14,7 @@ use skiff_artifact_model::{
     PackageSchemaIndex, PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
     PackageSchemaTypeRecordRef, PackageTypeRef, PublicationResourceRef, RuntimeAssembly,
     RuntimeAssemblyRef, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, TypeRefIr,
+    ServiceDeploymentRef, ServiceIngressKey, TypeRefIr,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -55,7 +55,7 @@ pub(super) async fn admitted_gateway_host() -> (RuntimeHost, HashMap<String, Act
         .map(|binding| {
             (
                 binding.selector.path.clone(),
-                host.lookup_active_assembly_request_route(&binding.selector)
+                host.lookup_active_assembly_request_route(&binding.service_ingress_key())
                     .expect("compiled HTTP gateway route"),
             )
         })
@@ -80,7 +80,7 @@ pub(super) async fn admitted_current_scope_gateway_host(
         .map(|binding| {
             (
                 binding.selector.path.clone(),
-                host.lookup_active_assembly_request_route(&binding.selector)
+                host.lookup_active_assembly_request_route(&binding.service_ingress_key())
                     .expect("exact current-scope gateway route"),
             )
         })
@@ -92,28 +92,27 @@ pub(crate) async fn reloaded_gateway_host(
 ) -> (RuntimeHost, ActiveAssemblyRoute, ActiveAssemblyRoute) {
     let fixture = fixture();
     let resolver = fixture.resolver();
-    let selector = fixture
+    let key = fixture
         .assembly
         .gateway_ingress
         .iter()
         .find(|binding| binding.selector.path == "/typed")
         .expect("typed gateway selector")
-        .selector
-        .clone();
+        .service_ingress_key();
     let host = super::super::test_host();
     host.assembly_admission
         .admit(Arc::clone(&fixture.assembly), &resolver)
         .await
         .expect("gateway generation one should admit");
     let pinned = host
-        .lookup_active_assembly_request_route(&selector)
+        .lookup_active_assembly_request_route(&key)
         .expect("generation one route");
     host.assembly_admission
         .admit(Arc::clone(&fixture.assembly), &resolver)
         .await
         .expect("gateway generation two should admit");
     let current = host
-        .lookup_active_assembly_request_route(&selector)
+        .lookup_active_assembly_request_route(&key)
         .expect("generation two route");
     (host, pinned, current)
 }
@@ -122,17 +121,17 @@ pub(crate) async fn admitted_websocket_gateway_host(
 ) -> (RuntimeHost, ActiveAssemblyRoute, ActiveAssemblyRoute) {
     let fixture = fixture();
     let resolver = fixture.resolver();
-    let (physical_selector, method_selector) = websocket_selectors(&fixture.assembly);
+    let (physical_key, method_key) = websocket_ingress_keys(&fixture.assembly);
     let host = super::super::test_host();
     host.assembly_admission
         .admit(Arc::clone(&fixture.assembly), &resolver)
         .await
         .expect("compiled WebSocket gateway assembly should admit");
     let physical = host
-        .lookup_active_assembly_request_route(&physical_selector)
+        .lookup_active_assembly_request_route(&physical_key)
         .expect("physical WebSocket route");
     let method = host
-        .lookup_active_assembly_request_route(&method_selector)
+        .lookup_active_assembly_request_route(&method_key)
         .expect("WebSocket JSON-RPC method route");
     (host, physical, method)
 }
@@ -141,21 +140,20 @@ pub(crate) async fn admitted_path_only_websocket_gateway_host() -> (RuntimeHost,
 {
     let fixture = path_only_fixture();
     let resolver = fixture.resolver();
-    let physical_selector = fixture
+    let physical_key = fixture
         .assembly
         .gateway_ingress
         .iter()
         .find(|binding| binding.selector.path == "/socket" && binding.selector.method.is_none())
         .expect("path-only physical WebSocket selector")
-        .selector
-        .clone();
+        .service_ingress_key();
     let host = super::super::test_host();
     host.assembly_admission
         .admit(Arc::clone(&fixture.assembly), &resolver)
         .await
         .expect("path-only WebSocket gateway assembly should admit");
     let physical = host
-        .lookup_active_assembly_request_route(&physical_selector)
+        .lookup_active_assembly_request_route(&physical_key)
         .expect("path-only physical WebSocket route");
     (host, physical)
 }
@@ -174,10 +172,10 @@ pub(crate) async fn reloaded_websocket_gateway_host() -> ReloadedWebSocketGatewa
     let fixture_b = pinned_route_fixture(true);
     let resolver_a = fixture_a.resolver();
     let resolver_b = fixture_b.resolver();
-    let (physical_selector_a, method_selector_a) = websocket_selectors(&fixture_a.assembly);
-    let (physical_selector_b, method_selector_b) = websocket_selectors(&fixture_b.assembly);
-    assert_eq!(physical_selector_a, physical_selector_b);
-    assert_eq!(method_selector_a, method_selector_b);
+    let (physical_key_a, method_key_a) = websocket_ingress_keys(&fixture_a.assembly);
+    let (physical_key_b, method_key_b) = websocket_ingress_keys(&fixture_b.assembly);
+    assert_eq!(physical_key_a.selector, physical_key_b.selector);
+    assert_eq!(method_key_a.selector, method_key_b.selector);
     let host = pinned_route_test_host();
     let service_db = AssemblyActivationServiceDb {
         mongo_url: "mongodb://pinned-route.invalid".to_string(),
@@ -195,10 +193,10 @@ pub(crate) async fn reloaded_websocket_gateway_host() -> ReloadedWebSocketGatewa
         .await
         .expect("WebSocket generation one should admit");
     let physical_a = host
-        .lookup_active_assembly_request_route(&physical_selector_a)
+        .lookup_active_assembly_request_route(&physical_key_a)
         .expect("generation one physical WebSocket route");
     let method_a = host
-        .lookup_active_assembly_request_route(&method_selector_a)
+        .lookup_active_assembly_request_route(&method_key_a)
         .expect("generation one WebSocket method route");
     let methods_a = websocket_method_routes(&host, &fixture_a.assembly);
     host.assembly_admission
@@ -212,10 +210,10 @@ pub(crate) async fn reloaded_websocket_gateway_host() -> ReloadedWebSocketGatewa
         .await
         .expect("WebSocket generation two should admit");
     let physical_b = host
-        .lookup_active_assembly_request_route(&physical_selector_b)
+        .lookup_active_assembly_request_route(&physical_key_b)
         .expect("generation two physical WebSocket route");
     let method_b = host
-        .lookup_active_assembly_request_route(&method_selector_b)
+        .lookup_active_assembly_request_route(&method_key_b)
         .expect("generation two WebSocket method route");
     ReloadedWebSocketGatewayHost {
         host,
@@ -298,19 +296,13 @@ fn pinned_route_test_host() -> RuntimeHost {
     .expect("pinned route runtime host should build")
 }
 
-fn websocket_selectors(
-    assembly: &RuntimeAssembly,
-) -> (
-    skiff_artifact_model::IngressSelector,
-    skiff_artifact_model::IngressSelector,
-) {
+fn websocket_ingress_keys(assembly: &RuntimeAssembly) -> (ServiceIngressKey, ServiceIngressKey) {
     let physical = assembly
         .gateway_ingress
         .iter()
         .find(|binding| binding.selector.path == "/socket" && binding.selector.method.is_none())
         .expect("physical WebSocket selector")
-        .selector
-        .clone();
+        .service_ingress_key();
     let method = assembly
         .gateway_ingress
         .iter()
@@ -319,8 +311,7 @@ fn websocket_selectors(
                 && binding.selector.method.as_deref() == Some("status.get")
         })
         .expect("WebSocket JSON-RPC method selector")
-        .selector
-        .clone();
+        .service_ingress_key();
     (physical, method)
 }
 
@@ -334,7 +325,7 @@ fn websocket_method_routes(
         .filter_map(|binding| {
             let method = binding.selector.method.clone()?;
             let route = host
-                .lookup_active_assembly_request_route(&binding.selector)
+                .lookup_active_assembly_request_route(&binding.service_ingress_key())
                 .expect("compiled WebSocket JSON-RPC route");
             Some((method, route))
         })
