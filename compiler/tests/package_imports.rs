@@ -454,6 +454,121 @@ packages:
 }
 
 #[test]
+fn top_level_access_accepts_canonically_equivalent_public_and_source_type_descriptors() {
+    let temp = TestDir::new("skiff-compiler", "top-level-canonical-type-descriptor");
+    fs::write(
+        temp.path().join("package.yml"),
+        r#"id: example.com/agent-tests
+version: 1.0.0
+packages:
+  - id: example.com/subject
+    version: 1.0.0
+    alias: subject
+    access: topLevel
+  - id: example.com/agent
+    version: 1.0.0
+    alias: agent
+    access: topLevel
+"#,
+    )
+    .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
+    fs::write(
+        temp.path().join("main.skiff"),
+        r#"
+import agent
+import subject
+
+function pointId(value: agent/canonical.CanonicalMessagePointView) -> string {
+  return value.point.id
+}
+
+function bindings(value: agent/canonical.AgentRuntimeBindings) -> agent/canonical.AgentRuntimeBindings {
+  return value
+}
+
+function subjectId(value: subject/internal.SubjectState) -> string {
+  return value.id
+}
+"#,
+    )
+    .unwrap();
+
+    let store = temp.path().join(".skiff-packages");
+    let agent = store.join("example~com~~agent/1.0.0");
+    fs::create_dir_all(&agent).unwrap();
+    fs::write(
+        agent.join("package.yml"),
+        "id: example.com/agent\nversion: 1.0.0\n",
+    )
+    .unwrap();
+    fs::write(
+        agent.join("api.yml"),
+        r#"canonical:
+  CanonicalMessagePoint: canonical.CanonicalMessagePoint
+  CanonicalMessagePointView: canonical.CanonicalMessagePointView
+  ToolProvider: canonical.ToolProvider
+  AgentRuntimeBindings: canonical.AgentRuntimeBindings
+"#,
+    )
+    .unwrap();
+    fs::write(
+        agent.join("canonical.skiff"),
+        r#"
+type CanonicalMessagePoint {
+  id: string
+}
+
+type CanonicalMessagePointView {
+  point: CanonicalMessagePoint
+}
+
+interface ToolProvider {}
+
+type AgentRuntimeBindings {
+  provider: any ToolProvider
+}
+"#,
+    )
+    .unwrap();
+
+    let subject = store.join("example~com~~subject/1.0.0");
+    fs::create_dir_all(&subject).unwrap();
+    fs::write(
+        subject.join("package.yml"),
+        "id: example.com/subject\nversion: 1.0.0\n",
+    )
+    .unwrap();
+    fs::write(subject.join("api.yml"), "{}\n").unwrap();
+    fs::write(
+        subject.join("internal.skiff"),
+        "type SubjectState { id: string }\n",
+    )
+    .unwrap();
+
+    let project = compile_package_project(temp.path())
+        .expect("public and source descriptors should select one exact agent type identity");
+    let agent = project
+        .dependency("example.com/agent", "1.0.0")
+        .expect("agent artifact");
+    let view = &agent.artifact.package_local_abi.implementation_symbols
+        ["canonical.CanonicalMessagePointView"];
+    let skiff_artifact_model::PackageLocalAbiSymbol::Type { descriptor, .. } = view else {
+        panic!("view must remain an implementation type");
+    };
+    assert!(matches!(
+        descriptor,
+        skiff_artifact_model::TypeDescriptorIr::Record { fields }
+            if matches!(
+                fields.get("point"),
+                Some(skiff_artifact_model::TypeRefIr::PackageSymbol { symbol })
+                    if symbol.symbol_path
+                        == "canonical.CanonicalMessagePoint"
+            )
+    ));
+}
+
+#[test]
 fn package_nominal_object_literals_keep_the_exact_file_ir_construct_target() {
     let temp = TestDir::new("skiff-compiler", "package-nominal-object-lowering");
     fs::write(
