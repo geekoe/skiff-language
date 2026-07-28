@@ -6,6 +6,10 @@ P5-R01 在 `c168b1dc` / tree `961998ac` 独立复验 PASS，Wave 2 consumer已�
 2026-07-28修正：I7真实组合assembly暴露旧Host全局selector设计错误。D0先冻结service-scoped ingress，
 K及后续consumer再实现并重验；旧T03/F03B ingress证据不再有效。
 
+2026-07-28修正：I7隔离验证还暴露Router把external request预算误用于assembly activation。P1D先冻结三个
+互不替代的预算域：business request、activation prepare和WebSocket generation release；后续P1实现只按
+`activation.prepareTimeoutMs`控制prepare事务，不能再从`requestTimeoutMs`或deployment policy取值。
+
 ## 输入
 
 - PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly 和完整 InProcessBoundary 生产路径。
@@ -28,6 +32,8 @@ K及后续consumer再实现并重验；旧T03/F03B ingress证据不再有效。
   `(protocol, method?, path)`选择entry；不同service可共享相同method/path，同service重复失败。
 - 多个runtime replica加载同一完整assembly identity，每replica有独立heap/lifecycle，按
   deployment配置共享外部数据层；不承诺service级隔离或独立扩缩。
+- external business request、activation prepare与WebSocket generation release各自拥有独立预算；
+  assembly activation不会因service/request timeout到期而被abort。
 - `skiff-packages` 和 `internals` 的registry/platform、packages、contracts、deployments、actual
   services、clients 全部切换，provider/list 和 chat smoke 到达真实业务结果。
 - 三个repo分别提交并合入各自 `main`；不push；所有已合并临时worktree/分支清理。

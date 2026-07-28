@@ -67,6 +67,32 @@ ServiceDeployment或RuntimeAssembly identity。Runtime不为二者另设文件�
 Runtime持有bootstrap DB transport binding不表示所有activation获得DB。只有声明并由deployment绑定DB
 requirement的ActivationContext才能得到`std.db` capability；service代码看不到provider URL。
 
+## Activation Prepare Budget
+
+RuntimeAssembly activation是Router协调的控制面事务，不是external business request。Router operator
+配置使用：
+
+```yaml
+activation:
+  prepareTimeoutMs: 120000
+```
+
+`activation.prepareTimeoutMs`缺失时默认`120000`毫秒；显式值必须是正safe integer，零、负数、小数、
+字符串、对象和超出safe-integer范围的值都在配置边界fail closed。该预算从coordinator开始一次prepare
+事务起计算，覆盖participants完成candidate resolve/load/link/admit并返回prepared ACK的等待时间。
+只有这个预算到期时，coordinator才以timeout原因abort该pending activation，并让
+`POST /__skiff/activate-assembly`返回504。普通reject、disconnect、CAS冲突或admission失败仍使用各自
+已有的fail-closed结果，不能伪装成prepare timeout。
+
+`requestTimeoutMs`只限制external business request；deployment `policy.timeoutMs`只会进一步收紧该
+request的effective deadline。两者都不参与assembly activation。Test-runner或其它activation client必须
+拥有独立deadline，并严格大于Router的prepare budget；默认prepare budget下建议使用`150000`毫秒。这样
+client不会在Router仍合法等待participant时先断开，也不会反过来延长Router事务预算。
+
+WebSocket generation release使用独立release timeout，不继承business request或activation prepare预算。
+当前契约不要求公开该release timeout为operator配置，但禁止从`requestTimeoutMs`或deployment
+`policy.timeoutMs`派生。旧的跨域timeout binding直接删除，不兼容读取。
+
 ## Service-scoped External Ingress
 
 Router外部的ingress可以按HTTP Host、域名或其它平台规则选择service坐标，并注入

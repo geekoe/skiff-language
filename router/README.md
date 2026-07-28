@@ -28,7 +28,7 @@ cp router.example.yml router.yml
 pnpm exec tsx src/router/server.ts --config router.yml
 ```
 
-The checked-in example uses this shape:
+The target configuration shape is:
 
 ```yaml
 profile: dev
@@ -38,6 +38,8 @@ artifactsPath: ../var/skiff-artifacts
 serviceDb:
   mongoUrl: mongodb://127.0.0.1:27017/?replicaSet=rs0
 requestTimeoutMs: 20000
+activation:
+  prepareTimeoutMs: 120000
 http:
   port: 4000
   maxRequestBytes: 67108864
@@ -58,6 +60,21 @@ The public HTTP listener defaults to port `4000`. The Runtime and control
 listener defaults to port `4001`, with Runtime connections at `/runtime`.
 `GET /__router/health` and `POST /__skiff/activate-assembly` are control-listener
 endpoints.
+
+`requestTimeoutMs` is only the platform cap for external business requests.
+The optional deployment `policy.timeoutMs` may shorten one such request, but
+neither value is an activation budget. RuntimeAssembly prepare uses the
+operator-owned `activation.prepareTimeoutMs`, which defaults to `120000` and
+must be a positive safe integer. Only expiry of that budget makes the
+coordinator abort the pending activation as a timeout and return `504` from the
+activation control endpoint.
+
+An activation client must use a separate deadline that is strictly greater
+than the Router prepare budget; `150000` is the recommended test-runner client
+deadline for the default prepare budget. WebSocket generation release has its
+own lifecycle timeout and does not inherit `requestTimeoutMs`, deployment
+`policy.timeoutMs`, or the activation prepare budget. The old cross-wiring of
+these timeout domains is not a compatibility input.
 
 ## Service Ingress Source
 
