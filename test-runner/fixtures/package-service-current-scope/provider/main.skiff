@@ -1,0 +1,6 @@
+function echo(value: string) -> string {
+  if value == "" {
+    return "provider-empty"
+  }
+  return "provider-echo"
+}

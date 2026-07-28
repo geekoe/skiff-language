@@ -1,0 +1,126 @@
+import std
+
+actor Counter id string {
+  count: number,
+}
+
+impl Counter {
+  function increment() -> string {
+    self.count = self.count + 1
+    return "actor-complete"
+  }
+}
+
+function clientRequest(url: string) -> std.http.HttpClientRequest {
+  return std.http.HttpClientRequest {
+    method: "POST",
+    url: url,
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: bytes.fromUtf8("current-scope"),
+    timeoutMs: 500,
+  }
+}
+
+function configured() -> string {
+  return config.require<string>("app.token")
+}
+
+function nestedHttpUnary(url: string) -> integer {
+  return timeout(400ms) value {
+    timeout(200ms) value {
+      const response = std.http.request(clientRequest(url))
+      response.status
+    }
+  }
+}
+
+function nestedHttpStream(url: string) -> integer {
+  return timeout(410ms) value {
+    timeout(210ms) value {
+      const response = std.http.stream(clientRequest(url))
+      response.status
+    }
+  }
+}
+
+function nestedWebSocketRequest(connectionId: string) -> string {
+  return timeout(420ms) value {
+    timeout(220ms) value {
+      std.websocket.requestJsonToConnection<string, string>(
+        connectionId,
+        "current-scope.echo",
+        "payload"
+      )
+    }
+  }
+}
+
+function nestedFile(value: string) -> string {
+  return timeout(430ms) value {
+    timeout(230ms) value {
+      const file = std.file.createText(value, null)
+      std.file.readText(file)
+    }
+  }
+}
+
+function nestedActor() -> string {
+  return timeout(440ms) value {
+    timeout(240ms) value {
+      const counter = std.actor.getOrCreate<Counter>("current-scope", { count: 0 })
+      counter.increment()
+    }
+  }
+}
+
+function nestedService(value: string) -> string {
+  return timeout(450ms) value {
+    timeout(250ms) value {
+      payments/echo(value)
+    }
+  }
+}
+
+function textResponse(status: integer, body: string) -> std.http.HttpResponse {
+  const headers = Array.empty<std.http.HttpHeader>()
+  headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
+  return std.http.HttpResponse {
+    status: status,
+    headers: headers,
+    body: bytes.fromUtf8(body),
+  }
+}
+
+function unary(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const unaryStatus = nestedHttpUnary("https://example.test/unary")
+  const streamStatus = nestedHttpStream("https://example.test/stream")
+  const peer = nestedWebSocketRequest(request.path)
+  const file = nestedFile(peer)
+  const actor = nestedActor()
+  const service = nestedService(file.concat(actor))
+  if unaryStatus == streamStatus {
+    return textResponse(200, service)
+  }
+  return textResponse(202, service)
+}
+
+function stream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  const status = nestedHttpStream("https://example.test/stream")
+  const headers = Array.empty<std.http.HttpHeader>()
+  headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
+  emit(std.http.streamStart(status, headers))
+  emit(std.http.streamChunk(request.body))
+  emit(std.http.streamEnd())
+  return null
+}
+
+function websocketConnect(
+  request: std.websocket.WebSocketConnectRequest,
+  connectionId: string
+) -> std.websocket.WebSocketConnectResult {
+  return {
+    tag: "accept",
+    businessIdentity: connectionId,
+    connectionPolicy: null,
+  }
+}

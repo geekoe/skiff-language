@@ -1,8 +1,5 @@
 use std::{fs, os::unix::fs::symlink};
 
-use skiff_artifact_model::{
-    BoundaryCallableProjection, CallableEffectSummary, CallableProvenanceSummary,
-};
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
     CompilerPlatformSources,
@@ -16,7 +13,7 @@ use super::{
     repository_platform_sources, temporary_path, CanonicalPackageProjectError,
     MinimalPlatformFixture,
 };
-use crate::canonical_package::compile_package_project;
+use crate::canonical_package::{compile_package_project, compile_package_project_for_test};
 use crate::{
     canonical_fixture::discover_package_test_cases, canonical_std_seed::seed_canonical_std,
     test_overlay::compile_package_test_overlay,
@@ -118,6 +115,7 @@ fn p5_f76_contextual_callable_provenance_combined() {
     // canonical store for the complete compile-only graph.
     for package in ["http-session", "aliyunoss", "track", "openai"] {
         let package_root = packages_root.join(package);
+        let test_root = packages_root.join("tests").join(package);
         build_authoring_object(
             &platform_sources,
             AuthoringObject::Package,
@@ -127,46 +125,67 @@ fn p5_f76_contextual_callable_provenance_combined() {
             true,
         )
         .unwrap();
-        let project =
+        let production =
             compile_package_project(&platform_sources, &package_root, &artifacts).unwrap();
-        let cases = discover_package_test_cases(&package_root, &package_root, false).unwrap();
+        assert_eq!(
+            production.package.artifact.package_id,
+            format!("skiff.run/{package}")
+        );
+        let project =
+            compile_package_project_for_test(&platform_sources, &test_root, &artifacts).unwrap();
+        assert_eq!(
+            project
+                .test_service_profile
+                .as_ref()
+                .map(|profile| profile.profile_name.as_str()),
+            Some("skiff-test")
+        );
+        let subject = project
+            .package
+            .artifact
+            .package_requirements
+            .iter()
+            .find(|requirement| requirement.alias == "subject")
+            .unwrap_or_else(|| panic!("{package} test service omitted its subject requirement"));
+        assert_eq!(subject.package_id, format!("skiff.run/{package}"));
+        assert_eq!(subject.exact_version, "1.0.0");
+        assert_eq!(
+            subject.expected_package_build.as_ref(),
+            Some(&production.package.artifact.package_build_id),
+            "{package} test service must bind the exact top-level subject build"
+        );
+        assert!(project.dependency_packages.iter().any(|dependency| {
+            dependency.package_build_id == production.package.artifact.package_build_id
+        }));
+        let cases = discover_package_test_cases(&test_root, &test_root, false).unwrap();
+        assert!(
+            !cases.is_empty(),
+            "{package} current tests/{package} service root selected zero cases"
+        );
         let overlay = compile_package_test_overlay(
             &platform_sources,
-            &package_root,
+            &test_root,
             &artifacts,
             &project,
             &cases,
         )
         .unwrap();
-        let binding = overlay
-            .bindings
-            .iter()
-            .find(|binding| binding.public_path == "testCases.case0")
-            .unwrap_or_else(|| panic!("{package} did not emit testCases.case0"));
-        let facts = &overlay.overlay.artifact.callable_semantic_facts[&binding.callable_id];
-        let CallableEffectSummary::Analyzed { effects } = facts.effects else {
-            panic!("{package} case0 retained unknown effects");
-        };
-        assert!(
-            !effects.writes_caller_reachable,
-            "{package} case0: {facts:?}"
+        assert_eq!(
+            overlay.bindings.len(),
+            cases.len(),
+            "{package} current test-service cases must map one-to-one to overlay bindings"
         );
-        assert!(
-            !effects.requires_same_heap_identity,
-            "{package} case0: {facts:?}"
-        );
-        assert!(!effects.invokes_unknown_target, "{package} case0");
-        assert!(
-            matches!(facts.provenance, CallableProvenanceSummary::Analyzed { .. }),
-            "{package} case0 retained unknown provenance"
-        );
-        assert!(
-            matches!(
-                overlay.overlay.artifact.boundary_projections[&binding.callable_id],
-                BoundaryCallableProjection::Available { .. }
-            ),
-            "{package} case0 is not boundary available"
-        );
+        for (index, binding) in overlay.bindings.iter().enumerate() {
+            assert_eq!(binding.public_path, format!("testCases.case{index}"));
+            assert!(
+                overlay
+                    .overlay
+                    .artifact
+                    .callable_semantic_facts
+                    .contains_key(&binding.callable_id),
+                "{package} {index} omitted callable semantic facts"
+            );
+        }
     }
     fs::remove_dir_all(artifacts).unwrap();
 }

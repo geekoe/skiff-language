@@ -1283,6 +1283,7 @@ fn canonical_live_source_roots_compile_to_current_receipts() {
     let default_service = repository.join("runtime/encrypted-storage-live/default-service");
     let mapped_service = repository.join("runtime/encrypted-storage-live/mapped-service");
     let runtime_live = repository.join("runtime/live-tests");
+    assert_current_scope_source_artifact_receipt(&repository);
 
     for (root, profile) in [
         (&default_service, "config.dev.yml"),
@@ -1488,6 +1489,297 @@ fn canonical_live_source_roots_compile_to_current_receipts() {
     assert_eq!(
         runtime_receipt.deployment.diagnostic_text.display_name,
         "skiff.run/runtime-live@0.1.0 (skiff-test)"
+    );
+}
+
+fn assert_current_scope_source_artifact_receipt(repository: &Path) {
+    let fixture = repository.join("test-runner/fixtures/package-service-current-scope");
+    let consumer_source = fixture.join("consumer/main.skiff");
+    for control in [
+        "consumer/package.yml",
+        "consumer/api.yml",
+        "consumer/service.yml",
+        "consumer/http.yml",
+        "consumer/websocket.yml",
+        "consumer/main.skiff",
+        "provider/package.yml",
+        "provider/api.yml",
+        "provider/service.yml",
+        "provider/main.skiff",
+    ] {
+        assert!(
+            fixture.join(control).is_file(),
+            "current-scope fixture must own {control}"
+        );
+    }
+    let source = fs::read_to_string(&consumer_source).unwrap();
+    assert_eq!(
+        source.matches("timeout(").count(),
+        12,
+        "six current-scope carriers must each use nested timeout expressions"
+    );
+    for required in [
+        "std.http.request",
+        "std.http.stream",
+        "std.websocket.requestJsonToConnection<string, string>",
+        "std.file.createText",
+        "std.actor.getOrCreate<Counter>",
+        "payments/echo",
+    ] {
+        assert!(
+            source.contains(required),
+            "current-scope source omitted {required}"
+        );
+    }
+    for forbidden in [
+        "$/cancelRequest",
+        "-32800",
+        "CancelError",
+        "requestId",
+        "ServiceTimeoutConfig",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "current-scope source retained forbidden {forbidden}"
+        );
+    }
+
+    let root = TestRoot::new("current-scope-source-artifact");
+    let artifacts = root.child("artifacts");
+    create_store(&artifacts);
+    seed_canonical_std(&platform_sources(), &artifacts).unwrap();
+    let receipt = prepare_package_service_host_fixture(
+        &platform_sources(),
+        &fixture,
+        &root.child("authoring"),
+        &artifacts,
+        "current-scope",
+    )
+    .expect("checked-in current-scope source must produce canonical authoring receipts");
+    let store = CanonicalArtifactStore::open(&artifacts).unwrap();
+    let package = store
+        .read_package_artifact(&receipt.consumer_package)
+        .expect("consumer package round-trip");
+    let contract = store
+        .read_service_contract(&receipt.consumer_contract)
+        .expect("consumer contract round-trip");
+    let deployment = store
+        .read_service_deployment(&receipt.consumer_deployment)
+        .expect("consumer deployment round-trip");
+    let assembly = store
+        .read_runtime_assembly(&receipt.base_assembly)
+        .expect("runtime assembly round-trip");
+    let project =
+        compile_package_project(&platform_sources(), &fixture.join("consumer"), &artifacts)
+            .expect("checked-in current-scope consumer must compile from its real source root");
+    let main = project
+        .package
+        .file_ir_units
+        .iter()
+        .find(|file| file.module_path == "main")
+        .expect("current-scope main File IR");
+
+    assert_eq!(main.unit.schema_version, "skiff-file-ir-v9");
+    assert_eq!(main.unit.ir_format_version, "skiff-file-ir-format-v7");
+    assert_eq!(main.unit.opcode_table_version, "skiff-opcode-table-v2");
+    assert_eq!(package.schema_version, "skiff-package-artifact-v9");
+    assert_eq!(contract.schema_version, "skiff-service-contract-v5");
+    assert_eq!(deployment.schema_version, "skiff-service-deployment-v3");
+    assert_eq!(assembly.schema_version, "skiff-runtime-assembly-v2");
+    assert_eq!(
+        skiff_artifact_identity::package_artifact_ref(&package).unwrap(),
+        receipt.consumer_package
+    );
+    assert_eq!(
+        service_contract_ref(&contract).unwrap(),
+        receipt.consumer_contract
+    );
+    assert_eq!(
+        service_deployment_ref(&deployment),
+        receipt.consumer_deployment
+    );
+    assert_eq!(
+        skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap(),
+        receipt.base_assembly
+    );
+    assert_eq!(
+        main.identity,
+        skiff_artifact_identity::file_ir_identity(&main.unit).unwrap()
+    );
+
+    let main_json = serde_json::to_string(&main.unit).unwrap();
+    assert_eq!(
+        main_json.matches("\"kind\":\"timeout\"").count(),
+        12,
+        "all authored timeout expressions must reach File IR"
+    );
+    for operation in [
+        "requestJsonToConnection",
+        "createText",
+        "getOrCreate",
+        "\"kind\":\"serviceCall\"",
+    ] {
+        assert!(
+            main_json.contains(operation),
+            "File IR omitted current-scope operation {operation}"
+        );
+    }
+    let service_call_refs =
+        skiff_artifact_model::validated_file_ir_service_call_refs(&main.unit).unwrap();
+    assert_eq!(service_call_refs.len(), 1);
+    assert_eq!(
+        service_call_refs[0].expected_protocol_identity,
+        receipt.payments_contract.service_protocol_identity
+    );
+
+    assert!(contract.operations.is_empty());
+    assert_eq!(deployment.service_selectors.len(), 1);
+    assert_eq!(
+        deployment.service_selectors[0].contract,
+        receipt.payments_contract
+    );
+    assert_eq!(deployment.gateway_entries.len(), 3);
+    assert_eq!(deployment.ingress.len(), 3);
+    let unary =
+        &deployment.gateway_entries[&GatewayEntryKey::parse("current-scope.unary").unwrap()];
+    let stream =
+        &deployment.gateway_entries[&GatewayEntryKey::parse("current-scope.stream").unwrap()];
+    let websocket = &deployment.gateway_entries[&GatewayEntryKey::parse("websocket").unwrap()];
+    let GatewayProtocolSurface::Http(unary_surface) = &unary.protocol_surface.protocol else {
+        panic!("current-scope unary must remain HTTP")
+    };
+    assert_eq!(unary_surface.dispatch_mode, GatewayDispatchMode::Unary);
+    let GatewayProtocolSurface::Http(stream_surface) = &stream.protocol_surface.protocol else {
+        panic!("current-scope stream must remain HTTP")
+    };
+    assert_eq!(
+        stream_surface.dispatch_mode,
+        GatewayDispatchMode::ServerStream
+    );
+    assert!(matches!(
+        websocket.protocol_surface.protocol,
+        GatewayProtocolSurface::WebSocketConnect(_)
+    ));
+    assert_eq!(assembly.roots, [receipt.consumer_deployment.clone()]);
+    assert!(assembly
+        .resolved_deployments
+        .contains(&receipt.provider_deployment));
+    assert_eq!(assembly.gateway_ingress.len(), 3);
+    assert_eq!(assembly.service_binding_templates.len(), 2);
+    let consumer_bindings = assembly
+        .service_binding_templates
+        .iter()
+        .find(|template| template.activation == receipt.consumer_deployment)
+        .expect("consumer service binding template");
+    assert_eq!(consumer_bindings.bindings.len(), 1);
+    assert_eq!(
+        consumer_bindings.bindings[0].provider,
+        receipt.provider_deployment
+    );
+
+    let identity_tuple = (
+        main.identity.as_str(),
+        receipt.consumer_package.package_build_id.as_str(),
+        receipt.consumer_package.package_local_abi_identity.as_str(),
+        receipt.consumer_contract.service_protocol_identity.as_str(),
+        receipt
+            .consumer_deployment
+            .deployment_artifact_identity
+            .as_str(),
+        unary.gateway_entry_identity.as_str(),
+        stream.gateway_entry_identity.as_str(),
+        websocket.gateway_entry_identity.as_str(),
+        receipt.base_assembly.assembly_identity.as_str(),
+    );
+    assert_eq!(
+        identity_tuple,
+        (
+            "skiff-file-ir-v9:sha256:9e0b0915efe308c05081320012f282ef81e37e9536c02f16af0a770a021f60f6",
+            "skiff-package-build-v10:sha256:9b03476e93f5ccb66dc69ff899f4a8fb9c68593e70c5aeda94d4e865aab688ad",
+            "skiff-package-local-abi-v7:sha256:605b18a2b130957f4b1feec499583334601b3788514ea851530b6623a017aed4",
+            "skiff-service-protocol-v5:sha256:9ea7ac440bd594ef31632c1c1914b40f2e92957e7fb0f73f587f4cb4d8563fa5",
+            "skiff-deployment-artifact-v3:sha256:aa74be018958d2e2375b91e500e4f73b6fea8fb97c4d694962d6745fe475791c",
+            "skiff-gateway-entry-v2:sha256:0fd289d7eec4e03b01e9e8f5633aedd7e1cc64158fa7932f99a9686e559c02f2",
+            "skiff-gateway-entry-v2:sha256:1aef41f397b7c817110cb0cc74a7b472ba9732c5ac6bcfe6e219e3ac51ab6bd0",
+            "skiff-gateway-entry-v2:sha256:f385624021966bab998385e1fd2c88804b51992f15f9c9d76c05d3e17a75018d",
+            "skiff-runtime-assembly-v2:sha256:ec66d8a209e65198ee5b82086a365a4b3a98021ef8117e2572c66fee8eac5f6e",
+        ),
+        "checked-in current-scope source must retain its exact artifact identity tuple"
+    );
+
+    let mutation_root = root.child("mutations");
+    copy_tree(&fixture, &mutation_root);
+    fs::write(
+        mutation_root.join("consumer/service.yml"),
+        "id: example.com/current-scope-consumer\nhttp: {}\n",
+    )
+    .unwrap();
+    let inline_error = read_service_package_root(&mutation_root.join("consumer"))
+        .expect_err("inline ingress must fail closed")
+        .to_string();
+    assert!(
+        inline_error.contains("unknown field `http`"),
+        "{inline_error}"
+    );
+
+    copy_tree(&fixture, &mutation_root);
+    let old_call_source = source.replace("payments/echo(value)", "payments.echo(value)");
+    fs::write(mutation_root.join("consumer/main.skiff"), old_call_source).unwrap();
+    let old_call_error = compile_package_project(
+        &platform_sources(),
+        &mutation_root.join("consumer"),
+        &artifacts,
+    )
+    .expect_err("retired service call spelling must fail closed")
+    .to_string();
+    assert!(
+        old_call_error.contains("payments.echo") || old_call_error.contains("payments"),
+        "{old_call_error}"
+    );
+
+    copy_tree(&fixture, &mutation_root);
+    let timeout_mutation = source.replace("timeout(250ms)", "timeout(251ms)");
+    fs::write(mutation_root.join("consumer/main.skiff"), timeout_mutation).unwrap();
+    let mutated = compile_package_project(
+        &platform_sources(),
+        &mutation_root.join("consumer"),
+        &artifacts,
+    )
+    .expect("timeout fact mutation must remain valid source");
+    let mutated_main = mutated
+        .package
+        .file_ir_units
+        .iter()
+        .find(|file| file.module_path == "main")
+        .unwrap();
+    assert_ne!(mutated_main.identity, main.identity);
+    assert_ne!(
+        mutated.package.artifact.package_build_id,
+        project.package.artifact.package_build_id
+    );
+    assert_eq!(
+        mutated
+            .package
+            .artifact
+            .package_local_abi
+            .local_abi_identity,
+        project
+            .package
+            .artifact
+            .package_local_abi
+            .local_abi_identity
+    );
+
+    let old_assembly_ref = serde_json::json!({
+        "assemblyIdentity": format!("skiff-runtime-assembly-v1:sha256:{}", "0".repeat(64))
+    });
+    let old_identity_error =
+        serde_json::from_value::<RuntimeAssemblyRef>(old_assembly_ref).unwrap_err();
+    assert!(
+        old_identity_error
+            .to_string()
+            .contains("skiff-runtime-assembly-v2"),
+        "{old_identity_error}"
     );
 }
 
