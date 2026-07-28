@@ -23,6 +23,14 @@ pub enum SourceDependencyAnalysisError {
     AliasKindConflict { alias: String },
     #[error("invalid validated contract dependency facts: {message}")]
     InvalidContractFacts { message: String },
+    #[error(
+        "package dependency view `{alias}` has invalid canonical alias `{canonical_alias}`: {reason}"
+    )]
+    InvalidPackageCanonicalAlias {
+        alias: String,
+        canonical_alias: String,
+        reason: String,
+    },
 }
 
 /// Canonical dependency facts made available to source call-target and effect
@@ -91,6 +99,53 @@ impl SourceDependencyAnalysisInput {
         for (alias, facts) in packages {
             if package_index.insert(alias.clone(), facts).is_some() {
                 return Err(SourceDependencyAnalysisError::DuplicatePackageAlias { alias });
+            }
+        }
+        for (alias, facts) in &package_index {
+            let Some(canonical_alias) = facts.canonical_alias.as_deref() else {
+                continue;
+            };
+            let Some(canonical) = package_index.get(canonical_alias) else {
+                return Err(
+                    SourceDependencyAnalysisError::InvalidPackageCanonicalAlias {
+                        alias: alias.clone(),
+                        canonical_alias: canonical_alias.to_string(),
+                        reason: "the primary dependency view is missing".to_string(),
+                    },
+                );
+            };
+            if canonical
+                .canonical_alias
+                .as_deref()
+                .is_some_and(|owner| owner != canonical_alias)
+            {
+                return Err(
+                    SourceDependencyAnalysisError::InvalidPackageCanonicalAlias {
+                        alias: alias.clone(),
+                        canonical_alias: canonical_alias.to_string(),
+                        reason: "the target is not a primary dependency view".to_string(),
+                    },
+                );
+            }
+            if facts.package_build_id != canonical.package_build_id {
+                return Err(
+                    SourceDependencyAnalysisError::InvalidPackageCanonicalAlias {
+                        alias: alias.clone(),
+                        canonical_alias: canonical_alias.to_string(),
+                        reason: "the view and primary alias select different package builds"
+                            .to_string(),
+                    },
+                );
+            }
+            if facts.expected_local_abi != canonical.expected_local_abi {
+                return Err(
+                    SourceDependencyAnalysisError::InvalidPackageCanonicalAlias {
+                        alias: alias.clone(),
+                        canonical_alias: canonical_alias.to_string(),
+                        reason: "the view and primary alias select different Local ABI identities"
+                            .to_string(),
+                    },
+                );
             }
         }
         let contracts = ContractDependencyIndex::build(contracts).map_err(|error| match error {
@@ -298,10 +353,14 @@ impl SourceDependencyAnalysisInput {
     pub(crate) fn package_callable_by_source_path(
         &self,
         path: &str,
-    ) -> Option<&PackageDependencyCallableAnalysis> {
+    ) -> Option<(&str, &PackageDependencyCallableAnalysis)> {
         let (alias, public_path) =
             dependency_source_address_parts(path).or_else(|| path.split_once('.'))?;
-        self.packages.get(alias)?.callables.get(public_path)
+        let (alias, facts) = self.packages.get_key_value(alias)?;
+        Some((
+            facts.canonical_alias.as_deref().unwrap_or(alias.as_str()),
+            facts.callables.get(public_path)?,
+        ))
     }
 
     pub fn package_constant_by_source_path(
@@ -511,6 +570,12 @@ mod tests {
                     && callable.callable_id().as_str() == "callable:implementation"
         ));
         assert!(matches!(
+            input.package_callable_by_source_path("widgetImpl/internal.run"),
+            Some((alias, callable))
+                if alias == "widget"
+                    && callable.callable_id().as_str() == "callable:implementation"
+        ));
+        assert!(matches!(
             input.resolve_path("widget/internal.run"),
             ResolvedDependencyAnalysisTarget::MissingMember
         ));
@@ -528,6 +593,57 @@ mod tests {
                 .is_some(),
             "canonical requirement lookup must recover a callable selected through the source-only view"
         );
+    }
+
+    #[test]
+    fn source_only_view_requires_one_exact_primary_dependency_identity() {
+        let facts = |build: &str, abi: &str, canonical: &str| {
+            PackageDependencyAnalysisFacts::new(
+                PackageBuildId::new(build),
+                PackageLocalAbiIdentity::new(abi),
+                BTreeMap::new(),
+            )
+            .with_canonical_alias(canonical)
+        };
+
+        let error = SourceDependencyAnalysisInput::new(
+            [(
+                "widgetImpl".to_string(),
+                facts("build:widget", "abi:widget", "widget"),
+            )],
+            [],
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("primary dependency view is missing"),
+            "{error}"
+        );
+
+        for (implementation, expected) in [
+            (
+                facts("build:other", "abi:widget", "widget"),
+                "different package builds",
+            ),
+            (
+                facts("build:widget", "abi:other", "widget"),
+                "different Local ABI identities",
+            ),
+        ] {
+            let error = SourceDependencyAnalysisInput::new(
+                [
+                    (
+                        "widget".to_string(),
+                        facts("build:widget", "abi:widget", "widget"),
+                    ),
+                    ("widgetImpl".to_string(), implementation),
+                ],
+                [],
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]
@@ -754,6 +870,38 @@ mod tests {
                     .unwrap()
             )
         );
+        let exact = input
+            .public_package_type_by_stable_key("svc", "Payload")
+            .unwrap();
+        assert_eq!(
+            input.exact_package_type(
+                &exact.package_id,
+                &exact.stable_schema_key,
+                &exact.package_schema_type_id,
+            ),
+            Some(exact)
+        );
+        assert!(input
+            .exact_package_type(
+                "example.wrong",
+                &exact.stable_schema_key,
+                &exact.package_schema_type_id,
+            )
+            .is_none());
+        assert!(input
+            .exact_package_type(
+                &exact.package_id,
+                "WrongStableKey",
+                &exact.package_schema_type_id,
+            )
+            .is_none());
+        assert!(input
+            .exact_package_type(
+                &exact.package_id,
+                &exact.stable_schema_key,
+                &"wrong-schema-type".into(),
+            )
+            .is_none());
     }
 
     #[test]

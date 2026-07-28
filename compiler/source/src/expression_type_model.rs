@@ -14,7 +14,7 @@ use crate::{
         BinaryOp, Block, DbBlockMode, DbBody, DbChangeOp, DbQueryBlock, DbSelector, DbWhereClause,
         Expr, ForBinding, FunctionDecl, Literal, SourceFile, Stmt, TypeRef, UnaryOp,
     },
-    shared::ast_utils::{dependency_source_address_parts, expr_path},
+    shared::ast_utils::expr_path,
     shared::error::SourceSpan,
     shared::prelude_registry::prelude_registry,
     shared::type_expr::TypeExpr,
@@ -2969,13 +2969,9 @@ impl<'a> OwnerChecker<'a> {
         }
         if type_args.is_empty() {
             let signature = self.dependency_analysis.and_then(|dependency_analysis| {
-                let (dependency_ref, _) =
-                    dependency_source_address_parts(&path).or_else(|| path.split_once('.'))?;
-                let signature = dependency_analysis
-                    .package_callable_by_source_path(&path)
-                    .and_then(|callable| callable.signature())?
-                    .clone();
-                Some((dependency_ref.to_string(), signature))
+                let (dependency_ref, callable) =
+                    dependency_analysis.package_callable_by_source_path(&path)?;
+                Some((dependency_ref.to_string(), callable.signature()?.clone()))
             });
             if let Some((dependency_ref, signature)) = signature {
                 // Resolve each parameter independently: an owner/slot diagnostic
