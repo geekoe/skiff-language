@@ -4,6 +4,8 @@ use super::capabilities::{
 };
 use super::type_descriptor::TypeSubstitutions;
 use crate::error::{Result, RuntimeError};
+use serde_json::Value;
+use skiff_runtime_capability_context::SupervisedStreamConsumptionChild;
 use skiff_runtime_linked_program::LinkedExecutable;
 use skiff_runtime_model::{runtime_value::RuntimeValueCarrier, type_plan::RuntimeTypePlan};
 
@@ -51,6 +53,7 @@ pub enum Flow {
 #[derive(Clone, Debug)]
 pub struct Env {
     storage: SlotStore,
+    stream_consumer_supervision: Option<EvalStreamConsumerSupervision>,
     pub stream_sink: Option<EvalStreamSink>,
     pub current_module: Option<String>,
     pub current_stream_item_type: Option<RuntimeTypePlan>,
@@ -63,6 +66,7 @@ impl Env {
     pub fn new() -> Self {
         Self {
             storage: SlotStore::empty(),
+            stream_consumer_supervision: None,
             stream_sink: None,
             current_module: None,
             current_stream_item_type: None,
@@ -99,6 +103,7 @@ impl Env {
                     .collect(),
                 self_slot: layout.self_slot,
             },
+            stream_consumer_supervision: None,
             stream_sink: None,
             current_module: None,
             current_stream_item_type: None,
@@ -186,6 +191,43 @@ impl Env {
             self.stream_sink.clone(),
             self.response_stream_sink.clone(),
         )
+    }
+
+    pub(crate) fn supervise_stream_consumer(
+        &mut self,
+        stream_value: Value,
+        supervision: SupervisedStreamConsumptionChild,
+    ) {
+        self.stream_consumer_supervision = Some(EvalStreamConsumerSupervision {
+            stream_value,
+            supervision,
+        });
+    }
+
+    pub(crate) fn inherit_stream_consumer_supervision_from(&mut self, caller: &Self) {
+        self.stream_consumer_supervision = caller.stream_consumer_supervision.clone();
+    }
+
+    pub(crate) fn stream_consumer_supervision_for(
+        &self,
+        stream_value: &Value,
+    ) -> Option<SupervisedStreamConsumptionChild> {
+        self.stream_consumer_supervision
+            .as_ref()
+            .filter(|supervision| supervision.stream_value == *stream_value)
+            .map(|supervision| supervision.supervision.clone())
+    }
+}
+
+#[derive(Clone)]
+struct EvalStreamConsumerSupervision {
+    stream_value: Value,
+    supervision: SupervisedStreamConsumptionChild,
+}
+
+impl std::fmt::Debug for EvalStreamConsumerSupervision {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("EvalStreamConsumerSupervision")
     }
 }
 
