@@ -986,14 +986,14 @@ fn time_sleep_invocation() -> RuntimeNativeInvocation {
 #[tokio::test]
 async fn f445h_i6_time_projection_to_pending_reaches_real_sleep_owner() {
     let base = tokio::time::Instant::now().into_std();
+    let current_deadline = base + Duration::from_secs(60);
     let (request_cancellation, root) = root_scope(None);
     let outer = root
-        .derive(base + Duration::from_millis(50), site())
+        .derive(base + Duration::from_secs(120), site())
         .expect("outer scope");
     let outer_control = ScopeAwareControl::available(outer, request_cancellation.token());
-    let current =
-        ExecutionControlApi::derive_scope(&outer_control, base + Duration::from_millis(5), site())
-            .expect("current scope");
+    let current = ExecutionControlApi::derive_scope(&outer_control, current_deadline, site())
+        .expect("current scope");
     let expected = current.execution_scope().expect("current execution scope");
     let current_context = context(outer_control).with_execution_control(current);
     let program = carrier_receipt_program();
@@ -1028,7 +1028,10 @@ async fn f445h_i6_time_projection_to_pending_reaches_real_sleep_owner() {
         "the projected current scope must own the real sleep pending lifecycle"
     );
 
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(matches!(
+        expected.terminal_at(current_deadline),
+        Some(ExecutionScopeTerminal::LocalDeadlineExceeded(_))
+    ));
     let Poll::Ready(outcome) = poll_time_pending(wait.as_mut()) else {
         panic!("current scope deadline must wake the real sleep future");
     };
