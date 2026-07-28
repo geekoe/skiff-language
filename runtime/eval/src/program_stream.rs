@@ -52,6 +52,9 @@ mod current_scope;
 #[cfg(test)]
 #[path = "program_stream/current_scope_tests.rs"]
 mod current_scope_tests;
+#[cfg(test)]
+#[path = "program_stream/supervised_executable_tests.rs"]
+mod supervised_executable_tests;
 
 impl Interpreter {
     #[allow(clippy::too_many_arguments)]
@@ -70,7 +73,11 @@ impl Interpreter {
         cancel_signals: &[StreamCancelSignal],
     ) -> Result<Flow> {
         let stream_runtime = context.stream_runtime();
-        let mut cleanup = StreamConsumerCleanup::new(stream_runtime.clone(), &stream_value);
+        let supervision = env.stream_consumer_supervision_for(&stream_value);
+        let mut cleanup = match &supervision {
+            Some(supervision) => supervision.consumer_cleanup(&stream_value),
+            None => StreamConsumerCleanup::new(stream_runtime.clone(), &stream_value),
+        };
         loop {
             let item = current_scope::next_with_actor(
                 &context,
@@ -84,9 +91,14 @@ impl Interpreter {
             let item = match item {
                 Ok(item) => item,
                 Err(error) => {
+                    if matches!(&error, StreamRuntimeError::Producer(_)) {
+                        if let Some(supervision) = &supervision {
+                            supervision.observe_producer_error(&stream_value);
+                        }
+                    }
                     return Err(materialize_consumed_stream_error(
                         self, &context, error, heap,
-                    )?)
+                    )?);
                 }
             };
             let item_value = match materialize_runtime_stream_item(item, item_type.as_ref(), heap)?

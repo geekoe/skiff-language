@@ -1502,16 +1502,21 @@ impl<'a> EvalContext<'a> {
         }
 
         let prepared = prepared.expect("producer count was validated before argument evaluation");
+        let mut consumer_env = self.env.clone();
+        consumer_env.supervise_stream_consumer(
+            prepared.stream_value().clone(),
+            prepared.consumption_child(),
+        );
         let consumer = self.interpreter.call_program_executable_carriers(
             self.context.clone().with_local_call_site(call.site.clone()),
             self.heap,
-            self.env,
+            &consumer_env,
             self.addr,
             callee_addr,
             &call.type_args,
             values,
         );
-        let result = self
+        let result = match self
             .interpreter
             .exec_prepared_native_stream_producer_arg(
                 self.context.clone(),
@@ -1519,7 +1524,15 @@ impl<'a> EvalContext<'a> {
                 prepared,
                 consumer,
             )
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                return Err(materialize_request_heap_owned_runtime_error(
+                    error, self.heap,
+                )?)
+            }
+        };
         Ok(Some(result))
     }
 

@@ -560,6 +560,7 @@ impl<'a> ExecutableInvocation<'a> {
         type_args: &BTreeMap<String, LinkedTypeRef>,
     ) -> Result<Env> {
         let mut env = self.env()?;
+        env.inherit_stream_consumer_supervision_from(caller_env);
         env.stream_sink = caller_env.stream_sink.clone();
         env.current_stream_item_type = caller_env.current_stream_item_type.clone();
         env.response_stream_sink = caller_env.response_stream_sink.clone();
@@ -673,6 +674,7 @@ impl<'a> AssemblyExecutableInvocation<'a> {
         type_args: &BTreeMap<String, LinkedTypeRef>,
     ) -> Result<Env> {
         let mut env = self.env()?;
+        env.inherit_stream_consumer_supervision_from(caller_env);
         env.stream_sink = caller_env.stream_sink.clone();
         env.current_stream_item_type = caller_env.current_stream_item_type.clone();
         env.response_stream_sink = caller_env.response_stream_sink.clone();
@@ -1267,6 +1269,7 @@ impl Interpreter {
             Some(file.module_path.clone()),
             program_assembly_index(addr),
         )?;
+        env.inherit_stream_consumer_supervision_from(caller_env);
         env.stream_sink = caller_env.stream_sink.clone();
         env.current_stream_item_type = caller_env.current_stream_item_type.clone();
         env.response_stream_sink = caller_env.response_stream_sink.clone();
