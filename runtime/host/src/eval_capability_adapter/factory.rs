@@ -95,14 +95,10 @@ pub fn websocket_from_runtime_request<'a>(
     router_sender: Option<&'a mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     connection_requests: Arc<ConnectionRequestRegistry>,
     router_session: ConnectionRequestSession,
-    cancellation: CancellationToken,
-    deadline: Option<Instant>,
 ) -> eval_capabilities::WebsocketCapabilityContext<'a> {
     let request_transport = RuntimeConnectionRequestParts {
         registry: connection_requests,
         session: router_session,
-        cancellation,
-        deadline,
     };
     websocket(
         concrete::WebsocketCapabilityContext::with_entry_id(
@@ -132,8 +128,6 @@ pub fn websocket_rebinder_for_runtime_request(
     router_sender: Option<&mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     connection_requests: Arc<ConnectionRequestRegistry>,
     router_session: ConnectionRequestSession,
-    cancellation: CancellationToken,
-    deadline: Option<Instant>,
 ) -> eval_capabilities::WebsocketCapabilityRebinder {
     let router_sender = router_sender.cloned();
     eval_capabilities::WebsocketCapabilityRebinder::new(move |service_id, websocket_entry_id| {
@@ -143,8 +137,6 @@ pub fn websocket_rebinder_for_runtime_request(
             router_sender.as_ref(),
             Arc::clone(&connection_requests),
             router_session.clone(),
-            cancellation.clone(),
-            deadline,
         )
         .owned()
     })
@@ -431,18 +423,15 @@ mod websocket_rebinder_tests {
     }
 
     #[tokio::test]
-    async fn production_connection_request_uses_captured_session_registry_and_provider_route() {
+    async fn f445h_i6_websocket_scope_provider_route_uses_current_scope_registry() {
         let registry = Arc::new(ConnectionRequestRegistry::new(4));
         let session =
             ConnectionRequestSession::new("router-session-provider").expect("canonical session");
-        let cancellation = CancellationSource::new();
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let rebinder = websocket_rebinder_for_runtime_request(
             Some(&sender),
             Arc::clone(&registry),
             session.clone(),
-            cancellation.token(),
-            None,
         );
         let websocket_entry_id = format!("skiff-websocket-entry-v1:sha256:{}", "a".repeat(64));
         let provider = rebinder.for_activation("service:provider", Some(&websocket_entry_id));
@@ -486,7 +475,7 @@ mod websocket_rebinder_tests {
     }
 
     #[tokio::test]
-    async fn production_connection_request_preserves_remote_terminal_and_releases_state() {
+    async fn f445h_i6_websocket_scope_remote_terminal_releases_all_state() {
         let registry = Arc::new(ConnectionRequestRegistry::new(4));
         let session = ConnectionRequestSession::new("router-session-remote").expect("session");
         let (sender, mut receiver) = mpsc::unbounded_channel();
@@ -497,8 +486,6 @@ mod websocket_rebinder_tests {
             Some(&sender),
             Arc::clone(&registry),
             session.clone(),
-            CancellationSource::new().token(),
-            None,
         );
 
         let request = context.request_json_to_connection(
@@ -524,7 +511,7 @@ mod websocket_rebinder_tests {
     }
 
     #[tokio::test]
-    async fn production_connection_request_ancestor_cancel_emits_cancel_and_releases_state() {
+    async fn f445h_i6_websocket_scope_ancestor_stop_emits_hint_after_local_release() {
         let registry = Arc::new(ConnectionRequestRegistry::new(4));
         let session = ConnectionRequestSession::new("router-session-cancel").expect("session");
         let cancellation = CancellationSource::new();
@@ -536,15 +523,14 @@ mod websocket_rebinder_tests {
             Some(&sender),
             Arc::clone(&registry),
             session,
-            cancellation.token(),
-            None,
         );
 
+        let execution_control = test_execution_control_from(cancellation.token(), None);
         let request = context.request_json_to_connection(
             "connection-cancel".to_string(),
             "status.get".to_string(),
             br#"{}"#.to_vec(),
-            test_execution_control(),
+            execution_control,
         );
         tokio::pin!(request);
         let queued = tokio::select! {
@@ -565,7 +551,7 @@ mod websocket_rebinder_tests {
     }
 
     #[tokio::test]
-    async fn production_connection_request_deadline_emits_cancel_and_releases_state() {
+    async fn f445h_i6_websocket_scope_derived_deadline_emits_hint_and_releases_state() {
         let registry = Arc::new(ConnectionRequestRegistry::new(4));
         let session = ConnectionRequestSession::new("router-session-deadline").expect("session");
         let (sender, mut receiver) = mpsc::unbounded_channel();
@@ -576,15 +562,23 @@ mod websocket_rebinder_tests {
             Some(&sender),
             Arc::clone(&registry),
             session,
-            CancellationSource::new().token(),
-            Some(Instant::now() + Duration::from_millis(100)),
         );
 
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let execution_control = test_execution_control()
+            .derive_scope(
+                deadline,
+                skiff_artifact_model::InstructionSourceSite::Synthetic {
+                    reason:
+                        skiff_artifact_model::SyntheticInstructionSiteReason::RuntimeControlFlow,
+                },
+            )
+            .expect("derived current execution scope");
         let request = context.request_json_to_connection(
             "connection-deadline".to_string(),
             "status.get".to_string(),
             br#"{}"#.to_vec(),
-            test_execution_control(),
+            execution_control,
         );
         tokio::pin!(request);
         let queued = tokio::select! {
@@ -605,7 +599,7 @@ mod websocket_rebinder_tests {
     }
 
     #[tokio::test]
-    async fn production_connection_request_disconnect_is_session_fenced_and_releases_state() {
+    async fn f445h_i6_websocket_scope_disconnect_session_fence_releases_state() {
         let registry = Arc::new(ConnectionRequestRegistry::new(4));
         let session = ConnectionRequestSession::new("router-session-disconnect").expect("session");
         let (sender, mut receiver) = mpsc::unbounded_channel();
@@ -616,8 +610,6 @@ mod websocket_rebinder_tests {
             Some(&sender),
             Arc::clone(&registry),
             session.clone(),
-            CancellationSource::new().token(),
-            None,
         );
 
         let request = context.request_json_to_connection(
@@ -669,14 +661,20 @@ mod websocket_rebinder_tests {
     }
 
     fn test_execution_control() -> capability_contract::OwnedExecutionControl {
+        test_execution_control_from(CancellationToken::new(), None)
+    }
+
+    fn test_execution_control_from(
+        cancellation: CancellationToken,
+        deadline: Option<Instant>,
+    ) -> capability_contract::OwnedExecutionControl {
         use skiff_runtime_request::execution_budget::{ExecutionBudget, ExecutionBudgetConfig};
 
         let budget = Arc::new(ExecutionBudget::new(
             ExecutionBudgetConfig::disabled(),
-            None,
+            deadline,
         ));
-        let execution =
-            skiff_runtime_request::ExecutionControl::new(CancellationToken::new(), &budget);
+        let execution = skiff_runtime_request::ExecutionControl::new(cancellation, &budget);
         super::execution_control(execution).owned()
     }
 }

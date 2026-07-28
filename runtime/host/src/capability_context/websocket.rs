@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use tokio::{sync::mpsc, time::Instant};
+use tokio::sync::mpsc;
 
 use crate::error::{Result, RuntimeError};
 
 use skiff_runtime_capability_context::{
-    CancellationToken, ConnectionRequestCancelControl, ConnectionRequestControl,
-    ConnectionRequestRegistry, ConnectionRequestSession, ConnectionRequestTerminal,
-    ConnectionSendControl, OutboundControlMessage, RouterWriterMessage, RuntimeDeadlineControl,
+    ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionRequestRegistry,
+    ConnectionRequestSession, ConnectionRequestTerminal, ConnectionSendControl, ExecutionScope,
+    OutboundControlMessage, RouterWriterMessage, RuntimeDeadlineControl,
 };
 
 #[derive(Clone, Copy)]
@@ -22,8 +22,7 @@ pub struct WebsocketCapabilityContext<'a> {
 struct ConnectionRequestTransport<'a> {
     registry: &'a ConnectionRequestRegistry,
     session: &'a ConnectionRequestSession,
-    cancellation: &'a CancellationToken,
-    deadline: Option<Instant>,
+    scope: &'a ExecutionScope,
     deadline_control: Option<&'a RuntimeDeadlineControl>,
 }
 
@@ -45,15 +44,13 @@ impl<'a> WebsocketCapabilityContext<'a> {
         mut self,
         registry: &'a ConnectionRequestRegistry,
         session: &'a ConnectionRequestSession,
-        cancellation: &'a CancellationToken,
-        deadline: Option<Instant>,
+        scope: &'a ExecutionScope,
         deadline_control: Option<&'a RuntimeDeadlineControl>,
     ) -> Self {
         self.request_transport = Some(ConnectionRequestTransport {
             registry,
             session,
-            cancellation,
-            deadline,
+            scope,
             deadline_control,
         });
         self
@@ -154,7 +151,8 @@ impl<'a> WebsocketCapabilityContext<'a> {
             return ConnectionRequestTerminal::TransportUnavailable;
         };
         if skiff_artifact_model::WebSocketEntryId::parse(websocket_entry_id).is_err()
-            || transport.deadline.is_some() != transport.deadline_control.is_some()
+            || transport.scope.effective_deadline().is_some()
+                != transport.deadline_control.is_some()
         {
             return ConnectionRequestTerminal::ProtocolError;
         }
@@ -182,8 +180,7 @@ impl<'a> WebsocketCapabilityContext<'a> {
         let cancel_sender = router_sender.clone();
         let mut pending = match transport.registry.install(
             transport.session.clone(),
-            transport.cancellation.clone(),
-            transport.deadline,
+            transport.scope.clone(),
             Arc::new(move |request_id, reason| {
                 cancel_sender
                     .send(RouterWriterMessage::Control(
@@ -298,7 +295,7 @@ mod connection_request_tests {
     use super::*;
     use skiff_runtime_capability_context::{
         CancellationSource, ConnectionRequestRegistry, ConnectionRequestSession,
-        ConnectionRequestTerminal,
+        ConnectionRequestTerminal, ExecutionScope,
     };
 
     #[tokio::test]
@@ -306,7 +303,7 @@ mod connection_request_tests {
         let registry = ConnectionRequestRegistry::new(4);
         let session = ConnectionRequestSession::new("router-session-1").expect("canonical session");
         let cancellation = CancellationSource::new();
-        let cancellation_token = cancellation.token();
+        let scope = ExecutionScope::request(cancellation.token(), None);
         let websocket_entry_id = format!("skiff-websocket-entry-v1:sha256:{}", "a".repeat(64));
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let context = WebsocketCapabilityContext::with_entry_id(
@@ -314,7 +311,7 @@ mod connection_request_tests {
             Some(&websocket_entry_id),
             Some(&sender),
         )
-        .with_request_transport(&registry, &session, &cancellation_token, None, None);
+        .with_request_transport(&registry, &session, &scope, None);
 
         let request = context.request_json_to_connection(
             "connection-1".to_string(),
