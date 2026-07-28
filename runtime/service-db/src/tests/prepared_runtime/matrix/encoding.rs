@@ -10,7 +10,7 @@ fn recoverable_and_encrypted_writes_finish_owned_encoding_during_prepare() {
         ServiceDbRuntime::new(
             "skiff.run/preparedrecoverable".to_string(),
             inert_mongo_url("prepared-recoverable"),
-            &recoverable_provider_metadata_value(),
+            &provider_metadata_from_ir(recoverable_provider_metadata_value()),
         )
         .expect("recoverable prepared runtime fixture should build"),
     );
@@ -33,7 +33,7 @@ fn recoverable_and_encrypted_writes_finish_owned_encoding_during_prepare() {
     drop(
         recoverable_store
             .prepare_create_runtime(
-                "ProviderBinding",
+                test_db_target(0, "", "ProviderBinding").lookup_key(),
                 &recoverable_value,
                 &mut recoverable_heap,
                 recoverable_context.clone(),
@@ -43,7 +43,7 @@ fn recoverable_and_encrypted_writes_finish_owned_encoding_during_prepare() {
     drop(
         recoverable_store
             .prepare_update_one_runtime(
-                "ProviderBinding",
+                test_db_target(0, "", "ProviderBinding").lookup_key(),
                 DbOneSelector::Key(db_key(json!("binding-1"))),
                 DbRuntimeChange {
                     wire_change: ServiceDbChange::default(),
@@ -60,7 +60,7 @@ fn recoverable_and_encrypted_writes_finish_owned_encoding_during_prepare() {
     drop(
         recoverable_store
             .prepare_replace_one_runtime(
-                "ProviderBinding",
+                test_db_target(0, "", "ProviderBinding").lookup_key(),
                 DbOneSelector::Key(db_key(json!("binding-1"))),
                 &recoverable_value,
                 &mut recoverable_heap,
@@ -76,7 +76,7 @@ fn recoverable_and_encrypted_writes_finish_owned_encoding_during_prepare() {
                 mongo_url: inert_mongo_url("prepared-encrypted"),
                 encryption_cipher: Some(test_encryption_keyring().cipher()),
             },
-            &encrypted_metadata("string", "string", json!([])),
+            &provider_metadata_from_ir(encrypted_metadata("string", "string", json!([]))),
         )
         .expect("encrypted prepared runtime fixture should build"),
     );
@@ -97,7 +97,7 @@ fn recoverable_and_encrypted_writes_finish_owned_encoding_during_prepare() {
     drop(
         encrypted_store
             .prepare_create_runtime(
-                "Credential",
+                test_db_target(0, "internal.credential", "Credential").lookup_key(),
                 &encrypted_value,
                 &mut encrypted_heap,
                 context(),
@@ -107,7 +107,7 @@ fn recoverable_and_encrypted_writes_finish_owned_encoding_during_prepare() {
     drop(
         encrypted_store
             .prepare_update_one_runtime(
-                "Credential",
+                test_db_target(0, "internal.credential", "Credential").lookup_key(),
                 DbOneSelector::Key(db_key(json!("credential-1"))),
                 DbRuntimeChange {
                     wire_change: ServiceDbChange::default(),
@@ -124,7 +124,7 @@ fn recoverable_and_encrypted_writes_finish_owned_encoding_during_prepare() {
     drop(
         encrypted_store
             .prepare_replace_one_runtime(
-                "Credential",
+                test_db_target(0, "internal.credential", "Credential").lookup_key(),
                 DbOneSelector::Key(db_key(json!("credential-1"))),
                 &encrypted_value,
                 &mut encrypted_heap,

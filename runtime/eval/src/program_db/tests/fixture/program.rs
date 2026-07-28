@@ -4,18 +4,20 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    ActorAbiIdentity, ActorFieldEncodingIr, ActorImplementationIdentity, InstructionSourceSite,
-    LiteralIr, SyntheticInstructionSiteReason, ACTOR_RUNTIME_ABI_VERSION_V1,
+    ActorAbiIdentity, ActorFieldEncodingIr, ActorImplementationIdentity, FileIrRef,
+    InstructionSourceSite, LiteralIr, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
+    SyntheticInstructionSiteReason, ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 use skiff_runtime_linked_program::{
-    linked::{DbDeclarationIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr},
-    BlockIr, CallIr, DbBodyIr, DbLeaseClaimIr, DbLeaseReadIr, DbOpKindIr, DbOperationIr, DbQueryIr,
-    DbTargetIr, DbTransactionIr, DbTransactionModeIr, ExecutableAddr, ExecutableKind, ExprRefIr,
-    ExternalRefTable, FileAddr, FileDeclarations, FileLinkTargets, LinkOverlay,
-    LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedActorField, LinkedCallTarget,
-    LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
-    LinkedInterfaceInstantiationRef, LinkedStmtIr, LinkedTypeRef, PublicationResourceTable,
-    RuntimeTypeContext, ServiceSymbolRef, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, UnitAddr,
+    linked::{DbDeclarationIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, TypeDeclarationIr},
+    BlockIr, CallIr, DbBodyIr, DbLeaseClaimIr, DbLeaseReadIr, DbObjectTargetId, DbOpKindIr,
+    DbOperationIr, DbQueryIr, DbTargetIr, DbTransactionIr, DbTransactionModeIr, ExecutableAddr,
+    ExecutableKind, ExprRefIr, ExternalRefTable, FileAddr, FileDeclarations, FileLinkTargets,
+    LinkOverlay, LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedActorField,
+    LinkedCallTarget, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
+    LinkedInterfaceInstantiationRef, LinkedStmtIr, LinkedTypeRef, PackageUnit,
+    PublicationResourceTable, RuntimeTypeContext, ServiceSymbolRef, SlotIr, SlotLayoutIr,
+    SourceMapDto, StmtRefIr, UnitAddr,
 };
 
 use crate::{actor_executor_test_runtime as test_runtime, EvalRuntimeProgram, Interpreter};
@@ -25,6 +27,10 @@ pub(in crate::program_db::tests) const ACTOR_SERVICE_ID: &str = "skiff.run/db-ac
 pub(in crate::program_db::tests) const ACTOR_TYPE_ID: &str = "svc.main.CheckpointActor";
 pub(in crate::program_db::tests) const BODY_CREATE_BLOCK_LABEL: &str = "body-create";
 pub(in crate::program_db::tests) const ILLEGAL_FLOW_BLOCK_LABEL: &str = "illegal-flow";
+const DB_PACKAGE_ID: &str = "skiff.run/db-actor-fixture-package";
+const DB_PACKAGE_VERSION: &str = "1.0.0";
+const DB_PACKAGE_BUILD: &str = "build:db-actor-fixture";
+const DB_PACKAGE_ABI: &str = "abi:db-actor-fixture";
 
 pub(in crate::program_db::tests) struct LinkedDbActorFixture {
     pub program: Arc<EvalRuntimeProgram>,
@@ -45,6 +51,13 @@ impl LinkedDbActorFixture {
     pub(in crate::program_db::tests) fn new() -> Self {
         let ir = fixture_ir();
         let file = linked_file(&ir);
+        let mut package = PackageUnit::empty(
+            DB_PACKAGE_ID,
+            DB_PACKAGE_VERSION,
+            DB_PACKAGE_BUILD,
+            DB_PACKAGE_ABI,
+        );
+        package.files.push(db_file_ref());
         let addr = ExecutableAddr {
             unit: UnitAddr::Service,
             file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
@@ -53,8 +66,8 @@ impl LinkedDbActorFixture {
         let program = Arc::new(EvalRuntimeProgram::new(
             ACTOR_SERVICE_ID,
             vec![Arc::clone(&file)],
-            Vec::new(),
-            Vec::new(),
+            vec![Arc::new(package)],
+            vec![vec![Arc::clone(&file)]],
             PublicationResourceTable::default(),
             Vec::new(),
             HashMap::new(),
@@ -159,6 +172,7 @@ fn thread_type() -> LinkedTypeRef {
 
 fn plain_target() -> DbTargetIr {
     DbTargetIr {
+        target_id: db_target_id(1),
         type_ref: json_type(),
         type_name: "RawThread".to_string(),
     }
@@ -166,6 +180,7 @@ fn plain_target() -> DbTargetIr {
 
 fn thread_target() -> DbTargetIr {
     DbTargetIr {
+        target_id: db_target_id(0),
         type_ref: thread_type(),
         type_name: "Thread".to_string(),
     }
@@ -262,6 +277,22 @@ fn synthetic_site() -> InstructionSourceSite {
 
 fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
     let mut declarations = FileDeclarations::default();
+    declarations.types.insert(
+        "Thread".to_string(),
+        TypeDeclarationIr {
+            type_index: 0,
+            symbol: "Thread".to_string(),
+            source_span: None,
+        },
+    );
+    declarations.types.insert(
+        "RawThread".to_string(),
+        TypeDeclarationIr {
+            type_index: 1,
+            symbol: "RawThread".to_string(),
+            source_span: None,
+        },
+    );
     declarations.db.insert(
         "Thread".to_string(),
         DbDeclarationIr {
@@ -283,6 +314,23 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
                 },
                 storage: Default::default(),
             }],
+            leases: Vec::new(),
+            indexes: Vec::new(),
+            source_span: None,
+        },
+    );
+    declarations.db.insert(
+        "RawThread".to_string(),
+        DbDeclarationIr {
+            type_ref: json_type(),
+            type_name: "RawThread".to_string(),
+            collection_name: "RawThread".to_string(),
+            kind: DbObjectKindIr::Object,
+            key: DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: string_type(),
+            },
+            fields: Vec::new(),
             leases: Vec::new(),
             indexes: Vec::new(),
             source_span: None,
@@ -316,7 +364,20 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
             public_methods: Vec::new(),
             actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
         }],
-        types: Vec::new(),
+        types: vec![
+            skiff_runtime_linked_program::anonymous_type_decl(
+                "Thread",
+                skiff_runtime_linked_program::LinkedTypeDescriptor::Record {
+                    fields: BTreeMap::new(),
+                },
+            ),
+            skiff_runtime_linked_program::anonymous_type_decl(
+                "RawThread",
+                skiff_runtime_linked_program::LinkedTypeDescriptor::Record {
+                    fields: BTreeMap::new(),
+                },
+            ),
+        ],
         constants: Vec::new(),
         executables: vec![LinkedExecutable {
             kind: ExecutableKind::Function,
@@ -399,4 +460,26 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
         }],
         external_refs: ExternalRefTable::default(),
     })
+}
+
+fn db_file_ref() -> FileIrRef {
+    FileIrRef {
+        file_ir_identity: FILE_ID.to_string(),
+        module_path: "svc.main".to_string(),
+        artifact_path: None,
+        source_ast_hash: Some("source:db-actor-fixture".to_string()),
+    }
+}
+
+fn db_target_id(type_index: usize) -> DbObjectTargetId {
+    DbObjectTargetId {
+        package_artifact_ref: PackageArtifactRef {
+            package_id: DB_PACKAGE_ID.to_string(),
+            package_version: DB_PACKAGE_VERSION.to_string(),
+            package_build_id: PackageBuildId::new(DB_PACKAGE_BUILD),
+            package_local_abi_identity: PackageLocalAbiIdentity::new(DB_PACKAGE_ABI),
+        },
+        file_ir_ref: db_file_ref(),
+        type_index,
+    }
 }

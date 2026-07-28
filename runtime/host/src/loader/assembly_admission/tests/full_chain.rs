@@ -685,12 +685,28 @@ fn insert_db_collection(file: &mut FileIrUnit, type_name: &str, collection_name:
         ("id".to_string(), TypeRefIr::builtin("string")),
         ("value".to_string(), TypeRefIr::builtin("string")),
     ]);
+    let type_index = file.type_table.len() as u32;
+    file.type_table.push(TypeDeclIr {
+        name: type_name.to_string(),
+        descriptor: TypeDescriptorIr::Record {
+            fields: fields.clone(),
+        },
+        type_params: Vec::new(),
+        implements: Vec::new(),
+        source_span: None,
+    });
+    file.declarations.types.insert(
+        type_name.to_string(),
+        TypeDeclarationIr {
+            type_index,
+            symbol: format!("{}.{}", file.module_path, type_name),
+            source_span: None,
+        },
+    );
     file.declarations.db.insert(
         type_name.to_string(),
         DbDeclarationIr {
-            type_ref: TypeRefIr::Record {
-                fields: fields.clone(),
-            },
+            type_ref: TypeRefIr::LocalType { type_index },
             type_name: type_name.to_string(),
             collection_name: collection_name.to_string(),
             kind: DbObjectKindIr::Object,
@@ -960,12 +976,16 @@ async fn collection_mapping_reaches_db_provider_exactly_and_survives_reload() {
         .runtime_program_db
         .iter()
         .map(|metadata| {
-            assert_eq!(metadata.source_role, "package");
+            assert_eq!(metadata.metadata.source_role, "package");
             assert_eq!(
-                metadata.package_id.as_deref(),
+                metadata.metadata.package_id.as_deref(),
                 Some("example.mapping-store")
             );
-            metadata.collection_name.clone()
+            assert_eq!(
+                metadata.target.target_id.package_artifact_ref.package_id,
+                "example.mapping-store"
+            );
+            metadata.metadata.collection_name.clone()
         })
         .collect::<Vec<_>>();
     collections.sort();
@@ -1029,8 +1049,10 @@ async fn identical_stateful_diamond_has_one_effective_projection_in_any_edge_ord
             let mut collections = inputs[0]
                 .runtime_program_db
                 .iter()
-                .filter(|metadata| metadata.package_id.as_deref() == Some("example.mapping-store"))
-                .map(|metadata| metadata.collection_name.as_str())
+                .filter(|metadata| {
+                    metadata.metadata.package_id.as_deref() == Some("example.mapping-store")
+                })
+                .map(|metadata| metadata.metadata.collection_name.as_str())
                 .collect::<Vec<_>>();
             collections.sort_unstable();
             let mut expected = expected_collections.clone();

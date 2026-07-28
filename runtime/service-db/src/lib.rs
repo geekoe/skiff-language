@@ -10,13 +10,12 @@ use mongodb::{
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use skiff_artifact_model::DbMetadataIr;
 use skiff_runtime_boundary::recoverable::{
     RecoverableArtifactRetentionRootStore, RecoverableArtifactStore,
 };
 use skiff_runtime_capability_context::{
-    DbDocument, DbKey, DbOneSelector, DbOrderEntry, DbPageResult, DbQuery, DbWriteResult,
-    FieldPath, ServiceDbChange, ServiceDbFindOptions,
+    DbDocument, DbKey, DbOneSelector, DbOrderEntry, DbPageResult, DbProviderTargetMetadata,
+    DbQuery, DbWriteResult, FieldPath, ServiceDbChange, ServiceDbFindOptions,
 };
 pub use skiff_runtime_capability_context::{
     DbRecoverableRuntimeContext, DbRecoverableRuntimeExpectedPlans, DbRuntimeChange,
@@ -174,7 +173,7 @@ impl ServiceDbRuntime {
     pub fn new(
         service_id: String,
         mongo_url: String,
-        runtime_program_db: &[DbMetadataIr],
+        runtime_program_db: &[DbProviderTargetMetadata],
     ) -> Result<Self> {
         Self::new_with_config(
             service_id,
@@ -189,7 +188,7 @@ impl ServiceDbRuntime {
     pub fn new_with_config(
         service_id: String,
         config: ServiceDbConfig,
-        runtime_program_db: &[DbMetadataIr],
+        runtime_program_db: &[DbProviderTargetMetadata],
     ) -> Result<Self> {
         let database_name = service_id_storage_database_name(&service_id)?;
         Self::new_with_config_and_namespace(service_id, database_name, config, runtime_program_db)
@@ -199,7 +198,7 @@ impl ServiceDbRuntime {
         service_id: String,
         state_namespace: String,
         config: ServiceDbConfig,
-        runtime_program_db: &[DbMetadataIr],
+        runtime_program_db: &[DbProviderTargetMetadata],
     ) -> Result<Self> {
         let database_name = state_namespace;
         validate_service_database_name(&database_name)?;
@@ -240,7 +239,7 @@ impl ServiceDbRuntime {
         projection: Option<Vec<FieldPath>>,
         session: Option<&mut ClientSession>,
     ) -> Result<Option<DbDocument>> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         let filter = binding.key_filter(&key)?;
         let document = self
             .find_one_document(binding, filter, None, projection.as_deref(), session)
@@ -273,7 +272,7 @@ impl ServiceDbRuntime {
         projection: Option<Vec<FieldPath>>,
         session: Option<&mut ClientSession>,
     ) -> Result<Option<DbDocument>> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         let filter = binding.query_filter(query)?;
         let sort = binding.order_document(&order)?;
         let document = self
@@ -310,7 +309,7 @@ impl ServiceDbRuntime {
         projection: Option<Vec<FieldPath>>,
         session: Option<&mut ClientSession>,
     ) -> Result<DbPageResult> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         let filter = binding.query_filter(query)?;
         let sort = binding.page_sort_document(&options)?;
         if options.limit == Some(0) {
@@ -358,7 +357,7 @@ impl ServiceDbRuntime {
         key: DbKey,
         session: Option<&mut ClientSession>,
     ) -> Result<bool> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         let filter = binding.key_filter(&key)?;
         Ok(self.count_documents(binding, filter, session).await? > 0)
     }
@@ -369,7 +368,7 @@ impl ServiceDbRuntime {
         query: DbQuery,
         session: Option<&mut ClientSession>,
     ) -> Result<bool> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         let filter = binding.query_filter(query)?;
         Ok(self.count_documents(binding, filter, session).await? > 0)
     }
@@ -380,7 +379,7 @@ impl ServiceDbRuntime {
         values: Vec<DbDocument>,
         session: Option<&mut ClientSession>,
     ) -> Result<DbWriteResult> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         let (documents, _) = binding.documents_from_business_values(values)?;
         let inserted_count = self.insert_many_count(binding, documents, session).await?;
         Ok(DbWriteResult::new(
@@ -396,7 +395,7 @@ impl ServiceDbRuntime {
         lease_guards: &[DbLeaseHold],
         session: Option<&mut ClientSession>,
     ) -> Result<Option<DbDocument>> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         if session.is_none()
             && (!binding.immutable_file_paths_for_change(&change).is_empty()
                 || has_matching_lease_guards(binding, lease_guards))
@@ -508,7 +507,7 @@ impl ServiceDbRuntime {
         lease_guards: &[DbLeaseHold],
         session: Option<&mut ClientSession>,
     ) -> Result<DbWriteResult> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         if session.is_none()
             && (!binding.immutable_file_paths_for_change(&change).is_empty()
                 || has_matching_lease_guards(binding, lease_guards))
@@ -580,7 +579,7 @@ impl ServiceDbRuntime {
         lease_guards: &[DbLeaseHold],
         session: Option<&mut ClientSession>,
     ) -> Result<DbWriteResult> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         let normalized = binding.normalize_one_selector(DbOneSelector::Key(key.clone()))?;
         let encrypted_context = normalized.encrypted_context().cloned();
         let filter = normalized.filter;
@@ -690,7 +689,7 @@ impl ServiceDbRuntime {
         lease_guards: &[DbLeaseHold],
         session: Option<&mut ClientSession>,
     ) -> Result<Option<DbDocument>> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         if session.is_none()
             && (binding.has_immutable_file_cascade()
                 || has_matching_lease_guards(binding, lease_guards))
@@ -799,7 +798,7 @@ impl ServiceDbRuntime {
         lease_guards: &[DbLeaseHold],
         session: Option<&mut ClientSession>,
     ) -> Result<bool> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         if session.is_none()
             && (binding.has_immutable_file_cascade()
                 || has_matching_lease_guards(binding, lease_guards))
@@ -859,7 +858,7 @@ impl ServiceDbRuntime {
         lease_guards: &[DbLeaseHold],
         session: Option<&mut ClientSession>,
     ) -> Result<DbWriteResult> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         if session.is_none()
             && (binding.has_immutable_file_cascade()
                 || has_matching_lease_guards(binding, lease_guards))
@@ -953,7 +952,7 @@ impl ServiceDbRuntime {
         value: DbDocument,
         session: Option<&mut ClientSession>,
     ) -> Result<DbDocument> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         let (document, materialized) = binding.document_from_business_value(value)?;
         self.mongo_executor(&binding.collection_name, session)
             .await?
@@ -982,7 +981,7 @@ impl ServiceDbRuntime {
         query: DbQuery,
         session: Option<&mut ClientSession>,
     ) -> Result<u64> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         let filter = binding.query_filter(query)?;
         let count = self
             .mongo_executor(&binding.collection_name, session)
@@ -1001,7 +1000,7 @@ impl ServiceDbRuntime {
         request_id: &str,
         now_ms: i64,
     ) -> Result<Option<DbLeaseHandle>> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         let lease = binding.lease(slot)?;
         let key_bson = key_bson(binding, &key)?;
         let token = uuid::Uuid::new_v4().to_string();
@@ -1037,12 +1036,10 @@ impl ServiceDbRuntime {
             return Ok(None);
         };
         let value = binding.business_value_from_document(document)?;
-        let type_name = binding
-            .canonical_type_name()
-            .unwrap_or_else(|| type_name.to_string());
         Ok(Some(DbLeaseHandle {
             hold: DbLeaseHold {
-                type_name,
+                target_key: type_name.to_string(),
+                type_name: binding.type_name.clone(),
                 key,
                 slot: slot.to_string(),
                 token,
@@ -1053,7 +1050,7 @@ impl ServiceDbRuntime {
     }
 
     pub async fn renew_lease(&self, hold: &DbLeaseHold, now_ms: i64) -> Result<bool> {
-        let binding = self.metadata.collection_for_type(&hold.type_name)?;
+        let binding = self.metadata.collection_for_target_key(&hold.target_key)?;
         let lease = binding.lease(&hold.slot)?;
         let key_bson = key_bson(binding, &hold.key)?;
         let max_path = lease_field(&hold.slot, LEASE_MAX_EXPIRES_AT_MS_FIELD);
@@ -1093,7 +1090,7 @@ impl ServiceDbRuntime {
     }
 
     pub async fn release_lease(&self, hold: &DbLeaseHold) -> Result<()> {
-        let binding = self.metadata.collection_for_type(&hold.type_name)?;
+        let binding = self.metadata.collection_for_target_key(&hold.target_key)?;
         let mut filter = doc! { "_id": key_bson(binding, &hold.key)? };
         filter.insert(
             lease_field(&hold.slot, LEASE_TOKEN_FIELD),
@@ -1117,7 +1114,7 @@ impl ServiceDbRuntime {
         slot: &str,
         now_ms: i64,
     ) -> Result<Option<Value>> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         binding.lease(slot)?;
         let filter = binding.key_filter(&key)?;
         let document = self
@@ -1212,7 +1209,7 @@ impl ServiceDbRuntime {
     ) -> Result<()> {
         let Some(session) = session else {
             for guard in guards {
-                let binding = self.metadata.collection_for_type(&guard.type_name)?;
+                let binding = self.metadata.collection_for_target_key(&guard.target_key)?;
                 let mut executor = self.mongo_executor(&binding.collection_name, None).await?;
                 self.assert_lease_hold_live(binding, guard, &mut executor)
                     .await?;
@@ -1220,7 +1217,7 @@ impl ServiceDbRuntime {
             return Ok(());
         };
         for guard in guards {
-            let binding = self.metadata.collection_for_type(&guard.type_name)?;
+            let binding = self.metadata.collection_for_target_key(&guard.target_key)?;
             let mut executor = self
                 .mongo_executor(&binding.collection_name, Some(&mut *session))
                 .await?;

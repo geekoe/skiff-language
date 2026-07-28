@@ -3,8 +3,8 @@ use std::sync::Arc;
 use skiff_artifact_model::PackageBuildId;
 use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_linked_program::{
-    AssemblyExecutionImage, ConstAddr, ConstIr, ExecutableAddr, FileAddr, LinkOverlay,
-    LinkedExecutable, LinkedFileUnit, PackageUnit, PublicationResourceTable,
+    AssemblyExecutionImage, ConstAddr, ConstIr, DbObjectTargetId, ExecutableAddr, FileAddr,
+    LinkOverlay, LinkedExecutable, LinkedFileUnit, PackageUnit, PublicationResourceTable,
     RuntimeProgramResourceView, RuntimeTypeContext, TypeAddr, UnitAddr,
 };
 use skiff_runtime_linked_type_plan::ProgramTypeView;
@@ -111,6 +111,75 @@ impl RuntimeAssemblyExecutionProjection {
             .code_slots()
             .get(*slot)
             .map(|code| code.schema_records())
+    }
+
+    fn resolve_db_target(
+        &self,
+        target: &DbObjectTargetId,
+    ) -> Result<ResolvedRuntimeDbTarget<'_>, RuntimeError> {
+        let shared = self
+            .image
+            .shared_packages()
+            .code_by_build(&target.package_artifact_ref.package_build_id)
+            .filter(|code| code.artifact_ref() == &target.package_artifact_ref)
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(
+                    "DB target package artifact is not loaded exactly".to_string(),
+                )
+            })?;
+        let mut file_refs = shared
+            .artifact()
+            .files
+            .iter()
+            .filter(|reference| **reference == target.file_ir_ref);
+        file_refs.next().ok_or_else(|| {
+            RuntimeError::InvalidArtifact(
+                "DB target File IR reference is not owned exactly by its package".to_string(),
+            )
+        })?;
+        if file_refs.next().is_some() {
+            return Err(RuntimeError::InvalidArtifact(
+                "DB target File IR reference is duplicated".to_string(),
+            ));
+        }
+        let addr = self
+            .image
+            .type_addr(
+                &target.package_artifact_ref.package_build_id,
+                &target.file_ir_ref.file_ir_identity,
+                target.type_index,
+            )
+            .map_err(|error| RuntimeError::InvalidArtifact(error.to_string()))?;
+        let UnitAddr::Package(slot) = addr.unit else {
+            return Err(RuntimeError::InvalidArtifact(
+                "DB target resolved outside package code".to_string(),
+            ));
+        };
+        let FileAddr::LoadedFileIndex(file_index) = addr.file else {
+            return Err(RuntimeError::InvalidArtifact(
+                "DB target did not resolve to a canonical file index".to_string(),
+            ));
+        };
+        let file = self
+            .storage
+            .package_files
+            .get(slot)
+            .and_then(|files| files.get(file_index))
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact("DB target linked file is not loaded".to_string())
+            })?;
+        if file.module_path != target.file_ir_ref.module_path
+            || target
+                .file_ir_ref
+                .source_ast_hash
+                .as_deref()
+                .is_some_and(|hash| hash != file.source_ast_hash)
+        {
+            return Err(RuntimeError::InvalidArtifact(
+                "DB target File IR identity was substituted".to_string(),
+            ));
+        }
+        resolve_db_declaration(file, addr, target.type_index)
     }
 
     pub(crate) fn resolve_file(
@@ -426,6 +495,85 @@ impl<'a> RuntimeExecutionProjection<'a> {
             Self::Assembly(projection) => projection.package_id(slot),
         }
     }
+
+    pub(crate) fn resolve_db_target(
+        &self,
+        target: &DbObjectTargetId,
+    ) -> Result<ResolvedRuntimeDbTarget<'_>, RuntimeError> {
+        match self {
+            Self::Assembly(projection) => projection.resolve_db_target(target),
+            Self::Legacy(program) => {
+                let mut packages = program.packages.iter().enumerate().filter(|(_, package)| {
+                    package.package_id == target.package_artifact_ref.package_id
+                        && package.version == target.package_artifact_ref.package_version
+                        && package.build_identity
+                            == target.package_artifact_ref.package_build_id.as_str()
+                        && package.abi_identity
+                            == target
+                                .package_artifact_ref
+                                .package_local_abi_identity
+                                .as_str()
+                });
+                let (slot, package) = packages.next().ok_or_else(|| {
+                    RuntimeError::InvalidArtifact(
+                        "DB target package artifact is not loaded exactly".to_string(),
+                    )
+                })?;
+                if packages.next().is_some() {
+                    return Err(RuntimeError::InvalidArtifact(
+                        "DB target package artifact is loaded more than once".to_string(),
+                    ));
+                }
+                let mut file_refs = package
+                    .files
+                    .iter()
+                    .filter(|reference| **reference == target.file_ir_ref);
+                file_refs.next().ok_or_else(|| {
+                    RuntimeError::InvalidArtifact(
+                        "DB target File IR reference is not owned by its package".to_string(),
+                    )
+                })?;
+                if file_refs.next().is_some() {
+                    return Err(RuntimeError::InvalidArtifact(
+                        "DB target File IR reference is duplicated".to_string(),
+                    ));
+                }
+                let mut files = program
+                    .package_files
+                    .get(slot)
+                    .into_iter()
+                    .flatten()
+                    .filter(|file| {
+                        file.file_ir_identity == target.file_ir_ref.file_ir_identity
+                            && file.module_path == target.file_ir_ref.module_path
+                            && target
+                                .file_ir_ref
+                                .source_ast_hash
+                                .as_deref()
+                                .is_none_or(|hash| hash == file.source_ast_hash)
+                    });
+                let file = files.next().ok_or_else(|| {
+                    RuntimeError::InvalidArtifact(
+                        "DB target linked File IR is not loaded".to_string(),
+                    )
+                })?;
+                if files.next().is_some() {
+                    return Err(RuntimeError::InvalidArtifact(
+                        "DB target linked File IR is ambiguous".to_string(),
+                    ));
+                }
+                resolve_db_declaration(
+                    file,
+                    TypeAddr {
+                        unit: UnitAddr::Package(slot),
+                        file: FileAddr::FileIrIdentity(target.file_ir_ref.file_ir_identity.clone()),
+                        type_index: target.type_index,
+                    },
+                    target.type_index,
+                )
+            }
+        }
+    }
 }
 
 pub(crate) struct ResolvedRuntimeExecutable<'a> {
@@ -439,6 +587,45 @@ pub(crate) struct ResolvedRuntimeConst<'a> {
     pub(crate) constant: &'a ConstIr,
 }
 
+pub(crate) struct ResolvedRuntimeDbTarget<'a> {
+    pub(crate) addr: TypeAddr,
+    pub(crate) declaration: &'a skiff_runtime_linked_program::linked::DbDeclarationIr,
+}
+
+fn resolve_db_declaration(
+    file: &LinkedFileUnit,
+    addr: TypeAddr,
+    type_index: usize,
+) -> Result<ResolvedRuntimeDbTarget<'_>, RuntimeError> {
+    if type_index >= file.types.len() {
+        return Err(RuntimeError::InvalidArtifact(
+            "DB target type index is out of bounds".to_string(),
+        ));
+    }
+    let mut declarations = file
+        .declarations
+        .types
+        .iter()
+        .filter(|(_, declaration)| declaration.type_index as usize == type_index);
+    let (symbol, declaration) = declarations.next().ok_or_else(|| {
+        RuntimeError::InvalidArtifact(
+            "DB target has no declaration for its exact type index".to_string(),
+        )
+    })?;
+    if declarations.next().is_some() || declaration.symbol != *symbol {
+        return Err(RuntimeError::InvalidArtifact(
+            "DB target type index declaration is ambiguous".to_string(),
+        ));
+    }
+    let db = file.declarations.db.get(symbol).ok_or_else(|| {
+        RuntimeError::InvalidArtifact("DB target has no exact DB attachment".to_string())
+    })?;
+    Ok(ResolvedRuntimeDbTarget {
+        addr,
+        declaration: db,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -449,12 +636,14 @@ mod tests {
         type_projection::EvalTypeProjection,
     };
     use skiff_artifact_model::{
-        AssemblyIdentity, CanonicalPackageLinkPlan, ExecutableBody, ExecutableIr, ExecutableKind,
-        FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBuildId,
-        PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-        PackageRuntimeRequirements, PackageSchemaIndexRef, RuntimeAssembly, SlotLayout, TypeDeclIr,
-        TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-        RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+        AssemblyIdentity, CanonicalPackageLinkPlan, DbDeclarationIr as ArtifactDbDeclarationIr,
+        DbObjectKeyIr as ArtifactDbObjectKeyIr, DbObjectKindIr as ArtifactDbObjectKindIr,
+        ExecutableBody, ExecutableIr, ExecutableKind, FileIrRef, FileIrUnit, PackageArtifact,
+        PackageArtifactRef, PackageBuildId, PackageCodeSlot, PackageImplementationLinks,
+        PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements,
+        PackageSchemaIndexRef, RuntimeAssembly, SlotLayout, TypeDeclIr,
+        TypeDeclarationIr as ArtifactTypeDeclarationIr, TypeDescriptorIr, TypeRefIr,
+        PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     };
     use skiff_runtime_model::service_error::{
         CatchIdentity, LocalExecutionTypeIdentity, NominalTypeIdentity,
@@ -586,6 +775,32 @@ mod tests {
 
         EvalRecoverableBehaviorHooks::new_for_execution(&execution)
             .expect("assembly recoverable DB behavior must index the execution image");
+    }
+
+    #[test]
+    fn assembly_db_target_resolution_uses_the_full_exact_identity() {
+        let (image, _) = projection_image();
+        let execution = RuntimeExecutionProjection::Assembly(
+            RuntimeAssemblyExecutionProjection::from_image(image),
+        );
+        let exact = projection_db_target();
+        let resolved = execution
+            .resolve_db_target(&exact)
+            .expect("exact DB target must resolve");
+        assert_eq!(resolved.declaration.type_name, "ProjectionType");
+
+        let mut substituted_package = exact.clone();
+        substituted_package.package_artifact_ref.package_id =
+            "projection.package.substituted".to_string();
+        assert!(execution.resolve_db_target(&substituted_package).is_err());
+
+        let mut substituted_file = exact.clone();
+        substituted_file.file_ir_ref.artifact_path = Some("substituted/file.ir.json".to_string());
+        assert!(execution.resolve_db_target(&substituted_file).is_err());
+
+        let mut substituted_type = exact;
+        substituted_type.type_index = 1;
+        assert!(execution.resolve_db_target(&substituted_type).is_err());
     }
 
     #[test]
@@ -833,6 +1048,32 @@ mod tests {
             implements: Vec::new(),
             source_span: None,
         });
+        file.declarations.types.insert(
+            "ProjectionType".to_string(),
+            ArtifactTypeDeclarationIr {
+                type_index: 0,
+                symbol: "ProjectionType".to_string(),
+                source_span: None,
+            },
+        );
+        file.declarations.db.insert(
+            "ProjectionType".to_string(),
+            ArtifactDbDeclarationIr {
+                type_ref: TypeRefIr::LocalType { type_index: 0 },
+                type_name: "ProjectionType".to_string(),
+                collection_name: "projection_type".to_string(),
+                kind: ArtifactDbObjectKindIr::Object,
+                key: ArtifactDbObjectKeyIr {
+                    name: "id".to_string(),
+                    ty: TypeRefIr::builtin("String"),
+                },
+                fields: Vec::new(),
+                retention: None,
+                leases: Vec::new(),
+                indexes: Vec::new(),
+                source_span: None,
+            },
+        );
         file.constants.push(skiff_artifact_model::ConstIr {
             name: "projection.value".to_string(),
             ty: TypeRefIr::builtin("bool"),
@@ -924,5 +1165,23 @@ mod tests {
             vec![(package, vec![file.clone()])],
         );
         (image, file.file_ir_identity)
+    }
+
+    fn projection_db_target() -> DbObjectTargetId {
+        DbObjectTargetId {
+            package_artifact_ref: PackageArtifactRef {
+                package_id: "projection.package".to_string(),
+                package_version: "1.0.0".to_string(),
+                package_build_id: PackageBuildId::new("projection-build"),
+                package_local_abi_identity: PackageLocalAbiIdentity::new("projection-abi"),
+            },
+            file_ir_ref: FileIrRef {
+                file_ir_identity: "file:projection".to_string(),
+                module_path: "projection".to_string(),
+                artifact_path: None,
+                source_ast_hash: Some("source:projection".to_string()),
+            },
+            type_index: 0,
+        }
     }
 }

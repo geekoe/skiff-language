@@ -19,7 +19,7 @@ fn unpolled_drop_never_starts_the_provider_wait() {
     let mut heap = RequestHeap::default();
     let operation = store
         .prepare_find_one_by_key_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             db_key(json!("item-1")),
             None,
             &mut heap,
@@ -42,7 +42,7 @@ fn prepare_failure_never_builds_or_starts_a_provider_wait() {
     let mut heap = RequestHeap::default();
 
     let missing_type = match store.prepare_find_one_by_key_runtime(
-        "MissingItem",
+        test_db_target(1, "", "MissingItem").lookup_key(),
         db_key(json!("item-1")),
         None,
         &mut heap,
@@ -52,15 +52,19 @@ fn prepare_failure_never_builds_or_starts_a_provider_wait() {
         Err(error) => error,
     };
     let scalar = RuntimeValue::String("not-an-object".to_string());
-    let invalid_create =
-        match store.prepare_create_runtime("PreparedItem", &scalar, &mut heap, context()) {
-            Ok(_) => panic!("invalid create value should fail during prepare"),
-            Err(error) => error,
-        };
+    let invalid_create = match store.prepare_create_runtime(
+        test_db_target(0, "", "PreparedItem").lookup_key(),
+        &scalar,
+        &mut heap,
+        context(),
+    ) {
+        Ok(_) => panic!("invalid create value should fail during prepare"),
+        Err(error) => error,
+    };
 
     assert!(missing_type
         .to_string()
-        .contains("does not declare type MissingItem"));
+        .contains("does not declare the exact DB target"));
     assert!(invalid_create
         .to_string()
         .contains("db write value must be an object"));
@@ -79,7 +83,7 @@ async fn zero_limit_skips_projection_compilation_and_provider_wait() {
     let stats = heap.stats();
     let operation = store
         .prepare_find_many_page_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             db_query(Value::Null),
             ServiceDbFindOptions {
                 order: vec![DbOrderEntry {
@@ -124,7 +128,7 @@ async fn pending_wait_releases_caller_heap_until_one_shot_finalize() {
     let mut heap = RequestHeap::default();
     let operation = store
         .prepare_find_one_by_key_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             db_key(json!("item-1")),
             None,
             &mut heap,
@@ -170,7 +174,7 @@ async fn pending_drop_does_not_restart_or_complete_the_provider_wait() {
     let checkpoint = heap.checkpoint();
     let operation = store
         .prepare_find_one_by_query_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             db_query(Value::Null),
             Vec::new(),
             None,
@@ -205,7 +209,7 @@ async fn provider_error_returns_no_finalizer_and_preserves_heap() {
     let stats = heap.stats();
     let operation = store
         .prepare_find_many_page_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             db_query(Value::Null),
             ServiceDbFindOptions::default(),
             None,
@@ -249,7 +253,7 @@ async fn multi_node_finalizer_failure_rolls_back_every_allocation() {
     );
     let operation = store
         .prepare_find_one_by_key_runtime(
-            "PreparedItem",
+            test_db_target(0, "", "PreparedItem").lookup_key(),
             db_key(json!("item-1")),
             None,
             &mut heap,

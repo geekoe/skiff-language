@@ -54,7 +54,7 @@ impl ServiceDbRuntime {
         heap: &RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> Result<PreparedUpdate> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         let cascade_paths = binding.immutable_file_paths_for_change(&change.wire_change);
         let wire_change = change.wire_change.clone();
         let normalized = binding.normalize_one_selector(selector)?;
@@ -145,7 +145,9 @@ impl PreparedUpdate {
         lease_guards: &[DbLeaseHold],
         mut session: Option<&mut ClientSession>,
     ) -> Result<CompletedUpdate> {
-        let binding = runtime.metadata.collection_for_type(&self.type_name)?;
+        let binding = runtime
+            .metadata
+            .collection_for_target_key(&self.type_name)?;
         let document = match self.kind {
             PreparedUpdateKind::Read { plan } => {
                 runtime
@@ -223,7 +225,9 @@ impl CompletedUpdate {
         runtime: &ServiceDbRuntime,
         heap: &mut RequestHeap,
     ) -> Result<Option<RuntimeValue>> {
-        let binding = runtime.metadata.collection_for_type(&self.type_name)?;
+        let binding = runtime
+            .metadata
+            .collection_for_target_key(&self.type_name)?;
         let read_context = recoverable_read_context(&self.context);
         self.document
             .map(|document| {

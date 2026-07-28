@@ -601,25 +601,24 @@ impl ServiceDbStore {
         key: DbKey,
         slot: &str,
     ) -> Result<Option<DbLeaseHandle>> {
-        let (owner, request_id) = {
-            let state = self.request_state.lock().await;
-            state.ensure_lease_live()?;
-            if state.transaction.is_some() {
-                return Err(ServiceDbError::Decode(
-                    "db claim is not allowed inside active db transaction".to_string(),
-                ));
-            }
-            if state
-                .leases
-                .iter()
-                .any(|hold| hold.type_name == type_name && hold.key == key && hold.slot == slot)
+        let (owner, request_id) =
             {
-                return Err(ServiceDbError::Decode(
-                    "db claim cannot re-enter a lease already held by this request".to_string(),
-                ));
-            }
-            (state.owner.clone(), state.request_id.clone())
-        };
+                let state = self.request_state.lock().await;
+                state.ensure_lease_live()?;
+                if state.transaction.is_some() {
+                    return Err(ServiceDbError::Decode(
+                        "db claim is not allowed inside active db transaction".to_string(),
+                    ));
+                }
+                if state.leases.iter().any(|hold| {
+                    hold.target_key == type_name && hold.key == key && hold.slot == slot
+                }) {
+                    return Err(ServiceDbError::Decode(
+                        "db claim cannot re-enter a lease already held by this request".to_string(),
+                    ));
+                }
+                (state.owner.clone(), state.request_id.clone())
+            };
         let handle = self
             .runtime
             .claim_lease(

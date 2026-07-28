@@ -1,5 +1,6 @@
 use skiff_runtime_capability_context::{
-    DbDocument, DbKey, DbOrderEntry, DbQuery, FieldPath, ServiceDbChange, ServiceDbFindOptions,
+    DbCapabilityTarget, DbDocument, DbKey, DbOrderEntry, DbQuery, FieldPath, ServiceDbChange,
+    ServiceDbFindOptions,
 };
 use skiff_runtime_model::{runtime_value::RuntimeValue, type_plan::RuntimeTypePlan};
 
@@ -24,7 +25,7 @@ pub enum DbCommand {
 
 #[derive(Debug)]
 pub struct DbFindManyCommand {
-    pub type_name: String,
+    pub target: DbCapabilityTarget,
     pub result_plan: RuntimeTypePlan,
     pub query: DbQuery,
     pub options: ServiceDbFindOptions,
@@ -34,7 +35,7 @@ pub struct DbFindManyCommand {
 
 #[derive(Debug)]
 pub struct DbFindOneCommand {
-    pub type_name: String,
+    pub target: DbCapabilityTarget,
     pub result_plan: RuntimeTypePlan,
     pub selector: DbOneCommandSelector,
     pub projection: Option<Vec<FieldPath>>,
@@ -55,21 +56,21 @@ pub enum DbOneCommandSelector {
 
 #[derive(Debug)]
 pub struct DbInsertOneCommand {
-    pub type_name: String,
+    pub target: DbCapabilityTarget,
     pub result_plan: RuntimeTypePlan,
     pub value: DbCommandValue,
 }
 
 #[derive(Debug)]
 pub struct DbInsertManyCommand {
-    pub type_name: String,
+    pub target: DbCapabilityTarget,
     pub result_plan: RuntimeTypePlan,
     pub values: Vec<DbDocument>,
 }
 
 #[derive(Debug)]
 pub struct DbUpdateOneCommand {
-    pub type_name: String,
+    pub target: DbCapabilityTarget,
     pub result_plan: RuntimeTypePlan,
     pub selector: DbOneCommandSelector,
     pub change: DbCommandChange,
@@ -77,7 +78,7 @@ pub struct DbUpdateOneCommand {
 
 #[derive(Debug)]
 pub struct DbUpdateManyCommand {
-    pub type_name: String,
+    pub target: DbCapabilityTarget,
     pub result_plan: RuntimeTypePlan,
     pub query: DbQuery,
     pub change: ServiceDbChange,
@@ -85,7 +86,7 @@ pub struct DbUpdateManyCommand {
 
 #[derive(Debug)]
 pub struct DbUpsertKeyCommand {
-    pub type_name: String,
+    pub target: DbCapabilityTarget,
     pub result_plan: RuntimeTypePlan,
     pub key: DbKey,
     pub insert: DbDocument,
@@ -94,7 +95,7 @@ pub struct DbUpsertKeyCommand {
 
 #[derive(Debug)]
 pub struct DbReplaceOneCommand {
-    pub type_name: String,
+    pub target: DbCapabilityTarget,
     pub result_plan: RuntimeTypePlan,
     pub selector: DbOneCommandSelector,
     pub value: DbCommandValue,
@@ -120,18 +121,18 @@ pub enum DbCommandChange {
 
 #[derive(Debug)]
 pub struct DbDeleteOneCommand {
-    pub type_name: String,
+    pub target: DbCapabilityTarget,
     pub selector: DbOneCommandSelector,
 }
 
 #[derive(Debug)]
 pub struct DbQueryCommand {
-    pub type_name: String,
+    pub target: DbCapabilityTarget,
     pub query: DbQuery,
 }
 
 #[derive(Debug)]
 pub struct DbExistsKeyCommand {
-    pub type_name: String,
+    pub target: DbCapabilityTarget,
     pub key: DbKey,
 }

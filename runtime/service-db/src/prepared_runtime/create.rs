@@ -35,7 +35,7 @@ impl ServiceDbRuntime {
         heap: &RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> Result<PreparedCreate> {
-        let binding = self.metadata.collection_for_type(type_name)?;
+        let binding = self.metadata.collection_for_target_key(type_name)?;
         let artifact_store = CurrentRequestRecoverableArtifactStore::new(&context);
         let mut root_store = CollectedRecoverableRootStore::default();
         let document = {
@@ -114,7 +114,9 @@ impl CompletedCreate {
         runtime: &ServiceDbRuntime,
         heap: &mut RequestHeap,
     ) -> Result<RuntimeValue> {
-        let binding = runtime.metadata.collection_for_type(&self.type_name)?;
+        let binding = runtime
+            .metadata
+            .collection_for_target_key(&self.type_name)?;
         let read_context = recoverable_read_context(&self.context);
         binding.runtime_business_value_from_document(self.document, heap, Some(&read_context))
     }

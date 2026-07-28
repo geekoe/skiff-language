@@ -346,7 +346,9 @@ impl Interpreter {
             .await?;
         let key = DbKey::new(runtime_to_wire(&key, heap)?);
         let claim_store = store.clone();
-        let type_name = claim.target.type_name.clone();
+        let type_name = super::db_eval::db_capability_target(&claim.target)
+            .lookup_key()
+            .to_string();
         let slot = claim.slot.clone();
         let Some(handle) = wait::await_operation(&program_context, heap, async move {
             claim_store.claim_lease(&type_name, key, &slot).await
@@ -444,7 +446,9 @@ impl Interpreter {
             .await?;
         let key = DbKey::new(runtime_to_wire(&key, heap)?);
         let read_store = store.clone();
-        let type_name = read.target.type_name.clone();
+        let type_name = super::db_eval::db_capability_target(&read.target)
+            .lookup_key()
+            .to_string();
         let slot = read.slot.clone();
         match wait::await_operation(&program_context, heap, async move {
             read_store.read_lease(&type_name, key, &slot).await
@@ -474,7 +478,7 @@ async fn execute_db_command(
                 let context =
                     db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
                 let operation = store.prepare_find_many_page_runtime(
-                    &command.type_name,
+                    command.target.lookup_key(),
                     command.query,
                     command.options,
                     command.projection,
@@ -487,7 +491,7 @@ async fn execute_db_command(
                 return Ok(RuntimeValue::Heap(heap.alloc_array(values)?));
             }
             let wait_store = store.clone();
-            let type_name = command.type_name;
+            let type_name = command.target.lookup_key().to_string();
             let page = wait::await_operation(program_context, heap, async move {
                 wait_store
                     .find_many_page(
@@ -512,7 +516,8 @@ async fn execute_db_command(
             )
         }
         DbCommand::FindOne(command) => {
-            let type_name = command.type_name;
+            let display_type_name = command.target.type_name.clone();
+            let type_name = command.target.lookup_key().to_string();
             let projection = command.projection;
             if let Some(recoverable_runtime) = command.recoverable_runtime {
                 let context =
@@ -532,7 +537,7 @@ async fn execute_db_command(
                 return match found {
                     Some(value) => Ok(value),
                     None if command.required => Err(RuntimeError::Decode(format!(
-                        "db require could not find {type_name}"
+                        "db require could not find {display_type_name}"
                     ))),
                     None => Ok(RuntimeValue::Null),
                 };
@@ -567,7 +572,7 @@ async fn execute_db_command(
                     heap,
                 ),
                 None if command.required => Err(RuntimeError::Decode(format!(
-                    "db require could not find {type_name}"
+                    "db require could not find {display_type_name}"
                 ))),
                 None => Ok(RuntimeValue::Null),
             }
@@ -575,7 +580,7 @@ async fn execute_db_command(
         DbCommand::InsertOne(command) => match command.value {
             DbCommandValue::Wire(value) => {
                 let wait_store = store.clone();
-                let type_name = command.type_name;
+                let type_name = command.target.lookup_key().to_string();
                 let result = wait::await_operation(program_context, heap, async move {
                     wait_store.create(&type_name, value).await
                 })
@@ -593,8 +598,12 @@ async fn execute_db_command(
             } => {
                 let context =
                     db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
-                let operation =
-                    store.prepare_create_runtime(&command.type_name, &value, heap, context)?;
+                let operation = store.prepare_create_runtime(
+                    command.target.lookup_key(),
+                    &value,
+                    heap,
+                    context,
+                )?;
                 let finalizer =
                     wait::await_operation(program_context, heap, operation.into_wait()).await??;
                 Ok(finalizer.finalize(heap)?)
@@ -602,7 +611,7 @@ async fn execute_db_command(
         },
         DbCommand::InsertMany(command) => {
             let wait_store = store.clone();
-            let type_name = command.type_name;
+            let type_name = command.target.lookup_key().to_string();
             let result = wait::await_operation(program_context, heap, async move {
                 wait_store
                     .insert_many_result(&type_name, command.values)
@@ -619,7 +628,7 @@ async fn execute_db_command(
         DbCommand::UpdateOne(command) => match command.change {
             DbCommandChange::Wire(change) => {
                 let wait_store = store.clone();
-                let type_name = command.type_name;
+                let type_name = command.target.lookup_key().to_string();
                 let selector = service_db_selector(command.selector);
                 let result = wait::await_operation(program_context, heap, async move {
                     wait_store.update_one(&type_name, selector, change).await
@@ -644,7 +653,7 @@ async fn execute_db_command(
                 let context =
                     db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
                 let operation = store.prepare_update_one_runtime(
-                    &command.type_name,
+                    command.target.lookup_key(),
                     service_db_selector(command.selector),
                     change,
                     heap,
@@ -657,7 +666,7 @@ async fn execute_db_command(
         },
         DbCommand::UpdateMany(command) => {
             let wait_store = store.clone();
-            let type_name = command.type_name;
+            let type_name = command.target.lookup_key().to_string();
             let result = wait::await_operation(program_context, heap, async move {
                 wait_store
                     .update_many(&type_name, command.query, command.change)
@@ -673,7 +682,7 @@ async fn execute_db_command(
         }
         DbCommand::UpsertKey(command) => {
             let wait_store = store.clone();
-            let type_name = command.type_name;
+            let type_name = command.target.lookup_key().to_string();
             let result = wait::await_operation(program_context, heap, async move {
                 wait_store
                     .upsert_by_key(&type_name, command.key, command.insert, command.change)
@@ -690,7 +699,7 @@ async fn execute_db_command(
         DbCommand::ReplaceOne(command) => match command.value {
             DbCommandValue::Wire(value) => {
                 let wait_store = store.clone();
-                let type_name = command.type_name;
+                let type_name = command.target.lookup_key().to_string();
                 let selector = service_db_selector(command.selector);
                 let result = wait::await_operation(program_context, heap, async move {
                     wait_store.replace_one(&type_name, selector, value).await
@@ -715,7 +724,7 @@ async fn execute_db_command(
                 let context =
                     db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
                 let operation = store.prepare_replace_one_runtime(
-                    &command.type_name,
+                    command.target.lookup_key(),
                     service_db_selector(command.selector),
                     &value,
                     heap,
@@ -728,7 +737,7 @@ async fn execute_db_command(
         },
         DbCommand::DeleteOne(command) => {
             let wait_store = store.clone();
-            let type_name = command.type_name;
+            let type_name = command.target.lookup_key().to_string();
             let selector = service_db_selector(command.selector);
             Ok(RuntimeValue::Bool(
                 wait::await_operation(program_context, heap, async move {
@@ -739,7 +748,7 @@ async fn execute_db_command(
         }
         DbCommand::DeleteMany(command) => {
             let wait_store = store.clone();
-            let type_name = command.type_name;
+            let type_name = command.target.lookup_key().to_string();
             let result = wait::await_operation(program_context, heap, async move {
                 wait_store.delete_many(&type_name, command.query).await
             })
@@ -748,7 +757,7 @@ async fn execute_db_command(
         }
         DbCommand::Count(command) => {
             let wait_store = store.clone();
-            let type_name = command.type_name;
+            let type_name = command.target.lookup_key().to_string();
             Ok(RuntimeValue::Number(
                 wait::await_operation(program_context, heap, async move {
                     wait_store.count(&type_name, command.query).await
@@ -758,7 +767,7 @@ async fn execute_db_command(
         }
         DbCommand::ExistsKey(command) => {
             let wait_store = store.clone();
-            let type_name = command.type_name;
+            let type_name = command.target.lookup_key().to_string();
             Ok(RuntimeValue::Bool(
                 wait::await_operation(program_context, heap, async move {
                     wait_store.exists_by_key(&type_name, command.key).await
@@ -768,7 +777,7 @@ async fn execute_db_command(
         }
         DbCommand::ExistsQuery(command) => {
             let wait_store = store.clone();
-            let type_name = command.type_name;
+            let type_name = command.target.lookup_key().to_string();
             Ok(RuntimeValue::Bool(
                 wait::await_operation(program_context, heap, async move {
                     wait_store.exists_by_query(&type_name, command.query).await

@@ -94,6 +94,23 @@ async fn f445h_e4r_spine_db_query_is_first_poll_ready_and_keeps_actor_segment() 
     let fixture = EvaluatorFixture::new(
         vec![LinkedExprIr::DbQuery {
             target: DbTargetIr {
+                target_id: DbObjectTargetId {
+                    package_artifact_ref: PackageArtifactRef {
+                        package_id: "skiff.run/db-query-test".to_string(),
+                        package_version: "1.0.0".to_string(),
+                        package_build_id: PackageBuildId::new("build:db-query-test"),
+                        package_local_abi_identity: PackageLocalAbiIdentity::new(
+                            "abi:db-query-test",
+                        ),
+                    },
+                    file_ir_ref: FileIrRef {
+                        file_ir_identity: "file:db-query-test".to_string(),
+                        module_path: "test.db".to_string(),
+                        artifact_path: None,
+                        source_ast_hash: Some("source:db-query-test".to_string()),
+                    },
+                    type_index: 0,
+                },
                 type_ref: string_type(),
                 type_name: "Thread".to_string(),
             },
