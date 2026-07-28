@@ -28,14 +28,21 @@ export type RuntimeAssemblyRequestWireKind =
   | "websocketConnect"
   | "websocketJsonRpc";
 
+export interface RuntimeAssemblyRequestDeploymentFrameHeader {
+  serviceId: string;
+  contractVersion: string;
+  deploymentRevision: string;
+  deploymentArtifactIdentity: string;
+}
+
 export interface RuntimeAssemblyHttpRequestRoutingFrameHeader {
   kind: "runtimeAssembly";
   assemblyIdentity: string;
   assemblyGeneration: number;
+  deployment: RuntimeAssemblyRequestDeploymentFrameHeader;
   gatewayEntryIdentity: string;
   ingress: {
     protocol: "http";
-    host: string;
     method: string;
     path: string;
   };
@@ -45,10 +52,10 @@ export interface RuntimeAssemblyWebSocketConnectRoutingFrameHeader {
   kind: "runtimeAssembly";
   assemblyIdentity: string;
   assemblyGeneration: number;
+  deployment: RuntimeAssemblyRequestDeploymentFrameHeader;
   gatewayEntryIdentity: string;
   ingress: {
     protocol: "webSocket";
-    host: string;
     method: null;
     path: string;
   };
@@ -58,10 +65,10 @@ export interface RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader {
   kind: "runtimeAssembly";
   assemblyIdentity: string;
   assemblyGeneration: number;
+  deployment: RuntimeAssemblyRequestDeploymentFrameHeader;
   gatewayEntryIdentity: string;
   ingress: {
     protocol: "webSocket";
-    host: string;
     method: string;
     path: string;
   };
@@ -186,10 +193,17 @@ const routingFields = new Set([
   "kind",
   "assemblyIdentity",
   "assemblyGeneration",
+  "deployment",
   "gatewayEntryIdentity",
   "ingress",
 ]);
-const ingressFields = new Set(["protocol", "host", "method", "path"]);
+const deploymentFields = new Set([
+  "serviceId",
+  "contractVersion",
+  "deploymentRevision",
+  "deploymentArtifactIdentity",
+]);
+const ingressFields = new Set(["protocol", "method", "path"]);
 const callerFields = new Set(["kind"]);
 
 export function hasRuntimeAssemblyRouting(
@@ -279,7 +293,7 @@ export function validateRuntimeAssemblyRequestRouting(
   try {
     runtimeAssemblyIdentity(routing.assemblyIdentity);
   } catch {
-    return "invalid request.start envelope: routing.assemblyIdentity must be skiff-runtime-assembly-v2:sha256:<64 lowercase hex>";
+    return "invalid request.start envelope: routing.assemblyIdentity must be skiff-runtime-assembly-v3:sha256:<64 lowercase hex>";
   }
   try {
     activationGeneration(
@@ -295,7 +309,42 @@ export function validateRuntimeAssemblyRequestRouting(
   ) {
     return "invalid request.start envelope: routing.gatewayEntryIdentity must be skiff-gateway-entry-v2:sha256:<64 lowercase hex>";
   }
+  const deploymentError = validateDeployment(routing.deployment);
+  if (deploymentError !== null) return deploymentError;
   return validateIngress(routing.ingress, wireKind);
+}
+
+function validateDeployment(input: unknown): string | null {
+  if (!isRecord(input)) {
+    return "invalid request.start envelope: routing.deployment must be an object";
+  }
+  const unsupported = firstUnsupportedField(input, deploymentFields);
+  if (unsupported !== undefined) {
+    return `invalid request.start envelope: routing.deployment.${unsupported} is not supported`;
+  }
+  const missing = firstMissingField(input, deploymentFields);
+  if (missing !== undefined) {
+    return `invalid request.start envelope: routing.deployment.${missing} is required`;
+  }
+  if (
+    typeof input.serviceId !== "string" ||
+    input.serviceId.length === 0 ||
+    typeof input.contractVersion !== "string" ||
+    input.contractVersion.length === 0 ||
+    typeof input.deploymentRevision !== "string" ||
+    input.deploymentRevision.length === 0
+  ) {
+    return "invalid request.start envelope: routing.deployment coordinate must contain non-empty strings";
+  }
+  if (
+    typeof input.deploymentArtifactIdentity !== "string" ||
+    !/^skiff-deployment-artifact-v4:sha256:[0-9a-f]{64}$/.test(
+      input.deploymentArtifactIdentity,
+    )
+  ) {
+    return "invalid request.start envelope: routing.deployment.deploymentArtifactIdentity must be skiff-deployment-artifact-v4:sha256:<64 lowercase hex>";
+  }
+  return null;
 }
 
 function runtimeAssemblyRequestWireKind(
@@ -366,9 +415,6 @@ function validateIngress(
   }
   if (input.protocol !== "http" && input.protocol !== "webSocket") {
     return "invalid request.start envelope: routing.ingress.protocol must be http or webSocket";
-  }
-  if (typeof input.host !== "string" || input.host.length === 0) {
-    return "invalid request.start envelope: routing.ingress.host must be a non-empty string";
   }
   if (
     (wireKind === "http" &&

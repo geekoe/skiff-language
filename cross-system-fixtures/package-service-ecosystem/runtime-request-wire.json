@@ -1,7 +1,7 @@
 {
   "requestStartHeaders": [
     {
-      "schemaVersion": "skiff-runtime-frame-v1",
+      "schemaVersion": "skiff-runtime-frame-v2",
       "type": "request.start",
       "requestId": "request-http-full",
       "mode": "unary",
@@ -10,12 +10,17 @@
       },
       "routing": {
         "kind": "runtimeAssembly",
-        "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f",
+        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f",
         "assemblyGeneration": 7,
+        "deployment": {
+          "serviceId": "example.com/service-1",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "deployment-1",
+          "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
         "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "ingress": {
           "protocol": "http",
-          "host": "example.com",
           "method": "POST",
           "path": "/items"
         }
@@ -61,7 +66,7 @@
       "testEffectsEnabled": true
     },
     {
-      "schemaVersion": "skiff-runtime-frame-v1",
+      "schemaVersion": "skiff-runtime-frame-v2",
       "type": "request.start",
       "requestId": "request-http-minimal-defaults",
       "mode": "unary",
@@ -70,12 +75,17 @@
       },
       "routing": {
         "kind": "runtimeAssembly",
-        "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "assemblyGeneration": 0,
+        "deployment": {
+          "serviceId": "example.com/service-2",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "deployment-2",
+          "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
         "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "ingress": {
           "protocol": "http",
-          "host": "example.com",
           "method": "GET",
           "path": "/"
         }
@@ -93,7 +103,7 @@
       }
     },
     {
-      "schemaVersion": "skiff-runtime-frame-v1",
+      "schemaVersion": "skiff-runtime-frame-v2",
       "type": "request.start",
       "requestId": "request-http-server-stream",
       "mode": "serverStream",
@@ -102,12 +112,17 @@
       },
       "routing": {
         "kind": "runtimeAssembly",
-        "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "assemblyGeneration": 9007199254740991,
+        "deployment": {
+          "serviceId": "example.com/service-3",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "deployment-3",
+          "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        },
         "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "ingress": {
           "protocol": "http",
-          "host": "stream.example.com",
           "method": "GET",
           "path": "/events"
         }
@@ -137,121 +152,658 @@
     }
   ],
   "requestStartMutations": [
-    { "name": "missing schemaVersion", "baseIndex": 0, "removePath": "schemaVersion" },
-    { "name": "missing type", "baseIndex": 0, "removePath": "type" },
-    { "name": "missing requestId", "baseIndex": 0, "removePath": "requestId" },
-    { "name": "missing mode", "baseIndex": 0, "removePath": "mode" },
-    { "name": "missing caller", "baseIndex": 0, "removePath": "caller" },
-    { "name": "missing routing", "baseIndex": 0, "removePath": "routing" },
-    { "name": "missing trace", "baseIndex": 0, "removePath": "trace" },
-    { "name": "missing httpRequest", "baseIndex": 0, "removePath": "httpRequest" },
-    { "name": "wrong schemaVersion", "baseIndex": 0, "setPath": "schemaVersion", "value": "skiff-runtime-frame-v2" },
-    { "name": "wrong type", "baseIndex": 0, "setPath": "type", "value": "response.start" },
-    { "name": "requestId null", "baseIndex": 0, "setPath": "requestId", "value": null },
-    { "name": "mode null", "baseIndex": 0, "setPath": "mode", "value": null },
-    { "name": "mode unsupported", "baseIndex": 0, "setPath": "mode", "value": "duplex" },
-    { "name": "unknown header field", "baseIndex": 0, "setPath": "unknown", "value": true },
-    { "name": "legacy target field", "baseIndex": 0, "setPath": "target", "value": "legacy-target" },
-    { "name": "legacy activation identity", "baseIndex": 0, "setPath": "activationIdentity", "value": "skiff-runtime-activation-v1:opaque:legacy" },
-    { "name": "legacy top gateway entry identity", "baseIndex": 0, "setPath": "gatewayEntryIdentity", "value": "skiff-gateway-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
-    { "name": "legacy business identity", "baseIndex": 0, "setPath": "businessIdentity", "value": "legacy" },
-    { "name": "legacy websocket entry id", "baseIndex": 0, "setPath": "websocketEntryId", "value": "legacy" },
-    { "name": "legacy http adapter", "baseIndex": 0, "setPath": "httpAdapter", "value": {} },
-    { "name": "legacy websocket adapter", "baseIndex": 0, "setPath": "websocketAdapter", "value": {} },
-    { "name": "legacy test effect doubles", "baseIndex": 0, "setPath": "testEffectDoubles", "value": {} },
-    { "name": "caller null", "baseIndex": 0, "setPath": "caller", "value": null },
-    { "name": "caller missing kind", "baseIndex": 0, "removePath": "caller.kind" },
-    { "name": "caller wrong kind", "baseIndex": 0, "setPath": "caller.kind", "value": "service" },
-    { "name": "caller kind null", "baseIndex": 0, "setPath": "caller.kind", "value": null },
-    { "name": "caller target is forbidden", "baseIndex": 0, "setPath": "caller.target", "value": "forged-handler" },
-    { "name": "routing null", "baseIndex": 0, "setPath": "routing", "value": null },
-    { "name": "routing unknown field", "baseIndex": 0, "setPath": "routing.unknown", "value": true },
-    { "name": "routing missing kind", "baseIndex": 0, "removePath": "routing.kind" },
-    { "name": "routing missing assembly identity", "baseIndex": 0, "removePath": "routing.assemblyIdentity" },
-    { "name": "routing missing assembly generation", "baseIndex": 0, "removePath": "routing.assemblyGeneration" },
-    { "name": "routing missing gateway identity", "baseIndex": 0, "removePath": "routing.gatewayEntryIdentity" },
-    { "name": "routing missing ingress", "baseIndex": 0, "removePath": "routing.ingress" },
-    { "name": "routing wrong kind", "baseIndex": 0, "setPath": "routing.kind", "value": "legacy" },
-    { "name": "assembly identity v1 rejected", "baseIndex": 0, "setPath": "routing.assemblyIdentity", "value": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
-    { "name": "assembly identity uppercase", "baseIndex": 0, "setPath": "routing.assemblyIdentity", "value": "skiff-runtime-assembly-v2:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
-    { "name": "assembly identity short", "baseIndex": 0, "setPath": "routing.assemblyIdentity", "value": "skiff-runtime-assembly-v2:sha256:aaaa" },
-    { "name": "assembly identity null", "baseIndex": 0, "setPath": "routing.assemblyIdentity", "value": null },
-    { "name": "assembly generation negative", "baseIndex": 0, "setPath": "routing.assemblyGeneration", "value": -1 },
-    { "name": "assembly generation negative zero", "baseIndex": 0, "setPath": "routing.assemblyGeneration", "value": -0 },
-    { "name": "assembly generation unsafe", "baseIndex": 0, "setPath": "routing.assemblyGeneration", "value": 9007199254740992 },
-    { "name": "assembly generation string", "baseIndex": 0, "setPath": "routing.assemblyGeneration", "value": "7" },
-    { "name": "assembly generation null", "baseIndex": 0, "setPath": "routing.assemblyGeneration", "value": null },
-    { "name": "gateway identity legacy prefix", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-gateway-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
-    { "name": "gateway identity operation prefix", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-contract-operation-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
-    { "name": "stale GatewayEntry v1 generation", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
-    { "name": "gateway identity uppercase", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-gateway-entry-v2:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
-    { "name": "gateway identity short", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": "skiff-gateway-entry-v2:sha256:aaaa" },
-    { "name": "gateway identity null", "baseIndex": 0, "setPath": "routing.gatewayEntryIdentity", "value": null },
-    { "name": "legacy contract operation routing", "baseIndex": 0, "setPath": "routing.contractOperationId", "value": "skiff-contract-operation-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
-    { "name": "gateway entry key routing", "baseIndex": 0, "setPath": "routing.gatewayEntryKey", "value": "items" },
-    { "name": "deployment routing", "baseIndex": 0, "setPath": "routing.deployment", "value": "deployment" },
-    { "name": "service contract routing", "baseIndex": 0, "setPath": "routing.serviceProtocolIdentity", "value": "service-contract" },
-    { "name": "ingress null", "baseIndex": 0, "setPath": "routing.ingress", "value": null },
-    { "name": "ingress unknown field", "baseIndex": 0, "setPath": "routing.ingress.unknown", "value": true },
-    { "name": "ingress missing protocol", "baseIndex": 0, "removePath": "routing.ingress.protocol" },
-    { "name": "ingress missing host", "baseIndex": 0, "removePath": "routing.ingress.host" },
-    { "name": "ingress missing method", "baseIndex": 0, "removePath": "routing.ingress.method" },
-    { "name": "ingress missing path", "baseIndex": 0, "removePath": "routing.ingress.path" },
-    { "name": "ingress websocket rejected", "baseIndex": 0, "setPath": "routing.ingress.protocol", "value": "webSocket" },
-    { "name": "ingress protocol null", "baseIndex": 0, "setPath": "routing.ingress.protocol", "value": null },
-    { "name": "ingress empty host", "baseIndex": 0, "setPath": "routing.ingress.host", "value": "" },
-    { "name": "ingress host null", "baseIndex": 0, "setPath": "routing.ingress.host", "value": null },
-    { "name": "ingress empty method", "baseIndex": 0, "setPath": "routing.ingress.method", "value": "" },
-    { "name": "ingress method null", "baseIndex": 0, "setPath": "routing.ingress.method", "value": null },
-    { "name": "ingress relative path", "baseIndex": 0, "setPath": "routing.ingress.path", "value": "items" },
-    { "name": "ingress path null", "baseIndex": 0, "setPath": "routing.ingress.path", "value": null },
-    { "name": "client session null", "baseIndex": 0, "setPath": "clientSession", "value": null },
-    { "name": "client session wrong type", "baseIndex": 0, "setPath": "clientSession", "value": "client" },
-    { "name": "client session unknown field", "baseIndex": 0, "setPath": "clientSession.unknown", "value": true },
-    { "name": "client session missing id", "baseIndex": 0, "removePath": "clientSession.id" },
-    { "name": "client session id null", "baseIndex": 0, "setPath": "clientSession.id", "value": null },
-    { "name": "deadline null", "baseIndex": 0, "setPath": "deadline", "value": null },
-    { "name": "deadline unknown field", "baseIndex": 0, "setPath": "deadline.unknown", "value": true },
-    { "name": "deadline missing timeout", "baseIndex": 0, "removePath": "deadline.timeoutMs" },
-    { "name": "deadline missing expires", "baseIndex": 0, "removePath": "deadline.expiresAt" },
-    { "name": "deadline timeout negative", "baseIndex": 0, "setPath": "deadline.timeoutMs", "value": -1 },
-    { "name": "deadline timeout negative zero", "baseIndex": 0, "setPath": "deadline.timeoutMs", "value": -0 },
-    { "name": "deadline timeout unsafe", "baseIndex": 0, "setPath": "deadline.timeoutMs", "value": 9007199254740992 },
-    { "name": "deadline timeout string", "baseIndex": 0, "setPath": "deadline.timeoutMs", "value": "25" },
-    { "name": "deadline expires null", "baseIndex": 0, "setPath": "deadline.expiresAt", "value": null },
-    { "name": "trace null", "baseIndex": 0, "setPath": "trace", "value": null },
-    { "name": "trace unknown field", "baseIndex": 0, "setPath": "trace.unknown", "value": true },
-    { "name": "trace missing trace id", "baseIndex": 0, "removePath": "trace.traceId" },
-    { "name": "trace missing span id", "baseIndex": 0, "removePath": "trace.spanId" },
-    { "name": "trace id null", "baseIndex": 0, "setPath": "trace.traceId", "value": null },
-    { "name": "trace span null", "baseIndex": 0, "setPath": "trace.spanId", "value": null },
-    { "name": "trace parent null", "baseIndex": 0, "setPath": "trace.parentSpanId", "value": null },
-    { "name": "trace sampled null", "baseIndex": 0, "setPath": "trace.sampled", "value": null },
-    { "name": "trace sampled string", "baseIndex": 0, "setPath": "trace.sampled", "value": "true" },
-    { "name": "http request null", "baseIndex": 0, "setPath": "httpRequest", "value": null },
-    { "name": "http request unknown field", "baseIndex": 0, "setPath": "httpRequest.unknown", "value": true },
-    { "name": "http request missing method", "baseIndex": 0, "removePath": "httpRequest.method" },
-    { "name": "http request missing url", "baseIndex": 0, "removePath": "httpRequest.url" },
-    { "name": "http request missing path", "baseIndex": 0, "removePath": "httpRequest.path" },
-    { "name": "http request missing query", "baseIndex": 0, "removePath": "httpRequest.query" },
-    { "name": "http request missing headers", "baseIndex": 0, "removePath": "httpRequest.headers" },
-    { "name": "http request method null", "baseIndex": 0, "setPath": "httpRequest.method", "value": null },
-    { "name": "http request url null", "baseIndex": 0, "setPath": "httpRequest.url", "value": null },
-    { "name": "http request path null", "baseIndex": 0, "setPath": "httpRequest.path", "value": null },
-    { "name": "http request query null", "baseIndex": 0, "setPath": "httpRequest.query", "value": null },
-    { "name": "http request headers null", "baseIndex": 0, "setPath": "httpRequest.headers", "value": null },
-    { "name": "query entry unknown field", "baseIndex": 0, "setPath": "httpRequest.query.0.unknown", "value": true },
-    { "name": "query entry missing name", "baseIndex": 0, "removePath": "httpRequest.query.0.name" },
-    { "name": "query entry missing value", "baseIndex": 0, "removePath": "httpRequest.query.0.value" },
-    { "name": "query entry name null", "baseIndex": 0, "setPath": "httpRequest.query.0.name", "value": null },
-    { "name": "query entry value null", "baseIndex": 0, "setPath": "httpRequest.query.0.value", "value": null },
-    { "name": "header entry unknown field", "baseIndex": 0, "setPath": "httpRequest.headers.0.unknown", "value": true },
-    { "name": "header entry missing name", "baseIndex": 0, "removePath": "httpRequest.headers.0.name" },
-    { "name": "header entry missing value", "baseIndex": 0, "removePath": "httpRequest.headers.0.value" },
-    { "name": "header entry name null", "baseIndex": 0, "setPath": "httpRequest.headers.0.name", "value": null },
-    { "name": "header entry value null", "baseIndex": 0, "setPath": "httpRequest.headers.0.value", "value": null },
-    { "name": "test effects null", "baseIndex": 0, "setPath": "testEffectsEnabled", "value": null },
-    { "name": "test effects string", "baseIndex": 0, "setPath": "testEffectsEnabled", "value": "false" }
+    {
+      "name": "missing schemaVersion",
+      "baseIndex": 0,
+      "removePath": "schemaVersion"
+    },
+    {
+      "name": "missing type",
+      "baseIndex": 0,
+      "removePath": "type"
+    },
+    {
+      "name": "missing requestId",
+      "baseIndex": 0,
+      "removePath": "requestId"
+    },
+    {
+      "name": "missing mode",
+      "baseIndex": 0,
+      "removePath": "mode"
+    },
+    {
+      "name": "missing caller",
+      "baseIndex": 0,
+      "removePath": "caller"
+    },
+    {
+      "name": "missing routing",
+      "baseIndex": 0,
+      "removePath": "routing"
+    },
+    {
+      "name": "missing trace",
+      "baseIndex": 0,
+      "removePath": "trace"
+    },
+    {
+      "name": "missing httpRequest",
+      "baseIndex": 0,
+      "removePath": "httpRequest"
+    },
+    {
+      "name": "wrong schemaVersion",
+      "baseIndex": 0,
+      "setPath": "schemaVersion",
+      "value": "skiff-runtime-frame-v1"
+    },
+    {
+      "name": "wrong type",
+      "baseIndex": 0,
+      "setPath": "type",
+      "value": "response.start"
+    },
+    {
+      "name": "requestId null",
+      "baseIndex": 0,
+      "setPath": "requestId",
+      "value": null
+    },
+    {
+      "name": "mode null",
+      "baseIndex": 0,
+      "setPath": "mode",
+      "value": null
+    },
+    {
+      "name": "mode unsupported",
+      "baseIndex": 0,
+      "setPath": "mode",
+      "value": "duplex"
+    },
+    {
+      "name": "unknown header field",
+      "baseIndex": 0,
+      "setPath": "unknown",
+      "value": true
+    },
+    {
+      "name": "legacy target field",
+      "baseIndex": 0,
+      "setPath": "target",
+      "value": "legacy-target"
+    },
+    {
+      "name": "legacy activation identity",
+      "baseIndex": 0,
+      "setPath": "activationIdentity",
+      "value": "skiff-runtime-activation-v1:opaque:legacy"
+    },
+    {
+      "name": "legacy top gateway entry identity",
+      "baseIndex": 0,
+      "setPath": "gatewayEntryIdentity",
+      "value": "skiff-gateway-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "legacy business identity",
+      "baseIndex": 0,
+      "setPath": "businessIdentity",
+      "value": "legacy"
+    },
+    {
+      "name": "legacy websocket entry id",
+      "baseIndex": 0,
+      "setPath": "websocketEntryId",
+      "value": "legacy"
+    },
+    {
+      "name": "legacy http adapter",
+      "baseIndex": 0,
+      "setPath": "httpAdapter",
+      "value": {}
+    },
+    {
+      "name": "legacy websocket adapter",
+      "baseIndex": 0,
+      "setPath": "websocketAdapter",
+      "value": {}
+    },
+    {
+      "name": "legacy test effect doubles",
+      "baseIndex": 0,
+      "setPath": "testEffectDoubles",
+      "value": {}
+    },
+    {
+      "name": "caller null",
+      "baseIndex": 0,
+      "setPath": "caller",
+      "value": null
+    },
+    {
+      "name": "caller missing kind",
+      "baseIndex": 0,
+      "removePath": "caller.kind"
+    },
+    {
+      "name": "caller wrong kind",
+      "baseIndex": 0,
+      "setPath": "caller.kind",
+      "value": "service"
+    },
+    {
+      "name": "caller kind null",
+      "baseIndex": 0,
+      "setPath": "caller.kind",
+      "value": null
+    },
+    {
+      "name": "caller target is forbidden",
+      "baseIndex": 0,
+      "setPath": "caller.target",
+      "value": "forged-handler"
+    },
+    {
+      "name": "routing null",
+      "baseIndex": 0,
+      "setPath": "routing",
+      "value": null
+    },
+    {
+      "name": "routing unknown field",
+      "baseIndex": 0,
+      "setPath": "routing.unknown",
+      "value": true
+    },
+    {
+      "name": "routing missing kind",
+      "baseIndex": 0,
+      "removePath": "routing.kind"
+    },
+    {
+      "name": "routing missing assembly identity",
+      "baseIndex": 0,
+      "removePath": "routing.assemblyIdentity"
+    },
+    {
+      "name": "routing missing assembly generation",
+      "baseIndex": 0,
+      "removePath": "routing.assemblyGeneration"
+    },
+    {
+      "name": "routing missing gateway identity",
+      "baseIndex": 0,
+      "removePath": "routing.gatewayEntryIdentity"
+    },
+    {
+      "name": "routing missing ingress",
+      "baseIndex": 0,
+      "removePath": "routing.ingress"
+    },
+    {
+      "name": "routing wrong kind",
+      "baseIndex": 0,
+      "setPath": "routing.kind",
+      "value": "legacy"
+    },
+    {
+      "name": "assembly identity v2 rejected",
+      "baseIndex": 0,
+      "setPath": "routing.assemblyIdentity",
+      "value": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "assembly identity uppercase",
+      "baseIndex": 0,
+      "setPath": "routing.assemblyIdentity",
+      "value": "skiff-runtime-assembly-v2:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "name": "assembly identity short",
+      "baseIndex": 0,
+      "setPath": "routing.assemblyIdentity",
+      "value": "skiff-runtime-assembly-v2:sha256:aaaa"
+    },
+    {
+      "name": "assembly identity null",
+      "baseIndex": 0,
+      "setPath": "routing.assemblyIdentity",
+      "value": null
+    },
+    {
+      "name": "assembly generation negative",
+      "baseIndex": 0,
+      "setPath": "routing.assemblyGeneration",
+      "value": -1
+    },
+    {
+      "name": "assembly generation unsafe",
+      "baseIndex": 0,
+      "setPath": "routing.assemblyGeneration",
+      "value": 9007199254740992
+    },
+    {
+      "name": "assembly generation string",
+      "baseIndex": 0,
+      "setPath": "routing.assemblyGeneration",
+      "value": "7"
+    },
+    {
+      "name": "assembly generation null",
+      "baseIndex": 0,
+      "setPath": "routing.assemblyGeneration",
+      "value": null
+    },
+    {
+      "name": "gateway identity legacy prefix",
+      "baseIndex": 0,
+      "setPath": "routing.gatewayEntryIdentity",
+      "value": "skiff-gateway-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "gateway identity operation prefix",
+      "baseIndex": 0,
+      "setPath": "routing.gatewayEntryIdentity",
+      "value": "skiff-contract-operation-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "stale GatewayEntry v1 generation",
+      "baseIndex": 0,
+      "setPath": "routing.gatewayEntryIdentity",
+      "value": "skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "gateway identity uppercase",
+      "baseIndex": 0,
+      "setPath": "routing.gatewayEntryIdentity",
+      "value": "skiff-gateway-entry-v2:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "name": "gateway identity short",
+      "baseIndex": 0,
+      "setPath": "routing.gatewayEntryIdentity",
+      "value": "skiff-gateway-entry-v2:sha256:aaaa"
+    },
+    {
+      "name": "gateway identity null",
+      "baseIndex": 0,
+      "setPath": "routing.gatewayEntryIdentity",
+      "value": null
+    },
+    {
+      "name": "legacy contract operation routing",
+      "baseIndex": 0,
+      "setPath": "routing.contractOperationId",
+      "value": "skiff-contract-operation-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "gateway entry key routing",
+      "baseIndex": 0,
+      "setPath": "routing.gatewayEntryKey",
+      "value": "items"
+    },
+    {
+      "name": "deployment routing",
+      "baseIndex": 0,
+      "setPath": "routing.deployment",
+      "value": "deployment"
+    },
+    {
+      "name": "service contract routing",
+      "baseIndex": 0,
+      "setPath": "routing.serviceProtocolIdentity",
+      "value": "service-contract"
+    },
+    {
+      "name": "ingress null",
+      "baseIndex": 0,
+      "setPath": "routing.ingress",
+      "value": null
+    },
+    {
+      "name": "ingress unknown field",
+      "baseIndex": 0,
+      "setPath": "routing.ingress.unknown",
+      "value": true
+    },
+    {
+      "name": "ingress missing protocol",
+      "baseIndex": 0,
+      "removePath": "routing.ingress.protocol"
+    },
+    {
+      "name": "ingress missing method",
+      "baseIndex": 0,
+      "removePath": "routing.ingress.method"
+    },
+    {
+      "name": "ingress missing path",
+      "baseIndex": 0,
+      "removePath": "routing.ingress.path"
+    },
+    {
+      "name": "ingress websocket rejected",
+      "baseIndex": 0,
+      "setPath": "routing.ingress.protocol",
+      "value": "webSocket"
+    },
+    {
+      "name": "ingress protocol null",
+      "baseIndex": 0,
+      "setPath": "routing.ingress.protocol",
+      "value": null
+    },
+    {
+      "name": "ingress empty method",
+      "baseIndex": 0,
+      "setPath": "routing.ingress.method",
+      "value": ""
+    },
+    {
+      "name": "ingress method null",
+      "baseIndex": 0,
+      "setPath": "routing.ingress.method",
+      "value": null
+    },
+    {
+      "name": "ingress relative path",
+      "baseIndex": 0,
+      "setPath": "routing.ingress.path",
+      "value": "items"
+    },
+    {
+      "name": "ingress path null",
+      "baseIndex": 0,
+      "setPath": "routing.ingress.path",
+      "value": null
+    },
+    {
+      "name": "client session null",
+      "baseIndex": 0,
+      "setPath": "clientSession",
+      "value": null
+    },
+    {
+      "name": "client session wrong type",
+      "baseIndex": 0,
+      "setPath": "clientSession",
+      "value": "client"
+    },
+    {
+      "name": "client session unknown field",
+      "baseIndex": 0,
+      "setPath": "clientSession.unknown",
+      "value": true
+    },
+    {
+      "name": "client session missing id",
+      "baseIndex": 0,
+      "removePath": "clientSession.id"
+    },
+    {
+      "name": "client session id null",
+      "baseIndex": 0,
+      "setPath": "clientSession.id",
+      "value": null
+    },
+    {
+      "name": "deadline null",
+      "baseIndex": 0,
+      "setPath": "deadline",
+      "value": null
+    },
+    {
+      "name": "deadline unknown field",
+      "baseIndex": 0,
+      "setPath": "deadline.unknown",
+      "value": true
+    },
+    {
+      "name": "deadline missing timeout",
+      "baseIndex": 0,
+      "removePath": "deadline.timeoutMs"
+    },
+    {
+      "name": "deadline missing expires",
+      "baseIndex": 0,
+      "removePath": "deadline.expiresAt"
+    },
+    {
+      "name": "deadline timeout negative",
+      "baseIndex": 0,
+      "setPath": "deadline.timeoutMs",
+      "value": -1
+    },
+    {
+      "name": "deadline timeout unsafe",
+      "baseIndex": 0,
+      "setPath": "deadline.timeoutMs",
+      "value": 9007199254740992
+    },
+    {
+      "name": "deadline timeout string",
+      "baseIndex": 0,
+      "setPath": "deadline.timeoutMs",
+      "value": "25"
+    },
+    {
+      "name": "deadline expires null",
+      "baseIndex": 0,
+      "setPath": "deadline.expiresAt",
+      "value": null
+    },
+    {
+      "name": "trace null",
+      "baseIndex": 0,
+      "setPath": "trace",
+      "value": null
+    },
+    {
+      "name": "trace unknown field",
+      "baseIndex": 0,
+      "setPath": "trace.unknown",
+      "value": true
+    },
+    {
+      "name": "trace missing trace id",
+      "baseIndex": 0,
+      "removePath": "trace.traceId"
+    },
+    {
+      "name": "trace missing span id",
+      "baseIndex": 0,
+      "removePath": "trace.spanId"
+    },
+    {
+      "name": "trace id null",
+      "baseIndex": 0,
+      "setPath": "trace.traceId",
+      "value": null
+    },
+    {
+      "name": "trace span null",
+      "baseIndex": 0,
+      "setPath": "trace.spanId",
+      "value": null
+    },
+    {
+      "name": "trace parent null",
+      "baseIndex": 0,
+      "setPath": "trace.parentSpanId",
+      "value": null
+    },
+    {
+      "name": "trace sampled null",
+      "baseIndex": 0,
+      "setPath": "trace.sampled",
+      "value": null
+    },
+    {
+      "name": "trace sampled string",
+      "baseIndex": 0,
+      "setPath": "trace.sampled",
+      "value": "true"
+    },
+    {
+      "name": "http request null",
+      "baseIndex": 0,
+      "setPath": "httpRequest",
+      "value": null
+    },
+    {
+      "name": "http request unknown field",
+      "baseIndex": 0,
+      "setPath": "httpRequest.unknown",
+      "value": true
+    },
+    {
+      "name": "http request missing method",
+      "baseIndex": 0,
+      "removePath": "httpRequest.method"
+    },
+    {
+      "name": "http request missing url",
+      "baseIndex": 0,
+      "removePath": "httpRequest.url"
+    },
+    {
+      "name": "http request missing path",
+      "baseIndex": 0,
+      "removePath": "httpRequest.path"
+    },
+    {
+      "name": "http request missing query",
+      "baseIndex": 0,
+      "removePath": "httpRequest.query"
+    },
+    {
+      "name": "http request missing headers",
+      "baseIndex": 0,
+      "removePath": "httpRequest.headers"
+    },
+    {
+      "name": "http request method null",
+      "baseIndex": 0,
+      "setPath": "httpRequest.method",
+      "value": null
+    },
+    {
+      "name": "http request url null",
+      "baseIndex": 0,
+      "setPath": "httpRequest.url",
+      "value": null
+    },
+    {
+      "name": "http request path null",
+      "baseIndex": 0,
+      "setPath": "httpRequest.path",
+      "value": null
+    },
+    {
+      "name": "http request query null",
+      "baseIndex": 0,
+      "setPath": "httpRequest.query",
+      "value": null
+    },
+    {
+      "name": "http request headers null",
+      "baseIndex": 0,
+      "setPath": "httpRequest.headers",
+      "value": null
+    },
+    {
+      "name": "query entry unknown field",
+      "baseIndex": 0,
+      "setPath": "httpRequest.query.0.unknown",
+      "value": true
+    },
+    {
+      "name": "query entry missing name",
+      "baseIndex": 0,
+      "removePath": "httpRequest.query.0.name"
+    },
+    {
+      "name": "query entry missing value",
+      "baseIndex": 0,
+      "removePath": "httpRequest.query.0.value"
+    },
+    {
+      "name": "query entry name null",
+      "baseIndex": 0,
+      "setPath": "httpRequest.query.0.name",
+      "value": null
+    },
+    {
+      "name": "query entry value null",
+      "baseIndex": 0,
+      "setPath": "httpRequest.query.0.value",
+      "value": null
+    },
+    {
+      "name": "header entry unknown field",
+      "baseIndex": 0,
+      "setPath": "httpRequest.headers.0.unknown",
+      "value": true
+    },
+    {
+      "name": "header entry missing name",
+      "baseIndex": 0,
+      "removePath": "httpRequest.headers.0.name"
+    },
+    {
+      "name": "header entry missing value",
+      "baseIndex": 0,
+      "removePath": "httpRequest.headers.0.value"
+    },
+    {
+      "name": "header entry name null",
+      "baseIndex": 0,
+      "setPath": "httpRequest.headers.0.name",
+      "value": null
+    },
+    {
+      "name": "header entry value null",
+      "baseIndex": 0,
+      "setPath": "httpRequest.headers.0.value",
+      "value": null
+    },
+    {
+      "name": "test effects null",
+      "baseIndex": 0,
+      "setPath": "testEffectsEnabled",
+      "value": null
+    },
+    {
+      "name": "test effects string",
+      "baseIndex": 0,
+      "setPath": "testEffectsEnabled",
+      "value": "false"
+    },
+    {
+      "name": "routing missing exact deployment",
+      "baseIndex": 0,
+      "removePath": "routing.deployment"
+    },
+    {
+      "name": "legacy ingress host rejected",
+      "baseIndex": 0,
+      "setPath": "routing.ingress.host",
+      "value": "example.com"
+    },
+    {
+      "name": "deployment artifact v3 rejected",
+      "baseIndex": 0,
+      "setPath": "routing.deployment.deploymentArtifactIdentity",
+      "value": "skiff-deployment-artifact-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "cross-deployment substitution shape rejected",
+      "baseIndex": 0,
+      "setPath": "routing.deployment.deploymentRevision",
+      "value": ""
+    }
   ],
   "requestStartRawCases": [
     {
@@ -382,7 +934,7 @@
   ],
   "legacyRequestStartHeaders": [
     {
-      "schemaVersion": "skiff-runtime-frame-v1",
+      "schemaVersion": "skiff-runtime-frame-v2",
       "type": "request.start",
       "requestId": "legacy-request-baseline",
       "mode": "unary",
