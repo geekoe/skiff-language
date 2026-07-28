@@ -1,0 +1,18 @@
+current-scope.unary:
+  host: "*"
+  method: POST
+  path: /current-scope/unary
+  kind: rawHttp
+  handler: main.unary
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+current-scope.stream:
+  host: "*"
+  method: POST
+  path: /current-scope/stream
+  kind: rawHttp
+  handler: main.stream
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }

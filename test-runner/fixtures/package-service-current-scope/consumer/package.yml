@@ -1,0 +1,6 @@
+id: example.com/current-scope-consumer
+version: 1.0.0
+services:
+  - id: example.com/payments
+    version: 1.0.0
+    alias: payments
