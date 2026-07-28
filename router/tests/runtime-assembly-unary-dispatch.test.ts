@@ -1,7 +1,10 @@
+import { mkdtemp, rm } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import WebSocket from 'ws';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { encodeAssemblyActivationFrame } from '../src/protocol/assemblyActivationFrame.js';
 import {
@@ -28,6 +31,7 @@ import {
   FixedServiceResponseError,
   RuntimeResponseError
 } from '../src/router/errors.js';
+import { FilesystemRuntimeAssemblySnapshotLoader } from '../src/router/filesystemRuntimeAssemblySnapshotLoader.js';
 import { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
 import { RuntimeEndpoint } from '../src/router/runtimeEndpoint.js';
 import type { RuntimeUnaryDispatchFrameHeader } from '../src/router/runtimeRegistry.js';
@@ -35,9 +39,11 @@ import { RuntimeRegistry } from '../src/router/runtimeRegistry.js';
 import {
   RouterActiveAssemblySnapshotStore,
   RuntimeAssemblyIngressIndex,
+  type LoadedRuntimeAssembly,
   type RouterActiveAssemblySnapshot,
   type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
+import { writeCurrentScopeCompilerGeneratedArtifactRoot } from './helpers/compilerArtifacts.js';
 
 const ASSEMBLY = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
 const GATEWAY_ENTRY_IDENTITY =
@@ -53,12 +59,88 @@ const PRIVATE_SENTINELS = [
   'stack'
 ] as const;
 const fixtures: UnaryFixture[] = [];
+let currentScopeRoot: string;
+let currentScopeAssembly: LoadedRuntimeAssembly;
+
+beforeAll(async () => {
+  currentScopeRoot = await mkdtemp(
+    join(tmpdir(), 'skiff-router-current-scope-unary-')
+  );
+  const generated =
+    await writeCurrentScopeCompilerGeneratedArtifactRoot(currentScopeRoot);
+  currentScopeAssembly = await new FilesystemRuntimeAssemblySnapshotLoader(
+    currentScopeRoot
+  ).load(generated.receipt.baseAssembly);
+}, 120_000);
+
+afterAll(async () => {
+  await rm(currentScopeRoot, { recursive: true, force: true });
+});
 
 describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
   afterEach(async () => {
     while (fixtures.length > 0) {
       await fixtures.pop()!.close();
     }
+  });
+
+  it('dispatches the exact S0 unary binding to an observable response', async () => {
+    const exact = currentScopeAssembly.gatewayIngress.find(
+      (candidate) =>
+        candidate.selector.protocol === 'http' &&
+        candidate.selector.path === '/current-scope/unary'
+    );
+    if (exact === undefined) {
+      throw new Error('current-scope unary binding is missing');
+    }
+    const fixture = await createFixture({
+      binding: exact,
+      assemblyIdentity: currentScopeAssembly.assemblyIdentity,
+      generation: 1
+    });
+    const response = sendHttp(
+      fixture.httpUrl,
+      Buffer.from('source-body', 'utf8'),
+      '',
+      exact.selector
+    );
+    const requestFrame = decodeBinaryFrame(
+      await nextBinaryMessage(fixture.runtime)
+    );
+    const requestId = String(requestFrame.header.requestId);
+    expect(requestFrame.header).toMatchObject({
+      type: 'request.start',
+      mode: 'unary',
+      routing: {
+        assemblyIdentity: currentScopeAssembly.assemblyIdentity,
+        assemblyGeneration: 1,
+        gatewayEntryIdentity:
+          'skiff-gateway-entry-v2:sha256:0fd289d7eec4e03b01e9e8f5633aedd7e1cc64158fa7932f99a9686e559c02f2',
+        ingress: exact.selector
+      }
+    });
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.end',
+      requestId,
+      payloadPresent: true,
+      httpResponse: {
+        status: 201,
+        headers: [{ name: 'x-source-receipt', value: 'current-scope' }]
+      }
+    }, Buffer.from('host-observable', 'utf8')));
+
+    await expect(response).resolves.toEqual({
+      status: 201,
+      headers: expect.objectContaining({
+        'x-source-receipt': 'current-scope'
+      }),
+      body: Buffer.from('host-observable', 'utf8')
+    });
+    expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
+      pendingUnary: 0,
+      pendingStream: 0
+    });
   });
 
   it('writes validator-accepted nested headers and preserves zero and opaque payloads', async () => {
@@ -1119,18 +1201,22 @@ const TYPED_BINDING: RuntimeAssemblyIngressBinding = {
 
 async function createFixture(
   limits: {
+    assemblyIdentity?: string;
     binding?: RuntimeAssemblyIngressBinding;
+    generation?: number;
     maxRequestBytes?: number;
     maxResponseBytes?: number;
     requestTimeoutMs?: number;
   } = {}
 ): Promise<UnaryFixture> {
   const selectedBinding = limits.binding ?? BINDING;
+  const assemblyIdentity = limits.assemblyIdentity ?? ASSEMBLY;
+  const generation = limits.generation ?? 7;
   const snapshots = new RouterActiveAssemblySnapshotStore();
   snapshots.replace({
     environment: 'test',
-    generation: 7,
-    assembly: { assemblyIdentity: ASSEMBLY },
+    generation,
+    assembly: { assemblyIdentity },
     ingress: new RuntimeAssemblyIngressIndex([selectedBinding])
   });
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
@@ -1164,8 +1250,8 @@ async function createFixture(
   runtime.send(encodeAssemblyActivationFrame('runtimeToRouter', {
     type: 'register',
     environment: 'test',
-    generation: 7,
-    assembly: { assemblyIdentity: ASSEMBLY },
+    generation,
+    assembly: { assemblyIdentity },
     replicaId: RUNTIME_ID
   }));
   await until(() => assemblyRegistry.healthyParticipantReplicaIds().includes(RUNTIME_ID));
@@ -1222,15 +1308,25 @@ function mutate(
 async function sendHttp(
   baseUrl: string,
   body: Uint8Array,
-  query = ''
+  query = '',
+  selector: {
+    host: string;
+    method: string | null;
+    path: string;
+  } = { host: HOST, method: 'POST', path: PATH }
 ): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: Buffer }> {
-  return await startHttp(baseUrl, body, query).response;
+  return await startHttp(baseUrl, body, query, selector).response;
 }
 
 function startHttp(
   baseUrl: string,
   body: Uint8Array,
-  query = ''
+  query = '',
+  selector: {
+    host: string;
+    method: string | null;
+    path: string;
+  } = { host: HOST, method: 'POST', path: PATH }
 ): {
   request: ReturnType<typeof httpRequest>;
   response: Promise<{
@@ -1249,10 +1345,10 @@ function startHttp(
     outgoing = httpRequest({
       hostname: base.hostname,
       port: base.port,
-      path: `${PATH}${query}`,
-      method: 'POST',
+      path: `${selector.path}${query}`,
+      method: selector.method ?? 'POST',
       headers: {
-        host: HOST,
+        host: selector.host,
         'content-length': String(body.byteLength)
       }
     }, (response) => {
